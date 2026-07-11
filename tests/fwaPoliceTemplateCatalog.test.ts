@@ -5,6 +5,24 @@ import {
   renderFwaPoliceTemplate,
 } from "../src/services/FwaPoliceTemplateCatalog";
 
+function buildCanonicalIssue(input: {
+  reasonLabel: string;
+  attackDetails: any[];
+  breachContext?: { starsAtBreach: number; timeRemaining: string } | null;
+}) {
+  return {
+    playerTag: "#P2YLC8R0",
+    playerName: "Player One",
+    playerPosition: 5,
+    ruleType: "not_following_plan",
+    expectedBehavior: "Mirror triple in strict window.",
+    actualBehavior: "#5 (2-star) : canonical police label",
+    reasonLabel: input.reasonLabel,
+    attackDetails: input.attackDetails,
+    breachContext: input.breachContext ?? null,
+  } as any;
+}
+
 describe("FwaPoliceTemplateCatalog", () => {
   it("defines exactly nine canonical violation enums", () => {
     expect(FWA_POLICE_VIOLATIONS).toEqual([
@@ -27,6 +45,176 @@ describe("FwaPoliceTemplateCatalog", () => {
       user: "UNLINKED_USER",
     });
     expect(rendered).toBe("Alert #15 - Tilonius / UNLINKED_USER");
+  });
+
+  it("maps canonical reason labels to their exact police violations", () => {
+    const cases = [
+      {
+        reasonLabel: "tripled non-mirror in strict window",
+        expected: "EARLY_NON_MIRROR_TRIPLE",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 14,
+            stars: 3,
+            attackOrder: 2,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "didn't triple mirror",
+        expected: "STRICT_WINDOW_MIRROR_MISS_WIN",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 1,
+            stars: 2,
+            attackOrder: 3,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "strict-window mirror miss in traditional loss",
+        expected: "STRICT_WINDOW_MIRROR_MISS_LOSS",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 5,
+            stars: 2,
+            attackOrder: 4,
+            isBreach: false,
+          },
+        ],
+      },
+      {
+        reasonLabel: "early non-mirror 2-star in traditional loss",
+        expected: "EARLY_NON_MIRROR_2STAR",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 14,
+            stars: 2,
+            attackOrder: 5,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "invalid star count in traditional loss",
+        expected: "TRADITIONAL_INVALID_STAR_COUNT",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 14,
+            stars: 1,
+            attackOrder: 6,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "any 3-star in traditional loss",
+        expected: "ANY_3STAR",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 1,
+            stars: 3,
+            attackOrder: 7,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "attack on a lower-20 base",
+        expected: "LOWER20_ANY_STARS",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 41,
+            stars: 2,
+            attackOrder: 8,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "0-star attack on a top-30 base",
+        expected: "TOP30_ZERO_STARS",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 22,
+            stars: 0,
+            attackOrder: 9,
+            isBreach: true,
+          },
+        ],
+      },
+      {
+        reasonLabel: "clan star cap exceeded",
+        expected: "CLAN_STAR_CAP_EXCEEDED",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 9,
+            stars: 1,
+            attackOrder: 10,
+            isBreach: true,
+          },
+        ],
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const violation = classifyFwaPoliceViolation({
+        issue: buildCanonicalIssue({
+          reasonLabel: testCase.reasonLabel,
+          attackDetails: testCase.attackDetails as any,
+          breachContext: null,
+        }),
+        context: testCase.context,
+      });
+      expect(violation).toBe(testCase.expected);
+    }
   });
 
   it("classifies early non-mirror 2-star from traditional-loss breach details", () => {

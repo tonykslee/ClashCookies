@@ -78,11 +78,6 @@ const MATCH_SELECTOR_CHOICES = [
 const MATCH_SELECTOR_CHOICES_SINGLE_TARGET = MATCH_SELECTOR_CHOICES.filter(
   (choice) => choice.value !== "FWA",
 );
-const DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS = 101;
-const DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT = 0;
-
-const DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS = 0;
-const DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT = 12;
 
 const ALL_TARGETS: PlanTarget[] = [
   { matchType: "BL", outcome: "ANY", loseStyle: "ANY" },
@@ -272,46 +267,6 @@ function parseSelector(
     return [{ matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" }];
   }
   return { error: "Unsupported match-type selector." };
-}
-
-function getModalComplianceFieldConfig(target: PlanTarget): {
-  minStarsLabel: string;
-  minStarsDefault: number;
-  openHoursDefault: number;
-  openHoursDefaultText: string;
-} {
-  if (
-    target.matchType === "FWA" &&
-    target.outcome === "LOSE" &&
-    target.loseStyle === "TRADITIONAL"
-  ) {
-    return {
-      minStarsLabel: "Clan stars before non-mirror 2-star opens",
-      minStarsDefault: DEFAULT_TRADITIONAL_MODAL_NON_MIRROR_TWO_STAR_MIN_CLAN_STARS,
-      openHoursDefault: DEFAULT_TRADITIONAL_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
-      openHoursDefaultText: "12h",
-    };
-  }
-
-  if (
-    target.matchType === "FWA" &&
-    target.outcome === "LOSE" &&
-    target.loseStyle === "TRIPLE_TOP_30"
-  ) {
-    return {
-      minStarsLabel: "Top-30 only (no lower-20 targets)",
-      minStarsDefault: 0,
-      openHoursDefault: 0,
-      openHoursDefaultText: "0",
-    };
-  }
-
-  return {
-    minStarsLabel: "Clan stars before non-mirror 3-star opens",
-    minStarsDefault: DEFAULT_MODAL_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
-    openHoursDefault: DEFAULT_MODAL_ALL_BASES_OPEN_HOURS_LEFT,
-    openHoursDefaultText: "0",
-  };
 }
 
 function getModalCompliancePrefillDefaults(

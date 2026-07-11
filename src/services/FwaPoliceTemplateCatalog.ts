@@ -132,6 +132,19 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
   },
 };
 
+const CANONICAL_REASON_LABEL_TO_VIOLATION: Record<string, FwaPoliceViolation> = {
+  "tripled non-mirror in strict window": "EARLY_NON_MIRROR_TRIPLE",
+  "didn't triple mirror": "STRICT_WINDOW_MIRROR_MISS_WIN",
+  "strict-window mirror miss in traditional loss":
+    "STRICT_WINDOW_MIRROR_MISS_LOSS",
+  "early non-mirror 2-star in traditional loss": "EARLY_NON_MIRROR_2STAR",
+  "invalid star count in traditional loss": "TRADITIONAL_INVALID_STAR_COUNT",
+  "any 3-star in traditional loss": "ANY_3STAR",
+  "attack on a lower-20 base": "LOWER20_ANY_STARS",
+  "0-star attack on a top-30 base": "TOP30_ZERO_STARS",
+  "clan star cap exceeded": "CLAN_STAR_CAP_EXCEEDED",
+};
+
 /** Purpose: render a police template with deterministic placeholder replacements. */
 export function renderFwaPoliceTemplate(input: {
   template: string;
@@ -144,6 +157,14 @@ export function renderFwaPoliceTemplate(input: {
     if (key === "user") return input.user;
     return `{${keyRaw}}`;
   });
+}
+
+function classifyUsingCanonicalReasonLabel(
+  labelRaw: string,
+): FwaPoliceViolation | null {
+  const label = normalizeFwaPoliceText(labelRaw).toLowerCase();
+  if (!label) return null;
+  return CANONICAL_REASON_LABEL_TO_VIOLATION[label] ?? null;
 }
 
 function classifyUsingReasonLabel(labelRaw: string): FwaPoliceViolation | null {
@@ -191,6 +212,13 @@ export function classifyFwaPoliceViolation(input: {
   issue: WarComplianceIssue;
   context: FwaPoliceApplicabilityContext;
 }): FwaPoliceViolation | null {
+  const exactFromLabel = classifyUsingCanonicalReasonLabel(
+    input.issue.reasonLabel ?? "",
+  );
+  if (exactFromLabel) {
+    return exactFromLabel;
+  }
+
   const fromLabel = classifyUsingReasonLabel(input.issue.reasonLabel ?? "");
   const hasStrictWindowContext = hasStrictWindowBreachContext(input.issue);
   if (fromLabel) {

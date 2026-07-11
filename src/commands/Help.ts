@@ -572,8 +572,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "This removes invalid option paths (no outcome/lose-style controls for BL/MM or FWA-WIN).",
       "Modal formatting tips: `**bold**`, `*italic*`, `` `code` ``, and code blocks with triple backticks.",
       "Custom/default plans support `{opponent}` placeholder and replace it with opponent clan name.",
-      "Warplan modal also supports optional compliance settings that change by plan: FWA WIN uses the non-mirror 3-star opening threshold/time-left, FWA LOSE TRADITIONAL uses the non-mirror 2-star opening threshold/time-left and the 100-star cap, and FWA LOSE TRIPLE_TOP_30 uses top-30 targeting with the 90-star cap. These inputs are prefilled from the effective config for the selected set (custom -> editable default -> built-in fallback defaults), and `/warplan show` renders the matching contextual compliance gate.",
-      "These compliance settings are resolved with the same precedence (custom -> editable default -> fallback defaults) and are applied by `/fwa compliance` only for effective `FWA_WIN` checks.",
+      "Warplan modal also supports optional compliance settings for FWA WIN and FWA LOSE TRADITIONAL: FWA WIN uses the non-mirror 3-star opening threshold/time-left, FWA LOSE TRADITIONAL uses the non-mirror 2-star opening threshold/time-left plus the 100-star cap, and FWA LOSE TRIPLE_TOP_30 keeps fixed top-30 / 90-star-cap rules with no editable opening gate. These inputs are prefilled from the effective config for the selected set (custom -> editable default -> built-in fallback defaults), `/warplan show` renders the matching contextual compliance gate, and BL/MM do not use automated compliance settings.",
+      "These plan-aware compliance settings are resolved with the same precedence (custom -> editable default -> fallback defaults) and are applied by `/fwa compliance` for FWA WIN and FWA LOSE TRADITIONAL checks.",
       "Precedence: clan custom -> editable guild default -> built-in fallback.",
     ],
     examples: [
