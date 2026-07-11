@@ -1137,7 +1137,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
         allBasesOpenHoursLeft: 0,
       },
     });
-    expect(result.notFollowingPlan).toEqual(["open11", "open12", "strict13"]);
+    expect(result.notFollowingPlan).toEqual(["strict13", "open12", "open11"]);
   });
 
   it("FWA LOSE Traditional plan: consumes an exact linked substitution without flagging it twice", () => {
@@ -1208,6 +1208,159 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       linkedGroups,
     });
     expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: allows cleanup before later exact mirror satisfaction", () => {
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars: 1,
+          trueStars: 1,
+          attackSeenAt: dateAt(10),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: uses canonical participant positions even when attack rows omit playerPosition", () => {
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "mirror", playerTag: "#MIRROR", attacksUsed: 1, playerPosition: 5 },
+      ],
+      attacks: [
+        {
+          playerTag: "#MIRROR",
+          playerName: "mirror",
+          playerPosition: 99,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(10),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: keeps open-phase-only 2-stars valid without strict participation", () => {
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "open", playerTag: "#OPEN", attacksUsed: 2, playerPosition: 4 },
+      ],
+      attacks: [
+        {
+          playerTag: "#OPEN",
+          playerName: "open",
+          playerPosition: 4,
+          defenderPosition: 11,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OPEN",
+          playerName: "open",
+          playerPosition: 4,
+          defenderPosition: 12,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(14),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: flags only the exact cap-crossing attack in shared chronology", () => {
+    const warEndTime = dateAt(24);
+    const attacks = [
+      {
+        playerTag: "#EARLY",
+        playerName: "early",
+        playerPosition: 1,
+        defenderPosition: 11,
+        stars: 2,
+        trueStars: 100,
+        attackSeenAt: dateAt(13),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#LATE",
+        playerName: "lateCap",
+        playerPosition: 2,
+        defenderPosition: 12,
+        stars: 2,
+        trueStars: 3,
+        attackSeenAt: dateAt(14),
+        warEndTime,
+        attackOrder: 1,
+      },
+    ];
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 150,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(contexts.get(attacks[0] as any)?.starsBeforeAttack).toBe(3);
+    expect(contexts.get(attacks[1] as any)?.starsBeforeAttack).toBe(0);
+
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "early", playerTag: "#EARLY", attacksUsed: 1, playerPosition: 1 },
+        { playerName: "lateCap", playerTag: "#LATE", attacksUsed: 1, playerPosition: 2 },
+      ],
+      attacks: attacks as any,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual(["early"]);
   });
 });
 

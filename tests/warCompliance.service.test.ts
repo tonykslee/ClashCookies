@@ -1132,7 +1132,7 @@ describe("WarComplianceService", () => {
         defenderPosition: 1,
         stars: 1,
         attackOrder: 2,
-        isBreach: false,
+        isBreach: true,
       },
     ]);
   });
@@ -1842,6 +1842,146 @@ describe("WarComplianceService", () => {
     expect(violatedNames).toEqual(["strict13"]);
   });
 
+  it("keeps traditional-loss snapshot and report aligned for a linked substitution and a separate strict non-mirror breach", async () => {
+    const warStartTime = new Date("2026-03-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-03-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "owner4",
+        playerTag: "#P444",
+        attacksUsed: 2,
+        playerPosition: 4,
+      },
+      {
+        playerName: "owner5",
+        playerTag: "#P555",
+        attacksUsed: 2,
+        playerPosition: 5,
+      },
+      {
+        playerName: "helper",
+        playerTag: "#H666",
+        attacksUsed: 2,
+        playerPosition: 9,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#H666",
+        playerName: "helper",
+        playerPosition: null,
+        defenderPosition: 4,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-03-01T10:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#H666",
+        playerName: "helper",
+        playerPosition: null,
+        defenderPosition: 6,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-03-01T10:10:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#P444",
+        playerName: "owner4",
+        playerPosition: 4,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T10:50:00.000Z"),
+        warEndTime,
+        attackOrder: 5,
+      },
+      {
+        playerTag: "#P555",
+        playerName: "owner5",
+        playerPosition: 999,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T10:20:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+      {
+        playerTag: "#P555",
+        playerName: "owner5",
+        playerPosition: 999,
+        defenderPosition: 2,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T10:30:00.000Z"),
+        warEndTime,
+        attackOrder: 4,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 50035,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
+      { playerTag: "#P444", discordUserId: "111111111111111111" },
+      { playerTag: "#P555", discordUserId: "111111111111111111" },
+      { playerTag: "#H666", discordUserId: "111111111111111111" },
+    ] as any);
+
+    const service = new WarComplianceService();
+    const snapshot = computeWarComplianceForTest({
+      clanTag: "#TEST",
+      participants: participants as any,
+      attacks: attacks as any,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+
+    expect(report).not.toBeNull();
+    expect(snapshot.notFollowingPlan).toEqual(["owner5", "helper"]);
+    expect(report?.notFollowingPlan.map((row) => row.playerName)).toEqual(
+      snapshot.notFollowingPlan,
+    );
+
+    const helper = report?.notFollowingPlan.find((row) => row.playerName === "helper");
+    expect(helper?.playerPosition).toBe(9);
+    expect(helper?.reasonLabel).toBe("early non-mirror 2-star in traditional loss");
+    expect(helper?.attackDetails?.map((detail) => detail.isBreach)).toEqual([
+      false,
+      true,
+    ]);
+    expect(helper?.attackDetails?.[0]?.attackOrder).toBe(1);
+    expect(helper?.attackDetails?.[1]?.attackOrder).toBe(2);
+
+    const owner5 = report?.notFollowingPlan.find((row) => row.playerName === "owner5");
+    expect(owner5?.playerPosition).toBe(5);
+    expect(owner5?.reasonLabel).toBe("strict-window mirror miss in traditional loss");
+    expect(owner5?.attackDetails?.map((detail) => detail.isBreach)).toEqual([
+      true,
+      true,
+    ]);
+  });
+
   it("treats grouped FWA-LOSS_TRADITIONAL obligations as owned by all linked members even when one owner has no late-window attacks", async () => {
     const warStartTime = new Date("2026-03-01T00:00:00.000Z");
     const warEndTime = new Date("2026-03-02T00:00:00.000Z");
@@ -1999,7 +2139,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
-    expect(violatedTags).toEqual(["#LR0UT"]);
+    expect(violatedTags).toEqual(["#LR0WNER", "#LR0UT"]);
   });
 
   it("keeps grouped LOSS_TRADITIONAL ownership deterministic and does not double-count one attack", async () => {

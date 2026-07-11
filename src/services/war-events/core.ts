@@ -80,6 +80,33 @@ export type WarComplianceReason = {
   hasViolation: boolean;
 };
 
+export type TraditionalComplianceAttackDetail = {
+  defenderPosition: number | null;
+  stars: number;
+  attackOrder: number | null;
+  isBreach: boolean;
+};
+
+export type TraditionalViolationResult = {
+  playerTag: string;
+  playerName: string | null;
+  playerPosition: number | null;
+  hasStrictParticipation: boolean;
+  ownerSatisfied: boolean;
+  hasViolation: boolean;
+  reason: WarComplianceReason;
+  attackDetails: TraditionalComplianceAttackDetail[];
+  consumedSubstitutionAttackOrders: number[];
+  actualBehavior: string;
+};
+
+export type TraditionalClanEvaluation = {
+  resultsByPlayerTag: Map<string, TraditionalViolationResult>;
+  satisfiedOwnerTags: Set<string>;
+  consumedSubstitutionAttackIndexes: Set<number>;
+  consumedSubstitutionAttackOrders: Set<number>;
+};
+
 /** Purpose: normalize a clan/player tag to uppercase with leading '#'. */
 export function normalizeTag(input: string | null | undefined): string {
   return normalizeClashTagInput(input);
@@ -294,143 +321,6 @@ function resolveEffectiveGateConfigForCompliance(input: {
   return input.winGateConfig ?? null;
 }
 
-/** Purpose: apply the linked traditional-loss mirror policy to baseline player violations. */
-function applyTraditionalLinkedGroupAdjustments(input: {
-  baselineViolationTags: Set<string>;
-  participants: WarComplianceParticipant[];
-  attacks: WarComplianceAttack[];
-  attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
-  attackIndexByAttack: Map<WarComplianceAttack, number>;
-  starsAfterByAttackIndex: Map<number, number>;
-  linkedGroups: WarComplianceLinkedGroup[];
-}): Set<string> {
-  const participantByTag = new Map<string, WarComplianceParticipant>();
-  for (const participant of input.participants) {
-    const tag = normalizeTag(participant.playerTag);
-    if (!tag) continue;
-    participantByTag.set(tag, participant);
-  }
-
-  const baselineViolationTags = new Set(input.baselineViolationTags);
-  const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
-  const reasonByTag = new Map<string, WarComplianceReason>();
-  for (const tag of baselineViolationTags) {
-    const participant = participantByTag.get(tag) ?? null;
-    if (!participant) continue;
-    const playerAttacks = orderedAttacks.filter(
-      (attack) => normalizeTag(attack.playerTag) === tag,
-    );
-    if (playerAttacks.length === 0) continue;
-    reasonByTag.set(
-      tag,
-      classifyComplianceReasonForPlayer({
-        playerAttacks,
-        allAttacks: orderedAttacks,
-        attackContextByAttack: input.attackContextByAttack,
-        attackIndexByAttack: input.attackIndexByAttack,
-        starsAfterByAttackIndex: input.starsAfterByAttackIndex,
-        playerAttacksUsed: participant.attacksUsed,
-        matchType: "FWA",
-        expectedOutcome: "LOSE",
-        loseStyle: "TRADITIONAL",
-      }),
-    );
-  }
-
-  for (const group of input.linkedGroups) {
-    if (!group.isLinked || group.memberTags.length <= 1) continue;
-
-    const obligations = group.memberTags
-      .map((ownerTag) => {
-        const normalizedOwnerTag = normalizeTag(ownerTag);
-        return {
-          ownerTag: normalizedOwnerTag,
-          ownerPosition: participantByTag.get(normalizedOwnerTag)?.playerPosition ?? null,
-        };
-      })
-      .filter(
-        (row): row is { ownerTag: string; ownerPosition: number } =>
-          Number.isFinite(Number(row.ownerPosition)) && Number(row.ownerPosition) > 0,
-      )
-      .sort((a, b) => {
-        if (a.ownerPosition !== b.ownerPosition) {
-          return a.ownerPosition - b.ownerPosition;
-        }
-        return a.ownerTag.localeCompare(b.ownerTag);
-      });
-
-    const satisfiedOwnerTags = new Set<string>();
-    const consumedLinkedSubstitutionByTag = new Set<string>();
-    for (const attack of orderedAttacks) {
-      const attackTag = normalizeTag(attack.playerTag);
-      const ctx = input.attackContextByAttack.get(attack);
-      if (!ctx?.isStrictWindow) continue;
-      if (Math.max(0, Math.trunc(Number(attack.stars ?? 0))) !== 2) continue;
-      const defenderPosition = Number(attack.defenderPosition ?? NaN);
-      if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
-
-      const obligation = obligations.find(
-        (row) =>
-          row.ownerPosition === defenderPosition &&
-          !satisfiedOwnerTags.has(row.ownerTag),
-      );
-      if (!obligation) continue;
-      satisfiedOwnerTags.add(obligation.ownerTag);
-      if (
-        !ctx?.isMirror &&
-        group.memberTagSet.has(attackTag) &&
-        attackTag !== obligation.ownerTag
-      ) {
-        consumedLinkedSubstitutionByTag.add(attackTag);
-      }
-    }
-
-    for (const memberTag of group.memberTags) {
-      const normalizedMemberTag = normalizeTag(memberTag);
-      const reason = reasonByTag.get(normalizedMemberTag);
-      if (!reason) continue;
-
-      if (reason.label === "strict-window mirror miss in traditional loss") {
-        const ownerAttacksUsed = Number(
-          participantByTag.get(normalizedMemberTag)?.attacksUsed ?? 0,
-        );
-        if (ownerAttacksUsed < 2 || satisfiedOwnerTags.has(normalizedMemberTag)) {
-          baselineViolationTags.delete(normalizedMemberTag);
-        }
-        continue;
-      }
-
-      if (reason.label === "early non-mirror 2-star in traditional loss") {
-        if (consumedLinkedSubstitutionByTag.has(normalizedMemberTag)) {
-          baselineViolationTags.delete(normalizedMemberTag);
-        }
-        continue;
-      }
-
-      if (reason.label === "invalid star count in traditional loss") {
-        if (
-          satisfiedOwnerTags.has(normalizedMemberTag) ||
-          consumedLinkedSubstitutionByTag.has(normalizedMemberTag)
-        ) {
-          baselineViolationTags.delete(normalizedMemberTag);
-        }
-      }
-    }
-
-    for (const obligation of obligations) {
-      const ownerAttacksUsed = Number(
-        participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
-      );
-      if (ownerAttacksUsed < 2) continue;
-      if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
-        baselineViolationTags.add(obligation.ownerTag);
-      }
-    }
-  }
-
-  return baselineViolationTags;
-}
-
 /** Purpose: sort attacks in the same deterministic chronology used by compliance checks. */
 function sortAttacksForComplianceOrder(
   attacks: WarComplianceAttack[],
@@ -576,120 +466,308 @@ function buildStarsAfterByAttackIndex(
   return result;
 }
 
-/** Purpose: classify one player's traditional-loss attacks using the shared canonical chronology. */
-function classifyTraditionalLossReason(input: {
-  playerAttacks: WarComplianceAttack[];
+/** Purpose: evaluate FWA traditional-loss compliance across the whole clan with shared strict-phase state. */
+export function evaluateFwaTraditionalLossComplianceForTest(input: {
+  participants: WarComplianceParticipant[];
+  attacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
-  attackIndexByAttack: Map<WarComplianceAttack, number>;
-  starsAfterByAttackIndex: Map<number, number>;
-}): WarComplianceReason {
-  const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
-  let playerAttackNumber = 0;
+  linkedGroups?: WarComplianceLinkedGroup[] | null;
+}): TraditionalClanEvaluation {
+  const participants = [...input.participants].sort((a, b) => {
+    const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    if (posA !== posB) return posA - posB;
+    return String(a.playerName ?? "").localeCompare(String(b.playerName ?? ""));
+  });
+  const participantByTag = new Map<string, WarComplianceParticipant>();
+  const ownerPositionByTag = new Map<string, number>();
+  const labelByTag = new Map<string, string>();
+  for (const participant of participants) {
+    const tag = normalizeTag(participant.playerTag);
+    if (!tag || participantByTag.has(tag)) continue;
+    participantByTag.set(tag, participant);
+    const playerPosition = Number(participant.playerPosition ?? NaN);
+    if (Number.isFinite(playerPosition) && playerPosition > 0) {
+      ownerPositionByTag.set(tag, Math.trunc(playerPosition));
+    }
+    labelByTag.set(
+      tag,
+      String(participant.playerName ?? participant.playerTag).trim() || tag,
+    );
+  }
 
-  for (const attack of orderedPlayerAttacks) {
-    playerAttackNumber += 1;
+  const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+  const attackIndexByAttack = new Map<WarComplianceAttack, number>();
+  orderedAttacks.forEach((attack, index) => {
+    attackIndexByAttack.set(attack, index);
+  });
+
+  const linkedGroupKeyByTag = new Map<string, string>();
+  for (const group of input.linkedGroups ?? []) {
+    if (!group.isLinked || group.memberTags.length <= 1) continue;
+    for (const memberTag of group.memberTags) {
+      const normalizedTag = normalizeTag(memberTag);
+      if (!normalizedTag) continue;
+      linkedGroupKeyByTag.set(normalizedTag, group.key);
+    }
+  }
+
+  const strictParticipatingTags = new Set<string>();
+  const obligations = input.participants
+    .map((participant) => {
+      const tag = normalizeTag(participant.playerTag);
+      const playerPosition = ownerPositionByTag.get(tag) ?? null;
+      if (!tag || playerPosition === null) return null;
+      const hasStrictAttack = orderedAttacks.some((attack) => {
+        if (normalizeTag(attack.playerTag) !== tag) return false;
+        const ctx = input.attackContextByAttack.get(attack);
+        return Boolean(ctx?.isStrictWindow);
+      });
+      if (!hasStrictAttack) return null;
+      strictParticipatingTags.add(tag);
+      return { ownerTag: tag, ownerPosition: playerPosition };
+    })
+    .filter(
+      (row): row is { ownerTag: string; ownerPosition: number } => Boolean(row),
+    )
+    .sort((a, b) => {
+      if (a.ownerPosition !== b.ownerPosition) return a.ownerPosition - b.ownerPosition;
+      return a.ownerTag.localeCompare(b.ownerTag);
+    });
+
+  const satisfiedOwnerTags = new Set<string>();
+  const consumedSubstitutionAttackIndexes = new Set<number>();
+  const consumedSubstitutionAttackOrders = new Set<number>();
+  for (const attack of orderedAttacks) {
     const ctx = input.attackContextByAttack.get(attack);
-    const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
-    const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
-    const playerPos = attack.playerPosition ?? null;
-    const defenderPos = attack.defenderPosition ?? null;
-    const isMirror =
-      playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-    const strictContext = ctx
-      ? {
-          starsBeforeAttack: ctx.starsBeforeAttack,
-          timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-        }
-      : null;
-    const globalIndex = input.attackIndexByAttack.get(attack);
-    const starsAfter =
-      globalIndex !== null && globalIndex !== undefined
-        ? input.starsAfterByAttackIndex.get(globalIndex) ?? null
-        : null;
-
+    if (!ctx?.isStrictWindow) continue;
+    if (Math.max(0, Math.trunc(Number(attack.stars ?? 0))) !== 2) continue;
+    const defenderPosition = Number(attack.defenderPosition ?? NaN);
+    if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
+    const obligation = obligations.find(
+      (row) =>
+        row.ownerPosition === defenderPosition &&
+        !satisfiedOwnerTags.has(row.ownerTag),
+    );
+    if (!obligation) continue;
+    satisfiedOwnerTags.add(obligation.ownerTag);
+    const attackTag = normalizeTag(attack.playerTag);
+    const attackGroupKey = linkedGroupKeyByTag.get(attackTag) ?? null;
+    const ownerGroupKey = linkedGroupKeyByTag.get(obligation.ownerTag) ?? null;
     if (
-      ctx &&
-      starsAfter !== null &&
-      ctx.starsBeforeAttack <= 100 &&
-      starsAfter > 100
+      attackGroupKey &&
+      ownerGroupKey &&
+      attackGroupKey === ownerGroupKey &&
+      attackTag !== obligation.ownerTag
     ) {
-      return {
-        label: "clan star cap exceeded",
-        strictWindowContext: strictContext,
-        breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-        hasViolation: true,
-      };
+      const attackIndex = attackIndexByAttack.get(attack);
+      if (attackIndex !== undefined) {
+        consumedSubstitutionAttackIndexes.add(attackIndex);
+      }
+      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
+      if (attackOrder !== null) {
+        consumedSubstitutionAttackOrders.add(attackOrder);
+      }
+    }
+  }
+
+  const resultsByPlayerTag = new Map<string, TraditionalViolationResult>();
+  for (const participant of participants) {
+    const playerTag = normalizeTag(participant.playerTag);
+    if (!playerTag) continue;
+    const playerAttacks = orderedAttacks.filter(
+      (attack) => normalizeTag(attack.playerTag) === playerTag,
+    );
+    const playerAttacksOrdered = [...playerAttacks].sort((a, b) => {
+      const timeDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+      if (timeDelta !== 0) return timeDelta;
+      const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
+      if (orderDelta !== 0) return orderDelta;
+      return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+    });
+    const playerPosition = ownerPositionByTag.get(playerTag) ?? null;
+    const ownSatisfied = satisfiedOwnerTags.has(playerTag);
+    const attackDetails: TraditionalComplianceAttackDetail[] = [];
+    const breachAttackOrders: number[] = [];
+    let firstBreachContext: WarComplianceReason["strictWindowContext"] = null;
+    let reasonLabel: string | null = null;
+    let hasViolation = false;
+
+    for (const attack of playerAttacksOrdered) {
+      const ctx = input.attackContextByAttack.get(attack) ?? null;
+      const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
+      const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
+      const trueStars = Math.max(0, Number(attack.trueStars ?? 0));
+      const starsBefore = ctx?.starsBeforeAttack ?? null;
+      const starsAfter =
+        starsBefore !== null && Number.isFinite(starsBefore)
+          ? starsBefore + trueStars
+          : null;
+      const isCapBreach =
+        ctx !== null &&
+        starsAfter !== null &&
+        starsBefore !== null &&
+        starsBefore <= 100 &&
+        starsAfter > 100;
+      const isStrict = Boolean(ctx?.isStrictWindow);
+      const attackIndex = attackIndexByAttack.get(attack);
+      const defenderPosition = Number(attack.defenderPosition ?? NaN);
+      const isOwnMirror =
+        playerPosition !== null &&
+        Number.isFinite(defenderPosition) &&
+        defenderPosition === playerPosition;
+      const isConsumedSubstitution =
+        (attackIndex !== undefined &&
+          consumedSubstitutionAttackIndexes.has(attackIndex)) ||
+        (attackOrder !== null &&
+          consumedSubstitutionAttackOrders.has(attackOrder));
+      let isBreach = false;
+
+      if (isCapBreach) {
+        isBreach = true;
+        if (reasonLabel === null) {
+          reasonLabel = "clan star cap exceeded";
+          firstBreachContext = ctx
+            ? {
+                starsBeforeAttack: ctx.starsBeforeAttack,
+                timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+              }
+            : null;
+        }
+      } else if (isStrict) {
+        if (stars === 3) {
+          isBreach = true;
+          if (reasonLabel === null) {
+            reasonLabel = "any 3-star in traditional loss";
+            firstBreachContext = ctx
+              ? {
+                  starsBeforeAttack: ctx.starsBeforeAttack,
+                  timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                }
+              : null;
+          }
+        } else if (stars === 0) {
+          isBreach = true;
+          if (reasonLabel === null) {
+            reasonLabel = "invalid star count in traditional loss";
+            firstBreachContext = ctx
+              ? {
+                  starsBeforeAttack: ctx.starsBeforeAttack,
+                  timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                }
+              : null;
+          }
+        } else if (stars === 2) {
+          if (!isOwnMirror && !isConsumedSubstitution) {
+            isBreach = true;
+            if (reasonLabel === null) {
+              reasonLabel = "early non-mirror 2-star in traditional loss";
+              firstBreachContext = ctx
+                ? {
+                    starsBeforeAttack: ctx.starsBeforeAttack,
+                    timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                  }
+                : null;
+            }
+          }
+        } else if (stars === 1) {
+          if (!ownSatisfied) {
+            isBreach = true;
+            if (reasonLabel === null) {
+              reasonLabel = "strict-window mirror miss in traditional loss";
+              firstBreachContext = ctx
+                ? {
+                    starsBeforeAttack: ctx.starsBeforeAttack,
+                    timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                  }
+                : null;
+            }
+          }
+        } else {
+          isBreach = true;
+          if (reasonLabel === null) {
+            reasonLabel = "invalid star count in traditional loss";
+            firstBreachContext = ctx
+              ? {
+                  starsBeforeAttack: ctx.starsBeforeAttack,
+                  timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                }
+              : null;
+          }
+        }
+      } else if (stars !== 2) {
+        isBreach = true;
+        if (reasonLabel === null) {
+          reasonLabel = "invalid star count in traditional loss";
+          firstBreachContext = ctx
+            ? {
+                starsBeforeAttack: ctx.starsBeforeAttack,
+                timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+              }
+            : null;
+        }
+      }
+
+      if (isBreach && attackOrder !== null) {
+        breachAttackOrders.push(attackOrder);
+      }
+
+      attackDetails.push({
+        defenderPosition: Number.isFinite(defenderPosition) ? defenderPosition : null,
+        stars,
+        attackOrder,
+        isBreach,
+      });
     }
 
-    if (stars === 3) {
-      return {
-        label: "any 3-star in traditional loss",
-        strictWindowContext: strictContext,
-        breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-        hasViolation: true,
-      };
-    }
-
-    if (ctx?.isStrictWindow) {
-      if (playerAttackNumber === 1) {
-        if (!isMirror && stars === 2) {
-          return {
-            label: "early non-mirror 2-star in traditional loss",
-            strictWindowContext: strictContext,
-            breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-            hasViolation: true,
-          };
+    const hasStrictParticipation = playerAttacks.some((attack) =>
+      Boolean(input.attackContextByAttack.get(attack)?.isStrictWindow),
+    );
+    const finalReason: WarComplianceReason = hasViolation || breachAttackOrders.length > 0
+      ? {
+          label: reasonLabel ?? "didn't follow lose-style rules",
+          strictWindowContext: firstBreachContext,
+          breachAttackOrders,
+          hasViolation: breachAttackOrders.length > 0,
         }
-        if (isMirror && stars === 2) {
-          continue;
-        }
-        return {
-          label: "strict-window mirror miss in traditional loss",
-          strictWindowContext: strictContext,
-          breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-          hasViolation: true,
+      : {
+          label: "didn't follow lose-style rules",
+          strictWindowContext: null,
+          breachAttackOrders: [],
+          hasViolation: false,
         };
-      }
+    hasViolation = finalReason.hasViolation;
 
-      if (playerAttackNumber === 2) {
-        if (stars === 1) {
-          continue;
-        }
-        return {
-          label: "invalid star count in traditional loss",
-          strictWindowContext: strictContext,
-          breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-          hasViolation: true,
-        };
-      }
+    const actualBehavior = `${playerAttacksOrdered
+      .map((row) => `#${row.defenderPosition ?? "?"} (${Math.max(0, Math.trunc(Number(row.stars ?? 0)))})`)
+      .join(", ")} : ${finalReason.label}${
+      finalReason.strictWindowContext
+        ? ` | ${finalReason.strictWindowContext.starsBeforeAttack}★ | ${finalReason.strictWindowContext.timeRemaining}`
+        : ""
+    }`;
 
-      if (stars === 2) {
-        continue;
-      }
-      return {
-        label: "invalid star count in traditional loss",
-        strictWindowContext: strictContext,
-        breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-        hasViolation: true,
-      };
-    }
-
-    if (stars === 2) {
-      continue;
-    }
-    return {
-      label: "invalid star count in traditional loss",
-      strictWindowContext: strictContext,
-      breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-      hasViolation: true,
-    };
+    resultsByPlayerTag.set(playerTag, {
+      playerTag,
+      playerName: participant.playerName ?? null,
+      playerPosition: participant.playerPosition ?? null,
+      hasStrictParticipation,
+      ownerSatisfied: ownSatisfied,
+      hasViolation,
+      reason: finalReason,
+      attackDetails,
+      consumedSubstitutionAttackOrders: attackDetails
+        .filter((detail) => consumedSubstitutionAttackOrders.has(detail.attackOrder ?? -1))
+        .map((detail) => detail.attackOrder)
+        .filter((value): value is number => value !== null),
+      actualBehavior,
+    });
   }
 
   return {
-    label: "didn't follow lose-style rules",
-    strictWindowContext: null,
-    breachAttackOrders: [],
-    hasViolation: false,
+    resultsByPlayerTag,
+    satisfiedOwnerTags,
+    consumedSubstitutionAttackIndexes,
+    consumedSubstitutionAttackOrders,
   };
 }
 
@@ -871,12 +949,6 @@ export function classifyComplianceReasonForPlayer(input: {
         starsAfterByAttackIndex: input.starsAfterByAttackIndex,
       });
     }
-    return classifyTraditionalLossReason({
-      playerAttacks: input.playerAttacks,
-      attackContextByAttack: input.attackContextByAttack,
-      attackIndexByAttack: input.attackIndexByAttack,
-      starsAfterByAttackIndex: input.starsAfterByAttackIndex,
-    });
   }
 
   return {
@@ -989,49 +1061,27 @@ export function computeWarComplianceForTest(input: {
         }
       }
     } else {
-      const baselineViolationTags = new Set<string>();
-      for (const participant of participants) {
-        const playerTag = normalizeTag(participant.playerTag);
-        const playerAttacks = attacks.filter(
-          (attack) => normalizeTag(attack.playerTag) === playerTag,
-        );
-        if (playerAttacks.length <= 0) continue;
-        const reason = classifyComplianceReasonForPlayer({
-          playerAttacks,
-          allAttacks: attacks,
-          attackContextByAttack,
-          attackIndexByAttack,
-          starsAfterByAttackIndex,
-          playerAttacksUsed: participant.attacksUsed,
-          matchType: input.matchType,
-          expectedOutcome: input.expectedOutcome,
-          loseStyle: input.loseStyle,
-        });
-        if (reason.hasViolation) {
-          baselineViolationTags.add(playerTag);
-        }
-      }
-
-      const adjustedBaselineViolationTags =
-        input.expectedOutcome === "LOSE" &&
-        input.loseStyle === "TRADITIONAL" &&
-        input.linkedGroups?.length
-          ? applyTraditionalLinkedGroupAdjustments({
-              baselineViolationTags,
-              participants,
-              attacks,
-              attackContextByAttack,
-              attackIndexByAttack,
-              starsAfterByAttackIndex,
-              linkedGroups: input.linkedGroups,
-            })
-          : baselineViolationTags;
-
-      for (const participant of participants) {
-        const playerTag = normalizeTag(participant.playerTag);
-        if (!adjustedBaselineViolationTags.has(playerTag)) continue;
-        addViolation(playerTag, participant.playerName);
-      }
+      const traditionalEvaluation = evaluateFwaTraditionalLossComplianceForTest({
+        participants,
+        attacks,
+        attackContextByAttack,
+        linkedGroups: input.linkedGroups,
+      });
+      const orderedResults = [...traditionalEvaluation.resultsByPlayerTag.values()].sort(
+        (a, b) => {
+          const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
+          const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
+          if (posA !== posB) return posA - posB;
+          return (a.playerTag ?? "").localeCompare(b.playerTag ?? "");
+        },
+      );
+      return {
+        missedBoth,
+        notFollowingPlan: orderedResults
+          .filter((result) => result.hasViolation)
+          .map((result) => labelForTag.get(result.playerTag) ?? result.playerName ?? result.playerTag)
+          .filter((label): label is string => Boolean(label)),
+      };
     }
   } else {
     for (const attack of attacks) {

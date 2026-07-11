@@ -7,6 +7,8 @@ import {
   buildAttackContextByAttack,
   type AttackContext,
   classifyComplianceReasonForPlayer,
+  evaluateFwaTraditionalLossComplianceForTest,
+  type TraditionalClanEvaluation,
   type WarComplianceWinGateConfig,
   type WarComplianceParticipant,
   type WarComplianceSnapshot,
@@ -466,6 +468,49 @@ function describeActualBehaviorForPlayer(input: {
     attackDetails,
     hasProvenStrictWindowViolation: reason.strictWindowContext !== null,
   };
+}
+
+/** Purpose: convert the structured traditional-loss evaluator result into detailed report issues. */
+function buildTraditionalLossIssuesFromEvaluation(input: {
+  evaluation: TraditionalClanEvaluation;
+  participantByLabel: Map<string, WarComplianceParticipant>;
+  expectedBehavior: string;
+}): WarComplianceIssue[] {
+  const issues: WarComplianceIssue[] = [];
+  for (const result of input.evaluation.resultsByPlayerTag.values()) {
+    if (!result.hasViolation) continue;
+    const participant = input.participantByLabel.get(result.playerName ?? "") ?? null;
+    const breachOrders = result.reason.breachAttackOrders;
+    issues.push({
+      playerTag: result.playerTag,
+      playerName: result.playerName ?? result.playerTag,
+      playerPosition: result.playerPosition ?? participant?.playerPosition ?? null,
+      ruleType: "not_following_plan",
+      expectedBehavior: input.expectedBehavior,
+      actualBehavior: result.actualBehavior,
+      attackDetails: result.attackDetails.map((detail) => ({
+        defenderPosition: detail.defenderPosition,
+        stars: detail.stars,
+        attackOrder: detail.attackOrder,
+        isBreach: detail.isBreach,
+      })),
+      breachContext:
+        result.reason.strictWindowContext &&
+        breachOrders.length > 0
+          ? {
+              starsAtBreach: result.reason.strictWindowContext.starsBeforeAttack,
+              timeRemaining: result.reason.strictWindowContext.timeRemaining,
+            }
+          : null,
+      reasonLabel: result.reason.label,
+    });
+  }
+  return issues.sort((a, b) => {
+    const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
+    if (posA !== posB) return posA - posB;
+    return a.playerTag.localeCompare(b.playerTag);
+  });
 }
 
 /** Purpose: map rule-engine name output into detailed issues for user-facing command output. */
@@ -2018,6 +2063,10 @@ export class WarComplianceService {
       context.matchType === "FWA" && context.expectedOutcome !== null
         ? await this.resolveEffectiveFwaWinGateConfig(context)
         : null;
+    const attackContextByAttack = buildAttackContextByAttack(
+      context.attacks,
+      fwaWinGateConfig,
+    );
     const snapshot = computeWarComplianceForTest({
       clanTag: context.clanTag,
       participants: context.participants,
@@ -2028,13 +2077,20 @@ export class WarComplianceService {
       winGateConfig: fwaWinGateConfig,
       linkedGroups,
     });
+    const traditionalEvaluation =
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      loseStyle === "TRADITIONAL"
+        ? evaluateFwaTraditionalLossComplianceForTest({
+            participants: context.participants,
+            attacks: context.attacks,
+            attackContextByAttack,
+            linkedGroups,
+          })
+        : null;
 
     const participantByLabel = new Map<string, WarComplianceParticipant>();
     const attacksByPlayerTag = new Map<string, WarComplianceAttack[]>();
-    const attackContextByAttack = buildAttackContextByAttack(
-      context.attacks,
-      fwaWinGateConfig,
-    );
     const orderedAttacks = sortAttacksForComplianceOrder(context.attacks);
     const attackIndexByAttack = new Map<WarComplianceAttack, number>();
     const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(
@@ -2063,18 +2119,36 @@ export class WarComplianceService {
       expectedOutcome: context.expectedOutcome,
       loseStyle,
     });
-    const adjustedNotFollowingNames =
-      await this.applyLinkedMirrorGroupingToNotFollowingNames({
-        baselineNames: snapshot.notFollowingPlan,
-        participantByLabel,
-        participants: context.participants,
-        attacks: context.attacks,
-        attackContextByAttack,
-        matchType: context.matchType,
-        expectedOutcome: context.expectedOutcome,
-        loseStyle,
-        linkedGroups,
-      });
+    const notFollowingPlanIssues = traditionalEvaluation
+      ? buildTraditionalLossIssuesFromEvaluation({
+          evaluation: traditionalEvaluation,
+          participantByLabel,
+          expectedBehavior: expectedPlanBehavior,
+        })
+      : mapNamesToIssues({
+          names: await this.applyLinkedMirrorGroupingToNotFollowingNames({
+            baselineNames: snapshot.notFollowingPlan,
+            participantByLabel,
+            participants: context.participants,
+            attacks: context.attacks,
+            attackContextByAttack,
+            matchType: context.matchType,
+            expectedOutcome: context.expectedOutcome,
+            loseStyle,
+            linkedGroups,
+          }),
+          ruleType: "not_following_plan",
+          expectedBehavior: expectedPlanBehavior,
+          participantByLabel,
+          attacksByPlayerTag,
+          allAttacks: context.attacks,
+          attackContextByAttack,
+          attackIndexByAttack,
+          starsAfterByAttackIndex,
+          matchType: context.matchType,
+          expectedOutcome: context.expectedOutcome,
+          loseStyle,
+        });
 
     return {
       clanTag: context.clanTag,
@@ -2100,20 +2174,7 @@ export class WarComplianceService {
         expectedOutcome: context.expectedOutcome,
         loseStyle,
       }),
-      notFollowingPlan: mapNamesToIssues({
-        names: adjustedNotFollowingNames,
-        ruleType: "not_following_plan",
-        expectedBehavior: expectedPlanBehavior,
-        participantByLabel,
-        attacksByPlayerTag,
-        allAttacks: context.attacks,
-        attackContextByAttack,
-        attackIndexByAttack,
-        starsAfterByAttackIndex,
-        matchType: context.matchType,
-        expectedOutcome: context.expectedOutcome,
-        loseStyle,
-      }),
+      notFollowingPlan: notFollowingPlanIssues,
       participantsCount: context.participants.length,
       attacksCount: context.attacks.length,
       fwaWinGateConfig: context.useConfiguredFwaWinGate
