@@ -339,6 +339,41 @@ function sortAttacksForComplianceOrder(
   });
 }
 
+/** Purpose: sort traditional-loss attacks by canonical obligation order without changing WIN chronology. */
+function compareAttacksForTraditionalLossComplianceOrder(
+  a: WarComplianceAttack,
+  b: WarComplianceAttack,
+): number {
+  const orderA = normalizeAttackOrder(a.attackOrder ?? null);
+  const orderB = normalizeAttackOrder(b.attackOrder ?? null);
+  const hasOrderA = orderA !== null && orderA > 0;
+  const hasOrderB = orderB !== null && orderB > 0;
+  if (hasOrderA && hasOrderB) {
+    const orderDelta = orderA - orderB;
+    if (orderDelta !== 0) return orderDelta;
+  } else if (hasOrderA !== hasOrderB) {
+    return hasOrderA ? -1 : 1;
+  }
+
+  const timeDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
+  if (timeDelta !== 0) return timeDelta;
+
+  const tagDelta = normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
+  if (tagDelta !== 0) return tagDelta;
+
+  const defenderDelta = Number(a.defenderPosition ?? 0) - Number(b.defenderPosition ?? 0);
+  if (defenderDelta !== 0) return defenderDelta;
+
+  return Number(a.stars ?? 0) - Number(b.stars ?? 0);
+}
+
+/** Purpose: sort traditional-loss attacks using canonical positive-order precedence with time fallback. */
+function sortAttacksForTraditionalLossComplianceOrder(
+  attacks: WarComplianceAttack[],
+): WarComplianceAttack[] {
+  return [...attacks].sort(compareAttacksForTraditionalLossComplianceOrder);
+}
+
 /** Purpose: normalize attack-order values so breach markers stay deterministic. */
 function normalizeAttackOrder(value: number | null | undefined): number | null {
   const parsed = Number(value ?? NaN);
@@ -496,7 +531,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     }
   }
 
-  const orderedAttacks = sortAttacksForComplianceOrder(input.attacks);
+  const orderedAttacks = sortAttacksForTraditionalLossComplianceOrder(input.attacks);
   const attackIndexByAttack = new Map<WarComplianceAttack, number>();
   orderedAttacks.forEach((attack, index) => {
     attackIndexByAttack.set(attack, index);
@@ -576,13 +611,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
     const playerAttacks = orderedAttacks.filter(
       (attack) => normalizeTag(attack.playerTag) === playerTag,
     );
-    const playerAttacksOrdered = [...playerAttacks].sort((a, b) => {
-      const timeDelta = a.attackSeenAt.getTime() - b.attackSeenAt.getTime();
-      if (timeDelta !== 0) return timeDelta;
-      const orderDelta = Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0);
-      if (orderDelta !== 0) return orderDelta;
-      return normalizeTag(a.playerTag).localeCompare(normalizeTag(b.playerTag));
-    });
+    const playerAttacksOrdered = sortAttacksForTraditionalLossComplianceOrder(playerAttacks);
     const playerPosition = ownerPositionByTag.get(playerTag) ?? null;
     const ownSatisfied = satisfiedOwnerTags.has(playerTag);
     const attackDetails: TraditionalComplianceAttackDetail[] = [];
@@ -776,6 +805,15 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         : ""
     }`;
 
+    const playerConsumedSubstitutionAttackIndexes = playerAttacksOrdered
+      .map((attack) => attackIndexByAttack.get(attack))
+      .filter((attackIndex): attackIndex is number =>
+        attackIndex !== undefined && consumedSubstitutionAttackIndexes.has(attackIndex),
+      );
+    const playerConsumedSubstitutionAttacks = playerAttacksOrdered.filter((attack) => {
+      const attackIndex = attackIndexByAttack.get(attack);
+      return attackIndex !== undefined && consumedSubstitutionAttackIndexes.has(attackIndex);
+    });
     resultsByPlayerTag.set(playerTag, {
       playerTag,
       playerName: participant.playerName ?? null,
@@ -785,12 +823,9 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       hasViolation,
       reason: finalReason,
       attackDetails,
-      consumedSubstitutionAttackIndexes: [...consumedSubstitutionAttackIndexes].sort(
-        (a, b) => a - b,
-      ),
-      consumedSubstitutionAttackOrders: attackDetails
-        .filter((detail) => consumedSubstitutionAttackOrders.has(detail.attackOrder ?? -1))
-        .map((detail) => detail.attackOrder)
+      consumedSubstitutionAttackIndexes: playerConsumedSubstitutionAttackIndexes,
+      consumedSubstitutionAttackOrders: playerConsumedSubstitutionAttacks
+        .map((attack) => normalizeAttackOrder(attack.attackOrder ?? null))
         .filter((value): value is number => value !== null),
       actualBehavior,
     });
