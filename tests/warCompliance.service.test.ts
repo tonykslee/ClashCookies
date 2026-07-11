@@ -968,7 +968,92 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan.map((row) => row.playerName)).toEqual(["p3"]);
+    expect(report?.notFollowingPlan).toEqual([]);
+  });
+
+  it("uses the legacy 12-hour FWA-WIN window when no guild config is available", async () => {
+    const warStartTime = new Date("2026-03-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-03-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "strict13",
+        playerTag: "#S13",
+        attacksUsed: 1,
+        playerPosition: 1,
+      },
+      {
+        playerName: "open12",
+        playerTag: "#O12",
+        attacksUsed: 1,
+        playerPosition: 2,
+      },
+      {
+        playerName: "open11",
+        playerTag: "#O11",
+        attacksUsed: 1,
+        playerPosition: 3,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#S13",
+        playerName: "strict13",
+        playerPosition: 1,
+        defenderPosition: 4,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-03-01T11:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#O12",
+        playerName: "open12",
+        playerPosition: 2,
+        defenderPosition: 5,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-03-01T12:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#O11",
+        playerName: "open11",
+        playerPosition: 3,
+        defenderPosition: 6,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-03-01T13:00:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 50022,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+    vi.spyOn(prisma.playerLink, "findMany").mockResolvedValue([] as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    expect(report).not.toBeNull();
+    expect(report?.notFollowingPlan.map((row) => row.playerName)).toEqual(["strict13"]);
   });
 
   it("does not synthesize a breach marker when no real breach attack can be matched", async () => {

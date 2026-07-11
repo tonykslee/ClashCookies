@@ -140,6 +140,9 @@ type ParsedWarLookupPayload = {
   } | null;
 };
 
+const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
+const LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT = 12;
+
 /** Purpose: produce a reusable clan-tag OR filter that supports stored with/without `#`. */
 function buildClanTagWhere(tagInput: string): {
   OR: Array<{ clanTag: string }>;
@@ -2166,10 +2169,6 @@ export class WarComplianceService {
   private async resolveEffectiveFwaWinGateConfig(
     context: ComplianceContext,
   ): Promise<WarComplianceWinGateConfig | null> {
-    if (!context.useConfiguredFwaWinGate || !context.guildId) {
-      return null;
-    }
-
     const normalizedClanTag = normalizeTag(context.clanTag);
     const clanTagWithHash = normalizedClanTag || "";
     const clanTagBare = normalizedClanTag.replace(/^#/, "");
@@ -2180,6 +2179,16 @@ export class WarComplianceService {
       loseStyle === "TRADITIONAL";
     const isWinPlan =
       context.matchType === "FWA" && context.expectedOutcome === "WIN";
+
+    if (!context.useConfiguredFwaWinGate || !context.guildId) {
+      if (isWinPlan) {
+        return {
+          nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
+          allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+        };
+      }
+      return null;
+    }
 
     if (!isWinPlan && !isTraditionalLoss) {
       return null;

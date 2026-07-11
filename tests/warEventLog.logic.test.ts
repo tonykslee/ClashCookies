@@ -869,6 +869,112 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     expect(result.notFollowingPlan).toEqual(["Alice"]);
   });
 
+  it("FWA WIN plan: uses the legacy 100/12 fallback when winGateConfig is omitted", () => {
+    const winParticipants = [
+      { playerName: "strict13", playerTag: "#S13", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "open12", playerTag: "#O12", attacksUsed: 1, playerPosition: 2 },
+      { playerName: "open11", playerTag: "#O11", attacksUsed: 1, playerPosition: 3 },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: winParticipants,
+      attacks: [
+        {
+          playerTag: "#S13",
+          playerName: "strict13",
+          playerPosition: 1,
+          defenderPosition: 4,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#O12",
+          playerName: "open12",
+          playerPosition: 2,
+          defenderPosition: 5,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(12),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+        {
+          playerTag: "#O11",
+          playerName: "open11",
+          playerPosition: 3,
+          defenderPosition: 6,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
+          attackOrder: 3,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "TRADITIONAL",
+    });
+    expect(result.notFollowingPlan).toEqual(["strict13"]);
+  });
+
+  it("FWA WIN plan: keeps explicit 101/0 strict-window config unchanged", () => {
+    const winParticipants = [
+      { playerName: "strict13", playerTag: "#S13", attacksUsed: 1, playerPosition: 1 },
+      { playerName: "open12", playerTag: "#O12", attacksUsed: 1, playerPosition: 2 },
+      { playerName: "open11", playerTag: "#O11", attacksUsed: 1, playerPosition: 3 },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: winParticipants,
+      attacks: [
+        {
+          playerTag: "#S13",
+          playerName: "strict13",
+          playerPosition: 1,
+          defenderPosition: 4,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(11),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#O12",
+          playerName: "open12",
+          playerPosition: 2,
+          defenderPosition: 5,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(12),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+        {
+          playerTag: "#O11",
+          playerName: "open11",
+          playerPosition: 3,
+          defenderPosition: 6,
+          stars: 3,
+          trueStars: 3,
+          attackSeenAt: dateAt(13),
+          warEndTime: dateAt(24),
+          attackOrder: 3,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "TRADITIONAL",
+      winGateConfig: {
+        nonMirrorTripleMinClanStars: 101,
+        allBasesOpenHoursLeft: 0,
+      },
+    });
+    expect(result.notFollowingPlan).toEqual(["open11", "open12", "strict13"]);
+  });
+
   it("FWA LOSE Triple-top-30 plan: flags attacks on defender positions 31-50", () => {
     const result = computeWarComplianceForTest({
       clanTag: "#CLAN",

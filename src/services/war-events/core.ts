@@ -49,6 +49,9 @@ export type WarComplianceWinGateConfig = {
   allBasesOpenHoursLeft: number;
 };
 
+const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
+const LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT = 12;
+
 export type AttackContext = {
   starsBeforeAttack: number;
   hoursRemaining: number | null;
@@ -248,6 +251,22 @@ function resolveWarEndOutcome(
   }
   if (outcome === "WIN" || outcome === "LOSE") return outcome;
   return "UNKNOWN";
+}
+
+/** Purpose: preserve the legacy WIN gate when no configured guild context is available. */
+function resolveEffectiveWinGateConfigForCompliance(input: {
+  expectedOutcome: "WIN" | "LOSE" | null;
+  winGateConfig?: WarComplianceWinGateConfig | null;
+}): WarComplianceWinGateConfig | null {
+  if (input.expectedOutcome === "WIN") {
+    return (
+      input.winGateConfig ?? {
+        nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+      }
+    );
+  }
+  return input.winGateConfig ?? null;
 }
 
 /** Purpose: sort attacks in the same deterministic chronology used by compliance checks. */
@@ -709,7 +728,7 @@ export function classifyComplianceReasonForPlayer(input: {
 /** Purpose: compute missed/violating members for war-plan compliance checks. */
 export function computeWarComplianceForTest(input: {
   clanTag: string;
-  participants: WarComplianceParticipant[];
+  participants: WarComplianceParticipant[]; 
   attacks: WarComplianceAttack[];
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
@@ -720,6 +739,11 @@ export function computeWarComplianceForTest(input: {
     return { missedBoth: [], notFollowingPlan: [] };
   }
 
+  const effectiveWinGateConfig = resolveEffectiveWinGateConfigForCompliance({
+    expectedOutcome: input.expectedOutcome,
+    winGateConfig: input.winGateConfig,
+  });
+
   const participants = [...input.participants].sort((a, b) => {
     const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
     const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
@@ -729,7 +753,7 @@ export function computeWarComplianceForTest(input: {
   const attacks = sortAttacksForComplianceOrder(input.attacks);
   const attackContextByAttack = buildAttackContextByAttack(
     attacks,
-    input.winGateConfig,
+    effectiveWinGateConfig,
   );
   const attackIndexByAttack = new Map<WarComplianceAttack, number>();
   const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(attacks);
