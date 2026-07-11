@@ -1,8 +1,5 @@
 import { prisma } from "../prisma";
-import {
-  listPlayerLinksForClanMembers,
-  normalizePlayerTag,
-} from "./PlayerLinkService";
+import * as PlayerLinkService from "./PlayerLinkService";
 import {
   type FwaLoseStyle,
   type MatchType,
@@ -1756,25 +1753,33 @@ export class WarComplianceService {
     }
 
     const orderedLinkLookupTags = orderedParticipantTags
-      .map((tag) => normalizePlayerTag(tag))
+      .map((tag) => PlayerLinkService.normalizePlayerTag(tag))
       .filter(Boolean);
     const lookupTagsUnique = [...new Set(orderedLinkLookupTags)];
     const linkedRows =
       lookupTagsUnique.length >= 2
-        ? await listPlayerLinksForClanMembers({
-            memberTagsInOrder: lookupTagsUnique,
-          }).catch(() => [])
+        ? await (async () => {
+            const module = await import("./PlayerLinkService");
+            return module
+              .listPlayerLinksForClanMembers({
+                memberTagsInOrder: lookupTagsUnique,
+              })
+              .catch(() => []);
+          })()
         : [];
     const linkedUserByPlayerTag = new Map<string, string>(
-      linkedRows.map((row) => [normalizePlayerTag(row.playerTag), row.discordUserId]),
-    );
+      linkedRows.map((row) => [
+        PlayerLinkService.normalizePlayerTag(row.playerTag),
+        row.discordUserId,
+      ]),
+      );
 
     const groupByKey = new Map<
       string,
       { key: string; isLinked: boolean; memberTags: string[] }
     >();
     for (const tag of orderedParticipantTags) {
-      const strictTag = normalizePlayerTag(tag);
+      const strictTag = PlayerLinkService.normalizePlayerTag(tag);
       const linkedUserId = strictTag
         ? linkedUserByPlayerTag.get(strictTag) ?? null
         : null;
@@ -2062,6 +2067,33 @@ export class WarComplianceService {
     const starsAfterByAttackIndex = buildStarsAfterByAttackIndex(input.attacks);
     for (let index = 0; index < orderedAttacks.length; index += 1) {
       attackIndexByAttack.set(orderedAttacks[index], index);
+    }
+
+    if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
+      const winViolationTags = new Set<string>(baselineViolationTags);
+      for (const group of groups) {
+        if (!group.isLinked || group.memberTags.length <= 1) continue;
+        for (const memberTag of group.memberTags) {
+          winViolationTags.delete(memberTag);
+        }
+        const groupViolations = this.evaluateFwaWinLinkedGroupViolations({
+          group,
+          orderedAttacks,
+          attackContextByAttack: input.attackContextByAttack,
+          participantByTag,
+        });
+        for (const violationTag of groupViolations) {
+          winViolationTags.add(violationTag);
+        }
+      }
+
+      const mappedNames = [...winViolationTags]
+        .map((tag) => labelByTag.get(tag))
+        .filter((name): name is string => Boolean(name))
+        .sort((a, b) => a.localeCompare(b));
+      return [...new Set([...mappedNames, ...preservedUnknownNames])].sort((a, b) =>
+        a.localeCompare(b),
+      );
     }
 
     const reasonByTag = new Map<string, NotFollowingReason>();

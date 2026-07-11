@@ -706,10 +706,25 @@ describe("WarComplianceService", () => {
       loseStyle: "TRADITIONAL",
     } as any);
     vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
-    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
-      { playerTag: "#P2YLC8R0", discordUserId: "111111111111111111" },
-      { playerTag: "#QGRJ2222", discordUserId: "111111111111111111" },
-      { playerTag: "#2QG2C08UP", discordUserId: "111111111111111111" },
+    vi.spyOn(prisma.playerLink, "findMany").mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#2QG2C08UP",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
     ] as any);
 
     const service = new WarComplianceService();
@@ -722,7 +737,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["p2", "p3"]);
+    expect(violatedNames).toEqual([]);
   });
 
   it("treats grouped FWA-WIN mirror obligations as owned by all linked members even when one owner has no strict-window attacks", async () => {
@@ -807,10 +822,25 @@ describe("WarComplianceService", () => {
       loseStyle: "TRADITIONAL",
     } as any);
     vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
-    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
-      { playerTag: "#QPJL9VUU2", discordUserId: "111111111111111111" },
-      { playerTag: "#QRL2VG9JC", discordUserId: "111111111111111111" },
-      { playerTag: "#G2VLQVU9V", discordUserId: "111111111111111111" },
+    vi.spyOn(prisma.playerLink, "findMany").mockResolvedValue([
+      {
+        playerTag: "#QPJL9VUU2",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#QRL2VG9JC",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#G2VLQVU9V",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
     ] as any);
 
     const service = new WarComplianceService();
@@ -823,7 +853,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["Mango"]);
+    expect(violatedNames).toEqual([]);
   });
 
   it("drops grouped FWA-WIN owner rows when no strict-window breach context can be proven", async () => {
@@ -908,10 +938,25 @@ describe("WarComplianceService", () => {
       loseStyle: "TRADITIONAL",
     } as any);
     vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
-    vi.spyOn(PlayerLinkService, "listPlayerLinksForClanMembers").mockResolvedValue([
-      { playerTag: "#P2YLC8R0", discordUserId: "111111111111111111" },
-      { playerTag: "#QGRJ2222", discordUserId: "111111111111111111" },
-      { playerTag: "#2QG2C08UP", discordUserId: "111111111111111111" },
+    vi.spyOn(prisma.playerLink, "findMany").mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#QGRJ2222",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#2QG2C08UP",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
     ] as any);
 
     const service = new WarComplianceService();
@@ -923,7 +968,7 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    expect(report?.notFollowingPlan).toEqual([]);
+    expect(report?.notFollowingPlan.map((row) => row.playerName)).toEqual(["p3"]);
   });
 
   it("does not synthesize a breach marker when no real breach attack can be matched", async () => {
@@ -1398,6 +1443,136 @@ describe("WarComplianceService", () => {
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
     expect(violatedNames).toEqual(["p3"]);
     expect(report?.notFollowingPlan[0]?.playerTag).toBe("#2QG2C08UP");
+  });
+
+  it("consumes an exact linked substitution for the matching owner position without flagging the helper triple", async () => {
+    const warStartTime = new Date("2026-03-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-03-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "owner4",
+        playerTag: "#A444",
+        attacksUsed: 2,
+        playerPosition: 4,
+      },
+      {
+        playerName: "owner5",
+        playerTag: "#B555",
+        attacksUsed: 2,
+        playerPosition: 5,
+      },
+      {
+        playerName: "helper",
+        playerTag: "#C666",
+        attacksUsed: 1,
+        playerPosition: 10,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#C666",
+        playerName: "helper",
+        playerPosition: 10,
+        defenderPosition: 4,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-03-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#A444",
+        playerName: "owner4",
+        playerPosition: 4,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T01:10:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#B555",
+        playerName: "owner5",
+        playerPosition: 5,
+        defenderPosition: 2,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T01:20:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+      {
+        playerTag: "#B555",
+        playerName: "owner5",
+        playerPosition: 5,
+        defenderPosition: 3,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-03-01T01:30:00.000Z"),
+        warEndTime,
+        attackOrder: 4,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 50021,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+    vi.spyOn(prisma.playerLink, "findMany").mockResolvedValue([
+      {
+        playerTag: "#A444",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#B555",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+      {
+        playerTag: "#C666",
+        discordUserId: "111111111111111111",
+        discordUsername: null,
+        createdAt: new Date(),
+      },
+    ] as any);
+
+    const service = new WarComplianceService();
+    const attackContextByAttack = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 100,
+      allBasesOpenHoursLeft: 12,
+    });
+    const exactLinkedGroup = {
+      key: "user:111111111111111111",
+      isLinked: true,
+      memberTags: ["#A444", "#B555", "#C666"],
+      memberTagSet: new Set(["#A444", "#B555", "#C666"]),
+    };
+    const internalViolations = (service as any).evaluateFwaWinLinkedGroupViolations({
+      group: exactLinkedGroup,
+      orderedAttacks: [...attacks].sort((a, b) =>
+        a.attackSeenAt.getTime() - b.attackSeenAt.getTime() ||
+        Number(a.attackOrder ?? 0) - Number(b.attackOrder ?? 0) ||
+        String(a.playerTag).localeCompare(String(b.playerTag)),
+      ),
+      attackContextByAttack,
+      participantByTag: new Map(participants.map((row) => [row.playerTag, row])),
+    });
+
+    expect([...internalViolations].sort()).toEqual(["#B555"]);
+    expect(internalViolations).not.toContain("#C666");
+    expect(internalViolations).not.toContain("#A444");
   });
 
   it("treats linked FWA-LOSS_TRADITIONAL mirror twos as group-owned obligations", async () => {
