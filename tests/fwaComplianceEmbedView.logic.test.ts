@@ -85,10 +85,12 @@ describe("buildFwaComplianceEmbedView", () => {
     const summary = embed.fields?.[0]?.value ?? "";
     const warPlan = embed.fields?.[1]?.value ?? "";
     const plan = embed.fields?.[2]?.value ?? "";
-    expect(embed.description).toContain("Rules: N=101, H=8h");
+    expect(embed.description).toContain(
+      "Compliance gate: non-mirror 3★ opens at 101 clan stars or 8h left",
+    );
 
     expect(embed.title).toBe("FWA War Compliance — Rocky Road");
-    expect(embed.description).toContain("War #777 • Expected: WIN");
+    expect(embed.description).toContain("War #777 â€¢ Expected: WIN");
     expect(summary).toContain("⚔️ Attacks Logged: 53");
     expect(summary).toContain("❌ Missed Both Attacks: 1");
     expect(summary).toContain("⚠️ Didn't Follow Plan: 1");

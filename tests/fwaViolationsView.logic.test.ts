@@ -721,7 +721,13 @@ describe("war plan violations view helpers", () => {
     );
     expect(formatWarPlanViolationsViolationTypeLabel("ANY_3STAR")).toBe("3-star plan violation");
     expect(formatWarPlanViolationsViolationTypeLabel("LOWER20_ANY_STARS")).toBe(
-      "Lower-20 attack violation",
+      "Attack on a lower-20 base",
+    );
+    expect(formatWarPlanViolationsViolationTypeLabel("CLAN_STAR_CAP_EXCEEDED")).toBe(
+      "Clan star cap exceeded",
+    );
+    expect(formatWarPlanViolationsViolationTypeLabel("TOP30_ZERO_STARS")).toBe(
+      "0-star attack on a top-30 base",
     );
     expect(formatWarPlanViolationsViolationTypeLabel("OTHER_PLAN_VIOLATION")).toBe(
       "Other plan violation",

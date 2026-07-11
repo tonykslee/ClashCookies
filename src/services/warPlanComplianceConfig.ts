@@ -1,15 +1,26 @@
-export const DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS = 101;
+export const DEFAULT_NON_MIRROR_MIN_CLAN_STARS = 101;
+export const DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS =
+  DEFAULT_NON_MIRROR_MIN_CLAN_STARS;
+export const DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS = 150;
 export const DEFAULT_ALL_BASES_OPEN_HOURS_LEFT = 0;
+export const DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT = 12;
 export const MAX_ALL_BASES_OPEN_HOURS_LEFT = 24;
 
 export type WarPlanComplianceConfig = {
+  nonMirrorMinClanStars: number;
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
 };
 
 type MaybeConfig = {
+  nonMirrorMinClanStars?: number | null;
   nonMirrorTripleMinClanStars?: number | null;
   allBasesOpenHoursLeft?: number | null;
+};
+
+type BuiltInFallback = {
+  nonMirrorMinClanStars: number;
+  allBasesOpenHoursLeft: number;
 };
 
 type ParseResult =
@@ -24,27 +35,33 @@ function toSafeNonNegativeInt(value: number | null | undefined): number | null {
   return parsed;
 }
 
-/** Purpose: parse optional integer input for non-mirror min-stars config; blank means unset/default. */
-export function parseNonMirrorTripleMinClanStarsInput(raw: string | null | undefined): ParseResult {
+function resolveNonMirrorMinClanStars(value: MaybeConfig | null | undefined): number | null {
+  return toSafeNonNegativeInt(
+    value?.nonMirrorMinClanStars ?? value?.nonMirrorTripleMinClanStars ?? null,
+  );
+}
+
+/** Purpose: parse optional integer input for the non-mirror star gate; blank means unset/default. */
+export function parseNonMirrorMinClanStarsInput(raw: string | null | undefined): ParseResult {
   const text = String(raw ?? "").trim();
   if (!text) return { ok: true, value: null };
   if (!/^\d+$/.test(text)) {
     return {
       ok: false,
-      error:
-        "`minimum clan stars before tripling non-mirror` must be a non-negative integer.",
+      error: "`clan stars before non-mirror opening` must be a non-negative integer.",
     };
   }
   const parsed = Math.trunc(Number(text));
   if (!Number.isFinite(parsed) || parsed < 0) {
     return {
       ok: false,
-      error:
-        "`minimum clan stars before tripling non-mirror` must be a non-negative integer.",
+      error: "`clan stars before non-mirror opening` must be a non-negative integer.",
     };
   }
   return { ok: true, value: parsed };
 }
+
+export const parseNonMirrorTripleMinClanStarsInput = parseNonMirrorMinClanStarsInput;
 
 /** Purpose: parse optional `H`/`Hh` input for all-bases-open cutoff; blank means unset/default. */
 export function parseAllBasesOpenHoursLeftInput(raw: string | null | undefined): ParseResult {
@@ -56,7 +73,7 @@ export function parseAllBasesOpenHoursLeftInput(raw: string | null | undefined):
     return {
       ok: false,
       error:
-        "`all bases open for 3 star time-left` must be a non-negative integer hour value like `8` or `8h`.",
+        "`all bases open time cutoff` must be a non-negative integer hour value like `8` or `8h`.",
     };
   }
 
@@ -65,13 +82,13 @@ export function parseAllBasesOpenHoursLeftInput(raw: string | null | undefined):
     return {
       ok: false,
       error:
-        "`all bases open for 3 star time-left` must be a non-negative integer hour value like `8` or `8h`.",
+        "`all bases open time cutoff` must be a non-negative integer hour value like `8` or `8h`.",
     };
   }
   if (parsed > MAX_ALL_BASES_OPEN_HOURS_LEFT) {
     return {
       ok: false,
-      error: `\`all bases open for 3 star time-left\` must be between 0 and ${MAX_ALL_BASES_OPEN_HOURS_LEFT}.`,
+      error: `\`all bases open time cutoff\` must be between 0 and ${MAX_ALL_BASES_OPEN_HOURS_LEFT}.`,
     };
   }
   return { ok: true, value: parsed };
@@ -81,22 +98,100 @@ export function parseAllBasesOpenHoursLeftInput(raw: string | null | undefined):
 export function resolveWarPlanComplianceConfig(input: {
   primary?: MaybeConfig | null;
   fallback?: MaybeConfig | null;
+  builtInFallback?: BuiltInFallback | null;
 }): WarPlanComplianceConfig {
-  const primaryMin = toSafeNonNegativeInt(input.primary?.nonMirrorTripleMinClanStars);
-  const fallbackMin = toSafeNonNegativeInt(input.fallback?.nonMirrorTripleMinClanStars);
+  const primaryMin = resolveNonMirrorMinClanStars(input.primary);
+  const fallbackMin = resolveNonMirrorMinClanStars(input.fallback);
   const primaryHours = toSafeNonNegativeInt(input.primary?.allBasesOpenHoursLeft);
   const fallbackHours = toSafeNonNegativeInt(input.fallback?.allBasesOpenHoursLeft);
+  const builtInFallback = input.builtInFallback ?? {
+    nonMirrorMinClanStars: DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
+    allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  };
 
   const resolvedHoursBase =
-    primaryHours ?? fallbackHours ?? DEFAULT_ALL_BASES_OPEN_HOURS_LEFT;
+    primaryHours ?? fallbackHours ?? builtInFallback.allBasesOpenHoursLeft;
   const resolvedHours = Math.max(
     0,
     Math.min(MAX_ALL_BASES_OPEN_HOURS_LEFT, resolvedHoursBase)
   );
+  const resolvedMin =
+    primaryMin ?? fallbackMin ?? builtInFallback.nonMirrorMinClanStars;
 
   return {
-    nonMirrorTripleMinClanStars:
-      primaryMin ?? fallbackMin ?? DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+    nonMirrorMinClanStars: resolvedMin,
+    nonMirrorTripleMinClanStars: resolvedMin,
     allBasesOpenHoursLeft: resolvedHours,
   };
+}
+
+export function resolveWarPlanComplianceConfigForPlan(input: {
+  primary?: MaybeConfig | null;
+  fallback?: MaybeConfig | null;
+  matchType: string | null | undefined;
+  expectedOutcome: string | null | undefined;
+  loseStyle?: string | null | undefined;
+}): WarPlanComplianceConfig | null {
+  const matchType = String(input.matchType ?? "").toUpperCase();
+  const expectedOutcome = String(input.expectedOutcome ?? "").toUpperCase();
+  const loseStyle = String(input.loseStyle ?? "").toUpperCase();
+
+  if (matchType !== "FWA") return null;
+  if (expectedOutcome === "WIN") {
+    return resolveWarPlanComplianceConfig({
+      primary: input.primary,
+      fallback: input.fallback,
+      builtInFallback: {
+        nonMirrorMinClanStars: DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+      },
+    });
+  }
+
+  if (expectedOutcome === "LOSE" && loseStyle === "TRADITIONAL") {
+    return resolveWarPlanComplianceConfig({
+      primary: input.primary,
+      fallback: input.fallback,
+      builtInFallback: {
+        nonMirrorMinClanStars:
+          DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+        allBasesOpenHoursLeft: DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+      },
+    });
+  }
+
+  return null;
+}
+
+export function formatWarPlanComplianceLine(input: {
+  matchType: string | null | undefined;
+  expectedOutcome: string | null | undefined;
+  loseStyle?: string | null | undefined;
+  config: WarPlanComplianceConfig | null;
+}): string | null {
+  const matchType = String(input.matchType ?? "").toUpperCase();
+  const expectedOutcome = String(input.expectedOutcome ?? "").toUpperCase();
+  const loseStyle = String(input.loseStyle ?? "").toUpperCase();
+
+  if (matchType !== "FWA") {
+    return "Automated warplan compliance is disabled.";
+  }
+
+  if (expectedOutcome === "WIN") {
+    if (!input.config) return "Automated warplan compliance is disabled.";
+    return `Compliance gate: non-mirror 3★ opens at ${input.config.nonMirrorMinClanStars} clan stars or ${input.config.allBasesOpenHoursLeft}h left`;
+  }
+
+  if (expectedOutcome === "LOSE" && loseStyle === "TRADITIONAL") {
+    if (!input.config) {
+      return `Compliance gate: non-mirror 2★ opens at ${DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS} clan stars or ${DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT}h left | clan cap: 100★`;
+    }
+    return `Compliance gate: non-mirror 2★ opens at ${input.config.nonMirrorMinClanStars} clan stars or ${input.config.allBasesOpenHoursLeft}h left | clan cap: 100★`;
+  }
+
+  if (expectedOutcome === "LOSE" && loseStyle === "TRIPLE_TOP_30") {
+    return "Compliance rules: targets #1-30 only | attacks must earn 1-3★ | clan cap: 90★";
+  }
+
+  return "Automated warplan compliance is disabled.";
 }

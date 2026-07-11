@@ -303,11 +303,13 @@ export function computeWarComplianceForTest(input: {
     if (input.expectedOutcome === "WIN") {
       const minClanStarsBeforeNonMirrorTriple = Math.max(
         0,
-        Math.trunc(Number(input.winGateConfig?.nonMirrorTripleMinClanStars ?? 100))
+        Math.trunc(
+          Number(input.winGateConfig?.nonMirrorTripleMinClanStars ?? 101),
+        ),
       );
       const allBasesOpenHoursLeft = Math.max(
         0,
-        Math.trunc(Number(input.winGateConfig?.allBasesOpenHoursLeft ?? 12))
+        Math.trunc(Number(input.winGateConfig?.allBasesOpenHoursLeft ?? 0)),
       );
       const mirrorTripleByPlayer = new Map<string, boolean>();
       const mirrorTripleByOwnedPosition = new Map<number, boolean>();
@@ -363,30 +365,87 @@ export function computeWarComplianceForTest(input: {
         }
       }
     } else if (input.loseStyle === "TRIPLE_TOP_30") {
-      for (const attack of attacks) {
+      for (let i = 0; i < attacks.length; i += 1) {
+        const attack = attacks[i];
         const defenderPos = attack.defenderPosition ?? null;
+        const stars = Number(attack.stars ?? 0);
         if (defenderPos !== null && defenderPos > 30) {
+          addViolation(attack.playerTag, attack.playerName);
+          continue;
+        }
+        if (defenderPos !== null && defenderPos <= 30 && stars <= 0) {
+          addViolation(attack.playerTag, attack.playerName);
+        }
+        if (starsBeforeAttack.get(i) !== undefined && (starsBeforeAttack.get(i) ?? 0) <= 90 && (starsAfterAttack.get(i) ?? 0) > 90) {
           addViolation(attack.playerTag, attack.playerName);
         }
       }
     } else {
+      const minClanStarsBeforeNonMirrorTriple = Math.max(
+        0,
+        Math.trunc(
+          Number(input.winGateConfig?.nonMirrorTripleMinClanStars ?? 150),
+        ),
+      );
+      const allBasesOpenHoursLeft = Math.max(
+        0,
+        Math.trunc(Number(input.winGateConfig?.allBasesOpenHoursLeft ?? 12)),
+      );
+      const playerAttackCount = new Map<string, number>();
       for (let i = 0; i < attacks.length; i += 1) {
         const attack = attacks[i];
+        const playerTag = normalizeTag(attack.playerTag);
+        const playerAttackNumber = (playerAttackCount.get(playerTag) ?? 0) + 1;
+        playerAttackCount.set(playerTag, playerAttackNumber);
+        const stars = Math.max(0, Math.trunc(Number(attack.stars ?? 0)));
+        const trueStars = Math.max(0, Number(attack.trueStars ?? 0));
         const hoursRemaining =
           attack.warEndTime instanceof Date
-            ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) / (60 * 60 * 1000)
+            ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
+              (60 * 60 * 1000)
             : null;
-        const stars = Number(attack.stars ?? 0);
-        if (hoursRemaining !== null && Number.isFinite(hoursRemaining) && hoursRemaining < 12) {
-          const playerPos = attack.playerPosition ?? null;
-          const defenderPos = attack.defenderPosition ?? null;
-          const isMirror = playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-          const validLate = (isMirror && stars === 2) || (!isMirror && stars === 1);
-          if (!validLate) addViolation(attack.playerTag, attack.playerName);
+        const starsBefore = starsBeforeAttack.get(i) ?? 0;
+        const isStrictWindow =
+          starsBefore < minClanStarsBeforeNonMirrorTriple &&
+          (hoursRemaining !== null &&
+            Number.isFinite(hoursRemaining) &&
+            hoursRemaining > allBasesOpenHoursLeft);
+        const playerPos = attack.playerPosition ?? null;
+        const defenderPos = attack.defenderPosition ?? null;
+        const isMirror =
+          playerPos !== null && defenderPos !== null && playerPos === defenderPos;
+        const openWindow = !isStrictWindow;
+
+        if (starsBefore <= 100 && (starsAfterAttack.get(i) ?? 0) > 100) {
+          addViolation(attack.playerTag, attack.playerName);
+        }
+        if (stars === 3) {
+          addViolation(attack.playerTag, attack.playerName);
           continue;
         }
-        if (!(stars === 1 || stars === 2)) addViolation(attack.playerTag, attack.playerName);
-        if ((starsAfterAttack.get(i) ?? 0) > 100) addViolation(attack.playerTag, attack.playerName);
+
+        if (isStrictWindow) {
+          if (playerAttackNumber === 1) {
+            if (!isMirror || stars !== 2) {
+              addViolation(attack.playerTag, attack.playerName);
+            }
+            continue;
+          }
+          if (playerAttackNumber === 2) {
+            if (stars !== 1) {
+              addViolation(attack.playerTag, attack.playerName);
+            }
+            continue;
+          }
+          if (stars !== 2) {
+            addViolation(attack.playerTag, attack.playerName);
+          }
+          continue;
+        }
+
+        if (openWindow && stars !== 2) {
+          addViolation(attack.playerTag, attack.playerName);
+        }
       }
     }
   } else {

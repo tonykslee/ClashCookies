@@ -6,7 +6,7 @@ import {
 } from "../src/services/FwaPoliceTemplateCatalog";
 
 describe("FwaPoliceTemplateCatalog", () => {
-  it("defines exactly six canonical violation enums", () => {
+  it("defines exactly eight canonical violation enums", () => {
     expect(FWA_POLICE_VIOLATIONS).toEqual([
       "EARLY_NON_MIRROR_TRIPLE",
       "STRICT_WINDOW_MIRROR_MISS_WIN",
@@ -14,6 +14,8 @@ describe("FwaPoliceTemplateCatalog", () => {
       "EARLY_NON_MIRROR_2STAR",
       "ANY_3STAR",
       "LOWER20_ANY_STARS",
+      "CLAN_STAR_CAP_EXCEEDED",
+      "TOP30_ZERO_STARS",
     ]);
   });
 
@@ -26,15 +28,15 @@ describe("FwaPoliceTemplateCatalog", () => {
     expect(rendered).toBe("Alert #15 - Tilonius / UNLINKED_USER");
   });
 
-  it("classifies early non-mirror 2-star from breach details", () => {
+  it("classifies early non-mirror 2-star from traditional-loss breach details", () => {
     const violation = classifyFwaPoliceViolation({
       issue: {
         playerTag: "#P2YLC8R0",
         playerName: "Player One",
         playerPosition: 1,
         ruleType: "not_following_plan",
-        expectedBehavior: "Mirror triple in strict window.",
-        actualBehavior: "#14 (2-star) : missed mirror",
+        expectedBehavior: "Avoid early non-mirror 2-star in traditional loss.",
+        actualBehavior: "#14 (2-star) : early non-mirror 2-star",
         reasonLabel: null,
         attackDetails: [
           {
@@ -47,11 +49,68 @@ describe("FwaPoliceTemplateCatalog", () => {
       },
       context: {
         matchType: "FWA",
-        expectedOutcome: "WIN",
-        loseStyle: "TRIPLE_TOP_30",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
       },
     });
     expect(violation).toBe("EARLY_NON_MIRROR_2STAR");
+  });
+
+  it("classifies top-30 zero-star and clan cap exceeded when no reason label is present", () => {
+    const zeroStarViolation = classifyFwaPoliceViolation({
+      issue: {
+        playerTag: "#P2YLC8R0",
+        playerName: "Player One",
+        playerPosition: 1,
+        ruleType: "not_following_plan",
+        expectedBehavior: "Attack only top-30 bases.",
+        actualBehavior: "#22 (0-star) : top-30 zero-star",
+        reasonLabel: null,
+        attackDetails: [
+          {
+            defenderPosition: 22,
+            stars: 0,
+            attackOrder: 1,
+            isBreach: true,
+          },
+        ],
+        breachContext: null,
+      },
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRIPLE_TOP_30",
+      },
+    });
+
+    const capViolation = classifyFwaPoliceViolation({
+      issue: {
+        playerTag: "#P2YLC8R0",
+        playerName: "Player One",
+        playerPosition: 1,
+        ruleType: "not_following_plan",
+        expectedBehavior: "Stay within the clan star cap.",
+        actualBehavior: "#9 (2-star) : pushed clan past the cap",
+        reasonLabel: "clan star cap exceeded",
+        attackDetails: [
+          {
+            defenderPosition: 9,
+            stars: 1,
+            attackOrder: 3,
+            isBreach: true,
+          },
+        ],
+        breachContext: null,
+      },
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    });
+
+    expect(zeroStarViolation).toBe("TOP30_ZERO_STARS");
+    expect(capViolation).toBe("CLAN_STAR_CAP_EXCEEDED");
   });
 
   it("does not classify generic FWA-WIN non-strict-window issues as strict-window violations", () => {

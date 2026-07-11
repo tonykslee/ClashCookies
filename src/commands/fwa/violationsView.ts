@@ -190,7 +190,11 @@ export function formatWarPlanViolationsViolationTypeLabel(violationType: string)
     case "ANY_3STAR":
       return "3-star plan violation";
     case "LOWER20_ANY_STARS":
-      return "Lower-20 attack violation";
+      return "Attack on a lower-20 base";
+    case "CLAN_STAR_CAP_EXCEEDED":
+      return "Clan star cap exceeded";
+    case "TOP30_ZERO_STARS":
+      return "0-star attack on a top-30 base";
     case "OTHER_PLAN_VIOLATION":
       return "Other plan violation";
     default: {

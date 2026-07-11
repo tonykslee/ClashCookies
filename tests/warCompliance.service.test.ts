@@ -1022,7 +1022,7 @@ describe("WarComplianceService", () => {
     expect(report?.notFollowingPlan[0]?.playerTag).toBe("#L0SS2");
     expect(report?.notFollowingPlan[0]?.breachContext).toBeNull();
     expect(report?.notFollowingPlan[0]?.reasonLabel).toBe(
-      "attacked outside top-30",
+      "attack on a lower-20 base",
     );
   });
 
@@ -1554,8 +1554,8 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
-    expect(violatedTags).toContain("#LR0UT");
-    expect(violatedTags).not.toContain("#LROWNER");
+    expect(violatedTags).toContain("#LR0WNER");
+    expect(violatedTags).not.toContain("#LR0UT");
   });
 
   it("keeps grouped LOSS_TRADITIONAL ownership deterministic and does not double-count one attack", async () => {

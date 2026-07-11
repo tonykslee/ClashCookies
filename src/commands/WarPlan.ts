@@ -18,8 +18,14 @@ import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import {
   parseAllBasesOpenHoursLeftInput,
-  parseNonMirrorTripleMinClanStarsInput,
+  parseNonMirrorMinClanStarsInput,
+  formatWarPlanComplianceLine,
   resolveWarPlanComplianceConfig,
+  resolveWarPlanComplianceConfigForPlan,
+  DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+  DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
   type WarPlanComplianceConfig,
 } from "../services/warPlanComplianceConfig";
 import { WarEventHistoryService } from "../services/war-events/history";
@@ -326,6 +332,54 @@ function getModalCompliancePrefillDefaults(
   };
 }
 
+/** Purpose: build the contextual compliance line shown in `/warplan show`. */
+function buildComplianceConfigLineForTarget(input: {
+  target: PlanTarget;
+  resolvedConfig: WarPlanComplianceConfig | null;
+}): string {
+  return (
+    formatWarPlanComplianceLine({
+      matchType: input.target.matchType,
+      expectedOutcome: input.target.outcome === "ANY" ? null : input.target.outcome,
+      loseStyle: input.target.loseStyle === "ANY" ? null : input.target.loseStyle,
+      config: input.resolvedConfig,
+    }) ?? "Automated warplan compliance is disabled."
+  );
+}
+
+/** Purpose: hide irrelevant compliance fields for plan types that do not use them. */
+function getModalComplianceFieldConfigForTarget(target: PlanTarget): {
+  minStarsLabel: string;
+  minStarsDefault: number;
+  openHoursDefault: number;
+  openHoursDefaultText: string;
+} | null {
+  if (target.matchType === "FWA" && target.outcome === "WIN") {
+    return {
+      minStarsLabel: "Clan stars before non-mirror ★★★ opens",
+      minStarsDefault: DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
+      openHoursDefault: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+      openHoursDefaultText: "0",
+    };
+  }
+
+  if (
+    target.matchType === "FWA" &&
+    target.outcome === "LOSE" &&
+    target.loseStyle === "TRADITIONAL"
+  ) {
+    return {
+      minStarsLabel: "Clan stars before non-mirror ★★☆ opens",
+      minStarsDefault:
+        DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+      openHoursDefault: DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+      openHoursDefaultText: "12h",
+    };
+  }
+
+  return null;
+}
+
 async function getDefaultPlanText(
   history: WarEventHistoryService,
   guildId: string,
@@ -421,10 +475,19 @@ async function getCurrentOrDefaultPlanData(params: {
     fallbackConfig = defaultRow;
   }
 
-  const resolvedConfig = resolveWarPlanComplianceConfig({
-    primary: existing,
-    fallback: fallbackConfig,
-  });
+  const resolvedConfig =
+    resolveWarPlanComplianceConfigForPlan({
+      primary: existing,
+      fallback: fallbackConfig,
+      matchType: params.target.matchType,
+      expectedOutcome:
+        params.target.outcome === "ANY" ? null : params.target.outcome,
+      loseStyle: params.target.loseStyle === "ANY" ? null : params.target.loseStyle,
+    }) ??
+    resolveWarPlanComplianceConfig({
+      primary: existing,
+      fallback: fallbackConfig,
+    });
 
   const planText =
     existing?.planText?.trim() ||
@@ -447,7 +510,7 @@ async function getCurrentOrDefaultPlanData(params: {
 
 export const resolveWarPlanEmojiShortcodesForTest =
   resolveWarPlanEmojiShortcodes;
-export const buildComplianceConfigLineForTest = buildComplianceConfigLine;
+export const buildComplianceConfigLineForTest = buildComplianceConfigLineForTarget;
 export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
 export const resolveWarPlanOverviewOverrideTypeForTest =
   resolveWarPlanOverviewOverrideType;
@@ -641,7 +704,7 @@ export const WarPlan: Command = {
         history,
       });
 
-      const modalConfig = getModalComplianceFieldConfig(target);
+      const modalConfig = getModalComplianceFieldConfigForTarget(target);
       const modalId = `${PLAN_MODAL_PREFIX}:${mode}:${clanTag || "_"}:${target.matchType}:${target.outcome}:${target.loseStyle}`;
       const modal = new ModalBuilder()
         .setCustomId(modalId)
@@ -658,27 +721,32 @@ export const WarPlan: Command = {
           "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>",
         )
         .setValue(prefill.planText);
-      const minStarsInput = new TextInputBuilder()
-        .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
-        .setLabel(modalConfig.minStarsLabel)
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false)
-        .setMaxLength(4)
-        .setPlaceholder(`Default: ${modalConfig.minStarsDefault}`)
-        .setValue(String(prefill.nonMirrorTripleMinClanStars));
-      const openHoursInput = new TextInputBuilder()
-        .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
-        .setLabel("All bases open hours left (H or Hh)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false)
-        .setMaxLength(3)
-        .setPlaceholder(`Default: ${modalConfig.openHoursDefaultText}`)
-        .setValue(String(prefill.allBasesOpenHoursLeft));
-      modal.addComponents(
+      const modalRows: ActionRowBuilder<TextInputBuilder>[] = [
         new ActionRowBuilder<TextInputBuilder>().addComponents(input),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput),
-      );
+      ];
+      if (modalConfig) {
+        const minStarsInput = new TextInputBuilder()
+          .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
+          .setLabel(modalConfig.minStarsLabel)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(4)
+          .setPlaceholder(`Default: ${modalConfig.minStarsDefault}`)
+          .setValue(String(prefill.nonMirrorTripleMinClanStars));
+        const openHoursInput = new TextInputBuilder()
+          .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
+          .setLabel("All bases open time cutoff (H or Hh)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(3)
+          .setPlaceholder(`Default: ${modalConfig.openHoursDefaultText}`)
+          .setValue(String(prefill.allBasesOpenHoursLeft));
+        modalRows.push(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput),
+        );
+      }
+      modal.addComponents(...modalRows);
       await interaction.showModal(modal);
 
       try {
@@ -690,14 +758,11 @@ export const WarPlan: Command = {
         const normalizedPlanText = normalizePlanTextInput(
           submitted.fields.getTextInputValue(PLAN_MODAL_INPUT_ID),
         );
-        const minStarsRaw = submitted.fields.getTextInputValue(
-          PLAN_MODAL_MIN_STARS_INPUT_ID,
-        );
-        const openHoursRaw = submitted.fields.getTextInputValue(
-          PLAN_MODAL_OPEN_HOURS_INPUT_ID,
-        );
-        const parsedMinStars =
-          parseNonMirrorTripleMinClanStarsInput(minStarsRaw);
+        const parsedMinStars = modalConfig
+          ? parseNonMirrorMinClanStarsInput(
+              submitted.fields.getTextInputValue(PLAN_MODAL_MIN_STARS_INPUT_ID),
+            )
+          : { ok: true as const, value: null };
         if (!parsedMinStars.ok) {
           await submitted.reply({
             ephemeral: true,
@@ -705,7 +770,11 @@ export const WarPlan: Command = {
           });
           return;
         }
-        const parsedOpenHours = parseAllBasesOpenHoursLeftInput(openHoursRaw);
+        const parsedOpenHours = modalConfig
+          ? parseAllBasesOpenHoursLeftInput(
+              submitted.fields.getTextInputValue(PLAN_MODAL_OPEN_HOURS_INPUT_ID),
+            )
+          : { ok: true as const, value: null };
         if (!parsedOpenHours.ok) {
           await submitted.reply({
             ephemeral: true,
@@ -733,6 +802,13 @@ export const WarPlan: Command = {
           return;
         }
 
+        const currentPlanValues = modalConfig
+          ? {
+              nonMirrorTripleMinClanStars: parsedMinStars.value,
+              allBasesOpenHoursLeft: parsedOpenHours.value,
+            }
+          : {};
+
         await prisma.clanWarPlan.upsert({
           where: {
             guildId_scope_clanTag_matchType_outcome_loseStyle: {
@@ -746,8 +822,7 @@ export const WarPlan: Command = {
           },
           update: {
             planText,
-            nonMirrorTripleMinClanStars: parsedMinStars.value,
-            allBasesOpenHoursLeft: parsedOpenHours.value,
+            ...(modalConfig ? currentPlanValues : {}),
           },
           create: {
             guildId,
@@ -757,8 +832,7 @@ export const WarPlan: Command = {
             outcome: target.outcome,
             loseStyle: target.loseStyle,
             planText,
-            nonMirrorTripleMinClanStars: parsedMinStars.value,
-            allBasesOpenHoursLeft: parsedOpenHours.value,
+            ...(modalConfig ? currentPlanValues : {}),
           },
         });
         await submitted.reply({
@@ -1041,11 +1115,9 @@ export const WarPlan: Command = {
             mode === "CUSTOM" ? (defaultRowByKey.get(key) ?? null) : null,
         });
         const fieldValue = clampEmbedFieldValue(
-          `${text}\n\n${buildComplianceConfigLine({
+          `${text}\n\n${buildComplianceConfigLineForTarget({
             target,
-            nonMirrorTripleMinClanStars:
-              resolvedConfig.nonMirrorTripleMinClanStars,
-            allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+            resolvedConfig,
           })}`,
         );
         fields.push({

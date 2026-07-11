@@ -6,6 +6,7 @@ import {
   type APIEmbed,
 } from "discord.js";
 import { type WarComplianceIssue } from "./WarComplianceService";
+import { formatWarPlanComplianceLine } from "./warPlanComplianceConfig";
 import { buildFwaComplianceViewCustomId } from "./fwaCustomIds";
 
 export type FwaComplianceActiveView = "fwa_main" | "missed";
@@ -18,6 +19,7 @@ export type FwaComplianceEmbedRenderInput = {
   warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle?: "TRADITIONAL" | "TRIPLE_TOP_30" | null;
   fwaWinGateConfig?:
     | {
         nonMirrorTripleMinClanStars: number;
@@ -284,9 +286,10 @@ function buildWarPlanFieldValue(warPlanText: string | null | undefined): string 
 }
 
 /** Purpose: safely build the war description with unknown fallbacks required by command contract. */
-function buildWarDescription(input: {
+function buildWarDescriptionForCompliance(input: {
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle?: "TRADITIONAL" | "TRIPLE_TOP_30" | null;
   fwaWinGateConfig?:
     | {
         nonMirrorTripleMinClanStars: number;
@@ -307,10 +310,22 @@ function buildWarDescription(input: {
       ? `End <t:${Math.floor(input.warEndTime.getTime() / 1000)}:R>`
       : "End unknown";
   const lines = [`War #${warIdLabel} • Expected: ${expected}`, startLine, endLine];
-  if (input.fwaWinGateConfig) {
-    lines.push(
-      `Rules: N=${input.fwaWinGateConfig.nonMirrorTripleMinClanStars}, H=${input.fwaWinGateConfig.allBasesOpenHoursLeft}h`
-    );
+  const complianceLine = formatWarPlanComplianceLine({
+    matchType: "FWA",
+    expectedOutcome: input.expectedOutcome,
+    loseStyle: input.loseStyle,
+    config: input.fwaWinGateConfig
+      ? {
+          nonMirrorMinClanStars:
+            input.fwaWinGateConfig.nonMirrorTripleMinClanStars,
+          nonMirrorTripleMinClanStars:
+            input.fwaWinGateConfig.nonMirrorTripleMinClanStars,
+          allBasesOpenHoursLeft: input.fwaWinGateConfig.allBasesOpenHoursLeft,
+        }
+      : null,
+  });
+  if (complianceLine) {
+    lines.push(complianceLine);
   }
   return lines.join("\n");
 }
@@ -321,6 +336,7 @@ function buildMainEmbed(input: {
   warPlanText?: string | null;
   warId: number | null;
   expectedOutcome: "WIN" | "LOSE" | null;
+  loseStyle?: "TRADITIONAL" | "TRIPLE_TOP_30" | null;
   fwaWinGateConfig?:
     | {
         nonMirrorTripleMinClanStars: number;
@@ -343,9 +359,10 @@ function buildMainEmbed(input: {
   const embed = new EmbedBuilder()
     .setTitle(`FWA War Compliance — ${input.clanName}`)
     .setDescription(
-      buildWarDescription({
+      buildWarDescriptionForCompliance({
         warId: input.warId,
         expectedOutcome: input.expectedOutcome,
+        loseStyle: input.loseStyle,
         fwaWinGateConfig: input.fwaWinGateConfig,
         warStartTime: input.warStartTime,
         warEndTime: input.warEndTime,
@@ -524,6 +541,7 @@ export function buildFwaComplianceEmbedView(
       warPlanText: input.warPlanText,
       warId: input.warId,
       expectedOutcome: input.expectedOutcome,
+      loseStyle: input.loseStyle,
       fwaWinGateConfig: input.fwaWinGateConfig,
       warStartTime: input.warStartTime,
       warEndTime: input.warEndTime,

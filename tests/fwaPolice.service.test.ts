@@ -824,11 +824,11 @@ describe("FwaPoliceService", () => {
     });
   });
 
-  it("still emits EARLY_NON_MIRROR_2STAR in FWA-WIN", async () => {
+  it("still emits EARLY_NON_MIRROR_2STAR in FWA-LOSS traditional", async () => {
     prismaMock.trackedClan.findFirst.mockResolvedValue({
       tag: "#2QG2C08UP",
       name: "Alpha",
-      loseStyle: "TRIPLE_TOP_30",
+      loseStyle: "TRADITIONAL",
       fwaPoliceDmEnabled: false,
       fwaPoliceLogEnabled: true,
       logChannelId: "channel-1",
@@ -855,8 +855,8 @@ describe("FwaPoliceService", () => {
         clanName: "Alpha",
         opponentName: "Bravo",
         matchType: "FWA",
-        expectedOutcome: "WIN",
-        loseStyle: "TRIPLE_TOP_30",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
         notFollowingPlan: [
           buildIssue({
             reasonLabel: null,
@@ -886,7 +886,7 @@ describe("FwaPoliceService", () => {
     expect(logSend).toHaveBeenCalledTimes(1);
     const sentPayload = logSend.mock.calls[0]?.[0];
     expect(String(sentPayload?.content ?? "")).toContain(
-      "took an early non-mirror 2-star before the FFA window",
+      "took an early non-mirror 2-star in traditional loss",
     );
     expect(result.logSent).toBe(1);
   });
