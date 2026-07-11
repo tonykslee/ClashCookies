@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../src/prisma";
 import { WarComplianceService } from "../src/services/WarComplianceService";
 import { WarEventHistoryService } from "../src/services/war-events/history";
-import { computeWarComplianceForTest } from "../src/services/war-events/core";
+import {
+  buildAttackContextByAttack,
+  computeWarComplianceForTest,
+} from "../src/services/war-events/core";
 import * as PlayerLinkService from "../src/services/PlayerLinkService";
 
 describe("WarComplianceService", () => {
@@ -83,6 +86,91 @@ describe("WarComplianceService", () => {
       loseStyle: "TRADITIONAL",
     });
     expect(snapshot).toEqual(expected);
+  });
+
+  it("keeps detailed breach context stars-before aligned with the shared chronology builder", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const participants = [
+      {
+        playerName: "mirror",
+        playerTag: "#P1",
+        attacksUsed: 1,
+        playerPosition: 1,
+      },
+      {
+        playerName: "lotus",
+        playerTag: "#P2",
+        attacksUsed: 2,
+        playerPosition: 5,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#P1",
+        playerName: "mirror",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T01:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#P2",
+        playerName: "lotus",
+        playerPosition: 5,
+        defenderPosition: 14,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T02:00:00.000Z"),
+        warEndTime,
+        attackOrder: 99,
+      },
+      {
+        playerTag: "#P2",
+        playerName: "lotus",
+        playerPosition: 5,
+        defenderPosition: 8,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-02-01T03:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+    ];
+
+    vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue({
+      warStartTime,
+      warEndTime,
+      warId: 777,
+    } as any);
+    vi.spyOn(prisma.warAttacks, "findMany")
+      .mockResolvedValueOnce(participants as any)
+      .mockResolvedValueOnce(attacks as any);
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst").mockResolvedValue(null as any);
+
+    const service = new WarComplianceService();
+    const report = await service.getComplianceReport({
+      clanTag: "#TEST",
+      preferredWarStartTime: warStartTime,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 8,
+    });
+    const lotusContext = contexts.get(attacks[1] as any);
+    const lotus = report?.notFollowingPlan.find((row) => row.playerName === "lotus");
+
+    expect(lotus?.breachContext?.starsAtBreach).toBe(lotusContext?.starsBeforeAttack);
+    expect(lotus?.breachContext?.timeRemaining).toBe("22h 0m left");
   });
 
   it("uses the first offending attack context for strict-window non-mirror triples", async () => {
@@ -634,7 +722,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["p1", "p2", "p3"]);
+    expect(violatedNames).toEqual(["p2", "p3"]);
   });
 
   it("treats grouped FWA-WIN mirror obligations as owned by all linked members even when one owner has no strict-window attacks", async () => {
@@ -1185,7 +1273,7 @@ describe("WarComplianceService", () => {
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
     expect(violatedTags).toContain("#BAD1");
-    expect(violatedTags).toContain("#SAFE1");
+    expect(violatedTags).not.toContain("#SAFE1");
   });
 
   it("assigns grouped FWA-WIN unmet mirror to the owning account", async () => {
@@ -1308,8 +1396,8 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedNames = report?.notFollowingPlan.map((row) => row.playerName) ?? [];
-    expect(violatedNames).toEqual(["p1", "p3"]);
-    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#P2YLC8R0");
+    expect(violatedNames).toEqual(["p3"]);
+    expect(report?.notFollowingPlan[0]?.playerTag).toBe("#2QG2C08UP");
   });
 
   it("treats linked FWA-LOSS_TRADITIONAL mirror twos as group-owned obligations", async () => {

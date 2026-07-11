@@ -28,6 +28,7 @@ import {
   resolveParticipationGuildId,
   WarEventHistoryService,
 } from "../src/services/war-events/history";
+import { buildAttackContextByAttack } from "../src/services/war-events/core";
 import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
 import * as reminderSchedulerService from "../src/services/reminders/ReminderSchedulerService";
 
@@ -960,6 +961,176 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       loseStyle: "TRADITIONAL",
     });
     expect(result.notFollowingPlan).toEqual(["Alice", "Bob"]);
+  });
+});
+
+describe("WarEventLogService.shared chronology", () => {
+  it("counts prior trueStars from zero for each valid attack order", () => {
+    const warEndTime = dateAt(20);
+    const attacks = [
+      {
+        playerTag: "#A",
+        playerName: "A",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: dateAt(1),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#B",
+        playerName: "B",
+        playerPosition: 2,
+        defenderPosition: 2,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: dateAt(2),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#C",
+        playerName: "C",
+        playerPosition: 3,
+        defenderPosition: 3,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: dateAt(3),
+        warEndTime,
+        attackOrder: 3,
+      },
+      {
+        playerTag: "#D",
+        playerName: "D",
+        playerPosition: 4,
+        defenderPosition: 4,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: dateAt(4),
+        warEndTime,
+        attackOrder: 4,
+      },
+    ];
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 2,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(contexts.get(attacks[0] as any)?.starsBeforeAttack).toBe(0);
+    expect(contexts.get(attacks[1] as any)?.starsBeforeAttack).toBe(1);
+    expect(contexts.get(attacks[2] as any)?.starsBeforeAttack).toBe(3);
+    expect(contexts.get(attacks[3] as any)?.starsBeforeAttack).toBe(3);
+  });
+
+  it("keeps a 2-star gate strict when only 1 true star has been earned", () => {
+    const warEndTime = dateAt(20);
+    const attacks = [
+      {
+        playerTag: "#A",
+        playerName: "A",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 1,
+        attackSeenAt: dateAt(1),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#B",
+        playerName: "B",
+        playerPosition: 2,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: dateAt(2),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 2,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(contexts.get(attacks[1] as any)?.starsBeforeAttack).toBe(1);
+    expect(contexts.get(attacks[1] as any)?.isStrictWindow).toBe(true);
+  });
+
+  it("opens the gate once prior trueStars reach the configured threshold", () => {
+    const warEndTime = dateAt(20);
+    const attacks = [
+      {
+        playerTag: "#A",
+        playerName: "A",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 2,
+        attackSeenAt: dateAt(1),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#B",
+        playerName: "B",
+        playerPosition: 2,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: dateAt(2),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 2,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(contexts.get(attacks[1] as any)?.starsBeforeAttack).toBe(2);
+    expect(contexts.get(attacks[1] as any)?.isStrictWindow).toBe(false);
+  });
+
+  it("does not open the gate from displayed stars when trueStars remain below the threshold", () => {
+    const warEndTime = dateAt(20);
+    const attacks = [
+      {
+        playerTag: "#A",
+        playerName: "A",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 0,
+        attackSeenAt: dateAt(1),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#B",
+        playerName: "B",
+        playerPosition: 2,
+        defenderPosition: 2,
+        stars: 3,
+        trueStars: 0,
+        attackSeenAt: dateAt(2),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+
+    const contexts = buildAttackContextByAttack(attacks as any, {
+      nonMirrorTripleMinClanStars: 2,
+      allBasesOpenHoursLeft: 12,
+    });
+
+    expect(contexts.get(attacks[1] as any)?.starsBeforeAttack).toBe(0);
+    expect(contexts.get(attacks[1] as any)?.isStrictWindow).toBe(true);
   });
 });
 

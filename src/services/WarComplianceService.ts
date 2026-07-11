@@ -7,6 +7,8 @@ import {
   type FwaLoseStyle,
   type MatchType,
   type WarComplianceAttack,
+  buildAttackContextByAttack,
+  type AttackContext,
   classifyComplianceReasonForPlayer,
   type WarComplianceWinGateConfig,
   type WarComplianceParticipant,
@@ -179,13 +181,6 @@ function getParticipantLabel(input: {
   return name || input.playerTag;
 }
 
-type AttackContext = {
-  starsBeforeAttack: number;
-  hoursRemaining: number | null;
-  isStrictWindow: boolean;
-  isMirror: boolean;
-};
-
 /** Purpose: ensure all compliance-side attack iteration uses the same deterministic chronology. */
 function compareAttacksForComplianceOrder(
   a: WarComplianceAttack,
@@ -244,81 +239,6 @@ function formatTimeRemaining(hoursRemaining: number | null): string {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${hours}h ${minutes}m left`;
-}
-
-/** Purpose: derive stars-before-attack from lower attackOrder values when the breached row has a usable order. */
-function computeStarsBeforeAttack(
-  attack: WarComplianceAttack,
-  allAttacks: WarComplianceAttack[],
-  fallbackStarsBeforeAttack: number,
-): number {
-  const attackOrder = normalizeAttackOrder(attack.attackOrder);
-  if (attackOrder === null || attackOrder <= 0) {
-    return fallbackStarsBeforeAttack;
-  }
-  return allAttacks.reduce((total, row) => {
-    const rowOrder = normalizeAttackOrder(row.attackOrder);
-    if (rowOrder === null || rowOrder <= 0 || rowOrder >= attackOrder) {
-      return total;
-    }
-    return total + Math.max(0, Number(row.trueStars ?? 0));
-  }, 0);
-}
-
-/** Purpose: compute strict-window metadata once using the same ordering/rules as compliance checks. */
-function buildAttackContextByAttack(
-  attacks: WarComplianceAttack[],
-  winGateConfig?: WarComplianceWinGateConfig | null,
-): Map<WarComplianceAttack, AttackContext> {
-  const ordered = sortAttacksForBreachContext(attacks);
-  const minClanStarsBeforeNonMirrorTriple = Math.max(
-    0,
-    Math.trunc(Number(winGateConfig?.nonMirrorTripleMinClanStars ?? 101)),
-  );
-  const allBasesOpenHoursLeft = Math.max(
-    0,
-    Math.trunc(Number(winGateConfig?.allBasesOpenHoursLeft ?? 0)),
-  );
-
-  const result = new Map<WarComplianceAttack, AttackContext>();
-  let cumulativeClanStars = 0;
-  for (const attack of ordered) {
-    const fallbackStarsBeforeAttack = cumulativeClanStars;
-    const starsBeforeAttack = computeStarsBeforeAttack(
-      attack,
-      attacks,
-      fallbackStarsBeforeAttack,
-    );
-    const gain = Math.max(0, Number(attack.trueStars ?? 0));
-    cumulativeClanStars += gain;
-
-    const hoursRemaining =
-      attack.warEndTime instanceof Date
-        ? (attack.warEndTime.getTime() - attack.attackSeenAt.getTime()) /
-          (60 * 60 * 1000)
-        : null;
-    const starsGateActive =
-      starsBeforeAttack < minClanStarsBeforeNonMirrorTriple;
-    const isTimeGateActive =
-      allBasesOpenHoursLeft <= 0
-        ? true
-        : hoursRemaining !== null &&
-          Number.isFinite(hoursRemaining) &&
-          hoursRemaining > allBasesOpenHoursLeft;
-    const isStrictWindow = starsGateActive && isTimeGateActive;
-    const playerPos = attack.playerPosition ?? null;
-    const defenderPos = attack.defenderPosition ?? null;
-    const isMirror =
-      playerPos !== null && defenderPos !== null && playerPos === defenderPos;
-
-    result.set(attack, {
-      starsBeforeAttack,
-      hoursRemaining,
-      isStrictWindow,
-      isMirror,
-    });
-  }
-  return result;
 }
 
 type LinkedComplianceGroup = {
@@ -561,15 +481,18 @@ function describeNotFollowingReason(input: {
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
   attackIndexByAttack: Map<WarComplianceAttack, number>;
   starsAfterByAttackIndex: Map<number, number>;
+  playerAttacksUsed?: number | null;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
 }): NotFollowingReason {
   return classifyComplianceReasonForPlayer({
     playerAttacks: input.playerAttacks,
+    allAttacks: input.allAttacks,
     attackContextByAttack: input.attackContextByAttack,
     attackIndexByAttack: input.attackIndexByAttack,
     starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+    playerAttacksUsed: input.playerAttacksUsed,
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
@@ -600,6 +523,7 @@ function describeExpectedPlanBehavior(input: {
 function describeActualBehaviorForPlayer(input: {
   playerTag: string;
   attacksByPlayerTag: Map<string, WarComplianceAttack[]>;
+  playerAttacksUsed: number | null;
   allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
   attackIndexByAttack: Map<WarComplianceAttack, number>;
@@ -630,6 +554,7 @@ function describeActualBehaviorForPlayer(input: {
     attackContextByAttack: input.attackContextByAttack,
     attackIndexByAttack: input.attackIndexByAttack,
     starsAfterByAttackIndex: input.starsAfterByAttackIndex,
+    playerAttacksUsed: input.playerAttacksUsed,
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
@@ -679,6 +604,7 @@ function mapNamesToIssues(input: {
       : describeActualBehaviorForPlayer({
           playerTag,
           attacksByPlayerTag: input.attacksByPlayerTag,
+          playerAttacksUsed: participant?.attacksUsed ?? null,
           allAttacks: input.allAttacks,
           attackContextByAttack: input.attackContextByAttack,
           attackIndexByAttack: input.attackIndexByAttack,
@@ -2140,6 +2066,7 @@ export class WarComplianceService {
 
     const reasonByTag = new Map<string, NotFollowingReason>();
     for (const tag of baselineViolationTags) {
+      const participant = participantByTag.get(tag) ?? null;
       const playerAttacks = input.attacks.filter(
         (attack) => normalizeTag(attack.playerTag) === tag,
       );
@@ -2152,6 +2079,7 @@ export class WarComplianceService {
           attackContextByAttack: input.attackContextByAttack,
           attackIndexByAttack,
           starsAfterByAttackIndex,
+          playerAttacksUsed: participant?.attacksUsed ?? null,
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,

@@ -49,7 +49,7 @@ export type WarComplianceWinGateConfig = {
   allBasesOpenHoursLeft: number;
 };
 
-type AttackContext = {
+export type AttackContext = {
   starsBeforeAttack: number;
   hoursRemaining: number | null;
   isStrictWindow: boolean;
@@ -289,7 +289,7 @@ function formatTimeRemaining(hoursRemaining: number | null): string {
 }
 
 /** Purpose: build the shared strict-window metadata used by all compliance reasons. */
-function buildAttackContextByAttack(
+export function buildAttackContextByAttack(
   attacks: WarComplianceAttack[],
   winGateConfig?: WarComplianceWinGateConfig | null,
 ): Map<WarComplianceAttack, AttackContext> {
@@ -344,6 +344,23 @@ function buildAttackContextByAttack(
   return result;
 }
 
+/** Purpose: collect defender positions that were actually tripled inside the strict window. */
+function buildStrictWindowTripledPositions(
+  allAttacks: WarComplianceAttack[],
+  attackContextByAttack: Map<WarComplianceAttack, AttackContext>,
+): Set<number> {
+  const result = new Set<number>();
+  for (const attack of allAttacks) {
+    const ctx = attackContextByAttack.get(attack);
+    if (!ctx?.isStrictWindow) continue;
+    if (Math.max(0, Number(attack.stars ?? 0)) < 3) continue;
+    const defenderPosition = Math.trunc(Number(attack.defenderPosition ?? NaN));
+    if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
+    result.add(defenderPosition);
+  }
+  return result;
+}
+
 /** Purpose: derive stars-before-attack from lower attackOrder values when the row has a usable order. */
 function computeStarsBeforeAttack(
   attack: WarComplianceAttack,
@@ -360,7 +377,7 @@ function computeStarsBeforeAttack(
       return total;
     }
     return total + Math.max(0, Number(row.trueStars ?? 0));
-  }, fallbackStarsBeforeAttack);
+  }, 0);
 }
 
 /** Purpose: compute cumulative clan true-stars after each chronologically ordered attack. */
@@ -574,10 +591,24 @@ function classifyTripleTop30Reason(input: {
 /** Purpose: classify one player's FWA-WIN attacks using the shared canonical chronology. */
 function classifyWinReason(input: {
   playerAttacks: WarComplianceAttack[];
+  allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
+  playerAttacksUsed?: number | null;
 }): WarComplianceReason {
   const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
+  const tripledPositions = buildStrictWindowTripledPositions(
+    input.allAttacks,
+    input.attackContextByAttack,
+  );
+  const playerPosition = orderedPlayerAttacks.find(
+    (attack) => Number.isFinite(Number(attack.playerPosition ?? NaN)) && Number(attack.playerPosition ?? 0) > 0,
+  )?.playerPosition ?? null;
+  const effectiveAttacksUsed = Math.max(
+    orderedPlayerAttacks.length,
+    Math.max(0, Math.trunc(Number(input.playerAttacksUsed ?? 0))),
+  );
   let firstStrictWindowContext: WarComplianceReason["strictWindowContext"] = null;
+  let firstStrictAttackOrder: number | null = null;
   for (const attack of orderedPlayerAttacks) {
     const ctx = input.attackContextByAttack.get(attack);
     if (!ctx?.isStrictWindow) continue;
@@ -586,6 +617,7 @@ function classifyWinReason(input: {
       timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
     };
     firstStrictWindowContext = firstStrictWindowContext ?? strictContext;
+    firstStrictAttackOrder = firstStrictAttackOrder ?? normalizeAttackOrder(attack.attackOrder ?? null);
     const attackOrder = normalizeAttackOrder(attack.attackOrder ?? null);
     const stars = Number(attack.stars ?? 0);
     const trueStars = Number(attack.trueStars ?? 0);
@@ -597,27 +629,25 @@ function classifyWinReason(input: {
         hasViolation: true,
       };
     }
-    if (ctx.isMirror && stars < 3) {
-      return {
-        label: "didn't triple mirror",
-        strictWindowContext: strictContext,
-        breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-        hasViolation: true,
-      };
-    }
-    if (!ctx.isMirror && stars === 1) {
-      return {
-        label: "didn't triple mirror",
-        strictWindowContext: strictContext,
-        breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
-        hasViolation: true,
-      };
-    }
     if (!ctx.isMirror && stars <= 0) {
       return {
         label: "didn't triple mirror",
         strictWindowContext: strictContext,
         breachAttackOrders: attackOrder !== null ? [attackOrder] : [],
+        hasViolation: true,
+      };
+    }
+  }
+
+  if (
+    playerPosition !== null &&
+    !tripledPositions.has(Math.trunc(Number(playerPosition)))
+  ) {
+    if (effectiveAttacksUsed >= 2 && firstStrictWindowContext) {
+      return {
+        label: "didn't triple mirror",
+        strictWindowContext: firstStrictWindowContext,
+        breachAttackOrders: firstStrictAttackOrder !== null ? [firstStrictAttackOrder] : [],
         hasViolation: true,
       };
     }
@@ -634,9 +664,11 @@ function classifyWinReason(input: {
 /** Purpose: classify one player's plan compliance from deterministic chronological attack evidence. */
 export function classifyComplianceReasonForPlayer(input: {
   playerAttacks: WarComplianceAttack[];
+  allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
   attackIndexByAttack: Map<WarComplianceAttack, number>;
   starsAfterByAttackIndex: Map<number, number>;
+  playerAttacksUsed?: number | null;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
@@ -644,7 +676,9 @@ export function classifyComplianceReasonForPlayer(input: {
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
     return classifyWinReason({
       playerAttacks: input.playerAttacks,
+      allAttacks: input.allAttacks,
       attackContextByAttack: input.attackContextByAttack,
+      playerAttacksUsed: input.playerAttacksUsed,
     });
   }
 
@@ -731,9 +765,11 @@ export function computeWarComplianceForTest(input: {
         if (playerAttacks.length <= 0) continue;
         const reason = classifyComplianceReasonForPlayer({
           playerAttacks,
+          allAttacks: attacks,
           attackContextByAttack,
           attackIndexByAttack,
           starsAfterByAttackIndex,
+          playerAttacksUsed: participant.attacksUsed,
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,
@@ -751,9 +787,11 @@ export function computeWarComplianceForTest(input: {
         if (playerAttacks.length <= 0) continue;
         const reason = classifyComplianceReasonForPlayer({
           playerAttacks,
+          allAttacks: attacks,
           attackContextByAttack,
           attackIndexByAttack,
           starsAfterByAttackIndex,
+          playerAttacksUsed: participant.attacksUsed,
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,
@@ -771,9 +809,11 @@ export function computeWarComplianceForTest(input: {
         if (playerAttacks.length <= 0) continue;
         const reason = classifyComplianceReasonForPlayer({
           playerAttacks,
+          allAttacks: attacks,
           attackContextByAttack,
           attackIndexByAttack,
           starsAfterByAttackIndex,
+          playerAttacksUsed: participant.attacksUsed,
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,
