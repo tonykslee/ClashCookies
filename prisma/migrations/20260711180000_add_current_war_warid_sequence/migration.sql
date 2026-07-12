@@ -5,13 +5,14 @@ CREATE SEQUENCE IF NOT EXISTS "CurrentWar_warId_seq"
     NO MAXVALUE
     CACHE 1;
 
-SELECT setval(
-    '"CurrentWar_warId_seq"',
-    GREATEST(
-        999999,
-        COALESCE((SELECT MAX("warId")::bigint FROM "ClanWarHistory"), 999999),
-        COALESCE((SELECT MAX("warId")::bigint FROM "CurrentWar"), 999999),
-        COALESCE((SELECT MAX("warId")::bigint FROM "WarAttacks"), 999999),
+DO $$
+DECLARE
+    highest_war_id bigint;
+BEGIN
+    SELECT GREATEST(
+        COALESCE((SELECT MAX("warId")::bigint FROM "ClanWarHistory"), 0),
+        COALESCE((SELECT MAX("warId")::bigint FROM "CurrentWar"), 0),
+        COALESCE((SELECT MAX("warId")::bigint FROM "WarAttacks"), 0),
         COALESCE(
             (
                 SELECT MAX(
@@ -22,8 +23,14 @@ SELECT setval(
                 )
                 FROM "WarLookup"
             ),
-            999999
+            0
         )
-    ),
-    true
-);
+    )
+    INTO highest_war_id;
+
+    IF highest_war_id < 1000000 THEN
+        PERFORM setval('"CurrentWar_warId_seq"', 1000000, false);
+    ELSE
+        PERFORM setval('"CurrentWar_warId_seq"', highest_war_id, true);
+    END IF;
+END $$;

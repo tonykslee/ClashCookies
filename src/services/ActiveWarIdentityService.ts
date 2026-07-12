@@ -1,59 +1,85 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
-import { compareActiveWarIdentities } from "./MatchTypeResolutionService";
-import { formatError } from "../helper/formatError";
 import { parseCocApiTime } from "../utils/cocTime";
 
 export type ActiveWarIdentityState = "preparation" | "inWar" | "notInWar";
 
-export type ActiveWarIdentityLiveWar = {
+export type ActiveWarIdentityPolicy =
+  | "poll_reconcile"
+  | "interactive_materialize"
+  | "preserve_persisted";
+
+export type CanonicalActiveWarIdentity = {
+  state: ActiveWarIdentityState;
+  warStartTime: Date;
+  preparationStartTime: Date;
+  warEndTime: Date;
+  opponentTag: string;
+  opponentName: string;
+  clanName: string;
+};
+
+export type ActiveWarIdentityCandidate = {
   state?: string | null;
-  startTime?: string | Date | null;
+  warStartTime?: string | Date | null;
   preparationStartTime?: string | Date | null;
-  endTime?: string | Date | null;
-  opponent?: {
-    tag?: string | null;
-    name?: string | null;
-  } | null;
-  clan?: {
-    name?: string | null;
-  } | null;
+  warEndTime?: string | Date | null;
+  opponentTag?: string | null;
+  opponentName?: string | null;
+  clanName?: string | null;
 };
 
 type ActiveWarIdentityCurrentWarRow = {
   warId: number | null;
-  startTime: Date | null;
-  opponentTag: string | null;
   state: string | null;
   prepStartTime: Date | null;
+  startTime: Date | null;
   endTime: Date | null;
+  opponentTag: string | null;
   opponentName: string | null;
   clanName: string | null;
 };
 
-export type ActiveWarIdentityResolutionReason =
-  | "reused_current_war_id"
-  | "materialized_missing_current_war_id"
-  | "rotated_stale_current_war_id"
-  | "blocked_not_in_war"
-  | "blocked_partial_live_identity"
-  | "blocked_missing_current_row"
-  | "blocked_persistence_error";
+type ActiveWarIdentityResolvedSource =
+  | "existing_exact_row"
+  | "reused_global_exact_identity"
+  | "materialized_missing_id"
+  | "allocated_new_identity"
+  | "preserved_during_outage_recovery";
 
-export type ActiveWarIdentityResolution = {
-  warId: number | null;
-  reason: ActiveWarIdentityResolutionReason;
-  liveState: ActiveWarIdentityState;
-  liveWarStartTime: Date | null;
-  liveOpponentTag: string | null;
-  currentWarId: number | null;
-  currentWarStartTime: Date | null;
-  currentWarOpponentTag: string | null;
-  sameWar: boolean;
-  liveIdentityComplete: boolean;
-  positivelyResolved: boolean;
-  materialized: boolean;
-};
+type ActiveWarIdentityBlockedReason =
+  | "not_in_war"
+  | "partial_live_identity"
+  | "missing_current_row"
+  | "persisted_identity_mismatch"
+  | "missing_preserved_id"
+  | "persistence_failure";
+
+export type ActiveWarIdentityResult =
+  | {
+      status: "resolved";
+      warId: number;
+      source:
+        | "existing_exact_row"
+        | "reused_global_exact_identity"
+        | "materialized_missing_id"
+        | "allocated_new_identity"
+        | "preserved_during_outage_recovery";
+      identity: CanonicalActiveWarIdentity;
+      identityPersisted: boolean;
+      liveValidated: boolean;
+    }
+  | {
+      status: "blocked";
+      warId: null;
+      reason:
+        | "not_in_war"
+        | "partial_live_identity"
+        | "missing_current_row"
+        | "persisted_identity_mismatch"
+        | "missing_preserved_id"
+        | "persistence_failure";
+    };
 
 function normalizeTag(input: string | null | undefined): string | null {
   const normalized = String(input ?? "")
@@ -71,11 +97,16 @@ function normalizeDate(input: string | Date | null | undefined): Date | null {
   return parsed === null ? null : new Date(parsed);
 }
 
-function normalizeWarState(input: string | null | undefined): ActiveWarIdentityState {
-  const normalized = String(input ?? "").trim().toLowerCase();
-  if (normalized === "preparation") return "preparation";
-  if (normalized === "inwar") return "inWar";
+function normalizeState(input: string | null | undefined): ActiveWarIdentityState {
+  const value = String(input ?? "").trim().toLowerCase();
+  if (value === "preparation") return "preparation";
+  if (value === "inwar") return "inWar";
   return "notInWar";
+}
+
+function sanitizeText(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed ? trimmed : null;
 }
 
 function normalizeWarId(input: number | string | null | undefined): number | null {
@@ -85,130 +116,150 @@ function normalizeWarId(input: number | string | null | undefined): number | nul
   return normalized > 0 ? normalized : null;
 }
 
-function sanitizeClanName(input: string | null | undefined): string | null {
-  const trimmed = String(input ?? "").trim();
-  return trimmed ? trimmed : null;
+function buildCanonicalIdentity(input: ActiveWarIdentityCandidate): CanonicalActiveWarIdentity | null {
+  const state = normalizeState(input.state ?? null);
+  if (state === "notInWar") return null;
+
+  const warStartTime = normalizeDate(input.warStartTime ?? null);
+  const preparationStartTime = normalizeDate(input.preparationStartTime ?? null);
+  const warEndTime = normalizeDate(input.warEndTime ?? null);
+  const opponentTag = normalizeTag(input.opponentTag ?? null);
+  const opponentName = sanitizeText(input.opponentName ?? null);
+  const clanName = sanitizeText(input.clanName ?? null);
+
+  if (
+    !warStartTime ||
+    !preparationStartTime ||
+    !warEndTime ||
+    !opponentTag ||
+    !opponentName ||
+    !clanName
+  ) {
+    return null;
+  }
+
+  return {
+    state,
+    warStartTime,
+    preparationStartTime,
+    warEndTime,
+    opponentTag,
+    opponentName,
+    clanName,
+  };
 }
 
-function buildScopeKey(guildId: string, clanTag: string): string {
-  return `${String(guildId ?? "").trim()}:${normalizeTag(clanTag) ?? "unknown"}`;
-}
-
-function buildResolutionLogLine(input: {
-  stage: string;
-  guildId: string;
+function buildPhysicalIdentityKey(input: {
   clanTag: string;
-  resolution: ActiveWarIdentityResolution;
+  identity: Pick<CanonicalActiveWarIdentity, "warStartTime" | "opponentTag">;
 }): string {
+  return [
+    normalizeTag(input.clanTag) ?? "unknown",
+    input.identity.warStartTime.toISOString(),
+    normalizeTag(input.identity.opponentTag) ?? "unknown",
+  ].join("|");
+}
+
+function samePhysicalIdentity(
+  persisted: Pick<ActiveWarIdentityCurrentWarRow, "startTime" | "opponentTag">,
+  active: Pick<CanonicalActiveWarIdentity, "warStartTime" | "opponentTag">,
+): boolean {
   return (
-    `[active-war-identity] stage=${input.stage}` +
-    ` guild=${String(input.guildId ?? "none")}` +
-    ` clan=#${normalizeTag(input.clanTag) ?? "unknown"}` +
-    ` live_state=${input.resolution.liveState}` +
-    ` live_war_start=${input.resolution.liveWarStartTime?.toISOString() ?? "none"}` +
-    ` live_opponent=${input.resolution.liveOpponentTag ? `#${input.resolution.liveOpponentTag}` : "none"}` +
-    ` current_war_id=${input.resolution.currentWarId ?? "none"}` +
-    ` current_war_start=${input.resolution.currentWarStartTime?.toISOString() ?? "none"}` +
-    ` current_war_opponent=${input.resolution.currentWarOpponentTag ? `#${input.resolution.currentWarOpponentTag}` : "none"}` +
-    ` same_war=${input.resolution.sameWar ? "1" : "0"}` +
-    ` live_identity_complete=${input.resolution.liveIdentityComplete ? "1" : "0"}` +
-    ` positively_resolved=${input.resolution.positivelyResolved ? "1" : "0"}` +
-    ` materialized=${input.resolution.materialized ? "1" : "0"}` +
-    ` reason=${input.resolution.reason}` +
-    ` resolved_war_id=${input.resolution.warId ?? "none"}`
+    persisted.startTime instanceof Date &&
+    persisted.startTime.getTime() === active.warStartTime.getTime() &&
+    normalizeTag(persisted.opponentTag ?? null) === normalizeTag(active.opponentTag)
   );
 }
 
-/** Purpose: own the canonical, concurrency-safe active-war identity resolution and materialization flow. */
+function buildResolvedIdentity(
+  row: ActiveWarIdentityCurrentWarRow | null,
+  identity: CanonicalActiveWarIdentity,
+): CanonicalActiveWarIdentity {
+  return {
+    state: normalizeState(row?.state ?? identity.state),
+    warStartTime: row?.startTime ?? identity.warStartTime,
+    preparationStartTime: row?.prepStartTime ?? identity.preparationStartTime,
+    warEndTime: row?.endTime ?? identity.warEndTime,
+    opponentTag: normalizeTag(row?.opponentTag ?? identity.opponentTag) ?? identity.opponentTag,
+    opponentName: sanitizeText(row?.opponentName ?? identity.opponentName) ?? identity.opponentName,
+    clanName: sanitizeText(row?.clanName ?? identity.clanName) ?? identity.clanName,
+  };
+}
+
+function isValidResolvedWarId(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.trunc(value) > 0;
+}
+
+function buildBlocked(
+  reason: ActiveWarIdentityBlockedReason,
+): ActiveWarIdentityResult {
+  return {
+    status: "blocked",
+    warId: null,
+    reason,
+  } as ActiveWarIdentityResult;
+}
+
+function buildResolved(params: {
+  source: ActiveWarIdentityResolvedSource;
+  identity: CanonicalActiveWarIdentity;
+  warId: number;
+  identityPersisted: boolean;
+  liveValidated: boolean;
+}): ActiveWarIdentityResult {
+  return {
+    status: "resolved",
+    source: params.source,
+    identity: params.identity,
+    warId: Math.trunc(params.warId),
+    identityPersisted: params.identityPersisted,
+    liveValidated: params.liveValidated,
+  } as ActiveWarIdentityResult;
+}
+
+/** Purpose: own the canonical, concurrency-safe active-war identity resolution flow. */
 export class ActiveWarIdentityService {
   constructor(private readonly db = prisma) {}
 
   async resolveCurrentWarId(input: {
-    stage: string;
+    policy: ActiveWarIdentityPolicy;
     guildId: string;
     clanTag: string;
-    liveWar: ActiveWarIdentityLiveWar | null | undefined;
-  }): Promise<ActiveWarIdentityResolution> {
+    candidateIdentity?: ActiveWarIdentityCandidate | null;
+  }): Promise<ActiveWarIdentityResult> {
     const guildId = String(input.guildId ?? "").trim();
     const clanTagBare = normalizeTag(input.clanTag);
-    const liveState = normalizeWarState(input.liveWar?.state ?? null);
-    const liveWarStartTime = normalizeDate(input.liveWar?.startTime ?? null);
-    const liveOpponentTag = normalizeTag(input.liveWar?.opponent?.tag ?? null);
-    const liveOpponentName = sanitizeClanName(input.liveWar?.opponent?.name ?? null);
-    const liveClanName = sanitizeClanName(input.liveWar?.clan?.name ?? null);
-    const livePrepStartTime =
-      normalizeDate(input.liveWar?.preparationStartTime ?? null) ??
-      (liveState === "preparation" && liveWarStartTime
-        ? new Date(liveWarStartTime.getTime() - 24 * 60 * 60 * 1000)
-        : null);
-    const liveEndTime = normalizeDate(input.liveWar?.endTime ?? null);
-    const liveIdentityComplete =
-      (liveState === "preparation" || liveState === "inWar") &&
-      liveWarStartTime !== null &&
-      liveOpponentTag !== null;
-
-    const buildBlocked = (
-      reason: ActiveWarIdentityResolutionReason,
-      currentWar: ActiveWarIdentityCurrentWarRow | null,
-    ): ActiveWarIdentityResolution => ({
-      warId: null,
-      reason,
-      liveState,
-      liveWarStartTime,
-      liveOpponentTag,
-      currentWarId: normalizeWarId(currentWar?.warId ?? null),
-      currentWarStartTime: currentWar?.startTime ?? null,
-      currentWarOpponentTag: normalizeTag(currentWar?.opponentTag ?? null),
-      sameWar:
-        currentWar !== null
-          ? compareActiveWarIdentities({
-              persisted: {
-                warId: currentWar.warId,
-                warStartTime: currentWar.startTime,
-                opponentTag: currentWar.opponentTag,
-              },
-              active: {
-                warStartTime: liveWarStartTime,
-                opponentTag: liveOpponentTag,
-              },
-            }).sameWar
-          : false,
-      liveIdentityComplete,
-      positivelyResolved:
-        liveIdentityComplete &&
-        (liveState === "preparation" || liveState === "inWar"),
-      materialized: false,
-    });
 
     if (!guildId || !clanTagBare) {
-      const resolution = buildBlocked("blocked_missing_current_row", null);
-      console.info(buildResolutionLogLine({ stage: input.stage, guildId, clanTag: input.clanTag, resolution }));
-      return resolution;
+      return buildBlocked("missing_current_row");
     }
 
-    if (!liveIdentityComplete) {
-      const resolution = buildBlocked(
-        liveState === "notInWar"
-          ? "blocked_not_in_war"
-          : "blocked_partial_live_identity",
-        null,
-      );
-      console.info(
-        buildResolutionLogLine({
-          stage: input.stage,
-          guildId,
-          clanTag: input.clanTag,
-          resolution,
-        }),
-      );
-      return resolution;
+    if (input.policy === "preserve_persisted") {
+      return this.resolvePreservedCurrentWar({
+        guildId,
+        clanTag: clanTagBare,
+      });
     }
 
-    let resolution: ActiveWarIdentityResolution | null = null;
+    const candidate = buildCanonicalIdentity(input.candidateIdentity ?? {});
+    if (!candidate) {
+      return buildBlocked(
+        normalizeState(input.candidateIdentity?.state ?? null) === "notInWar"
+          ? "not_in_war"
+          : "partial_live_identity",
+      );
+    }
+
+    const lockKey = buildPhysicalIdentityKey({
+      clanTag: clanTagBare,
+      identity: candidate,
+    });
+
     try {
-      await this.db.$transaction(async (tx) => {
+      let resolution: ActiveWarIdentityResult | null = null;
+      await this.db.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.$executeRaw(Prisma.sql`
-          SELECT pg_advisory_xact_lock(hashtext(${buildScopeKey(guildId, clanTagBare)})::bigint)
+          SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))
         `);
 
         const currentWar = await tx.currentWar.findUnique({
@@ -231,56 +282,159 @@ export class ActiveWarIdentityService {
         });
 
         if (!currentWar) {
-          return (resolution = buildBlocked("blocked_missing_current_row", null));
+          resolution = buildBlocked("missing_current_row");
+          return;
         }
 
         const currentWarId = normalizeWarId(currentWar.warId ?? null);
-        const comparison = compareActiveWarIdentities({
-          persisted: {
-            warId: currentWarId,
-            warStartTime: currentWar.startTime ?? null,
-            opponentTag: currentWar.opponentTag ?? null,
+        const exactPhysicalMatch = samePhysicalIdentity(
+          currentWar,
+          candidate,
+        );
+
+        if (input.policy === "interactive_materialize" && !exactPhysicalMatch) {
+          resolution = buildBlocked("persisted_identity_mismatch");
+          return;
+        }
+
+        if (input.policy === "poll_reconcile") {
+          const exactGlobalRow = await tx.currentWar.findMany({
+            where: {
+              clanTag: `#${clanTagBare}`,
+              startTime: candidate.warStartTime,
+              opponentTag: `#${candidate.opponentTag}`,
+              warId: { not: null },
+            },
+            orderBy: [{ updatedAt: "desc" }],
+            select: {
+              warId: true,
+              state: true,
+              prepStartTime: true,
+              startTime: true,
+              endTime: true,
+              opponentTag: true,
+              opponentName: true,
+              clanName: true,
+            },
+          });
+          const globalWarId = normalizeWarId(exactGlobalRow[0]?.warId ?? null);
+          const selectedWarId =
+            exactPhysicalMatch && currentWarId !== null
+              ? currentWarId
+              : globalWarId ?? (await this.allocateNextWarId(tx));
+          if (selectedWarId === null) {
+            resolution = buildBlocked("persistence_failure");
+            return;
+          }
+
+          const updated = await tx.currentWar.update({
+            where: {
+              clanTag_guildId: {
+                guildId,
+                clanTag: `#${clanTagBare}`,
+              },
+            },
+            data: {
+              warId: selectedWarId,
+              state: candidate.state,
+              prepStartTime: candidate.preparationStartTime,
+              startTime: candidate.warStartTime,
+              endTime: candidate.warEndTime,
+              opponentTag: `#${candidate.opponentTag}`,
+              opponentName: candidate.opponentName,
+              clanName: candidate.clanName,
+            },
+            select: {
+              warId: true,
+              state: true,
+              prepStartTime: true,
+              startTime: true,
+              endTime: true,
+              opponentTag: true,
+              opponentName: true,
+              clanName: true,
+            },
+          });
+
+          resolution = buildResolved({
+            source:
+              exactPhysicalMatch && currentWarId !== null
+                ? "existing_exact_row"
+                : globalWarId !== null
+                  ? "reused_global_exact_identity"
+                  : currentWarId !== null && exactPhysicalMatch
+                    ? "existing_exact_row"
+                    : currentWarId === null && exactPhysicalMatch
+                      ? "materialized_missing_id"
+                      : "allocated_new_identity",
+            identity: buildResolvedIdentity(updated, candidate),
+            warId: normalizeWarId(updated.warId ?? null) ?? selectedWarId,
+            identityPersisted: true,
+            liveValidated: true,
+          });
+          return;
+        }
+
+        const exactGlobalRow = await tx.currentWar.findMany({
+          where: {
+            clanTag: `#${clanTagBare}`,
+            startTime: candidate.warStartTime,
+            opponentTag: `#${candidate.opponentTag}`,
+            warId: { not: null },
           },
-          active: {
-            warStartTime: liveWarStartTime,
-            opponentTag: liveOpponentTag,
+          orderBy: [{ updatedAt: "desc" }],
+          select: {
+            warId: true,
           },
         });
+        const globalWarId = normalizeWarId(exactGlobalRow[0]?.warId ?? null);
+        const resolvedWarId =
+          currentWarId ?? globalWarId ?? (await this.allocateNextWarId(tx));
+        if (resolvedWarId === null) {
+          resolution = buildBlocked("persistence_failure");
+          return;
+        }
 
-        if (comparison.sameWar && currentWarId !== null) {
-          return (resolution = {
+        if (currentWarId !== null) {
+          resolution = buildResolved({
+            source: "existing_exact_row",
+            identity: buildResolvedIdentity(currentWar, candidate),
             warId: currentWarId,
-            reason: "reused_current_war_id" as const,
-            liveState,
-            liveWarStartTime,
-            liveOpponentTag,
-            currentWarId,
-            currentWarStartTime: currentWar.startTime ?? null,
-            currentWarOpponentTag: normalizeTag(currentWar.opponentTag ?? null),
-            sameWar: true,
-            liveIdentityComplete: true,
-            positivelyResolved: true,
-            materialized: false,
+            identityPersisted: true,
+            liveValidated: true,
           });
+          return;
         }
 
-        const allocatedRows = await tx.$queryRaw<Array<{ warId: bigint | number }>>(
-          Prisma.sql`
-            SELECT nextval('"CurrentWar_warId_seq"'::regclass) AS "warId"
-          `,
-        );
-        const rawWarId = allocatedRows[0]?.warId ?? null;
-        const allocatedWarId =
-          rawWarId === null || rawWarId === undefined
-            ? null
-            : typeof rawWarId === "bigint"
-              ? Number(rawWarId)
-              : Number(rawWarId);
-        if (!Number.isFinite(allocatedWarId ?? NaN)) {
-          return (resolution = buildBlocked("blocked_persistence_error", currentWar));
+        if (globalWarId !== null) {
+          await tx.currentWar.update({
+            where: {
+              clanTag_guildId: {
+                guildId,
+                clanTag: `#${clanTagBare}`,
+              },
+            },
+            data: {
+              warId: globalWarId,
+            },
+          });
+          resolution = buildResolved({
+            source: "reused_global_exact_identity",
+            identity: buildResolvedIdentity(
+              {
+                ...currentWar,
+                warId: globalWarId,
+              },
+              candidate,
+            ),
+            warId: globalWarId,
+            identityPersisted: true,
+            liveValidated: true,
+          });
+          return;
         }
 
-        const persisted = await tx.currentWar.update({
+        const updated = await tx.currentWar.update({
           where: {
             clanTag_guildId: {
               guildId,
@@ -288,14 +442,7 @@ export class ActiveWarIdentityService {
             },
           },
           data: {
-            warId: Math.trunc(Number(allocatedWarId)),
-            state: liveState,
-            prepStartTime: livePrepStartTime ?? currentWar.prepStartTime,
-            startTime: liveWarStartTime,
-            endTime: liveEndTime ?? currentWar.endTime,
-            opponentTag: liveOpponentTag ? `#${liveOpponentTag}` : currentWar.opponentTag,
-            opponentName: liveOpponentName ?? currentWar.opponentName,
-            clanName: liveClanName ?? currentWar.clanName,
+            warId: resolvedWarId,
           },
           select: {
             warId: true,
@@ -309,46 +456,100 @@ export class ActiveWarIdentityService {
           },
         });
 
-        const resolvedWarId = normalizeWarId(persisted.warId ?? null);
-        return (resolution = {
-          warId: resolvedWarId,
-          reason: comparison.sameWar
-            ? ("materialized_missing_current_war_id" as const)
-            : ("rotated_stale_current_war_id" as const),
-          liveState,
-          liveWarStartTime,
-          liveOpponentTag,
-          currentWarId,
-          currentWarStartTime: persisted.startTime ?? null,
-          currentWarOpponentTag: normalizeTag(persisted.opponentTag ?? null),
-          sameWar: comparison.sameWar,
-          liveIdentityComplete: true,
-          positivelyResolved: true,
-          materialized: true,
+        resolution = buildResolved({
+          source: exactPhysicalMatch
+            ? "materialized_missing_id"
+            : "allocated_new_identity",
+          identity: buildResolvedIdentity(updated, candidate),
+          warId: normalizeWarId(updated.warId ?? null) ?? resolvedWarId,
+          identityPersisted: true,
+          liveValidated: true,
         });
       });
 
-      const finalResolution =
-        resolution ?? buildBlocked("blocked_persistence_error", null);
-      const logLine = buildResolutionLogLine({
-        stage: input.stage,
-        guildId,
-        clanTag: input.clanTag,
-        resolution: finalResolution,
-      });
-      if (finalResolution.reason === "reused_current_war_id") {
-        console.debug(logLine);
-      } else {
-        console.info(logLine);
+      if (!resolution) {
+        return buildBlocked("persistence_failure");
       }
-      return finalResolution;
-    } catch (error) {
-      const resolution = buildBlocked("blocked_persistence_error", null);
-      console.error(
-        `${buildResolutionLogLine({ stage: input.stage, guildId, clanTag: input.clanTag, resolution })} error=${formatError(error)}`,
-      );
       return resolution;
+    } catch (error) {
+      void error;
+      return buildBlocked("persistence_failure");
     }
+  }
+
+  private async resolvePreservedCurrentWar(input: {
+    guildId: string;
+    clanTag: string;
+  }): Promise<ActiveWarIdentityResult> {
+    try {
+      let resolution: ActiveWarIdentityResult | null = null;
+      await this.db.$transaction(async (tx) => {
+        await tx.$executeRaw(Prisma.sql`
+          SELECT pg_advisory_xact_lock(hashtextextended(${`${input.guildId}:${input.clanTag}`}, 0))
+        `);
+
+        const currentWar = await tx.currentWar.findUnique({
+          where: {
+            clanTag_guildId: {
+              guildId: input.guildId,
+              clanTag: `#${input.clanTag}`,
+            },
+          },
+          select: {
+            warId: true,
+            state: true,
+            prepStartTime: true,
+            startTime: true,
+            endTime: true,
+            opponentTag: true,
+            opponentName: true,
+            clanName: true,
+          },
+        });
+
+        const currentWarId = normalizeWarId(currentWar?.warId ?? null);
+        if (currentWarId === null) {
+          resolution = buildBlocked("missing_preserved_id");
+          return;
+        }
+
+        const identity: CanonicalActiveWarIdentity = {
+          state: normalizeState(currentWar?.state ?? null),
+          warStartTime:
+            currentWar?.startTime ?? currentWar?.prepStartTime ?? new Date(),
+          preparationStartTime:
+            currentWar?.prepStartTime ?? currentWar?.startTime ?? new Date(),
+          warEndTime: currentWar?.endTime ?? currentWar?.startTime ?? new Date(),
+          opponentTag: normalizeTag(currentWar?.opponentTag ?? null) ?? "unknown",
+          opponentName: sanitizeText(currentWar?.opponentName ?? null) ?? "unknown",
+          clanName: sanitizeText(currentWar?.clanName ?? null) ?? input.clanTag,
+        };
+        resolution = buildResolved({
+          source: "preserved_during_outage_recovery",
+          identity,
+          warId: currentWarId,
+          identityPersisted: true,
+          liveValidated: false,
+        });
+      });
+
+      return resolution ?? buildBlocked("persistence_failure");
+    } catch (error) {
+      void error;
+      return buildBlocked("persistence_failure");
+    }
+  }
+
+  private async allocateNextWarId(tx: any): Promise<number | null> {
+    const rows = (await tx.$queryRaw(
+      Prisma.sql`
+        SELECT nextval('"CurrentWar_warId_seq"'::regclass) AS "warId"
+      `,
+    )) as Array<{ warId: bigint | number }>;
+    const raw = rows[0]?.warId ?? null;
+    if (raw === null || raw === undefined) return null;
+    const warId = typeof raw === "bigint" ? Number(raw) : Number(raw);
+    return isValidResolvedWarId(warId) ? Math.trunc(warId) : null;
   }
 }
 

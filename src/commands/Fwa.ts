@@ -4431,19 +4431,35 @@ async function buildWarMailEmbedForTag(
     },
   });
 
+  const activeWarStartMs = parseCocApiTime(war?.startTime ?? null);
+  const activePrepStartMs = parseCocApiTime(war?.preparationStartTime ?? null);
+  const activeWarEndMs = parseCocApiTime(war?.endTime ?? null);
+  const activeWarIdentityCandidate = {
+    state: warState,
+    warStartTime: activeWarStartMs !== null ? new Date(activeWarStartMs) : null,
+    preparationStartTime:
+      activePrepStartMs !== null ? new Date(activePrepStartMs) : null,
+    warEndTime: activeWarEndMs !== null ? new Date(activeWarEndMs) : null,
+    opponentTag: opponentTag || null,
+    opponentName: opponentName || null,
+    clanName,
+  };
   const activeWarIdentity = await activeWarIdentityService.resolveCurrentWarId({
-    stage: "fwa_mail_render",
+    policy: "interactive_materialize",
     guildId,
     clanTag: normalizedTag,
-    liveWar: war,
+    candidateIdentity: activeWarIdentityCandidate,
   });
-  const warIdForSync = activeWarIdentity.warId;
-  const warStartTimeForSync = activeWarIdentity.liveWarStartTime;
+  const warIdForSync =
+    activeWarIdentity.status === "resolved" ? activeWarIdentity.warId : null;
+  const warStartTimeForSync = activeWarIdentityCandidate.warStartTime
+    ? new Date(activeWarIdentityCandidate.warStartTime)
+    : null;
   const syncIdentity = buildActiveWarSyncIdentity({
     warState,
     warId: warIdForSync,
     warStartTime: warStartTimeForSync,
-    opponentTag: activeWarIdentity.liveOpponentTag ?? (opponentTag || null),
+    opponentTag: activeWarIdentityCandidate.opponentTag ?? (opponentTag || null),
   });
   const warIdForSyncNumber =
     warIdForSync !== null && Number.isFinite(Number(warIdForSync))
@@ -4456,7 +4472,8 @@ async function buildWarMailEmbedForTag(
     clanTag: normalizedTag,
     opponentTag,
     warState,
-    currentWarId: subscription?.warId ?? null,
+    currentWarId:
+      activeWarIdentity.status === "resolved" ? activeWarIdentity.warId : null,
     currentWarStartTime: subscription?.startTime ?? null,
     currentWarOpponentTag: subscription?.opponentTag ?? null,
     activeWarId: warIdForSync,
