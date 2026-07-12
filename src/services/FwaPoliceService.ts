@@ -9,7 +9,10 @@ import {
 } from "./PlayerLinkService";
 import {
   DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
   DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+  resolveWarPlanComplianceConfigForPlan,
   resolveWarPlanComplianceConfig,
 } from "./warPlanComplianceConfig";
 import {
@@ -314,15 +317,24 @@ function buildSampleExpectedBehavior(violation: FwaPoliceViolation): string {
     return "Mirror triple in strict window.";
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_LOSS") {
-    return "Follow strict-window mirror requirement for loss-traditional flow.";
+    return "Mirror 2-star in traditional loss strict window.";
   }
   if (violation === "EARLY_NON_MIRROR_2STAR") {
-    return "Avoid early non-mirror 2-star before FFA window opens.";
+    return "Avoid early non-mirror 2-star in traditional loss.";
+  }
+  if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
+    return "Use the correct star count for the current traditional-loss phase.";
   }
   if (violation === "ANY_3STAR") {
     return "Avoid 3-star attacks in traditional FWA-loss flow.";
   }
-  return "Do not earn stars on lower-20 bases in triple-top-30 loss mode.";
+  if (violation === "LOWER20_ANY_STARS") {
+    return "Attack only top-30 bases in triple-top-30 loss mode.";
+  }
+  if (violation === "CLAN_STAR_CAP_EXCEEDED") {
+    return "Stay within the clan star cap.";
+  }
+  return "Do not 0-star a top-30 base in triple-top-30 loss mode.";
 }
 
 function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
@@ -333,15 +345,24 @@ function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
     return "#15 (* * -) : missed mirror triple during strict window";
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_LOSS") {
-    return "#15 (* - -) : mirror strict-window miss in loss-traditional flow";
+    return "#15 (* - -) : mirror 2-star missed in traditional loss";
   }
   if (violation === "EARLY_NON_MIRROR_2STAR") {
-    return "#18 (* * -) : early non-mirror 2-star before FFA window";
+    return "#18 (* * -) : early non-mirror 2-star in traditional loss";
+  }
+  if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
+    return "#18 (* - -) : invalid star count in traditional loss";
   }
   if (violation === "ANY_3STAR") {
     return "#16 (* * *) : 3-star in loss-traditional flow";
   }
-  return "#41 (* - -) : starred lower-20 base in triple-top-30 loss";
+  if (violation === "LOWER20_ANY_STARS") {
+    return "#41 (* - -) : attacked lower-20 base in triple-top-30 loss";
+  }
+  if (violation === "CLAN_STAR_CAP_EXCEEDED") {
+    return "#9 (* * -) : pushed clan past the cap";
+  }
+  return "#22 (* - -) : 0-star on a top-30 base";
 }
 
 /** Purpose: resolve the canonical shared police template for one violation without custom overrides. */
@@ -551,35 +572,52 @@ async function resolveWarplanContextForClan(input: {
 }): Promise<FwaPoliceWarplanContext> {
   const normalizedClanTag = normalizeClanTag(input.clanTag);
   const bare = normalizedClanTag.replace(/^#/, "");
-  const [activeWar, customWinPlan, defaultWinPlan] = await Promise.all([
-    prisma.currentWar.findFirst({
-      where: {
-        guildId: input.guildId,
-        AND: [
-          {
-            OR: [
-              { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
-              { clanTag: { equals: bare, mode: "insensitive" } },
-            ],
-          },
-          {
-            OR: [
-              { state: { equals: "preparation", mode: "insensitive" } },
-              { state: { equals: "inWar", mode: "insensitive" } },
-            ],
-          },
-        ],
-      },
-      orderBy: [{ updatedAt: "desc" }],
-      select: { matchType: true, outcome: true },
-    }),
+  const activeWar = await prisma.currentWar.findFirst({
+    where: {
+      guildId: input.guildId,
+      AND: [
+        {
+          OR: [
+            { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+            { clanTag: { equals: bare, mode: "insensitive" } },
+          ],
+        },
+        {
+          OR: [
+            { state: { equals: "preparation", mode: "insensitive" } },
+            { state: { equals: "inWar", mode: "insensitive" } },
+          ],
+        },
+      ],
+    },
+    orderBy: [{ updatedAt: "desc" }],
+    select: { matchType: true, outcome: true },
+  });
+  const activeOutcome =
+    activeWar?.matchType === "FWA" ? normalizeOutcome(activeWar?.outcome ?? null) : null;
+  const effectiveOutcome =
+    activeOutcome ??
+    (input.loseStyle === "TRADITIONAL" || input.loseStyle === "TRIPLE_TOP_30"
+      ? "LOSE"
+      : "WIN");
+  const planMatchesWin = effectiveOutcome === "WIN";
+  const planMatchesTraditional =
+    effectiveOutcome === "LOSE" && input.loseStyle === "TRADITIONAL";
+  const planMatchesTriple =
+    effectiveOutcome === "LOSE" && input.loseStyle === "TRIPLE_TOP_30";
+  const planWhere = planMatchesWin
+    ? { outcome: "WIN" as const, loseStyle: "ANY" as const }
+    : planMatchesTraditional
+      ? { outcome: "LOSE" as const, loseStyle: "TRADITIONAL" as const }
+      : { outcome: "LOSE" as const, loseStyle: "TRIPLE_TOP_30" as const };
+
+  const [customPlan, defaultPlan] = await Promise.all([
     prisma.clanWarPlan.findFirst({
       where: {
         guildId: input.guildId,
         scope: "CUSTOM",
         matchType: "FWA",
-        outcome: "WIN",
-        loseStyle: "ANY",
+        ...planWhere,
         OR: [
           { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
           { clanTag: { equals: bare, mode: "insensitive" } },
@@ -596,8 +634,7 @@ async function resolveWarplanContextForClan(input: {
         scope: "DEFAULT",
         clanTag: "",
         matchType: "FWA",
-        outcome: "WIN",
-        loseStyle: "ANY",
+        ...planWhere,
       },
       select: {
         nonMirrorTripleMinClanStars: true,
@@ -606,10 +643,39 @@ async function resolveWarplanContextForClan(input: {
     }),
   ]);
 
-  const gateConfig = resolveWarPlanComplianceConfig({
-    primary: customWinPlan,
-    fallback: defaultWinPlan,
-  });
+  const gateConfig =
+    resolveWarPlanComplianceConfigForPlan({
+      primary: customPlan,
+      fallback: defaultPlan,
+      matchType: "FWA",
+      expectedOutcome: planMatchesWin ? "WIN" : "LOSE",
+      loseStyle: planMatchesWin
+        ? "ANY"
+        : planMatchesTraditional
+          ? "TRADITIONAL"
+          : "TRIPLE_TOP_30",
+    }) ??
+    resolveWarPlanComplianceConfig({
+      primary: customPlan,
+      fallback: defaultPlan,
+      builtInFallback: planMatchesWin
+        ? {
+            nonMirrorMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+            allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+          }
+        : planMatchesTraditional
+          ? {
+              nonMirrorMinClanStars:
+                DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+              allBasesOpenHoursLeft:
+                DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+            }
+          : {
+              nonMirrorMinClanStars: 0,
+              allBasesOpenHoursLeft: 0,
+            },
+    });
+
   const matchTypeContext =
     activeWar?.matchType === "FWA" ||
     activeWar?.matchType === "BL" ||
@@ -618,22 +684,30 @@ async function resolveWarplanContextForClan(input: {
       ? activeWar.matchType
       : "FWA";
   const expectedOutcome =
-    matchTypeContext === "FWA"
-      ? normalizeOutcome(activeWar?.outcome ?? null)
-      : null;
+    matchTypeContext === "FWA" ? activeOutcome ?? effectiveOutcome : null;
 
   return {
     matchTypeContext,
     expectedOutcome,
     loseStyle: input.loseStyle,
-    freeForAllStarThreshold:
-      Number.isFinite(Number(gateConfig.nonMirrorTripleMinClanStars))
+    freeForAllStarThreshold: gateConfig
+      ? Number.isFinite(Number(gateConfig.nonMirrorTripleMinClanStars))
         ? Math.trunc(Number(gateConfig.nonMirrorTripleMinClanStars))
-        : DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
-    freeForAllTimeThresholdHours:
-      Number.isFinite(Number(gateConfig.allBasesOpenHoursLeft))
+        : Math.trunc(Number(gateConfig.nonMirrorMinClanStars))
+      : planMatchesWin
+        ? DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS
+        : planMatchesTraditional
+          ? DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS
+          : 0,
+    freeForAllTimeThresholdHours: gateConfig
+      ? Number.isFinite(Number(gateConfig.allBasesOpenHoursLeft))
         ? Math.trunc(Number(gateConfig.allBasesOpenHoursLeft))
-        : DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+        : 0
+      : planMatchesWin
+        ? DEFAULT_ALL_BASES_OPEN_HOURS_LEFT
+        : planMatchesTraditional
+          ? DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT
+          : 0,
   };
 }
 

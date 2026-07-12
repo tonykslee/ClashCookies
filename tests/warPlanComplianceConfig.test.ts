@@ -1,22 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+  DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
   DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
   MAX_ALL_BASES_OPEN_HOURS_LEFT,
+  formatWarPlanComplianceLine,
   parseAllBasesOpenHoursLeftInput,
-  parseNonMirrorTripleMinClanStarsInput,
+  parseNonMirrorMinClanStarsInput,
   resolveWarPlanComplianceConfig,
+  resolveWarPlanComplianceConfigForPlan,
 } from "../src/services/warPlanComplianceConfig";
 
 describe("warPlanComplianceConfig", () => {
   it("parses non-mirror min-stars as an optional non-negative integer", () => {
-    expect(parseNonMirrorTripleMinClanStarsInput("")).toEqual({ ok: true, value: null });
-    expect(parseNonMirrorTripleMinClanStarsInput("101")).toEqual({
+    expect(parseNonMirrorMinClanStarsInput("")).toEqual({ ok: true, value: null });
+    expect(parseNonMirrorMinClanStarsInput("101")).toEqual({
       ok: true,
       value: 101,
     });
-    expect(parseNonMirrorTripleMinClanStarsInput("abc").ok).toBe(false);
-    expect(parseNonMirrorTripleMinClanStarsInput("-1").ok).toBe(false);
+    expect(parseNonMirrorMinClanStarsInput("abc").ok).toBe(false);
+    expect(parseNonMirrorMinClanStarsInput("-1").ok).toBe(false);
   });
 
   it("parses all-bases-open hours as optional H/Hh in range 0..24", () => {
@@ -31,6 +35,7 @@ describe("warPlanComplianceConfig", () => {
 
   it("resolves effective config using primary -> fallback -> defaults", () => {
     expect(resolveWarPlanComplianceConfig({})).toEqual({
+      nonMirrorMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
       nonMirrorTripleMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
       allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
     });
@@ -41,6 +46,7 @@ describe("warPlanComplianceConfig", () => {
         fallback: { nonMirrorTripleMinClanStars: 120, allBasesOpenHoursLeft: 9 },
       })
     ).toEqual({
+      nonMirrorMinClanStars: 120,
       nonMirrorTripleMinClanStars: 120,
       allBasesOpenHoursLeft: 9,
     });
@@ -51,6 +57,7 @@ describe("warPlanComplianceConfig", () => {
         fallback: { nonMirrorTripleMinClanStars: 120, allBasesOpenHoursLeft: 9 },
       })
     ).toEqual({
+      nonMirrorMinClanStars: 130,
       nonMirrorTripleMinClanStars: 130,
       allBasesOpenHoursLeft: 4,
     });
@@ -60,5 +67,65 @@ describe("warPlanComplianceConfig", () => {
         primary: { allBasesOpenHoursLeft: 999 },
       }).allBasesOpenHoursLeft
     ).toBe(MAX_ALL_BASES_OPEN_HOURS_LEFT);
+  });
+
+  it("resolves effective config per plan style and formats human-readable compliance lines", () => {
+    const win = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "ANY",
+      primary: null,
+      fallback: null,
+    });
+    const traditional = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: null,
+      fallback: null,
+    });
+    const tripleTop30 = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRIPLE_TOP_30",
+      primary: null,
+      fallback: null,
+    });
+
+    expect(win).toEqual({
+      nonMirrorMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+      nonMirrorTripleMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+      allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+    });
+    expect(traditional).toEqual({
+      nonMirrorMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+      nonMirrorTripleMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
+      allBasesOpenHoursLeft: DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+    });
+    expect(tripleTop30).toBeNull();
+    expect(
+      formatWarPlanComplianceLine({
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "ANY",
+        config: win,
+      }),
+    ).toContain("non-mirror 3★ opens at 101 clan stars or 0h left");
+    expect(
+      formatWarPlanComplianceLine({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        config: traditional,
+      }),
+    ).toContain("non-mirror 2★ opens at 150 clan stars or 12h left | clan cap: 100★");
+    expect(
+      formatWarPlanComplianceLine({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRIPLE_TOP_30",
+        config: null,
+      }),
+    ).toBe("Compliance rules: targets #1-30 only | attacks must earn 1-3★ | clan cap: 90★");
   });
 });

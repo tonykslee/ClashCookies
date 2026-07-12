@@ -110,6 +110,20 @@ function normalizeStrictFiniteNumber(input: unknown): number | null {
   return Math.trunc(input);
 }
 
+/** Purpose: normalize per-attack timing text while treating missing or blank values as absent. */
+function normalizeAttackTimeRemaining(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) return null;
+  const match = /^(\d+)h (\d+)m left$/.exec(normalized);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || minutes < 0 || minutes > 59) return null;
+  return `${Math.trunc(hours)}h ${Math.trunc(minutes)}m left`;
+}
+
 /** Purpose: render one Town Hall icon with a readable fallback when no application emoji exists. */
 function resolveTownHallIcon(
   townHallLevel: number | null | undefined,
@@ -187,10 +201,16 @@ export function formatWarPlanViolationsViolationTypeLabel(violationType: string)
       return "Missed mirror during LOSS strict window";
     case "EARLY_NON_MIRROR_2STAR":
       return "Early non-mirror 2-star";
+    case "TRADITIONAL_INVALID_STAR_COUNT":
+      return "Invalid star count in traditional loss";
     case "ANY_3STAR":
       return "3-star plan violation";
     case "LOWER20_ANY_STARS":
-      return "Lower-20 attack violation";
+      return "Attack on a lower-20 base";
+    case "CLAN_STAR_CAP_EXCEEDED":
+      return "Clan star cap exceeded";
+    case "TOP30_ZERO_STARS":
+      return "0-star attack on a top-30 base";
     case "OTHER_PLAN_VIOLATION":
       return "Other plan violation";
     default: {
@@ -652,7 +672,8 @@ function formatAttackEvidenceAttackLine(
       : "#?";
   const starsRaw = normalizeStrictFiniteNumber(attack.stars);
   const starsLabel = starsRaw === null ? "? stars" : `${Math.max(0, starsRaw)} stars`;
-  return `Attack ${order}: ${defenderPosition} - ${starsLabel}${attack.isBreach ? " (breach)" : ""}`;
+  const timeRemaining = normalizeAttackTimeRemaining(attack.timeRemaining) ?? "unknown left";
+  return `Attack ${order}: ${defenderPosition} - ${starsLabel} - ${timeRemaining}${attack.isBreach ? " (breach)" : ""}`;
 }
 
 /** Purpose: render the structured breach context line for player-history evidence. */
