@@ -17,6 +17,8 @@ import {
 type WarStartPointsCheckJob = {
   clanTag: string;
   opponentTag: string;
+  warId: string | null;
+  warStartTime: string | null;
   attempts: number;
   maxAttempts: number;
   nextAttemptAtMs: number;
@@ -37,6 +39,14 @@ type WarStartPointsCheckJob = {
 export type PointsSyncSubscriptionLike = {
   clanTag: string;
   fwaPoints: number | null;
+};
+
+export type WarStartPointsCheckContext = {
+  guildId: string;
+  clanTag: string;
+  warId: string | number | null;
+  warStartTime: Date | null;
+  opponentTag: string;
 };
 
 /** Purpose: manage previous sync recovery and war-start points-site retry jobs. */
@@ -72,13 +82,29 @@ export class WarStartPointsSyncService {
 
   /** Purpose: reset/start a new war-start points check job for a clan+opponent pair. */
   async resetWarStartPointsJob(
-    clanTag: string,
-    opponentTag: string
+    context: WarStartPointsCheckContext,
   ): Promise<void> {
     const now = Date.now();
+    const clanTag = normalizeTag(context.clanTag);
+    const opponentTag = normalizeTag(context.opponentTag);
+    const warId =
+      context.warId !== null &&
+      context.warId !== undefined &&
+      Number.isFinite(Number(context.warId)) &&
+      Math.trunc(Number(context.warId)) > 0
+        ? String(Math.trunc(Number(context.warId)))
+        : null;
+    const warStartTime =
+      context.warStartTime instanceof Date &&
+      Number.isFinite(context.warStartTime.getTime())
+        ? context.warStartTime.toISOString()
+        : null;
+    if (!clanTag || !opponentTag || !warId || !warStartTime) return;
     const next: WarStartPointsCheckJob = {
-      clanTag: normalizeTag(clanTag),
-      opponentTag: normalizeTag(opponentTag),
+      clanTag,
+      opponentTag,
+      warId,
+      warStartTime,
       attempts: 0,
       maxAttempts: WarStartPointsSyncService.WAR_START_POINTS_MAX_ATTEMPTS,
       nextAttemptAtMs: now,
@@ -100,21 +126,44 @@ export class WarStartPointsSyncService {
 
   /** Purpose: run/advance the retrying points-site sync check for an in-war clan. */
   async maybeRunWarStartPointsCheck(
-    sub: PointsSyncSubscriptionLike,
-    opponentTagInput: string,
-    _clanNameInput: string | null,
-    _opponentNameInput: string | null
+    context: WarStartPointsCheckContext,
   ): Promise<void> {
-    const clanTag = normalizeTag(sub.clanTag);
-    const opponentTag = normalizeTag(opponentTagInput);
-    if (!clanTag || !opponentTag) return;
+    const clanTag = normalizeTag(context.clanTag);
+    const opponentTag = normalizeTag(context.opponentTag);
+    const warId =
+      context.warId !== null &&
+      context.warId !== undefined &&
+      Number.isFinite(Number(context.warId)) &&
+      Math.trunc(Number(context.warId)) > 0
+        ? String(Math.trunc(Number(context.warId)))
+        : null;
+    const warStartTime =
+      context.warStartTime instanceof Date &&
+      Number.isFinite(context.warStartTime.getTime())
+        ? context.warStartTime
+        : null;
+    if (!clanTag || !opponentTag || !warId || !warStartTime) return;
 
     let job = await this.getWarStartPointsJob(clanTag);
-    if (!job || normalizeTag(job.opponentTag) !== opponentTag) {
-      await this.resetWarStartPointsJob(clanTag, opponentTag);
+    const jobMatchesContext =
+      job !== null &&
+      normalizeTag(job.clanTag) === clanTag &&
+      normalizeTag(job.opponentTag) === opponentTag &&
+      job.warId === warId &&
+      job.warStartTime === warStartTime.toISOString();
+    if (!jobMatchesContext) {
+      await this.resetWarStartPointsJob(context);
       job = await this.getWarStartPointsJob(clanTag);
     }
     if (!job || job.completed) return;
+    if (
+      normalizeTag(job.clanTag) !== clanTag ||
+      normalizeTag(job.opponentTag) !== opponentTag ||
+      job.warId !== warId ||
+      job.warStartTime !== warStartTime.toISOString()
+    ) {
+      return;
+    }
     if (Date.now() < job.nextAttemptAtMs) return;
 
     const nextAttempt = job.attempts + 1;
@@ -127,7 +176,7 @@ export class WarStartPointsSyncService {
       const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
         String(primary.winnerBoxText ?? "")
       );
-      const trackedDb = sub.fwaPoints ?? null;
+      const trackedDb = null;
       const trackedSite =
         primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
 
@@ -205,13 +254,13 @@ export class WarStartPointsSyncService {
         lastCheckedAtMs: Date.now(),
       });
       if (siteUpdated) {
-        const currentWar = await prisma.currentWar.findFirst({
+        const currentWar = await prisma.currentWar.findUnique({
           where: {
-            clanTag,
-            state: { in: ["preparation", "inWar"] },
-            startTime: { not: null },
+            clanTag_guildId: {
+              guildId: context.guildId,
+              clanTag,
+            },
           },
-          orderBy: { updatedAt: "desc" },
           select: {
             guildId: true,
             warId: true,
@@ -221,11 +270,15 @@ export class WarStartPointsSyncService {
             inferredMatchType: true,
             clanStars: true,
             opponentStars: true,
+            opponentTag: true,
           },
         });
         if (
           currentWar?.guildId &&
           currentWar.startTime &&
+          normalizeTag(currentWar.opponentTag ?? null) === opponentTag &&
+          String(Math.trunc(Number(currentWar.warId ?? 0))) === warId &&
+          currentWar.startTime.toISOString() === warStartTime.toISOString() &&
           trackedSite !== null &&
           opponentBalance !== null &&
           primary.winnerBoxSync !== null &&
@@ -265,10 +318,7 @@ export class WarStartPointsSyncService {
           await this.pointsSync.upsertPointsSync({
             guildId: currentWar.guildId,
             clanTag,
-            warId:
-              currentWar.warId !== null && Number.isFinite(currentWar.warId)
-                ? String(Math.trunc(currentWar.warId))
-                : null,
+            warId,
             warStartTime: currentWar.startTime,
             syncNum: Math.trunc(primary.winnerBoxSync),
             opponentTag,

@@ -6,6 +6,7 @@ import { MaintenanceWindowService } from "../src/services/MaintenanceWindowServi
 import {
   WarEventLogService,
   buildWarEndDiscrepancyFingerprintForTest,
+  buildNotifyWarRefreshCustomId,
 } from "../src/services/WarEventLogService";
 
 vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
@@ -19,6 +20,10 @@ beforeEach(() => {
   vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
     callback(prisma as any),
   );
+  vi.spyOn(prisma.currentWar, "updateMany").mockImplementation(async (args: any) => {
+    await prisma.currentWar.update(args as any);
+    return { count: 1 } as any;
+  });
 });
 
 function buildBasePayload(overrides?: Partial<Record<string, unknown>>) {
@@ -325,6 +330,28 @@ describe("War-end expected points persistence via processSubscription", () => {
     });
     (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
     (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockResolvedValue({
+        status: "resolved",
+        source: "preserved_during_outage_recovery",
+        warId: Number(sub.warId ?? 1001),
+        identity: {
+          state: "inWar",
+          warStartTime:
+            sub.startTime instanceof Date
+              ? sub.startTime
+              : new Date("2026-03-12T00:00:00.000Z"),
+          opponentTag: String(sub.opponentTag ?? "#OPP123").replace(/^#/, ""),
+          preparationStartTime:
+            sub.prepStartTime instanceof Date ? sub.prepStartTime : null,
+          warEndTime: sub.endTime instanceof Date ? sub.endTime : null,
+          opponentName: String(sub.opponentName ?? "Enemy").trim() || "Enemy",
+          clanName: String(sub.clanName ?? "Alpha").trim() || "Alpha",
+        },
+        identityPersisted: true,
+        liveValidated: false,
+      }),
+    };
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
@@ -524,29 +551,29 @@ describe("War-end expected points persistence via processSubscription", () => {
   });
 
   it("preserves war identity timestamps on war_ended updates", async () => {
-    const expectedPrepStart = new Date("2026-03-11T00:00:00.000Z");
-    const expectedWarStart = new Date("2026-03-12T00:00:00.000Z");
-    const expectedWarEnd = new Date("2026-03-12T01:00:00.000Z");
     const updateData = await runProcessSubscriptionCase({
       subOverrides: {
         matchType: "BL",
-        prepStartTime: expectedPrepStart,
-        startTime: expectedWarStart,
-        endTime: expectedWarEnd,
+        prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
+        startTime: new Date("2026-03-12T00:00:00.000Z"),
+        endTime: new Date("2026-03-12T01:00:00.000Z"),
       },
       finalResult: {
         clanStars: 10,
         opponentStars: 11,
         clanDestruction: 60.01,
         opponentDestruction: 41,
-        warEndTime: expectedWarEnd,
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
         resultLabel: "LOSE",
       },
       expectedWarEndFwaPoints: 1202,
     });
-    expect(updateData?.prepStartTime).toEqual(expectedPrepStart);
-    expect(updateData?.startTime).toEqual(expectedWarStart);
-    expect(updateData?.endTime).toEqual(expectedWarEnd);
+    expect(updateData?.prepStartTime).toBeUndefined();
+    expect(updateData?.startTime).toBeUndefined();
+    expect(updateData?.endTime).toBeUndefined();
+    expect(updateData?.opponentTag).toBeUndefined();
+    expect(updateData?.opponentName).toBeUndefined();
+    expect(updateData?.clanName).toBeUndefined();
   });
 });
 
@@ -609,6 +636,28 @@ describe("Post-war same-war freeze guard", () => {
     });
     (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
     (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockResolvedValue({
+        status: "resolved",
+        source: "preserved_during_outage_recovery",
+        warId: Number(sub.warId ?? 1001),
+        identity: {
+          state: "inWar",
+          warStartTime:
+            sub.startTime instanceof Date
+              ? sub.startTime
+              : new Date("2026-03-12T00:00:00.000Z"),
+          opponentTag: String(sub.opponentTag ?? "#OPP123").replace(/^#/, ""),
+          preparationStartTime:
+            sub.prepStartTime instanceof Date ? sub.prepStartTime : null,
+          warEndTime: sub.endTime instanceof Date ? sub.endTime : null,
+          opponentName: String(sub.opponentName ?? "Enemy").trim() || "Enemy",
+          clanName: String(sub.clanName ?? "Alpha").trim() || "Alpha",
+        },
+        identityPersisted: true,
+        liveValidated: false,
+      }),
+    };
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
@@ -710,6 +759,12 @@ describe("Post-war same-war freeze guard", () => {
     expect(updateData?.outcome).toBe("WIN");
     expect(updateData?.inferredMatchType).toBe(true);
     expect(updateData?.warEndFwaPoints).toBe(99);
+    expect(updateData?.prepStartTime).toBeUndefined();
+    expect(updateData?.startTime).toBeUndefined();
+    expect(updateData?.endTime).toBeUndefined();
+    expect(updateData?.opponentTag).toBeUndefined();
+    expect(updateData?.opponentName).toBeUndefined();
+    expect(updateData?.clanName).toBeUndefined();
     expect(upsertPointsSync).not.toHaveBeenCalled();
   });
 
@@ -817,7 +872,36 @@ describe("Post-war same-war freeze guard", () => {
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
     let callIndex = 0;
     vi.spyOn(prisma, "$queryRaw").mockImplementation(async () => [clanRows[callIndex++] as any] as any);
-    (service as any).activeWarIdentity = buildActiveWarIdentityMock(clanRows[0], 1001);
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockImplementation(async ({ clanTag }: any) => {
+        const row =
+          String(clanTag ?? "").toUpperCase().replace(/^#/, "") === "AAA111"
+            ? clanRows[0]
+            : clanRows[1];
+        const warStartTime = row.startTime as Date;
+        const opponentTag = String(row.opponentTag ?? "");
+        const prepStartTime = row.prepStartTime ?? null;
+        const warEndTime = row.endTime ?? null;
+        const opponentName = row.opponentName ?? null;
+        const clanName = row.clanName ?? null;
+        return {
+          status: "resolved",
+          source: "preserved_during_outage_recovery",
+          warId: row.warId ?? 1001,
+          identity: {
+            state: "notInWar",
+            warStartTime,
+            opponentTag,
+            preparationStartTime: prepStartTime,
+            warEndTime,
+            opponentName,
+            clanName,
+          },
+          identityPersisted: true,
+          liveValidated: false,
+        };
+      }),
+    };
     (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
       war: null,
       observation: { kind: "success" },
@@ -1274,6 +1358,160 @@ describe("Match-type confirmation rollover via processSubscription", () => {
   });
 });
 
+describe("War-event identity guards", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function buildBlockedRefreshService() {
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const messageFetch = vi.fn().mockResolvedValue({
+      content: "Refresh me",
+      embeds: [new EmbedBuilder()],
+      edit: messageEdit,
+    });
+    const channelFetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      messages: { fetch: messageFetch },
+    });
+    const service = new WarEventLogService(
+      { channels: { fetch: channelFetch } } as unknown as Client,
+      {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "inWar",
+          clan: { tag: "#AAA111", name: "Alpha", stars: 100, attacks: 0, destructionPercentage: 0 },
+          opponent: { tag: "#OPP123", name: "Enemy", stars: 99, attacks: 0, destructionPercentage: 0 },
+          preparationStartTime: "20260311T000000.000Z",
+          startTime: "20260312T000000.000Z",
+          endTime: "20260313T000000.000Z",
+          teamSize: 50,
+          attacksPerMember: 2,
+        }),
+      } as any,
+    );
+    (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(
+      makeSubscription({
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        state: "inWar",
+        startTime: new Date("2026-03-12T00:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+    );
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockResolvedValue({
+        status: "blocked",
+        warId: null,
+        reason: "partial_live_identity",
+      }),
+    };
+    return { service, messageEdit };
+  }
+
+  it("fails closed for processSubscription when identity resolution is blocked", async () => {
+    vi.clearAllMocks();
+    const updateManySpy = vi.spyOn(prisma.currentWar, "updateMany");
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      state: "inWar",
+      startTime: new Date("2026-03-12T00:00:00.000Z"),
+      opponentTag: "#OPP123",
+    });
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: {
+        state: "inWar",
+        clan: { tag: "#AAA111", name: "Alpha", stars: 100, attacks: 0, destructionPercentage: 0 },
+        opponent: { tag: "#OPP123", name: "Enemy", stars: 99, attacks: 0, destructionPercentage: 0 },
+        preparationStartTime: "20260311T000000.000Z",
+        startTime: "20260312T000000.000Z",
+        endTime: "20260313T000000.000Z",
+        teamSize: 50,
+        attacksPerMember: 2,
+      },
+      observation: { kind: "success" },
+    });
+    (service as any).recordCocWarObservation = vi.fn().mockReturnValue({ suspected: false });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockResolvedValue({
+        status: "blocked",
+        warId: null,
+        reason: "partial_live_identity",
+      }),
+    };
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockResolvedValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+      upsertPointsSync: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
+
+    const ok = await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    expect(ok).toBe(false);
+    expect(updateManySpy).not.toHaveBeenCalled();
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for notify refresh when identity resolution is blocked", async () => {
+    const { service, messageEdit } = buildBlockedRefreshService();
+    const updateManySpy = vi.spyOn(prisma.currentWar, "updateMany");
+
+    const ok = await service.refreshCurrentNotifyPost("guild-1", "#AAA111");
+
+    expect(ok).toBe(false);
+    expect(updateManySpy).not.toHaveBeenCalled();
+    expect(messageEdit).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for battle-day refresh when identity resolution is blocked", async () => {
+    const { service, messageEdit } = buildBlockedRefreshService();
+    const interaction = {
+      customId: buildNotifyWarRefreshCustomId("guild-1", "#AAA111"),
+      channelId: "chan-1",
+      guildId: "guild-1",
+      message: { id: "msg-1" },
+      replied: false,
+      deferred: false,
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await service.refreshBattleDayPostByInteraction(interaction);
+
+    expect(messageEdit).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "This battle day embed can no longer be refreshed.",
+      }),
+    );
+  });
+});
+
 describe("War outage recovery reconciliation", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1416,7 +1654,7 @@ describe("War outage recovery reconciliation", () => {
     ).toBe(true);
     expect(updateSpy).toHaveBeenCalled();
     expect(sub.warId).toBe(1001);
-    expect((sub.startTime as Date).toISOString()).toBe("2026-03-12T02:00:00.000Z");
+    expect((sub.startTime as Date).toISOString()).toBe("2026-03-12T00:00:00.000Z");
   });
 
   it("suppresses battle-day outage recovery identity shifts without duplicate battle_day emit", async () => {

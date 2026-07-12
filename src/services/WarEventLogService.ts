@@ -2985,6 +2985,34 @@ export class WarEventLogService {
     });
   }
 
+  /** Purpose: apply a lifecycle update only when the exact resolved identity still matches the live row. */
+  private async updateCurrentWarWithExactIdentityGuard(params: {
+    guildId: string;
+    clanTag: string;
+    resolvedIdentity: ActiveWarIdentityResult & { status: "resolved" };
+    update: Prisma.CurrentWarUncheckedUpdateInput;
+  }): Promise<boolean> {
+    const resolvedState = params.resolvedIdentity.identity.state;
+    const resolvedStartTime = params.resolvedIdentity.identity.warStartTime;
+    const resolvedOpponentTag = normalizeTag(
+      params.resolvedIdentity.identity.opponentTag,
+    );
+    if (!resolvedState || !resolvedStartTime || !resolvedOpponentTag) {
+      return false;
+    }
+    const updated = await prisma.currentWar.updateMany({
+      where: {
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        state: resolvedState,
+        startTime: resolvedStartTime,
+        opponentTag: resolvedOpponentTag,
+      },
+      data: params.update,
+    });
+    return updated.count > 0;
+  }
+
   private async processSubscription(
     guildId: string,
     clanTag: string,
@@ -3218,33 +3246,31 @@ export class WarEventLogService {
       clanTag: sub.clanTag,
       candidateIdentity,
     });
-    const resolvedWarIdentity =
-      identityResolution.status === "resolved"
-        ? identityResolution.identity
-        : null;
-    const resolvedWarId =
-      identityResolution.status === "resolved"
-        ? identityResolution.warId
-        : null;
+    if (identityResolution.status === "blocked") {
+      console.warn(
+        `[war-events] current-war identity resolution blocked guild=${sub.guildId} clan=${sub.clanTag} reason=${identityResolution.reason} event=${eventType}`,
+      );
+      return false;
+    }
+    const resolvedWarIdentity = identityResolution.identity;
+    const resolvedWarId = identityResolution.warId;
     const resolvedWarIdText =
       resolvedWarId !== null && resolvedWarId !== undefined
         ? String(Math.trunc(Number(resolvedWarId)))
         : null;
-    const resolvedWarStartTime = resolvedWarIdentity?.warStartTime ?? null;
-    const resolvedOpponentTag = resolvedWarIdentity?.opponentTag ?? null;
-    const resolvedOpponentName = resolvedWarIdentity?.opponentName ?? null;
-    const resolvedClanName = resolvedWarIdentity?.clanName ?? null;
-    const resolvedCurrentState = resolvedWarIdentity?.state ?? currentState;
-    const effectiveWarStartTime = resolvedWarStartTime ?? nextWarStartTime;
-    const effectiveWarEndTime = resolvedWarIdentity?.warEndTime ?? nextWarEndTime;
-    const effectivePrepStartTime =
-      resolvedWarIdentity?.preparationStartTime ?? nextPrepStartTime;
-    const effectiveClanName = resolvedClanName ?? nextClanName;
-    const effectiveOpponentName = resolvedOpponentName ?? nextOpponentName;
-    const effectiveOpponentTag =
-      resolvedOpponentTag ??
-      nextOpponentTag ??
-      normalizeTag(sub.opponentTag ?? "");
+    const resolvedWarStartTime = resolvedWarIdentity.warStartTime;
+    const resolvedOpponentTag = resolvedWarIdentity.opponentTag;
+    const resolvedOpponentName = resolvedWarIdentity.opponentName;
+    const resolvedClanName = resolvedWarIdentity.clanName;
+    const resolvedWarEndTime = resolvedWarIdentity.warEndTime ?? null;
+    const resolvedPrepStartTime =
+      resolvedWarIdentity.preparationStartTime ?? null;
+    const effectiveWarStartTime = resolvedWarStartTime;
+    const effectiveWarEndTime = resolvedWarEndTime;
+    const effectivePrepStartTime = resolvedPrepStartTime;
+    const effectiveClanName = resolvedClanName;
+    const effectiveOpponentName = resolvedOpponentName;
+    const effectiveOpponentTag = resolvedOpponentTag;
 
     const lifecycleState =
       sub.pointsConfirmedByClanMail === null &&
@@ -3275,38 +3301,27 @@ export class WarEventLogService {
       clanTag: sub.clanTag,
       pollerSource: "war_event_poll_cycle",
       requestedReason: "post_war_reconciliation",
-      warState: resolvedCurrentState,
+      warState: currentState,
       warStartTime: resolvedWarStartTime,
-      warEndTime: nextWarEndTime,
+      warEndTime: resolvedWarEndTime,
       currentSyncNumber: syncContext.activeSync,
       lifecycle: lifecycleState,
       activeWarId: resolvedWarIdText,
       activeOpponentTag: resolvedOpponentTag,
     });
-    if (
-      eventType === "war_started" &&
-      resolvedWarIdentity &&
-      resolvedOpponentTag
-    ) {
-      await this.pointsSync
-        .resetWarStartPointsJob(sub.clanTag, resolvedOpponentTag)
-        .catch(() => null);
-    }
-    if (
+    const stagedWarStartPointsCheckContext =
       gateDecision.allowed &&
-      resolvedWarIdentity !== null &&
       currentState !== "notInWar" &&
-      resolvedOpponentTag
-    ) {
-      await this.pointsSync
-        .maybeRunWarStartPointsCheck(
-          sub,
-          resolvedOpponentTag,
-          resolvedClanName,
-          resolvedOpponentName,
-        )
-        .catch(() => null);
-    }
+      resolvedOpponentTag !== null &&
+      resolvedOpponentTag !== undefined
+        ? {
+            guildId: sub.guildId,
+            clanTag: sub.clanTag,
+            warId: resolvedWarId,
+            warStartTime: resolvedWarStartTime,
+            opponentTag: resolvedOpponentTag,
+          }
+        : null;
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
         ? syncContext.activeSync
@@ -3407,6 +3422,24 @@ export class WarEventLogService {
     )
       ? Number(war?.opponent?.destructionPercentage)
       : null;
+    let stagedPollerPointsSync:
+      | {
+          guildId: string;
+          clanTag: string;
+          warId: string | null;
+          warStartTime: Date;
+          syncNum: number;
+          opponentTag: string;
+          clanPoints: number;
+          opponentPoints: number;
+          outcome: string | null;
+          isFwa: boolean;
+          fetchedAt: Date;
+          fetchReason: PointsApiFetchReason;
+          matchType: string | null;
+          needsValidation: boolean;
+        }
+      | null = null;
     if (
       gateDecision.allowed &&
       resolvedWarIdentity &&
@@ -3483,30 +3516,28 @@ export class WarEventLogService {
             syncResolution?.matchType ?? sub.matchType ?? null;
           const syncIsFwa =
             syncResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
-          await this.currentSyncs
-            .upsertPointsSync({
-              guildId: sub.guildId,
-              clanTag: projectionClanTag,
-              warId: resolvedWarIdText,
-              warStartTime: resolvedWarStartTime,
-              syncNum: observedSync,
-              opponentTag: projectionOpponentTag,
-              clanPoints: a.balance,
-              opponentPoints: b.balance,
-              outcome: deriveExpectedOutcome(
-                projectionClanTag,
-                projectionOpponentTag,
-                a.balance,
-                b.balance,
-                observedSync,
-              ),
-              isFwa: syncIsFwa,
-              fetchedAt: new Date(a.fetchedAtMs),
-              fetchReason: projectionReason,
-              matchType: syncMatchType,
-              needsValidation: false,
-            })
-            .catch(() => null);
+          stagedPollerPointsSync = {
+            guildId: sub.guildId,
+            clanTag: projectionClanTag,
+            warId: resolvedWarIdText,
+            warStartTime: resolvedWarStartTime,
+            syncNum: observedSync,
+            opponentTag: projectionOpponentTag,
+            clanPoints: a.balance,
+            opponentPoints: b.balance,
+            outcome: deriveExpectedOutcome(
+              projectionClanTag,
+              projectionOpponentTag,
+              a.balance,
+              b.balance,
+              observedSync,
+            ),
+            isFwa: syncIsFwa,
+            fetchedAt: new Date(a.fetchedAtMs),
+            fetchReason: projectionReason,
+            matchType: syncMatchType,
+            needsValidation: false,
+          };
         }
       }
       if (eventType === "war_started") {
@@ -3530,7 +3561,7 @@ export class WarEventLogService {
       warId: resolvedWarIdText,
       warStartTime: resolvedWarStartTime,
       opponentTag: resolvedOpponentTag,
-      currentState: resolvedCurrentState,
+      currentState,
       postedSyncNumber: null,
       previousSyncNumber: syncContext.previousSync,
     });
@@ -3621,30 +3652,42 @@ export class WarEventLogService {
       outcome: nextOutcome,
       matchType: nextMatchType,
       inferredMatchType: nextInferredMatchType,
-      prepStartTime: effectivePrepStartTime,
-      startTime: effectiveWarStartTime,
-      endTime: effectiveWarEndTime,
-      opponentTag: effectiveOpponentTag,
-      opponentName: effectiveOpponentName,
-      clanName: effectiveClanName,
       warStartFwaPoints: nextWarStartFwaPoints,
       warEndFwaPoints: nextWarEndFwaPoints,
       clanStars: nextClanStars,
       opponentStars: nextOpponentStars,
+      state: currentState,
       updatedAt: new Date(),
     };
-    if (shouldPreserveIdentity) {
-      currentWarUpdate.state = currentState;
-    }
-    await prisma.currentWar.update({
-      where: {
-        clanTag_guildId: {
-          guildId: sub.guildId,
-          clanTag: sub.clanTag,
-        },
-      },
-      data: currentWarUpdate,
+    const acceptedCurrentWarUpdate = await this.updateCurrentWarWithExactIdentityGuard({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      resolvedIdentity: identityResolution,
+      update: currentWarUpdate,
     });
+    if (!acceptedCurrentWarUpdate) {
+      console.warn(
+        `[war-events] current-war update skipped guild=${sub.guildId} clan=${sub.clanTag} reason=identity_guard_failed event=${eventType}`,
+      );
+      return false;
+    }
+    if (stagedPollerPointsSync) {
+      await this.currentSyncs
+        .upsertPointsSync(stagedPollerPointsSync)
+        .catch(() => null);
+    }
+    if (
+      stagedWarStartPointsCheckContext &&
+      currentState !== "notInWar" &&
+      resolvedOpponentTag
+    ) {
+      await this.pointsSync
+        .resetWarStartPointsJob(stagedWarStartPointsCheckContext)
+        .catch(() => null);
+      await this.pointsSync
+        .maybeRunWarStartPointsCheck(stagedWarStartPointsCheckContext)
+        .catch(() => null);
+    }
     let newAttackRowsObserved = 0;
     if (resolvedWarId !== null && resolvedWarId !== undefined) {
       newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({
@@ -3680,15 +3723,15 @@ export class WarEventLogService {
           );
         });
     }
-      if (
-        detectedEventPayload &&
-        resolvedWarId !== null &&
-        resolvedWarId !== undefined
-      ) {
-        await this.dispatchDetectedEvent({
-          sub,
-          payload: detectedEventPayload,
-          resolvedWarId,
+    if (
+      detectedEventPayload &&
+      resolvedWarId !== null &&
+      resolvedWarId !== undefined
+    ) {
+      await this.dispatchDetectedEvent({
+        sub,
+        payload: detectedEventPayload,
+        resolvedWarId,
         sendBattleDaySwapReminders:
           options?.sendBattleDaySwapReminders === true,
       });
@@ -5183,30 +5226,24 @@ export class WarEventLogService {
         clanName: nextClanName,
       },
     });
-    const resolvedWarId =
-      notifyIdentityResolution.status === "resolved"
-        ? notifyIdentityResolution.warId
-        : null;
-
-    await prisma.currentWar.update({
-      where: {
-        clanTag_guildId: {
-          guildId: sub.guildId,
-          clanTag: sub.clanTag,
-        },
-      },
-      data: {
+    if (notifyIdentityResolution.status === "blocked") {
+      return false;
+    }
+    const resolvedWarIdentity = notifyIdentityResolution.identity;
+    const resolvedWarId = notifyIdentityResolution.warId;
+    const acceptedCurrentWarUpdate = await this.updateCurrentWarWithExactIdentityGuard({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      resolvedIdentity: notifyIdentityResolution,
+      update: {
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
         updatedAt: new Date(),
       },
     });
-
-    const refreshedSub = await this.findSubscriptionByGuildAndTag(
-      guildId,
-      clanTag,
-    );
-    if (!refreshedSub) return false;
+    if (!acceptedCurrentWarUpdate) {
+      return false;
+    }
 
     const warIdText =
       resolvedWarId !== null &&
@@ -5248,25 +5285,25 @@ export class WarEventLogService {
     });
 
     const basePayload = {
-      clanTag: refreshedSub.clanTag,
-      clanName: nextClanName,
-      opponentTag: nextOpponentTag,
-      opponentName: nextOpponentName,
+      clanTag: sub.clanTag,
+      clanName: resolvedWarIdentity.clanName ?? sub.clanTag,
+      opponentTag: normalizeTag(resolvedWarIdentity.opponentTag),
+      opponentName: resolvedWarIdentity.opponentName ?? "Unknown",
       syncNumber,
-      pointsNeedsValidation: refreshedSub.pointsNeedsValidation,
-      notifyRole: refreshedSub.notifyRole,
-      pingRole: refreshedSub.pingRole,
-      fwaPoints: refreshedSub.fwaPoints,
-      opponentFwaPoints: refreshedSub.opponentFwaPoints,
-      outcome: normalizeOutcome(refreshedSub.outcome),
-      matchType: refreshedSub.matchType,
-      warStartFwaPoints: refreshedSub.warStartFwaPoints,
-      warEndFwaPoints: refreshedSub.warEndFwaPoints,
+      pointsNeedsValidation: sub.pointsNeedsValidation,
+      notifyRole: sub.notifyRole,
+      pingRole: sub.pingRole,
+      fwaPoints: sub.fwaPoints,
+      opponentFwaPoints: sub.opponentFwaPoints,
+      outcome: normalizeOutcome(sub.outcome),
+      matchType: sub.matchType,
+      warStartFwaPoints: sub.warStartFwaPoints,
+      warEndFwaPoints: sub.warEndFwaPoints,
       clanStars: nextClanStars,
       opponentStars: nextOpponentStars,
-      prepStartTime,
-      warStartTime,
-      warEndTime,
+      prepStartTime: resolvedWarIdentity.preparationStartTime,
+      warStartTime: resolvedWarIdentity.warStartTime,
+      warEndTime: resolvedWarIdentity.warEndTime,
       clanAttacks: Number.isFinite(Number(war.clan?.attacks))
         ? Number(war.clan?.attacks)
         : null,
@@ -5413,29 +5450,22 @@ export class WarEventLogService {
         clanName: nextClanName,
       },
     });
-    const resolvedWarId =
-      battleDayIdentityResolution.status === "resolved"
-        ? battleDayIdentityResolution.warId
-        : null;
-    await prisma.currentWar.update({
-      where: {
-        clanTag_guildId: {
-          guildId: sub.guildId,
-          clanTag: sub.clanTag,
-        },
-      },
-      data: {
+    if (battleDayIdentityResolution.status === "blocked") {
+      return "missing";
+    }
+    const resolvedWarIdentity = battleDayIdentityResolution.identity;
+    const resolvedWarId = battleDayIdentityResolution.warId;
+    const acceptedCurrentWarUpdate = await this.updateCurrentWarWithExactIdentityGuard({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      resolvedIdentity: battleDayIdentityResolution,
+      update: {
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
         updatedAt: new Date(),
       },
     });
-
-    const refreshedSub = await this.findSubscriptionByGuildAndTag(
-      guildId,
-      clanTag,
-    );
-    if (!refreshedSub) {
+    if (!acceptedCurrentWarUpdate) {
       battleDayPostByGuildTag.delete(key);
       return "missing";
     }
@@ -5461,8 +5491,8 @@ export class WarEventLogService {
       guildId,
       clanTag,
       warId: resolvedWarIdText,
-      warStartTime,
-      opponentTag: nextOpponentTag || refreshedSub.opponentTag,
+      warStartTime: resolvedWarIdentity.warStartTime,
+      opponentTag: resolvedWarIdentity.opponentTag,
       currentState: "inWar",
       postedSyncNumber,
       allowPostedSyncReuse: true,
@@ -5470,36 +5500,24 @@ export class WarEventLogService {
 
     const payload = {
       eventType: "battle_day" as const,
-      clanTag: refreshedSub.clanTag,
-      clanName:
-        String(
-          war.clan?.name ?? refreshedSub.clanName ?? refreshedSub.clanTag,
-        ).trim() || refreshedSub.clanTag,
-      opponentTag: normalizeTag(
-        war.opponent?.tag ?? refreshedSub.opponentTag ?? "",
-      ),
-      opponentName:
-        String(
-          war.opponent?.name ?? refreshedSub.opponentName ?? "Unknown",
-        ).trim() || "Unknown",
+      clanTag: sub.clanTag,
+      clanName: resolvedWarIdentity.clanName ?? sub.clanTag,
+      opponentTag: normalizeTag(resolvedWarIdentity.opponentTag),
+      opponentName: resolvedWarIdentity.opponentName ?? "Unknown",
       syncNumber,
-      pointsNeedsValidation: refreshedSub.pointsNeedsValidation,
-      notifyRole: refreshedSub.notifyRole,
-      pingRole: refreshedSub.pingRole,
-      fwaPoints: refreshedSub.fwaPoints,
-      opponentFwaPoints: refreshedSub.opponentFwaPoints,
-      outcome: normalizeOutcome(refreshedSub.outcome),
-      matchType: refreshedSub.matchType,
-      warStartFwaPoints: refreshedSub.warStartFwaPoints,
-      warEndFwaPoints: refreshedSub.warEndFwaPoints,
-      clanStars: Number.isFinite(Number(war.clan?.stars))
-        ? Number(war.clan?.stars)
-        : refreshedSub.clanStars,
-      opponentStars: Number.isFinite(Number(war.opponent?.stars))
-        ? Number(war.opponent?.stars)
-        : refreshedSub.opponentStars,
-      warStartTime,
-      warEndTime,
+      pointsNeedsValidation: sub.pointsNeedsValidation,
+      notifyRole: sub.notifyRole,
+      pingRole: sub.pingRole,
+      fwaPoints: sub.fwaPoints,
+      opponentFwaPoints: sub.opponentFwaPoints,
+      outcome: normalizeOutcome(sub.outcome),
+      matchType: sub.matchType,
+      warStartFwaPoints: sub.warStartFwaPoints,
+      warEndFwaPoints: sub.warEndFwaPoints,
+      clanStars: nextClanStars,
+      opponentStars: nextOpponentStars,
+      warStartTime: resolvedWarIdentity.warStartTime,
+      warEndTime: resolvedWarIdentity.warEndTime,
       clanAttacks: Number.isFinite(Number(war.clan?.attacks))
         ? Number(war.clan?.attacks)
         : null,
@@ -5521,7 +5539,7 @@ export class WarEventLogService {
         ? Number(war.opponent?.destructionPercentage)
         : null,
     };
-    const warId = resolvedWarId ?? refreshedSub.warId ?? null;
+    const warId = resolvedWarId;
     const embed = EmbedBuilder.from(message.embeds[0] ?? new EmbedBuilder());
     const next = await this.buildBattleDayRefreshEmbed(
       payload,
