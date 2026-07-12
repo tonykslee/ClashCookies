@@ -216,6 +216,66 @@ describe("war plan violations view helpers", () => {
     assertEmbedWithinLimits(embed);
   });
 
+  it("renders malformed per-attack timing as unknown left without echoing the source text", () => {
+    const result = makePlayerHistoryResult({
+      entries: [
+        makePlayerHistoryEntry(1, {
+          attackEvidence: {
+            attacks: [
+              {
+                defenderPosition: 12,
+                stars: 0,
+                attackOrder: 1,
+                isBreach: false,
+                timeRemaining: "soon",
+              },
+              {
+                defenderPosition: 13,
+                stars: 1,
+                attackOrder: 2,
+                isBreach: true,
+                timeRemaining: "17h 99m left",
+              },
+              {
+                defenderPosition: 14,
+                stars: 2,
+                attackOrder: 3,
+                isBreach: false,
+                timeRemaining: "",
+              },
+              {
+                defenderPosition: 15,
+                stars: 3,
+                attackOrder: 4,
+                isBreach: true,
+                timeRemaining: "17h 42m left",
+              },
+            ],
+            breachContext: {
+              starsAtBreach: 1,
+              timeRemaining: "33m left",
+            },
+          },
+        }),
+      ],
+    });
+
+    const embed = toEmbedJson(
+      buildWarPlanViolationsPlayerHistoryEmbed({
+        result,
+      }),
+    );
+
+    const attackEvidence = embed.fields?.find((field) => field.name === "Attack Evidence")?.value ?? "";
+    expect(attackEvidence).toContain("Attack 1: #12 - 0 stars - unknown left");
+    expect(attackEvidence).toContain("Attack 2: #13 - 1 stars - unknown left (breach)");
+    expect(attackEvidence).toContain("Attack 3: #14 - 2 stars - unknown left");
+    expect(attackEvidence).toContain("Attack 4: #15 - 3 stars - 17h 42m left (breach)");
+    expect(attackEvidence).not.toContain("soon");
+    expect(attackEvidence).not.toContain("17h 99m left");
+    assertEmbedWithinLimits(embed);
+  });
+
   it("renders alliance overview with both sections visible and section-specific markers", () => {
     const overview = makeAllianceOverview({
       clanSummaries: Array.from({ length: 100 }, (_, index) =>

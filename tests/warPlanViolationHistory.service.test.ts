@@ -3123,6 +3123,104 @@ describe("WarPlanViolationHistoryService", () => {
       });
     });
 
+    it("normalizes malformed per-attack timeRemaining strings to null while preserving valid ones", async () => {
+      const { service } = buildService([
+        buildFixture({
+          warId: 1,
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha",
+          warStartTime: d("2026-05-10T00:00:00.000Z"),
+          warEndTime: d("2026-05-10T01:00:00.000Z"),
+          violations: [
+            {
+              id: "vio-1",
+              playerTag: "#PYLQ0289",
+              playerNameSnapshot: "Snapshot Alpha",
+              townHallLevelSnapshot: 12,
+              attackDetails: {
+                attackDetails: [
+                  {
+                    defenderPosition: 4,
+                    stars: 2,
+                    attackOrder: 1,
+                    isBreach: false,
+                    timeRemaining: "soon",
+                  },
+                  {
+                    defenderPosition: 5,
+                    stars: 1,
+                    attackOrder: 2,
+                    isBreach: true,
+                    timeRemaining: "17h 99m left",
+                  },
+                  {
+                    defenderPosition: 6,
+                    stars: 0,
+                    attackOrder: 3,
+                    isBreach: false,
+                    timeRemaining: "",
+                  },
+                  {
+                    defenderPosition: 7,
+                    stars: 3,
+                    attackOrder: 4,
+                    isBreach: true,
+                    timeRemaining: "17h 42m left",
+                  },
+                ],
+                breachContext: {
+                  starsAtBreach: 4,
+                  timeRemaining: "33m left",
+                },
+              },
+            },
+          ],
+        }),
+      ]);
+
+      const result = await service.getPlayerHistory({
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        period: "lifetime",
+        now: d("2026-06-01T00:00:00.000Z"),
+      });
+
+      expect(result.entries[0]?.attackEvidence.attacks).toEqual([
+        {
+          defenderPosition: 4,
+          stars: 2,
+          attackOrder: 1,
+          isBreach: false,
+          timeRemaining: null,
+        },
+        {
+          defenderPosition: 5,
+          stars: 1,
+          attackOrder: 2,
+          isBreach: true,
+          timeRemaining: null,
+        },
+        {
+          defenderPosition: 6,
+          stars: 0,
+          attackOrder: 3,
+          isBreach: false,
+          timeRemaining: null,
+        },
+        {
+          defenderPosition: 7,
+          stars: 3,
+          attackOrder: 4,
+          isBreach: true,
+          timeRemaining: "17h 42m left",
+        },
+      ]);
+      expect(result.entries[0]?.attackEvidence.breachContext).toEqual({
+        starsAtBreach: 4,
+        timeRemaining: "33m left",
+      });
+    });
+
     it("does not mutate the original persisted evidence object", async () => {
       const attackDetails = {
         attackDetails: [

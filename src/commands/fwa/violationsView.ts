@@ -114,7 +114,14 @@ function normalizeStrictFiniteNumber(input: unknown): number | null {
 function normalizeAttackTimeRemaining(input: unknown): string | null {
   if (typeof input !== "string") return null;
   const normalized = input.replace(/\s+/g, " ").trim();
-  return normalized.length > 0 ? normalized : null;
+  if (normalized.length === 0) return null;
+  const match = /^(\d+)h (\d+)m left$/.exec(normalized);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || minutes < 0 || minutes > 59) return null;
+  return `${Math.trunc(hours)}h ${Math.trunc(minutes)}m left`;
 }
 
 /** Purpose: render one Town Hall icon with a readable fallback when no application emoji exists. */

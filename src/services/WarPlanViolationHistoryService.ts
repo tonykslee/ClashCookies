@@ -1032,7 +1032,7 @@ function normalizePlayerHistoryAttackEvidenceAttack(
     stars: normalizeFiniteInteger(record.stars),
     attackOrder: normalizeFiniteInteger(record.attackOrder),
     isBreach: record.isBreach === true,
-    timeRemaining: normalizePlayerHistoryTimeRemaining(record.timeRemaining),
+    timeRemaining: normalizePlayerHistoryAttackTimeRemaining(record.timeRemaining),
   };
 }
 
@@ -1060,6 +1060,20 @@ function normalizePlayerHistoryTimeRemaining(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Purpose: normalize per-attack time remaining strictly as `Xh Ym left`. */
+function normalizePlayerHistoryAttackTimeRemaining(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  const match = /^(\d+)h (\d+)m left$/.exec(trimmed);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || minutes < 0 || minutes > 59) return null;
+  return `${Math.trunc(hours)}h ${Math.trunc(minutes)}m left`;
 }
 
 /** Purpose: determine whether a JSON value is a plain object suitable for defensive inspection. */
