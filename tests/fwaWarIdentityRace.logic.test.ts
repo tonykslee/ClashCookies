@@ -736,6 +736,51 @@ describe("ActiveWarIdentityService", () => {
     expect(preservedShape && reconciledShape).toBe(false);
   });
 
+  it("clears stale optional metadata when poll_reconcile advances to a new physical war", async () => {
+    const harness = makeHarness([
+      {
+        guildId: "guild-1",
+        clanTag: "#2RYGLU2UY",
+        row: makeRow({
+          warId: 1000610,
+          prepStartTime: new Date("2026-07-11T15:22:26.000Z"),
+          startTime: new Date("2026-07-12T15:22:26.000Z"),
+          endTime: new Date("2026-07-13T15:22:26.000Z"),
+          opponentTag: "#LYPLQQUC",
+          opponentName: "War Farmers x44",
+          clanName: "Rocky Road",
+        }),
+      },
+    ]);
+    harness.setSequence(1000700);
+    const service = new ActiveWarIdentityService(harness.db as any);
+
+    const result = await service.resolveCurrentWarId({
+      policy: "poll_reconcile",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: makeCandidate({
+        warStartTime: "20260713T152226.000Z",
+        opponentTag: "#DIFFOPP",
+        preparationStartTime: null,
+        warEndTime: null,
+        opponentName: null,
+        clanName: null,
+      }),
+    });
+
+    const finalRow = harness.rows.get("guild-1|#2RYGLU2UY") as Record<string, unknown>;
+    expect(result.status).toBe("resolved");
+    expect(result.warId).toBe(1000700);
+    expect(finalRow.startTime instanceof Date).toBe(true);
+    expect((finalRow.startTime as Date).toISOString()).toBe("2026-07-13T15:22:26.000Z");
+    expect(normalizeTag(String(finalRow.opponentTag ?? ""))).toBe("DIFFOPP");
+    expect(finalRow.prepStartTime).toBeNull();
+    expect(finalRow.endTime).toBeNull();
+    expect(finalRow.opponentName).toBeNull();
+    expect(finalRow.clanName).toBeNull();
+  });
+
   it("blocks conflicting preexisting global ids for the same physical war", async () => {
     const harness = makeHarness([
       {

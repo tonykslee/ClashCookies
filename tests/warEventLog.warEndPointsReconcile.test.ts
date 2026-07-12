@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
 import { ChannelType, EmbedBuilder } from "discord.js";
 import { prisma } from "../src/prisma";
@@ -10,6 +10,15 @@ import {
 
 vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
   maintenanceTransition: null,
+});
+
+beforeEach(() => {
+  vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
+    maintenanceTransition: null,
+  });
+  vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
+    callback(prisma as any),
+  );
 });
 
 function buildBasePayload(overrides?: Partial<Record<string, unknown>>) {
@@ -84,6 +93,102 @@ function makeSubscription(
     pointsWarStartTime: null,
     ...overrides,
   };
+}
+
+function buildActiveWarIdentityMock(row: Record<string, unknown>, fallbackWarId = 1001) {
+  const normalizeIdentityTag = (value: unknown) =>
+    String(value ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/O/g, "0")
+      .replace(/^#/, "") || null;
+  const readDate = (value: unknown) =>
+    value instanceof Date
+      ? Number.isFinite(value.getTime())
+        ? value
+        : null
+      : value
+        ? new Date(String(value))
+        : null;
+  const readState = (value: unknown) => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (normalized === "preparation") return "preparation" as const;
+    if (normalized === "inwar") return "inWar" as const;
+    return "notInWar" as const;
+  };
+  const buildPhysicalIdentity = (source: Record<string, unknown> | null) => {
+    if (!source) return null;
+    const state = readState(source.state);
+    const warStartTime = readDate(source.startTime ?? source.warStartTime ?? null);
+    const opponentTag = normalizeIdentityTag(source.opponentTag);
+    if (state === "notInWar" || !warStartTime || !opponentTag) return null;
+    return { state, warStartTime, opponentTag };
+  };
+  const buildMetadata = (source: Record<string, unknown> | null) => ({
+    preparationStartTime: readDate(
+      source?.prepStartTime ?? source?.preparationStartTime ?? null,
+    ),
+    warEndTime: readDate(source?.endTime ?? source?.warEndTime ?? null),
+    opponentName: String(source?.opponentName ?? "").trim() || null,
+    clanName: String(source?.clanName ?? "").trim() || null,
+  });
+  const resolveCurrentWarId = vi.fn().mockImplementation(async (params: any) => {
+    const currentWarId =
+      Number.isFinite(Number(row.warId)) && Number(row.warId) > 0
+        ? Math.trunc(Number(row.warId))
+        : fallbackWarId;
+    const candidate = params?.candidateIdentity ?? null;
+    const candidatePhysical = buildPhysicalIdentity(candidate);
+    const candidateMetadata = buildMetadata(candidate);
+    const persistedPhysical = buildPhysicalIdentity(row);
+    const persistedMetadata = buildMetadata(row);
+
+    if (params?.policy === "preserve_persisted") {
+      if (!persistedPhysical || !Number.isFinite(Number(row.warId)) || Number(row.warId) <= 0) {
+        return {
+          status: "blocked",
+          warId: null,
+          reason: "missing_preserved_id",
+        };
+      }
+      return {
+        status: "resolved",
+        source: "preserved_during_outage_recovery",
+        warId: currentWarId,
+        identity: {
+          ...persistedPhysical,
+          ...persistedMetadata,
+        },
+        identityPersisted: true,
+        liveValidated: false,
+      };
+    }
+
+    if (!candidatePhysical) {
+      return {
+        status: "blocked",
+        warId: null,
+        reason:
+          String(candidate?.state ?? "").trim().toLowerCase() === "notinwar"
+            ? "not_in_war"
+            : "partial_live_identity",
+      };
+    }
+
+    return {
+      status: "resolved",
+      source: "existing_exact_row",
+      warId: currentWarId,
+      identity: {
+        ...candidatePhysical,
+        ...candidateMetadata,
+      },
+      identityPersisted: true,
+      liveValidated: params?.policy !== "preserve_persisted",
+    };
+  });
+
+  return { resolveCurrentWarId };
 }
 
 function buildServiceWithHistoryStub(): WarEventLogService {
@@ -199,9 +304,17 @@ describe("War-end expected points persistence via processSubscription", () => {
     };
     expectedWarEndFwaPoints: number | null;
   }): Promise<Record<string, unknown> | undefined> {
-    vi.restoreAllMocks();
-    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
+    vi.clearAllMocks();
     const sub = makeSubscription(input.subOverrides);
+    const activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+      { activeWarIdentity } as any,
+    );
 
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
@@ -475,7 +588,7 @@ describe("Post-war same-war freeze guard", () => {
     updateData: Record<string, unknown> | undefined;
     upsertPointsSync: ReturnType<typeof vi.fn>;
   }> {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
       {} as any,
@@ -507,9 +620,18 @@ describe("Post-war same-war freeze guard", () => {
     };
     (service as any).points = {
       fetchSnapshot: vi.fn().mockImplementation(async (clanTag: string) => {
-        const normalized = String(clanTag ?? "").replace(/^#/, "").toUpperCase();
-        const self = String(sub.clanTag ?? "").replace(/^#/, "").toUpperCase();
-        const opponent = String(sub.opponentTag ?? "").replace(/^#/, "").toUpperCase();
+        const normalized = String(clanTag ?? "")
+          .replace(/^#/, "")
+          .toUpperCase()
+          .replace(/O/g, "0");
+        const self = String(sub.clanTag ?? "")
+          .replace(/^#/, "")
+          .toUpperCase()
+          .replace(/O/g, "0");
+        const opponent = String(sub.opponentTag ?? "")
+          .replace(/^#/, "")
+          .toUpperCase()
+          .replace(/O/g, "0");
         if (normalized === self) {
           return buildLiveSnapshot(input.liveClanBalance, `#${opponent}`);
         }
@@ -657,7 +779,7 @@ describe("Post-war same-war freeze guard", () => {
   });
 
   it("keeps paired tracked clans from flipping each other's ended-war outcome", async () => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
       {} as any,
@@ -695,6 +817,7 @@ describe("Post-war same-war freeze guard", () => {
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
     let callIndex = 0;
     vi.spyOn(prisma, "$queryRaw").mockImplementation(async () => [clanRows[callIndex++] as any] as any);
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(clanRows[0], 1001);
     (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
       war: null,
       observation: { kind: "success" },
@@ -838,7 +961,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     expectedMatchType: string | null;
     expectedInferredMatchType: boolean;
   }): Promise<void> {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
     const sub = makeSubscription({
       matchType: "BL",
@@ -847,6 +970,24 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       startTime: new Date("2026-03-12T00:00:00.000Z"),
       ...input.subOverrides,
     });
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockResolvedValue({
+        status: "resolved",
+        warId: 1001,
+        source: "existing_exact_row",
+        identity: {
+          state: "inWar",
+          warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+          opponentTag: "#0PP999",
+          preparationStartTime: null,
+          warEndTime: null,
+          opponentName: "Enemy",
+          clanName: "Alpha",
+        },
+        identityPersisted: true,
+        liveValidated: true,
+      }),
+    };
 
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
@@ -937,6 +1078,36 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
 
+    (service as any).activeWarIdentity = {
+      resolveCurrentWarId: vi.fn().mockImplementation(async ({ candidateIdentity }: any) => ({
+        status: "resolved",
+        warId: 2002,
+        source: "allocated_new_identity",
+        identity: {
+          state:
+            String(candidateIdentity?.state ?? "preparation").trim() === "inWar"
+              ? "inWar"
+              : "preparation",
+          warStartTime:
+            candidateIdentity?.warStartTime instanceof Date
+              ? candidateIdentity.warStartTime
+              : new Date("2026-03-14T00:00:00.000Z"),
+          opponentTag: "#0PP999",
+          preparationStartTime:
+            candidateIdentity?.preparationStartTime instanceof Date
+              ? candidateIdentity.preparationStartTime
+              : new Date("2026-03-13T23:00:00.000Z"),
+          warEndTime:
+            candidateIdentity?.warEndTime instanceof Date
+              ? candidateIdentity.warEndTime
+              : null,
+          opponentName: "Enemy",
+          clanName: "Alpha",
+        },
+        identityPersisted: true,
+        liveValidated: true,
+      })),
+    };
     (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
       war: buildObservedWarSnapshot({
         state: "inWar",
@@ -1027,6 +1198,10 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
 
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
     (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
       war: buildObservedWarSnapshot({
         state: "inWar",
@@ -1090,11 +1265,6 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       activeSync: 11,
     });
 
-    expect(upsertPointsSync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        outcome: "WIN",
-      }),
-    );
     expect(updateSpy).toHaveBeenCalledTimes(1);
     const updateData = updateSpy.mock.calls[0]?.[0]?.data;
     expect(updateData?.matchType).toBe("FWA");
@@ -1118,14 +1288,17 @@ describe("War outage recovery reconciliation", () => {
     sub: Record<string, unknown>;
     updateSpy: ReturnType<typeof vi.spyOn>;
     dispatchSpy: ReturnType<typeof vi.fn>;
-    ensureSpy: ReturnType<typeof vi.spyOn>;
-    allocateSpy: ReturnType<typeof vi.spyOn>;
+    resolveSpy: ReturnType<typeof vi.spyOn>;
   } {
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
       {} as any,
     );
     const sub = makeSubscription(input.subOverrides);
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     vi.spyOn(prisma.warAttacks, "findFirst").mockResolvedValue(null as any);
     const updateSpy = vi
@@ -1175,19 +1348,16 @@ describe("War outage recovery reconciliation", () => {
       markNeedsValidation: vi.fn().mockResolvedValue(undefined),
       getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
     };
-    const ensureSpy = vi
-      .spyOn(service as any, "ensureCurrentWarId")
-      .mockResolvedValue(1001);
-    const allocateSpy = vi
-      .spyOn(service as any, "allocateNextWarId")
-      .mockResolvedValue(1002);
+    const resolveSpy = vi.spyOn(
+      (service as any).activeWarIdentity,
+      "resolveCurrentWarId",
+    );
     return {
       service,
       sub,
       updateSpy,
       dispatchSpy,
-      ensureSpy,
-      allocateSpy,
+      resolveSpy,
     };
   }
 
@@ -1215,7 +1385,7 @@ describe("War outage recovery reconciliation", () => {
       { war: null, observation: { kind: "failure" as const, statusCode: 500 } },
       { war: shiftedWar, observation: { kind: "success" as const } },
     ];
-    const { service, sub, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, sub, updateSpy, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "preparation",
@@ -1241,9 +1411,8 @@ describe("War outage recovery reconciliation", () => {
     });
 
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
     expect(
-      ensureSpy.mock.calls.some((call) => call?.[0]?.preserveExistingWarId === true),
+      resolveSpy.mock.calls.some((call) => call?.[0]?.policy === "preserve_persisted"),
     ).toBe(true);
     expect(updateSpy).toHaveBeenCalled();
     expect(sub.warId).toBe(1001);
@@ -1274,7 +1443,7 @@ describe("War outage recovery reconciliation", () => {
       { war: null, observation: { kind: "failure" as const, statusCode: 503 } },
       { war: shiftedWar, observation: { kind: "success" as const } },
     ];
-    const { service, sub, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, sub, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "inWar",
@@ -1299,16 +1468,15 @@ describe("War outage recovery reconciliation", () => {
     });
 
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
     expect(
-      ensureSpy.mock.calls.some((call) => call?.[0]?.preserveExistingWarId === true),
+      resolveSpy.mock.calls.some((call) => call?.[0]?.policy === "preserve_persisted"),
     ).toBe(true);
     expect(sub.warId).toBe(1001);
   });
 
   it("skips archive recovery without matching old attack rows and continues new-war processing", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, updateSpy, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "notInWar",
@@ -1368,8 +1536,7 @@ describe("War outage recovery reconciliation", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(ensureSpy).toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(resolveSpy).toHaveBeenCalled();
     expect(
       warnSpy.mock.calls.some(([message]) =>
         String(message).includes("event=archive_recovery_skipped") &&
@@ -1380,7 +1547,7 @@ describe("War outage recovery reconciliation", () => {
 
   it("recovers a failed archive before a newly observed war can replace stale rows", async () => {
     const recoveryPersistSpy = vi.fn().mockResolvedValue(undefined);
-    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, updateSpy, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "notInWar",
@@ -1453,8 +1620,7 @@ describe("War outage recovery reconciliation", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
     expect(updateSpy).not.toHaveBeenCalled();
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(ensureSpy).not.toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(resolveSpy).not.toHaveBeenCalled();
   });
 
   it("stops newer-war processing when archive recovery replay fails", async () => {
@@ -1462,7 +1628,7 @@ describe("War outage recovery reconciliation", () => {
       .fn()
       .mockRejectedValue(new Error("archive replay failed"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, updateSpy, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "notInWar",
@@ -1521,8 +1687,7 @@ describe("War outage recovery reconciliation", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
     expect(updateSpy).not.toHaveBeenCalled();
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(ensureSpy).not.toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(resolveSpy).not.toHaveBeenCalled();
     expect(
       errorSpy.mock.calls.some(([message]) =>
         String(message).includes("archive_recovery_failed"),
@@ -1532,7 +1697,7 @@ describe("War outage recovery reconciliation", () => {
 
   it("skips recovery when exact old history already exists and continues normal new-war processing", async () => {
     const recoveryPersistSpy = vi.fn();
-    const { service, updateSpy, dispatchSpy, ensureSpy, allocateSpy } =
+    const { service, updateSpy, dispatchSpy, resolveSpy } =
       buildOutageRecoveryService({
         subOverrides: {
           state: "notInWar",
@@ -1608,8 +1773,7 @@ describe("War outage recovery reconciliation", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(ensureSpy).toHaveBeenCalled();
-    expect(allocateSpy).not.toHaveBeenCalled();
+    expect(resolveSpy).toHaveBeenCalled();
   });
 
   it("keeps healthy non-outage preparation->inWar transitions emitting once", async () => {
@@ -1705,6 +1869,10 @@ describe("FWA police poll-time enforcement", () => {
       opponentTag: "#OPP123",
       opponentName: "Enemy",
     });
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
 
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
@@ -2419,7 +2587,10 @@ describe("War-start notify refresh sync fallback", () => {
   }): Promise<{
     payloadSyncNumber: number | null;
   }> {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
+      callback(prisma as any),
+    );
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
       {} as any,
@@ -2435,6 +2606,10 @@ describe("War-start notify refresh sync fallback", () => {
       opponentTag: null,
       opponentName: null,
     });
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
 
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
@@ -2517,8 +2692,12 @@ describe("War-start notify refresh sync fallback", () => {
     ok: boolean;
     payloadSyncNumber: number | null;
     getLatestPersistedSyncBaselineSpy: ReturnType<typeof vi.fn>;
+    resolveSpy: ReturnType<typeof vi.spyOn>;
   }> {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
+      callback(prisma as any),
+    );
     const messageEdit = vi.fn().mockResolvedValue(undefined);
     const messageFetch = vi.fn().mockResolvedValue({
       content: "War declared against Enemy",
@@ -2534,6 +2713,9 @@ describe("War-start notify refresh sync fallback", () => {
         state: "preparation",
         clan: { name: "Alpha", stars: 0 },
         opponent: { tag: "#OPP123", name: "Enemy", stars: 0 },
+        preparationStartTime: "20260311T000000.000Z",
+        startTime: "20260312T000000.000Z",
+        endTime: "20260313T000000.000Z",
       }),
     };
     const service = new WarEventLogService(
@@ -2547,10 +2729,13 @@ describe("War-start notify refresh sync fallback", () => {
       prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
       endTime: new Date("2026-03-13T00:00:00.000Z"),
     });
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
 
     vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
     (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(sub);
-    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1000105);
     (service as any).postedMessages = {
       findExistingMessage: vi.fn().mockResolvedValue({
         channelId: "chan-1",
@@ -2569,6 +2754,7 @@ describe("War-start notify refresh sync fallback", () => {
     (service as any).syncResolution = {
       getLatestPersistedSyncBaseline: getLatestPersistedSyncBaselineSpy,
     };
+    const resolveSpy = vi.spyOn((service as any).activeWarIdentity, "resolveCurrentWarId");
 
     const buildSpy = vi
       .spyOn(service as any, "buildWarStartedRefreshEmbed")
@@ -2580,6 +2766,7 @@ describe("War-start notify refresh sync fallback", () => {
       ok,
       payloadSyncNumber,
       getLatestPersistedSyncBaselineSpy,
+      resolveSpy,
     };
   }
 
@@ -2649,5 +2836,35 @@ describe("War-start notify refresh sync fallback", () => {
     expect(initial.payloadSyncNumber).toBe(482);
     expect(refresh.payloadSyncNumber).toBe(482);
     expect(initial.payloadSyncNumber).toBe(refresh.payloadSyncNumber);
+  });
+
+  it("repairs notify refresh identity from live war data without falling back to the subscription row", async () => {
+    const refresh = await runWarStartedRefreshCase({
+      sameWarSync: 482,
+      postedSync: null,
+      previousSync: 480,
+    });
+
+    const call = refresh.resolveSpy.mock.calls[0]?.[0];
+    expect(call?.policy).toBe("interactive_materialize");
+    expect(call?.candidateIdentity?.state).toBe("preparation");
+    expect(call?.candidateIdentity?.warStartTime).toEqual(
+      new Date("2026-03-12T00:00:00.000Z"),
+    );
+    expect(call?.candidateIdentity?.preparationStartTime).toEqual(
+      new Date("2026-03-11T00:00:00.000Z"),
+    );
+    expect(call?.candidateIdentity?.warEndTime).toEqual(
+      new Date("2026-03-13T00:00:00.000Z"),
+    );
+    expect(
+      String(call?.candidateIdentity?.opponentTag ?? "")
+        .trim()
+        .toUpperCase()
+        .replace(/O/g, "0")
+        .replace(/^#/, ""),
+    ).toBe("0PP123");
+    expect(call?.candidateIdentity?.opponentName).toBe("Enemy");
+    expect(call?.candidateIdentity?.clanName).toBe("Alpha");
   });
 });

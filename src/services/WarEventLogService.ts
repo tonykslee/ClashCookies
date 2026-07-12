@@ -146,32 +146,6 @@ function normalizeNotifyRoleId(
   return null;
 }
 
-function normalizeStateForIdentity(
-  value: string | null | undefined,
-): "preparation" | "inWar" | "notInWar" {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "preparation") return "preparation";
-  if (normalized === "inwar") return "inWar";
-  return "notInWar";
-}
-
-function normalizeDateForIdentity(
-  value: string | Date | null | undefined,
-): Date | null {
-  if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value : null;
-  }
-  const parsed = parseCocTime(typeof value === "string" ? value : null);
-  return parsed ? new Date(parsed) : null;
-}
-
-function sanitizeTextForIdentity(
-  value: string | null | undefined,
-): string | null {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || null;
-}
-
 function buildNotifyEventContextLine(
   eventType: EventType,
   opponentNameInput: string | null | undefined,
@@ -1529,13 +1503,14 @@ export class WarEventLogService {
   private readonly postedMessages: PostedMessageService;
   private readonly botLogChannels = new BotLogChannelService();
   private readonly maintenanceWindowService: MaintenanceWindowService;
-  private readonly activeWarIdentity = new ActiveWarIdentityService();
+  private readonly activeWarIdentity: ActiveWarIdentityService;
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
   /** Purpose: initialize service dependencies. */
   constructor(
     private readonly client: Client,
     private readonly coc: CoCService,
+    deps?: { activeWarIdentity?: ActiveWarIdentityService },
   ) {
     this.points = new PointsProjectionService(coc);
     this.pointsGate = new PointsDirectFetchGateService();
@@ -1560,6 +1535,8 @@ export class WarEventLogService {
       client,
       this.botLogChannels,
     );
+    this.activeWarIdentity =
+      deps?.activeWarIdentity ?? new ActiveWarIdentityService();
   }
 
   /** Purpose: poll. */
@@ -3000,70 +2977,12 @@ export class WarEventLogService {
     clanTag: string;
     candidateIdentity?: ActiveWarIdentityCandidate | null;
   }): Promise<ActiveWarIdentityResult> {
-    if (
-      this.ensureCurrentWarId !==
-      WarEventLogService.prototype.ensureCurrentWarId
-    ) {
-      const mockedWarId = await this.ensureCurrentWarId(params as any);
-      if (
-        mockedWarId !== null &&
-        mockedWarId !== undefined &&
-        Number.isFinite(Number(mockedWarId)) &&
-        Math.trunc(Number(mockedWarId)) > 0
-      ) {
-        const candidate = params.candidateIdentity ?? null;
-        const candidateState = normalizeStateForIdentity(
-          candidate?.state ?? "notInWar",
-        );
-        return {
-          status: "resolved",
-          source: "existing_exact_row",
-          warId: Math.trunc(Number(mockedWarId)),
-          identity: {
-            state: candidateState === "notInWar" ? "preparation" : candidateState,
-            warStartTime:
-              normalizeDateForIdentity(candidate?.warStartTime ?? null) ??
-              new Date(0),
-            preparationStartTime:
-              normalizeDateForIdentity(candidate?.preparationStartTime ?? null) ??
-              new Date(0),
-            warEndTime:
-              normalizeDateForIdentity(candidate?.warEndTime ?? null) ??
-              new Date(0),
-            opponentTag: normalizeTag(candidate?.opponentTag ?? null) ?? "UNKNOWN",
-            opponentName:
-              sanitizeTextForIdentity(candidate?.opponentName ?? null) ??
-              "UNKNOWN",
-            clanName:
-              sanitizeTextForIdentity(candidate?.clanName ?? null) ??
-              params.clanTag,
-          },
-          identityPersisted: true,
-          liveValidated: params.policy !== "preserve_persisted",
-        };
-      }
-      return {
-        status: "blocked",
-        warId: null,
-        reason: "persistence_failure",
-      };
-    }
     return this.activeWarIdentity.resolveCurrentWarId({
       policy: params.policy,
       guildId: params.guildId,
       clanTag: params.clanTag,
       candidateIdentity: params.candidateIdentity ?? null,
     });
-  }
-
-  private async ensureCurrentWarId(params: {
-    policy: ActiveWarIdentityPolicy;
-    guildId: string;
-    clanTag: string;
-    candidateIdentity?: ActiveWarIdentityCandidate | null;
-  }): Promise<number | null> {
-    const resolution = await this.resolveCurrentWarIdentity(params);
-    return resolution.status === "resolved" ? resolution.warId : null;
   }
 
   private async processSubscription(
@@ -3148,14 +3067,9 @@ export class WarEventLogService {
         ? "notInWar"
         : resolvedState;
     const prevState: WarState = deriveState(sub.state ?? "notInWar");
-    const nextClanName =
-      String(war?.clan?.name ?? sub.clanName ?? sub.clanTag).trim() ||
-      sub.clanTag;
-    const nextOpponentTag = normalizeTag(
-      war?.opponent?.tag ?? sub.opponentTag ?? "",
-    );
-    const nextOpponentName =
-      String(war?.opponent?.name ?? sub.opponentName ?? "").trim() || null;
+    const nextClanName = String(war?.clan?.name ?? "").trim() || null;
+    const nextOpponentTag = normalizeTag(war?.opponent?.tag ?? null);
+    const nextOpponentName = String(war?.opponent?.name ?? "").trim() || null;
     const timing = resolveActiveWarTiming({
       observedWarStartTime: parseCocTime(war?.startTime ?? null),
       observedWarEndTime: parseCocTime(war?.endTime ?? null),
@@ -3164,8 +3078,7 @@ export class WarEventLogService {
     });
     const nextWarStartTime = timing.warStartTime;
     const nextWarEndTime = timing.warEndTime;
-    const nextPrepStartTime =
-      parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
+    const nextPrepStartTime = parseCocTime(war?.preparationStartTime ?? null);
     // This poller keeps its own identity/timing reconciliation because it also
     // decides outage recovery and event emission; the shared active-war helper
     // used by `/fwa match` is intentionally narrower and command-focused.
@@ -3669,9 +3582,9 @@ export class WarEventLogService {
       ? ({
           eventType,
           clanTag: sub.clanTag,
-          clanName: effectiveClanName,
+          clanName: effectiveClanName ?? sub.clanTag,
           opponentTag: effectiveOpponentTag,
-          opponentName: effectiveOpponentName || sub.opponentName || "Unknown",
+          opponentName: effectiveOpponentName || "Unknown",
           syncNumber: syncNumberForEvent,
           notifyRole: sub.notifyRole,
           pingRole: sub.pingRole,
@@ -3708,6 +3621,12 @@ export class WarEventLogService {
       outcome: nextOutcome,
       matchType: nextMatchType,
       inferredMatchType: nextInferredMatchType,
+      prepStartTime: effectivePrepStartTime,
+      startTime: effectiveWarStartTime,
+      endTime: effectiveWarEndTime,
+      opponentTag: effectiveOpponentTag,
+      opponentName: effectiveOpponentName,
+      clanName: effectiveClanName,
       warStartFwaPoints: nextWarStartFwaPoints,
       warEndFwaPoints: nextWarEndFwaPoints,
       clanStars: nextClanStars,
@@ -5236,22 +5155,14 @@ export class WarEventLogService {
     const state = deriveState(String(war.state ?? ""));
     if (state !== "preparation" && state !== "inWar") return false;
 
-    const prepStartTime =
-      parseCocTime(war.preparationStartTime ?? null) ??
-      sub.prepStartTime ??
-      null;
-    const warStartTime =
-      parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
-    const warEndTime = parseCocTime(war.endTime ?? null) ?? sub.endTime ?? null;
+    const prepStartTime = parseCocTime(war.preparationStartTime ?? null);
+    const warStartTime = parseCocTime(war.startTime ?? null);
+    const warEndTime = parseCocTime(war.endTime ?? null);
     const nextClanName =
-      String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() ||
-      sub.clanTag;
-    const nextOpponentTag = normalizeTag(
-      war.opponent?.tag ?? sub.opponentTag ?? "",
-    );
+      String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() || sub.clanTag;
+    const nextOpponentTag = normalizeTag(war.opponent?.tag ?? null);
     const nextOpponentName =
-      String(war.opponent?.name ?? sub.opponentName ?? "Unknown").trim() ||
-      "Unknown";
+      String(war.opponent?.name ?? sub.opponentName ?? "Unknown").trim() || "Unknown";
     const nextClanStars = Number.isFinite(Number(war.clan?.stars))
       ? Number(war.clan?.stars)
       : sub.clanStars;
@@ -5259,7 +5170,7 @@ export class WarEventLogService {
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
     const notifyIdentityResolution = await this.resolveCurrentWarIdentity({
-      policy: "poll_reconcile",
+      policy: "interactive_materialize",
       guildId: sub.guildId,
       clanTag: sub.clanTag,
       candidateIdentity: {
@@ -5476,22 +5387,12 @@ export class WarEventLogService {
       return "frozen";
     }
 
-    const prepStartTime =
-      parseCocTime(war.preparationStartTime ?? null) ??
-      sub.prepStartTime ??
-      null;
-    const warStartTime =
-      parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
+    const prepStartTime = parseCocTime(war.preparationStartTime ?? null);
+    const warStartTime = parseCocTime(war.startTime ?? null);
     const warEndTime = parseCocTime(war.endTime ?? null);
-    const nextClanName =
-      String(war.clan?.name ?? sub.clanName ?? sub.clanTag).trim() ||
-      sub.clanTag;
-    const nextOpponentTag = normalizeTag(
-      war.opponent?.tag ?? sub.opponentTag ?? "",
-    );
-    const nextOpponentName =
-      String(war.opponent?.name ?? sub.opponentName ?? "Unknown").trim() ||
-      "Unknown";
+    const nextClanName = String(war.clan?.name ?? "").trim() || null;
+    const nextOpponentTag = normalizeTag(war.opponent?.tag ?? null);
+    const nextOpponentName = String(war.opponent?.name ?? "").trim() || null;
     const nextClanStars = Number.isFinite(Number(war.clan?.stars))
       ? Number(war.clan?.stars)
       : sub.clanStars;
@@ -5499,7 +5400,7 @@ export class WarEventLogService {
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
     const battleDayIdentityResolution = await this.resolveCurrentWarIdentity({
-      policy: "poll_reconcile",
+      policy: "interactive_materialize",
       guildId: sub.guildId,
       clanTag: sub.clanTag,
       candidateIdentity: {

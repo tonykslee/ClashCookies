@@ -399,16 +399,23 @@ export class ActiveWarIdentityService {
           startTime: candidate.physical.warStartTime,
           opponentTag: `#${candidate.physical.opponentTag}`,
         };
-        if (candidate.metadata.preparationStartTime) {
-          updateData.prepStartTime = candidate.metadata.preparationStartTime;
-        }
-        if (candidate.metadata.warEndTime) {
-          updateData.endTime = candidate.metadata.warEndTime;
-        }
-        if (candidate.metadata.opponentName !== null) {
+        if (currentExactPhysicalMatch) {
+          if (candidate.metadata.preparationStartTime) {
+            updateData.prepStartTime = candidate.metadata.preparationStartTime;
+          }
+          if (candidate.metadata.warEndTime) {
+            updateData.endTime = candidate.metadata.warEndTime;
+          }
+          if (candidate.metadata.opponentName !== null) {
+            updateData.opponentName = candidate.metadata.opponentName;
+          }
+          if (candidate.metadata.clanName !== null) {
+            updateData.clanName = candidate.metadata.clanName;
+          }
+        } else {
+          updateData.prepStartTime = candidate.metadata.preparationStartTime ?? null;
+          updateData.endTime = candidate.metadata.warEndTime ?? null;
           updateData.opponentName = candidate.metadata.opponentName;
-        }
-        if (candidate.metadata.clanName !== null) {
           updateData.clanName = candidate.metadata.clanName;
         }
 

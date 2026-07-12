@@ -121,15 +121,25 @@ describe("AutoRoleSchedulerService", () => {
       skipped: 0,
       failed: 0,
     });
+    let intervalHandler: TimerHandler | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      intervalHandler = handler;
+      expect(timeout).toBe(12_345);
+      return 1 as any;
+    }) as any);
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => undefined);
 
     const result = scheduler.start();
 
     expect(result).toEqual({ started: true });
+    expect(intervalHandler).toEqual(expect.any(Function));
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
     expect(runCycleSpy).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(12_345);
+    intervalHandler?.();
     expect(runCycleSpy).toHaveBeenCalledTimes(2);
 
     scheduler.stop();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
   });
 
   it("skips startup entirely in mirror mode", () => {
