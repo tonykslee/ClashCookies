@@ -39,6 +39,29 @@ function normalizeTag(input: string | null | undefined): string | null {
   return normalized ? normalized : null;
 }
 
+function querySqlText(query: any): string {
+  if (query && Array.isArray(query.strings)) {
+    return query.strings.join("?");
+  }
+  return String(query ?? "");
+}
+
+function createKeyLockManager() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(key: string): Promise<() => void> {
+      const previous = tails.get(key) ?? Promise.resolve();
+      let release!: () => void;
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      tails.set(key, previous.then(() => current));
+      await previous;
+      return () => release();
+    },
+  };
+}
+
 function makeWarIdentity(params: {
   currentWarId: number | null;
   currentWarStartTime: Date | null;
@@ -184,62 +207,163 @@ describe("ActiveWarIdentityService", () => {
       ]),
     );
     let sequence = 1000000;
-    let lock = Promise.resolve();
-    const tx = {
-      $executeRaw: vi.fn().mockResolvedValue(0),
-      $queryRaw: vi.fn().mockImplementation(async () => [{ warId: sequence++ }]),
-      currentWar: {
-        findUnique: vi.fn().mockImplementation(async ({ where }: any) => {
-          const key = `${where.clanTag_guildId.guildId}|${where.clanTag_guildId.clanTag}`;
-          const row = rows.get(key) ?? null;
-          return row ? { ...row } : null;
-        }),
-        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
-          const clanTag = where.clanTag;
-          const startTime = where.startTime;
-          const opponentTag = where.opponentTag;
-          const warIdNotNull = where.warId?.not === null || where.warId?.not === undefined ? true : false;
-          return [...rows.entries()]
-            .map(([key, row]) => ({ key, row }))
-            .filter(({ row }) => {
-              if (clanTag && row.clanTag !== clanTag) return false;
-              if (startTime && row.startTime instanceof Date && row.startTime.getTime() !== startTime.getTime()) return false;
-              if (opponentTag && normalizeTag(String(row.opponentTag ?? "")) !== normalizeTag(String(opponentTag ?? ""))) return false;
-              if (warIdNotNull && (row.warId === null || row.warId === undefined)) return false;
-              return true;
-            })
-            .map(({ row }) => ({ ...row }));
-        }),
-        update: vi.fn().mockImplementation(async ({ where, data, select }: any) => {
-          const key = `${where.clanTag_guildId.guildId}|${where.clanTag_guildId.clanTag}`;
-          const current = rows.get(key);
-          if (!current) {
-            throw new Error("missing row");
+    const rowLocks = createKeyLockManager();
+    const physicalLocks = createKeyLockManager();
+    const lockEvents: string[] = [];
+    const transactions: Array<any> = [];
+    const makeTx = () => {
+      const heldReleases: Array<() => void> = [];
+      const acquireLock = async (kind: "row" | "physical", key: string) => {
+        lockEvents.push(`acquire:${kind}:${key}`);
+        const release = await (kind === "row"
+          ? rowLocks.acquire(key)
+          : physicalLocks.acquire(key));
+        heldReleases.push(() => {
+          lockEvents.push(`release:${kind}:${key}`);
+          release();
+        });
+      };
+      return {
+        $executeRaw: vi.fn().mockImplementation(async (query: any) => {
+          const sql = querySqlText(query);
+          if (sql.includes("pg_advisory_xact_lock(hashtextextended(")) {
+            await acquireLock("physical", String(query?.values?.[0] ?? ""));
           }
-          const next = { ...current, ...data };
-          rows.set(key, next);
-          if (select) {
-            const projected: Record<string, unknown> = {};
-            for (const field of Object.keys(select)) {
-              projected[field] = next[field as keyof typeof next];
+          return 0;
+        }),
+        $queryRaw: vi.fn().mockImplementation(async (query: any) => {
+          const sql = querySqlText(query);
+          if (sql.includes("FOR UPDATE") && sql.includes('"CurrentWar"')) {
+            const guildId = String(query?.values?.[0] ?? "");
+            const clanTag = String(query?.values?.[1] ?? "");
+            await acquireLock("row", `${guildId}|${clanTag}`);
+            const row = rows.get(`${guildId}|${clanTag}`) ?? null;
+            return row ? [{ ...row }] : [];
+          }
+          if (
+            sql.includes('SELECT cw."warId"') &&
+            sql.includes('FROM "CurrentWar" cw') &&
+            sql.includes('cw."startTime"') &&
+            sql.includes('cw."opponentTag"') &&
+            sql.includes('cw."warId" IS NOT NULL')
+          ) {
+            const clanTag = String(query?.values?.[0] ?? "");
+            const startTime = query?.values?.[1];
+            const opponentTag = String(query?.values?.[2] ?? "");
+            return [...rows.values()]
+              .filter((row) => {
+                if (row.clanTag !== `#${clanTag.replace(/^#/, "")}`) return false;
+                if (
+                  startTime instanceof Date &&
+                  row.startTime instanceof Date &&
+                  row.startTime.getTime() !== startTime.getTime()
+                )
+                  return false;
+                if (
+                  normalizeTag(String(row.opponentTag ?? "")) !==
+                  normalizeTag(opponentTag)
+                )
+                  return false;
+                return row.warId !== null && row.warId !== undefined;
+              })
+              .map((row) => ({ warId: row.warId }));
+          }
+          if (sql.includes('nextval(\'"CurrentWar_warId_seq"\'::regclass)')) {
+            return [{ warId: sequence++ }];
+          }
+          return [];
+        }),
+        currentWar: {
+          findUnique: vi.fn().mockImplementation(async ({ where }: any) => {
+            const key = `${where.clanTag_guildId.guildId}|${where.clanTag_guildId.clanTag}`;
+            const row = rows.get(key) ?? null;
+            return row ? { ...row } : null;
+          }),
+          findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+            const clanTag = where.clanTag;
+            const startTime = where.startTime;
+            const opponentTag = where.opponentTag;
+            const warIdNotNull =
+              where.warId?.not === null || where.warId?.not === undefined
+                ? true
+                : false;
+            return [...rows.entries()]
+              .map(([key, row]) => ({ key, row }))
+              .filter(({ row }) => {
+                if (clanTag && row.clanTag !== clanTag) return false;
+                if (
+                  startTime &&
+                  row.startTime instanceof Date &&
+                  row.startTime.getTime() !== startTime.getTime()
+                )
+                  return false;
+                if (
+                  opponentTag &&
+                  normalizeTag(String(row.opponentTag ?? "")) !==
+                    normalizeTag(String(opponentTag ?? ""))
+                )
+                  return false;
+                if (
+                  warIdNotNull &&
+                  (row.warId === null || row.warId === undefined)
+                )
+                  return false;
+                return true;
+              })
+              .map(({ row }) => ({ ...row }));
+          }),
+          update: vi.fn().mockImplementation(async ({ where, data, select }: any) => {
+            const key = `${where.clanTag_guildId.guildId}|${where.clanTag_guildId.clanTag}`;
+            const current = rows.get(key);
+            if (!current) {
+              throw new Error("missing row");
             }
-            return projected;
+            const next = { ...current, ...data };
+            rows.set(key, next);
+            if (select) {
+              const projected: Record<string, unknown> = {};
+              for (const field of Object.keys(select)) {
+                projected[field] = next[field as keyof typeof next];
+              }
+              return projected;
+            }
+            return { ...next };
+          }),
+        },
+        releaseLocks: () => {
+          while (heldReleases.length > 0) {
+            const release = heldReleases.pop();
+            release?.();
           }
-          return { ...next };
-        }),
-      },
+        },
+      };
     };
     const db = {
       $transaction: vi.fn().mockImplementation(async (callback: any) => {
-        const run = lock.then(() => callback(tx));
-        lock = run.then(
-          () => undefined,
-          () => undefined,
-        );
-        return run;
+        const tx = makeTx();
+        transactions.push(tx);
+        try {
+          return await callback(tx);
+        } finally {
+          tx.releaseLocks();
+        }
       }),
     };
-    return { db, tx, rows, setSequence: (value: number) => { sequence = value; } };
+    return {
+      db,
+      rows,
+      transactions,
+      lockEvents,
+      setSequence: (value: number) => {
+        sequence = value;
+      },
+    };
+  }
+
+  function hasSql(tx: any, pattern: string): boolean {
+    return tx.$queryRaw.mock.calls.some(([query]: [any]) =>
+      querySqlText(query).includes(pattern),
+    );
   }
 
   it("materializes a missing id for an exact interactive row and writes only the war id", async () => {
@@ -267,7 +391,8 @@ describe("ActiveWarIdentityService", () => {
       liveValidated: true,
       identityPersisted: true,
     });
-    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(hasSql(harness.transactions[0], "FOR UPDATE")).toBe(true);
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(true);
     expect(harness.rows.get("guild-1|#2RYGLU2UY")).toMatchObject({ warId: 1000610 });
     expect(harness.rows.get("guild-1|#2RYGLU2UY")).toMatchObject({
       startTime: new Date("2026-07-12T15:22:26.000Z"),
@@ -301,7 +426,7 @@ describe("ActiveWarIdentityService", () => {
       reason: "persisted_identity_mismatch",
       warId: null,
     });
-    expect(harness.tx.$queryRaw).not.toHaveBeenCalled();
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(false);
     expect(harness.rows.get("guild-1|#2RYGLU2UY")).toMatchObject({
       warId: 1000609,
       startTime: new Date("2026-07-11T15:22:26.000Z"),
@@ -338,7 +463,8 @@ describe("ActiveWarIdentityService", () => {
       liveValidated: true,
       identityPersisted: true,
     });
-    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(hasSql(harness.transactions[0], "FOR UPDATE")).toBe(true);
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(true);
     expect(harness.rows.get("guild-1|#2RYGLU2UY")).toMatchObject({
       warId: 1000611,
       state: "preparation",
@@ -373,8 +499,8 @@ describe("ActiveWarIdentityService", () => {
       source: "preserved_during_outage_recovery",
       liveValidated: false,
     });
-    expect(harness.tx.$queryRaw).not.toHaveBeenCalled();
-    expect(harness.tx.currentWar.update).not.toHaveBeenCalled();
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(false);
+    expect(harness.transactions[0].currentWar.update).not.toHaveBeenCalled();
   });
 
   it("blocks outage preservation when the persisted row has no valid id", async () => {
@@ -399,8 +525,8 @@ describe("ActiveWarIdentityService", () => {
       reason: "missing_preserved_id",
       warId: null,
     });
-    expect(harness.tx.$queryRaw).not.toHaveBeenCalled();
-    expect(harness.tx.currentWar.update).not.toHaveBeenCalled();
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(false);
+    expect(harness.transactions[0].currentWar.update).not.toHaveBeenCalled();
   });
 
   it("reuses one global exact identity across guild rows", async () => {
@@ -439,7 +565,7 @@ describe("ActiveWarIdentityService", () => {
     expect(second.status).toBe("resolved");
     expect(first.warId).toBe(1000610);
     expect(second.warId).toBe(1000610);
-    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(true);
   });
 
   it("allocates distinct ids for different wars resolved concurrently", async () => {
@@ -489,6 +615,155 @@ describe("ActiveWarIdentityService", () => {
     expect(first.status).toBe("resolved");
     expect(second.status).toBe("resolved");
     expect(first.warId).not.toBe(second.warId);
-    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(harness.transactions).toHaveLength(2);
+    expect(hasSql(harness.transactions[0], "nextval")).toBe(true);
+    expect(hasSql(harness.transactions[1], "nextval")).toBe(true);
+  });
+
+  it("serializes concurrent reconciles on the same row without mixing identities", async () => {
+    const harness = makeHarness([
+      {
+        guildId: "guild-1",
+        clanTag: "#2RYGLU2UY",
+        row: makeRow({ warId: null }),
+      },
+    ]);
+    harness.setSequence(1000610);
+    const service = new ActiveWarIdentityService(harness.db as any);
+    const firstCandidate = makeCandidate({
+      warStartTime: "20260712T152226.000Z",
+      preparationStartTime: "20260711T152226.000Z",
+      warEndTime: "20260713T152226.000Z",
+      opponentTag: "#LYPLQQUC",
+      opponentName: "First Opponent",
+    });
+    const secondCandidate = makeCandidate({
+      warStartTime: "20260713T152226.000Z",
+      preparationStartTime: "20260712T152226.000Z",
+      warEndTime: "20260714T152226.000Z",
+      opponentTag: "#DIFFOPP",
+      opponentName: "Second Opponent",
+    });
+
+    const firstPromise = service.resolveCurrentWarId({
+      policy: "poll_reconcile",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: firstCandidate,
+    });
+    await Promise.resolve();
+    const secondPromise = service.resolveCurrentWarId({
+      policy: "poll_reconcile",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: secondCandidate,
+    });
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    const finalRow = harness.rows.get("guild-1|#2RYGLU2UY") as Record<string, unknown>;
+
+    expect(first.status).toBe("resolved");
+    expect(second.status).toBe("resolved");
+    expect(harness.lockEvents.filter((event) => event.startsWith("acquire:row:guild-1|#2RYGLU2UY"))).toHaveLength(2);
+    expect(harness.lockEvents.filter((event) => event.startsWith("acquire:physical:"))).toHaveLength(2);
+
+    const finalStartTime = (finalRow.startTime as Date).toISOString();
+    const finalOpponentTag = normalizeTag(String(finalRow.opponentTag ?? ""));
+    const firstShape =
+      finalStartTime === "2026-07-12T15:22:26.000Z" &&
+      finalOpponentTag === "LYPLQQUC";
+    const secondShape =
+      finalStartTime === "2026-07-13T15:22:26.000Z" &&
+      finalOpponentTag === "DIFFOPP";
+
+    expect(firstShape || secondShape).toBe(true);
+    expect(firstShape && secondShape).toBe(false);
+  });
+
+  it("serializes preserve and reconcile on the same row without cross-wiring identity fields", async () => {
+    const harness = makeHarness([
+      {
+        guildId: "guild-1",
+        clanTag: "#2RYGLU2UY",
+        row: makeRow({ warId: 1000610 }),
+      },
+    ]);
+    harness.setSequence(1000611);
+    const service = new ActiveWarIdentityService(harness.db as any);
+    const reconcileCandidate = makeCandidate({
+      warStartTime: "20260713T152226.000Z",
+      preparationStartTime: "20260712T152226.000Z",
+      warEndTime: "20260714T152226.000Z",
+      opponentTag: "#DIFFOPP",
+      opponentName: "Second Opponent",
+    });
+
+    const preservePromise = service.resolveCurrentWarId({
+      policy: "preserve_persisted",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: null,
+    });
+    await Promise.resolve();
+    const reconcilePromise = service.resolveCurrentWarId({
+      policy: "poll_reconcile",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: reconcileCandidate,
+    });
+
+    const [preserved, reconciled] = await Promise.all([
+      preservePromise,
+      reconcilePromise,
+    ]);
+    const finalRow = harness.rows.get("guild-1|#2RYGLU2UY") as Record<string, unknown>;
+
+    expect(preserved.status).toBe("resolved");
+    expect(preserved.warId).toBe(1000610);
+    expect(reconciled.status).toBe("resolved");
+    expect(harness.lockEvents.filter((event) => event.startsWith("acquire:row:guild-1|#2RYGLU2UY"))).toHaveLength(2);
+
+    const finalStartTime = (finalRow.startTime as Date).toISOString();
+    const finalOpponentTag = normalizeTag(String(finalRow.opponentTag ?? ""));
+    const preservedShape =
+      finalStartTime === "2026-07-12T15:22:26.000Z" &&
+      finalOpponentTag === "LYPLQQUC";
+    const reconciledShape =
+      finalStartTime === "2026-07-13T15:22:26.000Z" &&
+      finalOpponentTag === "DIFFOPP";
+
+    expect(preservedShape || reconciledShape).toBe(true);
+    expect(preservedShape && reconciledShape).toBe(false);
+  });
+
+  it("blocks conflicting preexisting global ids for the same physical war", async () => {
+    const harness = makeHarness([
+      {
+        guildId: "guild-1",
+        clanTag: "#2RYGLU2UY",
+        row: makeRow({ warId: 1000610 }),
+      },
+      {
+        guildId: "guild-2",
+        clanTag: "#2RYGLU2UY",
+        row: makeRow({ warId: 1000611 }),
+      },
+    ]);
+    const service = new ActiveWarIdentityService(harness.db as any);
+
+    const result = await service.resolveCurrentWarId({
+      policy: "poll_reconcile",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      candidateIdentity: makeCandidate(),
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "conflicting_global_identity_ids",
+      warId: null,
+    });
+    expect(harness.rows.get("guild-1|#2RYGLU2UY")).toMatchObject({ warId: 1000610 });
+    expect(harness.rows.get("guild-2|#2RYGLU2UY")).toMatchObject({ warId: 1000611 });
   });
 });
