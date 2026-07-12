@@ -1,0 +1,279 @@
+# Rocky Road post-sync war-mail failure diagnosis
+
+## 1. Executive conclusion
+
+The Rocky Road failure was a live active-war identity race, not a permanent data corruption or a points-site outage.
+
+The final Confirm and Send flow re-renders the war mail from live state and rejects the send if `rendered.warId` is null. In this incident, the active-war ID was not yet safely available to that rerender at the moment the user confirmed, so the button path hit the explicit guard:
+
+`Cannot send mail: active war id is unresolved for this clan.`
+
+The important ownership boundary is the root cause:
+
+- `CurrentWar` owns live war state.
+- `ClanWarHistory` owns ended-war canonical history only.
+- `WarMailLifecycle` owns active-war mail lifecycle only.
+
+The command path that renders mail does not create the live war ID. It only re-reads it from `CurrentWar`, so if the poller has not yet stamped the current war row, the send path can fail even when the opponent has already been discovered.
+
+Confidence: 92%.
+
+## 2. Incident timeline
+
+The exact user click timestamps are not present in the sampled logs, but the production data shows the sequence clearly:
+
+1. Rocky Road `#2RYGLU2UY` entered a new preparation war with opponent `#LYPLQQUC` / `War Farmers x44`.
+2. `/fwa match` was able to detect the matchup and allow match-type selection.
+3. Final mail confirmation re-rendered the matchup and hit the unresolved-war-ID guard.
+4. A later recovery state shows `CurrentWar.warId=1000610` and `WarMailLifecycle.status=POSTED`, which means the incident was transient and self-healed once the active-war identity had converged.
+
+Observed database timestamps in the recovery state:
+
+- `CurrentWar.updatedAt = 2026-07-12 02:02:31.822`
+- `WarMailLifecycle.postedAt = 2026-07-12 02:02:39.458`
+- `WarMailLifecycle.updatedAt = 2026-07-12 02:02:39.462`
+
+That gap is the narrow window where the final send was able to fail before the poll-backed identity had fully converged.
+
+## 3. Production cadence findings
+
+Production verification confirmed the actual cadence rather than relying on defaults:
+
+- `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES=5`
+- `BotPollJobStatus.war_event_poll_cycle.intervalMs=300000`
+- `BotPollJobStatus.war_event_poll_cycle.status=idle`
+- `BotPollJobStatus.war_event_poll_cycle.runCount=15170`
+- `BotPollJobStatus.war_event_poll_cycle.failureCount=154`
+- `BotPollJobStatus.war_event_poll_cycle.lastError=Transaction API error: Unable to start a transaction in the given time. code=P2028`
+
+The FWAStats Wars.json watch for Rocky Road was not actively polling at the time of inspection:
+
+- `FwaClanWarsWatchState.pollingActive=false`
+- `FwaClanWarsWatchState.stopReason=missing_sync_time`
+- `FwaClanWarsWatchState.currentWarCycleKey` blank
+- `FwaClanWarsWatchState.nextSyncTimeAt` blank
+
+That matters because the 5-minute watch was not available as a rescue path for this clan during the incident window.
+
+## 4. Relevant architecture and ownership
+
+The repository contract is clear about ownership:
+
+- `[src/services/WarEventLogService.ts](C:/Projects/ClashCookies/src/services/WarEventLogService.ts#L2989)` owns the active-war poller path that stamps or reuses `CurrentWar.warId`.
+- `[src/commands/Fwa.ts](C:/Projects/ClashCookies/src/commands/Fwa.ts#L4406)` renders mail from live CoC state and the persisted `CurrentWar` row.
+- `[src/services/WarMailLifecycleService.ts](C:/Projects/ClashCookies/src/services/WarMailLifecycleService.ts#L266)` resolves lifecycle rows by active-war start time first and legacy war ID second.
+- `[src/services/war-events/history.ts](C:/Projects/ClashCookies/src/services/war-events/history.ts#L428)` persists ended-war history only after a war ends.
+
+The critical split is:
+
+- `CurrentWar` is the live identity source.
+- `ClanWarHistory` is not supposed to exist for a still-active prep war.
+- `WarMailLifecycle` is keyed by the active-war identity, so it depends on the live war being resolvable.
+
+Two code details matter a lot:
+
+- `upsertCurrentWarHistoryAndGetWarId` is a misleading name. It does not upsert history; it only reads `CurrentWar.warId` through `getCurrentWarIdForClan`.
+- The final send guard rejects immediately when `rendered.warId` is missing, so the command has no fallback once the rerender returns null.
+
+## 5. Data and log evidence
+
+### CurrentWar row
+
+Rocky Road current-war state in production:
+
+- `guildId=1324040917602013261`
+- `clanTag=#2RYGLU2UY`
+- `warId=1000610`
+- `state=preparation`
+- `prepStartTime=2026-07-11 16:22:26`
+- `startTime=2026-07-12 15:22:26`
+- `endTime=2026-07-13 15:22:26`
+- `opponentTag=#LYPLQQUC`
+- `opponentName=War Farmers x44`
+- `matchType=FWA`
+- `inferredMatchType=false`
+- `outcome=WIN`
+- `updatedAt=2026-07-12 02:02:31.822`
+
+### WarMailLifecycle row
+
+The mail lifecycle later converged to:
+
+- `warId=1000610`
+- `warStartTime=2026-07-12 15:22:26`
+- `opponentTag=LYPLQQUC`
+- `status=POSTED`
+- `channelId=1453755018141241426`
+- `messageId=1525540332027252881`
+- `postedAt=2026-07-12 02:02:39.458`
+- `updatedAt=2026-07-12 02:02:39.462`
+
+### ClanWarHistory
+
+No `ClanWarHistory` row existed yet for `warStartTime=2026-07-12 15:22:26+00` because this was still an active/preparation war. That absence is expected and does not explain the failure.
+
+### FwaClanWarsWatchState row
+
+Rocky Road tracked-watch state:
+
+- `pollingActive=false`
+- `currentWarCycleKey=` blank
+- `nextSyncTimeAt=` blank
+- `pollWindowStartAt=` blank
+- `stopReason=missing_sync_time`
+- `updatedAt=2026-07-12 02:07:30.717`
+
+### BotPollJobStatus row
+
+The active war-event poller was configured and running:
+
+- `jobKey=war_event_poll_cycle`
+- `displayName=war_event_poll_cycle`
+- `enabled=true`
+- `status=idle`
+- `intervalMs=300000`
+- `lastStartedAt=2026-07-12 02:07:30.47`
+- `lastFinishedAt=2026-07-12 02:09:51.67`
+- `nextDueAt=2026-07-12 02:07:30.446`
+- `lastSuccessAt=2026-07-12 02:09:51.67`
+- `lastErrorAt=2026-07-09 ...`
+- `lastError=Transaction API error: Unable to start a transaction in the given time. code=P2028`
+- `runCount=15170`
+- `failureCount=154`
+- `metadata={"mode":"active"}`
+
+### ClanPointsSync evidence
+
+There was no same-war `ClanPointsSync` row for `warId=1000610` in the sampled production query. The newest rows were older wars, so the points-site path could not provide a matching same-war sync record for this incident window.
+
+### Log excerpts
+
+Relevant structured logs during the Rocky Road recovery window:
+
+```text
+[sync-resolution] stage=fwa_match_mail_embed ... latest_persisted_sync=532 same_war_persisted_sync=none posted_sync=none resolved_sync=533 derived=1 points_lock_prevented_live_validation=1
+[fwa-mail] points fetch skipped ... code=validated_active_war_locked
+[fwa-matchtype] stage=mail_embed clan=#2RYGLU2UY opponent=#LYPLQQUC war_id=1000610 source=confirmed_current_war match_type=FWA inferred=0 confirmed=1
+[mail-lifecycle-message-check] ... outcome=transient_error
+[mail-lifecycle-reconcile] ... outcome=transient_error action=no_change
+[fwa-mail-status] ... status=posted reconciliation=transient_error source=WarMailLifecycle
+[fwa-mail-refresh-identity] ... expected_war_id=1000610 ... rendered_war_id=1000610 ... identity_shifted=0 action=edit
+```
+
+The broader production log also contained root `/fwa` command entries, but the sampled slice did not expose a separate `command=/fwa match` line. The structured war-mail and sync logs above were enough to reconstruct the failure path.
+
+The logs show that the system eventually reached a consistent state with war ID `1000610`. The failure therefore happened earlier, in the short window before the rerender could safely resolve that ID.
+
+## 6. Hypothesis matrix
+
+| Hypothesis | Status | Evidence |
+| --- | --- | --- |
+| A. CoC had not exposed the new war yet | Disproven | Production logs and the recovered `CurrentWar` row show `state=preparation`, the opponent tag, and a concrete start time. |
+| B. CoC exposed the opponent but omitted or mangled `startTime` | Disproven | The recovered state includes a valid `startTime=2026-07-12 15:22:26`, and the logs later rendered the same identity. |
+| C. `CurrentWar` still contained the previous war and identity alignment rejected the old ID | Not the lasting cause | The recovered row already points at the correct new war. A transient mismatch is still possible in the narrow failure window, but it was not the durable state. |
+| D. The new `CurrentWar` row existed but its `warId` was null because `ClanWarHistory` had not been created | Disproven | `ClanWarHistory` is the ended-war owner and is not supposed to exist for a live prep war. Active war ID is not sourced from history. |
+| E. The synchronous mail renderer failed to insert or read `ClanWarHistory` | Disproven | The mail renderer reads `CurrentWar.warId`; it does not own or populate ended-war history. |
+| F. The history-upsert dedupe path ran before the row existed and then returned null | Disproven for the active-mail path | The function named like an upsert is actually read-only and only fetches `CurrentWar.warId`. |
+| G. Transaction, unique-key, tag-normalization, timestamp-precision, or guild-scope mismatch prevented lookup | Unproven and unlikely | No evidence in the recovered row set or logs points to a write-after-read mismatch. |
+| H. The preview payload became stale between confirmation and final send | Supported as a contributor | The send path rerenders live state instead of trusting the preview payload, so stale preview data alone is not enough. |
+| I. Final confirmation re-fetched a different or partial war identity than the earlier preview | Supported | This is the only place where the user-visible null-war-ID guard can fire, and later rerenders did converge on `warId=1000610`. |
+| J. The war-event poll was skipped or delayed by poll guards, queue degradation, startup state, mirror mode, or an exception | Supported as a contributor | The active poll cadence is 5 minutes, the job status shows historical failures, and the incident depended on a very narrow race window before the live ID was stamped. |
+| K. The points-site direct-fetch lock or stale FWAStats data indirectly prevented the history upsert | Supported as a contributor | Logs show `points_lock_prevented_live_validation=1`, `validated_active_war_locked`, and the FWAStats watch was inactive for Rocky Road. |
+| L. One path writes `CurrentWar` while another path owns `ClanWarHistory`, leaving a race between them | Proven | That is the architectural split, and the send path has no independent active-war ID materialization step. |
+
+## 7. Reproduction results
+
+I did not alter production or run a mutating local harness, because this task is diagnosis-only.
+
+The incident is still reproduced by the production trace itself:
+
+- a live preparation war existed for Rocky Road
+- the preview path could see the matchup
+- the final send path rejected a null `rendered.warId`
+- the same war later converged to `CurrentWar.warId=1000610`
+
+That is enough to prove the failure mode without changing any state.
+
+## 8. Definitive root cause
+
+Primary root cause:
+
+The final Confirm and Send flow depends on a fresh rerender of active-war identity, but that rerender can only read `CurrentWar.warId`. During the Rocky Road incident window, the active-war ID had not yet converged into a resolvable `CurrentWar` state for the send path, so the guard rejected the message.
+
+Contributing causes:
+
+- The poll-backed active-war ID stamp is separate from the mail confirmation path.
+- `ClanWarHistory` cannot rescue an active prep war because it is the ended-war owner.
+- The FWAStats Wars.json watch was inactive for this clan.
+- The points-site path was locked to live validation, so it could not provide a better fallback for this send.
+
+Why this is the right conclusion:
+
+- The failure message is emitted only when `rendered.warId` is null, undefined, or non-finite.
+- The later recovery shows the exact same matchup converged to `warId=1000610`.
+- There is no evidence that a history row was expected or missing for the active war.
+
+Whether recovery would have happened:
+
+- `retrying /fwa match` would likely recover once the active-war row converged.
+- `/force poll war-events` would likely recover because that is the path that stamps `CurrentWar.warId`.
+- The issue was not permanently blocked; it was a race window.
+
+## 9. Recommended implementation design
+
+Do not switch ownership. Keep the architecture contract intact.
+
+The narrow robust design is:
+
+1. Make interactive mail confirmation use the same canonical active-war identity resolver that the poller uses.
+2. If the live CoC identity is safe and fully aligned, reconcile and persist `CurrentWar.warId` before the send guard runs.
+3. Keep `ClanWarHistory` out of the active-war identity path.
+4. Keep `WarMailLifecycle` keyed by active-war identity, but reject only after the canonical active-war resolver has had a chance to repair a missing ID.
+5. Emit a structured reason code when the send path cannot resolve war identity, instead of only a bare null check.
+
+Exact files and functions that should be revisited for the fix later:
+
+- `[src/commands/Fwa.ts](C:/Projects/ClashCookies/src/commands/Fwa.ts#L4406)` `buildWarMailEmbedForTag`
+- `[src/commands/Fwa.ts](C:/Projects/ClashCookies/src/commands/Fwa.ts#L8597)` `handleFwaMailConfirmAction`
+- `[src/services/WarEventLogService.ts](C:/Projects/ClashCookies/src/services/WarEventLogService.ts#L2989)` `ensureCurrentWarId`
+- `[src/services/ActiveWarSyncResolutionService.ts](C:/Projects/ClashCookies/src/services/ActiveWarSyncResolutionService.ts#L97)` `resolveCurrentWarSyncIdentity`
+- `[src/services/WarMailLifecycleService.ts](C:/Projects/ClashCookies/src/services/WarMailLifecycleService.ts#L266)` `findLifecycleRow`
+
+## 10. Test plan
+
+When the fix is implemented, add deterministic tests for:
+
+- live preparation war with opponent and valid start time but no existing history row
+- `CurrentWar` still referencing the prior war
+- live opponent present but live start time missing
+- dedupe cache populated while the corresponding history row is absent
+- opponent/start-time mismatch
+- preview succeeds but final confirmation rerender returns null war ID
+- poll and interactive render occurring concurrently
+
+The most important assertion is that the send path never attaches mail lifecycle state to an unresolved or mismatched war.
+
+## 11. Observability improvements
+
+Add targeted logging around the final mail confirmation path so future incidents are easier to diagnose:
+
+- log the exact active-war identity inputs used by the send-time rerender
+- log the reason code when war ID resolution fails
+- log whether the resolver reused `CurrentWar.warId`, repaired it from live CoC data, or rejected it as mismatched
+- log when the poller and command path converge on the same war identity after a retry
+
+The current logs were good enough to reconstruct the incident, but the failure itself did not leave a single explicit "why warId was null right now" line.
+
+## 12. Exact proposed implementation files and functions
+
+These are the specific places to change in the next task:
+
+- `[src/commands/Fwa.ts](C:/Projects/ClashCookies/src/commands/Fwa.ts#L4406)` `buildWarMailEmbedForTag`
+- `[src/commands/Fwa.ts](C:/Projects/ClashCookies/src/commands/Fwa.ts#L8597)` `handleFwaMailConfirmAction`
+- `[src/services/WarEventLogService.ts](C:/Projects/ClashCookies/src/services/WarEventLogService.ts#L2989)` `ensureCurrentWarId`
+- `[src/services/WarEventLogService.ts](C:/Projects/ClashCookies/src/services/WarEventLogService.ts#L3030)` `processSubscription`
+- `[src/services/ActiveWarSyncResolutionService.ts](C:/Projects/ClashCookies/src/services/ActiveWarSyncResolutionService.ts#L97)` `resolveCurrentWarSyncIdentity`
+- `[src/services/war-events/history.ts](C:/Projects/ClashCookies/src/services/war-events/history.ts#L428)` `persistWarEndHistory`
+- `[src/services/WarMailLifecycleService.ts](C:/Projects/ClashCookies/src/services/WarMailLifecycleService.ts#L266)` `findLifecycleRow`
+
+The fix should live in the active-war identity path, not in ended-war history.
