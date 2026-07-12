@@ -44,6 +44,7 @@ export type WarComplianceIssueAttackDetail = {
   stars: number;
   attackOrder: number | null;
   isBreach: boolean;
+  timeRemaining?: string | null;
 };
 
 export type WarComplianceBreachContext = {
@@ -457,6 +458,9 @@ function describeActualBehaviorForPlayer(input: {
     isBreach: breachOrders.has(
       normalizeAttackOrder(row.attackOrder ?? null) ?? NaN,
     ),
+    timeRemaining: formatTimeRemaining(
+      input.attackContextByAttack.get(row)?.hoursRemaining ?? null,
+    ),
   }));
   const strictSuffix = reason.strictWindowContext
     ? ` | ${reason.strictWindowContext.starsBeforeAttack}★ | ${reason.strictWindowContext.timeRemaining}`
@@ -493,6 +497,7 @@ function buildTraditionalLossIssuesFromEvaluation(input: {
         stars: detail.stars,
         attackOrder: detail.attackOrder,
         isBreach: detail.isBreach,
+        timeRemaining: detail.timeRemaining,
       })),
       breachContext:
         result.reason.strictWindowContext &&

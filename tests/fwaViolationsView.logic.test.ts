@@ -209,10 +209,70 @@ describe("war plan violations view helpers", () => {
     );
 
     const attackEvidence = embed.fields?.find((field) => field.name === "Attack Evidence")?.value ?? "";
-    expect(attackEvidence).toContain("Attack 1: #? - ? stars");
-    expect(attackEvidence).toContain("Attack 2: #7 - 0 stars (breach)");
+    expect(attackEvidence).toContain("Attack 1: #? - ? stars - unknown left");
+    expect(attackEvidence).toContain("Attack 2: #7 - 0 stars - unknown left (breach)");
     expect(attackEvidence).not.toContain("0 stars at breach");
     expect(attackEvidence).not.toContain("Breach context");
+    assertEmbedWithinLimits(embed);
+  });
+
+  it("renders malformed per-attack timing as unknown left without echoing the source text", () => {
+    const result = makePlayerHistoryResult({
+      entries: [
+        makePlayerHistoryEntry(1, {
+          attackEvidence: {
+            attacks: [
+              {
+                defenderPosition: 12,
+                stars: 0,
+                attackOrder: 1,
+                isBreach: false,
+                timeRemaining: "soon",
+              },
+              {
+                defenderPosition: 13,
+                stars: 1,
+                attackOrder: 2,
+                isBreach: true,
+                timeRemaining: "17h 99m left",
+              },
+              {
+                defenderPosition: 14,
+                stars: 2,
+                attackOrder: 3,
+                isBreach: false,
+                timeRemaining: "",
+              },
+              {
+                defenderPosition: 15,
+                stars: 3,
+                attackOrder: 4,
+                isBreach: true,
+                timeRemaining: "17h 42m left",
+              },
+            ],
+            breachContext: {
+              starsAtBreach: 1,
+              timeRemaining: "33m left",
+            },
+          },
+        }),
+      ],
+    });
+
+    const embed = toEmbedJson(
+      buildWarPlanViolationsPlayerHistoryEmbed({
+        result,
+      }),
+    );
+
+    const attackEvidence = embed.fields?.find((field) => field.name === "Attack Evidence")?.value ?? "";
+    expect(attackEvidence).toContain("Attack 1: #12 - 0 stars - unknown left");
+    expect(attackEvidence).toContain("Attack 2: #13 - 1 stars - unknown left (breach)");
+    expect(attackEvidence).toContain("Attack 3: #14 - 2 stars - unknown left");
+    expect(attackEvidence).toContain("Attack 4: #15 - 3 stars - 17h 42m left (breach)");
+    expect(attackEvidence).not.toContain("soon");
+    expect(attackEvidence).not.toContain("17h 99m left");
     assertEmbedWithinLimits(embed);
   });
 
@@ -580,8 +640,20 @@ describe("war plan violations view helpers", () => {
           opponentName: null,
           attackEvidence: {
             attacks: [
-              { defenderPosition: 12, stars: 0, attackOrder: 1, isBreach: false },
-              { defenderPosition: null, stars: 2.7, attackOrder: 2, isBreach: true },
+              {
+                defenderPosition: 12,
+                stars: 0,
+                attackOrder: 1,
+                isBreach: false,
+                timeRemaining: "18h 5m left",
+              },
+              {
+                defenderPosition: null,
+                stars: 2.7,
+                attackOrder: 2,
+                isBreach: true,
+                timeRemaining: "17h 42m left",
+              },
             ],
             breachContext: { starsAtBreach: null, timeRemaining: null },
           },
@@ -624,8 +696,8 @@ describe("war plan violations view helpers", () => {
     expect(firstPage.fields?.[2]?.name).toBe("Actual");
     expect(firstPage.fields?.[2]?.value).toContain("Actual: Missed the mirror.");
     expect(firstPage.fields?.[3]?.value).toContain("Breach stars at: 44");
-    expect(firstPage.fields?.[4]?.value).toContain("Attack 1: #12 - 0 stars");
-    expect(firstPage.fields?.[4]?.value).toContain("Attack 2: #? - 2 stars (breach)");
+    expect(firstPage.fields?.[4]?.value).toContain("Attack 1: #12 - 0 stars - 18h 5m left");
+    expect(firstPage.fields?.[4]?.value).toContain("Attack 2: #? - 2 stars - 17h 42m left (breach)");
     expect(firstPage.fields?.[5]?.name).toBe("Reason");
     expect(firstPage.fields?.[5]?.value).toContain("Reason: Reason 2");
 

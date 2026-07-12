@@ -1129,12 +1129,14 @@ describe("WarComplianceService", () => {
         stars: 3,
         attackOrder: 1,
         isBreach: true,
+        timeRemaining: "13h 0m left",
       },
       {
         defenderPosition: 1,
         stars: 1,
         attackOrder: 2,
         isBreach: true,
+        timeRemaining: "12h 50m left",
       },
     ]);
   });
@@ -1983,6 +1985,10 @@ describe("WarComplianceService", () => {
     ]);
     expect(helper?.attackDetails?.[0]?.attackOrder).toBe(1);
     expect(helper?.attackDetails?.[1]?.attackOrder).toBe(2);
+    expect(helper?.attackDetails?.map((detail) => detail.timeRemaining)).toEqual([
+      "14h 0m left",
+      "13h 50m left",
+    ]);
 
     const owner5 = report?.notFollowingPlan.find((row) => row.playerName === "owner5");
     expect(owner5?.playerPosition).toBe(5);

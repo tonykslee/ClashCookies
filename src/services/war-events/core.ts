@@ -85,6 +85,7 @@ export type TraditionalComplianceAttackDetail = {
   stars: number;
   attackOrder: number | null;
   isBreach: boolean;
+  timeRemaining?: string | null;
 };
 
 export type TraditionalViolationResult = {
@@ -779,6 +780,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
         stars,
         attackOrder,
         isBreach,
+        timeRemaining: formatTimeRemaining(ctx?.hoursRemaining ?? null),
       });
     }
 
