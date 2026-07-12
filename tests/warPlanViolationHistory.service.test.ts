@@ -3017,6 +3017,7 @@ describe("WarPlanViolationHistoryService", () => {
             stars: 2,
             attackOrder: 7,
             isBreach: true,
+            timeRemaining: null,
           },
         ],
         breachContext: {
@@ -3073,6 +3074,7 @@ describe("WarPlanViolationHistoryService", () => {
             stars: 0,
             attackOrder: 2,
             isBreach: true,
+            timeRemaining: null,
           },
         ],
         breachContext: {

@@ -110,6 +110,13 @@ function normalizeStrictFiniteNumber(input: unknown): number | null {
   return Math.trunc(input);
 }
 
+/** Purpose: normalize per-attack timing text while treating missing or blank values as absent. */
+function normalizeAttackTimeRemaining(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const normalized = input.replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 /** Purpose: render one Town Hall icon with a readable fallback when no application emoji exists. */
 function resolveTownHallIcon(
   townHallLevel: number | null | undefined,
@@ -658,7 +665,8 @@ function formatAttackEvidenceAttackLine(
       : "#?";
   const starsRaw = normalizeStrictFiniteNumber(attack.stars);
   const starsLabel = starsRaw === null ? "? stars" : `${Math.max(0, starsRaw)} stars`;
-  return `Attack ${order}: ${defenderPosition} - ${starsLabel}${attack.isBreach ? " (breach)" : ""}`;
+  const timeRemaining = normalizeAttackTimeRemaining(attack.timeRemaining) ?? "unknown left";
+  return `Attack ${order}: ${defenderPosition} - ${starsLabel} - ${timeRemaining}${attack.isBreach ? " (breach)" : ""}`;
 }
 
 /** Purpose: render the structured breach context line for player-history evidence. */

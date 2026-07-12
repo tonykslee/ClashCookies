@@ -111,6 +111,7 @@ export type WarPlanViolationHistoryAttackEvidenceAttack = {
   stars: number | null;
   attackOrder: number | null;
   isBreach: boolean;
+  timeRemaining?: string | null;
 };
 
 export type WarPlanViolationHistoryAttackEvidenceBreachContext = {
@@ -1031,6 +1032,7 @@ function normalizePlayerHistoryAttackEvidenceAttack(
     stars: normalizeFiniteInteger(record.stars),
     attackOrder: normalizeFiniteInteger(record.attackOrder),
     isBreach: record.isBreach === true,
+    timeRemaining: normalizePlayerHistoryTimeRemaining(record.timeRemaining),
   };
 }
 
