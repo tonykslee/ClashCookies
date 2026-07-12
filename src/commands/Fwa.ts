@@ -10147,6 +10147,7 @@ export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
 export const resolveCurrentWarScopedSyncRowForTest =
   resolveCurrentWarScopedSyncRow;
+export const getCurrentWarIdForClanForTest = getCurrentWarIdForClan;
 export const persistActiveWarMailLifecycleForTest =
   persistActiveWarMailLifecycle;
 export const deriveProjectedOutcomeForTest = deriveProjectedOutcome;
