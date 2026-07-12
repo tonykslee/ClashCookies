@@ -1334,27 +1334,68 @@ function advanceCocWarOutageState(
 /** Purpose: resolve same-war timing while preventing prior-war end-time bleed. */
 function resolveActiveWarTiming(input: {
   observedWarStartTime: Date | null;
+  observedOpponentTag: string | null;
   observedWarEndTime: Date | null;
   previousWarStartTime: Date | null;
+  previousOpponentTag: string | null;
   previousWarEndTime: Date | null;
+  allowPreviousStartReuse?: boolean;
 }): {
   warStartTime: Date | null;
   warEndTime: Date | null;
   sameWarIdentity: boolean;
+  exactPhysicalIdentity: boolean;
 } {
-  const warStartTime = input.observedWarStartTime ?? input.previousWarStartTime;
+  const observedWarStartTime =
+    input.observedWarStartTime instanceof Date &&
+    Number.isFinite(input.observedWarStartTime.getTime())
+      ? input.observedWarStartTime
+      : null;
+  const previousWarStartTime =
+    input.previousWarStartTime instanceof Date &&
+    Number.isFinite(input.previousWarStartTime.getTime())
+      ? input.previousWarStartTime
+      : null;
+  const observedOpponentTag = normalizeTag(input.observedOpponentTag ?? null);
+  const previousOpponentTag = normalizeTag(input.previousOpponentTag ?? null);
+  const exactPhysicalIdentity = Boolean(
+    observedWarStartTime &&
+      previousWarStartTime &&
+      observedOpponentTag &&
+      previousOpponentTag &&
+      observedWarStartTime.getTime() === previousWarStartTime.getTime() &&
+      observedOpponentTag === previousOpponentTag,
+  );
+  const allowPreviousStartReuse =
+    Boolean(input.allowPreviousStartReuse) &&
+    !observedWarStartTime &&
+    Boolean(observedOpponentTag) &&
+    Boolean(previousWarStartTime) &&
+    Boolean(previousOpponentTag) &&
+    observedOpponentTag === previousOpponentTag;
+  const warStartTime = observedWarStartTime
+    ? observedOpponentTag
+      ? observedWarStartTime
+      : null
+    : allowPreviousStartReuse
+      ? previousWarStartTime
+      : null;
   const sameWarIdentity = Boolean(
-    warStartTime &&
-    input.previousWarStartTime &&
-    warStartTime.getTime() === input.previousWarStartTime.getTime(),
+    exactPhysicalIdentity ||
+      (allowPreviousStartReuse &&
+        !observedWarStartTime &&
+        Boolean(previousWarStartTime) &&
+        Boolean(previousOpponentTag) &&
+        observedOpponentTag === previousOpponentTag),
   );
   const warEndTime =
     input.observedWarEndTime ??
-    (sameWarIdentity ? (input.previousWarEndTime ?? null) : null);
+    (exactPhysicalIdentity ? (input.previousWarEndTime ?? null) : null);
   return {
     warStartTime,
     warEndTime,
     sameWarIdentity,
+    exactPhysicalIdentity,
   };
 }
 
@@ -2997,13 +3038,25 @@ export class WarEventLogService {
     const resolvedOpponentTag = normalizeTag(
       params.resolvedIdentity.identity.opponentTag,
     );
-    if (!resolvedState || !resolvedStartTime || !resolvedOpponentTag) {
+    const resolvedWarId =
+      params.resolvedIdentity.warId !== null &&
+      params.resolvedIdentity.warId !== undefined &&
+      Number.isFinite(Number(params.resolvedIdentity.warId))
+        ? Math.trunc(Number(params.resolvedIdentity.warId))
+        : null;
+    if (
+      !resolvedState ||
+      !resolvedStartTime ||
+      !resolvedOpponentTag ||
+      resolvedWarId === null
+    ) {
       return false;
     }
     const updated = await prisma.currentWar.updateMany({
       where: {
         guildId: params.guildId,
         clanTag: params.clanTag,
+        warId: resolvedWarId,
         state: resolvedState,
         startTime: resolvedStartTime,
         opponentTag: resolvedOpponentTag,
@@ -3098,11 +3151,27 @@ export class WarEventLogService {
     const nextClanName = String(war?.clan?.name ?? "").trim() || null;
     const nextOpponentTag = normalizeTag(war?.opponent?.tag ?? null);
     const nextOpponentName = String(war?.opponent?.name ?? "").trim() || null;
+    const pollNow = new Date();
+    const previousPhaseExpectedActive = isWarPhaseExpectedActive({
+      state: prevState,
+      knownWarStartTime: sub.startTime ?? null,
+      knownWarEndTime: sub.endTime ?? null,
+      now: pollNow,
+    });
     const timing = resolveActiveWarTiming({
       observedWarStartTime: parseCocTime(war?.startTime ?? null),
+      observedOpponentTag: nextOpponentTag,
       observedWarEndTime: parseCocTime(war?.endTime ?? null),
       previousWarStartTime: sub.startTime ?? null,
+      previousOpponentTag: sub.opponentTag ?? null,
       previousWarEndTime: sub.endTime ?? null,
+      allowPreviousStartReuse:
+        Boolean(nextOpponentTag) &&
+        Boolean(sub.opponentTag) &&
+        normalizeTag(nextOpponentTag) === normalizeTag(sub.opponentTag) &&
+        isActiveWarState(prevState) &&
+        isActiveWarState(candidateState) &&
+        previousPhaseExpectedActive,
     });
     const nextWarStartTime = timing.warStartTime;
     const nextWarEndTime = timing.warEndTime;
@@ -3121,16 +3190,12 @@ export class WarEventLogService {
         opponentTag: nextOpponentTag || null,
       },
     });
+    const observedPhysicalIdentityAvailable =
+      Boolean(nextWarStartTime) && Boolean(nextOpponentTag);
     const warIdentityChanged =
       isNewWarCycle(sub.startTime, nextWarStartTime) ||
-      warIdentityComparison.identityChanged;
-    const pollNow = new Date();
-    const previousPhaseExpectedActive = isWarPhaseExpectedActive({
-      state: prevState,
-      knownWarStartTime: sub.startTime ?? null,
-      knownWarEndTime: sub.endTime ?? null,
-      now: pollNow,
-    });
+      warIdentityComparison.identityChanged ||
+      (observedPhysicalIdentityAvailable && !timing.sameWarIdentity);
     if (
       warSnapshot.observation.kind === "failure" &&
       isActiveWarState(prevState) &&
@@ -3206,18 +3271,6 @@ export class WarEventLogService {
         eventType = null;
       }
     }
-    if (
-      (eventType === "war_started" || eventType === "war_ended") &&
-      nextWarStartTime
-    ) {
-      await this.currentSyncs
-        .markNeedsValidation({
-          guildId: sub.guildId,
-          clanTag: sub.clanTag,
-          warStartTime: nextWarStartTime,
-        })
-        .catch(() => null);
-    }
 
     const candidateIdentity: ActiveWarIdentityCandidate = {
       state: currentState,
@@ -3265,6 +3318,15 @@ export class WarEventLogService {
     const resolvedWarEndTime = resolvedWarIdentity.warEndTime ?? null;
     const resolvedPrepStartTime =
       resolvedWarIdentity.preparationStartTime ?? null;
+    const stagedValidationContext =
+      (eventType === "war_started" || eventType === "war_ended") &&
+      resolvedWarStartTime
+        ? {
+            guildId: sub.guildId,
+            clanTag: sub.clanTag,
+            warStartTime: resolvedWarStartTime,
+          }
+        : null;
     const effectiveWarStartTime = resolvedWarStartTime;
     const effectiveWarEndTime = resolvedWarEndTime;
     const effectivePrepStartTime = resolvedPrepStartTime;
@@ -3335,7 +3397,7 @@ export class WarEventLogService {
           ? await this.history.resolveExactCanonicalWarEndedHistoryRow({
               clanTag: sub.clanTag,
               opponentTag: effectiveOpponentTag,
-              warStartTime: effectiveWarStartTime ?? sub.startTime ?? nextWarStartTime,
+              warStartTime: effectiveWarStartTime ?? sub.startTime ?? null,
             })
           : null
         : null;
@@ -3671,6 +3733,11 @@ export class WarEventLogService {
       );
       return false;
     }
+    if (stagedValidationContext) {
+      await this.currentSyncs
+        .markNeedsValidation(stagedValidationContext)
+        .catch(() => null);
+    }
     if (stagedPollerPointsSync) {
       await this.currentSyncs
         .upsertPointsSync(stagedPollerPointsSync)
@@ -3681,9 +3748,6 @@ export class WarEventLogService {
       currentState !== "notInWar" &&
       resolvedOpponentTag
     ) {
-      await this.pointsSync
-        .resetWarStartPointsJob(stagedWarStartPointsCheckContext)
-        .catch(() => null);
       await this.pointsSync
         .maybeRunWarStartPointsCheck(stagedWarStartPointsCheckContext)
         .catch(() => null);

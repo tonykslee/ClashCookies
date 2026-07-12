@@ -49,6 +49,20 @@ export type WarStartPointsCheckContext = {
   opponentTag: string;
 };
 
+type ExactCurrentWarRow = {
+  guildId: string;
+  clanTag: string;
+  warId: number | null;
+  startTime: Date | null;
+  opponentTag: string | null;
+  fwaPoints: number | null;
+  state: string | null;
+  matchType: string | null;
+  inferredMatchType: boolean | null;
+  clanStars: number | null;
+  opponentStars: number | null;
+};
+
 /** Purpose: manage previous sync recovery and war-start points-site retry jobs. */
 export class WarStartPointsSyncService {
   private static readonly WAR_START_POINTS_JOB_PREFIX = "warStartPointsCheck";
@@ -61,6 +75,50 @@ export class WarStartPointsSyncService {
     private readonly settings: SettingsService,
     private readonly pointsSync = new PointsSyncService()
   ) {}
+
+  /** Purpose: load the exact canonical current-war row for a retry context. */
+  private async loadExactCurrentWarRow(
+    context: WarStartPointsCheckContext,
+  ): Promise<ExactCurrentWarRow | null> {
+    const clanTag = normalizeTag(context.clanTag);
+    const opponentTag = normalizeTag(context.opponentTag);
+    const warId =
+      context.warId !== null &&
+      context.warId !== undefined &&
+      Number.isFinite(Number(context.warId))
+        ? Math.trunc(Number(context.warId))
+        : null;
+    const warStartTime =
+      context.warStartTime instanceof Date &&
+      Number.isFinite(context.warStartTime.getTime())
+        ? context.warStartTime
+        : null;
+    if (!clanTag || !opponentTag || warId === null || !warStartTime) {
+      return null;
+    }
+    return prisma.currentWar.findFirst({
+      where: {
+        guildId: context.guildId,
+        clanTag,
+        warId,
+        startTime: warStartTime,
+        opponentTag,
+      },
+      select: {
+        guildId: true,
+        clanTag: true,
+        warId: true,
+        startTime: true,
+        opponentTag: true,
+        fwaPoints: true,
+        state: true,
+        matchType: true,
+        inferredMatchType: true,
+        clanStars: true,
+        opponentStars: true,
+      },
+    });
+  }
 
   /** Purpose: read previous sync from ClanPointsSync with ClanWarHistory fallback. */
   async getPreviousSyncNum(): Promise<number | null> {
@@ -166,6 +224,9 @@ export class WarStartPointsSyncService {
     }
     if (Date.now() < job.nextAttemptAtMs) return;
 
+    const exactCurrentWarBefore = await this.loadExactCurrentWarRow(context);
+    if (!exactCurrentWarBefore) return;
+
     const nextAttempt = job.attempts + 1;
     try {
       const primary = await this.points.fetchSnapshot(clanTag, {
@@ -176,7 +237,6 @@ export class WarStartPointsSyncService {
       const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
         String(primary.winnerBoxText ?? "")
       );
-      const trackedDb = null;
       const trackedSite =
         primary.balance !== null && Number.isFinite(primary.balance) ? primary.balance : null;
 
@@ -213,6 +273,14 @@ export class WarStartPointsSyncService {
         opponentNotFound = opp?.notFound ?? null;
       }
 
+      const exactCurrentWarAfter = await this.loadExactCurrentWarRow(context);
+      if (!exactCurrentWarAfter) return;
+      const trackedDb =
+        exactCurrentWarAfter.fwaPoints !== null &&
+        exactCurrentWarAfter.fwaPoints !== undefined &&
+        Number.isFinite(exactCurrentWarAfter.fwaPoints)
+          ? Math.trunc(exactCurrentWarAfter.fwaPoints)
+          : null;
       const mismatch =
         siteUpdated &&
         trackedDb !== null &&
@@ -253,91 +321,77 @@ export class WarStartPointsSyncService {
         opponentChecked,
         lastCheckedAtMs: Date.now(),
       });
-      if (siteUpdated) {
-        const currentWar = await prisma.currentWar.findUnique({
-          where: {
-            clanTag_guildId: {
-              guildId: context.guildId,
-              clanTag,
-            },
-          },
-          select: {
-            guildId: true,
-            warId: true,
-            startTime: true,
-            state: true,
-            matchType: true,
-            inferredMatchType: true,
-            clanStars: true,
-            opponentStars: true,
-            opponentTag: true,
-          },
+      if (
+        siteUpdated &&
+        exactCurrentWarAfter?.guildId &&
+        exactCurrentWarAfter.startTime &&
+        normalizeTag(exactCurrentWarAfter.opponentTag ?? null) === opponentTag &&
+        String(Math.trunc(Number(exactCurrentWarAfter.warId ?? 0))) === warId &&
+        exactCurrentWarAfter.startTime.toISOString() === warStartTime.toISOString() &&
+        trackedSite !== null &&
+        opponentBalance !== null &&
+        primary.winnerBoxSync !== null &&
+        Number.isFinite(primary.winnerBoxSync)
+      ) {
+        const currentWar = exactCurrentWarAfter;
+        const strongOpponentEvidencePresent =
+          opponentNotFound === true ||
+          opponentActiveFwa === true ||
+          opponentActiveFwa === false;
+        const liveResolution = inferMatchTypeFromOpponentPoints({
+          available: opponentChecked,
+          balance: opponentBalance,
+          activeFwa: opponentActiveFwa,
+          notFound: opponentNotFound,
+          winnerBoxNotMarkedFwa,
+          opponentEvidenceMissingOrNotCurrent:
+            !siteUpdated || !strongOpponentEvidencePresent,
+          currentWarState:
+            currentWar.state === "inWar" || currentWar.state === "preparation"
+              ? currentWar.state
+              : null,
+          currentWarClanStars: currentWar.clanStars ?? null,
+          currentWarOpponentStars: currentWar.opponentStars ?? null,
         });
-        if (
-          currentWar?.guildId &&
-          currentWar.startTime &&
-          normalizeTag(currentWar.opponentTag ?? null) === opponentTag &&
-          String(Math.trunc(Number(currentWar.warId ?? 0))) === warId &&
-          currentWar.startTime.toISOString() === warStartTime.toISOString() &&
-          trackedSite !== null &&
-          opponentBalance !== null &&
-          primary.winnerBoxSync !== null &&
-          Number.isFinite(primary.winnerBoxSync)
-        ) {
-          const strongOpponentEvidencePresent =
-            opponentNotFound === true ||
-            opponentActiveFwa === true ||
-            opponentActiveFwa === false;
-          const liveResolution = inferMatchTypeFromOpponentPoints({
-            available: opponentChecked,
-            balance: opponentBalance,
-            activeFwa: opponentActiveFwa,
-            notFound: opponentNotFound,
-            winnerBoxNotMarkedFwa,
-            opponentEvidenceMissingOrNotCurrent:
-              !siteUpdated || !strongOpponentEvidencePresent,
-            currentWarState:
-              currentWar.state === "inWar" || currentWar.state === "preparation"
-                ? currentWar.state
-                : null,
-            currentWarClanStars: currentWar.clanStars ?? null,
-            currentWarOpponentStars: currentWar.opponentStars ?? null,
-          });
-          const currentResolution = resolveCurrentWarMatchTypeSignal({
-            matchType: currentWar.matchType ?? null,
-            inferredMatchType: currentWar.inferredMatchType ?? true,
-          });
-          const appliedResolution = chooseMatchTypeResolution({
-            confirmedCurrent: currentResolution.confirmed,
-            liveOpponent: liveResolution,
-            storedSync: null,
-            unconfirmedCurrent: currentResolution.unconfirmed,
-          });
-          const syncMatchType = appliedResolution?.matchType ?? currentWar.matchType ?? null;
-          const syncIsFwa = appliedResolution?.syncIsFwa ?? toSyncIsFwa(syncMatchType) ?? false;
-          await this.pointsSync.upsertPointsSync({
-            guildId: currentWar.guildId,
+        const currentResolution = resolveCurrentWarMatchTypeSignal({
+          matchType: currentWar.matchType ?? null,
+          inferredMatchType: currentWar.inferredMatchType ?? true,
+        });
+        const appliedResolution = chooseMatchTypeResolution({
+          confirmedCurrent: currentResolution.confirmed,
+          liveOpponent: liveResolution,
+          storedSync: null,
+          unconfirmedCurrent: currentResolution.unconfirmed,
+        });
+        const syncMatchType = appliedResolution?.matchType ?? currentWar.matchType ?? null;
+        const syncIsFwa =
+          appliedResolution?.syncIsFwa ??
+          toSyncIsFwa(syncMatchType as Parameters<typeof toSyncIsFwa>[0]) ??
+          false;
+        const exactWarStartTime = currentWar.startTime;
+        if (!exactWarStartTime) return;
+        await this.pointsSync.upsertPointsSync({
+          guildId: currentWar.guildId,
+          clanTag,
+          warId,
+          warStartTime: exactWarStartTime,
+          syncNum: Math.trunc(primary.winnerBoxSync),
+          opponentTag,
+          clanPoints: trackedSite,
+          opponentPoints: opponentBalance,
+          outcome: deriveExpectedOutcome(
             clanTag,
-            warId,
-            warStartTime: currentWar.startTime,
-            syncNum: Math.trunc(primary.winnerBoxSync),
             opponentTag,
-            clanPoints: trackedSite,
-            opponentPoints: opponentBalance,
-            outcome: deriveExpectedOutcome(
-              clanTag,
-              opponentTag,
-              trackedSite,
-              opponentBalance,
-              Math.trunc(primary.winnerBoxSync)
-            ),
-            isFwa: syncIsFwa,
-            fetchedAt: new Date(primary.fetchedAtMs),
-            fetchReason: "post_war_reconciliation",
-            matchType: syncMatchType,
-            needsValidation: false,
-          });
-        }
+            trackedSite,
+            opponentBalance,
+            Math.trunc(primary.winnerBoxSync),
+          ),
+          isFwa: syncIsFwa,
+          fetchedAt: new Date(primary.fetchedAtMs),
+          fetchReason: "post_war_reconciliation",
+          matchType: syncMatchType,
+          needsValidation: false,
+        });
       }
     } catch {
       const exhausted = nextAttempt >= job.maxAttempts;

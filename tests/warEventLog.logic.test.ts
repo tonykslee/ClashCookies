@@ -4167,43 +4167,71 @@ describe("WarEventLogService.advanceCocWarOutageStateForTest", () => {
 });
 
 describe("WarEventLogService.resolveActiveWarTimingForTest", () => {
-  it("updates endTime when same war identity reports a changed endTime", () => {
+  it("updates endTime when the exact same physical war reports a changed endTime", () => {
     const start = new Date("2026-03-10T20:00:00.000Z");
     const result = resolveActiveWarTimingForTest({
       observedWarStartTime: start,
+      observedOpponentTag: "#OPP123",
       observedWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
       previousWarStartTime: start,
+      previousOpponentTag: "#OPP123",
       previousWarEndTime: new Date("2026-03-11T13:00:00.000Z"),
     });
 
     expect(result.sameWarIdentity).toBe(true);
+    expect(result.exactPhysicalIdentity).toBe(true);
     expect(result.warEndTime?.toISOString()).toBe("2026-03-11T14:21:56.000Z");
   });
 
-  it("preserves same-war endTime on transient snapshots with no observed timing", () => {
+  it("reuses the previous start on same-opponent reconciliation but clears the previous end without an exact physical match", () => {
     const start = new Date("2026-03-10T20:00:00.000Z");
     const end = new Date("2026-03-11T14:21:56.000Z");
     const result = resolveActiveWarTimingForTest({
       observedWarStartTime: null,
+      observedOpponentTag: "#OPP123",
       observedWarEndTime: null,
       previousWarStartTime: start,
+      previousOpponentTag: "#OPP123",
       previousWarEndTime: end,
+      allowPreviousStartReuse: true,
     });
 
     expect(result.sameWarIdentity).toBe(true);
+    expect(result.exactPhysicalIdentity).toBe(false);
     expect(result.warStartTime?.toISOString()).toBe(start.toISOString());
-    expect(result.warEndTime?.toISOString()).toBe(end.toISOString());
+    expect(result.warEndTime).toBeNull();
   });
 
-  it("does not carry prior-war endTime into a new war identity", () => {
+  it("does not reuse the previous start when the live opponent changes", () => {
     const result = resolveActiveWarTimingForTest({
       observedWarStartTime: new Date("2026-03-12T20:00:00.000Z"),
+      observedOpponentTag: "#NEW999",
       observedWarEndTime: null,
       previousWarStartTime: new Date("2026-03-10T20:00:00.000Z"),
+      previousOpponentTag: "#OLDOPP",
       previousWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+      allowPreviousStartReuse: true,
     });
 
     expect(result.sameWarIdentity).toBe(false);
+    expect(result.exactPhysicalIdentity).toBe(false);
+    expect(result.warEndTime).toBeNull();
+  });
+
+  it("blocks a hybrid snapshot when the live opponent is missing", () => {
+    const result = resolveActiveWarTimingForTest({
+      observedWarStartTime: new Date("2026-03-12T20:00:00.000Z"),
+      observedOpponentTag: null,
+      observedWarEndTime: null,
+      previousWarStartTime: new Date("2026-03-10T20:00:00.000Z"),
+      previousOpponentTag: "#OLDOPP",
+      previousWarEndTime: new Date("2026-03-11T14:21:56.000Z"),
+      allowPreviousStartReuse: true,
+    });
+
+    expect(result.sameWarIdentity).toBe(false);
+    expect(result.exactPhysicalIdentity).toBe(false);
+    expect(result.warStartTime).toBeNull();
     expect(result.warEndTime).toBeNull();
   });
 });
