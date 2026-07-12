@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  $executeRaw: vi.fn(),
+  $transaction: vi.fn(),
   currentWar: {
     findFirst: vi.fn(),
     findUnique: vi.fn(),
@@ -23,11 +25,10 @@ vi.mock("../src/services/PointsSyncService", () => ({
 }));
 
 import {
-  getCurrentWarIdForClanForTest,
   resolveCurrentWarScopedSyncRowForTest,
   resolveCurrentWarSyncIdentityForTest,
 } from "../src/commands/Fwa";
-import { WarEventLogService } from "../src/services/WarEventLogService";
+import { ActiveWarIdentityService } from "../src/services/ActiveWarIdentityService";
 
 function makeWarIdentity(params: {
   currentWarId: number | null;
@@ -50,6 +51,14 @@ function makeWarIdentity(params: {
 describe("Rocky Road war identity resolution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$transaction.mockImplementation(async (callback: any) =>
+      callback(prismaMock),
+    );
+    prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$executeRaw.mockResolvedValue(0);
+    prismaMock.currentWar.findFirst.mockResolvedValue(null);
+    prismaMock.currentWar.findUnique.mockResolvedValue(null);
+    prismaMock.currentWar.update.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -130,179 +139,216 @@ describe("Rocky Road war identity resolution", () => {
   });
 });
 
-describe("Current-war lookup and allocation diagnostics", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("returns the persisted current-war id without validating the supplied war-start time", async () => {
-    prismaMock.currentWar.findUnique.mockResolvedValueOnce({
-      warId: 1000609,
-    });
-
-    const warId = await getCurrentWarIdForClanForTest(
-      "guild-1",
-      "2RYGLU2UY",
-      new Date("2026-07-12T15:22:26.000Z").getTime(),
-    );
-
-    expect(warId).toBe(1000609);
-    expect(prismaMock.currentWar.findUnique).toHaveBeenCalledWith({
-      where: {
-        clanTag_guildId: {
-          guildId: "guild-1",
-          clanTag: "#2RYGLU2UY",
-        },
+describe("ActiveWarIdentityService", () => {
+  function makeLiveWar(overrides?: Partial<Record<string, unknown>>) {
+    return {
+      state: "preparation",
+      startTime: "20260712T152226.000Z",
+      preparationStartTime: "20260711T152226.000Z",
+      opponent: {
+        tag: "#LYPLQQUC",
+        name: "War Farmers x44",
       },
-      select: { warId: true },
-    });
-  });
-
-  it("allocates the same next war id for overlapping poll cycles that observe the same max snapshot", async () => {
-    prismaMock.currentWar.findFirst.mockResolvedValue(null);
-    prismaMock.$queryRaw.mockResolvedValue([{ warId: 1000610 }]);
-    const service = new WarEventLogService({} as any, {} as any);
-    const args = {
-      sub: {
-        clanTag: "#2RYGLU2UY",
-        warId: null,
-        startTime: null,
+      clan: {
+        name: "Rocky Road",
       },
-      warStartTime: new Date("2026-07-12T15:22:26.000Z"),
-      currentState: "preparation" as const,
+      ...overrides,
     };
+  }
 
-    const [first, second] = await Promise.all([
-      (service as any).ensureCurrentWarId(args),
-      (service as any).ensureCurrentWarId(args),
-    ]);
+  function makeDbHarness(initialCurrentWar: Record<string, unknown> | null) {
+    const state = {
+      currentWar: initialCurrentWar,
+    };
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn(),
+      currentWar: {
+        findUnique: vi.fn().mockImplementation(async () => state.currentWar),
+        update: vi.fn().mockImplementation(async ({ data }: any) => {
+          state.currentWar = {
+            ...(state.currentWar ?? {}),
+            ...data,
+          };
+          return state.currentWar;
+        }),
+      },
+    };
+    const db = {
+      $transaction: vi.fn().mockImplementation(async (callback: any) =>
+        callback(tx),
+      ),
+    };
+    return { db, tx, state };
+  }
 
-    expect(first).toBe(1000610);
-    expect(second).toBe(1000610);
-    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(2);
-  });
+  it("materializes a missing current-war id when the live identity is complete", async () => {
+    const { db, tx } = makeDbHarness({
+      warId: null,
+      startTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+      state: "preparation",
+      prepStartTime: new Date("2026-07-11T15:22:26.000Z"),
+      endTime: null,
+      opponentName: "War Farmers x44",
+      clanName: "Rocky Road",
+    });
+    const service = new ActiveWarIdentityService(db as any);
+    tx.$queryRaw.mockResolvedValueOnce([{ warId: 1000610 }]);
+    tx.currentWar.update.mockResolvedValueOnce({
+      warId: 1000610,
+      startTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+    });
 
-  it("leaves the next render with a stale or null current-war id when persistence fails after allocation", async () => {
-    prismaMock.$queryRaw
-      .mockResolvedValueOnce([
-        {
-          guildId: "guild-1",
-          clanTag: "#2RYGLU2UY",
-          warId: null,
-          syncNum: 532,
-          channelId: "mail-channel-1",
-          notify: true,
-          pingRole: false,
-          embedEnabled: true,
-          notifyRole: "notify-role-1",
-          inferredMatchType: false,
-          fwaPoints: null,
-          opponentFwaPoints: null,
-          outcome: null,
-          matchType: "FWA",
-          warStartFwaPoints: null,
-          warEndFwaPoints: null,
-          clanStars: null,
-          opponentStars: null,
+    const resolution = await service.resolveCurrentWarId({
+      stage: "fwa_mail_render",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      liveWar: makeLiveWar(),
+    });
+
+    expect(resolution).toMatchObject({
+      warId: 1000610,
+      reason: "materialized_missing_current_war_id",
+      materialized: true,
+      positivelyResolved: true,
+    });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.currentWar.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          clanTag_guildId: {
+            guildId: "guild-1",
+            clanTag: "#2RYGLU2UY",
+          },
+        },
+        data: expect.objectContaining({
+          warId: 1000610,
           state: "preparation",
-          prepStartTime: new Date("2026-07-11T15:22:26.000Z"),
-          startTime: null,
-          endTime: null,
-          opponentTag: null,
-          opponentName: null,
-          clanName: "Rocky Road",
-          clanRoleId: null,
-          pointsConfirmedByClanMail: false,
-          pointsNeedsValidation: true,
-          pointsLastSuccessfulFetchAt: null,
-          pointsLastKnownSyncNumber: null,
-          pointsLastKnownPoints: null,
-          pointsLastKnownMatchType: null,
-          pointsLastKnownOutcome: null,
-          pointsWarId: null,
-          pointsOpponentTag: null,
-          pointsWarStartTime: null,
-        },
-      ])
-      .mockResolvedValueOnce([{ warId: 1000610 }]);
-    prismaMock.currentWar.findFirst.mockResolvedValue(null);
-    prismaMock.currentWar.update.mockRejectedValueOnce(new Error("write failed"));
-
-    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {
-      getCurrentWar: vi.fn().mockResolvedValue({
-        state: "preparation",
-        startTime: "20260712T152226.000Z",
-        opponent: {
-          tag: "#LYPLQQUC",
-          name: "War Farmers x44",
-        },
-        clan: {
-          name: "Rocky Road",
-        },
+          startTime: new Date("2026-07-12T15:22:26.000Z"),
+          opponentTag: "#LYPLQQUC",
+        }),
       }),
-    } as any);
-    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
-    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
-      war: {
-        state: "preparation",
-        startTime: "20260712T152226.000Z",
-        opponent: {
-          tag: "#LYPLQQUC",
-          name: "War Farmers x44",
-        },
-        clan: {
-          name: "Rocky Road",
-        },
-      },
-      observation: { kind: "success" },
-      error: null,
-    });
-    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
-    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
-    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
-    (service as any).pointsGate = {
-      evaluatePollerFetch: vi.fn().mockReturnValue({
-        allowed: false,
-        fetchReason: "post_war_reconciliation",
-      }),
-    };
-    (service as any).pointsSync = {
-      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
-      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
-      getPreviousSyncNum: vi.fn().mockResolvedValue(532),
-    };
-    (service as any).currentSyncs = {
-      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
-      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
-    };
-    (service as any).history = {
-      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
-      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
-        clanStars: null,
-        opponentStars: null,
-        clanDestruction: null,
-        opponentDestruction: null,
-        warEndTime: null,
-        resultLabel: "UNKNOWN",
-      }),
-    };
-
-    await expect(
-      (service as any).processSubscription("guild-1", "#2RYGLU2UY", {
-        previousSync: 532,
-        activeSync: 533,
-      }),
-    ).rejects.toThrow("write failed");
-
-    const rerenderWarId = await getCurrentWarIdForClanForTest(
-      "guild-1",
-      "2RYGLU2UY",
-      new Date("2026-07-12T15:22:26.000Z").getTime(),
     );
-    expect(rerenderWarId).toBeNull();
+  });
+
+  it("reuses the current-war id safely once the poller has stamped the matching identity", async () => {
+    const { db, tx } = makeDbHarness({
+      warId: 1000610,
+      startTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+      state: "preparation",
+      prepStartTime: new Date("2026-07-11T15:22:26.000Z"),
+      endTime: null,
+      opponentName: "War Farmers x44",
+      clanName: "Rocky Road",
+    });
+    const service = new ActiveWarIdentityService(db as any);
+
+    const resolution = await service.resolveCurrentWarId({
+      stage: "fwa_mail_render",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      liveWar: makeLiveWar(),
+    });
+
+    expect(resolution).toMatchObject({
+      warId: 1000610,
+      reason: "reused_current_war_id",
+      materialized: false,
+      positivelyResolved: true,
+    });
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.currentWar.update).not.toHaveBeenCalled();
+  });
+
+  it("rotates a stale current-war id instead of reusing it when the live identity rolls forward", async () => {
+    const { db, tx } = makeDbHarness({
+      warId: 1000609,
+      startTime: new Date("2026-07-11T15:22:26.000Z"),
+      opponentTag: "#OLDOPP",
+      state: "preparation",
+      prepStartTime: new Date("2026-07-10T15:22:26.000Z"),
+      endTime: null,
+      opponentName: "Old Opponent",
+      clanName: "Rocky Road",
+    });
+    const service = new ActiveWarIdentityService(db as any);
+    tx.$queryRaw.mockResolvedValueOnce([{ warId: 1000611 }]);
+    tx.currentWar.update.mockResolvedValueOnce({
+      warId: 1000611,
+      startTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+    });
+
+    const resolution = await service.resolveCurrentWarId({
+      stage: "poll_cycle",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      liveWar: makeLiveWar(),
+    });
+
+    expect(resolution).toMatchObject({
+      warId: 1000611,
+      reason: "rotated_stale_current_war_id",
+      materialized: true,
+      positivelyResolved: true,
+      sameWar: false,
+    });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.currentWar.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a partial live identity and leaves the current-war row untouched", async () => {
+    const { db, tx } = makeDbHarness(null);
+    const service = new ActiveWarIdentityService(db as any);
+    const resolution = await service.resolveCurrentWarId({
+      stage: "fwa_mail_render",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      liveWar: makeLiveWar({ opponent: null }),
+    });
+
+    expect(resolution).toMatchObject({
+      warId: null,
+      reason: "blocked_partial_live_identity",
+      materialized: false,
+      positivelyResolved: false,
+    });
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.currentWar.findUnique).not.toHaveBeenCalled();
+    expect(tx.currentWar.update).not.toHaveBeenCalled();
+  });
+
+  it("returns a blocked persistence error when the materialization write fails", async () => {
+    const { db, tx } = makeDbHarness({
+      warId: null,
+      startTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+      state: "preparation",
+      prepStartTime: new Date("2026-07-11T15:22:26.000Z"),
+      endTime: null,
+      opponentName: "War Farmers x44",
+      clanName: "Rocky Road",
+    });
+    const service = new ActiveWarIdentityService(db as any);
+    tx.$queryRaw.mockResolvedValueOnce([{ warId: 1000612 }]);
+    tx.currentWar.update.mockRejectedValueOnce(new Error("write failed"));
+
+    const resolution = await service.resolveCurrentWarId({
+      stage: "poll_cycle",
+      guildId: "guild-1",
+      clanTag: "2RYGLU2UY",
+      liveWar: makeLiveWar(),
+    });
+
+    expect(resolution).toMatchObject({
+      warId: null,
+      reason: "blocked_persistence_error",
+      materialized: false,
+    });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.currentWar.update).toHaveBeenCalledTimes(1);
   });
 });

@@ -26,6 +26,7 @@ import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import { BotLogChannelService } from "./BotLogChannelService";
+import { ActiveWarIdentityService } from "./ActiveWarIdentityService";
 import { cwlStateService } from "./CwlStateService";
 import { MaintenanceWindowService } from "./MaintenanceWindowService";
 import {
@@ -1496,6 +1497,7 @@ export class WarEventLogService {
   private readonly postedMessages: PostedMessageService;
   private readonly botLogChannels = new BotLogChannelService();
   private readonly maintenanceWindowService: MaintenanceWindowService;
+  private readonly activeWarIdentity = new ActiveWarIdentityService();
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
 
   /** Purpose: initialize service dependencies. */
@@ -1743,6 +1745,7 @@ export class WarEventLogService {
       (await this.resolveWarId(
         payloadForEmit.clanTag,
         payloadForEmit.warStartTime,
+        payloadForEmit.opponentTag,
       ));
     await this.emitEvent(sub.channelId, payloadForEmit, resolvedWarId, sub);
 
@@ -1847,6 +1850,7 @@ export class WarEventLogService {
       (await this.resolveWarId(
         payloadForPreview.clanTag,
         payloadForPreview.warStartTime,
+        payloadForPreview.opponentTag,
       ));
     const message = await this.buildEventMessage(
       payloadForPreview,
@@ -2958,73 +2962,19 @@ export class WarEventLogService {
     return next;
   }
 
-  private async allocateNextWarId(): Promise<number | null> {
-    const rows = await prisma.$queryRaw<Array<{ warId: bigint | number }>>(
-      Prisma.sql`
-        SELECT
-          GREATEST(
-            COALESCE(
-              (
-                SELECT MAX(
-                  CASE
-                    WHEN "warId" ~ '^[0-9]+$' THEN "warId"::bigint
-                    ELSE NULL
-                  END
-                )
-                FROM "WarLookup"
-              ),
-              0
-            ),
-            COALESCE((SELECT MAX("warId")::bigint FROM "CurrentWar"), 0),
-            COALESCE((SELECT MAX("warId")::bigint FROM "WarAttacks"), 0)
-          ) + 1 AS "warId"
-      `,
-    );
-    const raw = rows[0]?.warId;
-    if (raw === null || raw === undefined) return null;
-    const warId = typeof raw === "bigint" ? Number(raw) : Number(raw);
-    return Number.isFinite(warId) ? Math.trunc(warId) : null;
-  }
-
   private async ensureCurrentWarId(params: {
-    sub: SubscriptionRow;
-    warStartTime: Date | null;
-    currentState: WarState;
-    preserveExistingWarId?: boolean;
+    guildId: string;
+    clanTag: string;
+    liveWar: CurrentWarSnapshot | null | undefined;
+    stage: string;
   }): Promise<number | null> {
-    if (params.currentState === "notInWar") return params.sub.warId ?? null;
-    if (!params.warStartTime) return params.sub.warId ?? null;
-    if (
-      params.preserveExistingWarId &&
-      params.sub.warId !== null &&
-      params.sub.warId !== undefined
-    ) {
-      return Number(params.sub.warId);
-    }
-
-    if (
-      params.sub.warId !== null &&
-      params.sub.warId !== undefined &&
-      params.sub.startTime &&
-      params.sub.startTime.getTime() === params.warStartTime.getTime()
-    ) {
-      return params.sub.warId;
-    }
-
-    const existing = await prisma.currentWar.findFirst({
-      where: {
-        clanTag: params.sub.clanTag,
-        startTime: params.warStartTime,
-        warId: { not: null },
-      },
-      orderBy: { updatedAt: "desc" },
-      select: { warId: true },
+    const resolution = await this.activeWarIdentity.resolveCurrentWarId({
+      stage: params.stage,
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      liveWar: params.liveWar ?? null,
     });
-    if (existing?.warId !== null && existing?.warId !== undefined) {
-      return Number(existing.warId);
-    }
-
-    return this.allocateNextWarId();
+    return resolution.warId;
   }
 
   private async processSubscription(
@@ -3192,7 +3142,6 @@ export class WarEventLogService {
     if (sub.state === "notInWar" && (await this.maybeRecoverEndedWarArchive({ sub }))) {
       return false;
     }
-    let preserveExistingWarId = false;
     let effectiveWarIdentityChanged = warIdentityChanged;
     if (
       shouldPreserveWarIdentityDuringOutageRecovery({
@@ -3207,7 +3156,6 @@ export class WarEventLogService {
         now: pollNow,
       })
     ) {
-      preserveExistingWarId = true;
       effectiveWarIdentityChanged = false;
       eventType = null;
       currentState = prevState;
@@ -3524,10 +3472,10 @@ export class WarEventLogService {
       resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
 
     const resolvedWarId = await this.ensureCurrentWarId({
-      sub,
-      warStartTime: nextWarStartTime,
-      currentState,
-      preserveExistingWarId,
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      liveWar: war,
+      stage: "poll_cycle",
     });
     const resolvedWarIdText =
       resolvedWarId !== null && resolvedWarId !== undefined
@@ -3657,12 +3605,19 @@ export class WarEventLogService {
         updatedAt: new Date(),
       },
     });
-    const newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({
-      war,
-      clanTag: sub.clanTag,
-      resolvedWarId,
-      fallbackWarStartTime: nextWarStartTime,
-    });
+    let newAttackRowsObserved = 0;
+    if (resolvedWarId !== null && resolvedWarId !== undefined) {
+      newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({
+        war,
+        clanTag: sub.clanTag,
+        resolvedWarId,
+        fallbackWarStartTime: nextWarStartTime,
+      });
+    } else {
+      console.warn(
+        `[war-events] active-war-id-unresolved guild=${sub.guildId} clan=${sub.clanTag} state=${currentState} war_start=${nextWarStartTime?.toISOString() ?? "unknown"} opponent=${nextOpponentTag || normalizeTag(sub.opponentTag ?? "") || "unknown"}`,
+      );
+    }
     if (maintenanceObservation.maintenanceTransition === "over") {
       options?.maintenanceOverGuildIds?.add(sub.guildId);
     }
@@ -4578,13 +4533,15 @@ export class WarEventLogService {
     warId: string | null;
   }> {
     const eventType = params.payload.eventType;
-    const warId =
-      params.resolvedWarId ??
-      params.sub.warId ??
-      (await this.resolveWarId(
-        params.payload.clanTag,
-        params.payload.warStartTime,
-      ));
+    const subWarIdMatchesLive =
+      params.sub.warId !== null &&
+      params.sub.warId !== undefined &&
+      params.sub.startTime instanceof Date &&
+      params.payload.warStartTime instanceof Date &&
+      params.sub.startTime.getTime() === params.payload.warStartTime.getTime() &&
+      normalizeTag(params.sub.opponentTag ?? "") ===
+        normalizeTag(params.payload.opponentTag ?? "");
+    const warId = params.resolvedWarId ?? (subWarIdMatchesLive ? params.sub.warId : null);
     if (
       warId === null ||
       warId === undefined ||
@@ -4623,23 +4580,33 @@ export class WarEventLogService {
     };
   }
 
+  /** Purpose: resolve an exact current-war id fallback for preview/test-only call sites that already have a live start time. */
   private async resolveWarId(
     clanTagInput: string,
     warStartTime: Date | null,
+    opponentTagInput?: string | null,
   ): Promise<number | null> {
     if (!warStartTime) return null;
     const clanTag = normalizeTag(clanTagInput);
     if (!clanTag) return null;
+    const opponentTag = normalizeTag(opponentTagInput ?? "");
     const currentWarId = await prisma.currentWar
       .findFirst({
         where: {
           clanTag,
           startTime: warStartTime,
         },
-        select: { warId: true },
+        select: { warId: true, opponentTag: true },
       })
       .catch(() => null);
-    return currentWarId?.warId !== null && currentWarId?.warId !== undefined
+    if (!currentWarId) return null;
+    if (
+      opponentTag &&
+      normalizeTag(currentWarId.opponentTag ?? "") !== opponentTag
+    ) {
+      return null;
+    }
+    return currentWarId.warId !== null && currentWarId.warId !== undefined
       ? Number(currentWarId.warId)
       : null;
   }
@@ -4746,7 +4713,11 @@ export class WarEventLogService {
     const guildId = (channel as { guildId?: string }).guildId ?? null;
     const warId =
       resolvedWarIdOverride ??
-      (await this.resolveWarId(payload.clanTag, payload.warStartTime));
+      (await this.resolveWarId(
+        payload.clanTag,
+        payload.warStartTime,
+        payload.opponentTag,
+      ));
     const roleId = normalizeNotifyRoleId(payload.notifyRole);
     const includeRoleMentionForPost = payload.pingRole;
 
@@ -5175,9 +5146,10 @@ export class WarEventLogService {
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
     const resolvedWarId = await this.ensureCurrentWarId({
-      sub,
-      warStartTime,
-      currentState: state,
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      liveWar: war,
+      stage: "notify_refresh",
     });
 
     await prisma.currentWar.update({
@@ -5412,9 +5384,10 @@ export class WarEventLogService {
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
     const resolvedWarId = await this.ensureCurrentWarId({
-      sub,
-      warStartTime,
-      currentState: "inWar",
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      liveWar: war,
+      stage: "battle_day_refresh",
     });
     await prisma.currentWar.update({
       where: {
