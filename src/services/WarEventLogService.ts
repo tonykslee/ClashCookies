@@ -633,6 +633,11 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
+export type WarEventPollClanResult = {
+  processed: boolean;
+  warEnded: boolean;
+};
+
 type CocWarOutageState = {
   failureStreak: number;
   recoveryStreak: number;
@@ -1535,11 +1540,7 @@ export class WarEventLogService {
   }): Promise<void> {
     const sendBattleDaySwapReminders =
       input?.sendBattleDaySwapReminders === true;
-    const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
-    const syncContext: PollSyncContext = {
-      previousSync,
-      activeSync: previousSync === null ? null : previousSync + 1,
-    };
+    const syncContext = await this.buildPollSyncContext();
     const targets = await this.listPollTargets();
     const maintenanceOverGuildIds = new Set<string>();
     for (const target of targets) {
@@ -1581,6 +1582,49 @@ export class WarEventLogService {
           `[war-plan-violation] event=reconcile_failed error=${formatError(err)}`,
         );
       });
+  }
+
+  /** Purpose: derive the shared poll sync context without widening the global poll loop. */
+  private async buildPollSyncContext(): Promise<PollSyncContext> {
+    const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
+    return {
+      previousSync,
+      activeSync: previousSync === null ? null : previousSync + 1,
+    };
+  }
+
+  /** Purpose: reconcile one tracked clan through the authoritative poll worker. */
+  async pollClan(input: {
+    guildId: string;
+    clanTag: string;
+    sendBattleDaySwapReminders?: boolean;
+  }): Promise<WarEventPollClanResult> {
+    const guildId = String(input.guildId ?? "").trim();
+    const clanTag = normalizeTag(input.clanTag);
+    if (!guildId || !clanTag) {
+      return { processed: false, warEnded: false };
+    }
+
+    const subscription = await this.findSubscriptionByGuildAndTag(
+      guildId,
+      clanTag,
+    );
+    if (!subscription) {
+      return { processed: false, warEnded: false };
+    }
+
+    const syncContext = await this.buildPollSyncContext();
+    const warEnded = await this.processSubscription(
+      guildId,
+      clanTag,
+      syncContext,
+      {
+        sendBattleDaySwapReminders:
+          input.sendBattleDaySwapReminders === true,
+      },
+    );
+
+    return { processed: true, warEnded };
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
