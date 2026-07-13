@@ -598,6 +598,7 @@ describe("Post-war same-war freeze guard", () => {
     subOverrides?: Partial<Record<string, unknown>>;
     liveClanBalance: number;
     liveOpponentBalance: number;
+    pointsGateAllowed?: boolean;
     historyRow: {
       warId: number;
       syncNumber: number | null;
@@ -614,6 +615,7 @@ describe("Post-war same-war freeze guard", () => {
   }): Promise<{
     updateData: Record<string, unknown> | undefined;
     upsertPointsSync: ReturnType<typeof vi.fn>;
+    markNeedsValidation: ReturnType<typeof vi.fn>;
   }> {
     vi.clearAllMocks();
     const service = new WarEventLogService(
@@ -663,7 +665,7 @@ describe("Post-war same-war freeze guard", () => {
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
     (service as any).pointsGate = {
       evaluatePollerFetch: vi.fn().mockReturnValue({
-        allowed: true,
+        allowed: input.pointsGateAllowed ?? false,
         fetchReason: "post_war_reconciliation",
       }),
     };
@@ -727,6 +729,121 @@ describe("Post-war same-war freeze guard", () => {
     return {
       updateData: updateSpy.mock.calls[0]?.[0]?.data,
       upsertPointsSync,
+      markNeedsValidation: (service as any).currentSyncs.markNeedsValidation as ReturnType<
+        typeof vi.fn
+      >,
+    };
+  }
+
+  async function runResolvedPostWarPointsSyncCase(): Promise<{
+    updateData: Record<string, unknown> | undefined;
+    upsertPointsSync: ReturnType<typeof vi.fn>;
+    markNeedsValidation: ReturnType<typeof vi.fn>;
+  }> {
+    vi.clearAllMocks();
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      state: "inWar",
+      startTime: new Date("2026-03-12T00:00:00.000Z"),
+      endTime: new Date("2026-03-12T01:00:00.000Z"),
+      opponentTag: "#OPP123",
+      outcome: "WIN",
+      matchType: "FWA",
+      warStartFwaPoints: 1200,
+      warEndFwaPoints: 1199,
+      fwaPoints: 1300,
+      inferredMatchType: false,
+    });
+
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: null,
+      observation: { kind: "success" },
+    });
+    (service as any).recordCocWarObservation = vi.fn().mockReturnValue({
+      suspected: false,
+    });
+    (service as any).hasWarEndRecorded = vi.fn().mockResolvedValue(false);
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).activeWarIdentity = buildActiveWarIdentityMock(
+      sub,
+      Number(sub.warId ?? 1001),
+    );
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(undefined);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockResolvedValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points = {
+      fetchSnapshot: vi.fn().mockImplementation(async (clanTag: string) => {
+        const normalized = String(clanTag ?? "")
+          .trim()
+          .toUpperCase()
+          .replace(/O/g, "0");
+        const self = String(sub.clanTag ?? "")
+          .trim()
+          .replace(/^#/, "")
+          .toUpperCase()
+          .replace(/O/g, "0");
+        const opponent = String(sub.opponentTag ?? "")
+          .trim()
+          .replace(/^#/, "")
+          .toUpperCase()
+          .replace(/O/g, "0");
+        if (normalized === self) {
+          return buildLiveSnapshot(1300, `#${opponent}`);
+        }
+        if (normalized === opponent || normalized === `#${opponent}`) {
+          return buildLiveSnapshot(1200, `#${self}`);
+        }
+        return buildLiveSnapshot(1300, `#${opponent}`);
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+      getPreviousSyncNum: vi.fn().mockResolvedValue(10),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+      upsertPointsSync: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
+      getWarEndResultSnapshot: vi.fn().mockResolvedValue({
+        clanStars: 100,
+        opponentStars: 99,
+        clanDestruction: 70,
+        opponentDestruction: 69,
+        warEndTime: new Date("2026-03-12T01:00:00.000Z"),
+        resultLabel: "WIN",
+      }),
+    };
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+    });
+
+    return {
+      updateData: updateSpy.mock.calls[0]?.[0]?.data,
+      upsertPointsSync: (service as any).currentSyncs.upsertPointsSync as ReturnType<
+        typeof vi.fn
+      >,
+      markNeedsValidation: (service as any).currentSyncs.markNeedsValidation as ReturnType<
+        typeof vi.fn
+      >,
     };
   }
 
@@ -798,6 +915,32 @@ describe("Post-war same-war freeze guard", () => {
     expect(updateData?.inferredMatchType).toBe(true);
     expect(updateData?.warEndFwaPoints).toBe(101);
     expect(upsertPointsSync).not.toHaveBeenCalled();
+  });
+
+  it("stages post-war points sync from the resolved identity when no live start is available", async () => {
+    const { updateData, upsertPointsSync, markNeedsValidation } =
+      await runResolvedPostWarPointsSyncCase();
+
+    expect(updateData?.state).toBe("notInWar");
+    expect(updateData?.startTime).toBeUndefined();
+    expect(updateData?.opponentTag).toBeUndefined();
+
+    expect(markNeedsValidation).toHaveBeenCalledTimes(1);
+    expect(markNeedsValidation.mock.calls[0]?.[0]).toMatchObject({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+    });
+
+    expect(upsertPointsSync).toHaveBeenCalledTimes(1);
+    expect(upsertPointsSync.mock.calls[0]?.[0]).toMatchObject({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: "1001",
+      warStartTime: new Date("2026-03-12T00:00:00.000Z"),
+      opponentTag: "0PP123",
+    });
+    expect(upsertPointsSync.mock.calls[0]?.[0]?.warStartTime).not.toBeNull();
   });
 
   it("restores canonical history values when CurrentWar is wrong during frozen post-war reconciliation", async () => {
@@ -1420,16 +1563,16 @@ describe("War-event identity guards", () => {
       clanTag: "#AAA111",
       state: "inWar",
       startTime: new Date("2026-03-12T00:00:00.000Z"),
-      opponentTag: "#OPP123",
+      opponentTag: "#OLDOPP",
     });
     vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
     (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
       war: {
         state: "inWar",
         clan: { tag: "#AAA111", name: "Alpha", stars: 100, attacks: 0, destructionPercentage: 0 },
-        opponent: { tag: "#OPP123", name: "Enemy", stars: 99, attacks: 0, destructionPercentage: 0 },
+        opponent: { tag: "#NEW999", name: "Enemy", stars: 99, attacks: 0, destructionPercentage: 0 },
         preparationStartTime: "20260311T000000.000Z",
-        startTime: "20260312T000000.000Z",
+        startTime: null,
         endTime: "20260313T000000.000Z",
         teamSize: 50,
         attacksPerMember: 2,
@@ -1462,6 +1605,19 @@ describe("War-event identity guards", () => {
       getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
       upsertPointsSync: vi.fn().mockResolvedValue(undefined),
     };
+    const pointsFetchSnapshotSpy = vi
+      .spyOn((service as any).points, "fetchSnapshot")
+      .mockResolvedValue(
+        {
+          balance: 1300,
+          activeFwa: false,
+          notFound: false,
+          winnerBoxTags: ["#NEW999"],
+          winnerBoxText: "not marked as an fwa match",
+          effectiveSync: 44,
+          fetchedAtMs: Date.now(),
+        } as any,
+      );
     (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
     (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
     (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
@@ -1473,7 +1629,10 @@ describe("War-event identity guards", () => {
 
     expect(ok).toBe(false);
     expect(updateManySpy).not.toHaveBeenCalled();
+    expect(pointsFetchSnapshotSpy).not.toHaveBeenCalled();
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).currentSyncs.markNeedsValidation).not.toHaveBeenCalled();
+    expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
   });
 

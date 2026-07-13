@@ -3525,7 +3525,7 @@ export class WarEventLogService {
       ]);
       const siteCurrent = a.winnerBoxTags
         .map((t) => normalizeTag(t))
-        .includes(projectionOpponentTag);
+        .includes(normalizeTag(projectionOpponentTag));
       const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
         String(a.winnerBoxText ?? ""),
       );
@@ -3559,7 +3559,9 @@ export class WarEventLogService {
       if (
         siteCurrent &&
         sub.guildId &&
-        nextWarStartTime &&
+        resolvedWarIdText &&
+        resolvedWarStartTime &&
+        resolvedOpponentTag &&
         observedSync !== null &&
         Number.isFinite(observedSync) &&
         a.balance !== null &&
