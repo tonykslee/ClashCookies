@@ -3217,6 +3217,37 @@ export function clearFwaBaseSwapSplitPostPayloadsForTest(): void {
   fwaBaseSwapSplitPostPayloads.clear();
 }
 
+export function setFwaMailPreviewPayloadForTest(
+  key: string,
+  payload: FwaMailPreviewPayload,
+): void {
+  fwaMailPreviewPayloads.set(key, payload);
+}
+
+export function getFwaMailPreviewPayloadForTest(
+  key: string,
+): FwaMailPreviewPayload | null {
+  return fwaMailPreviewPayloads.get(key) ?? null;
+}
+
+export function clearFwaMailPreviewPayloadsForTest(): void {
+  fwaMailPreviewPayloads.clear();
+}
+
+type FwaMailConfirmRerender = typeof buildWarMailEmbedForTag;
+let fwaMailConfirmRerenderForTest: FwaMailConfirmRerender =
+  buildWarMailEmbedForTag;
+
+export function setFwaMailConfirmRerenderForTest(
+  builder: FwaMailConfirmRerender,
+): void {
+  fwaMailConfirmRerenderForTest = builder;
+}
+
+export function resetFwaMailConfirmRerenderForTest(): void {
+  fwaMailConfirmRerenderForTest = buildWarMailEmbedForTag;
+}
+
 /** Purpose: normalize any war id input to a comparable string key. */
 function normalizeWarIdText(
   warId: string | number | null | undefined,
@@ -8711,7 +8742,7 @@ async function handleFwaMailConfirmAction(
     })
     .catch(() => undefined);
   const cocService = new CoCService();
-  const rendered = await buildWarMailEmbedForTag(
+  const rendered = await fwaMailConfirmRerenderForTest(
     cocService,
     payload.guildId,
     payload.tag,

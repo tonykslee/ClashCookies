@@ -79,6 +79,41 @@ Queue observability now includes:
 - FWA tracked-war roster summaries such as `event=tracked_war_roster_sync` and `event=war_members_tracked_roster_refresh`, which show the exact current-war identity that was stamped onto the derived tracked roster after each successful WarMembers fetch
 - todo snapshot WAR owner resolution logs such as `event=todo_war_owner_resolution_summary` and `event=todo_war_owner_resolution_ambiguous`, which summarize live-verification outcomes and surface ambiguous multi-clan matches when stale roster state needs correction
 
+### `active_war_identity_resolution`
+
+The active-war resolver emits one telemetry stage and one structured log line per attempt.
+
+Stage and log shape:
+
+- telemetry stage: `active_war_identity_resolution`
+- Dozzle prefix: `[active-war-identity]`
+- structured event kind: `active_war_identity_resolution`
+
+The structured payload includes:
+
+- caller
+- policy
+- candidate identity summary
+- pre-resolution persisted identity summary
+- resolved ID and source, when resolved
+- reason code, when blocked
+- allocation, preservation, persistence, and validation flags
+- duration
+- run, interaction, and poll-cycle correlation IDs when available
+
+Where to inspect it:
+
+- Dozzle for the raw structured line
+- telemetry aggregate/report tables for every attempt's stage timing
+
+Steady-state logging behavior:
+
+- the first `existing_exact_row` signature logs at `info`
+- unchanged repeated `existing_exact_row` signatures are downgraded to `debug` by `SteadyStateLogGate`
+- blocked, mutating, and recovery outcomes remain visible at their chosen level and are not hidden by the gate
+
+The aggregate stage timing records every attempt. The gate only quiets repeated healthy exact-row logs; it does not suppress blocked or mutating outcomes.
+
 CWL measurement baseline logs should stay structured and compact. The baseline capture service should emit:
 
 - `guildId`

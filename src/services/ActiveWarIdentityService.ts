@@ -264,6 +264,7 @@ type ActiveWarIdentityResolutionOutcome = {
   result: ActiveWarIdentityResult;
   candidate: ActiveWarIdentityCandidateSummary;
   persisted: ActiveWarIdentityPersistedSummary;
+  postPersisted: ActiveWarIdentityPersistedSummary | null;
   allocationOccurred: boolean;
   identityPersisted: boolean;
   identityPreserved: boolean;
@@ -416,6 +417,10 @@ export class ActiveWarIdentityService {
       outcome.identityPersisted ? "persisted" : "transient",
       outcome.identityPreserved ? "preserved" : "fresh",
       outcome.liveValidated ? "live" : "persisted",
+      outcome.postPersisted?.warId ?? "none",
+      outcome.postPersisted?.state ?? "none",
+      outcome.postPersisted?.warStartTime ?? "none",
+      outcome.postPersisted?.opponentTag ?? "none",
     ].join("|");
     const logLevel =
       outcome.result.status === "resolved"
@@ -448,6 +453,10 @@ export class ActiveWarIdentityService {
       persistedState: outcome.persisted.state,
       persistedWarStartTime: outcome.persisted.warStartTime,
       persistedOpponentTag: outcome.persisted.opponentTag,
+      postPersistedWarId: outcome.postPersisted?.warId ?? null,
+      postPersistedState: outcome.postPersisted?.state ?? null,
+      postPersistedWarStartTime: outcome.postPersisted?.warStartTime ?? null,
+      postPersistedOpponentTag: outcome.postPersisted?.opponentTag ?? null,
       resolvedWarId: outcome.result.status === "resolved" ? outcome.result.warId : null,
       source,
       reasonCode,
@@ -487,6 +496,7 @@ export class ActiveWarIdentityService {
         warStartTime: null,
         opponentTag: null,
       },
+      postPersisted: null,
       allocationOccurred: false,
       identityPersisted: false,
       identityPreserved: false,
@@ -505,13 +515,17 @@ export class ActiveWarIdentityService {
     try {
       await this.db.$transaction(async (tx: Prisma.TransactionClient) => {
         const currentWar = await this.lockTargetCurrentWarRow(tx, guildId, clanTagBare);
-        const persistedSummary = summarizePersistedIdentity(currentWar);
+        const persistedBeforeResolution = summarizePersistedIdentity(currentWar);
+        outcome = {
+          ...outcome,
+          persisted: persistedBeforeResolution,
+          postPersisted: null,
+        };
 
         if (!currentWar) {
           outcome = {
             ...outcome,
             result: buildBlocked("missing_current_row"),
-            persisted: persistedSummary,
           };
           return;
         }
@@ -522,7 +536,6 @@ export class ActiveWarIdentityService {
             outcome = {
               ...outcome,
               result: buildBlocked("missing_preserved_id"),
-              persisted: persistedSummary,
             };
             return;
           }
@@ -531,7 +544,6 @@ export class ActiveWarIdentityService {
             outcome = {
               ...outcome,
               result: buildBlocked("missing_preserved_id"),
-              persisted: persistedSummary,
             };
             return;
           }
@@ -544,7 +556,8 @@ export class ActiveWarIdentityService {
               identityPersisted: true,
               liveValidated: false,
             }),
-            persisted: persistedSummary,
+            persisted: persistedBeforeResolution,
+            postPersisted: persistedBeforeResolution,
             allocationOccurred: false,
             identityPersisted: true,
             identityPreserved: true,
@@ -562,7 +575,6 @@ export class ActiveWarIdentityService {
                 ? "not_in_war"
                 : "partial_live_identity",
             ),
-            persisted: persistedSummary,
           };
           return;
         }
@@ -584,7 +596,6 @@ export class ActiveWarIdentityService {
           outcome = {
             ...outcome,
             result: buildBlocked("conflicting_global_identity_ids"),
-            persisted: persistedSummary,
           };
           return;
         }
@@ -612,7 +623,6 @@ export class ActiveWarIdentityService {
             outcome = {
               ...outcome,
               result: buildBlocked("persisted_identity_mismatch"),
-              persisted: persistedSummary,
             };
             return;
           }
@@ -623,13 +633,12 @@ export class ActiveWarIdentityService {
             outcome = {
               ...outcome,
               result: buildBlocked("persistence_failure"),
-              persisted: persistedSummary,
             };
             return;
           }
 
           if (currentWarId === null) {
-            await tx.currentWar.update({
+            const updatedMaterializedWar = await tx.currentWar.update({
               where: {
                 clanTag_guildId: {
                   guildId,
@@ -639,7 +648,39 @@ export class ActiveWarIdentityService {
               data: {
                 warId: selectedWarId,
               },
+              select: {
+                warId: true,
+                state: true,
+                prepStartTime: true,
+                startTime: true,
+                endTime: true,
+                opponentTag: true,
+                opponentName: true,
+                clanName: true,
+              },
             });
+            outcome = {
+              ...outcome,
+              result: buildResolved({
+                source: matchingGlobalWarId !== null
+                  ? "reused_global_exact_identity"
+                  : "materialized_missing_id",
+                identity: buildResolvedIdentity(
+                  updatedMaterializedWar,
+                  candidate.physical,
+                  candidate.metadata,
+                ),
+                warId: selectedWarId,
+                identityPersisted,
+                liveValidated: true,
+              }),
+              postPersisted: summarizePersistedIdentity(updatedMaterializedWar),
+              allocationOccurred: matchingGlobalWarId === null,
+              identityPersisted,
+              identityPreserved: false,
+              liveValidated: true,
+            };
+            return;
           }
 
           outcome = {
@@ -656,7 +697,7 @@ export class ActiveWarIdentityService {
               identityPersisted,
               liveValidated: true,
             }),
-            persisted: persistedSummary,
+            postPersisted: summarizePersistedIdentity(currentWar),
             allocationOccurred:
               currentWarId === null && matchingGlobalWarId === null,
             identityPersisted,
@@ -674,7 +715,6 @@ export class ActiveWarIdentityService {
           outcome = {
             ...outcome,
             result: buildBlocked("persistence_failure"),
-            persisted: persistedSummary,
           };
           return;
         }
@@ -737,7 +777,8 @@ export class ActiveWarIdentityService {
             identityPersisted,
             liveValidated: true,
           }),
-          persisted: summarizePersistedIdentity(updated),
+          persisted: persistedBeforeResolution,
+          postPersisted: summarizePersistedIdentity(updated),
           allocationOccurred: sequenceAllocationOccurred,
           identityPersisted,
           identityPreserved: false,
@@ -754,6 +795,7 @@ export class ActiveWarIdentityService {
           warStartTime: null,
           opponentTag: null,
         },
+        postPersisted: null,
         allocationOccurred: false,
         identityPersisted: false,
         identityPreserved: false,
@@ -767,6 +809,7 @@ export class ActiveWarIdentityService {
         result: buildBlocked("persistence_failure"),
         candidate: candidateSummary,
         persisted: outcome.persisted,
+        postPersisted: outcome.postPersisted,
         allocationOccurred: false,
         identityPersisted: false,
         identityPreserved: false,

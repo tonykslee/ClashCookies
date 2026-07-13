@@ -202,6 +202,13 @@ describe("ActiveWarIdentityService observability", () => {
         guildId: "guild-1",
         clanTag: "#AAA111",
         persistedWarId: 1001,
+        persistedState: "preparation",
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        postPersistedWarId: 1001,
+        postPersistedState: "preparation",
+        postPersistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        postPersistedOpponentTag: "OPP123",
         source: "existing_exact_row",
         reasonCode: null,
         allocationOccurred: false,
@@ -336,6 +343,10 @@ describe("ActiveWarIdentityService observability", () => {
     expect(parseActiveWarIdentityLog()[0]).toEqual(
       expect.objectContaining({
         source: "existing_exact_row",
+        persistedWarId: 1001,
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        postPersistedWarId: 1001,
       }),
     );
   });
@@ -421,6 +432,15 @@ describe("ActiveWarIdentityService observability", () => {
         source: "materialized_missing_id",
         allocationOccurred: true,
         identityPreserved: false,
+        persistedWarId: null,
+        persistedState: "preparation",
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        postPersistedWarId: 2002,
+        postPersistedState: "preparation",
+        postPersistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        postPersistedOpponentTag: "OPP123",
+        resolvedWarId: 2002,
       }),
     );
 
@@ -467,6 +487,15 @@ describe("ActiveWarIdentityService observability", () => {
         source: "reused_global_exact_identity",
         allocationOccurred: false,
         identityPreserved: false,
+        persistedWarId: null,
+        persistedState: "preparation",
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        postPersistedWarId: 1001,
+        postPersistedState: "preparation",
+        postPersistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        postPersistedOpponentTag: "OPP123",
+        resolvedWarId: 1001,
       }),
     );
 
@@ -505,12 +534,33 @@ describe("ActiveWarIdentityService observability", () => {
         source: "preserved_during_outage_recovery",
         allocationOccurred: false,
         identityPreserved: true,
+        persistedWarId: 1001,
+        persistedState: "preparation",
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        postPersistedWarId: 1001,
+        postPersistedState: "preparation",
+        postPersistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        postPersistedOpponentTag: "OPP123",
+        resolvedWarId: 1001,
       }),
     );
   });
 
-  it("does not leak raw database errors or stack traces into the observability log", async () => {
-    prismaMock.$transaction.mockImplementation(async () => {
+  it("keeps the pre-resolution persisted identity when a later step fails", async () => {
+    installTransactionHarness({
+      currentWarRow: {
+        warId: 1001,
+        state: "preparation",
+        prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
+        startTime: new Date("2026-03-12T00:00:00.000Z"),
+        endTime: new Date("2026-03-12T01:00:00.000Z"),
+        opponentTag: "#OPP123",
+        opponentName: "Enemy",
+        clanName: "Clan",
+      },
+    });
+    prismaMock.$executeRaw.mockImplementation(async () => {
       throw new Error("SELECT * FROM CurrentWar failed\nstack trace");
     });
     const service = new ActiveWarIdentityService();
@@ -535,6 +585,15 @@ describe("ActiveWarIdentityService observability", () => {
       reason: "persistence_failure",
     });
     const payload = parseActiveWarIdentityLog().at(-1);
+    expect(payload).toEqual(
+      expect.objectContaining({
+        persistedWarId: 1001,
+        persistedState: "preparation",
+        persistedWarStartTime: "2026-03-12T00:00:00.000Z",
+        persistedOpponentTag: "OPP123",
+        reasonCode: "persistence_failure",
+      }),
+    );
     expect(String(JSON.stringify(payload))).not.toContain("SELECT * FROM CurrentWar");
     expect(String(JSON.stringify(payload))).not.toContain("stack trace");
   });
