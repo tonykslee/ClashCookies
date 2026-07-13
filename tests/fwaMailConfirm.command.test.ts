@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findUnique: vi.fn(),
@@ -22,6 +23,7 @@ import {
   getFwaMailPreviewPayloadForTest,
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
+  buildFwaMailIdentityFailureMessageForTest,
   resetFwaMailConfirmRerenderForTest,
   setFwaMailConfirmRerenderForTest,
   setFwaMailPreviewPayloadForTest,
@@ -50,7 +52,7 @@ function buildBlockedRendered(reason: string) {
     warId: 1001,
     opponentTag: "OPP123",
     warStartMs: Date.parse("2026-03-12T00:00:00.000Z"),
-    freezeRefresh: false,
+    freezeRefresh: true,
     unavailableReasons: [],
     matchType: "FWA" as const,
     expectedOutcome: "WIN" as const,
@@ -98,7 +100,8 @@ function buildResolvedRendered() {
     warId: 1001,
     opponentTag: "OPP123",
     warStartMs: Date.parse("2026-03-12T00:00:00.000Z"),
-    freezeRefresh: false,
+    // Keep this fixture out of the polling path; the test only exercises send-time side effects.
+    freezeRefresh: true,
     unavailableReasons: [],
     matchType: "FWA" as const,
     expectedOutcome: "WIN" as const,
@@ -144,11 +147,11 @@ function buildInteraction(customId: string) {
     send,
     messages: { fetch: vi.fn() },
   });
-    return {
-      customId,
-      guildId: "guild-1",
-      channelId: "command-channel-1",
-      user: { id: "user-1" },
+  return {
+    customId,
+    guildId: "guild-1",
+    channelId: "command-channel-1",
+    user: { id: "user-1" },
     memberPermissions: {
       has: vi.fn(() => true),
     },
@@ -177,6 +180,29 @@ function seedPreviewPayload(key: string) {
 }
 
 describe("FWA mail confirmation handlers", () => {
+  const blockedReasons = [
+    "partial_live_identity",
+    "missing_current_row",
+    "persisted_identity_mismatch",
+    "persistence_failure",
+    "conflicting_global_identity_ids",
+  ] as const;
+
+  const handlers = [
+    {
+      label: "Confirm and Send",
+      buildCustomId: buildFwaMailConfirmCustomId,
+      expectedMention: true,
+      invoke: handleFwaMailConfirmButton,
+    },
+    {
+      label: "Confirm Without Ping",
+      buildCustomId: buildFwaMailConfirmNoPingCustomId,
+      expectedMention: false,
+      invoke: handleFwaMailConfirmNoPingButton,
+    },
+  ] as const;
+
   beforeEach(() => {
     vi.clearAllMocks();
     currentWarUpsertMock.mockReset();
@@ -225,70 +251,40 @@ describe("FWA mail confirmation handlers", () => {
     vi.restoreAllMocks();
   });
 
-  it.each([
-    {
-      label: "Confirm and Send",
-      buildCustomId: buildFwaMailConfirmCustomId,
-      pingRole: true,
-    },
-    {
-      label: "Confirm Without Ping",
-      buildCustomId: buildFwaMailConfirmNoPingCustomId,
-      pingRole: false,
-    },
-  ])(
-    "rejects $label when the send-time rerender is blocked by partial_live_identity",
-    async ({ buildCustomId, pingRole }) => {
-      const key = "preview-key-blocked";
-      seedPreviewPayload(key);
-      setFwaMailConfirmRerenderForTest(async () =>
-        buildBlockedRendered("partial_live_identity"),
-      );
-      const interaction = buildInteraction(buildCustomId("user-1", key));
+  describe.each(handlers)("$label", ({ buildCustomId, invoke, expectedMention }) => {
+    it.each(blockedReasons)(
+      "rejects when the send-time rerender is blocked by %s",
+      async (reason) => {
+        const key = "preview-key-blocked";
+        seedPreviewPayload(key);
+        setFwaMailConfirmRerenderForTest(async () => buildBlockedRendered(reason));
+        const interaction = buildInteraction(buildCustomId("user-1", key));
 
-      await (pingRole ? handleFwaMailConfirmButton : handleFwaMailConfirmNoPingButton)(
-        interaction,
-      );
+        await invoke(interaction);
 
-      expect(channelFetchMock).not.toHaveBeenCalled();
-      expect(channelSendMock).not.toHaveBeenCalled();
-      expect(currentWarUpsertMock).not.toHaveBeenCalled();
-      expect(trackedClanUpdateMock).not.toHaveBeenCalled();
-      expect(WarMailLifecycleService.prototype.markPosted).not.toHaveBeenCalled();
-      expect(PointsSyncService.prototype.markConfirmedByClanMail).not.toHaveBeenCalled();
-      expect(RepWorkActivityService.prototype.recordMailSent).not.toHaveBeenCalled();
-      expect(WarEventLogService.prototype.refreshCurrentNotifyPost).not.toHaveBeenCalled();
-      expect(getFwaMailPreviewPayloadForTest(key)).not.toBeNull();
-      expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain(
-        "Clash of Clans has not returned the complete active-war identity",
-      );
-    },
-  );
+        expect(channelFetchMock).not.toHaveBeenCalled();
+        expect(channelSendMock).not.toHaveBeenCalled();
+        expect(currentWarUpsertMock).not.toHaveBeenCalled();
+        expect(trackedClanUpdateMock).not.toHaveBeenCalled();
+        expect(WarMailLifecycleService.prototype.markPosted).not.toHaveBeenCalled();
+        expect(PointsSyncService.prototype.markConfirmedByClanMail).not.toHaveBeenCalled();
+        expect(RepWorkActivityService.prototype.recordMailSent).not.toHaveBeenCalled();
+        expect(WarEventLogService.prototype.refreshCurrentNotifyPost).not.toHaveBeenCalled();
+        expect(getFwaMailPreviewPayloadForTest(key)).not.toBeNull();
+        expect(interaction.editReply).toHaveBeenCalled();
+        expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
+          buildFwaMailIdentityFailureMessageForTest(reason),
+        );
+      },
+    );
 
-  it.each([
-    {
-      label: "Confirm and Send",
-      buildCustomId: buildFwaMailConfirmCustomId,
-      pingRole: true,
-      expectedMention: true,
-    },
-    {
-      label: "Confirm Without Ping",
-      buildCustomId: buildFwaMailConfirmNoPingCustomId,
-      pingRole: false,
-      expectedMention: false,
-    },
-  ])(
-    "sends with the latest resolved identity for $label even if the preview payload came from a blocked state",
-    async ({ buildCustomId, pingRole, expectedMention }) => {
+    it("sends when the latest send-time rerender resolves successfully", async () => {
       const key = "preview-key-resolved";
       seedPreviewPayload(key);
       setFwaMailConfirmRerenderForTest(async () => buildResolvedRendered());
       const interaction = buildInteraction(buildCustomId("user-1", key));
 
-      await (pingRole ? handleFwaMailConfirmButton : handleFwaMailConfirmNoPingButton)(
-        interaction,
-      );
+      await invoke(interaction);
 
       expect(channelFetchMock).toHaveBeenCalledTimes(1);
       expect(channelSendMock).toHaveBeenCalledTimes(1);
@@ -307,6 +303,6 @@ describe("FWA mail confirmation handlers", () => {
       expect(RepWorkActivityService.prototype.recordMailSent).toHaveBeenCalledTimes(1);
       expect(WarEventLogService.prototype.refreshCurrentNotifyPost).toHaveBeenCalledTimes(1);
       expect(getFwaMailPreviewPayloadForTest(key)).toBeNull();
-    },
-  );
+    });
+  });
 });

@@ -279,7 +279,7 @@ describe("ActiveWarIdentityService observability", () => {
     expect(dozzleLogMock.warn).toHaveBeenCalled();
   });
 
-  it("samples repeated existing exact-row successes without hiding mutations or blocks", async () => {
+  it("logs the first exact-row success at info and downgrades unchanged repeats to debug without hiding mutations or blocks", async () => {
     const service = new ActiveWarIdentityService();
 
     installTransactionHarness({

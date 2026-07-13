@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
@@ -180,6 +180,10 @@ describe("SyncTimeFwaClanListViewService", () => {
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   it("builds the sync-time payload with the shared FWA readiness embed and refresh button", async () => {

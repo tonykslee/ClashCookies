@@ -48,7 +48,7 @@ App-owned log lines are normalized to one of these Dozzle-friendly levels:
 - `error`: failed command, job, API, or database operations
 - `warn`: recovered failures, skipped work, stale config, slow waits, retry exhaustion
 - `info`: startup milestones, readiness, command invocation/completion, scheduler lifecycle, successful side effects
-- `debug`: routine scheduler summaries, telemetry success samples, config and payload summaries
+- `debug`: routine scheduler summaries, telemetry success downgrades, config and payload summaries
 - `trace`: high-volume loop churn such as CoC queue enqueue and dispatch events
 
 Representative examples:
@@ -73,7 +73,7 @@ Queue observability now includes:
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 - maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 - CWL event-resolution and persistence logs such as `event=event_resolution_unresolved`, `event=event_resolution_collision`, `event=event_war_tags_attached`, `event=clan_current_event_changed`, `event=tracked_cwl_persist`, and `event=tracked_cwl_season_roster_reconcile`
-- active-war identity resolution logs emitted by `ActiveWarIdentityService`, including bounded structured context for the caller, policy, candidate identity, persisted identity, resolved source, reason code, and run identifiers; routine `existing_exact_row` successes are sampled through a steady-state gate so repeated healthy polls stay quiet while blocked resolutions remain visible
+- active-war identity resolution logs emitted by `ActiveWarIdentityService`, including bounded structured context for the caller, policy, candidate identity, persisted identity, resolved source, reason code, and run identifiers; the first or changed `existing_exact_row` signature logs at `info`, unchanged repeats are downgraded to `debug`, blocked and mutating outcomes keep their appropriate level, and stage telemetry records every attempt
 - finalized war-plan history logs such as `event=evaluation_completed`, `event=evaluation_failed`, `event=evaluation_terminalized_non_fwa`, `event=evaluation_claim_unavailable`, `event=evaluation_canonical_reset`, `event=evaluation_reactivated`, `event=evaluation_claim_lost`, and `event=reconcile_complete`, which should include `guild`, `war_id`, `clan_tag`, `status`, `violation_count`, `attempt`, `duration_ms`, and `failure_code` when applicable
 - final war-end persistence should keep the canonical history/enrollment transaction boundary silent on success and only emit follow-up logs after `WarLookup`, participation, and finalization steps complete
 - FWA tracked-war roster summaries such as `event=tracked_war_roster_sync` and `event=war_members_tracked_roster_refresh`, which show the exact current-war identity that was stamped onto the derived tracked roster after each successful WarMembers fetch
@@ -109,6 +109,7 @@ Where to inspect it:
 Steady-state logging behavior:
 
 - the first `existing_exact_row` signature logs at `info`
+- a changed `existing_exact_row` signature also logs at `info`
 - unchanged repeated `existing_exact_row` signatures are downgraded to `debug` by `SteadyStateLogGate`
 - blocked, mutating, and recovery outcomes remain visible at their chosen level and are not hidden by the gate
 

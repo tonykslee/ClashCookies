@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 import { HeatMapRefRebuildService } from "../src/services/HeatMapRefRebuildService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
@@ -174,6 +174,10 @@ describe("HeatMapRefRebuildService", () => {
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as never);
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   it("returns noop when the rebuilt content already matches the stored HeatMapRef rows", async () => {

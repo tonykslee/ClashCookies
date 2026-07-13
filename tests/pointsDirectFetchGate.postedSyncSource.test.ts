@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsService } from "../src/services/SettingsService";
 import {
   PointsDirectFetchGateService,
@@ -207,6 +207,10 @@ describe("PointsDirectFetchGateService posted sync source resolution", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   it("uses a valid active tracked sync epoch when no legacy setting exists", async () => {

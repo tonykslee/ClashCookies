@@ -1,5 +1,5 @@
 import { ChannelType } from "discord.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
@@ -155,6 +155,10 @@ describe("FwaMatchChecklistAutoPostService", () => {
       trackedMessageService,
       "releaseFwaMatchChecklistPublicationClaim",
     ).mockResolvedValue(true);
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   it("posts only the Mail checklist when requested", async () => {
