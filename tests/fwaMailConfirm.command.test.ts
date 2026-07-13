@@ -14,6 +14,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+vi.mock("../src/services/CoCService", () => ({
+  CoCService: class {},
+}));
+
 import {
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
