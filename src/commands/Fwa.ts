@@ -4360,37 +4360,130 @@ function mailStatusTitleForState(state: WarStateForSync): string {
   return "War Ended";
 }
 
-async function upsertCurrentWarHistoryAndGetWarId(params: {
+const warMailCurrentWarRenderSelect = Prisma.validator<Prisma.CurrentWarSelect>()({
+  warId: true,
+  matchType: true,
+  inferredMatchType: true,
+  outcome: true,
+  fwaPoints: true,
+  opponentFwaPoints: true,
+  startTime: true,
+  state: true,
+  endTime: true,
+  opponentTag: true,
+  opponentName: true,
+  clanStars: true,
+  opponentStars: true,
+});
+
+type WarMailCurrentWarRenderRow = Prisma.CurrentWarGetPayload<{
+  select: typeof warMailCurrentWarRenderSelect;
+}>;
+
+type WarMailResolvedCurrentWarIdentity = {
+  warId: number;
+  startTime: Date;
+  opponentTag: string;
+};
+
+type WarMailCurrentWarRowClassification = {
+  samePhysicalWar: boolean;
+  exactIdentity: WarMailResolvedCurrentWarIdentity | null;
+};
+
+function isActiveWarMailState(
+  state: string | null | undefined,
+): state is "preparation" | "inWar" {
+  const normalized = String(state ?? "").trim();
+  return normalized === "preparation" || normalized === "inWar";
+}
+
+function classifyWarMailCurrentWarRow(
+  row: WarMailCurrentWarRenderRow | null | undefined,
+  input: {
+    liveWarState: WarStateForSync;
+    liveWarStartMs: number | null;
+    liveOpponentTag: string | null;
+  },
+): WarMailCurrentWarRowClassification {
+  if (input.liveWarState === "notInWar") {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+  if (!row || !isActiveWarMailState(row.state)) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+  if (input.liveWarStartMs === null || input.liveOpponentTag === null) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+
+  const rowStartMs = toWarStartMs(row.startTime);
+  const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
+  const samePhysicalWar =
+    rowStartMs !== null &&
+    rowStartMs === Math.trunc(input.liveWarStartMs) &&
+    rowOpponentTag === input.liveOpponentTag;
+  if (!samePhysicalWar) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+
+  const rowWarId = toComparableSyncNumber(row.warId ?? null);
+  const exactIdentity =
+    rowWarId !== null && rowWarId > 0
+      ? {
+          warId: rowWarId,
+          startTime: row.startTime!,
+          opponentTag: rowOpponentTag,
+        }
+      : null;
+
+  return {
+    samePhysicalWar: true,
+    exactIdentity,
+  };
+}
+
+function resolveExactCurrentWarMailIdentityForRow(
+  row: WarMailCurrentWarRenderRow | null | undefined,
+  input: {
+    liveWarState: WarStateForSync;
+    liveWarStartMs: number | null;
+    liveOpponentTag: string | null;
+  },
+): WarMailResolvedCurrentWarIdentity | null {
+  return classifyWarMailCurrentWarRow(row, input).exactIdentity;
+}
+
+async function loadWarMailCurrentWarRenderRow(params: {
   guildId: string;
   normalizedTag: string;
-  warStartMs: number | null;
-  warEndMs: number | null;
-  currentSync: number | null;
-  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
-  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
-  clanName: string;
-  opponentName: string;
-  opponentTag: string;
-  war: Awaited<ReturnType<CoCService["getCurrentWar"]>>;
-}): Promise<number | null> {
-  const resolvedWarStartMs =
-    params.warStartMs !== null && Number.isFinite(params.warStartMs)
-      ? params.warStartMs
-      : parseCocApiTime(params.war?.startTime);
-  return getCurrentWarIdForClan(
-    params.guildId,
-    params.normalizedTag,
-    resolvedWarStartMs !== null && Number.isFinite(resolvedWarStartMs)
-      ? resolvedWarStartMs
-      : null,
-  );
+}): Promise<WarMailCurrentWarRenderRow | null> {
+  if (!params.guildId || !params.normalizedTag) return null;
+  return prisma.currentWar.findUnique({
+    where: {
+      clanTag_guildId: {
+        guildId: params.guildId,
+        clanTag: `#${params.normalizedTag}`,
+      },
+    },
+    select: warMailCurrentWarRenderSelect,
+  });
 }
+
+export const loadWarMailCurrentWarRenderRowForTest =
+  loadWarMailCurrentWarRenderRow;
+
+export const classifyWarMailCurrentWarRowForTest =
+  classifyWarMailCurrentWarRow;
+
+export const resolveExactCurrentWarMailIdentityForTagForTest =
+  resolveExactCurrentWarMailIdentityForRow;
 
 async function getCurrentWarIdForClan(
   guildId: string,
   normalizedTag: string,
   _warStartMs: number | null,
 ): Promise<number | null> {
+  if (!guildId || !normalizedTag) return null;
   const current = await prisma.currentWar.findUnique({
     where: {
       clanTag_guildId: {
@@ -4403,6 +4496,204 @@ async function getCurrentWarIdForClan(
   return current?.warId ?? null;
 }
 
+export const targetedWarMailIdentityResolver = {
+  /** Purpose: resolve a war-mail identity only after targeted one-clan reconciliation. */
+  async resolve(params: {
+    client: Client | null | undefined;
+    cocService: CoCService;
+    guildId: string;
+    normalizedTag: string;
+    liveWarState: WarStateForSync;
+    liveWarStartMs: number | null;
+    liveOpponentTag: string | null;
+    activeWarSyncIdentity: ActiveWarSyncIdentity;
+    currentWarRow: WarMailCurrentWarRenderRow | null;
+  }): Promise<{
+    identity: WarMailResolvedCurrentWarIdentity | null;
+    currentWarRow: WarMailCurrentWarRenderRow | null;
+    reconciled: boolean;
+  }> {
+    const normalizedGuildId = String(params.guildId ?? "").trim();
+    const normalizedTag = normalizeTag(params.normalizedTag);
+    if (!normalizedGuildId || !normalizedTag) {
+      return {
+        identity: null,
+        currentWarRow: params.currentWarRow,
+        reconciled: false,
+      };
+    }
+    const initialClassification = classifyWarMailCurrentWarRow(
+      params.currentWarRow,
+      {
+        liveWarState: params.liveWarState,
+        liveWarStartMs: params.liveWarStartMs,
+        liveOpponentTag: params.liveOpponentTag,
+      },
+    );
+    const initialExact = initialClassification.exactIdentity;
+    if (initialExact) {
+      return {
+        identity: initialExact,
+        currentWarRow: params.currentWarRow,
+        reconciled: false,
+      };
+    }
+    const initialRenderableRow = initialClassification.samePhysicalWar
+      ? params.currentWarRow
+      : null;
+
+    if (
+      !params.client ||
+      params.liveWarState === "notInWar" ||
+      params.liveWarStartMs === null ||
+      params.liveOpponentTag === null ||
+      (params.activeWarSyncIdentity.warId !== null &&
+        params.activeWarSyncIdentity.warId !== undefined &&
+        Number.isFinite(Number(params.activeWarSyncIdentity.warId)) &&
+        Math.trunc(Number(params.activeWarSyncIdentity.warId)) > 0)
+    ) {
+      return {
+        identity: null,
+        currentWarRow: initialRenderableRow,
+        reconciled: false,
+      };
+    }
+
+    const warEvents = new WarEventLogService(params.client, params.cocService);
+    try {
+      const result = await warEvents.pollClan({
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        sendBattleDaySwapReminders: false,
+      });
+      if (!result.processed) {
+        console.warn(
+          `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=not_processed`,
+        );
+        return {
+          identity: null,
+          currentWarRow: initialRenderableRow,
+          reconciled: false,
+        };
+      }
+    } catch (error) {
+      console.warn(
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed error=${formatError(error)}`,
+      );
+      return {
+        identity: null,
+        currentWarRow: initialRenderableRow,
+        reconciled: false,
+      };
+    }
+
+    const rereadRow = await loadWarMailCurrentWarRenderRow({
+      guildId: normalizedGuildId,
+      normalizedTag,
+    });
+    const reread = resolveExactCurrentWarMailIdentityForRow(rereadRow, {
+      liveWarState: params.liveWarState,
+      liveWarStartMs: params.liveWarStartMs,
+      liveOpponentTag: params.liveOpponentTag,
+    });
+    if (!reread) {
+      console.warn(
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=unresolved`,
+      );
+      return {
+        identity: null,
+        currentWarRow: initialRenderableRow,
+        reconciled: false,
+      };
+    }
+    return {
+      identity: reread,
+      currentWarRow: rereadRow,
+      reconciled: true,
+    };
+  },
+};
+
+export const resolveWarMailCurrentWarRenderContextForTest =
+  targetedWarMailIdentityResolver.resolve;
+
+type WarMailCurrentWarRenderState = {
+  warId: number | null;
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+  inferredMatchType: boolean | null;
+  outcome: "WIN" | "LOSE" | null;
+  fwaPoints: number | null;
+  opponentFwaPoints: number | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  opponentTag: string | null;
+  opponentName: string | null;
+  clanStars: number | null;
+  opponentStars: number | null;
+};
+
+function buildWarMailCurrentWarRenderState(
+  currentWarRow: WarMailCurrentWarRenderRow | null,
+): WarMailCurrentWarRenderState {
+  if (!currentWarRow) {
+    return {
+      warId: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      clanStars: null,
+      opponentStars: null,
+    };
+  }
+
+  return {
+    warId:
+      currentWarRow.warId !== null && Number.isFinite(Number(currentWarRow.warId))
+        ? Math.trunc(Number(currentWarRow.warId))
+        : null,
+    matchType: (currentWarRow.matchType as "FWA" | "BL" | "MM" | "SKIP" | null) ?? null,
+    inferredMatchType: Boolean(currentWarRow.inferredMatchType),
+    outcome: (currentWarRow.outcome as "WIN" | "LOSE" | null) ?? null,
+    fwaPoints:
+      currentWarRow.fwaPoints !== null &&
+      currentWarRow.fwaPoints !== undefined &&
+      Number.isFinite(Number(currentWarRow.fwaPoints))
+        ? Number(currentWarRow.fwaPoints)
+        : null,
+    opponentFwaPoints:
+      currentWarRow.opponentFwaPoints !== null &&
+      currentWarRow.opponentFwaPoints !== undefined &&
+      Number.isFinite(Number(currentWarRow.opponentFwaPoints))
+        ? Number(currentWarRow.opponentFwaPoints)
+        : null,
+    startTime: currentWarRow.startTime ?? null,
+    endTime: currentWarRow.endTime ?? null,
+    opponentTag: normalizeTag(String(currentWarRow.opponentTag ?? "")),
+    opponentName: sanitizeClanName(String(currentWarRow.opponentName ?? "")),
+    clanStars:
+      currentWarRow.clanStars !== null &&
+      currentWarRow.clanStars !== undefined &&
+      Number.isFinite(Number(currentWarRow.clanStars))
+        ? Number(currentWarRow.clanStars)
+        : null,
+    opponentStars:
+      currentWarRow.opponentStars !== null &&
+      currentWarRow.opponentStars !== undefined &&
+      Number.isFinite(Number(currentWarRow.opponentStars))
+        ? Number(currentWarRow.opponentStars)
+        : null,
+  };
+}
+
+export const buildWarMailCurrentWarRenderStateForTest =
+  buildWarMailCurrentWarRenderState;
+
 async function buildWarMailEmbedForTag(
   cocService: CoCService,
   guildId: string,
@@ -4411,6 +4702,7 @@ async function buildWarMailEmbedForTag(
     fetchReason?: PointsApiFetchReason;
     routine?: boolean;
     revisionOverride?: MatchRevisionFields | null;
+    targetedWarReconcileClient?: Client | null;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -4448,28 +4740,9 @@ async function buildWarMailEmbedForTag(
     sanitizeClanName(String(war?.clan?.name ?? "")) ??
     `#${normalizedTag}`;
 
-  const subscription = await prisma.currentWar.findUnique({
-    where: {
-      clanTag_guildId: {
-        guildId,
-        clanTag: `#${normalizedTag}`,
-      },
-    },
-    select: {
-      warId: true,
-      matchType: true,
-      inferredMatchType: true,
-      outcome: true,
-      fwaPoints: true,
-      opponentFwaPoints: true,
-      startTime: true,
-      state: true,
-      endTime: true,
-      opponentTag: true,
-      opponentName: true,
-      clanStars: true,
-      opponentStars: true,
-    },
+  const initialCurrentWar = await loadWarMailCurrentWarRenderRow({
+    guildId,
+    normalizedTag,
   });
 
   const syncIdentity = resolveCurrentWarSyncIdentity({
@@ -4477,12 +4750,34 @@ async function buildWarMailEmbedForTag(
     warState,
     liveWarStartTime: war?.startTime ?? null,
     liveOpponentTag: opponentTag || null,
-    currentWarId: subscription?.warId ?? null,
-    currentWarStartTime: subscription?.startTime ?? null,
-    currentWarOpponentTag: subscription?.opponentTag ?? null,
+    currentWarId: initialCurrentWar?.warId ?? null,
+    currentWarStartTime: initialCurrentWar?.startTime ?? null,
+    currentWarOpponentTag: initialCurrentWar?.opponentTag ?? null,
   });
-  const warIdForSync = syncIdentity.warId;
-  const warStartTimeForSync = syncIdentity.warStartTime;
+  const reconciledContext = await targetedWarMailIdentityResolver.resolve({
+    client: options?.targetedWarReconcileClient ?? null,
+    cocService,
+    guildId,
+    normalizedTag,
+    liveWarState: warState,
+    liveWarStartMs: parseCocApiTime(war?.startTime),
+    liveOpponentTag: opponentTag || null,
+    activeWarSyncIdentity: syncIdentity,
+    currentWarRow: initialCurrentWar,
+  });
+  const currentWarForRender = reconciledContext.currentWarRow;
+  const currentWarRenderState = buildWarMailCurrentWarRenderState(currentWarForRender);
+  const resolvedCurrentWarIdentity = reconciledContext.identity;
+  const syncIdentityForRender = resolvedCurrentWarIdentity
+    ? buildActiveWarSyncIdentity({
+        warState,
+        warId: resolvedCurrentWarIdentity.warId,
+        warStartTime: resolvedCurrentWarIdentity.startTime,
+        opponentTag: resolvedCurrentWarIdentity.opponentTag,
+      })
+    : syncIdentity;
+  const warIdForSync = syncIdentityForRender.warId;
+  const warStartTimeForSync = syncIdentityForRender.warStartTime;
   const warIdForSyncNumber =
     warIdForSync !== null && Number.isFinite(Number(warIdForSync))
       ? Math.trunc(Number(warIdForSync))
@@ -4492,21 +4787,14 @@ async function buildWarMailEmbedForTag(
     clanTag: normalizedTag,
     opponentTag,
     warState,
-    currentWarId: subscription?.warId ?? null,
-    currentWarStartTime: subscription?.startTime ?? null,
-    currentWarOpponentTag: subscription?.opponentTag ?? null,
+    currentWarId: syncIdentityForRender.warId ?? null,
+    currentWarStartTime: syncIdentityForRender.warStartTime ?? null,
+    currentWarOpponentTag: syncIdentityForRender.opponentTag ?? null,
     activeWarId: warIdForSync,
     activeWarStartTime: warStartTimeForSync,
-    activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
-    existingMatchType:
-      (subscription?.matchType as
-        | "FWA"
-        | "BL"
-        | "MM"
-        | "SKIP"
-        | null
-        | undefined) ?? null,
-    existingInferredMatchType: subscription?.inferredMatchType ?? null,
+    activeOpponentTag: syncIdentityForRender.opponentTag ?? opponentTag,
+    existingMatchType: currentWarRenderState.matchType,
+    existingInferredMatchType: currentWarRenderState.inferredMatchType ?? null,
   });
   let appliedResolution = chooseMatchTypeResolution({
     confirmedCurrent: fallbackResolution.confirmedCurrent,
@@ -4515,40 +4803,37 @@ async function buildWarMailEmbedForTag(
     unconfirmedCurrent: fallbackResolution.unconfirmedCurrent,
   });
   let inferredMatchType =
-    appliedResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
+    appliedResolution?.inferred ??
+    Boolean(currentWarRenderState.inferredMatchType);
   let matchType: "FWA" | "BL" | "MM" | "UNKNOWN" =
     appliedResolution?.matchType === "SKIP"
       ? "UNKNOWN"
       : (appliedResolution?.matchType ?? "UNKNOWN");
-  let outcome =
-    (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ?? null;
-  const fallbackOpponentTag = normalizeTag(
-    String(subscription?.opponentTag ?? ""),
-  );
+  let outcome = currentWarRenderState.outcome;
+  const fallbackOpponentTag = currentWarRenderState.opponentTag ?? null;
   const effectiveOpponentTag = opponentTag || fallbackOpponentTag;
   const effectiveOpponentName = opponentTag
     ? opponentName
-    : (sanitizeClanName(String(subscription?.opponentName ?? "")) ??
-      opponentName);
+    : (currentWarRenderState.opponentName ?? opponentName);
   const hasLiveWar = warState !== "notInWar" && Boolean(opponentTag);
   const hasStoredWarIdentity = Boolean(
-    (subscription?.warId !== null &&
-      subscription?.warId !== undefined &&
-      Number.isFinite(Number(subscription.warId))) ||
-      subscription?.startTime,
+    (currentWarRenderState.warId !== null &&
+      currentWarRenderState.warId !== undefined &&
+      Number.isFinite(Number(currentWarRenderState.warId))) ||
+      currentWarRenderState.startTime,
   );
   const freezeRefresh =
     !hasLiveWar && hasStoredWarIdentity && Boolean(effectiveOpponentTag);
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
-      clanTag: normalizedTag,
-      warId: warIdForSync,
-      warStartTime: warStartTimeForSync,
-    })
+        clanTag: normalizedTag,
+        warId: warIdForSync,
+        warStartTime: warStartTimeForSync,
+      })
     .catch(() => null);
   const syncResolution = resolveActiveWarSyncNumber({
-    identity: syncIdentity,
+    identity: syncIdentityForRender,
     latestPersistedSyncNumber: sourceSync,
     sameWarPersistedSyncNumber: syncRow?.syncNum ?? null,
   });
@@ -4580,7 +4865,7 @@ async function buildWarMailEmbedForTag(
         preferredAllowedReason: options?.fetchReason ?? "mail_refresh",
         warState,
         warStartTime: warStartTimeForSync,
-        warEndTime: subscription?.endTime ?? null,
+        warEndTime: currentWarRenderState.endTime ?? null,
         currentSyncNumber: resolvedCurrentSyncNum,
         lifecycle,
         activeWarId: warIdForSync,
@@ -4653,9 +4938,10 @@ async function buildWarMailEmbedForTag(
     primaryBalance = primarySnapshot?.balance ?? null;
     opponentBalance = opponentSnapshot?.balance ?? null;
   } else {
-    primaryBalance = subscription?.fwaPoints ?? syncRow?.clanPoints ?? null;
+    primaryBalance =
+      currentWarRenderState.fwaPoints ?? syncRow?.clanPoints ?? null;
     opponentBalance =
-      subscription?.opponentFwaPoints ?? syncRow?.opponentPoints ?? null;
+      currentWarRenderState.opponentFwaPoints ?? syncRow?.opponentPoints ?? null;
   }
   const siteCurrentFromPrimary = Boolean(
     opponentTag &&
@@ -4681,9 +4967,9 @@ async function buildWarMailEmbedForTag(
     const activeWarInference = buildActiveWarMatchInferenceOptions({
       warState,
       clanAttacksUsed: war?.clan?.attacks ?? null,
-      clanStars: war?.clan?.stars ?? subscription?.clanStars ?? null,
+      clanStars: war?.clan?.stars ?? currentWarRenderState.clanStars ?? null,
       opponentStars:
-        war?.opponent?.stars ?? subscription?.opponentStars ?? null,
+        war?.opponent?.stars ?? currentWarRenderState.opponentStars ?? null,
     });
     pointsInference = toMatchTypeResolutionFromPointsInference(
       inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot, {
@@ -4699,8 +4985,8 @@ async function buildWarMailEmbedForTag(
         opponentNotFoundExplicitly: opponentSnapshot?.notFound === true,
         hasSameWarExplicitFwaConfirmation: hasSameWarExplicitFwaConfirmation({
           fallbackResolution,
-          currentWarStartTime: subscription?.startTime ?? null,
-          currentWarOpponentTag: subscription?.opponentTag ?? null,
+          currentWarStartTime: currentWarRenderState.startTime ?? null,
+          currentWarOpponentTag: currentWarRenderState.opponentTag ?? null,
           activeWarStartTime: getWarStartDateForSync(null, war),
           activeOpponentTag: opponentTag,
         }),
@@ -4712,7 +4998,8 @@ async function buildWarMailEmbedForTag(
       unconfirmedCurrent: guardedFallbackResolution.unconfirmedCurrent,
     });
     inferredMatchType =
-      appliedResolution?.inferred ?? Boolean(subscription?.inferredMatchType);
+      appliedResolution?.inferred ??
+      Boolean(currentWarRenderState.inferredMatchType);
     matchType =
       appliedResolution?.matchType === "SKIP"
         ? "UNKNOWN"
@@ -4722,7 +5009,7 @@ async function buildWarMailEmbedForTag(
         stage: "mail_embed",
         clanTag: normalizedTag,
         opponentTag,
-        warId: subscription?.warId ?? null,
+        warId: currentWarRenderState.warId ?? null,
         source: appliedResolution.source,
         matchType: appliedResolution.matchType,
         inferred: appliedResolution.inferred,
@@ -4841,30 +5128,21 @@ async function buildWarMailEmbedForTag(
 
   const battleTargetMs = parseCocApiTime(war?.endTime);
   const warStartMs = parseCocApiTime(war?.startTime);
-  const fallbackWarStartMs = subscription?.startTime
-    ? subscription.startTime.getTime()
+  const fallbackWarStartMs = currentWarRenderState.startTime
+    ? currentWarRenderState.startTime.getTime()
     : null;
-  const effectiveWarStartMs = warStartMs ?? fallbackWarStartMs;
+  const effectiveWarStartMs =
+    syncIdentityForRender.warStartTime?.getTime() ?? warStartMs ?? fallbackWarStartMs;
   const liveExpectedOutcome =
     matchType === "FWA" ? (outcome ?? "UNKNOWN") : null;
   const remainingText = formatDiscordRelativeMs(
     warState === "preparation" ? effectiveWarStartMs : battleTargetMs,
   );
-  const warId =
-    (await upsertCurrentWarHistoryAndGetWarId({
-      guildId,
-      normalizedTag,
-      warStartMs: effectiveWarStartMs,
-      warEndMs: battleTargetMs,
-      currentSync: resolvedCurrentSyncNum,
-      matchType,
-      expectedOutcome: liveExpectedOutcome,
-      clanName,
-      opponentName: effectiveOpponentName,
-      opponentTag: effectiveOpponentTag,
-      war,
-    })) ??
-    (await getCurrentWarIdForClan(guildId, normalizedTag, effectiveWarStartMs));
+  const warId = syncIdentityForRender.warId
+    ? Math.trunc(Number(syncIdentityForRender.warId))
+    : null;
+  const effectiveOpponentTagForRender =
+    syncIdentityForRender.opponentTag ?? effectiveOpponentTag;
   let displayClanStars = war?.clan?.stars ?? null;
   let displayOpponentStars = war?.opponent?.stars ?? null;
   let displayClanDestruction = war?.clan?.destructionPercentage ?? null;
@@ -4877,14 +5155,14 @@ async function buildWarMailEmbedForTag(
   if (freezeRefresh) {
     const finalResult = await history.getWarEndResultSnapshot({
       clanTag: normalizedTag,
-      opponentTag: effectiveOpponentTag,
-      fallbackClanStars: subscription?.clanStars ?? null,
-      fallbackOpponentStars: subscription?.opponentStars ?? null,
-      warStartTime: subscription?.startTime ?? null,
+      opponentTag: effectiveOpponentTag ?? opponentTag,
+      fallbackClanStars: currentWarRenderState.clanStars ?? null,
+      fallbackOpponentStars: currentWarRenderState.opponentStars ?? null,
+      warStartTime: currentWarRenderState.startTime ?? null,
     });
     const endedAtMs =
       finalResult.warEndTime?.getTime() ??
-      subscription?.endTime?.getTime() ??
+      currentWarRenderState.endTime?.getTime() ??
       battleTargetMs ??
       null;
     displayClanStars = finalResult.clanStars;
@@ -4927,7 +5205,7 @@ async function buildWarMailEmbedForTag(
   embed.addFields(
     {
       name: "Opponent",
-      value: `${effectiveOpponentName} (${effectiveOpponentTag ? `#${effectiveOpponentTag}` : "unknown"})`,
+      value: `${effectiveOpponentName} (${effectiveOpponentTagForRender ? `#${effectiveOpponentTagForRender}` : "unknown"})`,
       inline: false,
     },
     {
@@ -4982,7 +5260,7 @@ async function buildWarMailEmbedForTag(
     mailChannelId: trackedConfig.mailChannelId,
     clanRoleId: trackedConfig.clanRoleId,
     warId,
-    opponentTag: effectiveOpponentTag || null,
+    opponentTag: effectiveOpponentTagForRender || null,
     warStartMs: effectiveWarStartMs,
     freezeRefresh,
     unavailableReasons,
@@ -8157,6 +8435,7 @@ async function showWarMailPreview(
   const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag, {
     fetchReason: "pre_fwa_validation",
     revisionOverride: revisionOverride ?? null,
+    targetedWarReconcileClient: interaction.client,
   });
   const mailSendGate = rendered.mailRevisionDecision;
   if (
@@ -8643,6 +8922,7 @@ async function handleFwaMailConfirmAction(
     {
       fetchReason: "pre_fwa_validation",
       revisionOverride: payload.revisionOverride ?? null,
+      targetedWarReconcileClient: interaction.client,
     },
   );
   if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {

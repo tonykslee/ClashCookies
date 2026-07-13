@@ -633,9 +633,103 @@ type PollSyncContext = {
   activeSync: number | null;
 };
 
+type ReconciliationRelease = () => void;
+type ReconciliationMode = "global" | "targeted";
+
+/** Purpose: coordinate active and scheduled war reconciliation work within one Node process. */
+class WarReconciliationCoordinator {
+  private activeMode: ReconciliationMode | null = null;
+  private readonly globalWaiters: Array<(release: ReconciliationRelease) => void> =
+    [];
+
+  /** Purpose: run one global reconciliation at a time while waiting for any active targeted reconciliation. */
+  async runGlobal<T>(work: () => Promise<T>): Promise<T> {
+    const release = await this.acquireGlobal();
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+
+  /** Purpose: attempt targeted reconciliation once and skip immediately if any reconciliation is already active or queued. */
+  async runTargeted<T>(work: () => Promise<T>): Promise<
+    | { acquired: true; value: T }
+    | { acquired: false }
+  > {
+    const release = this.tryAcquireTargeted();
+    if (!release) {
+      return { acquired: false };
+    }
+
+    try {
+      return { acquired: true, value: await work() };
+    } finally {
+      release();
+    }
+  }
+
+  /** Purpose: queue a global reconciliation until the coordinator becomes free. */
+  private acquireGlobal(): Promise<ReconciliationRelease> {
+    return new Promise((resolve) => {
+      if (this.activeMode === null && this.globalWaiters.length === 0) {
+        this.activeMode = "global";
+        resolve(this.createRelease());
+        return;
+      }
+
+      this.globalWaiters.push(resolve);
+    });
+  }
+
+  /** Purpose: grab the coordinator only when no reconciliation is active or already waiting. */
+  private tryAcquireTargeted(): ReconciliationRelease | null {
+    if (this.activeMode !== null || this.globalWaiters.length > 0) {
+      return null;
+    }
+
+    this.activeMode = "targeted";
+    return this.createRelease();
+  }
+
+  /** Purpose: release the current reconciliation and hand the coordinator to the next queued global run. */
+  private createRelease(): ReconciliationRelease {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+
+      const next = this.globalWaiters.shift();
+      if (next) {
+        this.activeMode = "global";
+        next(this.createRelease());
+        return;
+      }
+
+      this.activeMode = null;
+    };
+  }
+
+  /** Purpose: clear coordinator state for isolated tests. */
+  resetForTest(): void {
+    this.activeMode = null;
+    this.globalWaiters.length = 0;
+  }
+}
+
+const reconciliationCoordinator = new WarReconciliationCoordinator();
+
+/** Purpose: clear the module-scoped reconciliation coordinator between isolated tests. */
+export const resetWarReconciliationCoordinatorForTest = (): void => {
+  reconciliationCoordinator.resetForTest();
+};
+
 export type WarEventPollClanResult = {
   processed: boolean;
   warEnded: boolean;
+  skippedReason?: "reconciliation_in_flight";
 };
 
 type CocWarOutageState = {
@@ -1538,50 +1632,52 @@ export class WarEventLogService {
     sendBattleDaySwapReminders?: boolean;
     currentWarSnapshotCycleContext?: CurrentWarSnapshotCycleContext;
   }): Promise<void> {
-    const sendBattleDaySwapReminders =
-      input?.sendBattleDaySwapReminders === true;
-    const syncContext = await this.buildPollSyncContext();
-    const targets = await this.listPollTargets();
-    const maintenanceOverGuildIds = new Set<string>();
-    for (const target of targets) {
-      await this.ensureCurrentWarBaseline(target);
-      await this.processSubscription(
-        target.guildId,
-        target.clanTag,
-        syncContext,
-        {
-          sendBattleDaySwapReminders,
-          maintenanceOverGuildIds,
-          currentWarSnapshotCycleContext: input?.currentWarSnapshotCycleContext ?? null,
-        },
-      ).catch((err) => {
-        console.error(
-          `[war-events] process failed guild=${target.guildId} clan=${target.clanTag} error=${formatError(
-            err,
-          )}`,
-        );
-      });
-    }
-    for (const guildId of maintenanceOverGuildIds) {
-      await fireBattleDayTransitionWar24hRemindersForGuild({
-        client: this.client,
-        guildId,
-        nowMs: Date.now(),
-        triggerSource: "maintenance_over",
-      }).catch((err) => {
-        console.error(
-          `[reminders] battle_day_maintenance_over_failed guild=${guildId} trigger=maintenance_over error=${formatError(err)}`,
-        );
-      });
-    }
+    await reconciliationCoordinator.runGlobal(async () => {
+      const sendBattleDaySwapReminders =
+        input?.sendBattleDaySwapReminders === true;
+      const syncContext = await this.buildPollSyncContext();
+      const targets = await this.listPollTargets();
+      const maintenanceOverGuildIds = new Set<string>();
+      for (const target of targets) {
+        await this.ensureCurrentWarBaseline(target);
+        await this.processSubscription(
+          target.guildId,
+          target.clanTag,
+          syncContext,
+          {
+            sendBattleDaySwapReminders,
+            maintenanceOverGuildIds,
+            currentWarSnapshotCycleContext: input?.currentWarSnapshotCycleContext ?? null,
+          },
+        ).catch((err) => {
+          console.error(
+            `[war-events] process failed guild=${target.guildId} clan=${target.clanTag} error=${formatError(
+              err,
+            )}`,
+          );
+        });
+      }
+      for (const guildId of maintenanceOverGuildIds) {
+        await fireBattleDayTransitionWar24hRemindersForGuild({
+          client: this.client,
+          guildId,
+          nowMs: Date.now(),
+          triggerSource: "maintenance_over",
+        }).catch((err) => {
+          console.error(
+            `[reminders] battle_day_maintenance_over_failed guild=${guildId} trigger=maintenance_over error=${formatError(err)}`,
+          );
+        });
+      }
 
-    await this.warPlanViolations
-      .reconcileDueEvaluations({ limit: 20 })
-      .catch((err) => {
-        console.error(
-          `[war-plan-violation] event=reconcile_failed error=${formatError(err)}`,
-        );
-      });
+      await this.warPlanViolations
+        .reconcileDueEvaluations({ limit: 20 })
+        .catch((err) => {
+          console.error(
+            `[war-plan-violation] event=reconcile_failed error=${formatError(err)}`,
+          );
+        });
+    });
   }
 
   /** Purpose: derive the shared poll sync context without widening the global poll loop. */
@@ -1605,26 +1701,41 @@ export class WarEventLogService {
       return { processed: false, warEnded: false };
     }
 
-    const subscription = await this.findSubscriptionByGuildAndTag(
-      guildId,
-      clanTag,
-    );
-    if (!subscription) {
-      return { processed: false, warEnded: false };
+    const targeted = await reconciliationCoordinator.runTargeted(async () => {
+      const subscription = await this.findSubscriptionByGuildAndTag(
+        guildId,
+        clanTag,
+      );
+      if (!subscription) {
+        return { processed: false, warEnded: false };
+      }
+
+      const syncContext = await this.buildPollSyncContext();
+      const warEnded = await this.processSubscription(
+        guildId,
+        clanTag,
+        syncContext,
+        {
+          sendBattleDaySwapReminders:
+            input.sendBattleDaySwapReminders === true,
+        },
+      );
+
+      return { processed: true, warEnded };
+    });
+
+    if (!targeted.acquired) {
+      console.warn(
+        `[war-events] event=reconciliation_skipped source=poll_clan reason=in_flight guild=${guildId} clan=${clanTag}`,
+      );
+      return {
+        processed: false,
+        warEnded: false,
+        skippedReason: "reconciliation_in_flight",
+      };
     }
 
-    const syncContext = await this.buildPollSyncContext();
-    const warEnded = await this.processSubscription(
-      guildId,
-      clanTag,
-      syncContext,
-      {
-        sendBattleDaySwapReminders:
-          input.sendBattleDaySwapReminders === true,
-      },
-    );
-
-    return { processed: true, warEnded };
+    return targeted.value;
   }
 
   private async listPollTargets(): Promise<PollTarget[]> {
