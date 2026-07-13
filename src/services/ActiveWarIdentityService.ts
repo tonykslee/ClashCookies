@@ -1,5 +1,12 @@
 import { Prisma } from "@prisma/client";
+import { dozzleLog } from "../helper/dozzleLogger";
+import {
+  resolveSteadyStateLogLevel,
+  SteadyStateLogGate,
+} from "../helper/steadyStateLogGate";
 import { prisma } from "../prisma";
+import { getTelemetryContext } from "./telemetry/context";
+import { TelemetryIngestService } from "./telemetry/ingest";
 import { parseCocApiTime } from "../utils/cocTime";
 
 export type ActiveWarIdentityState = "preparation" | "inWar" | "notInWar";
@@ -8,6 +15,33 @@ export type ActiveWarIdentityPolicy =
   | "poll_reconcile"
   | "interactive_materialize"
   | "preserve_persisted";
+
+export type ActiveWarIdentityBlockedReason =
+  | "not_in_war"
+  | "partial_live_identity"
+  | "missing_current_row"
+  | "persisted_identity_mismatch"
+  | "missing_preserved_id"
+  | "conflicting_global_identity_ids"
+  | "persistence_failure";
+
+export type ActiveWarIdentityResolvedSource =
+  | "existing_exact_row"
+  | "reused_global_exact_identity"
+  | "materialized_missing_id"
+  | "allocated_new_identity"
+  | "preserved_during_outage_recovery";
+
+export type ActiveWarIdentityObservabilityContext = {
+  caller:
+    | "fwa_mail_render"
+    | "war_event_poll"
+    | "notify_refresh"
+    | "battle_day_refresh";
+  runId?: string | null;
+  interactionId?: string | null;
+  pollCycleId?: string | null;
+};
 
 export type PhysicalActiveWarIdentity = {
   state: "preparation" | "inWar";
@@ -46,32 +80,11 @@ type ActiveWarIdentityCurrentWarRow = {
   clanName: string | null;
 };
 
-type ActiveWarIdentityResolvedSource =
-  | "existing_exact_row"
-  | "reused_global_exact_identity"
-  | "materialized_missing_id"
-  | "allocated_new_identity"
-  | "preserved_during_outage_recovery";
-
-type ActiveWarIdentityBlockedReason =
-  | "not_in_war"
-  | "partial_live_identity"
-  | "missing_current_row"
-  | "persisted_identity_mismatch"
-  | "missing_preserved_id"
-  | "conflicting_global_identity_ids"
-  | "persistence_failure";
-
 export type ActiveWarIdentityResult =
   | {
       status: "resolved";
       warId: number;
-      source:
-        | "existing_exact_row"
-        | "reused_global_exact_identity"
-        | "materialized_missing_id"
-        | "allocated_new_identity"
-        | "preserved_during_outage_recovery";
+      source: ActiveWarIdentityResolvedSource;
       identity: CanonicalActiveWarIdentity;
       identityPersisted: boolean;
       liveValidated: boolean;
@@ -79,14 +92,7 @@ export type ActiveWarIdentityResult =
   | {
       status: "blocked";
       warId: null;
-      reason:
-        | "not_in_war"
-        | "partial_live_identity"
-        | "missing_current_row"
-        | "persisted_identity_mismatch"
-        | "missing_preserved_id"
-        | "conflicting_global_identity_ids"
-        | "persistence_failure";
+      reason: ActiveWarIdentityBlockedReason;
     };
 
 function normalizeTag(input: string | null | undefined): string | null {
@@ -117,6 +123,12 @@ function normalizeState(
 function sanitizeText(input: string | null | undefined): string | null {
   const trimmed = String(input ?? "").trim();
   return trimmed ? trimmed : null;
+}
+
+function toIsoString(input: Date | null | undefined): string | null {
+  return input instanceof Date && Number.isFinite(input.getTime())
+    ? input.toISOString()
+    : null;
 }
 
 function normalizeWarId(input: number | string | null | undefined): number | null {
@@ -235,6 +247,50 @@ function buildBlocked(
   } as ActiveWarIdentityResult;
 }
 
+type ActiveWarIdentityCandidateSummary = {
+  state: string | null;
+  warStartTime: string | null;
+  opponentTag: string | null;
+};
+
+type ActiveWarIdentityPersistedSummary = {
+  warId: number | null;
+  state: string | null;
+  warStartTime: string | null;
+  opponentTag: string | null;
+};
+
+type ActiveWarIdentityResolutionOutcome = {
+  result: ActiveWarIdentityResult;
+  candidate: ActiveWarIdentityCandidateSummary;
+  persisted: ActiveWarIdentityPersistedSummary;
+  allocationOccurred: boolean;
+  identityPersisted: boolean;
+  identityPreserved: boolean;
+  liveValidated: boolean;
+};
+
+function summarizeCandidateIdentity(
+  input: ActiveWarIdentityCandidate | null | undefined,
+): ActiveWarIdentityCandidateSummary {
+  return {
+    state: String(input?.state ?? "").trim() || null,
+    warStartTime: toIsoString(normalizeDate(input?.warStartTime ?? null)),
+    opponentTag: normalizeTag(input?.opponentTag ?? null),
+  };
+}
+
+function summarizePersistedIdentity(
+  row: ActiveWarIdentityCurrentWarRow | null | undefined,
+): ActiveWarIdentityPersistedSummary {
+  return {
+    warId: normalizeWarId(row?.warId ?? null),
+    state: String(row?.state ?? "").trim() || null,
+    warStartTime: toIsoString(row?.startTime ?? null),
+    opponentTag: normalizeTag(row?.opponentTag ?? null),
+  };
+}
+
 function buildResolved(params: {
   source: ActiveWarIdentityResolvedSource;
   identity: CanonicalActiveWarIdentity;
@@ -252,61 +308,262 @@ function buildResolved(params: {
   } as ActiveWarIdentityResult;
 }
 
+function buildTelemetryLabels(input: {
+  caller: ActiveWarIdentityObservabilityContext["caller"];
+  telemetryContext: ReturnType<typeof getTelemetryContext>;
+}): { commandName: string; subcommand: string } {
+  if (input.telemetryContext?.commandName && input.telemetryContext?.subcommand) {
+    return {
+      commandName: input.telemetryContext.commandName,
+      subcommand: input.telemetryContext.subcommand,
+    };
+  }
+  switch (input.caller) {
+    case "war_event_poll":
+      return { commandName: "war-events", subcommand: "poll" };
+    case "notify_refresh":
+      return { commandName: "notify", subcommand: "refresh" };
+    case "battle_day_refresh":
+      return { commandName: "war-events", subcommand: "battle-day-refresh" };
+    case "fwa_mail_render":
+    default:
+      return { commandName: "fwa", subcommand: "match" };
+  }
+}
+
+function buildActiveWarIdentityResolutionLogLevel(input: {
+  source: ActiveWarIdentityResolvedSource | null;
+  identity: string;
+  outcomeSignature: string;
+  exactRowGate: SteadyStateLogGate;
+}): "info" | "debug" | "warn" | "error" {
+  if (input.source === "existing_exact_row") {
+    return resolveSteadyStateLogLevel({
+      gate: input.exactRowGate,
+      identity: input.identity,
+      signature: input.outcomeSignature,
+    });
+  }
+  return input.source === "allocated_new_identity" ||
+    input.source === "materialized_missing_id" ||
+    input.source === "reused_global_exact_identity" ||
+    input.source === "preserved_during_outage_recovery"
+    ? "info"
+    : "warn";
+}
+
 /** Purpose: own the canonical, concurrency-safe active-war identity resolution flow. */
 export class ActiveWarIdentityService {
+  private readonly telemetryIngest = TelemetryIngestService.getInstance();
+  private readonly exactRowLogGate = new SteadyStateLogGate();
+
   constructor(private readonly db = prisma) {}
+
+  private recordObservability(
+    input: {
+      policy: ActiveWarIdentityPolicy;
+      guildId: string;
+      clanTag: string;
+      observabilityContext?: ActiveWarIdentityObservabilityContext | null;
+    },
+    outcome: ActiveWarIdentityResolutionOutcome,
+    durationMs: number,
+  ): void {
+    const telemetryContext = getTelemetryContext();
+    const caller = input.observabilityContext?.caller ?? "war_event_poll";
+    const runId =
+      input.observabilityContext?.runId ?? telemetryContext?.runId ?? null;
+    const interactionId =
+      input.observabilityContext?.interactionId ??
+      telemetryContext?.interactionId ??
+      null;
+    const pollCycleId = input.observabilityContext?.pollCycleId ?? null;
+    const labels = buildTelemetryLabels({
+      caller,
+      telemetryContext,
+    });
+    try {
+      this.telemetryIngest.recordStageTiming({
+        stage: "active_war_identity_resolution",
+        status: outcome.result.status === "resolved" ? "success" : "failure",
+        guildId: input.guildId,
+        commandName: labels.commandName,
+        subcommand: labels.subcommand,
+        runId: runId ?? undefined,
+        durationMs,
+      });
+    } catch (error) {
+      void error;
+    }
+
+    const source =
+      outcome.result.status === "resolved" ? outcome.result.source : null;
+    const reasonCode =
+      outcome.result.status === "blocked" ? outcome.result.reason : null;
+    const signature = [
+      outcome.result.status,
+      source ?? "blocked",
+      reasonCode ?? "resolved",
+      outcome.persisted.warId ?? "none",
+      outcome.persisted.state ?? "none",
+      outcome.persisted.warStartTime ?? "none",
+      outcome.persisted.opponentTag ?? "none",
+      outcome.result.status === "resolved" ? outcome.result.warId : "none",
+      outcome.candidate.state ?? "none",
+      outcome.candidate.warStartTime ?? "none",
+      outcome.candidate.opponentTag ?? "none",
+      outcome.allocationOccurred ? "alloc" : "reuse",
+      outcome.identityPersisted ? "persisted" : "transient",
+      outcome.identityPreserved ? "preserved" : "fresh",
+      outcome.liveValidated ? "live" : "persisted",
+    ].join("|");
+    const logLevel =
+      outcome.result.status === "resolved"
+        ? buildActiveWarIdentityResolutionLogLevel({
+            source,
+            identity: [
+              caller,
+              input.guildId,
+              input.clanTag,
+              source,
+            ].join("|"),
+            outcomeSignature: signature,
+            exactRowGate: this.exactRowLogGate,
+          })
+        : reasonCode === "conflicting_global_identity_ids" ||
+            reasonCode === "persistence_failure"
+          ? "error"
+          : "warn";
+    const payload = {
+      kind: "active_war_identity_resolution",
+      status: outcome.result.status,
+      policy: input.policy,
+      caller,
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      candidateState: outcome.candidate.state,
+      candidateWarStartTime: outcome.candidate.warStartTime,
+      candidateOpponentTag: outcome.candidate.opponentTag,
+      persistedWarId: outcome.persisted.warId,
+      persistedState: outcome.persisted.state,
+      persistedWarStartTime: outcome.persisted.warStartTime,
+      persistedOpponentTag: outcome.persisted.opponentTag,
+      resolvedWarId: outcome.result.status === "resolved" ? outcome.result.warId : null,
+      source,
+      reasonCode,
+      allocationOccurred: outcome.allocationOccurred,
+      identityPersisted: outcome.identityPersisted,
+      identityPreserved: outcome.identityPreserved,
+      liveValidated: outcome.liveValidated,
+      durationMs,
+      runId,
+      interactionId,
+      pollCycleId,
+    };
+    try {
+      dozzleLog[logLevel](`[active-war-identity] ${JSON.stringify(payload)}`);
+    } catch (error) {
+      void error;
+    }
+  }
 
   async resolveCurrentWarId(input: {
     policy: ActiveWarIdentityPolicy;
     guildId: string;
     clanTag: string;
     candidateIdentity?: ActiveWarIdentityCandidate | null;
+    observabilityContext?: ActiveWarIdentityObservabilityContext | null;
   }): Promise<ActiveWarIdentityResult> {
     const guildId = String(input.guildId ?? "").trim();
     const clanTagBare = normalizeTag(input.clanTag);
+    const startedAtMs = Date.now();
+    const candidateSummary = summarizeCandidateIdentity(input.candidateIdentity ?? null);
+    let outcome: ActiveWarIdentityResolutionOutcome = {
+      result: buildBlocked("persistence_failure"),
+      candidate: candidateSummary,
+      persisted: {
+        warId: null,
+        state: null,
+        warStartTime: null,
+        opponentTag: null,
+      },
+      allocationOccurred: false,
+      identityPersisted: false,
+      identityPreserved: false,
+      liveValidated: false,
+    };
 
     if (!guildId || !clanTagBare) {
-      return buildBlocked("missing_current_row");
+      outcome = {
+        ...outcome,
+        result: buildBlocked("missing_current_row"),
+      };
+      this.recordObservability(input, outcome, Date.now() - startedAtMs);
+      return outcome.result;
     }
 
     try {
-      let resolution: ActiveWarIdentityResult | null = null;
       await this.db.$transaction(async (tx: Prisma.TransactionClient) => {
         const currentWar = await this.lockTargetCurrentWarRow(tx, guildId, clanTagBare);
+        const persistedSummary = summarizePersistedIdentity(currentWar);
 
         if (!currentWar) {
-          resolution = buildBlocked("missing_current_row");
+          outcome = {
+            ...outcome,
+            result: buildBlocked("missing_current_row"),
+            persisted: persistedSummary,
+          };
           return;
         }
 
         if (input.policy === "preserve_persisted") {
           const currentWarId = normalizeWarId(currentWar.warId ?? null);
           if (currentWarId === null) {
-            resolution = buildBlocked("missing_preserved_id");
+            outcome = {
+              ...outcome,
+              result: buildBlocked("missing_preserved_id"),
+              persisted: persistedSummary,
+            };
             return;
           }
           const persistedIdentity = buildPersistedIdentity(currentWar);
           if (!persistedIdentity) {
-            resolution = buildBlocked("missing_preserved_id");
+            outcome = {
+              ...outcome,
+              result: buildBlocked("missing_preserved_id"),
+              persisted: persistedSummary,
+            };
             return;
           }
-          resolution = buildResolved({
-            source: "preserved_during_outage_recovery",
-            identity: persistedIdentity,
-            warId: currentWarId,
+          outcome = {
+            ...outcome,
+            result: buildResolved({
+              source: "preserved_during_outage_recovery",
+              identity: persistedIdentity,
+              warId: currentWarId,
+              identityPersisted: true,
+              liveValidated: false,
+            }),
+            persisted: persistedSummary,
+            allocationOccurred: false,
             identityPersisted: true,
+            identityPreserved: true,
             liveValidated: false,
-          });
+          };
           return;
         }
 
         const candidate = buildCanonicalIdentity(input.candidateIdentity ?? {});
         if (!candidate) {
-          resolution = buildBlocked(
-            normalizeState(input.candidateIdentity?.state ?? null) === "notInWar"
-              ? "not_in_war"
-              : "partial_live_identity",
-          );
+          outcome = {
+            ...outcome,
+            result: buildBlocked(
+              normalizeState(input.candidateIdentity?.state ?? null) === "notInWar"
+                ? "not_in_war"
+                : "partial_live_identity",
+            ),
+            persisted: persistedSummary,
+          };
           return;
         }
 
@@ -324,7 +581,11 @@ export class ActiveWarIdentityService {
         });
         const globalWarId = this.summarizeGlobalWarId(exactGlobalRows);
         if (globalWarId.conflict) {
-          resolution = buildBlocked("conflicting_global_identity_ids");
+          outcome = {
+            ...outcome,
+            result: buildBlocked("conflicting_global_identity_ids"),
+            persisted: persistedSummary,
+          };
           return;
         }
 
@@ -341,17 +602,29 @@ export class ActiveWarIdentityService {
               : currentExactPhysicalMatch
                 ? "materialized_missing_id"
                 : "allocated_new_identity";
+        const sequenceAllocationOccurred =
+          matchingGlobalWarId === null &&
+          (!(currentExactPhysicalMatch && currentWarId !== null) ||
+            currentWarId === null);
 
         if (input.policy === "interactive_materialize") {
           if (!currentExactPhysicalMatch) {
-            resolution = buildBlocked("persisted_identity_mismatch");
+            outcome = {
+              ...outcome,
+              result: buildBlocked("persisted_identity_mismatch"),
+              persisted: persistedSummary,
+            };
             return;
           }
 
           const selectedWarId =
             currentWarId ?? matchingGlobalWarId ?? (await this.allocateNextWarId(tx));
           if (selectedWarId === null) {
-            resolution = buildBlocked("persistence_failure");
+            outcome = {
+              ...outcome,
+              result: buildBlocked("persistence_failure"),
+              persisted: persistedSummary,
+            };
             return;
           }
 
@@ -369,18 +642,27 @@ export class ActiveWarIdentityService {
             });
           }
 
-          resolution = buildResolved({
-            source:
-              currentWarId === null
-                ? matchingGlobalWarId !== null
-                  ? "reused_global_exact_identity"
-                  : "materialized_missing_id"
-                : "existing_exact_row",
-            identity: buildResolvedIdentity(currentWar, candidate.physical, candidate.metadata),
-            warId: currentWarId ?? selectedWarId,
+          outcome = {
+            ...outcome,
+            result: buildResolved({
+              source:
+                currentWarId === null
+                  ? matchingGlobalWarId !== null
+                    ? "reused_global_exact_identity"
+                    : "materialized_missing_id"
+                  : "existing_exact_row",
+              identity: buildResolvedIdentity(currentWar, candidate.physical, candidate.metadata),
+              warId: currentWarId ?? selectedWarId,
+              identityPersisted,
+              liveValidated: true,
+            }),
+            persisted: persistedSummary,
+            allocationOccurred:
+              currentWarId === null && matchingGlobalWarId === null,
             identityPersisted,
+            identityPreserved: false,
             liveValidated: true,
-          });
+          };
           return;
         }
 
@@ -389,7 +671,11 @@ export class ActiveWarIdentityService {
             ? currentWarId
             : matchingGlobalWarId) ?? (await this.allocateNextWarId(tx));
         if (selectedWarId === null) {
-          resolution = buildBlocked("persistence_failure");
+          outcome = {
+            ...outcome,
+            result: buildBlocked("persistence_failure"),
+            persisted: persistedSummary,
+          };
           return;
         }
 
@@ -439,19 +725,55 @@ export class ActiveWarIdentityService {
           },
         });
 
-        resolution = buildResolved({
-          source: currentExactPhysicalMatch && currentWarId !== null ? "existing_exact_row" : identitySource,
-          identity: buildResolvedIdentity(updated, candidate.physical, candidate.metadata),
-          warId: normalizeWarId(updated.warId ?? null) ?? selectedWarId,
+        outcome = {
+          ...outcome,
+          result: buildResolved({
+            source:
+              currentExactPhysicalMatch && currentWarId !== null
+                ? "existing_exact_row"
+                : identitySource,
+            identity: buildResolvedIdentity(updated, candidate.physical, candidate.metadata),
+            warId: normalizeWarId(updated.warId ?? null) ?? selectedWarId,
+            identityPersisted,
+            liveValidated: true,
+          }),
+          persisted: summarizePersistedIdentity(updated),
+          allocationOccurred: sequenceAllocationOccurred,
           identityPersisted,
+          identityPreserved: false,
           liveValidated: true,
-        });
+        };
       });
 
-      return resolution ?? buildBlocked("persistence_failure");
+      outcome = outcome ?? {
+        result: buildBlocked("persistence_failure"),
+        candidate: candidateSummary,
+        persisted: {
+          warId: null,
+          state: null,
+          warStartTime: null,
+          opponentTag: null,
+        },
+        allocationOccurred: false,
+        identityPersisted: false,
+        identityPreserved: false,
+        liveValidated: false,
+      };
+      this.recordObservability(input, outcome, Date.now() - startedAtMs);
+      return outcome.result;
     } catch (error) {
       void error;
-      return buildBlocked("persistence_failure");
+      outcome = {
+        result: buildBlocked("persistence_failure"),
+        candidate: candidateSummary,
+        persisted: outcome.persisted,
+        allocationOccurred: false,
+        identityPersisted: false,
+        identityPreserved: false,
+        liveValidated: false,
+      };
+      this.recordObservability(input, outcome, Date.now() - startedAtMs);
+      return outcome.result;
     }
   }
 

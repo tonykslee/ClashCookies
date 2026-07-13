@@ -30,6 +30,7 @@ import {
   ActiveWarIdentityService,
   type ActiveWarIdentityCandidate,
   type ActiveWarIdentityPolicy,
+  type ActiveWarIdentityObservabilityContext,
   type ActiveWarIdentityResult,
 } from "./ActiveWarIdentityService";
 import { cwlStateService } from "./CwlStateService";
@@ -3017,12 +3018,14 @@ export class WarEventLogService {
     guildId: string;
     clanTag: string;
     candidateIdentity?: ActiveWarIdentityCandidate | null;
+    observabilityContext?: ActiveWarIdentityObservabilityContext | null;
   }): Promise<ActiveWarIdentityResult> {
     return this.activeWarIdentity.resolveCurrentWarId({
       policy: params.policy,
       guildId: params.guildId,
       clanTag: params.clanTag,
       candidateIdentity: params.candidateIdentity ?? null,
+      observabilityContext: params.observabilityContext ?? null,
     });
   }
 
@@ -3298,6 +3301,10 @@ export class WarEventLogService {
       guildId: sub.guildId,
       clanTag: sub.clanTag,
       candidateIdentity,
+      observabilityContext: {
+        caller: "war_event_poll",
+        pollCycleId: null,
+      },
     });
     if (identityResolution.status === "blocked") {
       console.warn(
@@ -5291,6 +5298,10 @@ export class WarEventLogService {
         opponentName: nextOpponentName || null,
         clanName: nextClanName,
       },
+      observabilityContext: {
+        caller: "notify_refresh",
+        pollCycleId: null,
+      },
     });
     if (notifyIdentityResolution.status === "blocked") {
       return false;
@@ -5514,6 +5525,10 @@ export class WarEventLogService {
         opponentTag: nextOpponentTag || null,
         opponentName: nextOpponentName || null,
         clanName: nextClanName,
+      },
+      observabilityContext: {
+        caller: "battle_day_refresh",
+        pollCycleId: null,
       },
     });
     if (battleDayIdentityResolution.status === "blocked") {

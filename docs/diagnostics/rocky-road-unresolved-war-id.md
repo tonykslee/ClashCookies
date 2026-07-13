@@ -16,6 +16,8 @@ The important ownership boundary is the root cause:
 
 The command path that renders mail does not create the live war ID. In `src/commands/Fwa.ts`, `buildWarMailEmbedForTag` resolves `warId` from `upsertCurrentWarHistoryAndGetWarId(...) ?? getCurrentWarIdForClan(...)`, and `upsertCurrentWarHistoryAndGetWarId` is only a `CurrentWar` read. If the poller has not yet stamped the current war row, the send path can fail even when the opponent has already been discovered.
 
+The follow-up in PR #1674 closes the narrow post-war staging gap by using the canonical resolved active-war identity for points sync staging and by surfacing structured blocked-reason context from the shared active-war resolver.
+
 Confidence: 88%.
 
 ## 2. Incident timeline

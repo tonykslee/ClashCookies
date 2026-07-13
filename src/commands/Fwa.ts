@@ -128,7 +128,12 @@ import {
   resolveCurrentWarSyncIdentity,
   type ActiveWarSyncIdentity,
 } from "../services/ActiveWarSyncResolutionService";
-import { ActiveWarIdentityService } from "../services/ActiveWarIdentityService";
+import {
+  ActiveWarIdentityService,
+  type ActiveWarIdentityBlockedReason,
+  type ActiveWarIdentityObservabilityContext,
+  type ActiveWarIdentityResolvedSource,
+} from "../services/ActiveWarIdentityService";
 import {
   resolveActiveWarIdentityPatch,
 } from "../services/ActiveWarIdentityReconciliationService";
@@ -140,6 +145,7 @@ import {
 } from "../services/WarMailLifecycleService";
 import type { PointsApiFetchReason } from "../services/PointsFetchTypes";
 import { PointsSyncService } from "../services/PointsSyncService";
+import { getTelemetryContext } from "../services/telemetry/context";
 import {
   chooseMatchTypeResolution,
   compareActiveWarIdentities,
@@ -4149,6 +4155,72 @@ function formatMailBlockedReason(
   return `:warning: ${reason}`;
 }
 
+/** Purpose: translate blocked active-war identity resolution into one actionable mail error. */
+function buildFwaMailIdentityFailureMessage(
+  reason: ActiveWarIdentityBlockedReason | null | undefined,
+): string {
+  switch (reason) {
+    case "not_in_war":
+      return "Cannot send mail: no active war is currently tracked for this clan.";
+    case "partial_live_identity":
+      return "Cannot send mail yet: Clash of Clans has not returned the complete active-war identity. Run /force poll war-events and retry.";
+    case "missing_current_row":
+      return "Cannot send mail: active-war tracking is missing for this clan. Run /force poll war-events and retry.";
+    case "persisted_identity_mismatch":
+      return "Cannot send mail yet: the live war does not match the tracked active war. Run /force poll war-events and retry.";
+    case "missing_preserved_id":
+      return "Cannot send mail yet: no safe stored war ID is available. Run /force poll war-events and retry.";
+    case "conflicting_global_identity_ids":
+      return "Cannot send mail: conflicting active-war IDs were detected. Do not send mail; contact a bot administrator to repair the tracked war identity.";
+    case "persistence_failure":
+      return "Cannot send mail because the active-war identity could not be saved. Run /force poll war-events and retry. If this continues, contact a bot administrator.";
+    default:
+      return "Cannot send mail: the active war ID could not be resolved safely. Run /force poll war-events and retry.";
+  }
+}
+
+/** Purpose: preserve command telemetry correlation when the mail renderer resolves active-war identity. */
+function buildActiveWarIdentityObservabilityContext(
+  caller: ActiveWarIdentityObservabilityContext["caller"],
+): ActiveWarIdentityObservabilityContext {
+  const telemetryContext = getTelemetryContext();
+  return {
+    caller,
+    runId: telemetryContext?.runId ?? null,
+    interactionId: telemetryContext?.interactionId ?? null,
+  };
+}
+
+type FwaMailConfirmActionDecision =
+  | {
+      kind: "blocked";
+      message: string;
+      activeWarIdentityResolution: FwaMailIdentityResolutionSummary;
+    }
+  | {
+      kind: "send";
+      activeWarIdentityResolution: FwaMailIdentityResolutionSummary;
+    };
+
+/** Purpose: resolve the final mail confirmation action from the latest rerender only. */
+function resolveFwaMailConfirmAction(rendered: {
+  activeWarIdentityResolution: FwaMailIdentityResolutionSummary;
+}, _options?: { pingRole?: boolean }): FwaMailConfirmActionDecision {
+  if (rendered.activeWarIdentityResolution.status === "blocked") {
+    return {
+      kind: "blocked",
+      message: buildFwaMailIdentityFailureMessage(
+        rendered.activeWarIdentityResolution.reason,
+      ),
+      activeWarIdentityResolution: rendered.activeWarIdentityResolution,
+    };
+  }
+  return {
+    kind: "send",
+    activeWarIdentityResolution: rendered.activeWarIdentityResolution,
+  };
+}
+
 /** Purpose: identify lifecycle reconciliation outcomes that make tracked active-war mail unusable. */
 function isUnusableLifecycleOutcome(
   outcome: WarMailLifecycleReconciliationOutcome,
@@ -4362,6 +4434,19 @@ function mailStatusTitleForState(state: WarStateForSync): string {
   return "War Ended";
 }
 
+type FwaMailIdentityResolutionSummary =
+  | {
+      status: "resolved";
+      warId: number;
+      source: ActiveWarIdentityResolvedSource;
+      liveValidated: boolean;
+    }
+  | {
+      status: "blocked";
+      warId: null;
+      reason: ActiveWarIdentityBlockedReason;
+    };
+
 async function buildWarMailEmbedForTag(
   cocService: CoCService,
   guildId: string,
@@ -4384,8 +4469,9 @@ async function buildWarMailEmbedForTag(
   unavailableReasons: string[];
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  activeWarIdentityResolution: FwaMailIdentityResolutionSummary;
   mailRevisionDecision: MailRevisionDecisionContract;
-}> {
+  }> {
   const normalizedTag = normalizeTag(tag);
   const trackedConfig = await getTrackedClanMailConfig(normalizedTag);
   if (!trackedConfig) {
@@ -4449,9 +4535,27 @@ async function buildWarMailEmbedForTag(
     guildId,
     clanTag: normalizedTag,
     candidateIdentity: activeWarIdentityCandidate,
+    observabilityContext: buildActiveWarIdentityObservabilityContext(
+      "fwa_mail_render",
+    ),
   });
+  const activeWarIdentityResolution: FwaMailIdentityResolutionSummary =
+    activeWarIdentity.status === "resolved"
+      ? {
+          status: "resolved",
+          warId: activeWarIdentity.warId,
+          source: activeWarIdentity.source,
+          liveValidated: activeWarIdentity.liveValidated,
+        }
+      : {
+          status: "blocked",
+          warId: null,
+          reason: activeWarIdentity.reason,
+        };
   const warIdForSync =
-    activeWarIdentity.status === "resolved" ? activeWarIdentity.warId : null;
+    activeWarIdentityResolution.status === "resolved"
+      ? activeWarIdentityResolution.warId
+      : null;
   const warStartTimeForSync = activeWarIdentityCandidate.warStartTime
     ? new Date(activeWarIdentityCandidate.warStartTime)
     : null;
@@ -4873,6 +4977,11 @@ async function buildWarMailEmbedForTag(
   });
 
   const unavailableReasons: string[] = [];
+  if (activeWarIdentityResolution.status === "blocked") {
+    unavailableReasons.push(
+      buildFwaMailIdentityFailureMessage(activeWarIdentityResolution.reason),
+    );
+  }
   if (!trackedConfig.mailChannelId) {
     unavailableReasons.push("Tracked clan mail channel is not configured.");
   }
@@ -4954,6 +5063,7 @@ async function buildWarMailEmbedForTag(
     matchType: mailMatchType,
     expectedOutcome: mailExpectedOutcome,
     mailRevisionDecision,
+    activeWarIdentityResolution,
   };
 }
 
@@ -8610,20 +8720,22 @@ async function handleFwaMailConfirmAction(
       revisionOverride: payload.revisionOverride ?? null,
     },
   );
-  if (!rendered.mailChannelId || rendered.unavailableReasons.length > 0) {
+  const confirmationDecision = resolveFwaMailConfirmAction(rendered);
+  if (confirmationDecision.kind === "blocked") {
     await interaction.editReply({
-      content: `Cannot send mail: ${rendered.unavailableReasons.join(" ") || "mail channel unavailable."}`,
+      content: confirmationDecision.message,
       embeds: [],
       components: buildWarMailPreviewComponents({
         userId: parsed.userId,
         key: parsed.key,
-        enabled: true,
+        enabled: false,
+        showBack: Boolean(payload.sourceMatchPayloadKey),
       }),
     });
     return;
   }
   const channel = await interaction.client.channels
-    .fetch(rendered.mailChannelId)
+    .fetch(rendered.mailChannelId ?? "")
     .catch(() => null);
   if (!channel || !channel.isTextBased()) {
     await interaction.editReply({
@@ -10046,6 +10158,10 @@ export const renderFwaBaseSwapAnnouncementForTest =
   renderFwaBaseSwapAnnouncement;
 export const getMailBlockedReasonFromRevisionStateForTest =
   getMailBlockedReasonFromRevisionState;
+export const buildFwaMailIdentityFailureMessageForTest =
+  buildFwaMailIdentityFailureMessage;
+export const resolveFwaMailConfirmActionForTest =
+  resolveFwaMailConfirmAction;
 export const resolveWarMailFreshnessStatusForTest =
   resolveWarMailFreshnessStatus;
 export const formatMailLifecycleStatusLineForTest =
