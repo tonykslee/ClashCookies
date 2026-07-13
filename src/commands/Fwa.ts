@@ -131,6 +131,7 @@ import {
 import {
   resolveActiveWarIdentityPatch,
 } from "../services/ActiveWarIdentityReconciliationService";
+import { isActivePollingMode } from "../services/PollingModeService";
 import {
   WarMailLifecycleService,
   type WarMailLifecycleReconciliationOutcome,
@@ -4541,6 +4542,17 @@ export const targetedWarMailIdentityResolver = {
     const initialRenderableRow = initialClassification.samePhysicalWar
       ? params.currentWarRow
       : null;
+
+    if (!isActivePollingMode()) {
+      console.warn(
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=skipped reason=mirror_mode`,
+      );
+      return {
+        identity: null,
+        currentWarRow: initialRenderableRow,
+        reconciled: false,
+      };
+    }
 
     if (
       !params.client ||

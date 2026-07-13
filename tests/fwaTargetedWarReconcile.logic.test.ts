@@ -37,6 +37,7 @@ import {
 const liveStartMs = new Date("2026-07-12T15:22:26.000Z").getTime();
 const liveStartTime = new Date("2026-07-12T15:22:26.000Z");
 const staleStartTime = new Date("2026-07-11T15:22:26.000Z");
+const originalPollingMode = process.env.POLLING_MODE;
 
 function buildRenderRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -95,6 +96,27 @@ function expectNullWarMailRenderState(row: unknown): void {
   });
 }
 
+async function withPollingMode<T>(
+  pollingMode: string | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previousPollingMode = process.env.POLLING_MODE;
+  if (pollingMode === undefined) {
+    delete process.env.POLLING_MODE;
+  } else {
+    process.env.POLLING_MODE = pollingMode;
+  }
+  try {
+    return await run();
+  } finally {
+    if (previousPollingMode === undefined) {
+      delete process.env.POLLING_MODE;
+    } else {
+      process.env.POLLING_MODE = previousPollingMode;
+    }
+  }
+}
+
 describe("fwa targeted war-mail identity reconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -109,6 +131,11 @@ describe("fwa targeted war-mail identity reconciliation", () => {
   });
 
   afterEach(() => {
+    if (originalPollingMode === undefined) {
+      delete process.env.POLLING_MODE;
+    } else {
+      process.env.POLLING_MODE = originalPollingMode;
+    }
     vi.restoreAllMocks();
   });
 
@@ -200,6 +227,55 @@ describe("fwa targeted war-mail identity reconciliation", () => {
     expect(warEventLogServiceMock.pollClan).not.toHaveBeenCalled();
     expectNoGlobalPolls();
     expectNoMutatingWrites();
+  });
+
+  it("accepts an already exact persisted CurrentWar row in mirror mode without polling", async () => {
+    await withPollingMode("mirror", async () => {
+      const exactRow = buildRenderRow({
+        warId: 1000610,
+        state: "preparation",
+        opponentTag: "#LYPLQQUC",
+        opponentName: "Exact Opponent",
+        inferredMatchType: false,
+        outcome: null,
+        fwaPoints: 120,
+        opponentFwaPoints: 108,
+        clanStars: 28,
+        opponentStars: 26,
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const result = await resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: "1000610",
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: exactRow,
+      });
+
+      expect(result).toEqual({
+        identity: {
+          warId: 1000610,
+          startTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+        },
+        currentWarRow: exactRow,
+        reconciled: false,
+      });
+      expect(warEventLogServiceMock.pollClan).not.toHaveBeenCalled();
+      expectNoGlobalPolls();
+      expectNoMutatingWrites();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("reconciles a stale row through pollClan and replaces the render row with the fresh exact row", async () => {
@@ -294,6 +370,90 @@ describe("fwa targeted war-mail identity reconciliation", () => {
     expect(freshState.opponentFwaPoints).not.toBe(staleRow.opponentFwaPoints);
     expect(freshState.clanStars).not.toBe(staleRow.clanStars);
     expect(freshState.opponentStars).not.toBe(staleRow.opponentStars);
+  });
+
+  it("skips targeted repair in mirror mode for a missing war ID row", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#LYPLQQUC",
+      opponentName: "Exact Opponent",
+      startTime: liveStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-12T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+
+    await withPollingMode("mirror", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = await resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      });
+
+      expect(result.identity).toBeNull();
+      expect(result.currentWarRow).toBe(staleRow);
+      expect(result.reconciled).toBe(false);
+      expect(warEventLogServiceMock.pollClan).not.toHaveBeenCalled();
+      expectNoGlobalPolls();
+      expectNoMutatingWrites();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[fwa-mail] event=targeted_war_reconcile guild=guild-1 clan=#LYPLQQUC result=skipped reason=mirror_mode",
+        ),
+      );
+    });
+  });
+
+  it("skips targeted repair in mirror mode when the row is missing", async () => {
+    await withPollingMode("mirror", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = await resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: null,
+      });
+
+      expect(result.identity).toBeNull();
+      expect(result.currentWarRow).toBeNull();
+      expect(result.reconciled).toBe(false);
+      expect(warEventLogServiceMock.pollClan).not.toHaveBeenCalled();
+      expectNoGlobalPolls();
+      expectNoMutatingWrites();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "[fwa-mail] event=targeted_war_reconcile guild=guild-1 clan=#LYPLQQUC result=skipped reason=mirror_mode",
+        ),
+      );
+    });
   });
 
   it("returns null row and fail-closed render state when a stale row poll throws", async () => {
