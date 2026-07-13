@@ -4386,11 +4386,60 @@ type WarMailResolvedCurrentWarIdentity = {
   opponentTag: string;
 };
 
+type WarMailCurrentWarRowClassification = {
+  samePhysicalWar: boolean;
+  exactIdentity: WarMailResolvedCurrentWarIdentity | null;
+};
+
 function isActiveWarMailState(
   state: string | null | undefined,
 ): state is "preparation" | "inWar" {
   const normalized = String(state ?? "").trim();
   return normalized === "preparation" || normalized === "inWar";
+}
+
+function classifyWarMailCurrentWarRow(
+  row: WarMailCurrentWarRenderRow | null | undefined,
+  input: {
+    liveWarState: WarStateForSync;
+    liveWarStartMs: number | null;
+    liveOpponentTag: string | null;
+  },
+): WarMailCurrentWarRowClassification {
+  if (input.liveWarState === "notInWar") {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+  if (!row || !isActiveWarMailState(row.state)) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+  if (input.liveWarStartMs === null || input.liveOpponentTag === null) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+
+  const rowStartMs = toWarStartMs(row.startTime);
+  const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
+  const samePhysicalWar =
+    rowStartMs !== null &&
+    rowStartMs === Math.trunc(input.liveWarStartMs) &&
+    rowOpponentTag === input.liveOpponentTag;
+  if (!samePhysicalWar) {
+    return { samePhysicalWar: false, exactIdentity: null };
+  }
+
+  const rowWarId = toComparableSyncNumber(row.warId ?? null);
+  const exactIdentity =
+    rowWarId !== null && rowWarId > 0
+      ? {
+          warId: rowWarId,
+          startTime: row.startTime!,
+          opponentTag: rowOpponentTag,
+        }
+      : null;
+
+  return {
+    samePhysicalWar: true,
+    exactIdentity,
+  };
 }
 
 function resolveExactCurrentWarMailIdentityForRow(
@@ -4401,28 +4450,7 @@ function resolveExactCurrentWarMailIdentityForRow(
     liveOpponentTag: string | null;
   },
 ): WarMailResolvedCurrentWarIdentity | null {
-  if (input.liveWarState === "notInWar") return null;
-  if (!row || !isActiveWarMailState(row.state)) return null;
-  if (input.liveWarStartMs === null || input.liveOpponentTag === null) return null;
-
-  const rowWarId = toComparableSyncNumber(row.warId ?? null);
-  const rowStartMs = toWarStartMs(row.startTime);
-  const rowOpponentTag = normalizeTag(String(row.opponentTag ?? ""));
-  if (
-    rowWarId === null ||
-    rowWarId <= 0 ||
-    rowStartMs === null ||
-    rowStartMs !== Math.trunc(input.liveWarStartMs) ||
-    rowOpponentTag !== input.liveOpponentTag
-  ) {
-    return null;
-  }
-
-  return {
-    warId: rowWarId,
-    startTime: row.startTime!,
-    opponentTag: rowOpponentTag,
-  };
+  return classifyWarMailCurrentWarRow(row, input).exactIdentity;
 }
 
 async function loadWarMailCurrentWarRenderRow(params: {
@@ -4443,6 +4471,9 @@ async function loadWarMailCurrentWarRenderRow(params: {
 
 export const loadWarMailCurrentWarRenderRowForTest =
   loadWarMailCurrentWarRenderRow;
+
+export const classifyWarMailCurrentWarRowForTest =
+  classifyWarMailCurrentWarRow;
 
 export const resolveExactCurrentWarMailIdentityForTagForTest =
   resolveExactCurrentWarMailIdentityForRow;
@@ -4491,7 +4522,7 @@ export const targetedWarMailIdentityResolver = {
         reconciled: false,
       };
     }
-    const initialExact = resolveExactCurrentWarMailIdentityForRow(
+    const initialClassification = classifyWarMailCurrentWarRow(
       params.currentWarRow,
       {
         liveWarState: params.liveWarState,
@@ -4499,6 +4530,7 @@ export const targetedWarMailIdentityResolver = {
         liveOpponentTag: params.liveOpponentTag,
       },
     );
+    const initialExact = initialClassification.exactIdentity;
     if (initialExact) {
       return {
         identity: initialExact,
@@ -4506,6 +4538,9 @@ export const targetedWarMailIdentityResolver = {
         reconciled: false,
       };
     }
+    const initialRenderableRow = initialClassification.samePhysicalWar
+      ? params.currentWarRow
+      : null;
 
     if (
       !params.client ||
@@ -4519,7 +4554,7 @@ export const targetedWarMailIdentityResolver = {
     ) {
       return {
         identity: null,
-        currentWarRow: params.currentWarRow,
+        currentWarRow: initialRenderableRow,
         reconciled: false,
       };
     }
@@ -4537,7 +4572,7 @@ export const targetedWarMailIdentityResolver = {
         );
         return {
           identity: null,
-          currentWarRow: params.currentWarRow,
+          currentWarRow: initialRenderableRow,
           reconciled: false,
         };
       }
@@ -4547,7 +4582,7 @@ export const targetedWarMailIdentityResolver = {
       );
       return {
         identity: null,
-        currentWarRow: params.currentWarRow,
+        currentWarRow: initialRenderableRow,
         reconciled: false,
       };
     }
@@ -4567,7 +4602,7 @@ export const targetedWarMailIdentityResolver = {
       );
       return {
         identity: null,
-        currentWarRow: params.currentWarRow,
+        currentWarRow: initialRenderableRow,
         reconciled: false,
       };
     }
@@ -4709,16 +4744,15 @@ async function buildWarMailEmbedForTag(
     guildId,
     normalizedTag,
   });
-  let currentWarForRender = initialCurrentWar;
 
   const syncIdentity = resolveCurrentWarSyncIdentity({
     clanTag: tag,
     warState,
     liveWarStartTime: war?.startTime ?? null,
     liveOpponentTag: opponentTag || null,
-    currentWarId: currentWarForRender?.warId ?? null,
-    currentWarStartTime: currentWarForRender?.startTime ?? null,
-    currentWarOpponentTag: currentWarForRender?.opponentTag ?? null,
+    currentWarId: initialCurrentWar?.warId ?? null,
+    currentWarStartTime: initialCurrentWar?.startTime ?? null,
+    currentWarOpponentTag: initialCurrentWar?.opponentTag ?? null,
   });
   const reconciledContext = await targetedWarMailIdentityResolver.resolve({
     client: options?.targetedWarReconcileClient ?? null,
@@ -4729,14 +4763,10 @@ async function buildWarMailEmbedForTag(
     liveWarStartMs: parseCocApiTime(war?.startTime),
     liveOpponentTag: opponentTag || null,
     activeWarSyncIdentity: syncIdentity,
-    currentWarRow: currentWarForRender,
+    currentWarRow: initialCurrentWar,
   });
-  if (reconciledContext.currentWarRow) {
-    currentWarForRender = reconciledContext.currentWarRow;
-  }
-  const currentWarRenderState = buildWarMailCurrentWarRenderState(
-    currentWarForRender,
-  );
+  const currentWarForRender = reconciledContext.currentWarRow;
+  const currentWarRenderState = buildWarMailCurrentWarRenderState(currentWarForRender);
   const resolvedCurrentWarIdentity = reconciledContext.identity;
   const syncIdentityForRender = resolvedCurrentWarIdentity
     ? buildActiveWarSyncIdentity({
