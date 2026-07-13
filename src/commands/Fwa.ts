@@ -5320,7 +5320,14 @@ function buildFwaMailConfirmExpectedIdentity(params: {
       ? new Date(params.startTime.getTime())
       : null;
   const opponentTag = normalizeTag(String(params.opponentTag ?? ""));
-  if (!guildId || !clanTag || !warId || !startTime || !opponentTag) {
+  if (
+    !guildId ||
+    !clanTag ||
+    warId === null ||
+    warId <= 0 ||
+    !startTime ||
+    !opponentTag
+  ) {
     return null;
   }
   return Object.freeze({
@@ -5358,6 +5365,15 @@ async function updateExactCurrentWarAfterFwaMailConfirm(params: {
   channelId: string;
   currentWarState: CurrentWarConfirmedState | null;
 }): Promise<number> {
+  const data: Prisma.CurrentWarUpdateManyMutationInput = {
+    channelId: params.channelId,
+    inferredMatchType: params.currentWarState?.inferredMatchType ?? true,
+    outcome: params.currentWarState?.outcome ?? null,
+    updatedAt: new Date(),
+  };
+  if (params.currentWarState?.matchType != null) {
+    data.matchType = params.currentWarState?.matchType;
+  }
   const result = await prisma.currentWar.updateMany({
     where: {
       guildId: params.identity.guildId,
@@ -5369,15 +5385,24 @@ async function updateExactCurrentWarAfterFwaMailConfirm(params: {
         in: ["preparation", "inWar"],
       },
     },
-    data: {
-      channelId: params.channelId,
-      matchType: params.currentWarState?.matchType ?? null,
-      inferredMatchType: params.currentWarState?.inferredMatchType ?? true,
-      outcome: params.currentWarState?.outcome ?? null,
-      updatedAt: new Date(),
-    },
+    data,
   });
   return result.count;
+}
+
+function logWarMailGuardUpdateFailure(params: {
+  guildId: string;
+  clanTag: string;
+  warId: number;
+  startTime: Date;
+  opponentTag: string;
+  channelId: string;
+  messageId: string;
+  error: unknown;
+}): void {
+  console.error(
+    `[fwa-mail] event=war_mail_guard_update_failed guild=${params.guildId} clan=#${params.clanTag} war_id=${params.warId} war_start=${params.startTime.toISOString()} opponent=#${params.opponentTag} channel_id=${params.channelId} message_id=${params.messageId} error=${formatError(params.error)}`,
+  );
 }
 
 function logWarMailCompensationFailure(params: {
@@ -9217,11 +9242,25 @@ async function handleFwaMailConfirmAction(
       ? []
       : buildWarMailPostedComponents(postKey),
   });
-  const updatedCount = await updateExactCurrentWarAfterFwaMailConfirm({
-    identity: exactCurrentWarIdentity,
-    channelId: channel.id,
-    currentWarState: confirmedCurrentWarState,
-  }).catch(() => 0);
+  let updatedCount = 0;
+  try {
+    updatedCount = await updateExactCurrentWarAfterFwaMailConfirm({
+      identity: exactCurrentWarIdentity,
+      channelId: channel.id,
+      currentWarState: confirmedCurrentWarState,
+    });
+  } catch (error) {
+    logWarMailGuardUpdateFailure({
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      warId: exactCurrentWarIdentity.warId,
+      startTime: exactCurrentWarIdentity.startTime,
+      opponentTag: exactCurrentWarIdentity.opponentTag,
+      channelId: channel.id,
+      messageId: sent.id,
+      error,
+    });
+  }
   if (updatedCount !== 1) {
     const deleteError = await sent.delete().catch((error: unknown) => error);
     if (deleteError) {
