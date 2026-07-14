@@ -4075,10 +4075,12 @@ export class WarEventLogService {
         ? "intended_next_sync_null"
         : "intended_next_sync_assigned";
     };
-    let currentWarCanonicalSyncNumber = effectiveWarIdentityChanged
+    const isActivePhysicalRollover =
+      effectiveWarIdentityChanged && currentState !== "notInWar";
+    let currentWarCanonicalSyncNumber = isActivePhysicalRollover
       ? null
       : toValidSyncNumber(sub.syncNumber ?? null);
-    const currentWarLegacySyncNumber = effectiveWarIdentityChanged
+    const currentWarLegacySyncNumber = isActivePhysicalRollover
       ? null
       : toValidSyncNumber(sub.syncNum ?? null);
     const sameWarPointsSyncNumber =
@@ -4102,7 +4104,8 @@ export class WarEventLogService {
       startTime: currentWarRolloverIdentity.startTime ?? null,
       opponentTag: normalizeTag(currentWarRolloverIdentity.opponentTag ?? null),
     };
-    const currentWarBeforeRollover = await readCurrentWarSnapshot();
+    if (isActivePhysicalRollover) {
+      const currentWarBeforeRollover = await readCurrentWarSnapshot();
     if (!currentWarBeforeRollover) {
       return false;
     }
@@ -4175,6 +4178,7 @@ export class WarEventLogService {
         }
       }
     }
+    }
     const resolveActiveSyncNumber =
       syncContext.resolveActiveSyncNumber ??
       (async (
@@ -4228,7 +4232,7 @@ export class WarEventLogService {
         ? currentWarCanonicalSyncNumber
         : syncAssignment?.usable && syncAssignment.syncNumber !== null
           ? syncAssignment.syncNumber
-          : effectiveWarIdentityChanged
+          : isActivePhysicalRollover
             ? null
             : currentWarCanonicalSyncNumber;
     const syncNumberForEvent =
