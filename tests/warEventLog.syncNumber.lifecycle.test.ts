@@ -445,7 +445,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       warId: 5001,
       syncNumber: 534,
       syncNum: 534,
-      state: "preparation",
+      state: "notInWar",
       prepStartTime,
       startTime: prepStartTime,
       opponentName: "Old Opponent",
@@ -458,7 +458,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         syncNumber: 534,
         syncNum: 534,
         pointsSyncNum: 534,
-        state: "notInWar",
+        state: "unknown",
         startTime: prepStartTime,
         prepStartTime,
         opponentName: "Old Opponent",
@@ -529,7 +529,6 @@ describe("WarEventLogService sync-number lifecycle", () => {
       expect.objectContaining({
         currentWarCanonicalSyncNumber: 535,
         currentWarLegacySyncNumber: null,
-        sameWarPointsSyncNumber: null,
       }),
     );
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
@@ -768,8 +767,74 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
+    expect((service as any).fwaPolice.enforceWarViolations).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a stale snapshot that is already unrelated before the first rollover reread", async () => {
+    const currentWarStore = createCurrentWarStore({
+      warId: 5003,
+      syncNumber: 999,
+      syncNum: 999,
+      state: "inWar",
+      prepStartTime: new Date("2026-03-22T09:00:00.000Z"),
+      startTime: new Date("2026-03-22T09:00:00.000Z"),
+      opponentTag: "#0PPZ",
+      opponentName: "Third Opponent",
+      clanName: "Rocky Road",
+    });
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      makeSubscriptionRow({
+        warId: 5001,
+        syncNumber: 534,
+        syncNum: 534,
+        state: "preparation",
+        startTime: prepStartTime,
+        prepStartTime,
+        opponentTag: "#0PPX",
+        pointsWarStartTime: prepStartTime,
+        updatedAt: currentWarStore.state.updatedAt,
+      }),
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({ warId: 5002 });
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: newWarStartTime,
+        opponentTag: "#0PPY",
+      }),
+      currentWarStore,
+    );
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: false,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
+
+    await expect(
+      (service as any).processSubscription("guild-1", testClanTag, {
+        previousSync: 534,
+        activeSync: 534,
+        resolveActiveSyncNumber,
+      }),
+    ).resolves.toBe(false);
+
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
+    expect((service as any).fwaPolice.enforceWarViolations).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5003,
+      syncNumber: 999,
+      state: "inWar",
+      opponentTag: "#0PPZ",
+    });
   });
 
   it("continues idempotent rollover when the target identity is already present without sync", async () => {
