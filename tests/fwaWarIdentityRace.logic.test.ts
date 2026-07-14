@@ -5,7 +5,12 @@ const prismaMock = vi.hoisted(() => ({
   currentWar: {
     findFirst: vi.fn(),
     findUnique: vi.fn(),
+    updateMany: vi.fn(),
     update: vi.fn(),
+  },
+  maintenanceWindowRuntimeState: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -230,7 +235,9 @@ describe("Current-war lookup and allocation diagnostics", () => {
       ])
       .mockResolvedValueOnce([{ warId: 1000610 }]);
     prismaMock.currentWar.findFirst.mockResolvedValue(null);
-    prismaMock.currentWar.update.mockRejectedValueOnce(new Error("write failed"));
+    prismaMock.currentWar.updateMany.mockRejectedValueOnce(
+      new Error("write failed"),
+    );
 
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {
       getCurrentWar: vi.fn().mockResolvedValue({
@@ -296,7 +303,7 @@ describe("Current-war lookup and allocation diagnostics", () => {
         previousSync: 532,
         activeSync: 533,
       }),
-    ).rejects.toThrow("write failed");
+    ).resolves.toBe(false);
 
     const rerenderWarId = await getCurrentWarIdForClanForTest(
       "guild-1",

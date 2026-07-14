@@ -507,14 +507,14 @@ export class ActiveWarSyncResolutionService {
 
     if (isMirrorPollingMode()) {
       return finish("mirror_mode", {
-        syncNumber: currentWarSyncNumber ?? sameWarPointsSyncNumber ?? null,
+        syncNumber: currentWarSyncNumber,
         proposedSyncNumber: null,
-        usable: currentWarSyncNumber !== null || sameWarPointsSyncNumber !== null,
+        usable: currentWarSyncNumber !== null,
         source: "mirror_mode",
         shouldPersist: false,
         persistence: "not_needed",
         ...baseResult,
-        persistedSyncNumber: currentWarSyncNumber ?? sameWarPointsSyncNumber ?? null,
+        persistedSyncNumber: currentWarSyncNumber,
       });
     }
 

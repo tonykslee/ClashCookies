@@ -64,6 +64,35 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
 
+  it("does not promote same-war points sync in mirror mode when CurrentWar syncNumber is absent", async () => {
+    process.env.POLLING_MODE = "mirror";
+    const service = makeService();
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4001",
+        warStartTime: new Date("2026-03-12T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      sameWarPointsSyncNumber: 321,
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "mirror_mode",
+      persistence: "not_needed",
+      shouldPersist: false,
+      usable: false,
+      persistedSyncNumber: null,
+    });
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+  });
+
   it("persists a legacy-only CurrentWar sync number when the war is positively resolved", async () => {
     const service = makeService();
 

@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ActiveWarSyncResolutionService,
+  buildActiveWarSyncIdentity,
+} from "../src/services/ActiveWarSyncResolutionService";
 import { WarEventLogService } from "../src/services/WarEventLogService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
   currentWar: {
     findFirst: vi.fn(),
+    findMany: vi.fn(),
     findUnique: vi.fn(),
+    updateMany: vi.fn(),
     update: vi.fn(),
   },
   maintenanceWindowRuntimeState: {
@@ -26,8 +32,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.$queryRaw.mockResolvedValue([]);
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
+  prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.currentWar.findUnique.mockResolvedValue(null);
   prismaMock.currentWar.update.mockResolvedValue({});
+  prismaMock.currentWar.updateMany.mockResolvedValue({ count: 0 });
   prismaMock.maintenanceWindowRuntimeState.findUnique.mockResolvedValue(null);
   prismaMock.maintenanceWindowRuntimeState.upsert.mockResolvedValue({});
 });
@@ -37,6 +45,203 @@ const testClanTag = "#2QG2C08UP";
 const prepStartTime = new Date("2026-03-20T09:00:00.000Z");
 const sameWarStartTime = new Date("2026-03-20T09:00:00.000Z");
 const newWarStartTime = new Date("2026-03-21T09:00:00.000Z");
+
+type CurrentWarState = {
+  guildId: string;
+  clanTag: string;
+  warId: number | null;
+  syncNumber: number | null;
+  syncNum: number | null;
+  state: string | null;
+  prepStartTime: Date | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  opponentTag: string | null;
+  opponentName: string | null;
+  clanName: string | null;
+  updatedAt: Date;
+};
+
+function createCurrentWarState(
+  overrides?: Partial<CurrentWarState>,
+): CurrentWarState {
+  return {
+    guildId: testGuildId,
+    clanTag: testClanTag,
+    warId: 5001,
+    syncNumber: 534,
+    syncNum: 534,
+    state: "preparation",
+    prepStartTime,
+    startTime: sameWarStartTime,
+    endTime: null,
+    opponentTag: "#0PPX",
+    opponentName: "Old Opponent",
+    clanName: "Rocky Road",
+    updatedAt: new Date("2026-03-20T09:30:00.000Z"),
+    ...overrides,
+  };
+}
+
+function cloneCurrentWarState(state: CurrentWarState): CurrentWarState {
+  return {
+    ...state,
+    prepStartTime: state.prepStartTime ? new Date(state.prepStartTime) : null,
+    startTime: state.startTime ? new Date(state.startTime) : null,
+    endTime: state.endTime ? new Date(state.endTime) : null,
+    updatedAt: new Date(state.updatedAt),
+  };
+}
+
+function createCurrentWarStore(overrides?: Partial<CurrentWarState>) {
+  const state = createCurrentWarState(overrides);
+  const bumpUpdatedAt = () => {
+    state.updatedAt = new Date(state.updatedAt.getTime() + 1000);
+  };
+  const applyUpdate = (data: Record<string, unknown>) => {
+    if (Object.prototype.hasOwnProperty.call(data, "warId")) {
+      state.warId =
+        data.warId === null || data.warId === undefined
+          ? null
+          : Number(data.warId);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "syncNumber")) {
+      state.syncNumber =
+        data.syncNumber === null || data.syncNumber === undefined
+          ? null
+          : Number(data.syncNumber);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "syncNum")) {
+      state.syncNum =
+        data.syncNum === null || data.syncNum === undefined
+          ? null
+          : Number(data.syncNum);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "state")) {
+      state.state = (data.state as string | null) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "prepStartTime")) {
+      state.prepStartTime =
+        data.prepStartTime instanceof Date
+          ? new Date(data.prepStartTime)
+          : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "startTime")) {
+      state.startTime =
+        data.startTime instanceof Date ? new Date(data.startTime) : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "endTime")) {
+      state.endTime =
+        data.endTime instanceof Date ? new Date(data.endTime) : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "opponentTag")) {
+      state.opponentTag =
+        (data.opponentTag as string | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "opponentName")) {
+      state.opponentName =
+        (data.opponentName as string | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "clanName")) {
+      state.clanName = (data.clanName as string | null | undefined) ?? null;
+    }
+    bumpUpdatedAt();
+    return cloneCurrentWarState(state);
+  };
+  const matchesWhere = (where: any) => {
+    if (where?.clanTag_guildId) {
+      if (where.clanTag_guildId.guildId !== state.guildId) return false;
+      if (where.clanTag_guildId.clanTag !== state.clanTag) return false;
+    }
+    if (where?.guildId && where.guildId !== state.guildId) return false;
+    if (where?.clanTag && where.clanTag !== state.clanTag) return false;
+    if (where?.updatedAt instanceof Date) {
+      if (where.updatedAt.getTime() !== state.updatedAt.getTime()) return false;
+    }
+    if (where?.warId !== undefined) {
+      if (typeof where.warId === "object" && where.warId !== null) {
+        if (where.warId.not === null && state.warId === null) return false;
+        if (where.warId.not !== undefined && where.warId.not !== null) {
+          if (state.warId === where.warId.not) return false;
+        }
+        if (where.warId.in && !where.warId.in.includes(state.warId)) return false;
+      } else if (where.warId !== state.warId) {
+        return false;
+      }
+    }
+    if (where?.syncNumber !== undefined) {
+      if (where.syncNumber === null) {
+        if (state.syncNumber !== null) return false;
+      } else if (typeof where.syncNumber === "object") {
+        if (where.syncNumber.not === null && state.syncNumber === null) return false;
+      } else if (where.syncNumber !== state.syncNumber) {
+        return false;
+      }
+    }
+    if (where?.state !== undefined) {
+      if (typeof where.state === "object" && where.state !== null) {
+        if (Array.isArray(where.state.in)) {
+          if (!where.state.in.includes(state.state)) return false;
+        } else if (where.state.not !== undefined) {
+          if (state.state === where.state.not) return false;
+        }
+      } else if (where.state !== state.state) {
+        return false;
+      }
+    }
+    if (where?.startTime instanceof Date) {
+      if (!state.startTime || where.startTime.getTime() !== state.startTime.getTime()) {
+        return false;
+      }
+    }
+    if (where?.opponentTag !== undefined) {
+      if (where.opponentTag === null) {
+        if (state.opponentTag !== null) return false;
+      } else if (
+        typeof where.opponentTag === "object" &&
+        where.opponentTag !== null
+      ) {
+        if (where.opponentTag.equals !== undefined && where.opponentTag.equals !== null) {
+          const expected = String(where.opponentTag.equals).toUpperCase();
+          const actual = String(state.opponentTag ?? "").toUpperCase();
+          if (expected !== actual) return false;
+        }
+      } else if (where.opponentTag !== state.opponentTag) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return {
+    state,
+    snapshot: () => cloneCurrentWarState(state),
+    findUnique: vi.fn(async (args?: { where?: any }) => {
+      if (args?.where && !matchesWhere(args.where)) return null;
+      return cloneCurrentWarState(state);
+    }),
+    findFirst: vi.fn(async (args?: { where?: any }) => {
+      if (args?.where?.startTime instanceof Date) {
+        if (
+          !state.startTime ||
+          args.where.startTime.getTime() !== state.startTime.getTime()
+        ) {
+          return null;
+        }
+      }
+      if (args?.where?.warId?.not === null && state.warId === null) {
+        return null;
+      }
+      return state.warId !== null ? { warId: state.warId } : null;
+    }),
+    updateMany: vi.fn(async (args?: { where?: any; data?: any }) => {
+      applyUpdate(args.data ?? {});
+      return { count: 1 };
+    }),
+    update: vi.fn(async (args?: { data?: any }) => {
+      return applyUpdate(args?.data ?? {});
+    }),
+  };
+}
 
 function makeWarSnapshot(input: {
   state: "preparation" | "inWar" | "notInWar";
@@ -88,11 +293,12 @@ function makeSubscriptionRow(overrides?: Partial<Record<string, unknown>>) {
     warEndFwaPoints: null,
     clanStars: null,
     opponentStars: null,
+    updatedAt: new Date("2026-03-20T09:30:00.000Z"),
     state: "preparation",
     prepStartTime,
     startTime: sameWarStartTime,
     endTime: null,
-    opponentTag: "#OPPX",
+    opponentTag: "#0PPX",
     opponentName: "Old Opponent",
     clanName: "Rocky Road",
     clanRoleId: null,
@@ -105,13 +311,13 @@ function makeSubscriptionRow(overrides?: Partial<Record<string, unknown>>) {
     pointsLastKnownMatchType: "FWA",
     pointsLastKnownOutcome: null,
     pointsWarId: "5001",
-    pointsOpponentTag: "#OPPX",
+    pointsOpponentTag: "#0PPX",
     pointsWarStartTime: sameWarStartTime,
     ...overrides,
   };
 }
 
-function makeService(snapshot: any) {
+function makeService(snapshot: any, currentWarStore = createCurrentWarStore()) {
   const service = new WarEventLogService(
     { channels: { fetch: vi.fn() } } as any,
     {
@@ -136,6 +342,15 @@ function makeService(snapshot: any) {
     upsertPointsSync: vi.fn().mockResolvedValue(undefined),
     markNeedsValidation: vi.fn().mockResolvedValue(undefined),
   };
+  prismaMock.currentWar.findUnique.mockImplementation(
+    currentWarStore.findUnique,
+  );
+  prismaMock.currentWar.findFirst.mockImplementation(currentWarStore.findFirst);
+  prismaMock.currentWar.updateMany.mockImplementation(
+    currentWarStore.updateMany,
+  );
+  prismaMock.currentWar.update.mockImplementation(currentWarStore.update);
+  (service as any).__currentWarStore = currentWarStore;
   (service as any).history = {
     resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
     getWarEndResultSnapshot: vi.fn().mockResolvedValue({
@@ -163,7 +378,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       makeWarSnapshot({
         state: "inWar",
         startTime: sameWarStartTime,
-        opponentTag: "#OPPX",
+        opponentTag: "#0PPX",
       }),
     );
     const resolveActiveSyncNumber = vi.fn().mockResolvedValue({
@@ -193,7 +408,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         sameWarPointsSyncNumber: 534,
       }),
     );
-    expect(prismaMock.currentWar.update).toHaveBeenCalledWith(
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           syncNumber: 534,
@@ -218,7 +433,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         state: "preparation",
         startTime: prepStartTime,
         prepStartTime,
-        opponentTag: "#OPPX",
+        opponentTag: "#0PPX",
         pointsWarStartTime: prepStartTime,
       }),
     ]);
@@ -227,7 +442,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       makeWarSnapshot({
         state: "inWar",
         startTime: newWarStartTime,
-        opponentTag: "#OPPY",
+        opponentTag: "#0PPY",
       }),
     );
     const resolveActiveSyncNumber = vi.fn().mockResolvedValue({
@@ -250,7 +465,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.update).toHaveBeenNthCalledWith(
+    expect(prismaMock.currentWar.updateMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         data: expect.objectContaining({
@@ -267,10 +482,10 @@ describe("WarEventLogService sync-number lifecycle", () => {
         sameWarPointsSyncNumber: null,
       }),
     );
-    expect(prismaMock.currentWar.update.mock.invocationCallOrder?.[0]).toBeLessThan(
+    expect(prismaMock.currentWar.updateMany.mock.invocationCallOrder?.[0]).toBeLessThan(
       resolveActiveSyncNumber.mock.invocationCallOrder?.[0] ?? Number.MAX_SAFE_INTEGER,
     );
-    expect(prismaMock.currentWar.update).toHaveBeenCalledWith(
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           warId: 5002,
@@ -296,7 +511,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         state: "preparation",
         startTime: prepStartTime,
         prepStartTime,
-        opponentTag: "#OPPX",
+        opponentTag: "#0PPX",
         pointsWarStartTime: prepStartTime,
       }),
     ]);
@@ -305,7 +520,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       makeWarSnapshot({
         state: "inWar",
         startTime: newWarStartTime,
-        opponentTag: "#OPPY",
+        opponentTag: "#0PPY",
       }),
     );
     (service as any).pointsGate = {
@@ -319,7 +534,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         if (clanTag === testClanTag) {
           return {
             balance: 100,
-            winnerBoxTags: ["#OPPY"],
+            winnerBoxTags: ["#0PPY"],
             winnerBoxText: "Marked as an FWA match",
             activeFwa: true,
             notFound: false,
@@ -358,7 +573,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.update).toHaveBeenCalledWith(
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           syncNumber: null,
@@ -374,5 +589,117 @@ describe("WarEventLogService sync-number lifecycle", () => {
         }),
       }),
     );
+  });
+
+  it("rolls over to the new war before allocating and writing points sync", async () => {
+    const currentWarStore = createCurrentWarStore({
+      warId: 5001,
+      syncNumber: 534,
+      syncNum: 534,
+      state: "preparation",
+      prepStartTime,
+      startTime: sameWarStartTime,
+      opponentTag: "#0PPX",
+      opponentName: "Old Opponent",
+      clanName: "Rocky Road",
+    });
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      makeSubscriptionRow({
+        warId: 5001,
+        syncNumber: 534,
+        syncNum: 534,
+        state: "preparation",
+        startTime: prepStartTime,
+        prepStartTime,
+        opponentTag: "#0PPX",
+        pointsWarStartTime: prepStartTime,
+        updatedAt: currentWarStore.updatedAt,
+      }),
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({ warId: 5002 });
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: newWarStartTime,
+        opponentTag: "#0PPY",
+      }),
+      currentWarStore,
+    );
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points.fetchSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({
+        balance: 145,
+        winnerBoxTags: ["#0PPY"],
+        winnerBoxText: "Marked as an FWA match",
+        activeFwa: true,
+        notFound: false,
+        fetchedAtMs: Date.now(),
+        effectiveSync: 535,
+      })
+      .mockResolvedValueOnce({
+        balance: 132,
+        winnerBoxTags: [],
+        winnerBoxText: "Marked as an FWA match",
+        activeFwa: true,
+        notFound: false,
+        fetchedAtMs: Date.now(),
+        effectiveSync: 535,
+      });
+    const allocationService = new ActiveWarSyncResolutionService({
+      findLatestSyncNum: vi.fn().mockResolvedValue(534),
+    } as any);
+    const resolveActiveSyncNumber = vi.fn(async (input: any) =>
+      allocationService.resolveOrAllocateActiveSyncNumber({
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        identity: buildActiveWarSyncIdentity({
+          warState: input.warState,
+          warId: input.warId,
+          warStartTime: input.warStartTime,
+          opponentTag: input.opponentTag,
+        }),
+        currentWarSyncNumber: input.currentWarCanonicalSyncNumber,
+        currentWarLegacySyncNumber: input.currentWarLegacySyncNumber,
+        sameWarPointsSyncNumber: input.sameWarPointsSyncNumber,
+        matchType: input.matchType,
+        inferredMatchType: input.inferredMatchType,
+        allowAllocation: true,
+        pollCycle: input.pollCycle,
+      }),
+    );
+
+    await (service as any).processSubscription("guild-1", testClanTag, {
+      previousSync: 534,
+      activeSync: null,
+      resolveActiveSyncNumber,
+    });
+
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        warId: "5002",
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: null,
+        sameWarPointsSyncNumber: null,
+      }),
+    );
+    expect((service as any).currentSyncs.upsertPointsSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        warId: "5002",
+        syncNum: 535,
+      }),
+    );
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5002,
+      syncNumber: 535,
+      state: "inWar",
+      opponentTag: "#0PPY",
+    });
   });
 });
