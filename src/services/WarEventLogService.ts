@@ -651,12 +651,21 @@ type ReconciliationObservedRunHandle = {
   run: ReconciliationObservedRun;
   settle: (outcome: ReconciliationOutcome) => void;
 };
-type ReconciliationCoordinatorSnapshot = {
+export type ReconciliationCoordinatorSnapshot = {
   activeMode: ReconciliationMode | null;
   globalQueueLength: number;
   observedState: ReconciliationObservationState;
   observedRun: ReconciliationObservedRun | null;
 };
+type TargetedReconciliationResult<T> =
+  | {
+      acquired: true;
+      value: T;
+    }
+  | {
+      acquired: false;
+      observation: ReconciliationCoordinatorSnapshot;
+    };
 type ReconciliationWaitResult =
   | {
       kind: "completed";
@@ -720,12 +729,14 @@ class WarReconciliationCoordinator {
 
   /** Purpose: attempt targeted reconciliation once and skip immediately if any reconciliation is already active or queued. */
   async runTargeted<T>(work: () => Promise<T>): Promise<
-    | { acquired: true; value: T }
-    | { acquired: false }
+    TargetedReconciliationResult<T>
   > {
     const release = this.tryAcquireTargeted();
     if (!release) {
-      return { acquired: false };
+      return {
+        acquired: false,
+        observation: this.getSnapshot(),
+      };
     }
 
     try {
@@ -914,6 +925,8 @@ export type WarEventPollClanResult = {
   processed: boolean;
   warEnded: boolean;
   skippedReason?: "reconciliation_in_flight";
+  reason?: "coordinator_busy" | "invalid_input" | "subscription_missing";
+  coordinatorObservation?: ReconciliationCoordinatorSnapshot;
 };
 
 type CocWarOutageState = {
@@ -1882,16 +1895,25 @@ export class WarEventLogService {
     const guildId = String(input.guildId ?? "").trim();
     const clanTag = normalizeTag(input.clanTag);
     if (!guildId || !clanTag) {
-      return { processed: false, warEnded: false };
+      return {
+        processed: false,
+        warEnded: false,
+        reason: "invalid_input",
+      };
     }
 
-    const targeted = await reconciliationCoordinator.runTargeted(async () => {
+    const targeted = await reconciliationCoordinator.runTargeted(
+      async (): Promise<WarEventPollClanResult> => {
       const subscription = await this.findSubscriptionByGuildAndTag(
         guildId,
         clanTag,
       );
       if (!subscription) {
-        return { processed: false, warEnded: false };
+        return {
+          processed: false,
+          warEnded: false,
+          reason: "subscription_missing",
+        };
       }
 
       const syncContext = await this.buildPollSyncContext();
@@ -1906,7 +1928,8 @@ export class WarEventLogService {
       );
 
       return { processed: true, warEnded };
-    });
+      },
+    );
 
     if (!targeted.acquired) {
       console.warn(
@@ -1916,6 +1939,8 @@ export class WarEventLogService {
         processed: false,
         warEnded: false,
         skippedReason: "reconciliation_in_flight",
+        reason: "coordinator_busy",
+        coordinatorObservation: targeted.observation,
       };
     }
 

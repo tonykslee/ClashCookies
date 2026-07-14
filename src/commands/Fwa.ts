@@ -4688,21 +4688,21 @@ export const targetedWarMailIdentityResolver = {
     };
 
     const attemptTargetedPoll = async (): Promise<{
-      processed: boolean;
+      pollResult: Awaited<ReturnType<typeof warEvents.pollClan>>;
       row: WarMailCurrentWarRenderRow | null;
       identity: WarMailResolvedCurrentWarIdentity | null;
     }> => {
-      const result = await warEvents.pollClan({
+      const pollResult = await warEvents.pollClan({
         guildId: normalizedGuildId,
         clanTag: normalizedTag,
         sendBattleDaySwapReminders: false,
       });
-      if (!result.processed) {
-        return { processed: false, row: null, identity: null };
+      if (!pollResult.processed) {
+        return { pollResult, row: null, identity: null };
       }
       const reread = await readExactCurrentWar();
       return {
-        processed: true,
+        pollResult,
         row: reread.row,
         identity: reread.identity,
       };
@@ -4804,7 +4804,7 @@ export const targetedWarMailIdentityResolver = {
         coordinatorState: "idle",
       });
     }
-    if (firstAttempt.processed) {
+    if (firstAttempt.pollResult.processed) {
       if (firstAttempt.identity) {
         return respondResolved({
           reason: "targeted_processed_resolved",
@@ -4820,18 +4820,17 @@ export const targetedWarMailIdentityResolver = {
       });
     }
 
-    const initialCoordinatorState = getWarReconciliationCoordinatorState();
-    const initialCoordinatorLabel = coordinatorStateToLabel(initialCoordinatorState);
-    if (initialCoordinatorLabel === "targeted_active") {
+    const firstObservation = firstAttempt.pollResult.coordinatorObservation ?? null;
+    if (firstObservation?.observedState === "targeted_active") {
       return respondUnresolved({
         reason: "coordinator_still_busy",
-        coordinatorState: initialCoordinatorLabel,
+        coordinatorState: "targeted_active",
       });
     }
 
     if (
-      initialCoordinatorLabel === "global_active" ||
-      initialCoordinatorLabel === "global_queued"
+      firstObservation?.observedState === "global_active" ||
+      firstObservation?.observedState === "global_queued"
     ) {
       logTargetedWarReconcile({
         level: "info",
@@ -4841,16 +4840,16 @@ export const targetedWarMailIdentityResolver = {
         liveOpponentTag: params.liveOpponentTag,
         result: "waiting",
         reason:
-          initialCoordinatorLabel === "global_active"
+          firstObservation.observedState === "global_active"
             ? "global_active"
             : "global_queued",
-        coordinatorState: initialCoordinatorLabel,
+        coordinatorState: firstObservation.observedState,
         targetedRetryAttempted: false,
         finalExactIdentityResolved: false,
       });
 
       const waitResult = await waitForObservedWarReconciliation(
-        initialCoordinatorState,
+        firstObservation,
         TARGETED_WAR_RECONCILIATION_WAIT_MS,
       );
       const waitMs =
@@ -4870,7 +4869,7 @@ export const targetedWarMailIdentityResolver = {
                 : "global_completed",
           row: rereadAfterWait.row,
           identity: rereadAfterWait.identity,
-          coordinatorState: initialCoordinatorLabel,
+          coordinatorState: firstObservation.observedState,
           waitMs,
         });
       }
@@ -4878,7 +4877,7 @@ export const targetedWarMailIdentityResolver = {
       if (waitResult.kind === "timeout") {
         return respondUnresolved({
           reason: "wait_timeout",
-          coordinatorState: initialCoordinatorLabel,
+          coordinatorState: firstObservation.observedState,
           waitMs,
           finalExactIdentityResolved: false,
         });
@@ -4923,29 +4922,40 @@ export const targetedWarMailIdentityResolver = {
         });
       }
 
-      if (retryAttempt.processed && retryAttempt.identity) {
+      const finalRetryReread = await readExactCurrentWar();
+      if (finalRetryReread.identity) {
         return respondResolved({
           reason:
             waitResult.kind === "completed" &&
             waitResult.outcome.status === "failed"
               ? "global_failed_but_row_repaired"
-              : "global_completed",
-          row: retryAttempt.row,
-          identity: retryAttempt.identity,
+              : retryAttempt.pollResult.processed
+                ? "targeted_processed_resolved"
+                : "global_completed",
+          row: finalRetryReread.row,
+          identity: finalRetryReread.identity,
           coordinatorState: "idle",
           waitMs,
           targetedRetryAttempted: true,
         });
       }
 
-      if (retryAttempt.processed && !retryAttempt.identity) {
+      const retryObservation = retryAttempt.pollResult.coordinatorObservation ?? null;
+      if (retryObservation?.observedState === "targeted_active") {
         return respondUnresolved({
-          reason:
-            waitResult.kind === "completed" &&
-            waitResult.outcome.status === "failed"
-              ? "global_failed_identity_missing"
-              : "global_completed_identity_missing",
-          coordinatorState: "idle",
+          reason: "coordinator_still_busy",
+          coordinatorState: "targeted_active",
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+      if (
+        retryObservation?.observedState === "global_active" ||
+        retryObservation?.observedState === "global_queued"
+      ) {
+        return respondUnresolved({
+          reason: "coordinator_still_busy",
+          coordinatorState: retryObservation.observedState,
           waitMs,
           targetedRetryAttempted: true,
         });
@@ -4967,7 +4977,9 @@ export const targetedWarMailIdentityResolver = {
           waitResult.kind === "completed" &&
           waitResult.outcome.status === "failed"
             ? "global_failed_identity_missing"
-            : "global_completed_identity_missing",
+            : retryAttempt.pollResult.processed
+              ? "targeted_processed_unresolved"
+              : "global_completed_identity_missing",
         coordinatorState: retryLabel,
         waitMs,
         targetedRetryAttempted: true,
@@ -4993,9 +5005,68 @@ export const targetedWarMailIdentityResolver = {
       });
     }
 
+    let retryAttempt: Awaited<ReturnType<typeof attemptTargetedPoll>>;
+    try {
+      retryAttempt = await attemptTargetedPoll();
+    } catch (error) {
+      console.warn(
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed reason=targeted_poll_failed error=${formatError(error)}`,
+      );
+      return respondUnresolved({
+        reason: "targeted_poll_failed",
+        coordinatorState: "idle",
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const finalIdleReread = await readExactCurrentWar();
+    if (finalIdleReread.identity) {
+      return respondResolved({
+        reason: retryAttempt.pollResult.processed
+          ? "targeted_processed_resolved"
+          : "global_completed",
+        row: finalIdleReread.row,
+        identity: finalIdleReread.identity,
+        coordinatorState: "idle",
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const retryObservation = retryAttempt.pollResult.coordinatorObservation ?? null;
+    if (retryObservation?.observedState === "targeted_active") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: "targeted_active",
+        targetedRetryAttempted: true,
+      });
+    }
+    if (
+      retryObservation?.observedState === "global_active" ||
+      retryObservation?.observedState === "global_queued"
+    ) {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: retryObservation.observedState,
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const finalIdleState = getWarReconciliationCoordinatorState();
+    const finalIdleLabel = coordinatorStateToLabel(finalIdleState);
+    if (finalIdleLabel !== "idle") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: finalIdleLabel,
+        targetedRetryAttempted: true,
+      });
+    }
+
     return respondUnresolved({
-      reason: "global_completed_identity_missing",
-      coordinatorState: idleLabel,
+      reason: retryAttempt.pollResult.processed
+        ? "targeted_processed_unresolved"
+        : "global_completed_identity_missing",
+      coordinatorState: finalIdleLabel,
+      targetedRetryAttempted: true,
     });
   },
 };

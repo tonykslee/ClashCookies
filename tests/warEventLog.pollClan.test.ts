@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WarEventLogService } from "../src/services/WarEventLogService";
+import {
+  WarEventLogService,
+  resetWarReconciliationCoordinatorForTest,
+} from "../src/services/WarEventLogService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
@@ -28,6 +31,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetWarReconciliationCoordinatorForTest();
   prismaMock.$queryRaw.mockResolvedValue([]);
   prismaMock.trackedClan.findMany.mockResolvedValue([]);
   prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -94,7 +98,11 @@ describe("WarEventLogService.pollClan", () => {
       clanTag: "#aaa111",
     });
 
-    expect(result).toEqual({ processed: false, warEnded: false });
+    expect(result).toEqual({
+      processed: false,
+      warEnded: false,
+      reason: "subscription_missing",
+    });
     expect(processSpy).not.toHaveBeenCalled();
     expect(syncSpy).not.toHaveBeenCalled();
     expect(pollSpy).not.toHaveBeenCalled();
