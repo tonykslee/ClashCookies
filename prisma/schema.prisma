@@ -1730,6 +1730,10 @@ model WarMailLifecycle {
   channelId    String?
   postedAt     DateTime?
   deletedAt    DateTime?
+  sendClaimToken      String?
+  sendClaimKey        String?
+  sendClaimedAt       DateTime?
+  lastCompletedSendKey String?
   createdAt    DateTime               @default(now())
   updatedAt    DateTime               @updatedAt
 

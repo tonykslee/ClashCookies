@@ -122,6 +122,48 @@ type FindByMessageInput = {
   opponentTag?: string | null;
 };
 
+type ExactWarMailLifecycleIdentity = {
+  guildId: string;
+  clanTag: string;
+  warId: number;
+  warStartTime: Date;
+  opponentTag: string;
+};
+
+type NormalizeExactWarMailLifecycleIdentityInput = {
+  guildId: string;
+  clanTag: string;
+  warId?: number | string | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+};
+
+export type WarMailLifecycleSendClaimAcquireResult =
+  | { result: "acquired" }
+  | { result: "already_in_flight" }
+  | { result: "already_completed" }
+  | { result: "invalid_identity" };
+
+type AcquireSendClaimInput = ExactWarMailLifecycleIdentity & {
+  sendKey: string;
+  claimToken: string;
+  claimedAt?: Date | null;
+};
+
+type FinalizeSendClaimInput = ExactWarMailLifecycleIdentity & {
+  sendKey: string;
+  claimToken: string;
+  channelId: string;
+  messageId: string;
+  postedAt: Date;
+};
+
+type ReleaseSendClaimInput = ExactWarMailLifecycleIdentity & {
+  sendKey: string;
+  claimToken: string;
+  reason: string;
+};
+
 /** Purpose: normalize clan tags for deterministic lifecycle lookups. */
 function normalizeTag(input: string): string {
   return `#${input.trim().toUpperCase().replace(/^#/, "")}`;
@@ -146,6 +188,30 @@ function normalizeOptionalWarId(input: number | string | null | undefined): numb
 function normalizeOptionalDate(input: Date | null | undefined): Date | null {
   if (!(input instanceof Date)) return null;
   return Number.isFinite(input.getTime()) ? input : null;
+}
+
+/** Purpose: normalize one required clan tag for exact lifecycle identity checks. */
+function normalizeRequiredClanTag(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed ? normalizeTag(trimmed) : null;
+}
+
+/** Purpose: normalize one required opponent tag for exact lifecycle identity checks. */
+function normalizeRequiredOpponentTag(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed ? normalizeOptionalTag(trimmed) : null;
+}
+
+/** Purpose: normalize one required claim or send key for guarded lifecycle operations. */
+function normalizeRequiredKey(input: string | null | undefined): string | null {
+  const trimmed = String(input ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+/** Purpose: normalize one exact positive war ID for guarded lifecycle operations. */
+function normalizeExactPositiveWarId(input: number | string | null | undefined): number | null {
+  const value = typeof input === "number" ? input : Number(input);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 /** Purpose: read numeric Discord API error codes from unknown thrown values. */
@@ -263,6 +329,74 @@ export class WarMailLifecycleService {
     ].join(" ");
   }
 
+  /** Purpose: format guarded send-claim fields for structured diagnostics. */
+  private formatSendClaimLogFields(input: {
+    warId: number;
+    warStartTime: Date;
+    opponentTag: string;
+    sendKey: string;
+  }): string {
+    return [
+      `war_id=${input.warId}`,
+      `war_start=${input.warStartTime.toISOString()}`,
+      `opponent=${input.opponentTag ? `#${input.opponentTag}` : "none"}`,
+      `send_key=${input.sendKey}`,
+    ].join(" ");
+  }
+
+  /** Purpose: normalize one exact active-war identity for guarded claim and finalize operations. */
+  private normalizeExactIdentity(
+    input: NormalizeExactWarMailLifecycleIdentityInput
+  ): ExactWarMailLifecycleIdentity | null {
+    const guildId = String(input.guildId ?? "").trim();
+    const clanTag = normalizeRequiredClanTag(input.clanTag);
+    const warId = normalizeExactPositiveWarId(input.warId);
+    const warStartTime = normalizeOptionalDate(input.warStartTime ?? null);
+    const opponentTag = normalizeRequiredOpponentTag(input.opponentTag);
+    if (!guildId || !clanTag || warId === null || !warStartTime || !opponentTag) {
+      return null;
+    }
+    return {
+      guildId,
+      clanTag,
+      warId,
+      warStartTime,
+      opponentTag,
+    };
+  }
+
+  /** Purpose: log a POSTED lifecycle transition using the same rules as the existing mail updater. */
+  private logPostedLifecycleTransition(input: {
+    identity: {
+      guildId: string;
+      clanTag: string;
+      warId: number | null;
+      warStartTime: Date | null;
+      opponentTag: string | null;
+    };
+    existing: {
+      status: WarMailLifecycleStatus;
+      channelId: string | null;
+      messageId: string | null;
+    } | null;
+    channelId: string;
+    messageId: string;
+  }): void {
+    const isTransitionToPosted =
+      !input.existing || input.existing.status !== WarMailLifecycleStatus.POSTED;
+    const postedIdentityChanged =
+      input.existing?.channelId !== input.channelId ||
+      input.existing?.messageId !== input.messageId;
+    const logLine =
+      `[mail-lifecycle] guild=${input.identity.guildId} clan=${input.identity.clanTag} ` +
+      `${this.formatIdentityLogFields(input.identity)} status=POSTED`;
+    if (isTransitionToPosted || postedIdentityChanged) {
+      console.info(logLine);
+      return;
+    }
+    console.debug(`${logLine} outcome=noop_reasserted`);
+  }
+
   /** Purpose: resolve one lifecycle row by active-war start time first and legacy war ID second. */
   private async findLifecycleRow(input: WarMailLifecycleIdentity) {
     const identity = this.normalizeIdentity(input);
@@ -330,19 +464,286 @@ export class WarMailLifecycleService {
         },
       });
     }
-    const isTransitionToPosted =
-      !existing || existing.status !== WarMailLifecycleStatus.POSTED;
-    const postedIdentityChanged =
-      existing?.channelId !== input.channelId ||
-      existing?.messageId !== input.messageId;
-    const logLine =
-      `[mail-lifecycle] guild=${identity.guildId} clan=${identity.clanTag} ` +
-      `${this.formatIdentityLogFields(identity)} status=POSTED`;
-    if (isTransitionToPosted || postedIdentityChanged) {
-      console.info(logLine);
-      return;
+    this.logPostedLifecycleTransition({
+      identity: {
+        guildId: identity.guildId,
+        clanTag: identity.clanTag,
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+      },
+      existing: existing
+        ? {
+            status: existing.status,
+            channelId: existing.channelId,
+            messageId: existing.messageId,
+          }
+        : null,
+      channelId: input.channelId,
+      messageId: input.messageId,
+    });
+  }
+
+  /** Purpose: atomically reserve one active-war mail revision for a single posting attempt. */
+  async acquireSendClaim(input: AcquireSendClaimInput): Promise<WarMailLifecycleSendClaimAcquireResult> {
+    const identity = this.normalizeExactIdentity(input);
+    const sendKey = normalizeRequiredKey(input.sendKey);
+    const claimToken = normalizeRequiredKey(input.claimToken);
+    const claimedAt = normalizeOptionalDate(input.claimedAt ?? null) ?? new Date();
+    if (!identity || !sendKey || !claimToken) {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_acquire guild=${String(input.guildId ?? "").trim() || "none"} clan=${normalizeRequiredClanTag(input.clanTag) ?? "none"} result=invalid_identity reason=invalid_input`
+      );
+      return { result: "invalid_identity" };
     }
-    console.debug(`${logLine} outcome=noop_reasserted`);
+
+    const lifecycle = await prisma.$transaction(async (tx) => {
+      const ensured = await tx.warMailLifecycle.upsert({
+        where: {
+          guildId_clanTag_warStartTime: {
+            guildId: identity.guildId,
+            clanTag: identity.clanTag,
+            warStartTime: identity.warStartTime,
+          },
+        },
+        create: {
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          status: WarMailLifecycleStatus.NOT_POSTED,
+        },
+        update: {},
+      });
+      if (
+        ensured.guildId !== identity.guildId ||
+        ensured.clanTag !== identity.clanTag ||
+        ensured.warId !== identity.warId ||
+        !(ensured.warStartTime instanceof Date) ||
+        ensured.warStartTime.getTime() !== identity.warStartTime.getTime() ||
+        ensured.opponentTag !== identity.opponentTag
+      ) {
+        return { result: "invalid_identity" as const };
+      }
+
+      const claimed = await tx.warMailLifecycle.updateMany({
+        where: {
+          id: ensured.id,
+          guildId: identity.guildId,
+          clanTag: identity.clanTag,
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendClaimToken: null,
+          sendClaimKey: null,
+          sendClaimedAt: null,
+          OR: [
+            { lastCompletedSendKey: null },
+            { lastCompletedSendKey: { not: sendKey } },
+          ],
+        },
+        data: {
+          sendClaimToken: claimToken,
+          sendClaimKey: sendKey,
+          sendClaimedAt: claimedAt,
+        },
+      });
+      if (claimed.count === 1) {
+        return { result: "acquired" as const };
+      }
+
+      const current = await tx.warMailLifecycle.findUnique({
+        where: { id: ensured.id },
+        select: {
+          sendClaimToken: true,
+          sendClaimKey: true,
+          sendClaimedAt: true,
+          lastCompletedSendKey: true,
+        },
+      });
+      if (!current) {
+        return { result: "invalid_identity" as const };
+      }
+      if (current.sendClaimToken || current.sendClaimKey || current.sendClaimedAt) {
+        return { result: "already_in_flight" as const };
+      }
+      if (current.lastCompletedSendKey === sendKey) {
+        return { result: "already_completed" as const };
+      }
+      return { result: "invalid_identity" as const };
+    });
+
+    if (lifecycle.result === "acquired") {
+      console.info(
+        `[mail-lifecycle] event=send_claim_acquire guild=${identity.guildId} clan=${identity.clanTag} result=acquired ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+    } else if (lifecycle.result === "already_completed") {
+      console.info(
+        `[mail-lifecycle] event=send_claim_acquire guild=${identity.guildId} clan=${identity.clanTag} result=already_completed ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+    } else if (lifecycle.result === "already_in_flight") {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_acquire guild=${identity.guildId} clan=${identity.clanTag} result=already_in_flight reason=active_claim ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+    } else {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_acquire guild=${identity.guildId} clan=${identity.clanTag} result=invalid_identity reason=stale_or_invalid_identity ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+    }
+
+    return lifecycle;
+  }
+
+  /** Purpose: finalize one previously acquired active-war mail claim as the authoritative posted message. */
+  async finalizeSendClaim(input: FinalizeSendClaimInput): Promise<boolean> {
+    const identity = this.normalizeExactIdentity(input);
+    const sendKey = normalizeRequiredKey(input.sendKey);
+    const claimToken = normalizeRequiredKey(input.claimToken);
+    const channelId = String(input.channelId ?? "").trim();
+    const messageId = String(input.messageId ?? "").trim();
+    const postedAt = normalizeOptionalDate(input.postedAt ?? null);
+    if (!identity || !sendKey || !claimToken || !channelId || !messageId || !postedAt) {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_finalize guild=${String(input.guildId ?? "").trim() || "none"} clan=${normalizeRequiredClanTag(input.clanTag) ?? "none"} result=invalid_identity reason=invalid_input`
+      );
+      return false;
+    }
+
+    const current = await prisma.warMailLifecycle.findFirst({
+      where: {
+        guildId: identity.guildId,
+        clanTag: identity.clanTag,
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+      },
+      select: {
+        status: true,
+        channelId: true,
+        messageId: true,
+        sendClaimToken: true,
+        sendClaimKey: true,
+      },
+    });
+    const updated = await prisma.warMailLifecycle.updateMany({
+      where: {
+        guildId: identity.guildId,
+        clanTag: identity.clanTag,
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+        sendClaimToken: claimToken,
+        sendClaimKey: sendKey,
+      },
+      data: {
+        status: WarMailLifecycleStatus.POSTED,
+        channelId,
+        messageId,
+        postedAt,
+        guildId: identity.guildId,
+        clanTag: identity.clanTag,
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+        sendClaimToken: null,
+        sendClaimKey: null,
+        sendClaimedAt: null,
+        lastCompletedSendKey: sendKey,
+        deletedAt: null,
+      },
+    });
+    if (updated.count !== 1) {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_finalize guild=${identity.guildId} clan=${identity.clanTag} result=stale reason=token_or_send_key_mismatch ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+      return false;
+    }
+
+    this.logPostedLifecycleTransition({
+      identity,
+      existing: current,
+      channelId,
+      messageId,
+    });
+    return true;
+  }
+
+  /** Purpose: release one acquired active-war mail claim without mutating the authoritative posted message. */
+  async releaseSendClaim(input: ReleaseSendClaimInput): Promise<boolean> {
+    const identity = this.normalizeExactIdentity(input);
+    const sendKey = normalizeRequiredKey(input.sendKey);
+    const claimToken = normalizeRequiredKey(input.claimToken);
+    const reason = String(input.reason ?? "").trim() || "unknown";
+    if (!identity || !sendKey || !claimToken) {
+      console.warn(
+        `[mail-lifecycle] event=send_claim_release guild=${String(input.guildId ?? "").trim() || "none"} clan=${normalizeRequiredClanTag(input.clanTag) ?? "none"} result=invalid_identity reason=invalid_input`
+      );
+      return false;
+    }
+
+    const released = await prisma.warMailLifecycle.updateMany({
+      where: {
+        guildId: identity.guildId,
+        clanTag: identity.clanTag,
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+        sendClaimToken: claimToken,
+        sendClaimKey: sendKey,
+      },
+      data: {
+        sendClaimToken: null,
+        sendClaimKey: null,
+        sendClaimedAt: null,
+      },
+    });
+    if (released.count === 1) {
+      console.info(
+        `[mail-lifecycle] event=send_claim_release guild=${identity.guildId} clan=${identity.clanTag} result=released reason=${reason} ${this.formatSendClaimLogFields({
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+          sendKey,
+        })}`
+      );
+      return true;
+    }
+
+    console.warn(
+      `[mail-lifecycle] event=send_claim_release guild=${identity.guildId} clan=${identity.clanTag} result=stale reason=${reason} ${this.formatSendClaimLogFields({
+        warId: identity.warId,
+        warStartTime: identity.warStartTime,
+        opponentTag: identity.opponentTag,
+        sendKey,
+      })}`
+    );
+    return false;
   }
 
   /** Purpose: persist lifecycle status=DELETED for one clan and one war. */
