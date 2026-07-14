@@ -7,6 +7,7 @@ import {
 import {
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
+  buildFwaMailSendClaimKeyForTest,
   setFwaMailConfirmRendererForTest,
   setFwaMailPreviewPayloadForTest,
 } from "../src/commands/Fwa";
@@ -40,8 +41,10 @@ vi.mock("../src/services/PointsSyncService", () => ({
 }));
 
 const lifecycleMock = vi.hoisted(() => ({
+  acquireSendClaim: vi.fn(),
+  finalizeSendClaim: vi.fn(),
+  releaseSendClaim: vi.fn(),
   getLifecycleForWar: vi.fn(),
-  markPosted: vi.fn(),
 }));
 
 vi.mock("../src/services/WarMailLifecycleService", () => ({
@@ -95,6 +98,15 @@ function buildRenderedMail(overrides?: Partial<{
     expectedOutcome: overrides?.expectedOutcome ?? "WIN",
     mailRevisionDecision: {
       mailBlockedReason: overrides?.mailBlockedReason ?? null,
+      effectiveRevisionFields: {
+        warId: String(overrides?.warId ?? 1000110),
+        opponentTag: overrides?.opponentTag ?? "2LYPLQQUC",
+        matchType: overrides?.matchType ?? "FWA",
+        expectedOutcome:
+          (overrides?.matchType ?? "FWA") === "FWA"
+            ? overrides?.expectedOutcome ?? "WIN"
+            : null,
+      },
     },
   } as any;
 }
@@ -191,6 +203,9 @@ describe("fwa mail confirm button", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    lifecycleMock.acquireSendClaim.mockResolvedValue({ result: "acquired" });
+    lifecycleMock.finalizeSendClaim.mockResolvedValue(true);
+    lifecycleMock.releaseSendClaim.mockResolvedValue(true);
     pollSpy = vi.spyOn(WarEventLogService.prototype, "poll").mockResolvedValue(
       undefined,
     );
@@ -232,7 +247,9 @@ describe("fwa mail confirm button", () => {
       expect(prisma.currentWar.update).not.toHaveBeenCalled();
       expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
       expect(pointsSyncMock.getCurrentSyncForClan).not.toHaveBeenCalled();
-      expect(lifecycleMock.markPosted).not.toHaveBeenCalled();
+      expect(lifecycleMock.acquireSendClaim).not.toHaveBeenCalled();
+      expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+      expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
       expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
       expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
       expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
@@ -271,7 +288,9 @@ describe("fwa mail confirm button", () => {
     expect(prisma.currentWar.updateMany).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
     expect(pointsSyncMock.getCurrentSyncForClan).not.toHaveBeenCalled();
-    expect(lifecycleMock.markPosted).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
     expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
     expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
     expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
@@ -318,7 +337,12 @@ describe("fwa mail confirm button", () => {
     expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.currentWar.update).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
-    expect(lifecycleMock.markPosted).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).toHaveBeenCalledTimes(1);
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
     expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
     expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
@@ -359,7 +383,12 @@ describe("fwa mail confirm button", () => {
     expect(send).not.toHaveBeenCalled();
     expect(prisma.currentWar.update).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
-    expect(lifecycleMock.markPosted).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).toHaveBeenCalledTimes(1);
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
     expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
     expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
@@ -398,7 +427,12 @@ describe("fwa mail confirm button", () => {
         "[fwa-mail] event=discord_send_failed guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC mail_channel_id=mail-channel-1 interaction_channel_id=command-channel-1 interaction_user_id=owner-1 result=failed error=send boom",
       ),
     );
-    expect(lifecycleMock.markPosted).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).toHaveBeenCalledTimes(1);
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
     expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
     expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
@@ -406,6 +440,9 @@ describe("fwa mail confirm button", () => {
     expect(refreshBattleDayPostsSpy).not.toHaveBeenCalled();
     expect(refreshNotifySpy).not.toHaveBeenCalled();
     expect(globalThis.setInterval).not.toHaveBeenCalled();
+    expect(
+      lifecycleMock.releaseSendClaim.mock.invocationCallOrder[0],
+    ).toBeGreaterThan(send.mock.invocationCallOrder[0]);
     const failureReply = interaction.editReply.mock.calls[
       interaction.editReply.mock.calls.length - 1
     ]?.[0] as
@@ -417,6 +454,94 @@ describe("fwa mail confirm button", () => {
     });
     expect(failureReply?.components).toEqual(expect.any(Array));
     expect(failureReply?.components?.length).toBeGreaterThan(0);
+  });
+
+  it("fails closed when lifecycle finalization fails after the message is sent", async () => {
+    const previewKey = await seedConfirmPayloadAndRenderer();
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
+    lifecycleMock.finalizeSendClaim.mockResolvedValueOnce(false);
+    const send = vi.fn().mockResolvedValue({
+      id: "sent-finalize-failed",
+      delete: vi.fn().mockResolvedValue(undefined),
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = createInteraction({
+      customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+      send,
+    });
+
+    await handleFwaMailConfirmButton(interaction as any);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
+    expect(
+      prisma.currentWar.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(
+      send.mock.invocationCallOrder[0],
+    ).toBeLessThan(lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[fwa-mail] event=send_claim_finalize_failed_after_send guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC mail_channel_id=mail-channel-1 message_id=sent-finalize-failed interaction_channel_id=command-channel-1 interaction_user_id=owner-1 result=orphaned_public_message",
+      ),
+    );
+    expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
+    expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
+    expect(refreshBattleDayPostsSpy).not.toHaveBeenCalled();
+    expect(refreshNotifySpy).not.toHaveBeenCalled();
+    expect(globalThis.setInterval).not.toHaveBeenCalled();
+    const failureReply = interaction.editReply.mock.calls[
+      interaction.editReply.mock.calls.length - 1
+    ]?.[0] as
+      | { content?: string; components?: unknown[] }
+      | undefined;
+    expect(failureReply).toMatchObject({
+      content:
+        "War mail was posted, but the lifecycle could not be finalized. Please contact an administrator.",
+      embeds: [],
+    });
+    expect(failureReply?.components).toEqual([]);
+  });
+
+  it("keeps the command safe when releasing a claim fails after send throws", async () => {
+    const previewKey = await seedConfirmPayloadAndRenderer();
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
+    lifecycleMock.releaseSendClaim.mockRejectedValueOnce(new Error("release boom"));
+    const send = vi.fn().mockRejectedValueOnce(new Error("send boom"));
+    const interaction = createInteraction({
+      customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+      send,
+    });
+
+    await handleFwaMailConfirmButton(interaction as any);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).toHaveBeenCalledTimes(1);
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
+    expect(
+      prisma.currentWar.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
+    expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
+    expect(refreshBattleDayPostsSpy).not.toHaveBeenCalled();
+    expect(refreshNotifySpy).not.toHaveBeenCalled();
+    expect(globalThis.setInterval).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenLastCalledWith({
+      content: "Failed to send war mail.",
+      embeds: [],
+      components: expect.any(Array),
+    });
   });
 
   it("prevents two concurrent confirmations from producing two public posts", async () => {
@@ -439,7 +564,14 @@ describe("fwa mail confirm button", () => {
     pointsSyncMock.getCurrentSyncForClan.mockResolvedValue(null);
     pointsSyncMock.markConfirmedByClanMail.mockResolvedValue(undefined);
     lifecycleMock.getLifecycleForWar.mockResolvedValue(null);
-    lifecycleMock.markPosted.mockResolvedValue(undefined);
+    let claimAcquired = false;
+    lifecycleMock.acquireSendClaim.mockImplementation(async () => {
+      if (claimAcquired) {
+        return { result: "already_in_flight" as const };
+      }
+      claimAcquired = true;
+      return { result: "acquired" as const };
+    });
     repWorkActivityMock.recordMailSent.mockResolvedValue(undefined);
     const interactionOne = createInteraction({
       customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
@@ -457,8 +589,13 @@ describe("fwa mail confirm button", () => {
     await Promise.all([firstRun, secondRun]);
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(2);
-    expect(lifecycleMock.markPosted).toHaveBeenCalledTimes(1);
+    expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(2);
+    expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).toHaveBeenCalledTimes(1);
     expect(pointsSyncMock.markConfirmedByClanMail).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedClan.update).toHaveBeenCalledTimes(1);
@@ -490,7 +627,6 @@ describe("fwa mail confirm button", () => {
     pointsSyncMock.getCurrentSyncForClan.mockResolvedValueOnce(null);
     pointsSyncMock.markConfirmedByClanMail.mockResolvedValueOnce(undefined);
     lifecycleMock.getLifecycleForWar.mockResolvedValueOnce(null);
-    lifecycleMock.markPosted.mockResolvedValueOnce(undefined);
     repWorkActivityMock.recordMailSent.mockResolvedValueOnce(undefined);
     const sentMessage = {
       id: "sent-unknown",
@@ -517,7 +653,12 @@ describe("fwa mail confirm button", () => {
     expect(sentMessage.delete).not.toHaveBeenCalled();
     expect(prisma.currentWar.update).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
-    expect(lifecycleMock.markPosted).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).toHaveBeenCalledTimes(1);
     expect(pointsSyncMock.markConfirmedByClanMail).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedClan.update).toHaveBeenCalledTimes(1);
@@ -525,6 +666,24 @@ describe("fwa mail confirm button", () => {
     expect(refreshBattleDayPostsSpy).not.toHaveBeenCalled();
     expect(refreshNotifySpy).toHaveBeenCalledTimes(1);
     expect(globalThis.setInterval).toHaveBeenCalledTimes(1);
+    const acquireCall = lifecycleMock.acquireSendClaim.mock.calls[0]?.[0] as
+      | { sendKey?: string }
+      | undefined;
+    expect(acquireCall?.sendKey).toBe(
+      buildFwaMailSendClaimKeyForTest({
+        guildId: "guild-1",
+        clanTag: "R80L8VYG",
+        warId: 1000110,
+        warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+        opponentTag: "2LYPLQQUC",
+        revision: {
+          warId: "1000110",
+          opponentTag: "2LYPLQQUC",
+          matchType: "UNKNOWN",
+          expectedOutcome: null,
+        },
+      }),
+    );
   });
 
   it("sends and records the pinging confirmation on the success path", async () => {
@@ -539,7 +698,6 @@ describe("fwa mail confirm button", () => {
     pointsSyncMock.getCurrentSyncForClan.mockResolvedValueOnce(null);
     pointsSyncMock.markConfirmedByClanMail.mockResolvedValueOnce(undefined);
     lifecycleMock.getLifecycleForWar.mockResolvedValueOnce(null);
-    lifecycleMock.markPosted.mockResolvedValueOnce(undefined);
     repWorkActivityMock.recordMailSent.mockResolvedValueOnce(undefined);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const sentMessage = {
@@ -569,6 +727,9 @@ describe("fwa mail confirm button", () => {
     expect(
       prisma.currentWar.updateMany.mock.invocationCallOrder[0],
     ).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(
+      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(prisma.currentWar.updateMany).toHaveBeenCalledWith({
       where: {
         guildId: "guild-1",
@@ -591,15 +752,44 @@ describe("fwa mail confirm button", () => {
     });
     expect(prisma.currentWar.update).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
-    expect(lifecycleMock.markPosted).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
     expect(repWorkActivityMock.recordMailSent).toHaveBeenCalledTimes(1);
     expect(pointsSyncMock.markConfirmedByClanMail).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedClan.update).toHaveBeenCalledTimes(1);
+    expect(
+      lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(repWorkActivityMock.recordMailSent.mock.invocationCallOrder[0]);
+    expect(
+      lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(pointsSyncMock.markConfirmedByClanMail.mock.invocationCallOrder[0]);
+    expect(
+      lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prismaMock.trackedClan.update.mock.invocationCallOrder[0]);
     expect(refreshNotifySpy).toHaveBeenCalledTimes(1);
     expect(globalThis.setInterval).toHaveBeenCalledTimes(1);
     expect(sentMessage.delete).not.toHaveBeenCalled();
     expect(interaction.deleteReply).toHaveBeenCalledTimes(1);
     expect(interaction.followUp).toHaveBeenCalledTimes(1);
+    const acquireCall = lifecycleMock.acquireSendClaim.mock.calls[0]?.[0] as
+      | { sendKey?: string }
+      | undefined;
+    expect(acquireCall?.sendKey).toBe(
+      buildFwaMailSendClaimKeyForTest({
+        guildId: "guild-1",
+        clanTag: "R80L8VYG",
+        warId: 1000110,
+        warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+        opponentTag: "2LYPLQQUC",
+        revision: {
+          warId: "1000110",
+          opponentTag: "2LYPLQQUC",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+      }),
+    );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining(
         "[fwa-mail] event=pre_send_guard_succeeded guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC mail_channel_id=mail-channel-1 interaction_channel_id=command-channel-1 interaction_user_id=owner-1 result=success",
@@ -630,7 +820,6 @@ describe("fwa mail confirm button", () => {
     pointsSyncMock.getCurrentSyncForClan.mockResolvedValueOnce(null);
     pointsSyncMock.markConfirmedByClanMail.mockResolvedValueOnce(undefined);
     lifecycleMock.getLifecycleForWar.mockResolvedValueOnce(null);
-    lifecycleMock.markPosted.mockResolvedValueOnce(undefined);
     repWorkActivityMock.recordMailSent.mockResolvedValueOnce(undefined);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const sentMessage = {
@@ -660,6 +849,9 @@ describe("fwa mail confirm button", () => {
     expect(
       prisma.currentWar.updateMany.mock.invocationCallOrder[0],
     ).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(
+      send.mock.invocationCallOrder[0],
+    ).toBeLessThan(lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0]);
     expect(prisma.currentWar.updateMany).toHaveBeenCalledWith({
       where: {
         guildId: "guild-1",
@@ -682,12 +874,36 @@ describe("fwa mail confirm button", () => {
     });
     expect(prisma.currentWar.update).not.toHaveBeenCalled();
     expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
     expect(interaction.followUp).toHaveBeenCalledTimes(1);
     const followUpContent = String(
       (interaction.followUp.mock.calls[0]?.[0] as { content?: string } | undefined)
         ?.content ?? "",
     );
     expect(followUpContent).toContain("without ping");
+    expect(
+      lifecycleMock.finalizeSendClaim.mock.invocationCallOrder[0],
+    ).toBeLessThan(prismaMock.trackedClan.update.mock.invocationCallOrder[0]);
+    const noPingAcquireCall = lifecycleMock.acquireSendClaim.mock.calls[0]?.[0] as
+      | { sendKey?: string }
+      | undefined;
+    expect(noPingAcquireCall?.sendKey).toBe(
+      buildFwaMailSendClaimKeyForTest({
+        guildId: "guild-1",
+        clanTag: "R80L8VYG",
+        warId: 1000110,
+        warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+        opponentTag: "2LYPLQQUC",
+        revision: {
+          warId: "1000110",
+          opponentTag: "2LYPLQQUC",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+      }),
+    );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining(
         "[fwa-mail] event=pre_send_guard_succeeded guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC mail_channel_id=mail-channel-1 interaction_channel_id=command-channel-1 interaction_user_id=owner-1 result=success",
@@ -698,5 +914,51 @@ describe("fwa mail confirm button", () => {
         "[fwa-mail] event=mail_posted guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC mail_channel_id=mail-channel-1 message_id=sent-2 interaction_channel_id=command-channel-1 interaction_user_id=owner-1 ping_role=no result=posted",
       ),
     );
+  });
+
+  it("derives a deterministic send key from the canonical active-war revision", () => {
+    const base = buildFwaMailSendClaimKeyForTest({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      warId: 1000110,
+      warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "2LYPLQQUC",
+      revision: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+    });
+    const same = buildFwaMailSendClaimKeyForTest({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      warId: 1000110,
+      warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "2LYPLQQUC",
+      revision: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+    });
+    const different = buildFwaMailSendClaimKeyForTest({
+      guildId: "guild-1",
+      clanTag: "R80L8VYG",
+      warId: 1000110,
+      warStartTime: new Date("2026-07-12T15:22:26.000Z"),
+      opponentTag: "2LYPLQQUC",
+      revision: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+      },
+    });
+
+    expect(base).toBe(same);
+    expect(base).not.toBe(different);
+    expect(base).toMatch(/^wml:[0-9a-f]{64}$/);
   });
 });
