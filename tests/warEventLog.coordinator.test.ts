@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WarEventLogService,
+  getWarReconciliationCoordinatorState,
   resetWarReconciliationCoordinatorForTest,
+  waitForObservedWarReconciliation,
 } from "../src/services/WarEventLogService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -15,6 +17,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
   },
+  clanPointsSync: {
+    findFirst: vi.fn(),
+  },
   clanNotifyConfig: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -26,6 +31,7 @@ vi.mock("../src/prisma", () => ({
 }));
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -38,6 +44,7 @@ beforeEach(() => {
   prismaMock.currentWar.findFirst.mockResolvedValue(null);
   prismaMock.currentWar.findMany.mockResolvedValue([]);
   prismaMock.currentWar.upsert.mockResolvedValue({});
+  prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
 });
@@ -120,11 +127,17 @@ describe("WarEventLogService reconciliation coordinator", () => {
       clanTag: " aaa111 ",
     });
 
-    expect(targetedResult).toEqual({
-      processed: false,
-      warEnded: false,
-      skippedReason: "reconciliation_in_flight",
-    });
+    expect(targetedResult).toEqual(
+      expect.objectContaining({
+        processed: false,
+        warEnded: false,
+        skippedReason: "reconciliation_in_flight",
+        reason: "coordinator_busy",
+      }),
+    );
+    expect(targetedResult.coordinatorObservation?.observedState).toBe(
+      "global_active",
+    );
     expect(warnSpy).toHaveBeenCalledWith(
       "[war-events] event=reconciliation_skipped source=poll_clan reason=in_flight guild=guild-1 clan=#AAA111",
     );
@@ -155,11 +168,17 @@ describe("WarEventLogService reconciliation coordinator", () => {
       clanTag: "#AAA111",
     });
 
-    expect(secondTargeted).toEqual({
-      processed: false,
-      warEnded: false,
-      skippedReason: "reconciliation_in_flight",
-    });
+    expect(secondTargeted).toEqual(
+      expect.objectContaining({
+        processed: false,
+        warEnded: false,
+        skippedReason: "reconciliation_in_flight",
+        reason: "coordinator_busy",
+      }),
+    );
+    expect(secondTargeted.coordinatorObservation?.observedState).toBe(
+      "targeted_active",
+    );
     expect(findSubscriptionSpy).toHaveBeenCalledTimes(1);
     expect(buildSyncSpy).toHaveBeenCalledTimes(1);
     expect(processSpy).not.toHaveBeenCalled();
@@ -314,11 +333,15 @@ describe("WarEventLogService reconciliation coordinator", () => {
       clanTag: "#AAA111",
     });
 
-    expect(skipped).toEqual({
-      processed: false,
-      warEnded: false,
-      skippedReason: "reconciliation_in_flight",
-    });
+    expect(skipped).toEqual(
+      expect.objectContaining({
+        processed: false,
+        warEnded: false,
+        skippedReason: "reconciliation_in_flight",
+        reason: "coordinator_busy",
+      }),
+    );
+    expect(skipped.coordinatorObservation?.observedState).toBe("targeted_active");
     expect(targetedA.findSubscriptionSpy).toHaveBeenCalledTimes(1);
     expect(targetedA.buildSyncSpy).toHaveBeenCalledTimes(1);
     expect(targetedA.processSpy).not.toHaveBeenCalled();
@@ -331,5 +354,342 @@ describe("WarEventLogService reconciliation coordinator", () => {
       processed: true,
       warEnded: true,
     });
+  });
+
+  it("captures the active global run and settles after the observed run completes", async () => {
+    const service = makeService();
+    const globalGate = makeDeferred<void>();
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue([]);
+    const reconcileSpy = vi
+      .spyOn((service as any).warPlanViolations, "reconcileDueEvaluations")
+      .mockImplementation(async () => {
+        await globalGate.promise;
+        return {
+          requestedLimit: 20,
+          processedCount: 0,
+          completedCount: 0,
+          insufficientDataCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          durationMs: 0,
+        };
+      });
+    const findSpy = vi.spyOn(service as any, "findSubscriptionByGuildAndTag");
+    const processSpy = vi.spyOn(service as any, "processSubscription");
+
+    const globalPoll = service.poll();
+    await flushTick();
+
+    const denied = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(denied.processed).toBe(false);
+    expect(denied.reason).toBe("coordinator_busy");
+    expect(denied.skippedReason).toBe("reconciliation_in_flight");
+    expect(denied.coordinatorObservation?.observedState).toBe("global_active");
+    expect(denied.coordinatorObservation?.observedRun).toBeTruthy();
+    expect(findSpy).not.toHaveBeenCalled();
+    expect(processSpy).not.toHaveBeenCalled();
+
+    const waitPromise = waitForObservedWarReconciliation(
+      denied.coordinatorObservation!,
+      1000,
+    );
+    globalGate.resolve();
+    await globalPoll;
+
+    await expect(waitPromise).resolves.toMatchObject({
+      kind: "completed",
+      observedState: "global_active",
+      outcome: { status: "resolved" },
+    });
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "idle",
+    });
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands queued global work to the coordinator before any new targeted acquisition", async () => {
+    const serviceA = makeService();
+    const serviceB = makeService();
+    const buildSyncGate = makeDeferred<void>();
+    const targetedA = stubTargetedPollBody(serviceA, buildSyncGate.promise);
+    const globalGate = makeDeferred<void>();
+    const listTargetsSpy = vi
+      .spyOn(serviceA as any, "listPollTargets")
+      .mockResolvedValue([]);
+    const reconcileSpy = vi
+      .spyOn((serviceA as any).warPlanViolations, "reconcileDueEvaluations")
+      .mockImplementation(async () => {
+        await globalGate.promise;
+        return {
+          requestedLimit: 20,
+          processedCount: 0,
+          completedCount: 0,
+          insufficientDataCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          durationMs: 0,
+        };
+      });
+
+    const inFlightTargeted = serviceA.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    await flushTick();
+
+    const queuedGlobal = serviceA.poll();
+    await flushTick();
+
+    const queued = await serviceB.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(queued.processed).toBe(false);
+    expect(queued.reason).toBe("coordinator_busy");
+    expect(queued.coordinatorObservation?.observedState).toBe("global_queued");
+    expect(queued.coordinatorObservation?.observedRun).toBeTruthy();
+    expect(targetedA.findSubscriptionSpy).toHaveBeenCalledTimes(1);
+    expect(targetedA.buildSyncSpy).toHaveBeenCalledTimes(1);
+    expect(targetedA.processSpy).not.toHaveBeenCalled();
+
+    const queuedWait = waitForObservedWarReconciliation(
+      queued.coordinatorObservation!,
+      1000,
+    );
+    buildSyncGate.resolve();
+    await inFlightTargeted;
+    await flushTick();
+
+    const activeDuringHandoff = await serviceB.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    expect(activeDuringHandoff.processed).toBe(false);
+    expect(activeDuringHandoff.coordinatorObservation?.observedState).toBe(
+      "global_active",
+    );
+
+    globalGate.resolve();
+    await inFlightTargeted;
+    await expect(queuedWait).resolves.toMatchObject({
+      kind: "completed",
+      outcome: { status: "resolved" },
+    });
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "idle",
+    });
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
+    await queuedGlobal;
+  });
+
+  it("reports failed global settlement without wedging later acquisitions", async () => {
+    const service = makeService();
+    const globalGate = makeDeferred<void>();
+    const findSpy = vi.spyOn(service as any, "findSubscriptionByGuildAndTag");
+    const buildSpy = vi.spyOn(service as any, "buildPollSyncContext");
+    const processSpy = vi.spyOn(service as any, "processSubscription");
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue([]);
+    const reconcileSpy = vi
+      .spyOn((service as any).warPlanViolations, "reconcileDueEvaluations")
+      .mockImplementation(async () => {
+        await globalGate.promise;
+        throw new Error("global boom");
+      });
+
+    const globalPoll = service.poll();
+    await flushTick();
+
+    const denied = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(denied.coordinatorObservation?.observedState).toBe("global_active");
+    const waitPromise = waitForObservedWarReconciliation(
+      denied.coordinatorObservation!,
+      1000,
+    );
+    globalGate.resolve();
+    await globalPoll;
+    await expect(waitPromise).resolves.toMatchObject({
+      kind: "completed",
+      outcome: { status: "resolved" },
+    });
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "idle",
+    });
+
+    findSpy.mockResolvedValue({ guildId: "guild-1", clanTag: "#AAA111" });
+    buildSpy.mockResolvedValue({ previousSync: 41, activeSync: 42 });
+    processSpy.mockResolvedValue(true);
+
+    await expect(
+      service.pollClan({
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+      }),
+    ).resolves.toEqual({
+      processed: true,
+      warEnded: true,
+    });
+    expect(findSpy).toHaveBeenCalled();
+    expect(buildSpy).toHaveBeenCalled();
+    expect(processSpy).toHaveBeenCalled();
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one observed completion across multiple waiters", async () => {
+    const service = makeService();
+    const globalGate = makeDeferred<void>();
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue([]);
+    const reconcileSpy = vi
+      .spyOn((service as any).warPlanViolations, "reconcileDueEvaluations")
+      .mockImplementation(async () => {
+        await globalGate.promise;
+        return {
+          requestedLimit: 20,
+          processedCount: 0,
+          completedCount: 0,
+          insufficientDataCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          durationMs: 0,
+        };
+      });
+
+    const globalPoll = service.poll();
+    await flushTick();
+
+    const first = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    const second = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+
+    expect(first.coordinatorObservation?.observedState).toBe("global_active");
+    expect(second.coordinatorObservation?.observedState).toBe("global_active");
+    expect(
+      first.coordinatorObservation?.observedRun?.completion,
+    ).toBe(second.coordinatorObservation?.observedRun?.completion);
+
+    const waitOne = waitForObservedWarReconciliation(
+      first.coordinatorObservation!,
+      1000,
+    );
+    const waitTwo = waitForObservedWarReconciliation(
+      second.coordinatorObservation!,
+      1000,
+    );
+    globalGate.resolve();
+    await globalPoll;
+
+    await expect(waitOne).resolves.toMatchObject({
+      kind: "completed",
+      outcome: { status: "resolved" },
+    });
+    await expect(waitTwo).resolves.toMatchObject({
+      kind: "completed",
+      outcome: { status: "resolved" },
+    });
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "idle",
+    });
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the global run active through a timeout and clears timers on timeout and completion", async () => {
+    vi.useFakeTimers();
+    const service = makeService();
+    const globalGate = makeDeferred<void>();
+    const findSpy = vi.spyOn(service as any, "findSubscriptionByGuildAndTag");
+    const buildSpy = vi.spyOn(service as any, "buildPollSyncContext");
+    const processSpy = vi.spyOn(service as any, "processSubscription");
+    const listTargetsSpy = vi
+      .spyOn(service as any, "listPollTargets")
+      .mockResolvedValue([]);
+    const reconcileSpy = vi
+      .spyOn((service as any).warPlanViolations, "reconcileDueEvaluations")
+      .mockImplementation(async () => {
+        await globalGate.promise;
+        return {
+          requestedLimit: 20,
+          processedCount: 0,
+          completedCount: 0,
+          insufficientDataCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          durationMs: 0,
+        };
+      });
+
+    const globalPoll = service.poll();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const denied = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    const waitPromise = waitForObservedWarReconciliation(
+      denied.coordinatorObservation!,
+      1000,
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(waitPromise).resolves.toMatchObject({
+      kind: "timeout",
+      observedState: "global_active",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "global_active",
+    });
+
+    const stillDenied = await service.pollClan({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    expect(stillDenied.coordinatorObservation?.observedState).toBe(
+      "global_active",
+    );
+
+    globalGate.resolve();
+    await globalPoll;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getWarReconciliationCoordinatorState()).toMatchObject({
+      observedState: "idle",
+    });
+
+    findSpy.mockResolvedValue({ guildId: "guild-1", clanTag: "#AAA111" });
+    buildSpy.mockResolvedValue({ previousSync: 41, activeSync: 42 });
+    processSpy.mockResolvedValue(true);
+    await expect(
+      service.pollClan({
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+      }),
+    ).resolves.toEqual({
+      processed: true,
+      warEnded: true,
+    });
+    expect(listTargetsSpy).toHaveBeenCalledTimes(1);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
   });
 });

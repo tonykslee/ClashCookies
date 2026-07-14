@@ -82,7 +82,11 @@ import {
   normalizeFwaPoliceText,
   type FwaPoliceViolation,
 } from "../services/FwaPoliceTemplateCatalog";
-import { WarEventLogService } from "../services/WarEventLogService";
+import {
+  WarEventLogService,
+  getWarReconciliationCoordinatorState,
+  waitForObservedWarReconciliation,
+} from "../services/WarEventLogService";
 import { buildComplianceWarPlanText } from "../services/warPlanDisplay";
 import { getClanScopedWarIdAutocompleteChoices } from "../services/WarIdAutocompleteService";
 import {
@@ -4539,6 +4543,78 @@ async function getCurrentWarIdForClan(
   return current?.warId ?? null;
 }
 
+const TARGETED_WAR_RECONCILIATION_WAIT_MS = 10_000;
+
+type TargetedWarReconcileCoordinatorState =
+  | "idle"
+  | "global_active"
+  | "global_queued"
+  | "targeted_active";
+
+type TargetedWarReconcileTerminalReason =
+  | "exact_existing"
+  | "targeted_processed_resolved"
+  | "targeted_processed_unresolved"
+  | "targeted_poll_failed"
+  | "global_completed"
+  | "global_completed_identity_missing"
+  | "global_failed_but_row_repaired"
+  | "global_failed_identity_missing"
+  | "timeout_but_row_repaired"
+  | "wait_timeout"
+  | "coordinator_still_busy"
+  | "mirror_mode"
+  | "insufficient_live_identity";
+
+function formatTargetedWarReconcileLog(params: {
+  guildId: string;
+  clanTag: string;
+  liveWarStartMs: number | null;
+  liveOpponentTag: string | null;
+  result: "waiting" | "retrying" | "resolved" | "unresolved" | "skipped" | "exact_existing";
+  reason: TargetedWarReconcileTerminalReason | "global_active" | "global_queued" | "coordinator_idle_after_wait";
+  coordinatorState: TargetedWarReconcileCoordinatorState;
+  waitMs?: number | null;
+  targetedRetryAttempted?: boolean;
+  finalExactIdentityResolved?: boolean;
+}): string {
+  const waitMsText = params.waitMs !== null && params.waitMs !== undefined
+    ? ` wait_ms=${Math.trunc(params.waitMs)}`
+    : "";
+  return (
+    `[fwa-mail] event=targeted_war_reconcile guild=${params.guildId} clan=#${params.clanTag}` +
+    ` live_war_start=${params.liveWarStartMs !== null ? new Date(params.liveWarStartMs).toISOString() : "none"}` +
+    ` live_opponent=${params.liveOpponentTag ? `#${params.liveOpponentTag}` : "none"}` +
+    ` coordinator_state=${params.coordinatorState}` +
+    ` result=${params.result}` +
+    ` reason=${params.reason}` +
+    `${waitMsText}` +
+    ` targeted_retry_attempted=${params.targetedRetryAttempted ? "yes" : "no"}` +
+    ` final_exact_identity=${params.finalExactIdentityResolved ? "yes" : "no"}`
+  );
+}
+
+function logTargetedWarReconcile(params: {
+  level: "info" | "warn";
+  guildId: string;
+  clanTag: string;
+  liveWarStartMs: number | null;
+  liveOpponentTag: string | null;
+  result: "waiting" | "retrying" | "resolved" | "unresolved" | "skipped" | "exact_existing";
+  reason: TargetedWarReconcileTerminalReason | "global_active" | "global_queued" | "coordinator_idle_after_wait";
+  coordinatorState: TargetedWarReconcileCoordinatorState;
+  waitMs?: number | null;
+  targetedRetryAttempted?: boolean;
+  finalExactIdentityResolved?: boolean;
+}): void {
+  const line = formatTargetedWarReconcileLog(params);
+  if (params.level === "warn") {
+    console.warn(line);
+    return;
+  }
+  console.info(line);
+}
+
 export const targetedWarMailIdentityResolver = {
   /** Purpose: resolve a war-mail identity only after targeted one-clan reconciliation. */
   async resolve(params: {
@@ -4584,6 +4660,108 @@ export const targetedWarMailIdentityResolver = {
     const initialRenderableRow = initialClassification.samePhysicalWar
       ? params.currentWarRow
       : null;
+    const coordinatorStateToLabel = (
+      state: ReturnType<typeof getWarReconciliationCoordinatorState>,
+    ): TargetedWarReconcileCoordinatorState =>
+      state.observedState === "global_active" ||
+      state.observedState === "global_queued" ||
+      state.observedState === "targeted_active"
+        ? state.observedState
+        : "idle";
+
+    const readExactCurrentWar = async (): Promise<{
+      row: WarMailCurrentWarRenderRow | null;
+      identity: WarMailResolvedCurrentWarIdentity | null;
+    }> => {
+      const row = await loadWarMailCurrentWarRenderRow({
+        guildId: normalizedGuildId,
+        normalizedTag,
+      });
+      return {
+        row,
+        identity: resolveExactCurrentWarMailIdentityForRow(row, {
+          liveWarState: params.liveWarState,
+          liveWarStartMs: params.liveWarStartMs,
+          liveOpponentTag: params.liveOpponentTag,
+        }),
+      };
+    };
+
+    const attemptTargetedPoll = async (): Promise<{
+      pollResult: Awaited<ReturnType<typeof warEvents.pollClan>>;
+      row: WarMailCurrentWarRenderRow | null;
+      identity: WarMailResolvedCurrentWarIdentity | null;
+    }> => {
+      const pollResult = await warEvents.pollClan({
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        sendBattleDaySwapReminders: false,
+      });
+      if (!pollResult.processed) {
+        return { pollResult, row: null, identity: null };
+      }
+      const reread = await readExactCurrentWar();
+      return {
+        pollResult,
+        row: reread.row,
+        identity: reread.identity,
+      };
+    };
+
+    const respondResolved = (input: {
+      reason: TargetedWarReconcileTerminalReason;
+      row: WarMailCurrentWarRenderRow | null;
+      identity: WarMailResolvedCurrentWarIdentity;
+      coordinatorState: TargetedWarReconcileCoordinatorState;
+      waitMs?: number | null;
+      targetedRetryAttempted?: boolean;
+    }) => {
+      logTargetedWarReconcile({
+        level: "info",
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        liveWarStartMs: params.liveWarStartMs,
+        liveOpponentTag: params.liveOpponentTag,
+        result: "resolved",
+        reason: input.reason,
+        coordinatorState: input.coordinatorState,
+        waitMs: input.waitMs ?? null,
+        targetedRetryAttempted: input.targetedRetryAttempted ?? false,
+        finalExactIdentityResolved: true,
+      });
+      return {
+        identity: input.identity,
+        currentWarRow: input.row,
+        reconciled: true,
+      };
+    };
+
+    const respondUnresolved = (input: {
+      reason: TargetedWarReconcileTerminalReason;
+      coordinatorState: TargetedWarReconcileCoordinatorState;
+      waitMs?: number | null;
+      targetedRetryAttempted?: boolean;
+      finalExactIdentityResolved?: boolean;
+    }) => {
+      logTargetedWarReconcile({
+        level: "warn",
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        liveWarStartMs: params.liveWarStartMs,
+        liveOpponentTag: params.liveOpponentTag,
+        result: "unresolved",
+        reason: input.reason,
+        coordinatorState: input.coordinatorState,
+        waitMs: input.waitMs ?? null,
+        targetedRetryAttempted: input.targetedRetryAttempted ?? false,
+        finalExactIdentityResolved: input.finalExactIdentityResolved ?? false,
+      });
+      return {
+        identity: null,
+        currentWarRow: initialRenderableRow,
+        reconciled: false,
+      };
+    };
 
     if (!isActivePollingMode()) {
       console.warn(
@@ -4614,57 +4792,282 @@ export const targetedWarMailIdentityResolver = {
     }
 
     const warEvents = new WarEventLogService(params.client, params.cocService);
+    let firstAttempt: Awaited<ReturnType<typeof attemptTargetedPoll>>;
     try {
-      const result = await warEvents.pollClan({
-        guildId: normalizedGuildId,
-        clanTag: normalizedTag,
-        sendBattleDaySwapReminders: false,
-      });
-      if (!result.processed) {
-        console.warn(
-          `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=not_processed`,
-        );
-        return {
-          identity: null,
-          currentWarRow: initialRenderableRow,
-          reconciled: false,
-        };
-      }
+      firstAttempt = await attemptTargetedPoll();
     } catch (error) {
       console.warn(
-        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed error=${formatError(error)}`,
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed reason=targeted_poll_failed error=${formatError(error)}`,
       );
-      return {
-        identity: null,
-        currentWarRow: initialRenderableRow,
-        reconciled: false,
-      };
+      return respondUnresolved({
+        reason: "targeted_poll_failed",
+        coordinatorState: "idle",
+      });
+    }
+    if (firstAttempt.pollResult.processed) {
+      if (firstAttempt.identity) {
+        return respondResolved({
+          reason: "targeted_processed_resolved",
+          row: firstAttempt.row,
+          identity: firstAttempt.identity,
+          coordinatorState: "idle",
+        });
+      }
+      return respondUnresolved({
+        reason: "targeted_processed_unresolved",
+        coordinatorState: "idle",
+        finalExactIdentityResolved: false,
+      });
     }
 
-    const rereadRow = await loadWarMailCurrentWarRenderRow({
-      guildId: normalizedGuildId,
-      normalizedTag,
-    });
-    const reread = resolveExactCurrentWarMailIdentityForRow(rereadRow, {
-      liveWarState: params.liveWarState,
-      liveWarStartMs: params.liveWarStartMs,
-      liveOpponentTag: params.liveOpponentTag,
-    });
-    if (!reread) {
-      console.warn(
-        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=unresolved`,
-      );
-      return {
-        identity: null,
-        currentWarRow: initialRenderableRow,
-        reconciled: false,
-      };
+    const firstObservation = firstAttempt.pollResult.coordinatorObservation ?? null;
+    if (firstObservation?.observedState === "targeted_active") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: "targeted_active",
+      });
     }
-    return {
-      identity: reread,
-      currentWarRow: rereadRow,
-      reconciled: true,
-    };
+
+    if (
+      firstObservation?.observedState === "global_active" ||
+      firstObservation?.observedState === "global_queued"
+    ) {
+      logTargetedWarReconcile({
+        level: "info",
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        liveWarStartMs: params.liveWarStartMs,
+        liveOpponentTag: params.liveOpponentTag,
+        result: "waiting",
+        reason:
+          firstObservation.observedState === "global_active"
+            ? "global_active"
+            : "global_queued",
+        coordinatorState: firstObservation.observedState,
+        targetedRetryAttempted: false,
+        finalExactIdentityResolved: false,
+      });
+
+      const waitResult = await waitForObservedWarReconciliation(
+        firstObservation,
+        TARGETED_WAR_RECONCILIATION_WAIT_MS,
+      );
+      const waitMs =
+        waitResult.kind === "completed" || waitResult.kind === "timeout"
+          ? waitResult.waitedMs
+          : null;
+
+      const rereadAfterWait = await readExactCurrentWar();
+      if (rereadAfterWait.identity) {
+        return respondResolved({
+          reason:
+            waitResult.kind === "completed" &&
+            waitResult.outcome.status === "failed"
+              ? "global_failed_but_row_repaired"
+              : waitResult.kind === "timeout"
+                ? "timeout_but_row_repaired"
+                : "global_completed",
+          row: rereadAfterWait.row,
+          identity: rereadAfterWait.identity,
+          coordinatorState: firstObservation.observedState,
+          waitMs,
+        });
+      }
+
+      if (waitResult.kind === "timeout") {
+        return respondUnresolved({
+          reason: "wait_timeout",
+          coordinatorState: firstObservation.observedState,
+          waitMs,
+          finalExactIdentityResolved: false,
+        });
+      }
+
+      const postWaitState = getWarReconciliationCoordinatorState();
+      const postWaitLabel = coordinatorStateToLabel(postWaitState);
+      if (postWaitLabel !== "idle") {
+        return respondUnresolved({
+          reason: "coordinator_still_busy",
+          coordinatorState: postWaitLabel,
+          waitMs,
+        });
+      }
+
+      logTargetedWarReconcile({
+        level: "info",
+        guildId: normalizedGuildId,
+        clanTag: normalizedTag,
+        liveWarStartMs: params.liveWarStartMs,
+        liveOpponentTag: params.liveOpponentTag,
+        result: "retrying",
+        reason: "coordinator_idle_after_wait",
+        coordinatorState: postWaitLabel,
+        waitMs,
+        targetedRetryAttempted: true,
+        finalExactIdentityResolved: false,
+      });
+
+      let retryAttempt: Awaited<ReturnType<typeof attemptTargetedPoll>>;
+      try {
+        retryAttempt = await attemptTargetedPoll();
+      } catch (error) {
+        console.warn(
+          `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed reason=targeted_poll_failed error=${formatError(error)}`,
+        );
+        return respondUnresolved({
+          reason: "targeted_poll_failed",
+          coordinatorState: "idle",
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+
+      const finalRetryReread = await readExactCurrentWar();
+      if (finalRetryReread.identity) {
+        return respondResolved({
+          reason:
+            waitResult.kind === "completed" &&
+            waitResult.outcome.status === "failed"
+              ? "global_failed_but_row_repaired"
+              : retryAttempt.pollResult.processed
+                ? "targeted_processed_resolved"
+                : "global_completed",
+          row: finalRetryReread.row,
+          identity: finalRetryReread.identity,
+          coordinatorState: "idle",
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+
+      const retryObservation = retryAttempt.pollResult.coordinatorObservation ?? null;
+      if (retryObservation?.observedState === "targeted_active") {
+        return respondUnresolved({
+          reason: "coordinator_still_busy",
+          coordinatorState: "targeted_active",
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+      if (
+        retryObservation?.observedState === "global_active" ||
+        retryObservation?.observedState === "global_queued"
+      ) {
+        return respondUnresolved({
+          reason: "coordinator_still_busy",
+          coordinatorState: retryObservation.observedState,
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+
+      const retryState = getWarReconciliationCoordinatorState();
+      const retryLabel = coordinatorStateToLabel(retryState);
+      if (retryLabel !== "idle") {
+        return respondUnresolved({
+          reason: "coordinator_still_busy",
+          coordinatorState: retryLabel,
+          waitMs,
+          targetedRetryAttempted: true,
+        });
+      }
+
+      return respondUnresolved({
+        reason:
+          waitResult.kind === "completed" &&
+          waitResult.outcome.status === "failed"
+            ? "global_failed_identity_missing"
+            : retryAttempt.pollResult.processed
+              ? "targeted_processed_unresolved"
+              : "global_completed_identity_missing",
+        coordinatorState: retryLabel,
+        waitMs,
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const idleReread = await readExactCurrentWar();
+    if (idleReread.identity) {
+      return respondResolved({
+        reason: "global_completed",
+        row: idleReread.row,
+        identity: idleReread.identity,
+        coordinatorState: "idle",
+      });
+    }
+
+    const idleState = getWarReconciliationCoordinatorState();
+    const idleLabel = coordinatorStateToLabel(idleState);
+    if (idleLabel !== "idle") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: idleLabel,
+      });
+    }
+
+    let retryAttempt: Awaited<ReturnType<typeof attemptTargetedPoll>>;
+    try {
+      retryAttempt = await attemptTargetedPoll();
+    } catch (error) {
+      console.warn(
+        `[fwa-mail] event=targeted_war_reconcile guild=${normalizedGuildId} clan=#${normalizedTag} result=failed reason=targeted_poll_failed error=${formatError(error)}`,
+      );
+      return respondUnresolved({
+        reason: "targeted_poll_failed",
+        coordinatorState: "idle",
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const finalIdleReread = await readExactCurrentWar();
+    if (finalIdleReread.identity) {
+      return respondResolved({
+        reason: retryAttempt.pollResult.processed
+          ? "targeted_processed_resolved"
+          : "global_completed",
+        row: finalIdleReread.row,
+        identity: finalIdleReread.identity,
+        coordinatorState: "idle",
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const retryObservation = retryAttempt.pollResult.coordinatorObservation ?? null;
+    if (retryObservation?.observedState === "targeted_active") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: "targeted_active",
+        targetedRetryAttempted: true,
+      });
+    }
+    if (
+      retryObservation?.observedState === "global_active" ||
+      retryObservation?.observedState === "global_queued"
+    ) {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: retryObservation.observedState,
+        targetedRetryAttempted: true,
+      });
+    }
+
+    const finalIdleState = getWarReconciliationCoordinatorState();
+    const finalIdleLabel = coordinatorStateToLabel(finalIdleState);
+    if (finalIdleLabel !== "idle") {
+      return respondUnresolved({
+        reason: "coordinator_still_busy",
+        coordinatorState: finalIdleLabel,
+        targetedRetryAttempted: true,
+      });
+    }
+
+    return respondUnresolved({
+      reason: retryAttempt.pollResult.processed
+        ? "targeted_processed_unresolved"
+        : "global_completed_identity_missing",
+      coordinatorState: finalIdleLabel,
+      targetedRetryAttempted: true,
+    });
   },
 };
 

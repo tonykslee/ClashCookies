@@ -635,31 +635,108 @@ type PollSyncContext = {
 
 type ReconciliationRelease = () => void;
 type ReconciliationMode = "global" | "targeted";
+type ReconciliationOutcome = {
+  status: "resolved" | "failed";
+  error: unknown | null;
+};
+type ReconciliationObservationState =
+  | "idle"
+  | "global_active"
+  | "global_queued"
+  | "targeted_active";
+type ReconciliationObservedRun = {
+  completion: Promise<ReconciliationOutcome>;
+};
+type ReconciliationObservedRunHandle = {
+  run: ReconciliationObservedRun;
+  settle: (outcome: ReconciliationOutcome) => void;
+};
+export type ReconciliationCoordinatorSnapshot = {
+  activeMode: ReconciliationMode | null;
+  globalQueueLength: number;
+  observedState: ReconciliationObservationState;
+  observedRun: ReconciliationObservedRun | null;
+};
+type TargetedReconciliationResult<T> =
+  | {
+      acquired: true;
+      value: T;
+    }
+  | {
+      acquired: false;
+      observation: ReconciliationCoordinatorSnapshot;
+    };
+type ReconciliationWaitResult =
+  | {
+      kind: "completed";
+      observedState: Exclude<ReconciliationObservationState, "idle" | "targeted_active">;
+      waitedMs: number;
+      outcome: ReconciliationOutcome;
+    }
+  | {
+      kind: "timeout";
+      observedState: Exclude<ReconciliationObservationState, "idle" | "targeted_active">;
+      waitedMs: number;
+    }
+  | {
+      kind: "no_active_run";
+      observedState: ReconciliationObservationState;
+    };
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 /** Purpose: coordinate active and scheduled war reconciliation work within one Node process. */
 class WarReconciliationCoordinator {
   private activeMode: ReconciliationMode | null = null;
-  private readonly globalWaiters: Array<(release: ReconciliationRelease) => void> =
-    [];
+  private activeGlobalRun: ReconciliationObservedRun | null = null;
+  private readonly globalWaiters: Array<{
+    resolve: (release: ReconciliationRelease) => void;
+    run: ReconciliationObservedRun;
+    settle: (outcome: ReconciliationOutcome) => void;
+  }> = [];
 
   /** Purpose: run one global reconciliation at a time while waiting for any active targeted reconciliation. */
   async runGlobal<T>(work: () => Promise<T>): Promise<T> {
-    const release = await this.acquireGlobal();
+    const observed = this.createObservedRun();
+    const release = await this.acquireGlobal(observed);
+    const releaseOnce = (() => {
+      let released = false;
+      return () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        release();
+      };
+    })();
     try {
-      return await work();
-    } finally {
-      release();
+      const value = await work();
+      releaseOnce();
+      observed.settle({ status: "resolved", error: null });
+      return value;
+    } catch (error) {
+      releaseOnce();
+      observed.settle({ status: "failed", error });
+      throw error;
     }
   }
 
   /** Purpose: attempt targeted reconciliation once and skip immediately if any reconciliation is already active or queued. */
   async runTargeted<T>(work: () => Promise<T>): Promise<
-    | { acquired: true; value: T }
-    | { acquired: false }
+    TargetedReconciliationResult<T>
   > {
     const release = this.tryAcquireTargeted();
     if (!release) {
-      return { acquired: false };
+      return {
+        acquired: false,
+        observation: this.getSnapshot(),
+      };
     }
 
     try {
@@ -670,15 +747,22 @@ class WarReconciliationCoordinator {
   }
 
   /** Purpose: queue a global reconciliation until the coordinator becomes free. */
-  private acquireGlobal(): Promise<ReconciliationRelease> {
+  private acquireGlobal(
+    observed: ReconciliationObservedRunHandle,
+  ): Promise<ReconciliationRelease> {
     return new Promise((resolve) => {
       if (this.activeMode === null && this.globalWaiters.length === 0) {
         this.activeMode = "global";
+        this.activeGlobalRun = observed.run;
         resolve(this.createRelease());
         return;
       }
 
-      this.globalWaiters.push(resolve);
+      this.globalWaiters.push({
+        resolve,
+        run: observed.run,
+        settle: observed.settle,
+      });
     });
   }
 
@@ -689,7 +773,19 @@ class WarReconciliationCoordinator {
     }
 
     this.activeMode = "targeted";
+    this.activeGlobalRun = null;
     return this.createRelease();
+  }
+
+  /** Purpose: create a completion promise for one observed global reconciliation run. */
+  private createObservedRun(): ReconciliationObservedRunHandle {
+    const deferred = createDeferred<ReconciliationOutcome>();
+    return {
+      run: {
+        completion: deferred.promise,
+      },
+      settle: deferred.resolve,
+    };
   }
 
   /** Purpose: release the current reconciliation and hand the coordinator to the next queued global run. */
@@ -704,17 +800,54 @@ class WarReconciliationCoordinator {
       const next = this.globalWaiters.shift();
       if (next) {
         this.activeMode = "global";
-        next(this.createRelease());
+        this.activeGlobalRun = next.run;
+        next.resolve(this.createRelease());
         return;
       }
 
       this.activeMode = null;
+      this.activeGlobalRun = null;
+    };
+  }
+
+  /** Purpose: expose one bounded snapshot of the shared reconciliation coordinator for waiters. */
+  getSnapshot(): ReconciliationCoordinatorSnapshot {
+    if (this.activeMode === "global" && this.activeGlobalRun) {
+      return {
+        activeMode: "global",
+        globalQueueLength: this.globalWaiters.length,
+        observedState: "global_active",
+        observedRun: this.activeGlobalRun,
+      };
+    }
+    if (this.globalWaiters.length > 0) {
+      return {
+        activeMode: this.activeMode,
+        globalQueueLength: this.globalWaiters.length,
+        observedState: "global_queued",
+        observedRun: this.globalWaiters[0]?.run ?? null,
+      };
+    }
+    if (this.activeMode === "targeted") {
+      return {
+        activeMode: "targeted",
+        globalQueueLength: 0,
+        observedState: "targeted_active",
+        observedRun: null,
+      };
+    }
+    return {
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
     };
   }
 
   /** Purpose: clear coordinator state for isolated tests. */
   resetForTest(): void {
     this.activeMode = null;
+    this.activeGlobalRun = null;
     this.globalWaiters.length = 0;
   }
 }
@@ -726,10 +859,74 @@ export const resetWarReconciliationCoordinatorForTest = (): void => {
   reconciliationCoordinator.resetForTest();
 };
 
+/** Purpose: observe the current shared war-reconciliation ownership state without mutating it. */
+export const getWarReconciliationCoordinatorState = (): ReconciliationCoordinatorSnapshot =>
+  reconciliationCoordinator.getSnapshot();
+
+/** Purpose: wait for one observed reconciliation run to release ownership without stealing it. */
+export async function waitForObservedWarReconciliation(
+  observation: ReconciliationCoordinatorSnapshot,
+  timeoutMs: number,
+): Promise<ReconciliationWaitResult> {
+  if (!observation.observedRun) {
+    return {
+      kind: "no_active_run",
+      observedState: observation.observedState,
+    };
+  }
+
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      const maybeTimer = timer as { unref?: () => void } | null;
+      if (maybeTimer && typeof maybeTimer.unref === "function") {
+        maybeTimer.unref();
+      }
+    });
+
+    const outcome = await Promise.race([
+      observation.observedRun.completion,
+      timeoutPromise,
+    ]);
+    if (outcome === "timeout") {
+      const observedState =
+        observation.observedState as Exclude<
+          ReconciliationObservationState,
+          "idle" | "targeted_active"
+        >;
+      return {
+        kind: "timeout",
+        observedState,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+
+    const observedState =
+      observation.observedState as Exclude<
+        ReconciliationObservationState,
+        "idle" | "targeted_active"
+      >;
+    return {
+      kind: "completed",
+      observedState,
+      waitedMs: Date.now() - startedAt,
+      outcome,
+    };
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export type WarEventPollClanResult = {
   processed: boolean;
   warEnded: boolean;
   skippedReason?: "reconciliation_in_flight";
+  reason?: "coordinator_busy" | "invalid_input" | "subscription_missing";
+  coordinatorObservation?: ReconciliationCoordinatorSnapshot;
 };
 
 type CocWarOutageState = {
@@ -1698,16 +1895,25 @@ export class WarEventLogService {
     const guildId = String(input.guildId ?? "").trim();
     const clanTag = normalizeTag(input.clanTag);
     if (!guildId || !clanTag) {
-      return { processed: false, warEnded: false };
+      return {
+        processed: false,
+        warEnded: false,
+        reason: "invalid_input",
+      };
     }
 
-    const targeted = await reconciliationCoordinator.runTargeted(async () => {
+    const targeted = await reconciliationCoordinator.runTargeted(
+      async (): Promise<WarEventPollClanResult> => {
       const subscription = await this.findSubscriptionByGuildAndTag(
         guildId,
         clanTag,
       );
       if (!subscription) {
-        return { processed: false, warEnded: false };
+        return {
+          processed: false,
+          warEnded: false,
+          reason: "subscription_missing",
+        };
       }
 
       const syncContext = await this.buildPollSyncContext();
@@ -1722,7 +1928,8 @@ export class WarEventLogService {
       );
 
       return { processed: true, warEnded };
-    });
+      },
+    );
 
     if (!targeted.acquired) {
       console.warn(
@@ -1732,6 +1939,8 @@ export class WarEventLogService {
         processed: false,
         warEnded: false,
         skippedReason: "reconciliation_in_flight",
+        reason: "coordinator_busy",
+        coordinatorObservation: targeted.observation,
       };
     }
 

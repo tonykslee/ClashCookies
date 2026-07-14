@@ -333,3 +333,20 @@ This is distinct from the null-ID race.
 The safe part of the pipeline is `resolveCurrentWarSyncIdentity`, which validates live war start time and opponent identity before reusing a current-war ID. The unsafe part is the raw lookup helper, which does not validate `_warStartMs` at all.
 
 The new test `returns the persisted current-war id without validating the supplied war-start time` captures that risk so the next implementation task can decide whether to keep, replace, or wrap that helper with a shared canonical resolver.
+
+## 15. Follow-up implementation notes
+
+The remaining PR #1681 work tightened the targeted war-mail repair path without changing the ownership model described above:
+
+- `src/commands/Fwa.ts` now treats mirror mode as fail-closed for targeted repair. An already exact persisted `CurrentWar` row still resolves, but a missing or stale identity does not trigger `WarEventLogService.pollClan()` in mirror mode.
+- `WarEventLogService.pollClan()` now returns the exact coordinator observation that caused a targeted denial. That lets the command wait on the observed global run instead of re-sampling a later, potentially misleading snapshot.
+- After any wait or retry, the command performs one final exact reread before deciding the identity is unresolved. That keeps the response behavior conservative: stale war IDs are never substituted for a missing identity.
+- The coordinator snapshots now distinguish `global_active`, `global_queued`, `targeted_active`, and `idle`, which makes the observed contention state visible in tests and logs.
+
+Operationally, this means the command path now has three distinct outcomes for a stale or missing war ID:
+
+1. exact persisted identity is reused immediately
+2. active mode can repair by polling and rereading
+3. mirror mode refuses repair work and returns the existing unresolved state
+
+That is the intended safety boundary for the current design.

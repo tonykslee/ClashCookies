@@ -13,6 +13,8 @@ const warEventLogServiceMock = vi.hoisted(() => ({
   pollClan: vi.fn(),
   poll: vi.fn(),
   refreshBattleDayPosts: vi.fn(),
+  getWarReconciliationCoordinatorState: vi.fn(),
+  waitForObservedWarReconciliation: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -25,6 +27,10 @@ vi.mock("../src/services/WarEventLogService", () => ({
     poll = warEventLogServiceMock.poll;
     refreshBattleDayPosts = warEventLogServiceMock.refreshBattleDayPosts;
   },
+  getWarReconciliationCoordinatorState:
+    warEventLogServiceMock.getWarReconciliationCoordinatorState,
+  waitForObservedWarReconciliation:
+    warEventLogServiceMock.waitForObservedWarReconciliation,
 }));
 
 import {
@@ -96,6 +102,16 @@ function expectNullWarMailRenderState(row: unknown): void {
   });
 }
 
+function makeDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 async function withPollingMode<T>(
   pollingMode: string | undefined,
   run: () => Promise<T>,
@@ -127,6 +143,15 @@ describe("fwa targeted war-mail identity reconciliation", () => {
     warEventLogServiceMock.pollClan.mockResolvedValue({
       processed: true,
       warEnded: false,
+    });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
+    });
+    warEventLogServiceMock.waitForObservedWarReconciliation.mockResolvedValue({
+      kind: "no_active_run",
     });
   });
 
@@ -520,6 +545,13 @@ describe("fwa targeted war-mail identity reconciliation", () => {
     warEventLogServiceMock.pollClan.mockResolvedValueOnce({
       processed: false,
       warEnded: false,
+      reason: "subscription_missing",
+    });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: "targeted",
+      globalQueueLength: 0,
+      observedState: "targeted_active",
+      observedRun: null,
     });
 
     const result = await resolveWarMailCurrentWarRenderContextForTest({
@@ -543,10 +575,432 @@ describe("fwa targeted war-mail identity reconciliation", () => {
     expect(result.currentWarRow).toBeNull();
     expect(result.reconciled).toBe(false);
     expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(1);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).not.toHaveBeenCalled();
     expect(warEventLogServiceMock.poll).not.toHaveBeenCalled();
     expect(warEventLogServiceMock.refreshBattleDayPosts).not.toHaveBeenCalled();
     expectNoMutatingWrites();
     expectNullWarMailRenderState(result.currentWarRow);
+  });
+
+  it("waits for an observed global reconciliation and resolves after the row is repaired", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#OLDTAG",
+      opponentName: "Old Opponent",
+      startTime: staleStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-11T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+    const repairedRow = buildRenderRow({
+      warId: 1000610,
+      matchType: "MM",
+      inferredMatchType: false,
+      outcome: null,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      startTime: liveStartTime,
+      state: "preparation",
+      endTime: null,
+      opponentTag: "#LYPLQQUC",
+      opponentName: "Fresh Opponent",
+      clanStars: 17,
+      opponentStars: 14,
+    });
+    const observedRun = makeDeferred<{ status: "resolved"; error: null }>();
+    observedRun.resolve({ status: "resolved", error: null });
+    warEventLogServiceMock.pollClan.mockResolvedValueOnce({
+      processed: false,
+      warEnded: false,
+      reason: "coordinator_busy",
+      coordinatorObservation: {
+        activeMode: "global",
+        globalQueueLength: 0,
+        observedState: "global_active",
+        observedRun: { completion: observedRun.promise },
+      },
+    });
+    warEventLogServiceMock.pollClan.mockResolvedValueOnce({
+      processed: true,
+      warEnded: false,
+    });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
+    });
+    warEventLogServiceMock.waitForObservedWarReconciliation.mockImplementationOnce(
+      async (observation) => ({
+        kind: "completed",
+        observedState: observation.observedState,
+        waitedMs: 42,
+        outcome: await observation.observedRun!.completion,
+      }),
+    );
+    prismaMock.currentWar.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(repairedRow);
+
+    const result = await withPollingMode("active", async () =>
+      resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      }),
+    );
+
+    expect(result).toEqual({
+      identity: {
+        warId: 1000610,
+        startTime: liveStartTime,
+        opponentTag: "LYPLQQUC",
+      },
+      currentWarRow: repairedRow,
+      reconciled: true,
+    });
+    expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(2);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).toHaveBeenCalledTimes(1);
+    expect(warEventLogServiceMock.poll).not.toHaveBeenCalled();
+    expect(warEventLogServiceMock.refreshBattleDayPosts).not.toHaveBeenCalled();
+    expectNoMutatingWrites();
+  });
+
+  it("waits for a queued global reconciliation and retries once after the coordinator becomes idle", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#OLDTAG",
+      opponentName: "Old Opponent",
+      startTime: staleStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-11T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+    const repairedRow = buildRenderRow({
+      warId: 1000610,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 201,
+      opponentFwaPoints: 171,
+      startTime: liveStartTime,
+      state: "preparation",
+      endTime: new Date("2026-07-12T18:22:26.000Z"),
+      opponentTag: "#LYPLQQUC",
+      opponentName: "Fresh Opponent",
+      clanStars: 32,
+      opponentStars: 30,
+    });
+    const observedRun = makeDeferred<{ status: "resolved"; error: null }>();
+    observedRun.resolve({ status: "resolved", error: null });
+    warEventLogServiceMock.pollClan
+      .mockResolvedValueOnce({
+        processed: false,
+        warEnded: false,
+        reason: "coordinator_busy",
+        coordinatorObservation: {
+          activeMode: "global",
+          globalQueueLength: 1,
+          observedState: "global_queued",
+          observedRun: { completion: observedRun.promise },
+        },
+      })
+      .mockResolvedValueOnce({ processed: true, warEnded: false });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
+    });
+    warEventLogServiceMock.waitForObservedWarReconciliation.mockImplementationOnce(
+      async (observation) => ({
+        kind: "completed",
+        observedState: observation.observedState,
+        waitedMs: 77,
+        outcome: await observation.observedRun!.completion,
+      }),
+    );
+    prismaMock.currentWar.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(repairedRow);
+
+    const result = await withPollingMode("active", async () =>
+      resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      }),
+    );
+
+    expect(result).toEqual({
+      identity: {
+        warId: 1000610,
+        startTime: liveStartTime,
+        opponentTag: "LYPLQQUC",
+      },
+      currentWarRow: repairedRow,
+      reconciled: true,
+    });
+    expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(2);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).toHaveBeenCalledTimes(1);
+    expect(warEventLogServiceMock.poll).not.toHaveBeenCalled();
+    expect(warEventLogServiceMock.refreshBattleDayPosts).not.toHaveBeenCalled();
+    expectNoMutatingWrites();
+  });
+
+  it("times out waiting for a global reconciliation and fails closed", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#OLDTAG",
+      opponentName: "Old Opponent",
+      startTime: staleStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-11T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+    const observedRun = makeDeferred<{ status: "resolved"; error: null }>();
+    warEventLogServiceMock.pollClan.mockResolvedValueOnce({
+      processed: false,
+      warEnded: false,
+      reason: "coordinator_busy",
+      coordinatorObservation: {
+        activeMode: "global",
+        globalQueueLength: 0,
+        observedState: "global_active",
+        observedRun: { completion: observedRun.promise },
+      },
+    });
+    warEventLogServiceMock.waitForObservedWarReconciliation.mockResolvedValueOnce({
+      kind: "timeout",
+      observedState: "global_active",
+      waitedMs: 1000,
+    });
+
+    const result = await withPollingMode("active", async () =>
+      resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      }),
+    );
+
+    expect(result.identity).toBeNull();
+    expect(result.reconciled).toBe(false);
+    expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(1);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).toHaveBeenCalledTimes(1);
+    expect(warEventLogServiceMock.poll).not.toHaveBeenCalled();
+    expect(warEventLogServiceMock.refreshBattleDayPosts).not.toHaveBeenCalled();
+    expectNoMutatingWrites();
+    expect(result.currentWarRow).toBeNull();
+  });
+
+  it("returns the repaired row after a retry returns processed false", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#OLDTAG",
+      opponentName: "Old Opponent",
+      startTime: staleStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-11T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+    const repairedRow = buildRenderRow({
+      warId: 1000610,
+      matchType: "MM",
+      inferredMatchType: false,
+      outcome: null,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      startTime: liveStartTime,
+      state: "preparation",
+      endTime: null,
+      opponentTag: "#LYPLQQUC",
+      opponentName: "Fresh Opponent",
+      clanStars: 17,
+      opponentStars: 14,
+    });
+    warEventLogServiceMock.pollClan
+      .mockResolvedValueOnce({
+        processed: false,
+        warEnded: false,
+        reason: "subscription_missing",
+      })
+      .mockResolvedValueOnce({
+        processed: false,
+        warEnded: false,
+        reason: "subscription_missing",
+      });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
+    });
+    prismaMock.currentWar.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(repairedRow);
+
+    const result = await withPollingMode("active", async () =>
+      resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      }),
+    );
+
+    expect(result).toEqual({
+      identity: {
+        warId: 1000610,
+        startTime: liveStartTime,
+        opponentTag: "LYPLQQUC",
+      },
+      currentWarRow: repairedRow,
+      reconciled: true,
+    });
+    expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(2);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.findUnique).toHaveBeenCalledTimes(2);
+    expectNoMutatingWrites();
+  });
+
+  it("keeps the final reread and stops after retry contention appears", async () => {
+    const staleRow = buildRenderRow({
+      warId: null,
+      state: "preparation",
+      opponentTag: "#OLDTAG",
+      opponentName: "Old Opponent",
+      startTime: staleStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      fwaPoints: 200,
+      opponentFwaPoints: 170,
+      endTime: new Date("2026-07-11T18:22:26.000Z"),
+      clanStars: 31,
+      opponentStars: 30,
+    });
+    warEventLogServiceMock.pollClan
+      .mockResolvedValueOnce({
+        processed: false,
+        warEnded: false,
+        reason: "subscription_missing",
+      })
+      .mockResolvedValueOnce({
+        processed: false,
+        warEnded: false,
+        reason: "coordinator_busy",
+        coordinatorObservation: {
+          activeMode: "targeted",
+          globalQueueLength: 0,
+          observedState: "targeted_active",
+          observedRun: null,
+        },
+      });
+    warEventLogServiceMock.getWarReconciliationCoordinatorState.mockReturnValue({
+      activeMode: null,
+      globalQueueLength: 0,
+      observedState: "idle",
+      observedRun: null,
+    });
+    prismaMock.currentWar.findUnique.mockResolvedValueOnce(null);
+    prismaMock.currentWar.findUnique.mockResolvedValueOnce(null);
+
+    const result = await withPollingMode("active", async () =>
+      resolveWarMailCurrentWarRenderContextForTest({
+        client: { channels: { fetch: vi.fn() } } as any,
+        cocService: {} as any,
+        guildId: "guild-1",
+        normalizedTag: "LYPLQQUC",
+        liveWarState: "preparation",
+        liveWarStartMs: liveStartMs,
+        liveOpponentTag: "LYPLQQUC",
+        activeWarSyncIdentity: buildActiveIdentity({
+          warId: null,
+          warStartTime: liveStartTime,
+          opponentTag: "LYPLQQUC",
+          positivelyResolved: true,
+        }),
+        currentWarRow: staleRow,
+      }),
+    );
+
+    expect(result.identity).toBeNull();
+    expect(result.reconciled).toBe(false);
+    expect(warEventLogServiceMock.pollClan).toHaveBeenCalledTimes(2);
+    expect(warEventLogServiceMock.waitForObservedWarReconciliation).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.findUnique).toHaveBeenCalledTimes(2);
+    expectNoMutatingWrites();
+    expect(result.currentWarRow).toBeNull();
   });
 
   it("returns null row when a stale row reread is mismatched", async () => {
