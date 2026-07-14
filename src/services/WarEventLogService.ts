@@ -634,7 +634,9 @@ type PollTarget = {
 type PollSyncContext = {
   previousSync: number | null;
   activeSync: number | null;
-  resolveActiveSyncNumber: (input: ActiveWarSyncResolutionInput) => Promise<ActiveWarSyncAssignmentResult>;
+  resolveActiveSyncNumber?: (
+    input: ActiveWarSyncResolutionInput,
+  ) => Promise<ActiveWarSyncAssignmentResult>;
 };
 
 type ActiveWarSyncResolutionInput = {
@@ -3464,7 +3466,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          cw."guildId",cw."clanTag",cw."warId",cw."syncNumber",cw."syncNum",
           COALESCE(
             cnc."channelId",
             cw."channelId",
@@ -3484,6 +3486,7 @@ export class WarEventLogService {
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
           cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
+          cps."syncNum" AS "pointsSyncNum",
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
@@ -3697,7 +3700,10 @@ export class WarEventLogService {
       warState: currentState,
       warStartTime: nextWarStartTime,
       warEndTime: nextWarEndTime,
-      currentSyncNumber: syncContext.activeSync ?? syncContext.previousSync,
+      currentSyncNumber:
+        currentState === "notInWar"
+          ? syncContext.previousSync
+          : syncContext.activeSync,
       lifecycle: lifecycleState,
       activeWarId:
         sub.warId !== null &&
@@ -3728,10 +3734,10 @@ export class WarEventLogService {
     }
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
-        ? syncContext.activeSync ?? syncContext.previousSync
+        ? syncContext.activeSync
         : currentState === "notInWar"
           ? syncContext.previousSync
-          : syncContext.activeSync ?? syncContext.previousSync;
+          : syncContext.activeSync;
     const frozenEndedWarContext =
       currentState === "notInWar"
         ? typeof this.history.resolveExactCanonicalWarEndedHistoryRow ===
@@ -3959,6 +3965,71 @@ export class WarEventLogService {
         : sub.warId !== null && sub.warId !== undefined
           ? String(Math.trunc(Number(sub.warId)))
           : null;
+    const currentWarCanonicalSyncNumber = effectiveWarIdentityChanged
+      ? null
+      : toValidSyncNumber(sub.syncNumber ?? null);
+    const currentWarLegacySyncNumber = effectiveWarIdentityChanged
+      ? null
+      : toValidSyncNumber(sub.syncNum ?? null);
+    const sameWarPointsSyncNumber = effectiveWarIdentityChanged
+      ? null
+      : toValidSyncNumber(sub.pointsSyncNum ?? null);
+    const resolveActiveSyncNumber =
+      syncContext.resolveActiveSyncNumber ??
+      (async (
+        input: ActiveWarSyncResolutionInput,
+      ): Promise<ActiveWarSyncAssignmentResult> => {
+        const fallbackSyncNumber =
+          input.currentWarCanonicalSyncNumber ??
+          input.currentWarLegacySyncNumber ??
+          input.sameWarPointsSyncNumber ??
+          null;
+        return {
+          syncNumber: fallbackSyncNumber,
+          proposedSyncNumber: fallbackSyncNumber,
+          usable: fallbackSyncNumber !== null,
+          source:
+            input.currentWarCanonicalSyncNumber !== null
+              ? "existing_current_war"
+              : input.currentWarLegacySyncNumber !== null
+                ? "existing_current_war"
+                : input.sameWarPointsSyncNumber !== null
+                  ? "same_war_points_recovery"
+                  : "unavailable",
+          shouldPersist: false,
+          persistence: "not_needed",
+          validation: null,
+          latestPersistedSyncNumber: syncContext.previousSync,
+          activeCycleSyncNumber: syncContext.activeSync,
+          sameWarPointsSyncNumber: input.sameWarPointsSyncNumber,
+          persistedSyncNumber: fallbackSyncNumber,
+        };
+      });
+    const syncAssignment =
+      currentState === "notInWar"
+        ? null
+        : await resolveActiveSyncNumber({
+            guildId,
+            clanTag: sub.clanTag,
+            warState: currentState,
+            warId: resolvedWarIdText,
+            warStartTime: nextWarStartTime,
+            opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+            currentWarCanonicalSyncNumber,
+            currentWarLegacySyncNumber,
+            sameWarPointsSyncNumber,
+            matchType: nextMatchType,
+            inferredMatchType: nextInferredMatchType,
+            allowAllocation: true,
+          });
+    const nextCanonicalSyncNumber =
+      currentState === "notInWar"
+        ? currentWarCanonicalSyncNumber
+        : syncAssignment?.usable && syncAssignment.syncNumber !== null
+          ? syncAssignment.syncNumber
+          : effectiveWarIdentityChanged
+            ? null
+            : currentWarCanonicalSyncNumber;
     const syncNumberForEvent =
       currentState === "notInWar"
         ? await this.resolveNotifyEventSyncNumber({
@@ -3971,22 +4042,7 @@ export class WarEventLogService {
             postedSyncNumber: null,
             previousSyncNumber: syncContext.previousSync,
           })
-        : (
-            await syncContext.resolveActiveSyncNumber({
-              guildId,
-              clanTag: sub.clanTag,
-              warState: currentState,
-              warId: resolvedWarIdText,
-              warStartTime: nextWarStartTime,
-              opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
-              currentWarCanonicalSyncNumber: toValidSyncNumber(sub.syncNumber ?? null),
-              currentWarLegacySyncNumber: toValidSyncNumber(sub.syncNum ?? null),
-              sameWarPointsSyncNumber: toValidSyncNumber(sub.pointsSyncNum ?? null),
-              matchType: nextMatchType,
-              inferredMatchType: nextInferredMatchType,
-              allowAllocation: true,
-            })
-          ).syncNumber;
+        : nextCanonicalSyncNumber;
     if (outcomeComputationInput) {
       nextOutcome = deriveExpectedOutcome(
         outcomeComputationInput.clanTag,
@@ -4079,6 +4135,7 @@ export class WarEventLogService {
         warId:
           currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
         state: currentState,
+        syncNumber: nextCanonicalSyncNumber,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,
         outcome: nextOutcome,
