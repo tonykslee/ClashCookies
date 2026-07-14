@@ -4075,6 +4075,72 @@ export class WarEventLogService {
         ? "intended_next_sync_null"
         : "intended_next_sync_assigned";
     };
+    type CurrentWarFinalizationClassification =
+      | "owned_pre_finalize"
+      | "already_finalized_same_identity"
+      | "stale_physical_identity"
+      | "missing";
+    const classifyCurrentWarFinalizationSnapshot = (input: {
+      snapshot: {
+        warId: number | null;
+        syncNumber: number | null;
+        state: string | null;
+        startTime: Date | null;
+        opponentTag: string | null;
+      } | null;
+      expectedPhysicalIdentity: {
+        warId: number | null;
+        state: WarState;
+        startTime: Date | null;
+        opponentTag: string | null;
+        syncNumber: number | null;
+      };
+      previousState: WarState;
+      intendedState: WarState;
+    }): CurrentWarFinalizationClassification => {
+      if (!input.snapshot) return "missing";
+      if (input.snapshot.warId !== input.expectedPhysicalIdentity.warId) {
+        return "stale_physical_identity";
+      }
+      if (
+        input.snapshot.state !== input.expectedPhysicalIdentity.state &&
+        input.snapshot.state !== input.previousState &&
+        input.snapshot.state !== input.intendedState
+      ) {
+        return "stale_physical_identity";
+      }
+      if (
+        input.snapshot.startTime?.getTime() !==
+        input.expectedPhysicalIdentity.startTime?.getTime()
+      ) {
+        return "stale_physical_identity";
+      }
+      if (
+        normalizeTag(input.snapshot.opponentTag ?? null) !==
+        normalizeTag(input.expectedPhysicalIdentity.opponentTag ?? null)
+      ) {
+        return "stale_physical_identity";
+      }
+      if (
+        toValidSyncNumber(input.snapshot.syncNumber) !==
+        toValidSyncNumber(input.expectedPhysicalIdentity.syncNumber)
+      ) {
+        return "stale_physical_identity";
+      }
+      if (input.snapshot.state === input.intendedState) {
+        return "already_finalized_same_identity";
+      }
+      if (
+        input.previousState !== input.intendedState &&
+        input.snapshot.state === input.previousState
+      ) {
+        return "owned_pre_finalize";
+      }
+      if (input.snapshot.state === input.expectedPhysicalIdentity.state) {
+        return "owned_pre_finalize";
+      }
+      return "stale_physical_identity";
+    };
     const isActivePhysicalRollover =
       effectiveWarIdentityChanged && currentState !== "notInWar";
     let currentWarCanonicalSyncNumber = isActivePhysicalRollover
@@ -4329,8 +4395,31 @@ export class WarEventLogService {
       );
     }
 
+    const expectedFinalizationIdentity = {
+      warId: currentWarRolloverIdentity.warId ?? null,
+      state: currentWarRolloverIdentity.state,
+      startTime: currentWarRolloverIdentity.startTime ?? null,
+      opponentTag: normalizeTag(currentWarRolloverIdentity.opponentTag ?? null),
+      syncNumber: nextCanonicalSyncNumber,
+    };
     const currentWarBeforeFinalize = await readCurrentWarSnapshot();
     if (!currentWarBeforeFinalize) {
+      return false;
+    }
+    const currentWarBeforeFinalizeClassification =
+      classifyCurrentWarFinalizationSnapshot({
+        snapshot: currentWarBeforeFinalize,
+        expectedPhysicalIdentity: expectedFinalizationIdentity,
+        previousState: prevState,
+        intendedState: currentState,
+      });
+    if (
+      currentWarBeforeFinalizeClassification === "missing" ||
+      currentWarBeforeFinalizeClassification === "stale_physical_identity"
+    ) {
+      console.warn(
+        `[war-events] event=current_war_finalization result=skipped reason=stale_before_finalize guild=${sub.guildId} clan=${sub.clanTag} expected_war=${expectedFinalizationIdentity.warId ?? "none"} expected_state=${expectedFinalizationIdentity.state ?? "none"} expected_start=${expectedFinalizationIdentity.startTime?.toISOString() ?? "none"} expected_opponent=${expectedFinalizationIdentity.opponentTag ? `#${expectedFinalizationIdentity.opponentTag}` : "none"} expected_sync=${expectedFinalizationIdentity.syncNumber ?? "none"} observed_war=${currentWarBeforeFinalize?.warId ?? "none"} observed_state=${currentWarBeforeFinalize?.state ?? "none"} observed_start=${currentWarBeforeFinalize?.startTime?.toISOString() ?? "none"} observed_opponent=${currentWarBeforeFinalize?.opponentTag ? `#${normalizeTag(currentWarBeforeFinalize.opponentTag) ?? "unknown"}` : "none"} observed_sync=${currentWarBeforeFinalize?.syncNumber ?? "none"}`,
+      );
       return false;
     }
     const finalUpdateData = {
@@ -4361,17 +4450,16 @@ export class WarEventLogService {
     });
     if (finalizeAttempt.count === 0) {
       const currentWarAfterFinalize = await readCurrentWarSnapshot();
-      if (
-        !matchesExactCurrentWarIdentity(currentWarAfterFinalize, {
-          warId: finalUpdateData.warId,
-          syncNumber: finalUpdateData.syncNumber,
-          state: finalUpdateData.state,
-          startTime: finalUpdateData.startTime,
-          opponentTag: finalUpdateData.opponentTag ?? null,
-        })
-      ) {
+      const currentWarAfterFinalizeClassification =
+        classifyCurrentWarFinalizationSnapshot({
+          snapshot: currentWarAfterFinalize,
+          expectedPhysicalIdentity: expectedFinalizationIdentity,
+          previousState: prevState,
+          intendedState: currentState,
+        });
+      if (currentWarAfterFinalizeClassification !== "already_finalized_same_identity") {
         console.warn(
-          `[war-events] finalize rejected guild=${sub.guildId} clan=${sub.clanTag} reason=stale_row prev_updated=${currentWarBeforeFinalize.updatedAt.toISOString()} current_updated=${currentWarAfterFinalize?.updatedAt?.toISOString() ?? "none"} war=${currentWarAfterFinalize?.warId ?? "none"} state=${currentWarAfterFinalize?.state ?? "none"} sync=${currentWarAfterFinalize?.syncNumber ?? "none"}`,
+          `[war-events] finalize rejected guild=${sub.guildId} clan=${sub.clanTag} reason=${currentWarAfterFinalizeClassification === "owned_pre_finalize" ? "contention_after_finalize_race" : "stale_row"} prev_updated=${currentWarBeforeFinalize.updatedAt.toISOString()} current_updated=${currentWarAfterFinalize?.updatedAt?.toISOString() ?? "none"} expected_war=${expectedFinalizationIdentity.warId ?? "none"} expected_state=${expectedFinalizationIdentity.state ?? "none"} expected_start=${expectedFinalizationIdentity.startTime?.toISOString() ?? "none"} expected_opponent=${expectedFinalizationIdentity.opponentTag ? `#${expectedFinalizationIdentity.opponentTag}` : "none"} expected_sync=${expectedFinalizationIdentity.syncNumber ?? "none"} current_war=${currentWarAfterFinalize?.warId ?? "none"} current_state=${currentWarAfterFinalize?.state ?? "none"} current_start=${currentWarAfterFinalize?.startTime?.toISOString() ?? "none"} current_opponent=${currentWarAfterFinalize?.opponentTag ? `#${normalizeTag(currentWarAfterFinalize.opponentTag) ?? "unknown"}` : "none"} current_sync=${currentWarAfterFinalize?.syncNumber ?? "none"}`,
         );
         return false;
       }
