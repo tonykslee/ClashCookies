@@ -837,6 +837,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
     observedWar: Record<string, unknown>;
     expectedMatchType: string | null;
     expectedInferredMatchType: boolean;
+    expectedUpdateCount?: number;
   }): Promise<void> {
     vi.restoreAllMocks();
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
@@ -893,8 +894,8 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       activeSync: 11,
     });
 
-    expect(updateSpy).toHaveBeenCalledTimes(1);
-    const updateData = updateSpy.mock.calls[0]?.[0]?.data;
+    expect(updateSpy).toHaveBeenCalledTimes(input.expectedUpdateCount ?? 1);
+    const updateData = updateSpy.mock.calls.at(-1)?.[0]?.data;
     expect(updateData?.matchType ?? null).toBe(input.expectedMatchType);
     expect(updateData?.inferredMatchType).toBe(input.expectedInferredMatchType);
   }
@@ -908,6 +909,7 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       }),
       expectedMatchType: null,
       expectedInferredMatchType: true,
+      expectedUpdateCount: 2,
     });
   });
 
@@ -999,8 +1001,8 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       activeSync: 11,
     });
 
-    expect(updateSpy).toHaveBeenCalledTimes(1);
-    const updateData = updateSpy.mock.calls[0]?.[0]?.data;
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    const updateData = updateSpy.mock.calls.at(-1)?.[0]?.data;
     expect(updateData?.matchType).toBe("FWA");
     expect(updateData?.inferredMatchType).toBe(true);
   });
@@ -1366,7 +1368,7 @@ describe("War outage recovery reconciliation", () => {
     });
     expect(history.persistWarEndHistory).not.toHaveBeenCalled();
     expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(1);
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledTimes(2);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
     expect(ensureSpy).toHaveBeenCalled();
     expect(allocateSpy).not.toHaveBeenCalled();
@@ -1606,7 +1608,7 @@ describe("War outage recovery reconciliation", () => {
     });
     expect(recoveryPersistSpy).not.toHaveBeenCalled();
     expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(1);
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledTimes(2);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
     expect(ensureSpy).toHaveBeenCalled();
     expect(allocateSpy).not.toHaveBeenCalled();

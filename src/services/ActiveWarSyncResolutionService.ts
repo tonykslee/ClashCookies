@@ -486,7 +486,7 @@ export class ActiveWarSyncResolutionService {
     const activeSyncNumber = activeCycleDiscovery.syncNumber;
     const baseResult = {
       latestPersistedSyncNumber: await this.getLatestPersistedSyncBaseline({
-        guildId: guildId || null,
+        guildId: null,
       }),
       activeCycleSyncNumber: activeSyncNumber,
       sameWarPointsSyncNumber,

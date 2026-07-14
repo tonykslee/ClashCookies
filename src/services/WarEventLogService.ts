@@ -3971,9 +3971,35 @@ export class WarEventLogService {
     const currentWarLegacySyncNumber = effectiveWarIdentityChanged
       ? null
       : toValidSyncNumber(sub.syncNum ?? null);
-    const sameWarPointsSyncNumber = effectiveWarIdentityChanged
+    const sameWarPointsSyncNumber =
+      prevState !== "notInWar" && effectiveWarIdentityChanged
       ? null
       : toValidSyncNumber(sub.pointsSyncNum ?? null);
+    const currentWarRolloverIdentity = {
+      warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
+      state: currentState,
+      prepStartTime: nextPrepStartTime,
+      startTime: nextWarStartTime,
+      endTime: nextWarEndTime,
+      opponentTag: nextOpponentTag || sub.opponentTag,
+      opponentName: nextOpponentName || sub.opponentName,
+      clanName: nextClanName,
+      updatedAt: new Date(),
+    };
+    if (currentState !== "notInWar" && effectiveWarIdentityChanged) {
+      await prisma.currentWar.update({
+        where: {
+          clanTag_guildId: {
+            guildId: sub.guildId,
+            clanTag: sub.clanTag,
+          },
+        },
+        data: {
+          ...currentWarRolloverIdentity,
+          syncNumber: null,
+        },
+      });
+    }
     const resolveActiveSyncNumber =
       syncContext.resolveActiveSyncNumber ??
       (async (
@@ -4031,7 +4057,7 @@ export class WarEventLogService {
             ? null
             : currentWarCanonicalSyncNumber;
     const syncNumberForEvent =
-      currentState === "notInWar"
+      eventType === "war_started" || currentState === "notInWar"
         ? await this.resolveNotifyEventSyncNumber({
             guildId,
             clanTag: sub.clanTag,
@@ -4132,9 +4158,7 @@ export class WarEventLogService {
         },
       },
       data: {
-        warId:
-          currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
-        state: currentState,
+        ...currentWarRolloverIdentity,
         syncNumber: nextCanonicalSyncNumber,
         fwaPoints: nextFwaPoints,
         opponentFwaPoints: nextOpponentFwaPoints,
@@ -4145,15 +4169,6 @@ export class WarEventLogService {
         warEndFwaPoints: nextWarEndFwaPoints,
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
-        // Preserve ended-war identity timestamps so downstream mail refresh can
-        // reliably recognize and freeze the completed war post.
-        prepStartTime: nextPrepStartTime,
-        startTime: nextWarStartTime,
-        endTime: nextWarEndTime,
-        opponentTag: nextOpponentTag || sub.opponentTag,
-        opponentName: nextOpponentName || sub.opponentName,
-        clanName: nextClanName,
-        updatedAt: new Date(),
       },
     });
     const newAttackRowsObserved = await this.syncWarAttacksFromWarSnapshot({

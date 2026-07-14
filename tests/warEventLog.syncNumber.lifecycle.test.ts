@@ -250,12 +250,25 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
+    expect(prismaMock.currentWar.update).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warId: 5002,
+          state: "inWar",
+          syncNumber: null,
+        }),
+      }),
+    );
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
         currentWarCanonicalSyncNumber: null,
         currentWarLegacySyncNumber: null,
         sameWarPointsSyncNumber: null,
       }),
+    );
+    expect(prismaMock.currentWar.update.mock.invocationCallOrder?.[0]).toBeLessThan(
+      resolveActiveSyncNumber.mock.invocationCallOrder?.[0] ?? Number.MAX_SAFE_INTEGER,
     );
     expect(prismaMock.currentWar.update).toHaveBeenCalledWith(
       expect.objectContaining({

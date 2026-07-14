@@ -412,4 +412,28 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     });
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
+
+  it("reads the latest persisted baseline without guild scoping", async () => {
+    const findLatestSyncNum = vi.fn().mockResolvedValue(500);
+    const service = new ActiveWarSyncResolutionService({
+      findLatestSyncNum,
+    } as any);
+
+    await service.resolveOrAllocateActiveSyncNumber({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4012",
+        warStartTime: new Date("2026-03-22T12:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(findLatestSyncNum).toHaveBeenCalledWith({
+      guildId: null,
+    });
+  });
 });
