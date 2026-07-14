@@ -405,6 +405,45 @@ describe("fwa mail confirm button", () => {
     });
   });
 
+  it("fails closed when the send claim cannot be acquired", async () => {
+    const previewKey = await seedConfirmPayloadAndRenderer();
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
+    lifecycleMock.acquireSendClaim.mockRejectedValueOnce(new Error("acquire boom"));
+    const send = vi.fn();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const interaction = createInteraction({
+      customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+      send,
+    });
+
+    await handleFwaMailConfirmButton(interaction as any);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[fwa-mail] event=mail_send_claim guild=guild-1 clan=#R80L8VYG war_id=1000110 war_start=2026-07-12T15:22:26.000Z opponent=#2LYPLQQUC result=failed reason=acquire_error error=acquire boom",
+      ),
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(prisma.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(prisma.currentWar.update).not.toHaveBeenCalled();
+    expect(prisma.currentWar.upsert).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+    expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
+    expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
+    expect(pollSpy).not.toHaveBeenCalled();
+    expect(refreshBattleDayPostsSpy).not.toHaveBeenCalled();
+    expect(refreshNotifySpy).not.toHaveBeenCalled();
+    expect(globalThis.setInterval).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenLastCalledWith({
+      content: "Failed to reserve war mail send. Please try again.",
+      embeds: [],
+      components: [],
+    });
+  });
+
   it("logs discord send failures after a successful guard and keeps retry available", async () => {
     const previewKey = await seedConfirmPayloadAndRenderer();
     prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
@@ -503,7 +542,7 @@ describe("fwa mail confirm button", () => {
       | undefined;
     expect(failureReply).toMatchObject({
       content:
-        "War mail was posted, but the lifecycle could not be finalized. Please contact an administrator.",
+        "War mail was posted, but tracking could not be finalized. Please contact an administrator.",
       embeds: [],
     });
     expect(failureReply?.components).toEqual([]);
@@ -538,32 +577,80 @@ describe("fwa mail confirm button", () => {
     expect(refreshNotifySpy).not.toHaveBeenCalled();
     expect(globalThis.setInterval).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenLastCalledWith({
-      content: "Failed to send war mail.",
+      content:
+        "Failed to send war mail, and the send lock could not be released. Please contact an administrator.",
       embeds: [],
-      components: expect.any(Array),
+      components: [],
     });
   });
 
   it("prevents two concurrent confirmations from producing two public posts", async () => {
-    const previewKey = await seedConfirmPayloadAndRenderer({
-      currentWarRow: buildCurrentWarRow(),
+    const previewKey = "preview-concurrent";
+    setFwaMailPreviewPayloadForTest(previewKey, {
+      userId: "owner-1",
+      guildId: "guild-1",
+      tag: "R80L8VYG",
+      revisionOverride: null,
     });
-    prismaMock.currentWar.findUnique.mockResolvedValue(buildCurrentWarRow());
-    let guardCallCount = 0;
-    prismaMock.currentWar.updateMany.mockImplementation(async () => ({
-      count: guardCallCount++ === 0 ? 1 : 0,
-    }));
+    setFwaMailConfirmRendererForTest(async () => buildRenderedMail());
+    const currentWarState = buildCurrentWarRow();
+    const rereadUpdatedAts: string[] = [];
+    prismaMock.currentWar.findUnique.mockImplementation(async () => {
+      rereadUpdatedAts.push(currentWarState.updatedAt.toISOString());
+      return {
+        ...currentWarState,
+        updatedAt: new Date(currentWarState.updatedAt.getTime()),
+      };
+    });
+    prismaMock.currentWar.updateMany.mockImplementation(async ({ data }) => {
+      currentWarState.channelId = String(data.channelId ?? "mail-channel-1");
+      currentWarState.matchType = String(data.matchType ?? currentWarState.matchType);
+      currentWarState.inferredMatchType = Boolean(data.inferredMatchType);
+      currentWarState.outcome = data.outcome ?? currentWarState.outcome;
+      currentWarState.updatedAt = new Date(
+        currentWarState.updatedAt.getTime() + 1000,
+      );
+      return { count: 1 };
+    });
     const sentMessage = {
       id: "sent-concurrent",
       delete: vi.fn().mockResolvedValue(undefined),
+      edit: vi.fn().mockResolvedValue(undefined),
+      embeds: [],
     };
-    const sendDeferred = createDeferred<typeof sentMessage>();
-    const send = vi.fn().mockImplementation(() => sendDeferred.promise);
+    const sendStarted = createDeferred<void>();
+    const sendRelease = createDeferred<typeof sentMessage>();
+    const send = vi.fn().mockImplementation(() => {
+      sendStarted.resolve();
+      return sendRelease.promise;
+    });
+    const oldMessageEdit = vi.fn().mockResolvedValue(undefined);
+    const oldChannel = {
+      id: "old-channel",
+      isTextBased: () => true,
+      messages: {
+        fetch: vi.fn().mockResolvedValue({
+          id: "old-message",
+          edit: oldMessageEdit,
+          embeds: [],
+        }),
+      },
+    };
+    const mailChannel = {
+      id: "mail-channel-1",
+      isTextBased: () => true,
+      send,
+      messages: { fetch: vi.fn() },
+    };
     prismaMock.trackedClan.findUnique.mockResolvedValue({ mailConfig: null });
     prismaMock.trackedClan.update.mockResolvedValue({});
     pointsSyncMock.getCurrentSyncForClan.mockResolvedValue(null);
     pointsSyncMock.markConfirmedByClanMail.mockResolvedValue(undefined);
-    lifecycleMock.getLifecycleForWar.mockResolvedValue(null);
+    lifecycleMock.getLifecycleForWar.mockResolvedValue({
+      status: "POSTED",
+      channelId: "old-channel",
+      messageId: "old-message",
+    });
     let claimAcquired = false;
     lifecycleMock.acquireSendClaim.mockImplementation(async () => {
       if (claimAcquired) {
@@ -581,35 +668,44 @@ describe("fwa mail confirm button", () => {
       customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
       send,
     });
+    interactionOne.client.channels.fetch = vi
+      .fn()
+      .mockImplementation(async (channelId: string) =>
+        channelId === "old-channel" ? oldChannel : mailChannel,
+      );
+    interactionTwo.client.channels.fetch = vi
+      .fn()
+      .mockImplementation(async (channelId: string) =>
+        channelId === "old-channel" ? oldChannel : mailChannel,
+      );
 
     const firstRun = handleFwaMailConfirmButton(interactionOne as any);
-    await Promise.resolve();
+    await sendStarted.promise;
     const secondRun = handleFwaMailConfirmButton(interactionTwo as any);
-    sendDeferred.resolve(sentMessage);
+    sendRelease.resolve(sentMessage);
     await Promise.all([firstRun, secondRun]);
 
+    expect(rereadUpdatedAts).toEqual([
+      "2026-07-12T15:24:26.000Z",
+      "2026-07-12T15:24:27.000Z",
+    ]);
     expect(send).toHaveBeenCalledTimes(1);
     expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(1);
     expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(2);
     expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
     expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
-    expect(
-      lifecycleMock.acquireSendClaim.mock.invocationCallOrder[0],
-    ).toBeLessThan(prisma.currentWar.updateMany.mock.invocationCallOrder[0]);
     expect(repWorkActivityMock.recordMailSent).toHaveBeenCalledTimes(1);
     expect(pointsSyncMock.markConfirmedByClanMail).toHaveBeenCalledTimes(1);
     expect(prismaMock.trackedClan.update).toHaveBeenCalledTimes(1);
-    expect(
-      interactionOne.followUp.mock.calls.length +
-        interactionTwo.followUp.mock.calls.length,
-    ).toBe(1);
-    expect(
-      [...interactionOne.editReply.mock.calls, ...interactionTwo.editReply.mock.calls].some(
-        ([call]) =>
-          String((call as { content?: string } | undefined)?.content ?? "") ===
-          "Cannot send mail because the active war changed. Please run /fwa match again.",
-      ),
-    ).toBe(true);
+    expect(oldMessageEdit).toHaveBeenCalledTimes(1);
+    expect(sentMessage.edit).not.toHaveBeenCalled();
+    expect(interactionOne.followUp).toHaveBeenCalledTimes(1);
+    expect(interactionTwo.followUp).not.toHaveBeenCalled();
+    expect(interactionTwo.editReply).toHaveBeenLastCalledWith({
+      content: "War mail is already being sent for this war.",
+      embeds: [],
+      components: [],
+    });
   });
 
   it("omits matchType from the guarded update when the rendered match is UNKNOWN", async () => {
