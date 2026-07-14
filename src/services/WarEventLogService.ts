@@ -3587,6 +3587,7 @@ export class WarEventLogService {
       Prisma.sql`
         SELECT
           cw."guildId",cw."clanTag",cw."warId",cw."syncNumber",cw."syncNum",
+          cw."updatedAt",
           COALESCE(
             cnc."channelId",
             cw."channelId",
@@ -4275,14 +4276,20 @@ export class WarEventLogService {
     };
     const isActivePhysicalRollover =
       effectiveWarIdentityChanged && currentState !== "notInWar";
-    let currentWarCanonicalSyncNumber = isActivePhysicalRollover
-      ? null
-      : toValidSyncNumber(sub.syncNumber ?? null);
-    const currentWarLegacySyncNumber = isActivePhysicalRollover
-      ? null
-      : toValidSyncNumber(sub.syncNum ?? null);
-    const currentWarLifecycleIdentity = {
+    let currentWarCanonicalSyncNumber = toValidSyncNumber(sub.syncNumber ?? null);
+    let currentWarLegacySyncNumber = toValidSyncNumber(sub.syncNum ?? null);
+    const currentWarPendingIdentity = {
       warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
+      state: isActivePhysicalRollover ? prevState : currentState,
+      prepStartTime: nextPrepStartTime,
+      startTime: nextWarStartTime,
+      endTime: nextWarEndTime,
+      opponentTag: nextOpponentTag || sub.opponentTag,
+      opponentName: nextOpponentName || sub.opponentName,
+      clanName: nextClanName,
+    };
+    const currentWarFinalizationIdentity = {
+      warId: currentWarPendingIdentity.warId ?? null,
       state: currentState,
       prepStartTime: nextPrepStartTime,
       startTime: nextWarStartTime,
@@ -4293,10 +4300,10 @@ export class WarEventLogService {
     };
     const rolloverRevisionAt = nextCurrentWarRevision(ownedCurrentWarRevisionAt);
     const intendedNextIdentity = {
-      warId: currentWarLifecycleIdentity.warId ?? null,
-      state: currentWarLifecycleIdentity.state,
-      startTime: currentWarLifecycleIdentity.startTime ?? null,
-      opponentTag: normalizeTag(currentWarLifecycleIdentity.opponentTag ?? null),
+      warId: currentWarPendingIdentity.warId ?? null,
+      state: currentWarPendingIdentity.state,
+      startTime: currentWarPendingIdentity.startTime ?? null,
+      opponentTag: normalizeTag(currentWarPendingIdentity.opponentTag ?? null),
     };
     if (isActivePhysicalRollover) {
       const currentWarBeforeRollover = await readCurrentWarSnapshot();
@@ -4309,47 +4316,61 @@ export class WarEventLogService {
           originalIdentity: originalSubscriptionIdentity,
           intendedIdentity: intendedNextIdentity,
         });
-      if (
-        currentWarBeforeRolloverClassification !== "original" ||
-        currentWarBeforeRollover.updatedAt.getTime() !==
-          ownedCurrentWarRevisionAt.getTime()
-      ) {
+      if (currentWarBeforeRollover.updatedAt.getTime() !== ownedCurrentWarRevisionAt.getTime()) {
         console.warn(
           `[war-events] event=current_war_rollover result=skipped reason=stale_before_rollover guild=${sub.guildId} clan=${sub.clanTag} original_war=${originalSubscriptionIdentity.warId ?? "none"} original_state=${originalSubscriptionIdentity.state ?? "none"} original_start=${originalSubscriptionIdentity.startTime?.toISOString() ?? "none"} original_opponent=${originalSubscriptionIdentity.opponentTag ? `#${originalSubscriptionIdentity.opponentTag}` : "none"} original_sync=${originalSubscriptionIdentity.syncNumber ?? "none"} observed_war=${currentWarBeforeRollover.warId ?? "none"} observed_state=${currentWarBeforeRollover.state ?? "none"} observed_start=${currentWarBeforeRollover.startTime?.toISOString() ?? "none"} observed_opponent=${currentWarBeforeRollover.opponentTag ? `#${normalizeTag(currentWarBeforeRollover.opponentTag) ?? "unknown"}` : "none"} observed_sync=${currentWarBeforeRollover.syncNumber ?? "none"} intended_war=${intendedNextIdentity.warId ?? "none"} intended_state=${intendedNextIdentity.state ?? "none"} intended_start=${intendedNextIdentity.startTime?.toISOString() ?? "none"} intended_opponent=${intendedNextIdentity.opponentTag ? `#${intendedNextIdentity.opponentTag}` : "none"}`,
         );
         return false;
       }
-      const rolloverAttempt = await prisma.currentWar.updateMany({
-        where: {
-          guildId: sub.guildId,
-          clanTag: sub.clanTag,
-          updatedAt: currentWarBeforeRollover.updatedAt,
-          warId: currentWarBeforeRollover.warId,
-          state: currentWarBeforeRollover.state,
-          startTime: currentWarBeforeRollover.startTime,
-          opponentTag: normalizeTag(currentWarBeforeRollover.opponentTag ?? null),
-          syncNumber: currentWarBeforeRollover.syncNumber,
-        },
-        data: {
-          ...currentWarLifecycleIdentity,
-          updatedAt: rolloverRevisionAt,
-          syncNumber: null,
-        },
-      });
-      if (rolloverAttempt.count > 1) {
+      if (currentWarBeforeRolloverClassification === "original") {
+        const rolloverAttempt = await prisma.currentWar.updateMany({
+          where: {
+            guildId: sub.guildId,
+            clanTag: sub.clanTag,
+            updatedAt: currentWarBeforeRollover.updatedAt,
+            warId: currentWarBeforeRollover.warId,
+            state: currentWarBeforeRollover.state,
+            startTime: currentWarBeforeRollover.startTime,
+            opponentTag: normalizeTag(currentWarBeforeRollover.opponentTag ?? null),
+            syncNumber: currentWarBeforeRollover.syncNumber,
+          },
+          data: {
+            ...currentWarPendingIdentity,
+            updatedAt: rolloverRevisionAt,
+            syncNumber: null,
+            syncNum: null,
+          },
+        });
+        if (rolloverAttempt.count > 1) {
+          console.warn(
+            `[war-events] rollover rejected guild=${sub.guildId} clan=${sub.clanTag} reason=consistency_conflict updated_count=${rolloverAttempt.count}`,
+          );
+          return false;
+        }
+        if (rolloverAttempt.count === 0) {
+          const currentWarAfterRollover = await readCurrentWarSnapshot();
+          console.warn(
+            `[war-events] rollover rejected guild=${sub.guildId} clan=${sub.clanTag} reason=contention_after_rollover_race prev_war=${currentWarBeforeRollover.warId ?? "none"} prev_state=${currentWarBeforeRollover.state ?? "none"} current_war=${currentWarAfterRollover?.warId ?? "none"} current_state=${currentWarAfterRollover?.state ?? "none"} current_start=${currentWarAfterRollover?.startTime?.toISOString() ?? "none"} current_opponent=${currentWarAfterRollover?.opponentTag ? `#${normalizeTag(currentWarAfterRollover.opponentTag) ?? "unknown"}` : "none"} current_sync=${currentWarAfterRollover?.syncNumber ?? "none"}`,
+          );
+          return false;
+        }
+        ownedCurrentWarRevisionAt = rolloverRevisionAt;
+        currentWarCanonicalSyncNumber = null;
+        currentWarLegacySyncNumber = null;
+      } else if (
+        currentWarBeforeRolloverClassification === "intended_next_sync_null" ||
+        currentWarBeforeRolloverClassification === "intended_next_sync_assigned"
+      ) {
+        currentWarCanonicalSyncNumber = toValidSyncNumber(
+          currentWarBeforeRollover.syncNumber ?? null,
+        );
+        currentWarLegacySyncNumber = null;
+      } else {
         console.warn(
-          `[war-events] rollover rejected guild=${sub.guildId} clan=${sub.clanTag} reason=consistency_conflict updated_count=${rolloverAttempt.count}`,
+          `[war-events] event=current_war_rollover result=skipped reason=stale_before_rollover guild=${sub.guildId} clan=${sub.clanTag} original_war=${originalSubscriptionIdentity.warId ?? "none"} original_state=${originalSubscriptionIdentity.state ?? "none"} original_start=${originalSubscriptionIdentity.startTime?.toISOString() ?? "none"} original_opponent=${originalSubscriptionIdentity.opponentTag ? `#${originalSubscriptionIdentity.opponentTag}` : "none"} original_sync=${originalSubscriptionIdentity.syncNumber ?? "none"} observed_war=${currentWarBeforeRollover.warId ?? "none"} observed_state=${currentWarBeforeRollover.state ?? "none"} observed_start=${currentWarBeforeRollover.startTime?.toISOString() ?? "none"} observed_opponent=${currentWarBeforeRollover.opponentTag ? `#${normalizeTag(currentWarBeforeRollover.opponentTag) ?? "unknown"}` : "none"} observed_sync=${currentWarBeforeRollover.syncNumber ?? "none"} intended_war=${intendedNextIdentity.warId ?? "none"} intended_state=${intendedNextIdentity.state ?? "none"} intended_start=${intendedNextIdentity.startTime?.toISOString() ?? "none"} intended_opponent=${intendedNextIdentity.opponentTag ? `#${intendedNextIdentity.opponentTag}` : "none"}`,
         );
         return false;
       }
-      if (rolloverAttempt.count === 0) {
-        const currentWarAfterRollover = await readCurrentWarSnapshot();
-        console.warn(
-          `[war-events] rollover rejected guild=${sub.guildId} clan=${sub.clanTag} reason=contention_after_rollover_race prev_war=${currentWarBeforeRollover.warId ?? "none"} prev_state=${currentWarBeforeRollover.state ?? "none"} current_war=${currentWarAfterRollover?.warId ?? "none"} current_state=${currentWarAfterRollover?.state ?? "none"} current_start=${currentWarAfterRollover?.startTime?.toISOString() ?? "none"} current_opponent=${currentWarAfterRollover?.opponentTag ? `#${normalizeTag(currentWarAfterRollover.opponentTag) ?? "unknown"}` : "none"} current_sync=${currentWarAfterRollover?.syncNumber ?? "none"}`,
-        );
-        return false;
-      }
-      ownedCurrentWarRevisionAt = rolloverRevisionAt;
     }
     const resolveActiveSyncNumber =
       syncContext.resolveActiveSyncNumber ??
@@ -4401,23 +4422,25 @@ export class WarEventLogService {
             allowAllocation: true,
             expectedCurrentWarRevisionAt: ownedCurrentWarRevisionAt,
           });
-    if (isActivePhysicalRollover) {
-      if (
-        syncAssignment?.persistence !== "saved" ||
-        !syncAssignment.persistedRevisionAt
-      ) {
-        return false;
-      }
+    const assignmentNeedsOwnership =
+      Boolean(syncAssignment) &&
+      syncAssignment?.persistence !== "idempotent" &&
+      currentWarCanonicalSyncNumber === null &&
+      syncAssignment?.source !== "not_fwa" &&
+      syncAssignment?.source !== "mirror_mode" &&
+      (syncAssignment?.source !== "existing_current_war" ||
+        currentWarLegacySyncNumber !== null);
+    if (syncAssignment?.persistence === "saved" && syncAssignment.persistedRevisionAt) {
       ownedCurrentWarRevisionAt = syncAssignment.persistedRevisionAt;
+    } else if (assignmentNeedsOwnership) {
+      return false;
     }
     const nextCanonicalSyncNumber =
       currentState === "notInWar"
         ? currentWarCanonicalSyncNumber
         : syncAssignment?.usable && syncAssignment.syncNumber !== null
           ? syncAssignment.syncNumber
-          : isActivePhysicalRollover
-            ? null
-            : currentWarCanonicalSyncNumber;
+          : currentWarCanonicalSyncNumber;
     const syncNumberForEvent =
       currentState === "notInWar"
         ? await this.resolveNotifyEventSyncNumber({
@@ -4513,10 +4536,10 @@ export class WarEventLogService {
     }
 
     const expectedFinalizationIdentity = {
-      warId: currentWarLifecycleIdentity.warId ?? null,
-      state: currentWarLifecycleIdentity.state,
-      startTime: currentWarLifecycleIdentity.startTime ?? null,
-      opponentTag: normalizeTag(currentWarLifecycleIdentity.opponentTag ?? null),
+      warId: currentWarFinalizationIdentity.warId ?? null,
+      state: currentWarFinalizationIdentity.state,
+      startTime: currentWarFinalizationIdentity.startTime ?? null,
+      opponentTag: normalizeTag(currentWarFinalizationIdentity.opponentTag ?? null),
       syncNumber: nextCanonicalSyncNumber,
     };
     const currentWarBeforeFinalize = await readCurrentWarSnapshot();
@@ -4552,7 +4575,7 @@ export class WarEventLogService {
       ownedCurrentWarRevisionAt,
     );
     const finalUpdateData = {
-      ...currentWarLifecycleIdentity,
+      ...currentWarFinalizationIdentity,
       updatedAt: finalizationRevisionAt,
       syncNumber: nextCanonicalSyncNumber,
       fwaPoints: nextFwaPoints,

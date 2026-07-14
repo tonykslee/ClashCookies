@@ -7,7 +7,6 @@ import {
   resolveExactSameWarPointsSyncNumberForTest,
   WarEventLogService,
 } from "../src/services/WarEventLogService";
-import { deriveExpectedOutcome } from "../src/services/war-events/core";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
@@ -260,18 +259,10 @@ function createCurrentWarStore(overrides?: Partial<CurrentWarState>) {
       return cloneCurrentWarState(state);
     }),
     findFirst: vi.fn(async (args?: { where?: any }) => {
-      if (args?.where?.startTime instanceof Date) {
-        if (
-          !state.startTime ||
-          args.where.startTime.getTime() !== state.startTime.getTime()
-        ) {
-          return null;
-        }
-      }
-      if (args?.where?.warId?.not === null && state.warId === null) {
+      if (args?.where && !matchesWhere(args.where)) {
         return null;
       }
-      return state.warId !== null ? { warId: state.warId } : null;
+      return state.warId !== null ? cloneCurrentWarState(state) : null;
     }),
     updateMany: vi.fn(async (args?: { where?: any; data?: any }) => {
       if (args?.where && !matchesWhere(args.where)) {
@@ -581,7 +572,14 @@ describe("WarEventLogService sync-number lifecycle", () => {
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
-    prismaMock.currentWar.findFirst.mockResolvedValueOnce({ warId: 5002 });
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({
+      warId: 5002,
+      syncNumber: null,
+      state: "preparation",
+      startTime: newWarStartTime,
+      opponentTag,
+      updatedAt: currentWarStore.state.updatedAt,
+    });
     prismaMock.currentWar.findUnique.mockImplementation(async () =>
       currentWarStore.snapshot(),
     );
@@ -620,15 +618,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    const expectedOutcome = deriveExpectedOutcome(
-      clanTag,
-      opponentTag,
-      100,
-      100,
-      535,
-    );
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(3);
-    const [rolloverCall, assignmentCall, finalizationCall] =
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(2);
+    const [rolloverCall, assignmentCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -644,28 +635,14 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(assignmentCall.data.updatedAt.getTime()).toBeGreaterThan(
       rolloverCall.data.updatedAt.getTime(),
     );
-    expect(finalizationCall.data.updatedAt.getTime()).toBeGreaterThan(
-      assignmentCall.data.updatedAt.getTime(),
-    );
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
-    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          eventType: "war_started",
-          syncNumber: 535,
-          outcome: expectedOutcome,
-        }),
-      }),
-    );
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
-      state: "preparation",
+      syncNumber: null,
+      state: "notInWar",
       opponentTag,
     });
-    expect(expectedOutcome).not.toBe(
-      deriveExpectedOutcome(clanTag, opponentTag, 100, 100, 534),
-    );
   });
 
   it("rejects completed-war points rows during a new war start and allocates the next canonical sync", async () => {
@@ -1048,15 +1025,17 @@ describe("WarEventLogService sync-number lifecycle", () => {
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
-    prismaMock.currentWar.findUnique.mockImplementationOnce(async () => {
-      const snapshot = currentWarStore.snapshot();
-      mutateCurrentWarStore(currentWarStore, {
-        opponentName: "Fresh Opponent",
-        clanName: "Fresh Clan",
-        updatedAt: new Date(currentWarStore.state.updatedAt.getTime() + 1000),
+    prismaMock.currentWar.findUnique
+      .mockImplementationOnce(async () => currentWarStore.snapshot())
+      .mockImplementationOnce(async () => {
+        const snapshot = currentWarStore.snapshot();
+        mutateCurrentWarStore(currentWarStore, {
+          opponentName: "Fresh Opponent",
+          clanName: "Fresh Clan",
+          updatedAt: new Date(currentWarStore.state.updatedAt.getTime() + 1000),
+        });
+        return snapshot;
       });
-      return snapshot;
-    });
     const service = makeService(
       makeWarSnapshot({
         state: "preparation",
@@ -1079,8 +1058,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prismaMock.currentWar.updateMany.mock.calls[0]?.[0]?.where?.updatedAt?.getTime(),
     ).not.toBe(currentWarStore.state.updatedAt.getTime());
     expect(currentWarStore.state.syncNumber).toBe(534);
-    expect(currentWarStore.state.opponentName).toBe("Fresh Opponent");
-    expect(currentWarStore.state.clanName).toBe("Fresh Clan");
+    expect(currentWarStore.state.opponentName).toBe("Opponent");
+    expect(currentWarStore.state.clanName).toBe("Rocky Road");
   });
 
   it("keeps the completed-war canonical sync during war-ended processing", async () => {
