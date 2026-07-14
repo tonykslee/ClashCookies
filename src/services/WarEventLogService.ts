@@ -3983,7 +3983,86 @@ export class WarEventLogService {
           updatedAt: true,
         },
       });
-    const currentWarCanonicalSyncNumber = effectiveWarIdentityChanged
+    const matchesCurrentWarSnapshot = (
+      snapshot: {
+        warId: number | null;
+        syncNumber: number | null;
+        state: string | null;
+        startTime: Date | null;
+        opponentTag: string | null;
+      } | null,
+      reference: {
+        warId: number | null;
+        syncNumber: number | null;
+        state: string | null;
+        startTime: Date | null;
+        opponentTag: string | null;
+      },
+      syncMode: "exact" | "any" = "exact",
+    ) => {
+      if (!snapshot) return false;
+      if (snapshot.warId !== reference.warId) return false;
+      if (snapshot.state !== reference.state) return false;
+      if (
+        snapshot.startTime?.getTime() !== reference.startTime?.getTime()
+      ) {
+        return false;
+      }
+      if (
+        normalizeTag(snapshot.opponentTag ?? null) !==
+        normalizeTag(reference.opponentTag ?? null)
+      ) {
+        return false;
+      }
+      if (syncMode === "any") return true;
+      return toValidSyncNumber(snapshot.syncNumber) ===
+        toValidSyncNumber(reference.syncNumber);
+    };
+    const classifyCurrentWarRolloverSnapshot = (
+      snapshot: {
+        warId: number | null;
+        syncNumber: number | null;
+        state: string | null;
+        startTime: Date | null;
+        opponentTag: string | null;
+      } | null,
+    ) => {
+      if (
+        matchesCurrentWarSnapshot(snapshot, {
+          warId: currentWarBeforeRollover?.warId ?? null,
+          syncNumber: currentWarBeforeRollover?.syncNumber ?? null,
+          state: currentWarBeforeRollover?.state ?? null,
+          startTime: currentWarBeforeRollover?.startTime ?? null,
+          opponentTag: currentWarBeforeRollover?.opponentTag ?? null,
+        })
+      ) {
+        return "original" as const;
+      }
+      if (
+        matchesCurrentWarSnapshot(snapshot, {
+          warId: currentWarRolloverIdentity.warId,
+          syncNumber: null,
+          state: currentWarRolloverIdentity.state,
+          startTime: currentWarRolloverIdentity.startTime,
+          opponentTag: currentWarRolloverIdentity.opponentTag ?? null,
+        })
+      ) {
+        return "intended_next_sync_null" as const;
+      }
+      if (
+        matchesCurrentWarSnapshot(snapshot, {
+          warId: currentWarRolloverIdentity.warId,
+          syncNumber: null,
+          state: currentWarRolloverIdentity.state,
+          startTime: currentWarRolloverIdentity.startTime,
+          opponentTag: currentWarRolloverIdentity.opponentTag ?? null,
+        }, "any")
+      ) {
+        return "intended_next_sync_assigned" as const;
+      }
+      return "stale" as const;
+    };
+    let currentWarCanonicalSyncNumber = effectiveWarIdentityChanged
       ? null
       : toValidSyncNumber(sub.syncNumber ?? null);
     const currentWarLegacySyncNumber = effectiveWarIdentityChanged
@@ -4026,19 +4105,17 @@ export class WarEventLogService {
       });
       if (rolloverAttempt.count === 0) {
         const currentWarAfterRollover = await readCurrentWarSnapshot();
-        const rolloverMatches =
-          currentWarAfterRollover &&
-          currentWarAfterRollover.warId === currentWarRolloverIdentity.warId &&
-          currentWarAfterRollover.state === currentWarRolloverIdentity.state &&
-          currentWarAfterRollover.startTime?.getTime() ===
-            currentWarRolloverIdentity.startTime?.getTime() &&
-          normalizeTag(currentWarAfterRollover.opponentTag ?? null) ===
-            normalizeTag(currentWarRolloverIdentity.opponentTag ?? null);
-        if (!rolloverMatches) {
+        const rolloverSnapshotState =
+          classifyCurrentWarRolloverSnapshot(currentWarAfterRollover);
+        if (rolloverSnapshotState === "stale") {
           console.warn(
             `[war-events] rollover rejected guild=${sub.guildId} clan=${sub.clanTag} reason=identity_changed prev_war=${currentWarBeforeRollover.warId ?? "none"} prev_state=${currentWarBeforeRollover.state ?? "none"} current_war=${currentWarAfterRollover?.warId ?? "none"} current_state=${currentWarAfterRollover?.state ?? "none"} current_start=${currentWarAfterRollover?.startTime?.toISOString() ?? "none"} current_opponent=${currentWarAfterRollover?.opponentTag ? `#${normalizeTag(currentWarAfterRollover.opponentTag) ?? "unknown"}` : "none"}`,
           );
           return false;
+        }
+        if (rolloverSnapshotState === "intended_next_sync_assigned") {
+          currentWarCanonicalSyncNumber =
+            toValidSyncNumber(currentWarAfterRollover?.syncNumber ?? null);
         }
       }
     }
@@ -4099,7 +4176,7 @@ export class WarEventLogService {
             ? null
             : currentWarCanonicalSyncNumber;
     const syncNumberForEvent =
-      eventType === "war_started" || currentState === "notInWar"
+      currentState === "notInWar"
         ? await this.resolveNotifyEventSyncNumber({
             guildId,
             clanTag: sub.clanTag,
@@ -4224,17 +4301,15 @@ export class WarEventLogService {
     });
     if (finalizeAttempt.count === 0) {
       const currentWarAfterFinalize = await readCurrentWarSnapshot();
-      const finalizeMatches =
-        currentWarAfterFinalize &&
-        currentWarAfterFinalize.warId === finalUpdateData.warId &&
-        currentWarAfterFinalize.state === finalUpdateData.state &&
-        currentWarAfterFinalize.startTime?.getTime() ===
-          finalUpdateData.startTime?.getTime() &&
-        normalizeTag(currentWarAfterFinalize.opponentTag ?? null) ===
-          normalizeTag(finalUpdateData.opponentTag ?? null) &&
-        toValidSyncNumber(currentWarAfterFinalize.syncNumber) ===
-          toValidSyncNumber(finalUpdateData.syncNumber);
-      if (!finalizeMatches) {
+      if (
+        !matchesCurrentWarSnapshot(currentWarAfterFinalize, {
+          warId: finalUpdateData.warId,
+          syncNumber: finalUpdateData.syncNumber,
+          state: finalUpdateData.state,
+          startTime: finalUpdateData.startTime,
+          opponentTag: finalUpdateData.opponentTag ?? null,
+        })
+      ) {
         console.warn(
           `[war-events] finalize rejected guild=${sub.guildId} clan=${sub.clanTag} reason=stale_row prev_updated=${currentWarBeforeFinalize.updatedAt.toISOString()} current_updated=${currentWarAfterFinalize?.updatedAt?.toISOString() ?? "none"} war=${currentWarAfterFinalize?.warId ?? "none"} state=${currentWarAfterFinalize?.state ?? "none"} sync=${currentWarAfterFinalize?.syncNumber ?? "none"}`,
         );
