@@ -631,22 +631,15 @@ describe("WarEventLogService sync-number lifecycle", () => {
       100,
       535,
     );
-    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        currentWarCanonicalSyncNumber: 535,
-        currentWarLegacySyncNumber: null,
-      }),
-    );
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
-    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          eventType: "war_started",
-          syncNumber: 535,
-          outcome: expectedOutcome,
-        }),
-      }),
-    );
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5002,
+      syncNumber: 535,
+      state: "preparation",
+      opponentTag,
+    });
     expect(expectedOutcome).not.toBe(
       deriveExpectedOutcome(clanTag, opponentTag, 100, 100, 534),
     );
@@ -725,35 +718,13 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     const allocationResolution = await resolveActiveSyncNumber.mock.results[0]?.value;
 
-    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        currentWarCanonicalSyncNumber: null,
-        currentWarLegacySyncNumber: null,
-        sameWarPointsSyncNumber: null,
-      }),
-    );
-    expect(allocationResolution).toMatchObject({
-      source: "allocated_latest_plus_one",
-      syncNumber: 535,
-      usable: true,
-    });
-    expect((service as any).currentSyncs.upsertPointsSync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        warId: "5002",
-        syncNum: 535,
-      }),
-    );
-    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          eventType: "war_started",
-          syncNumber: 535,
-        }),
-      }),
-    );
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
+    expect(allocationResolution).toBeUndefined();
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
+      syncNumber: null,
       state: "preparation",
       opponentTag: newOpponentTag,
     });
@@ -841,22 +812,15 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        currentWarCanonicalSyncNumber: 535,
-        currentWarLegacySyncNumber: null,
-        sameWarPointsSyncNumber: null,
-      }),
-    );
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
-    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          eventType: "battle_day",
-          syncNumber: 535,
-        }),
-      }),
-    );
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5002,
+      syncNumber: 535,
+      state: "inWar",
+      opponentTag,
+    });
   });
 
   it("keeps the canonical sync number during a routine preparation refresh", async () => {
@@ -1050,6 +1014,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
     prismaMock.currentWar.findUnique.mockImplementationOnce(async () => {
       const snapshot = currentWarStore.snapshot();
       mutateCurrentWarStore(currentWarStore, {
+        opponentName: "Fresh Opponent",
+        clanName: "Fresh Clan",
         updatedAt: new Date(currentWarStore.state.updatedAt.getTime() + 1000),
       });
       return snapshot;
@@ -1076,6 +1042,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prismaMock.currentWar.updateMany.mock.calls[0]?.[0]?.where?.updatedAt?.getTime(),
     ).not.toBe(currentWarStore.state.updatedAt.getTime());
     expect(currentWarStore.state.syncNumber).toBe(534);
+    expect(currentWarStore.state.opponentName).toBe("Fresh Opponent");
+    expect(currentWarStore.state.clanName).toBe("Fresh Clan");
   });
 
   it("keeps the completed-war canonical sync during war-ended processing", async () => {
@@ -1334,7 +1302,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     });
   });
 
-  it("continues idempotent rollover when the target identity is already present without sync", async () => {
+  it("rejects a stale rollover snapshot when the target identity is already present without sync", async () => {
     const currentWarStore = createCurrentWarStore({
       warId: 5001,
       syncNumber: 534,
@@ -1413,34 +1381,29 @@ describe("WarEventLogService sync-number lifecycle", () => {
       });
     const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
 
-    await (service as any).processSubscription("guild-1", testClanTag, {
+    await expect(
+      (service as any).processSubscription("guild-1", testClanTag, {
       previousSync: 534,
       activeSync: null,
       resolveActiveSyncNumber,
-    });
+    })).resolves.toBe(false);
 
-    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        currentWarCanonicalSyncNumber: null,
-        currentWarLegacySyncNumber: null,
-        sameWarPointsSyncNumber: null,
-      }),
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
+    expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
+      1,
     );
-    expect((service as any).currentSyncs.upsertPointsSync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        warId: "5002",
-        syncNum: 535,
-      }),
-    );
+    expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
+      syncNumber: null,
       state: "inWar",
       opponentTag: "#0PPY",
     });
   });
 
-  it("reuses an already assigned canonical sync when the rollover snapshot is up to date", async () => {
+  it("rejects a rollover snapshot when a newer same-war revision already exists", async () => {
     const currentWarStore = createCurrentWarStore({
       warId: 5001,
       syncNumber: 534,
@@ -1519,29 +1482,20 @@ describe("WarEventLogService sync-number lifecycle", () => {
       });
     const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
 
-    await (service as any).processSubscription("guild-1", testClanTag, {
+    await expect(
+      (service as any).processSubscription("guild-1", testClanTag, {
       previousSync: 534,
       activeSync: null,
       resolveActiveSyncNumber,
-    });
+    })).resolves.toBe(false);
 
-    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        currentWarCanonicalSyncNumber: 535,
-        currentWarLegacySyncNumber: null,
-        sameWarPointsSyncNumber: null,
-      }),
-    );
+    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
       1,
     );
-    expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(1);
-    expect((service as any).currentSyncs.upsertPointsSync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        warId: "5002",
-        syncNum: 535,
-      }),
-    );
+    expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
+    expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
       syncNumber: 535,
