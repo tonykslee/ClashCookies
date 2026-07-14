@@ -1511,6 +1511,119 @@ function hasSameWarConfirmedMailBaseline(input: {
   return true;
 }
 
+type ExactSameWarPointsSyncRejectionReason =
+  | "identity_incomplete"
+  | "start_mismatch"
+  | "opponent_mismatch"
+  | "war_id_mismatch";
+
+function logRejectedExactSameWarPointsSync(input: {
+  guildId?: string | null;
+  clanTag?: string | null;
+  reason: ExactSameWarPointsSyncRejectionReason;
+  pointsWarId: string | number | null | undefined;
+  pointsWarStartTime: Date | null | undefined;
+  pointsOpponentTag: string | null | undefined;
+  pointsSyncNumber: number | null | undefined;
+  intendedWarId: string | number | null | undefined;
+  intendedWarStartTime: Date | null | undefined;
+  intendedOpponentTag: string | null | undefined;
+}): void {
+  const line =
+    `[war-events] event=active_war_points_identity result=rejected reason=${input.reason}` +
+    ` guild=${String(input.guildId ?? "none")}` +
+    ` clan=${String(input.clanTag ?? "none")}` +
+    ` points_war_id=${toValidWarIdText(input.pointsWarId) ?? "none"}` +
+    ` points_war_start=${input.pointsWarStartTime?.toISOString() ?? "none"}` +
+    ` points_opponent=${normalizeTag(input.pointsOpponentTag ?? "") ?? "none"}` +
+    ` points_sync=${toValidSyncNumber(input.pointsSyncNumber) ?? "none"}` +
+    ` intended_war_id=${toValidWarIdText(input.intendedWarId) ?? "none"}` +
+    ` intended_war_start=${input.intendedWarStartTime?.toISOString() ?? "none"}` +
+    ` intended_opponent=${normalizeTag(input.intendedOpponentTag ?? "") ?? "none"}`;
+  if (input.reason === "war_id_mismatch") {
+    console.warn(line);
+    return;
+  }
+  console.debug(line);
+}
+
+function resolveExactSameWarPointsSyncNumber(input: {
+  guildId?: string | null;
+  clanTag?: string | null;
+  pointsWarId: string | number | null | undefined;
+  pointsWarStartTime: Date | null | undefined;
+  pointsOpponentTag: string | null | undefined;
+  pointsSyncNumber: number | null | undefined;
+  intendedWarId: string | number | null | undefined;
+  intendedWarStartTime: Date | null | undefined;
+  intendedOpponentTag: string | null | undefined;
+}): number | null {
+  const pointsSyncNumber = toValidSyncNumber(input.pointsSyncNumber);
+  if (pointsSyncNumber === null) {
+    return null;
+  }
+  const pointsWarStartTime =
+    input.pointsWarStartTime instanceof Date &&
+    Number.isFinite(input.pointsWarStartTime.getTime())
+      ? input.pointsWarStartTime
+      : null;
+  const intendedWarStartTime =
+    input.intendedWarStartTime instanceof Date &&
+    Number.isFinite(input.intendedWarStartTime.getTime())
+      ? input.intendedWarStartTime
+      : null;
+  const pointsOpponentTag = normalizeTag(input.pointsOpponentTag ?? null);
+  const intendedOpponentTag = normalizeTag(input.intendedOpponentTag ?? null);
+  if (
+    !pointsWarStartTime ||
+    !intendedWarStartTime ||
+    !pointsOpponentTag ||
+    !intendedOpponentTag
+  ) {
+    logRejectedExactSameWarPointsSync({
+      ...input,
+      reason: "identity_incomplete",
+    });
+    return null;
+  }
+  if (pointsWarStartTime.getTime() !== intendedWarStartTime.getTime()) {
+    logRejectedExactSameWarPointsSync({
+      ...input,
+      pointsWarStartTime,
+      intendedWarStartTime,
+      pointsOpponentTag,
+      intendedOpponentTag,
+      reason: "start_mismatch",
+    });
+    return null;
+  }
+  if (pointsOpponentTag !== intendedOpponentTag) {
+    logRejectedExactSameWarPointsSync({
+      ...input,
+      pointsWarStartTime,
+      intendedWarStartTime,
+      pointsOpponentTag,
+      intendedOpponentTag,
+      reason: "opponent_mismatch",
+    });
+    return null;
+  }
+  const pointsWarId = toValidWarIdText(input.pointsWarId);
+  const intendedWarId = toValidWarIdText(input.intendedWarId);
+  if (pointsWarId && intendedWarId && pointsWarId !== intendedWarId) {
+    logRejectedExactSameWarPointsSync({
+      ...input,
+      pointsWarStartTime,
+      intendedWarStartTime,
+      pointsOpponentTag,
+      intendedOpponentTag,
+      reason: "war_id_mismatch",
+    });
+    return null;
+  }
+  return pointsSyncNumber;
+}
+
 function resolveEventRenderSyncNumber(input: {
   identity: ReturnType<typeof buildActiveWarSyncIdentity>;
   sameWarSyncNumber: number | null;
@@ -1528,6 +1641,8 @@ function resolveEventRenderSyncNumber(input: {
 }
 
 export const resolveEventRenderSyncNumberForTest = resolveEventRenderSyncNumber;
+export const resolveExactSameWarPointsSyncNumberForTest =
+  resolveExactSameWarPointsSyncNumber;
 
 function formatWarStatCellLeft(value: string): string {
   return value.padStart(10, " ");
@@ -3966,6 +4081,19 @@ export class WarEventLogService {
             sub.warId !== undefined
           ? String(Math.trunc(Number(sub.warId)))
           : null;
+    const intendedActiveWarOpponentTag =
+      nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
+    const sameWarPointsSyncNumber = resolveExactSameWarPointsSyncNumber({
+      guildId: sub.guildId,
+      clanTag: sub.clanTag,
+      pointsWarId: sub.pointsWarId,
+      pointsWarStartTime: sub.pointsWarStartTime,
+      pointsOpponentTag: sub.pointsOpponentTag,
+      pointsSyncNumber: sub.pointsSyncNum,
+      intendedWarId: resolvedWarIdText,
+      intendedWarStartTime: nextWarStartTime,
+      intendedOpponentTag: intendedActiveWarOpponentTag,
+    });
     const readCurrentWarSnapshot = () =>
       prisma.currentWar.findUnique({
         where: {
@@ -4149,10 +4277,6 @@ export class WarEventLogService {
     const currentWarLegacySyncNumber = isActivePhysicalRollover
       ? null
       : toValidSyncNumber(sub.syncNum ?? null);
-    const sameWarPointsSyncNumber =
-      prevState !== "notInWar" && effectiveWarIdentityChanged
-      ? null
-      : toValidSyncNumber(sub.pointsSyncNum ?? null);
     const currentWarRolloverIdentity = {
       warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
       state: currentState,

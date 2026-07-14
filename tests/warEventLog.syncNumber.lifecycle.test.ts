@@ -3,7 +3,10 @@ import {
   ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
 } from "../src/services/ActiveWarSyncResolutionService";
-import { WarEventLogService } from "../src/services/WarEventLogService";
+import {
+  resolveExactSameWarPointsSyncNumberForTest,
+  WarEventLogService,
+} from "../src/services/WarEventLogService";
 import { deriveExpectedOutcome } from "../src/services/war-events/core";
 
 const prismaMock = vi.hoisted(() => ({
@@ -475,6 +478,69 @@ function expectNoFinalizationUpdateMany() {
   expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
 }
 
+describe("exact same-war points identity validation", () => {
+  const intendedWarId = "5002";
+  const intendedWarStartTime = newWarStartTime;
+  const intendedOpponentTag = "#0PPY";
+
+  function resolvePointsSync(overrides?: Record<string, unknown>) {
+    return resolveExactSameWarPointsSyncNumberForTest({
+      guildId: "guild-1",
+      clanTag: testClanTag,
+      intendedWarId,
+      intendedWarStartTime,
+      intendedOpponentTag,
+      pointsWarId: "5002",
+      pointsWarStartTime: intendedWarStartTime,
+      pointsOpponentTag: intendedOpponentTag,
+      pointsSyncNumber: 535,
+      ...overrides,
+    });
+  }
+
+  it("accepts an exact same-war points row", () => {
+    expect(resolvePointsSync()).toBe(535);
+  });
+
+  it("rejects a different start time", () => {
+    expect(
+      resolvePointsSync({
+        pointsWarStartTime: new Date("2026-03-22T09:00:00.000Z"),
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects a different opponent", () => {
+    expect(resolvePointsSync({ pointsOpponentTag: "#0PPZ" })).toBeNull();
+  });
+
+  it("rejects conflicting war IDs", () => {
+    expect(resolvePointsSync({ pointsWarId: "9999" })).toBeNull();
+  });
+
+  it("rejects missing points start", () => {
+    expect(resolvePointsSync({ pointsWarStartTime: null })).toBeNull();
+  });
+
+  it("rejects missing points opponent", () => {
+    expect(resolvePointsSync({ pointsOpponentTag: null })).toBeNull();
+  });
+
+  it("rejects invalid points sync values", () => {
+    expect(resolvePointsSync({ pointsSyncNumber: 0 })).toBeNull();
+    expect(resolvePointsSync({ pointsSyncNumber: -1 })).toBeNull();
+    expect(resolvePointsSync({ pointsSyncNumber: Number.NaN })).toBeNull();
+  });
+
+  it("allows legacy rows without a war ID when the physical identity matches", () => {
+    expect(
+      resolvePointsSync({
+        pointsWarId: null,
+      }),
+    ).toBe(535);
+  });
+});
+
 describe("WarEventLogService sync-number lifecycle", () => {
   it("uses the canonical sync number for war_started payloads and tied-point outcome", async () => {
     const clanTag = "#1AAAA";
@@ -584,6 +650,113 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(expectedOutcome).not.toBe(
       deriveExpectedOutcome(clanTag, opponentTag, 100, 100, 534),
     );
+  });
+
+  it("rejects completed-war points rows during a new war start and allocates the next canonical sync", async () => {
+    const clanTag = "#1AAAA";
+    const oldOpponentTag = "#0PPX";
+    const newOpponentTag = "#2AAAA";
+    const currentWarStore = createCurrentWarStore({
+      clanTag,
+      warId: 5002,
+      syncNumber: null,
+      syncNum: null,
+      state: "preparation",
+      prepStartTime: newWarStartTime,
+      startTime: newWarStartTime,
+      opponentTag: newOpponentTag,
+      opponentName: "New Opponent",
+      clanName: "Rocky Road",
+    });
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      makeSubscriptionRow({
+        clanTag,
+        opponentTag: oldOpponentTag,
+        warId: 5001,
+        syncNumber: 534,
+        syncNum: 534,
+        pointsSyncNum: 534,
+        state: "notInWar",
+        startTime: sameWarStartTime,
+        prepStartTime: sameWarStartTime,
+        opponentName: "Old Opponent",
+        pointsWarId: "5001",
+        pointsWarStartTime: sameWarStartTime,
+        pointsOpponentTag: oldOpponentTag,
+        updatedAt: currentWarStore.state.updatedAt,
+      }),
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({ warId: 5002 });
+    prismaMock.currentWar.findUnique.mockImplementationOnce(async () =>
+      currentWarStore.snapshot(),
+    );
+    const service = makeService(
+      makeWarSnapshot({
+        state: "preparation",
+        startTime: newWarStartTime,
+        opponentTag: newOpponentTag,
+      }),
+      currentWarStore,
+    );
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points.fetchSnapshot = vi.fn().mockImplementation(
+      async (tag: string) => ({
+        balance: 100,
+        winnerBoxTags: tag === clanTag ? [newOpponentTag] : [],
+        winnerBoxText: "Marked as an FWA match",
+        activeFwa: true,
+        notFound: false,
+        fetchedAtMs: Date.now(),
+        effectiveSync: 535,
+      }),
+    );
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
+
+    await (service as any).processSubscription("guild-1", clanTag, {
+      previousSync: 534,
+      activeSync: null,
+      resolveActiveSyncNumber,
+    });
+
+    const allocationResolution = await resolveActiveSyncNumber.mock.results[0]?.value;
+
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: null,
+        sameWarPointsSyncNumber: null,
+      }),
+    );
+    expect(allocationResolution).toMatchObject({
+      source: "allocated_latest_plus_one",
+      syncNumber: 535,
+      usable: true,
+    });
+    expect((service as any).currentSyncs.upsertPointsSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        warId: "5002",
+        syncNum: 535,
+      }),
+    );
+    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          eventType: "war_started",
+          syncNumber: 535,
+        }),
+      }),
+    );
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5002,
+      syncNumber: 535,
+      state: "preparation",
+      opponentTag: newOpponentTag,
+    });
   });
 
   it("uses the canonical sync number for battle_day payloads", async () => {
