@@ -14,6 +14,7 @@ import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
 import {
   ActiveWarSyncResolutionService,
+  type ActiveWarSyncAssignmentResult,
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
   resolveActiveWarSyncNumber,
@@ -582,6 +583,7 @@ type SubscriptionRow = {
   guildId: string;
   clanTag: string;
   warId: number | null;
+  syncNumber: number | null;
   syncNum: number | null;
   channelId: string | null;
   notify: boolean;
@@ -608,6 +610,7 @@ type SubscriptionRow = {
   pointsConfirmedByClanMail: boolean | null;
   pointsNeedsValidation: boolean | null;
   pointsLastSuccessfulFetchAt: Date | null;
+  pointsSyncNum: number | null;
   pointsLastKnownSyncNumber: number | null;
   pointsLastKnownPoints: number | null;
   pointsLastKnownMatchType: string | null;
@@ -631,6 +634,26 @@ type PollTarget = {
 type PollSyncContext = {
   previousSync: number | null;
   activeSync: number | null;
+  resolveActiveSyncNumber: (input: ActiveWarSyncResolutionInput) => Promise<ActiveWarSyncAssignmentResult>;
+};
+
+type ActiveWarSyncResolutionInput = {
+  guildId: string;
+  clanTag: string;
+  warState: WarState;
+  warId: string | null;
+  warStartTime: Date | null;
+  opponentTag: string | null;
+  currentWarCanonicalSyncNumber: number | null;
+  currentWarLegacySyncNumber: number | null;
+  sameWarPointsSyncNumber: number | null;
+  matchType: string | null;
+  inferredMatchType: boolean | null;
+  allowAllocation?: boolean;
+  pollCycle?: {
+    activeSyncNumber: number | null;
+    recordActiveSyncNumber: (syncNumber: number) => void;
+  };
 };
 
 type ReconciliationRelease = () => void;
@@ -1880,9 +1903,43 @@ export class WarEventLogService {
   /** Purpose: derive the shared poll sync context without widening the global poll loop. */
   private async buildPollSyncContext(): Promise<PollSyncContext> {
     const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
+    let activeSync: number | null = null;
+    let pollCycle: ActiveWarSyncResolutionInput["pollCycle"] = {
+      activeSyncNumber: activeSync,
+      recordActiveSyncNumber: (syncNumber: number) => {
+        if (Number.isFinite(syncNumber) && syncNumber > 0) {
+          activeSync = Math.trunc(syncNumber);
+          if (pollCycle) pollCycle.activeSyncNumber = activeSync;
+        }
+      },
+    };
     return {
       previousSync,
-      activeSync: previousSync === null ? null : previousSync + 1,
+      get activeSync() {
+        return activeSync;
+      },
+      resolveActiveSyncNumber: async (input: ActiveWarSyncResolutionInput) => {
+        pollCycle.activeSyncNumber = activeSync;
+        const resolution = await this.syncResolution.resolveOrAllocateActiveSyncNumber({
+          guildId: input.guildId,
+          clanTag: input.clanTag,
+          identity: buildActiveWarSyncIdentity({
+            warState: input.warState,
+            warId: input.warId,
+            warStartTime: input.warStartTime,
+            opponentTag: input.opponentTag,
+          }),
+          currentWarSyncNumber: input.currentWarCanonicalSyncNumber,
+          currentWarLegacySyncNumber: input.currentWarLegacySyncNumber,
+          sameWarPointsSyncNumber: input.sameWarPointsSyncNumber,
+          matchType: input.matchType,
+          inferredMatchType: input.inferredMatchType,
+          allowAllocation: input.allowAllocation,
+          pollCycle,
+        });
+        activeSync = pollCycle.activeSyncNumber;
+        return resolution;
+      },
     };
   }
 
@@ -2163,6 +2220,7 @@ export class WarEventLogService {
       guildId: params.guildId,
       clanTag: normalizeTag(params.clanTag),
       warId: null,
+      syncNumber: null,
       syncNum: null,
       channelId: effectiveChannelId,
       notify: config?.embedEnabled ?? tracked?.notifyEnabled ?? false,
@@ -2190,6 +2248,7 @@ export class WarEventLogService {
       pointsConfirmedByClanMail: null,
       pointsNeedsValidation: null,
       pointsLastSuccessfulFetchAt: null,
+      pointsSyncNum: null,
       pointsLastKnownSyncNumber: null,
       pointsLastKnownPoints: null,
       pointsLastKnownMatchType: null,
@@ -3180,7 +3239,7 @@ export class WarEventLogService {
     const rows = await prisma.$queryRaw<SubscriptionRow[]>(
       Prisma.sql`
         SELECT
-          cw."guildId",cw."clanTag",cw."warId",cw."syncNum",
+          cw."guildId",cw."clanTag",cw."warId",cw."syncNumber",cw."syncNum",
           COALESCE(
             cnc."channelId",
             cw."channelId",
@@ -3200,6 +3259,7 @@ export class WarEventLogService {
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
           cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
+          cps."syncNum" AS "pointsSyncNum",
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
@@ -3637,7 +3697,7 @@ export class WarEventLogService {
       warState: currentState,
       warStartTime: nextWarStartTime,
       warEndTime: nextWarEndTime,
-      currentSyncNumber: syncContext.activeSync,
+      currentSyncNumber: syncContext.activeSync ?? syncContext.previousSync,
       lifecycle: lifecycleState,
       activeWarId:
         sub.warId !== null &&
@@ -3668,10 +3728,10 @@ export class WarEventLogService {
     }
     const fallbackSyncNumberForEvent =
       eventType === "war_ended"
-        ? syncContext.activeSync
+        ? syncContext.activeSync ?? syncContext.previousSync
         : currentState === "notInWar"
           ? syncContext.previousSync
-          : syncContext.activeSync;
+          : syncContext.activeSync ?? syncContext.previousSync;
     const frozenEndedWarContext =
       currentState === "notInWar"
         ? typeof this.history.resolveExactCanonicalWarEndedHistoryRow ===
@@ -3899,16 +3959,34 @@ export class WarEventLogService {
         : sub.warId !== null && sub.warId !== undefined
           ? String(Math.trunc(Number(sub.warId)))
           : null;
-    const syncNumberForEvent = await this.resolveNotifyEventSyncNumber({
-      guildId,
-      clanTag: sub.clanTag,
-      warId: resolvedWarIdText,
-      warStartTime: nextWarStartTime,
-      opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
-      currentState,
-      postedSyncNumber: null,
-      previousSyncNumber: syncContext.previousSync,
-    });
+    const syncNumberForEvent =
+      currentState === "notInWar"
+        ? await this.resolveNotifyEventSyncNumber({
+            guildId,
+            clanTag: sub.clanTag,
+            warId: resolvedWarIdText,
+            warStartTime: nextWarStartTime,
+            opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+            currentState,
+            postedSyncNumber: null,
+            previousSyncNumber: syncContext.previousSync,
+          })
+        : (
+            await syncContext.resolveActiveSyncNumber({
+              guildId,
+              clanTag: sub.clanTag,
+              warState: currentState,
+              warId: resolvedWarIdText,
+              warStartTime: nextWarStartTime,
+              opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+              currentWarCanonicalSyncNumber: toValidSyncNumber(sub.syncNumber ?? null),
+              currentWarLegacySyncNumber: toValidSyncNumber(sub.syncNum ?? null),
+              sameWarPointsSyncNumber: toValidSyncNumber(sub.pointsSyncNum ?? null),
+              matchType: nextMatchType,
+              inferredMatchType: nextInferredMatchType,
+              allowAllocation: true,
+            })
+          ).syncNumber;
     if (outcomeComputationInput) {
       nextOutcome = deriveExpectedOutcome(
         outcomeComputationInput.clanTag,

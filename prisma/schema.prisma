@@ -1549,6 +1549,7 @@ model CurrentWar {
   guildId           String
   clanTag           String
   warId             Int?
+  syncNumber        Int?
   syncNum           Int?
   channelId         String
   notify            Boolean       @default(true)
