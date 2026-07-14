@@ -258,7 +258,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     });
   });
 
-  it("reports identity_changed when the exact row is replaced before write", async () => {
+  it("reports revision_changed when the exact row is replaced before write", async () => {
     const service = makeService();
     const pollCycle = { activeSyncNumber: 888, recordActiveSyncNumber: vi.fn() };
     prismaMock.currentWar.findFirst
@@ -268,6 +268,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
         startTime: new Date("2026-03-18T09:00:00.000Z"),
         opponentTag: "#OPP123",
         state: "inWar",
+        updatedAt: new Date("2026-03-18T09:30:00.000Z"),
       })
       .mockResolvedValueOnce({
         syncNumber: null,
@@ -275,6 +276,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
         startTime: new Date("2026-03-18T09:00:00.000Z"),
         opponentTag: "#OPP123",
         state: "inWar",
+        updatedAt: new Date("2026-03-18T09:30:01.000Z"),
       });
     prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 0 });
 
@@ -296,13 +298,13 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       syncNumber: null,
       proposedSyncNumber: 888,
       source: "active_cycle_reuse",
-      persistence: "identity_changed",
+      persistence: "revision_changed",
       usable: false,
       shouldPersist: false,
     });
   });
 
-  it("reports conflict when the exact row already owns a different sync number", async () => {
+  it("reports revision_changed when the exact row already owns a different sync number", async () => {
     const service = makeService();
     const pollCycle = { activeSyncNumber: 889, recordActiveSyncNumber: vi.fn() };
     prismaMock.currentWar.findFirst.mockResolvedValueOnce({
@@ -311,6 +313,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       startTime: new Date("2026-03-19T09:00:00.000Z"),
       opponentTag: "#OPP123",
       state: "inWar",
+      updatedAt: new Date("2026-03-19T09:30:00.000Z"),
     });
     prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 0 });
 
@@ -332,7 +335,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       syncNumber: null,
       proposedSyncNumber: 889,
       source: "active_cycle_reuse",
-      persistence: "conflict",
+      persistence: "revision_changed",
       usable: false,
       shouldPersist: false,
     });
