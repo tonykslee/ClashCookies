@@ -73,6 +73,17 @@ type CurrentWarState = {
   opponentTag: string | null;
   opponentName: string | null;
   clanName: string | null;
+  matchType: string | null;
+  inferredMatchType: boolean | null;
+  fwaPoints: number | null;
+  opponentFwaPoints: number | null;
+  outcome: string | null;
+  warStartFwaPoints: number | null;
+  warEndFwaPoints: number | null;
+  clanStars: number | null;
+  opponentStars: number | null;
+  pendingEventType: string | null;
+  pendingEventTargetState: string | null;
   updatedAt: Date;
 };
 
@@ -92,6 +103,17 @@ function createCurrentWarState(
     opponentTag: "#0PPX",
     opponentName: "Old Opponent",
     clanName: "Rocky Road",
+    matchType: "BL",
+    inferredMatchType: false,
+    fwaPoints: 120,
+    opponentFwaPoints: 90,
+    outcome: "WIN",
+    warStartFwaPoints: 120,
+    warEndFwaPoints: 118,
+    clanStars: 24,
+    opponentStars: 21,
+    pendingEventType: null,
+    pendingEventTargetState: null,
     updatedAt: new Date("2026-03-20T09:30:00.000Z"),
     ...overrides,
   };
@@ -165,6 +187,46 @@ function createCurrentWarStore(overrides?: Partial<CurrentWarState>) {
     if (Object.prototype.hasOwnProperty.call(data, "clanName")) {
       state.clanName = (data.clanName as string | null | undefined) ?? null;
     }
+    if (Object.prototype.hasOwnProperty.call(data, "matchType")) {
+      state.matchType = (data.matchType as string | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "inferredMatchType")) {
+      state.inferredMatchType =
+        (data.inferredMatchType as boolean | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "fwaPoints")) {
+      state.fwaPoints = (data.fwaPoints as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "opponentFwaPoints")) {
+      state.opponentFwaPoints =
+        (data.opponentFwaPoints as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "outcome")) {
+      state.outcome = (data.outcome as string | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "warStartFwaPoints")) {
+      state.warStartFwaPoints =
+        (data.warStartFwaPoints as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "warEndFwaPoints")) {
+      state.warEndFwaPoints =
+        (data.warEndFwaPoints as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "clanStars")) {
+      state.clanStars = (data.clanStars as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "opponentStars")) {
+      state.opponentStars =
+        (data.opponentStars as number | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "pendingEventType")) {
+      state.pendingEventType =
+        (data.pendingEventType as string | null | undefined) ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, "pendingEventTargetState")) {
+      state.pendingEventTargetState =
+        (data.pendingEventTargetState as string | null | undefined) ?? null;
+    }
     if (Object.prototype.hasOwnProperty.call(data, "updatedAt")) {
       const nextUpdatedAt = (data.updatedAt as Date | null | undefined) ?? null;
       if (!(nextUpdatedAt instanceof Date) || !Number.isFinite(nextUpdatedAt.getTime())) {
@@ -218,6 +280,27 @@ function createCurrentWarStore(overrides?: Partial<CurrentWarState>) {
           if (state.state === where.state.not) return false;
         }
       } else if (where.state !== state.state) {
+        return false;
+      }
+    }
+    if (where?.matchType !== undefined) {
+      if (where.matchType === null) {
+        if (state.matchType !== null) return false;
+      } else if (where.matchType !== state.matchType) {
+        return false;
+      }
+    }
+    if (where?.pendingEventType !== undefined) {
+      if (where.pendingEventType === null) {
+        if (state.pendingEventType !== null) return false;
+      } else if (where.pendingEventType !== state.pendingEventType) {
+        return false;
+      }
+    }
+    if (where?.pendingEventTargetState !== undefined) {
+      if (where.pendingEventTargetState === null) {
+        if (state.pendingEventTargetState !== null) return false;
+      } else if (where.pendingEventTargetState !== state.pendingEventTargetState) {
         return false;
       }
     }
@@ -327,6 +410,8 @@ function makeSubscriptionRow(overrides?: Partial<Record<string, unknown>>) {
     warEndFwaPoints: null,
     clanStars: null,
     opponentStars: null,
+    pendingEventType: null,
+    pendingEventTargetState: null,
     updatedAt: new Date("2026-03-20T09:30:00.000Z"),
     state: "preparation",
     prepStartTime,
@@ -397,7 +482,7 @@ function makeService(snapshot: any, currentWarStore = createCurrentWarStore()) {
     }),
   };
   (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
-  (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+  (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(true);
   (service as any).reconcileWarEndedPointsDiscrepancy = vi.fn().mockResolvedValue(undefined);
   (service as any).fwaPolice = {
     enforceWarViolations: vi.fn().mockResolvedValue(undefined),
@@ -441,6 +526,7 @@ function makeResolveActiveSyncNumber(pointsBaseline = 534) {
 type CurrentWarUpdateManyKind =
   | "preliminary_rollover"
   | "allocator"
+  | "cleanup"
   | "finalization"
   | "other";
 
@@ -453,6 +539,12 @@ function classifyCurrentWarUpdateManyCall(args: { data?: any; where?: any }) {
     args?.data?.warEndFwaPoints !== undefined
   ) {
     return "finalization";
+  }
+  if (
+    args?.data?.pendingEventType === null &&
+    args?.data?.pendingEventTargetState === null
+  ) {
+    return "cleanup";
   }
   if (
     args?.where?.syncNumber === null &&
@@ -542,7 +634,7 @@ describe("exact same-war points identity validation", () => {
 });
 
 describe("WarEventLogService sync-number lifecycle", () => {
-  it("uses the canonical sync number for war_started payloads and tied-point outcome", async () => {
+  it("succeeds on the first-poll FWA war_started path and clears the pending marker", async () => {
     const clanTag = "#1AAAA";
     const opponentTag = "#2AAAA";
     const currentWarStore = createCurrentWarStore({
@@ -555,6 +647,15 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prepStartTime,
       startTime: prepStartTime,
       opponentName: "Old Opponent",
+      matchType: "BL",
+      inferredMatchType: false,
+      fwaPoints: 88,
+      opponentFwaPoints: 77,
+      outcome: "WIN",
+      warStartFwaPoints: 88,
+      warEndFwaPoints: 92,
+      clanStars: 26,
+      opponentStars: 22,
     });
     prismaMock.$queryRaw.mockResolvedValueOnce([
       makeSubscriptionRow({
@@ -618,8 +719,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(2);
-    const [rolloverCall, assignmentCall] =
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(4);
+    const [rolloverCall, assignmentCall, finalizationCall, cleanupCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -635,30 +736,46 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(assignmentCall.data.updatedAt.getTime()).toBeGreaterThan(
       rolloverCall.data.updatedAt.getTime(),
     );
+    expect(finalizationCall.data.updatedAt.getTime()).toBeGreaterThan(
+      assignmentCall.data.updatedAt.getTime(),
+    );
+    expect(getCurrentWarUpdateManyCallsByKind("cleanup")).toHaveLength(1);
+    expect(cleanupCall.data).toMatchObject({
+      pendingEventType: null,
+      pendingEventTargetState: null,
+    });
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
-    expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
+    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledTimes(1);
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: null,
-      state: "notInWar",
+      syncNumber: 535,
+      state: "preparation",
       opponentTag,
+      pendingEventType: null,
+      pendingEventTargetState: null,
+      matchType: "FWA",
     });
+    expect(currentWarStore.state.matchType).toBe("FWA");
+    expect(currentWarStore.state.fwaPoints).toBe(100);
+    expect(currentWarStore.state.opponentFwaPoints).toBe(100);
+    expect(currentWarStore.state.clanStars).toBe(0);
+    expect(currentWarStore.state.opponentStars).toBe(0);
   });
 
-  it("rejects completed-war points rows during a new war start and allocates the next canonical sync", async () => {
+  it("leaves a retryable pending marker when canonical assignment is unavailable", async () => {
     const clanTag = "#1AAAA";
     const oldOpponentTag = "#0PPX";
     const newOpponentTag = "#2AAAA";
     const currentWarStore = createCurrentWarStore({
       clanTag,
-      warId: 5002,
-      syncNumber: null,
-      syncNum: null,
-      state: "preparation",
-      prepStartTime: newWarStartTime,
-      startTime: newWarStartTime,
-      opponentTag: newOpponentTag,
-      opponentName: "New Opponent",
+      warId: 5001,
+      syncNumber: 534,
+      syncNum: 534,
+      state: "notInWar",
+      prepStartTime,
+      startTime: prepStartTime,
+      opponentTag: oldOpponentTag,
+      opponentName: "Old Opponent",
       clanName: "Rocky Road",
     });
     prismaMock.$queryRaw.mockResolvedValueOnce([
@@ -669,7 +786,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
         syncNumber: 534,
         syncNum: 534,
         pointsSyncNum: 534,
-        state: "notInWar",
+        state: "unknown",
         startTime: sameWarStartTime,
         prepStartTime: sameWarStartTime,
         opponentName: "Old Opponent",
@@ -708,7 +825,20 @@ describe("WarEventLogService sync-number lifecycle", () => {
         effectiveSync: 535,
       }),
     );
-    const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
+    const resolveActiveSyncNumber = vi.fn().mockResolvedValue({
+      syncNumber: null,
+      proposedSyncNumber: null,
+      usable: false,
+      source: "unavailable",
+      shouldPersist: false,
+      persistence: "conflict",
+      validation: null,
+      latestPersistedSyncNumber: null,
+      activeCycleSyncNumber: null,
+      sameWarPointsSyncNumber: null,
+      persistedSyncNumber: null,
+      persistedRevisionAt: null,
+    });
 
     await (service as any).processSubscription("guild-1", clanTag, {
       previousSync: 534,
@@ -716,21 +846,43 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    const allocationResolution = await resolveActiveSyncNumber.mock.results[0]?.value;
-
-    expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
-    expect(allocationResolution).toBeUndefined();
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedCurrentWarRevisionAt: expect.any(Date),
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: null,
+        sameWarPointsSyncNumber: null,
+      }),
+    );
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
+    expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
+      1,
+    );
+    expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
+    expect(getCurrentWarUpdateManyCallsByKind("cleanup")).toHaveLength(0);
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
       syncNumber: null,
+      syncNum: null,
       state: "preparation",
       opponentTag: newOpponentTag,
+      pendingEventType: "war_started",
+      pendingEventTargetState: "preparation",
+      matchType: null,
+      inferredMatchType: true,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      outcome: null,
+      warStartFwaPoints: null,
+      warEndFwaPoints: null,
+      clanStars: null,
+      opponentStars: null,
     });
   });
 
-  it("uses the canonical sync number for battle_day payloads", async () => {
+  it("uses the canonical sync number for battle_day payloads and clears the pending marker", async () => {
     const clanTag = "#1AAAA";
     const opponentTag = "#2AAAA";
     const currentWarStore = createCurrentWarStore({
@@ -799,8 +951,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(3);
-    const [rolloverCall, assignmentCall, finalizationCall] =
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(4);
+    const [rolloverCall, assignmentCall, finalizationCall, cleanupCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -819,6 +971,10 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(finalizationCall.data.updatedAt.getTime()).toBeGreaterThan(
       assignmentCall.data.updatedAt.getTime(),
     );
+    expect(cleanupCall.data).toMatchObject({
+      pendingEventType: null,
+      pendingEventTargetState: null,
+    });
     expect((service as any).resolveNotifyEventSyncNumber).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -833,6 +989,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       syncNumber: 535,
       state: "inWar",
       opponentTag,
+      pendingEventType: null,
+      pendingEventTargetState: null,
     });
   });
 

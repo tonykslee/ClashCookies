@@ -601,6 +601,8 @@ type SubscriptionRow = {
   warEndFwaPoints: number | null;
   clanStars: number | null;
   opponentStars: number | null;
+  pendingEventType: string | null;
+  pendingEventTargetState: string | null;
   state: string | null;
   prepStartTime: Date | null;
   startTime: Date | null;
@@ -621,6 +623,20 @@ type SubscriptionRow = {
   pointsOpponentTag: string | null;
   pointsWarStartTime: Date | null;
 };
+
+type PendingCurrentWarEventType = Extract<EventType, "war_started" | "battle_day">;
+
+function isPendingCurrentWarEventType(
+  input: string | null | undefined,
+): input is PendingCurrentWarEventType {
+  return input === "war_started" || input === "battle_day";
+}
+
+function pendingCurrentWarTargetStateForEvent(
+  eventType: PendingCurrentWarEventType,
+): WarState {
+  return eventType === "war_started" ? "preparation" : "inWar";
+}
 
 type PollTarget = {
   guildId: string;
@@ -2357,6 +2373,8 @@ export class WarEventLogService {
       warEndFwaPoints: null,
       clanStars: null,
       opponentStars: null,
+      pendingEventType: null,
+      pendingEventTargetState: null,
       updatedAt: new Date(),
       state: "notInWar",
       prepStartTime: null,
@@ -3375,7 +3393,7 @@ export class WarEventLogService {
           COALESCE(cnc."roleId", cw."notifyRole", tc."notifyRole") AS "notifyRole",
           cw."inferredMatchType",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
-          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."clanStars",cw."opponentStars",cw."pendingEventType",cw."pendingEventTargetState",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
           tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
@@ -3573,6 +3591,95 @@ export class WarEventLogService {
     return this.allocateNextWarId();
   }
 
+  /** Purpose: validate whether a persisted pending marker still belongs to the observed active war. */
+  private resolveCurrentWarPendingEvent(input: {
+    sub: SubscriptionRow;
+    currentState: WarState;
+    warIdentityChanged: boolean;
+    nextWarStartTime: Date | null;
+    nextOpponentTag: string | null;
+  }):
+    | { kind: "none" }
+    | {
+        kind: "valid";
+        eventType: PendingCurrentWarEventType;
+        targetState: WarState;
+      }
+    | {
+        kind: "abandoned";
+        reason: "identity_changed";
+        eventType: PendingCurrentWarEventType;
+        targetState: WarState;
+      }
+    | {
+        kind: "malformed";
+        reason: "invalid_marker" | "state_mismatch" | "identity_mismatch";
+      } {
+    const pendingEventType = String(input.sub.pendingEventType ?? "").trim();
+    const pendingTargetState = String(
+      input.sub.pendingEventTargetState ?? "",
+    ).trim();
+    if (!pendingEventType && !pendingTargetState) {
+      return { kind: "none" };
+    }
+    if (!isPendingCurrentWarEventType(pendingEventType)) {
+      return { kind: "malformed", reason: "invalid_marker" };
+    }
+    if (
+      pendingTargetState !== "preparation" &&
+      pendingTargetState !== "inWar"
+    ) {
+      return { kind: "malformed", reason: "invalid_marker" };
+    }
+    const expectedTargetState =
+      pendingCurrentWarTargetStateForEvent(pendingEventType);
+    if (expectedTargetState !== pendingTargetState) {
+      return { kind: "malformed", reason: "invalid_marker" };
+    }
+    if (pendingTargetState !== input.currentState) {
+      return input.warIdentityChanged
+        ? {
+            kind: "abandoned",
+            reason: "identity_changed",
+            eventType: pendingEventType,
+            targetState: pendingTargetState,
+          }
+        : { kind: "malformed", reason: "state_mismatch" };
+    }
+    const persistedStartTime = input.sub.startTime ?? null;
+    if (
+      persistedStartTime &&
+      input.nextWarStartTime &&
+      persistedStartTime.getTime() !== input.nextWarStartTime.getTime()
+    ) {
+      return input.warIdentityChanged
+        ? {
+            kind: "abandoned",
+            reason: "identity_changed",
+            eventType: pendingEventType,
+            targetState: pendingTargetState,
+          }
+        : { kind: "malformed", reason: "identity_mismatch" };
+    }
+    const persistedOpponentTag = normalizeTag(input.sub.opponentTag ?? null);
+    const observedOpponentTag = normalizeTag(input.nextOpponentTag ?? null);
+    if (persistedOpponentTag && observedOpponentTag && persistedOpponentTag !== observedOpponentTag) {
+      return input.warIdentityChanged
+        ? {
+            kind: "abandoned",
+            reason: "identity_changed",
+            eventType: pendingEventType,
+            targetState: pendingTargetState,
+          }
+        : { kind: "malformed", reason: "identity_mismatch" };
+    }
+    return {
+      kind: "valid",
+      eventType: pendingEventType,
+      targetState: pendingTargetState as WarState,
+    };
+  }
+
   private async processSubscription(
     guildId: string,
     clanTag: string,
@@ -3601,7 +3708,7 @@ export class WarEventLogService {
           COALESCE(cnc."roleId", cw."notifyRole", tc."notifyRole") AS "notifyRole",
           cw."inferredMatchType",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
-          cw."clanStars",cw."opponentStars",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."clanStars",cw."opponentStars",cw."pendingEventType",cw."pendingEventTargetState",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
           tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
@@ -3709,8 +3816,32 @@ export class WarEventLogService {
       );
     }
 
-    const eventTypeRaw = shouldEmit(prevState, candidateState);
-    let eventType = eventTypeRaw;
+    const pendingEventResolution = this.resolveCurrentWarPendingEvent({
+      sub,
+      currentState: candidateState,
+      warIdentityChanged,
+      nextWarStartTime,
+      nextOpponentTag,
+    });
+    if (pendingEventResolution.kind === "valid") {
+      console.info(
+        `[war-events] event=current_war_pending_event result=retrying guild=${sub.guildId} clan=${sub.clanTag} pending_event=${pendingEventResolution.eventType} target_state=${pendingEventResolution.targetState} war_id=${sub.warId ?? "none"} war_start=${sub.startTime?.toISOString() ?? "none"} opponent=${sub.opponentTag ? `#${normalizeTag(sub.opponentTag) ?? "unknown"}` : "none"} revision=${sub.updatedAt.toISOString()}`,
+      );
+    } else if (pendingEventResolution.kind === "abandoned") {
+      console.warn(
+        `[war-events] event=current_war_pending_event result=abandoned reason=${pendingEventResolution.reason} guild=${sub.guildId} clan=${sub.clanTag} pending_event=${pendingEventResolution.eventType} target_state=${pendingEventResolution.targetState} persisted_war=${sub.warId ?? "none"} persisted_start=${sub.startTime?.toISOString() ?? "none"} persisted_opponent=${sub.opponentTag ? `#${normalizeTag(sub.opponentTag) ?? "unknown"}` : "none"} observed_state=${candidateState} observed_start=${nextWarStartTime?.toISOString() ?? "none"} observed_opponent=${nextOpponentTag || "none"} revision=${sub.updatedAt.toISOString()}`,
+      );
+    } else if (pendingEventResolution.kind === "malformed") {
+      console.warn(
+        `[war-events] event=current_war_pending_event result=abandoned reason=${pendingEventResolution.reason} guild=${sub.guildId} clan=${sub.clanTag} persisted_war=${sub.warId ?? "none"} persisted_start=${sub.startTime?.toISOString() ?? "none"} persisted_opponent=${sub.opponentTag ? `#${normalizeTag(sub.opponentTag) ?? "unknown"}` : "none"} observed_state=${candidateState} observed_start=${nextWarStartTime?.toISOString() ?? "none"} observed_opponent=${nextOpponentTag || "none"} revision=${sub.updatedAt.toISOString()}`,
+      );
+      if (!warIdentityChanged) {
+        return false;
+      }
+    }
+    let eventType = pendingEventResolution.kind === "valid"
+      ? pendingEventResolution.eventType
+      : shouldEmit(prevState, candidateState);
     let eventDerivedFromIdentityShift = false;
     if (!eventType && warIdentityChanged) {
       if (candidateState === "preparation") {
@@ -3737,7 +3868,11 @@ export class WarEventLogService {
         `[war-events] war_ended suppressed guild=${sub.guildId} clan=${sub.clanTag} reason=${warEndedGuard.suppressReason} prev=${prevState} current=${candidateState} knownEnd=${nextWarEndTime?.toISOString() ?? "unknown"} maintenanceSuspected=${outageState.suspected} failureStreak=${outageState.failureStreak}${outageState.lastFailureStatusCode ? ` status=${outageState.lastFailureStatusCode}` : ""}`,
       );
     }
-    if (sub.state === "notInWar" && (await this.maybeRecoverEndedWarArchive({ sub }))) {
+    if (
+      sub.state === "notInWar" &&
+      pendingEventResolution.kind !== "valid" &&
+      (await this.maybeRecoverEndedWarArchive({ sub }))
+    ) {
       return false;
     }
     let preserveExistingWarId = false;
@@ -3890,12 +4025,17 @@ export class WarEventLogService {
       nextOpponentStars = sub.opponentStars;
     };
 
-    const currentMatchTypeForResolution = effectiveWarIdentityChanged
+    const pendingEventActive = pendingEventResolution.kind === "valid";
+    const currentMatchTypeForResolution = pendingEventActive
       ? null
-      : sub.matchType;
-    const currentInferredMatchTypeForResolution = effectiveWarIdentityChanged
+      : effectiveWarIdentityChanged
+        ? null
+        : sub.matchType;
+    const currentInferredMatchTypeForResolution = pendingEventActive
       ? true
-      : sub.inferredMatchType;
+      : effectiveWarIdentityChanged
+        ? true
+        : sub.inferredMatchType;
     const currentWarResolution = resolveCurrentWarMatchTypeSignal({
       matchType: currentMatchTypeForResolution,
       inferredMatchType: currentInferredMatchTypeForResolution,
@@ -4112,6 +4252,8 @@ export class WarEventLogService {
           state: true,
           startTime: true,
           opponentTag: true,
+          pendingEventType: true,
+          pendingEventTargetState: true,
           updatedAt: true,
         },
       });
@@ -4278,18 +4420,9 @@ export class WarEventLogService {
       effectiveWarIdentityChanged && currentState !== "notInWar";
     let currentWarCanonicalSyncNumber = toValidSyncNumber(sub.syncNumber ?? null);
     let currentWarLegacySyncNumber = toValidSyncNumber(sub.syncNum ?? null);
-    const currentWarPendingIdentity = {
-      warId: currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
-      state: isActivePhysicalRollover ? prevState : currentState,
-      prepStartTime: nextPrepStartTime,
-      startTime: nextWarStartTime,
-      endTime: nextWarEndTime,
-      opponentTag: nextOpponentTag || sub.opponentTag,
-      opponentName: nextOpponentName || sub.opponentName,
-      clanName: nextClanName,
-    };
-    const currentWarFinalizationIdentity = {
-      warId: currentWarPendingIdentity.warId ?? null,
+    const currentWarPhysicalIdentity = {
+      warId:
+        currentState === "notInWar" ? (sub.warId ?? null) : resolvedWarId,
       state: currentState,
       prepStartTime: nextPrepStartTime,
       startTime: nextWarStartTime,
@@ -4298,12 +4431,37 @@ export class WarEventLogService {
       opponentName: nextOpponentName || sub.opponentName,
       clanName: nextClanName,
     };
+    const currentWarPendingIdentity =
+      currentState === "notInWar"
+        ? null
+        : {
+            ...currentWarPhysicalIdentity,
+            pendingEventType:
+              currentState === "preparation"
+                ? "war_started"
+                : currentState === "inWar"
+                  ? "battle_day"
+                  : null,
+            pendingEventTargetState: currentState,
+            syncNumber: null,
+            syncNum: null,
+            fwaPoints: null,
+            opponentFwaPoints: null,
+            outcome: null,
+            matchType: null,
+            inferredMatchType: true,
+            warStartFwaPoints: null,
+            warEndFwaPoints: null,
+            clanStars: null,
+            opponentStars: null,
+          };
+    const currentWarFinalizationIdentity = currentWarPhysicalIdentity;
     const rolloverRevisionAt = nextCurrentWarRevision(ownedCurrentWarRevisionAt);
     const intendedNextIdentity = {
-      warId: currentWarPendingIdentity.warId ?? null,
-      state: currentWarPendingIdentity.state,
-      startTime: currentWarPendingIdentity.startTime ?? null,
-      opponentTag: normalizeTag(currentWarPendingIdentity.opponentTag ?? null),
+      warId: currentWarPhysicalIdentity.warId ?? null,
+      state: currentWarPhysicalIdentity.state,
+      startTime: currentWarPhysicalIdentity.startTime ?? null,
+      opponentTag: normalizeTag(currentWarPhysicalIdentity.opponentTag ?? null),
     };
     if (isActivePhysicalRollover) {
       const currentWarBeforeRollover = await readCurrentWarSnapshot();
@@ -4316,7 +4474,10 @@ export class WarEventLogService {
           originalIdentity: originalSubscriptionIdentity,
           intendedIdentity: intendedNextIdentity,
         });
-      if (currentWarBeforeRollover.updatedAt.getTime() !== ownedCurrentWarRevisionAt.getTime()) {
+      if (
+        currentWarBeforeRollover.updatedAt.getTime() !==
+        ownedCurrentWarRevisionAt.getTime()
+      ) {
         console.warn(
           `[war-events] event=current_war_rollover result=skipped reason=stale_before_rollover guild=${sub.guildId} clan=${sub.clanTag} original_war=${originalSubscriptionIdentity.warId ?? "none"} original_state=${originalSubscriptionIdentity.state ?? "none"} original_start=${originalSubscriptionIdentity.startTime?.toISOString() ?? "none"} original_opponent=${originalSubscriptionIdentity.opponentTag ? `#${originalSubscriptionIdentity.opponentTag}` : "none"} original_sync=${originalSubscriptionIdentity.syncNumber ?? "none"} observed_war=${currentWarBeforeRollover.warId ?? "none"} observed_state=${currentWarBeforeRollover.state ?? "none"} observed_start=${currentWarBeforeRollover.startTime?.toISOString() ?? "none"} observed_opponent=${currentWarBeforeRollover.opponentTag ? `#${normalizeTag(currentWarBeforeRollover.opponentTag) ?? "unknown"}` : "none"} observed_sync=${currentWarBeforeRollover.syncNumber ?? "none"} intended_war=${intendedNextIdentity.warId ?? "none"} intended_state=${intendedNextIdentity.state ?? "none"} intended_start=${intendedNextIdentity.startTime?.toISOString() ?? "none"} intended_opponent=${intendedNextIdentity.opponentTag ? `#${intendedNextIdentity.opponentTag}` : "none"}`,
         );
@@ -4335,10 +4496,8 @@ export class WarEventLogService {
             syncNumber: currentWarBeforeRollover.syncNumber,
           },
           data: {
-            ...currentWarPendingIdentity,
+            ...currentWarPendingIdentity!,
             updatedAt: rolloverRevisionAt,
-            syncNumber: null,
-            syncNum: null,
           },
         });
         if (rolloverAttempt.count > 1) {
@@ -4357,6 +4516,11 @@ export class WarEventLogService {
         ownedCurrentWarRevisionAt = rolloverRevisionAt;
         currentWarCanonicalSyncNumber = null;
         currentWarLegacySyncNumber = null;
+        if (currentWarPendingIdentity) {
+          console.info(
+            `[war-events] event=current_war_pending_event result=created guild=${sub.guildId} clan=${sub.clanTag} pending_event=${currentWarPendingIdentity.pendingEventType} target_state=${currentWarPendingIdentity.pendingEventTargetState} war_id=${currentWarPendingIdentity.warId ?? "none"} war_start=${currentWarPendingIdentity.startTime?.toISOString() ?? "none"} opponent=${currentWarPendingIdentity.opponentTag ? `#${normalizeTag(currentWarPendingIdentity.opponentTag) ?? "unknown"}` : "none"} revision=${rolloverRevisionAt.toISOString()}`,
+          );
+        }
       } else if (
         currentWarBeforeRolloverClassification === "intended_next_sync_null" ||
         currentWarBeforeRolloverClassification === "intended_next_sync_assigned"
@@ -4672,14 +4836,60 @@ export class WarEventLogService {
           );
         });
     }
+    let dispatchSucceeded = false;
     if (detectedEventPayload) {
-      await this.dispatchDetectedEvent({
+      dispatchSucceeded = await this.dispatchDetectedEvent({
         sub,
         payload: detectedEventPayload,
         resolvedWarId,
         sendBattleDaySwapReminders:
           options?.sendBattleDaySwapReminders === true,
       });
+    }
+    const pendingEventCleanupRequired =
+      dispatchSucceeded &&
+      (isActivePhysicalRollover || pendingEventResolution.kind === "valid");
+    if (pendingEventCleanupRequired && currentWarPendingIdentity) {
+      const cleanupRevisionAt = nextCurrentWarRevision(
+        ownedCurrentWarRevisionAt,
+      );
+      const cleanupAttempt = await prisma.currentWar.updateMany({
+        where: {
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          updatedAt: ownedCurrentWarRevisionAt,
+          warId: currentWarFinalizationIdentity.warId,
+          state: currentWarFinalizationIdentity.state,
+          startTime: currentWarFinalizationIdentity.startTime,
+          opponentTag: normalizeTag(currentWarFinalizationIdentity.opponentTag ?? null),
+          syncNumber: nextCanonicalSyncNumber,
+          pendingEventType: currentWarPendingIdentity.pendingEventType,
+          pendingEventTargetState:
+            currentWarPendingIdentity.pendingEventTargetState,
+        },
+        data: {
+          pendingEventType: null,
+          pendingEventTargetState: null,
+          updatedAt: cleanupRevisionAt,
+        },
+      });
+      if (cleanupAttempt.count === 1) {
+        console.info(
+          `[war-events] event=current_war_pending_event result=cleared guild=${sub.guildId} clan=${sub.clanTag} pending_event=${currentWarPendingIdentity.pendingEventType} target_state=${currentWarPendingIdentity.pendingEventTargetState} war_id=${currentWarFinalizationIdentity.warId ?? "none"} state=${currentWarFinalizationIdentity.state} start=${currentWarFinalizationIdentity.startTime?.toISOString() ?? "none"} opponent=${currentWarFinalizationIdentity.opponentTag ? `#${normalizeTag(currentWarFinalizationIdentity.opponentTag) ?? "unknown"}` : "none"} sync=${nextCanonicalSyncNumber ?? "none"} revision=${cleanupRevisionAt.toISOString()}`,
+        );
+        ownedCurrentWarRevisionAt = cleanupRevisionAt;
+      } else {
+        const currentWarAfterCleanup = await readCurrentWarSnapshot();
+        const cleanupReason =
+          !currentWarAfterCleanup ||
+          currentWarAfterCleanup.updatedAt.getTime() !==
+            ownedCurrentWarRevisionAt.getTime()
+            ? "revision_not_owned"
+            : "identity_changed";
+        console.warn(
+          `[war-events] event=current_war_pending_event result=cleanup_skipped reason=${cleanupReason} guild=${sub.guildId} clan=${sub.clanTag} pending_event=${currentWarPendingIdentity.pendingEventType} target_state=${currentWarPendingIdentity.pendingEventTargetState} observed_war=${currentWarAfterCleanup?.warId ?? "none"} observed_state=${currentWarAfterCleanup?.state ?? "none"} observed_start=${currentWarAfterCleanup?.startTime?.toISOString() ?? "none"} observed_opponent=${currentWarAfterCleanup?.opponentTag ? `#${normalizeTag(currentWarAfterCleanup.opponentTag) ?? "unknown"}` : "none"} observed_sync=${currentWarAfterCleanup?.syncNumber ?? "none"} observed_revision=${currentWarAfterCleanup?.updatedAt?.toISOString() ?? "none"} expected_war=${currentWarFinalizationIdentity.warId ?? "none"} expected_state=${currentWarFinalizationIdentity.state ?? "none"} expected_start=${currentWarFinalizationIdentity.startTime?.toISOString() ?? "none"} expected_opponent=${currentWarFinalizationIdentity.opponentTag ? `#${normalizeTag(currentWarFinalizationIdentity.opponentTag) ?? "unknown"}` : "none"} expected_sync=${nextCanonicalSyncNumber ?? "none"} revision=${ownedCurrentWarRevisionAt.toISOString()}`,
+        );
+      }
     }
     if (currentState === "notInWar" && eventType !== "war_ended") {
       await this.reconcileWarEndedPointsDiscrepancy({
@@ -4704,6 +4914,12 @@ export class WarEventLogService {
     sub: SubscriptionRow;
   }): Promise<boolean> {
     if (params.sub.state !== "notInWar") return false;
+    if (
+      String(params.sub.pendingEventType ?? "").trim() ||
+      String(params.sub.pendingEventTargetState ?? "").trim()
+    ) {
+      return false;
+    }
     if (!params.sub.startTime) return false;
 
     const oldAttackRow = await prisma.warAttacks.findFirst({
@@ -4915,9 +5131,10 @@ export class WarEventLogService {
     payload: EventEmitPayload;
     resolvedWarId: number | null;
     sendBattleDaySwapReminders?: boolean;
-  }): Promise<void> {
+  }): Promise<boolean> {
     let payloadForDelivery = params.payload;
     let resolvedWarIdForDelivery = params.resolvedWarId;
+
     if (payloadForDelivery.eventType === "battle_day") {
       await fireBattleDayTransitionWar24hRemindersForClan({
         client: this.client,
@@ -4925,7 +5142,8 @@ export class WarEventLogService {
         clanTag: params.sub.clanTag,
         clanName: params.sub.clanName ?? payloadForDelivery.clanName,
         warId: resolvedWarIdForDelivery,
-        warStartTime: payloadForDelivery.warStartTime ?? params.sub.startTime ?? null,
+        warStartTime:
+          payloadForDelivery.warStartTime ?? params.sub.startTime ?? null,
         warEndTime: payloadForDelivery.warEndTime ?? params.sub.endTime ?? null,
         nowMs: Date.now(),
       }).catch((err) => {
@@ -4934,6 +5152,7 @@ export class WarEventLogService {
         );
       });
     }
+
     if (params.payload.eventType === "war_ended") {
       await this.history
         .persistWarEndHistory({
@@ -4949,8 +5168,7 @@ export class WarEventLogService {
         params.payload,
       );
       payloadForDelivery = canonicalized.payload;
-      resolvedWarIdForDelivery =
-        canonicalized.warId ?? resolvedWarIdForDelivery;
+      resolvedWarIdForDelivery = canonicalized.warId ?? resolvedWarIdForDelivery;
       const canonicalFinalResult = await this.history.getWarEndResultSnapshot({
         clanTag: payloadForDelivery.clanTag,
         opponentTag: payloadForDelivery.opponentTag,
@@ -4974,22 +5192,22 @@ export class WarEventLogService {
         warEndFwaPoints: canonicalWarEndFwaPoints,
         testFinalResultOverride: canonicalFinalResult,
       };
-    if (
-      payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints
-    ) {
-      await this.history
-        .persistWarEndHistory({
+      if (
+        payloadForDelivery.warEndFwaPoints !== params.payload.warEndFwaPoints
+      ) {
+        await this.history
+          .persistWarEndHistory({
             ...payloadForDelivery,
             guildId: params.sub.guildId,
           })
           .catch((err) => {
             console.error(
               `[war-events] persist canonical war history failed guild=${params.sub.guildId} clan=${params.sub.clanTag} error=${formatError(err)}`,
-          );
-        });
+            );
+          });
       }
-
     }
+
     if (
       params.sendBattleDaySwapReminders === true &&
       payloadForDelivery.eventType === "battle_day"
@@ -5001,14 +5219,16 @@ export class WarEventLogService {
         payload: battleDayPayload,
       });
     }
-    if (!params.sub.notify || !params.sub.channelId) return;
+
+    if (!params.sub.notify) return true;
+    if (!params.sub.channelId) return false;
     const reserved = await this.reserveEventDelivery({
       sub: params.sub,
       payload: payloadForDelivery,
       resolvedWarId: resolvedWarIdForDelivery,
     });
     if (!reserved.allowed) {
-      return;
+      return false;
     }
     if (reserved.existingMessage) {
       console.log(
@@ -5023,12 +5243,12 @@ export class WarEventLogService {
           },
         );
       }
-      return;
+      return true;
     }
     console.log(
       `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${payloadForDelivery.clanTag} event=${payloadForDelivery.eventType}`,
     );
-    await this.emitEvent(
+    return this.emitEvent(
       params.sub.channelId,
       payloadForDelivery,
       resolvedWarIdForDelivery,
@@ -5579,6 +5799,23 @@ export class WarEventLogService {
       return { allowed: false, existingMessage: null, warId: null };
     }
     const warIdText = String(Math.trunc(Number(warId)));
+    const existingMessage = await this.postedMessages.findExistingMessage({
+      guildId: params.sub.guildId,
+      clanTag: params.payload.clanTag,
+      warId: warIdText,
+      type: "notify",
+      event: eventType,
+    });
+    if (existingMessage) {
+      return {
+        allowed: true,
+        existingMessage: {
+          channelId: existingMessage.channelId,
+          messageId: existingMessage.messageId,
+        },
+        warId: warIdText,
+      };
+    }
     const allowed = await this.tryCreateEventGuard(
       warIdText,
       params.payload.clanTag,
@@ -5587,21 +5824,9 @@ export class WarEventLogService {
     if (!allowed) {
       return { allowed: false, existingMessage: null, warId: warIdText };
     }
-    const existingMessage = await this.postedMessages.findExistingMessage({
-      guildId: params.sub.guildId,
-      clanTag: params.payload.clanTag,
-      warId: warIdText,
-      type: "notify",
-      event: eventType,
-    });
     return {
       allowed: true,
-      existingMessage: existingMessage
-        ? {
-            channelId: existingMessage.channelId,
-            messageId: existingMessage.messageId,
-          }
-        : null,
+      existingMessage: null,
       warId: warIdText,
     };
   }
@@ -5698,7 +5923,7 @@ export class WarEventLogService {
     },
     resolvedWarIdOverride?: number | null,
     sub?: SubscriptionRow,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const channel = await this.client.channels
       .fetch(channelId)
       .catch(() => null);
@@ -5706,13 +5931,13 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_found`,
       );
-      return;
+      return false;
     }
     if (!channel.isTextBased()) {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_text_based`,
       );
-      return;
+      return false;
     }
     if (
       channel.type !== ChannelType.GuildText &&
@@ -5723,7 +5948,7 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=unsupported_channel_type type=${channel.type}`,
       );
-      return;
+      return false;
     }
 
     const guildId = (channel as { guildId?: string }).guildId ?? null;
@@ -5993,6 +6218,7 @@ export class WarEventLogService {
         `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`,
       );
     }
+    return Boolean(sent);
   }
   async refreshBattleDayPosts(): Promise<void> {
     const storedPosts = await prisma.clanPostedMessage.findMany({
