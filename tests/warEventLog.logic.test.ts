@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ChannelType } from "discord.js";
 import {
   advanceCocWarOutageStateForTest,
   applyWarEndedMaintenanceGuardForTest,
@@ -76,6 +77,12 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
   },
+  clanPostedMessage: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
   clanPointsSync: {
     findFirst: vi.fn(),
   },
@@ -86,7 +93,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   warEvent: {
+    findFirst: vi.fn(),
     create: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -122,10 +131,16 @@ beforeEach(() => {
   prismaMock.warPlanViolation.deleteMany.mockResolvedValue({ count: 0 });
   prismaMock.clanNotifyConfig.findMany.mockResolvedValue([]);
   prismaMock.clanNotifyConfig.findUnique.mockResolvedValue(null);
+  prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
+  prismaMock.clanPostedMessage.findMany.mockResolvedValue([]);
+  prismaMock.clanPostedMessage.create.mockResolvedValue({});
+  prismaMock.clanPostedMessage.update.mockResolvedValue({});
   prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
   prismaMock.roster.findMany.mockResolvedValue([]);
   prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+  prismaMock.warEvent.findFirst.mockResolvedValue(null);
   prismaMock.warEvent.create.mockResolvedValue({});
+  prismaMock.warEvent.deleteMany.mockResolvedValue({ count: 0 });
   vi.spyOn(cwlStateService, "getCurrentRoundForClan").mockResolvedValue(null);
   vi.spyOn(cwlStateService, "getCurrentPreparationSnapshotForClan").mockResolvedValue(null);
 });
@@ -162,6 +177,98 @@ function makeReminderClient(params: {
       }),
     },
   } as any;
+}
+
+function makeWarEventSubscription(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    guildId: testGuildId,
+    clanTag: "#C0CU2Q82",
+    channelId: notifyChannelId,
+    notify: true,
+    pingRole: false,
+    embedEnabled: true,
+    notifyRole: "notify-role-42",
+    warId: null,
+    syncNum: null,
+    inferredMatchType: true,
+    fwaPoints: null,
+    opponentFwaPoints: null,
+    outcome: null,
+    matchType: "FWA",
+    warStartFwaPoints: null,
+    warEndFwaPoints: null,
+    clanStars: null,
+    opponentStars: null,
+    state: "notInWar",
+    prepStartTime: null,
+    startTime: null,
+    endTime: null,
+    opponentTag: null,
+    opponentName: null,
+    clanName: "Configured Clan",
+    pointsConfirmedByClanMail: null,
+    pointsNeedsValidation: null,
+    pointsLastSuccessfulFetchAt: null,
+    pointsLastKnownSyncNumber: null,
+    pointsLastKnownPoints: null,
+    pointsLastKnownMatchType: null,
+    pointsLastKnownOutcome: null,
+    pointsWarId: null,
+    pointsOpponentTag: null,
+    pointsWarStartTime: null,
+    ...overrides,
+  };
+}
+
+function makeWarStartedEventPayload(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    eventType: "war_started",
+    clanTag: "#C0CU2Q82",
+    clanName: "Configured Clan",
+    opponentTag: "#OPP123",
+    opponentName: "Enemy",
+    syncNumber: 10,
+    notifyRole: "notify-role-42",
+    pingRole: false,
+    fwaPoints: null,
+    opponentFwaPoints: null,
+    outcome: null,
+    matchType: "FWA",
+    warStartFwaPoints: null,
+    warEndFwaPoints: null,
+    clanStars: null,
+    opponentStars: null,
+    prepStartTime: null,
+    warStartTime: null,
+    warEndTime: null,
+    clanAttacks: null,
+    opponentAttacks: null,
+    teamSize: null,
+    attacksPerMember: null,
+    clanDestruction: null,
+    opponentDestruction: null,
+    ...overrides,
+  };
+}
+
+function makeWarEventDeliveryService(send: ReturnType<typeof vi.fn>) {
+  const service = new WarEventLogService(
+    {
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          guildId: testGuildId,
+          type: ChannelType.GuildText,
+          isTextBased: () => true,
+          send,
+        }),
+      },
+    } as any,
+    {} as any,
+  );
+  (service as any).history = {
+    buildWarPlanText: vi.fn().mockResolvedValue(""),
+  };
+  return service;
 }
 
 function makeFwaBaseSwapCandidate(overrides?: Partial<Record<string, unknown>>) {
@@ -3259,7 +3366,11 @@ describe("WarEventLogService FWA battle-day reminder", () => {
       },
     } as any;
     const service = new WarEventLogService(client, {} as any);
-    vi.spyOn(service as any, "tryCreateEventGuard").mockResolvedValue(false);
+    vi.spyOn(service as any, "reserveEventDelivery").mockResolvedValue({
+      state: "in_flight",
+      warId: "123",
+      reason: "reservation_in_flight",
+    });
 
     await (service as any).dispatchDetectedEvent({
       sub: {
@@ -3713,9 +3824,9 @@ describe("WarEventLogService notify config ownership", () => {
   it("passes dispatchDetectedEvent guard when the resolved subscription has notify and channel", async () => {
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {} as any);
     const reserveSpy = vi.spyOn(service as any, "reserveEventDelivery").mockResolvedValue({
-      allowed: true,
-      existingMessage: null,
-      warId: 1001,
+      state: "claimed",
+      warId: "1001",
+      guardCreatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
 
@@ -3789,6 +3900,191 @@ describe("WarEventLogService notify config ownership", () => {
 
     expect(reserveSpy).toHaveBeenCalledTimes(1);
     expect(emitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns in_flight when another worker still owns the active delivery lease", async () => {
+    const service = makeWarEventDeliveryService(vi.fn());
+    const inFlightCreatedAt = new Date(Date.now() - 60_000);
+    prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.findFirst.mockResolvedValue({
+      createdAt: inFlightCreatedAt,
+    });
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toEqual({
+      state: "in_flight",
+      warId: "1001",
+      reason: "reservation_in_flight",
+    });
+    expect(prismaMock.warEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an expired delivery lease and releases it after the message is durably saved", async () => {
+    const send = vi.fn().mockResolvedValue({
+      id: "message-1",
+      createdTimestamp: Date.parse("2026-01-01T00:02:00.000Z"),
+    });
+    const service = makeWarEventDeliveryService(send);
+    const expiredCreatedAt = new Date("2025-12-31T23:50:00.000Z");
+    const claimedCreatedAt = new Date("2026-01-01T00:03:00.000Z");
+    prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.findFirst.mockResolvedValue({
+      createdAt: expiredCreatedAt,
+    });
+    prismaMock.warEvent.deleteMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    prismaMock.warEvent.create.mockResolvedValue({
+      createdAt: claimedCreatedAt,
+    });
+    prismaMock.clanPostedMessage.create.mockResolvedValue({
+      id: "posted-1",
+    });
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toMatchObject({
+      state: "delivered_new",
+      warId: "1001",
+      guardCreatedAt: claimedCreatedAt,
+    });
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          warId: 1001,
+          clanTag: "#C0CU2Q82",
+          eventType: "war_started",
+          createdAt: expiredCreatedAt,
+        }),
+      }),
+    );
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          warId: 1001,
+          clanTag: "#C0CU2Q82",
+          eventType: "war_started",
+          createdAt: claimedCreatedAt,
+        }),
+      }),
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the reservation when Discord send fails after the lease is claimed", async () => {
+    const send = vi.fn().mockRejectedValue(new Error("discord send failed"));
+    const service = makeWarEventDeliveryService(send);
+    const claimedCreatedAt = new Date("2026-01-01T00:04:00.000Z");
+    prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.create.mockResolvedValue({
+      createdAt: claimedCreatedAt,
+    });
+    prismaMock.warEvent.deleteMany.mockResolvedValue({ count: 1 });
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toEqual({
+      state: "failed",
+      warId: "1001",
+      reason: "delivery_failed",
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          warId: 1001,
+          clanTag: "#C0CU2Q82",
+          eventType: "war_started",
+          createdAt: claimedCreatedAt,
+        }),
+      }),
+    );
+    expect(prismaMock.clanPostedMessage.create).not.toHaveBeenCalled();
+  });
+
+  it("releases the reservation when posted-message persistence fails after a successful send", async () => {
+    const send = vi.fn().mockResolvedValue({
+      id: "message-2",
+      createdTimestamp: Date.parse("2026-01-01T00:05:00.000Z"),
+    });
+    const service = makeWarEventDeliveryService(send);
+    const claimedCreatedAt = new Date("2026-01-01T00:06:00.000Z");
+    prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.findFirst.mockResolvedValue(null);
+    prismaMock.warEvent.create.mockResolvedValue({
+      createdAt: claimedCreatedAt,
+    });
+    prismaMock.warEvent.deleteMany.mockResolvedValue({ count: 1 });
+    prismaMock.clanPostedMessage.create.mockRejectedValue(
+      new Error("persist failed"),
+    );
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toEqual({
+      state: "failed",
+      warId: "1001",
+      reason: "delivery_failed",
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          warId: 1001,
+          clanTag: "#C0CU2Q82",
+          eventType: "war_started",
+          createdAt: claimedCreatedAt,
+        }),
+      }),
+    );
+  });
+
+  it("skips send when the posted message already exists", async () => {
+    const send = vi.fn();
+    const service = makeWarEventDeliveryService(send);
+    prismaMock.clanPostedMessage.findFirst.mockResolvedValue({
+      channelId: notifyChannelId,
+      messageId: "message-existing",
+    });
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toEqual({
+      state: "delivered_existing",
+      warId: "1001",
+      existingMessage: {
+        channelId: notifyChannelId,
+        messageId: "message-existing",
+      },
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(prismaMock.warEvent.create).not.toHaveBeenCalled();
   });
 
   it("builds a /notify preview using ClanNotifyConfig channel ownership when legacy notifyChannelId is missing", async () => {

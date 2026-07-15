@@ -625,6 +625,62 @@ type SubscriptionRow = {
 };
 
 type PendingCurrentWarEventType = Extract<EventType, "war_started" | "battle_day">;
+const WAR_EVENT_RESERVATION_LEASE_MS = 5 * 60 * 1000;
+
+type EventDeliveryReservation =
+  | {
+      state: "delivered_existing";
+      existingMessage: {
+        channelId: string;
+        messageId: string;
+      };
+      warId: string;
+    }
+  | {
+      state: "claimed";
+      warId: string;
+      guardCreatedAt: Date;
+    }
+  | {
+      state: "in_flight";
+      warId: string | null;
+      reason: string;
+    }
+  | {
+      state: "unavailable";
+      warId: string | null;
+      reason: string;
+    };
+
+type EventDispatchResult =
+  | {
+      state: "delivered_new";
+      warId: string | null;
+      guardCreatedAt: Date | null;
+    }
+  | {
+      state: "delivered_existing";
+      warId: string | null;
+      existingMessage: {
+        channelId: string;
+        messageId: string;
+      };
+    }
+  | {
+      state: "intentionally_suppressed";
+      warId: string | null;
+      reason: string;
+    }
+  | {
+      state: "in_flight";
+      warId: string | null;
+      reason: string;
+    }
+  | {
+      state: "failed";
+      warId: string | null;
+      reason: string;
+    };
 
 function isPendingCurrentWarEventType(
   input: string | null | undefined,
@@ -636,6 +692,33 @@ function pendingCurrentWarTargetStateForEvent(
   eventType: PendingCurrentWarEventType,
 ): WarState {
   return eventType === "war_started" ? "preparation" : "inWar";
+}
+
+function isEventDeliveryCleanupSuccess(
+  result: EventDispatchResult | boolean | null | undefined,
+): boolean {
+  if (typeof result === "boolean") {
+    return result;
+  }
+  if (!result) {
+    return false;
+  }
+  return (
+    result.state === "delivered_new" ||
+    result.state === "delivered_existing" ||
+    result.state === "intentionally_suppressed"
+  );
+}
+
+function getWarEventReservationLeaseExpiresAt(createdAt: Date): Date {
+  return new Date(createdAt.getTime() + WAR_EVENT_RESERVATION_LEASE_MS);
+}
+
+function isWarEventReservationExpired(
+  createdAt: Date,
+  now = new Date(),
+): boolean {
+  return now.getTime() >= getWarEventReservationLeaseExpiresAt(createdAt).getTime();
 }
 
 type PollTarget = {
@@ -4836,9 +4919,9 @@ export class WarEventLogService {
           );
         });
     }
-    let dispatchSucceeded = false;
+    let dispatchResult: EventDispatchResult | boolean | null = null;
     if (detectedEventPayload) {
-      dispatchSucceeded = await this.dispatchDetectedEvent({
+      dispatchResult = await this.dispatchDetectedEvent({
         sub,
         payload: detectedEventPayload,
         resolvedWarId,
@@ -4847,7 +4930,7 @@ export class WarEventLogService {
       });
     }
     const pendingEventCleanupRequired =
-      dispatchSucceeded &&
+      isEventDeliveryCleanupSuccess(dispatchResult) &&
       (isActivePhysicalRollover || pendingEventResolution.kind === "valid");
     if (pendingEventCleanupRequired && currentWarPendingIdentity) {
       const cleanupRevisionAt = nextCurrentWarRevision(
@@ -5131,7 +5214,7 @@ export class WarEventLogService {
     payload: EventEmitPayload;
     resolvedWarId: number | null;
     sendBattleDaySwapReminders?: boolean;
-  }): Promise<boolean> {
+  }): Promise<EventDispatchResult> {
     let payloadForDelivery = params.payload;
     let resolvedWarIdForDelivery = params.resolvedWarId;
 
@@ -5220,19 +5303,40 @@ export class WarEventLogService {
       });
     }
 
-    if (!params.sub.notify) return true;
-    if (!params.sub.channelId) return false;
+    if (!params.sub.notify) {
+      console.info(
+        `[war-events] event=war_event_delivery result=intentionally_suppressed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${resolvedWarIdForDelivery ?? "none"} event_type=${payloadForDelivery.eventType} reason=notifications_disabled`,
+      );
+      return {
+        state: "intentionally_suppressed",
+        warId:
+          resolvedWarIdForDelivery !== null
+            ? String(resolvedWarIdForDelivery)
+            : null,
+        reason: "notifications_disabled",
+      };
+    }
+    if (!params.sub.channelId) {
+      console.warn(
+        `[war-events] event=war_event_delivery result=failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${resolvedWarIdForDelivery ?? "none"} event_type=${payloadForDelivery.eventType} reason=channel_missing`,
+      );
+      return {
+        state: "failed",
+        warId:
+          resolvedWarIdForDelivery !== null
+            ? String(resolvedWarIdForDelivery)
+            : null,
+        reason: "channel_missing",
+      };
+    }
     const reserved = await this.reserveEventDelivery({
       sub: params.sub,
       payload: payloadForDelivery,
       resolvedWarId: resolvedWarIdForDelivery,
     });
-    if (!reserved.allowed) {
-      return false;
-    }
-    if (reserved.existingMessage) {
+    if (reserved.state === "delivered_existing") {
       console.log(
-        `[notify] existing message found guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${payloadForDelivery.eventType} message=${reserved.existingMessage.messageId}`,
+        `[war-events] event=war_event_delivery result=existing guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId} event_type=${payloadForDelivery.eventType} message=${reserved.existingMessage.messageId}`,
       );
       if (payloadForDelivery.eventType === "battle_day") {
         battleDayPostByGuildTag.set(
@@ -5243,17 +5347,67 @@ export class WarEventLogService {
           },
         );
       }
-      return true;
+      return {
+        state: "delivered_existing",
+        warId: reserved.warId,
+        existingMessage: reserved.existingMessage,
+      };
+    }
+    if (reserved.state === "in_flight") {
+      console.info(
+        `[war-events] event=war_event_delivery result=in_flight guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId ?? "none"} event_type=${payloadForDelivery.eventType} reason=${reserved.reason}`,
+      );
+      return reserved;
+    }
+    if (reserved.state === "unavailable") {
+      console.warn(
+        `[war-events] event=war_event_delivery result=failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId ?? "none"} event_type=${payloadForDelivery.eventType} reason=${reserved.reason}`,
+      );
+      return {
+        state: "failed",
+        warId: reserved.warId,
+        reason: reserved.reason,
+      };
+    }
+    if (reserved.state !== "claimed") {
+      return {
+        state: "failed",
+        warId:
+          resolvedWarIdForDelivery !== null &&
+          resolvedWarIdForDelivery !== undefined
+            ? String(resolvedWarIdForDelivery)
+            : null,
+        reason: "unexpected_reservation_state",
+      };
     }
     console.log(
       `[war-events] emit start guild=${params.sub.guildId} channel=${params.sub.channelId} clan=${payloadForDelivery.clanTag} event=${payloadForDelivery.eventType}`,
     );
-    return this.emitEvent(
+    const delivered = await this.emitEvent(
       params.sub.channelId,
       payloadForDelivery,
       resolvedWarIdForDelivery,
       params.sub,
+      reserved.guardCreatedAt,
     );
+    if (delivered) {
+      console.info(
+        `[war-events] event=war_event_delivery result=durable_success guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId} event_type=${payloadForDelivery.eventType} claim_created_at=${reserved.guardCreatedAt.toISOString()}`,
+      );
+      return {
+        state: "delivered_new",
+        warId: reserved.warId,
+        guardCreatedAt: reserved.guardCreatedAt,
+      };
+    }
+    console.warn(
+      `[war-events] event=war_event_delivery result=failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId} event_type=${payloadForDelivery.eventType} reason=delivery_failed`,
+    );
+    return {
+      state: "failed",
+      warId: reserved.warId,
+      reason: "delivery_failed",
+    };
   }
 
   private async sendFwaBaseSwapBattleDayReminder(params: {
@@ -5772,15 +5926,9 @@ export class WarEventLogService {
     sub: SubscriptionRow;
     payload: EventEmitPayload;
     resolvedWarId: number | null;
-  }): Promise<{
-    allowed: boolean;
-    existingMessage: {
-      channelId: string;
-      messageId: string;
-    } | null;
-    warId: string | null;
-  }> {
+  }): Promise<EventDeliveryReservation> {
     const eventType = params.payload.eventType;
+    const clanTag = normalizeTag(params.payload.clanTag);
     const warId =
       params.resolvedWarId ??
       params.sub.warId ??
@@ -5796,19 +5944,30 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped guild=${params.sub.guildId} clan=${params.sub.clanTag} event=${eventType} reason=missing_war_id_for_idempotency`,
       );
-      return { allowed: false, existingMessage: null, warId: null };
+      return {
+        state: "unavailable",
+        warId: null,
+        reason: "missing_war_id_for_idempotency",
+      };
     }
     const warIdText = String(Math.trunc(Number(warId)));
-    const existingMessage = await this.postedMessages.findExistingMessage({
-      guildId: params.sub.guildId,
-      clanTag: params.payload.clanTag,
-      warId: warIdText,
-      type: "notify",
-      event: eventType,
-    });
+    const existingMessage = await this.postedMessages
+      .findExistingMessage({
+        guildId: params.sub.guildId,
+        clanTag,
+        warId: warIdText,
+        type: "notify",
+        event: eventType,
+      })
+      .catch((err) => {
+        console.warn(
+          `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=existing_message_lookup_failed error=${formatError(err)}`,
+        );
+        return null;
+      });
     if (existingMessage) {
       return {
-        allowed: true,
+        state: "delivered_existing",
         existingMessage: {
           channelId: existingMessage.channelId,
           messageId: existingMessage.messageId,
@@ -5816,18 +5975,92 @@ export class WarEventLogService {
         warId: warIdText,
       };
     }
-    const allowed = await this.tryCreateEventGuard(
-      warIdText,
-      params.payload.clanTag,
-      eventType,
-    );
-    if (!allowed) {
-      return { allowed: false, existingMessage: null, warId: warIdText };
+    const existingReservation = await prisma.warEvent
+      .findFirst({
+        where: {
+          warId: Math.trunc(Number(warIdText)),
+          clanTag,
+          eventType,
+        },
+        select: {
+          createdAt: true,
+        },
+      })
+      .catch((err) => {
+        console.warn(
+          `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=reservation_lookup_failed error=${formatError(err)}`,
+        );
+        return null;
+      });
+    if (existingReservation) {
+      if (!isWarEventReservationExpired(existingReservation.createdAt)) {
+        return {
+          state: "in_flight",
+          warId: warIdText,
+          reason: "reservation_in_flight",
+        };
+      }
+      const reclaimed = await prisma.warEvent
+        .deleteMany({
+          where: {
+            warId: Math.trunc(Number(warIdText)),
+            clanTag,
+            eventType,
+            createdAt: existingReservation.createdAt,
+          },
+        })
+        .catch((err) => {
+          console.warn(
+            `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=reservation_reclaim_failed error=${formatError(err)}`,
+          );
+          return null;
+        });
+      if (!reclaimed || reclaimed.count !== 1) {
+        return {
+          state: "in_flight",
+          warId: warIdText,
+          reason: "reservation_ownership_lost",
+        };
+      }
+      console.info(
+        `[war-events] event=war_event_delivery_reservation result=reclaimed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} claim_created_at=${existingReservation.createdAt.toISOString()}`,
+      );
     }
+    const createdReservation = await prisma.warEvent
+      .create({
+        data: {
+          warId: Math.trunc(Number(warIdText)),
+          clanTag,
+          eventType,
+          payload: {},
+        },
+      })
+      .catch((err) => {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          return null;
+        }
+        console.warn(
+          `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=reservation_create_failed error=${formatError(err)}`,
+        );
+        return null;
+      });
+    if (!createdReservation) {
+      return {
+        state: "in_flight",
+        warId: warIdText,
+        reason: "reservation_already_claimed",
+      };
+    }
+    console.info(
+      `[war-events] event=war_event_delivery_reservation result=claimed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} claim_created_at=${createdReservation.createdAt.toISOString()}`,
+    );
     return {
-      allowed: true,
-      existingMessage: null,
+      state: "claimed",
       warId: warIdText,
+      guardCreatedAt: createdReservation.createdAt,
     };
   }
 
@@ -5923,7 +6156,22 @@ export class WarEventLogService {
     },
     resolvedWarIdOverride?: number | null,
     sub?: SubscriptionRow,
+    reservationGuardCreatedAt?: Date | null,
   ): Promise<boolean> {
+    let warId = resolvedWarIdOverride ?? null;
+    const releaseReservation = async (reason: string): Promise<void> => {
+      if (!reservationGuardCreatedAt) return;
+      await this.releaseEventDelivery({
+        warId:
+          warId !== null && warId !== undefined
+            ? String(Math.trunc(Number(warId)))
+            : null,
+        clanTag: payload.clanTag,
+        eventType: payload.eventType,
+        guardCreatedAt: reservationGuardCreatedAt,
+        reason,
+      });
+    };
     const channel = await this.client.channels
       .fetch(channelId)
       .catch(() => null);
@@ -5931,12 +6179,14 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_found`,
       );
+      await releaseReservation("channel_not_found");
       return false;
     }
     if (!channel.isTextBased()) {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=channel_not_text_based`,
       );
+      await releaseReservation("channel_not_text_based");
       return false;
     }
     if (
@@ -5948,13 +6198,13 @@ export class WarEventLogService {
       console.warn(
         `[war-events] emit skipped channel=${channelId} clan=${payload.clanTag} event=${payload.eventType} reason=unsupported_channel_type type=${channel.type}`,
       );
+      await releaseReservation("unsupported_channel_type");
       return false;
     }
 
     const guildId = (channel as { guildId?: string }).guildId ?? null;
-    const warId =
-      resolvedWarIdOverride ??
-      (await this.resolveWarId(payload.clanTag, payload.warStartTime));
+    warId =
+      warId ?? (await this.resolveWarId(payload.clanTag, payload.warStartTime));
     const roleId = normalizeNotifyRoleId(payload.notifyRole);
     const includeRoleMentionForPost = payload.pingRole;
 
@@ -6151,28 +6401,40 @@ export class WarEventLogService {
         );
         return null;
       });
-    if (guildId) {
-      const key = makeBattleDayPostKey(guildId, payload.clanTag);
-      if (payload.eventType === "battle_day" && sent) {
-        battleDayPostByGuildTag.set(key, { channelId, messageId: sent.id });
-      } else if (payload.eventType !== "battle_day") {
-        battleDayPostByGuildTag.delete(key);
-      }
-    }
     if (sent) {
       if (guildId && sub && warId !== null && warId !== undefined) {
-        await this.postedMessages.savePostedMessage({
-          guildId,
-          clanTag: payload.clanTag,
-          type: "notify",
-          event: payload.eventType,
-          warId: String(warId),
-          syncNum: payload.syncNumber ?? null,
-          channelId,
-          messageId: sent.id,
-          messageUrl: `https://discord.com/channels/${guildId}/${channelId}/${sent.id}`,
-          configHash: this.buildNotifyConfigHash(sub, payload.eventType),
-        });
+        const savedMessage = await this.postedMessages
+          .savePostedMessage({
+            guildId,
+            clanTag: payload.clanTag,
+            type: "notify",
+            event: payload.eventType,
+            warId: String(warId),
+            syncNum: payload.syncNumber ?? null,
+            channelId,
+            messageId: sent.id,
+            messageUrl: `https://discord.com/channels/${guildId}/${channelId}/${sent.id}`,
+            configHash: this.buildNotifyConfigHash(sub, payload.eventType),
+          })
+          .catch((err) => {
+            console.error(
+              `[war-events] persist posted message failed guild=${guildId} clan=${payload.clanTag} event=${payload.eventType} message=${sent.id} error=${formatError(err)}`,
+            );
+            return null;
+          });
+        if (!savedMessage) {
+          await releaseReservation("posted_message_persistence_failed");
+          return false;
+        }
+      }
+
+      if (guildId) {
+        const key = makeBattleDayPostKey(guildId, payload.clanTag);
+        if (payload.eventType === "battle_day") {
+          battleDayPostByGuildTag.set(key, { channelId, messageId: sent.id });
+        } else {
+          battleDayPostByGuildTag.delete(key);
+        }
       }
 
       if (
@@ -6214,12 +6476,61 @@ export class WarEventLogService {
         }
       }
 
+      await releaseReservation("durable_delivery_complete");
       console.log(
         `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`,
       );
     }
+    if (!sent) {
+      await releaseReservation("send_failed");
+    }
     return Boolean(sent);
   }
+
+  private async releaseEventDelivery(params: {
+    warId: string | null;
+    clanTag: string;
+    eventType: string;
+    guardCreatedAt: Date | null | undefined;
+    reason: string;
+  }): Promise<boolean> {
+    if (!params.guardCreatedAt) {
+      return false;
+    }
+    const warId = params.warId;
+    if (warId === null || warId === undefined || !Number.isFinite(Number(warId))) {
+      console.warn(
+        `[war-events] event=war_event_delivery_reservation result=release_skipped clan=${params.clanTag} event_type=${params.eventType} reason=invalid_war_id cleanup_reason=${params.reason}`,
+      );
+      return false;
+    }
+    try {
+      const released = await prisma.warEvent.deleteMany({
+        where: {
+          warId: Math.trunc(Number(warId)),
+          clanTag: normalizeTag(params.clanTag),
+          eventType: params.eventType,
+          createdAt: params.guardCreatedAt,
+        },
+      });
+      if (released.count === 1) {
+        console.info(
+          `[war-events] event=war_event_delivery_reservation result=released clan=${params.clanTag} event_type=${params.eventType} cleanup_reason=${params.reason} claim_created_at=${params.guardCreatedAt.toISOString()}`,
+        );
+        return true;
+      }
+      console.info(
+        `[war-events] event=war_event_delivery_reservation result=release_skipped clan=${params.clanTag} event_type=${params.eventType} cleanup_reason=${params.reason} reason=ownership_lost`,
+      );
+      return false;
+    } catch (err) {
+      console.warn(
+        `[war-events] event=war_event_delivery_reservation result=release_skipped clan=${params.clanTag} event_type=${params.eventType} cleanup_reason=${params.reason} error=${formatError(err)}`,
+      );
+      return false;
+    }
+  }
+
   async refreshBattleDayPosts(): Promise<void> {
     const storedPosts = await prisma.clanPostedMessage.findMany({
       where: {
