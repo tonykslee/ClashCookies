@@ -4,6 +4,7 @@ import {
   buildWarMailSendPayloadForTest,
   buildWarMailRefreshEditPayloadForTest,
   hasWarIdentityShiftedForTest,
+  resolvePostedMailRefreshAuthorityForTest,
   resolveWarMailRefreshIdentityDecisionForTest,
 } from "../src/commands/Fwa";
 
@@ -105,6 +106,164 @@ describe("fwa war-mail refresh identity decision", () => {
       action: "freeze",
       identityShifted: true,
     });
+  });
+});
+
+describe("fwa posted-mail refresh authority", () => {
+  const baseInput = {
+    postedWarId: "1001",
+    postedOpponentTag: "2OLDTAG",
+    expectedWarId: "1001",
+    expectedWarStartMs: 1_700_000_000_000,
+    expectedOpponentTag: "#2OLDTAG",
+    renderedWarId: 1001,
+    renderedWarStartMs: 1_700_000_000_000,
+    renderedOpponentTag: "2OLDTAG",
+  } as const;
+
+  it("allows a resolved FWA WIN refresh", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "resolved_fwa",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+    });
+
+    expect(decision).toEqual({ state: "authoritative" });
+  });
+
+  it("allows a resolved FWA LOSE refresh", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "resolved_fwa",
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+      },
+    });
+
+    expect(decision).toEqual({ state: "authoritative" });
+  });
+
+  it("skips an unresolved FWA expected outcome", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "unresolved_fwa_expected_outcome",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+      },
+    });
+
+    expect(decision).toEqual({
+      state: "temporarily_unavailable",
+      reason: "expected_outcome_unknown",
+    });
+  });
+
+  it("skips an unknown match type", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "unresolved_match_type",
+        matchType: "UNKNOWN",
+        expectedOutcome: "UNKNOWN",
+        unavailableReasons: [],
+      },
+    });
+
+    expect(decision).toEqual({
+      state: "temporarily_unavailable",
+      reason: "match_type_unknown",
+    });
+  });
+
+  it.each([
+    [
+      "war id",
+      {
+        renderedWarId: null,
+      },
+      "war_id_missing",
+    ],
+    [
+      "war start",
+      {
+        renderedWarStartMs: null,
+      },
+      "war_start_missing",
+    ],
+    [
+      "opponent",
+      {
+        renderedOpponentTag: null,
+      },
+      "opponent_missing",
+    ],
+  ] as const)("skips when the rendered %s is missing", (_label, overrides, reason) => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      ...overrides,
+      renderResult: {
+        kind: "unavailable",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        unavailableReasons: ["render incomplete"],
+      },
+    });
+
+    expect(decision).toEqual({
+      state: "temporarily_unavailable",
+      reason,
+    });
+  });
+
+  it("skips a generic unavailable render", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "unavailable",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        unavailableReasons: ["tracked clan mail channel is not configured."],
+      },
+    });
+
+    expect(decision).toEqual({
+      state: "temporarily_unavailable",
+      reason: "render_unavailable",
+    });
+  });
+
+  it("freezes when the rendered mail belongs to a different physical war", () => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderedWarId: 2002,
+      renderedWarStartMs: 1_700_086_400_000,
+      renderedOpponentTag: "2NEWTAG",
+      renderResult: {
+        kind: "resolved_fwa",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+      },
+    });
+
+    expect(decision).toEqual({ state: "different_physical_war" });
+  });
+
+  it.each(["BL", "MM"] as const)("allows %s refreshes", (matchType) => {
+    const decision = resolvePostedMailRefreshAuthorityForTest({
+      ...baseInput,
+      renderResult: {
+        kind: "resolved_blmm",
+        matchType,
+        expectedOutcome: null,
+      },
+    });
+
+    expect(decision).toEqual({ state: "authoritative" });
   });
 });
 

@@ -6478,8 +6478,14 @@ export type WarMailEmbedRenderResult =
       expectedOutcome: "UNKNOWN" | null;
     }
   | {
+      kind: "unresolved_match_type";
+      matchType: "UNKNOWN";
+      expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+      unavailableReasons: string[];
+    }
+  | {
       kind: "unavailable";
-      matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+      matchType: "FWA" | "BL" | "MM";
       expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
       unavailableReasons: string[];
     };
@@ -6489,7 +6495,15 @@ function buildWarMailEmbedRenderResult(input: {
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
   unavailableReasons: string[];
 }): WarMailEmbedRenderResult {
-  if (input.unavailableReasons.length > 0 || input.matchType === "UNKNOWN") {
+  if (input.matchType === "UNKNOWN") {
+    return {
+      kind: "unresolved_match_type",
+      matchType: "UNKNOWN",
+      expectedOutcome: input.expectedOutcome,
+      unavailableReasons: [...input.unavailableReasons],
+    };
+  }
+  if (input.unavailableReasons.length > 0) {
     return {
       kind: "unavailable",
       matchType: input.matchType,
@@ -7102,6 +7116,93 @@ function hasWarIdentityShifted(params: {
 
 export const hasWarIdentityShiftedForTest = hasWarIdentityShifted;
 
+export type PostedMailRefreshAuthorityDecision =
+  | { state: "authoritative" }
+  | {
+      state: "temporarily_unavailable";
+      reason:
+        | "war_id_missing"
+        | "war_start_missing"
+        | "opponent_missing"
+        | "match_type_unknown"
+        | "expected_outcome_unknown"
+        | "render_unavailable";
+    }
+  | { state: "different_physical_war" };
+
+/** Purpose: decide whether a posted mail refresh may edit the existing Discord message. */
+function resolvePostedMailRefreshAuthority(params: {
+  postedWarId?: string | null;
+  postedOpponentTag?: string | null;
+  renderedWarId?: number | null;
+  renderedWarStartMs?: number | null;
+  renderedOpponentTag?: string | null;
+  expectedWarId?: string | null;
+  expectedWarStartMs?: number | null;
+  expectedOpponentTag?: string | null;
+  renderResult: WarMailEmbedRenderResult;
+}): PostedMailRefreshAuthorityDecision {
+  const renderedWarId =
+    params.renderedWarId !== null &&
+    params.renderedWarId !== undefined &&
+    Number.isFinite(params.renderedWarId)
+      ? Math.trunc(params.renderedWarId)
+      : null;
+  if (renderedWarId === null) {
+    return { state: "temporarily_unavailable", reason: "war_id_missing" };
+  }
+
+  const renderedWarStartMs =
+    typeof params.renderedWarStartMs === "number" &&
+    Number.isFinite(params.renderedWarStartMs)
+      ? Math.trunc(params.renderedWarStartMs)
+      : null;
+  if (renderedWarStartMs === null) {
+    return { state: "temporarily_unavailable", reason: "war_start_missing" };
+  }
+
+  const renderedOpponentTag = String(params.renderedOpponentTag ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "");
+  if (!renderedOpponentTag) {
+    return { state: "temporarily_unavailable", reason: "opponent_missing" };
+  }
+
+  if (params.renderResult.kind === "unresolved_match_type") {
+    return { state: "temporarily_unavailable", reason: "match_type_unknown" };
+  }
+  if (params.renderResult.kind === "unresolved_fwa_expected_outcome") {
+    return {
+      state: "temporarily_unavailable",
+      reason: "expected_outcome_unknown",
+    };
+  }
+  if (params.renderResult.kind === "unavailable") {
+    return { state: "temporarily_unavailable", reason: "render_unavailable" };
+  }
+
+  if (
+    hasWarIdentityShifted({
+      postedWarId: params.postedWarId,
+      postedOpponentTag: params.postedOpponentTag,
+      renderedWarId,
+      renderedWarStartMs,
+      renderedOpponentTag,
+      expectedWarId: params.expectedWarId,
+      expectedWarStartMs: params.expectedWarStartMs,
+      expectedOpponentTag: params.expectedOpponentTag,
+    })
+  ) {
+    return { state: "different_physical_war" };
+  }
+
+  return { state: "authoritative" };
+}
+
+export const resolvePostedMailRefreshAuthorityForTest =
+  resolvePostedMailRefreshAuthority;
+
 type WarMailRefreshIdentityDecision = {
   action: "edit" | "freeze";
   identityShifted: boolean;
@@ -7189,13 +7290,13 @@ async function refreshWarMailPost(
     routine: true,
     lifecycleStatus: lifecycle.status,
   });
-  if (refreshed === "missing") {
+  if (refreshed === "missing" || refreshed === "frozen") {
     stopWarMailPolling(key);
   }
   return refreshed;
 }
 
-async function refreshWarMailPostByResolvedTarget(params: {
+export async function refreshWarMailPostByResolvedTargetForTest(params: {
   client: Client;
   guildId: string;
   tag: string;
@@ -7258,6 +7359,19 @@ async function refreshWarMailPostByResolvedTarget(params: {
       .replace(/^#/, "");
     console.info(
       `[fwa-mail-refresh-identity] guild=${params.guildId} clan=#${normalizedTag} message_id=${params.messageId} expected_war_id=${expectedWarIdText} expected_war_start_ms=${expectedWarStartText} expected_opponent=${expectedOpponentText ? `#${expectedOpponentText}` : "unknown"} posted_war_id=${postedWarIdText} posted_opponent=${postedOpponentTag ? `#${postedOpponentTag}` : "unknown"} rendered_war_id=${renderedWarIdText} rendered_war_start_ms=${renderedWarStartText} rendered_opponent=${renderedOpponentTag ? `#${renderedOpponentTag}` : "unknown"} identity_shifted=${input.identityShifted ? "1" : "0"} action=${input.action}`,
+    );
+  };
+  const logSkippedRefresh = (reason: "war_id_missing" | "war_start_missing" | "opponent_missing" | "match_type_unknown" | "expected_outcome_unknown" | "render_unavailable") => {
+    const confirmedBaselineAvailable = Boolean(
+      rendered.mailRevisionDecision.confirmedRevisionBaseline,
+    );
+    const warStartTimeText =
+      typeof rendered.warStartMs === "number" &&
+      Number.isFinite(rendered.warStartMs)
+        ? new Date(Math.trunc(rendered.warStartMs)).toISOString()
+        : "unknown";
+    console.info(
+      `[fwa-mail-refresh] event=war_mail_refresh result=skipped reason=${reason} guild=${params.guildId} clan=#${normalizedTag} war_id=${rendered.warId ?? "unknown"} war_start_time=${warStartTimeText} opponent=${rendered.opponentTag ? `#${rendered.opponentTag}` : "unknown"} lifecycle_status=${params.lifecycleStatus ?? "unknown"} confirmed_baseline=${confirmedBaselineAvailable ? "1" : "0"}`,
     );
   };
   const reconcileMissingExplicitTarget = async (): Promise<void> => {
@@ -7391,7 +7505,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
       routine: params.routine,
     },
   );
-  const renderedIdentityDecision = resolveWarMailRefreshIdentityDecision({
+  const refreshAuthority = resolvePostedMailRefreshAuthority({
     postedWarId,
     postedOpponentTag,
     renderedWarId: rendered.warId,
@@ -7399,18 +7513,23 @@ async function refreshWarMailPostByResolvedTarget(params: {
     renderedOpponentTag: rendered.opponentTag,
     expectedWarId: params.expectedWarId,
     expectedWarStartMs: params.expectedWarStartMs,
+    expectedOpponentTag: params.expectedOpponentTag,
+    renderResult: rendered.renderResult,
   });
-  const identityShifted = renderedIdentityDecision.identityShifted;
-  logIdentityDecision({
-    action: renderedIdentityDecision.action,
-    identityShifted,
-    renderedWarId: rendered.warId,
-    renderedWarStartMs: rendered.warStartMs,
-    renderedOpponentTag: rendered.opponentTag,
-    postedWarId,
-    postedOpponentTag,
-  });
-  if (renderedIdentityDecision.action === "freeze") {
+  if (refreshAuthority.state === "temporarily_unavailable") {
+    logSkippedRefresh(refreshAuthority.reason);
+    return "skipped";
+  }
+  if (refreshAuthority.state === "different_physical_war") {
+    logIdentityDecision({
+      action: "freeze",
+      identityShifted: true,
+      renderedWarId: rendered.warId,
+      renderedWarStartMs: rendered.warStartMs,
+      renderedOpponentTag: rendered.opponentTag,
+      postedWarId,
+      postedOpponentTag,
+    });
     await message
       .edit({
         components: [],
@@ -7419,26 +7538,15 @@ async function refreshWarMailPostByResolvedTarget(params: {
     if (params.key) stopWarMailPolling(params.key);
     return "frozen";
   }
-  if (
-    params.routine &&
-    params.lifecycleStatus === "POSTED" &&
-    renderedIdentityDecision.action === "edit" &&
-    rendered.matchType === "FWA" &&
-    rendered.renderResult.kind === "unresolved_fwa_expected_outcome"
-  ) {
-    const confirmedBaselineAvailable = Boolean(
-      rendered.mailRevisionDecision.confirmedRevisionBaseline,
-    );
-    const warStartTimeText =
-      typeof rendered.warStartMs === "number" &&
-      Number.isFinite(rendered.warStartMs)
-        ? new Date(Math.trunc(rendered.warStartMs)).toISOString()
-        : "unknown";
-    console.info(
-      `[fwa-mail-refresh] event=war_mail_refresh result=skipped reason=unresolved_expected_outcome guild=${params.guildId} clan=#${normalizedTag} war_id=${rendered.warId ?? "unknown"} war_start_time=${warStartTimeText} opponent=${rendered.opponentTag ? `#${rendered.opponentTag}` : "unknown"} lifecycle_status=${params.lifecycleStatus ?? "unknown"} confirmed_baseline=${confirmedBaselineAvailable ? "1" : "0"}`,
-    );
-    return "skipped";
-  }
+  logIdentityDecision({
+    action: "edit",
+    identityShifted: false,
+    renderedWarId: rendered.warId,
+    renderedWarStartMs: rendered.warStartMs,
+    renderedOpponentTag: rendered.opponentTag,
+    postedWarId,
+    postedOpponentTag,
+  });
   const nextWarIdText =
     rendered.warId !== null &&
     rendered.warId !== undefined &&
@@ -7504,9 +7612,6 @@ async function refreshWarMailPostByResolvedTarget(params: {
   }
   return rendered.freezeRefresh ? "frozen" : "refreshed";
 }
-
-export const refreshWarMailPostByResolvedTargetForTest =
-  refreshWarMailPostByResolvedTarget;
 
 function extractWarMailTagFromMessage(
   message: ButtonInteraction["message"],
@@ -10557,7 +10662,7 @@ export async function handleFwaMailRefreshButton(
         refreshedByKey === "frozen"
           ? "War mail frozen for the ended war."
           : refreshedByKey === "skipped"
-            ? "War mail refresh skipped until the expected outcome is resolved."
+            ? "War mail refresh skipped until the render is authoritative."
           : "War mail refreshed.",
     });
     return;
@@ -10621,8 +10726,27 @@ export async function handleFwaMailRefreshButton(
         ? "This mail post can no longer be refreshed."
         : refreshed === "frozen"
           ? "War mail frozen for the ended war."
+          : refreshed === "skipped"
+            ? "War mail refresh skipped until the render is authoritative."
           : "War mail refreshed.",
   });
+}
+
+async function refreshWarMailPostByResolvedTarget(params: {
+  client: Client;
+  guildId: string;
+  tag: string;
+  channelId: string;
+  messageId: string;
+  key?: string;
+  expectedWarId?: string | null;
+  expectedWarStartMs?: number | null;
+  expectedOpponentTag?: string | null;
+  fetchReason?: PointsApiFetchReason;
+  routine?: boolean;
+  lifecycleStatus?: "POSTED" | "NOT_POSTED" | "DELETED" | null;
+}): Promise<"refreshed" | "frozen" | "missing" | "skipped"> {
+  return refreshWarMailPostByResolvedTargetForTest(params);
 }
 
 export async function refreshAllTrackedWarMailPosts(
@@ -10683,11 +10807,11 @@ export async function refreshAllTrackedWarMailPosts(
       expectedOpponentTag: row.opponentTag ?? null,
       fetchReason: "mail_refresh",
       routine: true,
-      lifecycleStatus: lifecycle.status.toUpperCase() as "POSTED" | "NOT_POSTED" | "DELETED",
+      lifecycleStatus: lifecycle.status,
     }).catch(() => "missing" as const);
     if (refreshed === "refreshed") {
       startWarMailPolling(client, pollKey);
-    } else if (refreshed !== "skipped") {
+    } else if (refreshed === "missing" || refreshed === "frozen") {
       stopWarMailPolling(pollKey);
     }
   }
@@ -10809,6 +10933,10 @@ export async function runForceMailUpdateCommand(
     expectedWarStartMs: currentWarStartMs,
     fetchReason: "manual_refresh",
     routine: false,
+    lifecycleStatus: lifecycle.status.toUpperCase() as
+      | "POSTED"
+      | "NOT_POSTED"
+      | "DELETED",
   }).catch(() => "missing" as const);
   if (refreshed === "missing") {
     await interaction.editReply(
@@ -10820,7 +10948,7 @@ export async function runForceMailUpdateCommand(
     await interaction.editReply(
       [
         `Force mail update skipped for #${tag}.`,
-        "The active FWA outcome is still unresolved, so the existing message was left unchanged.",
+        "The active FWA outcome is still unresolved or the render is otherwise incomplete, so the existing message was left unchanged.",
       ].join("\n"),
     );
     return;

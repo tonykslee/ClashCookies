@@ -136,10 +136,12 @@ describe("routine war-mail refresh guard", () => {
 
       expect(result).toBe("skipped");
       expect(message.edit).not.toHaveBeenCalled();
+      expect(message.content).toBe(`Posted ${previousOutcome} mail`);
+      expect(message.embeds[0]?.footer?.text).toBe("War ID: 1001");
       expect(markPostedSpy).not.toHaveBeenCalled();
       expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining(
-          "event=war_mail_refresh result=skipped reason=unresolved_expected_outcome",
+          "event=war_mail_refresh result=skipped reason=expected_outcome_unknown",
         ),
       );
       expect(
@@ -149,6 +151,210 @@ describe("routine war-mail refresh guard", () => {
       ).toBe(true);
     },
   );
+
+  it.each(["WIN", "LOSE"] as const)(
+    "skips the exact production-incident UNKNOWN rerender for a posted FWA %s mail",
+    async (previousOutcome) => {
+      const message = buildPostedMessage({
+        warId: "1001",
+        opponentTag: "2NEW",
+        content: `Posted ${previousOutcome} mail`,
+      });
+      const client = buildRefreshClient(message);
+      const markPostedSpy = vi
+        .spyOn(WarMailLifecycleService.prototype, "markPosted")
+        .mockResolvedValue(true);
+      setFwaMailRefreshRendererForTest(async () =>
+        buildRenderedMail({
+          planText: "FWA plan unavailable (expected outcome unknown).",
+          warId: null,
+          warStartMs: null,
+          opponentTag: null,
+          matchType: "UNKNOWN",
+          expectedOutcome: null,
+          mailRevisionDecision: {
+            confirmedRevisionBaseline: null,
+            effectiveRevisionFields: null,
+          },
+          renderResult: {
+            kind: "unresolved_match_type",
+            matchType: "UNKNOWN",
+            expectedOutcome: "UNKNOWN",
+            unavailableReasons: [],
+          },
+        }),
+      );
+
+      const result = await refreshWarMailPostByResolvedTargetForTest({
+        client,
+        guildId: "guild-1",
+        tag: "#AAA111",
+        channelId: "channel-1",
+        messageId: message.id,
+        expectedWarId: "1001",
+        expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+        fetchReason: "mail_refresh",
+        routine: true,
+        lifecycleStatus: "POSTED",
+      });
+
+      expect(result).toBe("skipped");
+      expect(message.edit).not.toHaveBeenCalled();
+      expect(message.content).toBe(`Posted ${previousOutcome} mail`);
+      expect(markPostedSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["WIN", "LOSE"] as const)(
+    "skips editing a posted FWA %s mail when the rerender loses the match type",
+    async (previousOutcome) => {
+      const message = buildPostedMessage({
+        warId: "1001",
+        opponentTag: "2NEW",
+        content: `Posted ${previousOutcome} mail`,
+      });
+      const client = buildRefreshClient(message);
+      const markPostedSpy = vi
+        .spyOn(WarMailLifecycleService.prototype, "markPosted")
+        .mockResolvedValue(true);
+      setFwaMailRefreshRendererForTest(async () =>
+        buildRenderedMail({
+          planText: "FWA plan unavailable (expected outcome unknown).",
+          matchType: "UNKNOWN",
+          expectedOutcome: null,
+          mailRevisionDecision: {
+            confirmedRevisionBaseline: null,
+            effectiveRevisionFields: null,
+          },
+          renderResult: {
+            kind: "unresolved_match_type",
+            matchType: "UNKNOWN",
+            expectedOutcome: "UNKNOWN",
+            unavailableReasons: [],
+          },
+        }),
+      );
+
+      const result = await refreshWarMailPostByResolvedTargetForTest({
+        client,
+        guildId: "guild-1",
+        tag: "#AAA111",
+        channelId: "channel-1",
+        messageId: message.id,
+        expectedWarId: "1001",
+        expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+        fetchReason: "mail_refresh",
+        routine: true,
+        lifecycleStatus: "POSTED",
+      });
+
+      expect(result).toBe("skipped");
+      expect(message.edit).not.toHaveBeenCalled();
+      expect(message.content).toBe(`Posted ${previousOutcome} mail`);
+      expect(message.embeds[0]?.footer?.text).toBe("War ID: 1001");
+      expect(markPostedSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["war id", { warId: null }, "war_id_missing"],
+    ["war start", { warStartMs: null }, "war_start_missing"],
+    ["opponent", { opponentTag: null }, "opponent_missing"],
+  ] as const)(
+    "skips editing a posted FWA mail when the rendered %s is missing",
+    async (_label, overrides, _expectedReason) => {
+      const message = buildPostedMessage({
+        warId: "1001",
+        opponentTag: "2NEW",
+      });
+      const client = buildRefreshClient(message);
+      const markPostedSpy = vi
+        .spyOn(WarMailLifecycleService.prototype, "markPosted")
+        .mockResolvedValue(true);
+      setFwaMailRefreshRendererForTest(async () =>
+        buildRenderedMail({
+          ...overrides,
+          planText: "FWA plan unavailable (expected outcome unknown).",
+          matchType: "UNKNOWN",
+          expectedOutcome: null,
+          mailRevisionDecision: {
+            confirmedRevisionBaseline: null,
+            effectiveRevisionFields: null,
+          },
+          renderResult: {
+            kind: "unresolved_match_type",
+            matchType: "UNKNOWN",
+            expectedOutcome: "UNKNOWN",
+            unavailableReasons: [],
+          },
+        }),
+      );
+
+      const result = await refreshWarMailPostByResolvedTargetForTest({
+        client,
+        guildId: "guild-1",
+        tag: "#AAA111",
+        channelId: "channel-1",
+        messageId: message.id,
+        expectedWarId: "1001",
+        expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+        fetchReason: "mail_refresh",
+        routine: true,
+        lifecycleStatus: "POSTED",
+      });
+
+      expect(result).toBe("skipped");
+      expect(message.edit).not.toHaveBeenCalled();
+      expect(message.content).toBe("Old war mail content");
+      expect(message.embeds[0]?.footer?.text).toBe("War ID: 1001");
+      expect(markPostedSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("skips editing a posted mail when the render is generically unavailable", async () => {
+    const message = buildPostedMessage({
+      warId: "1001",
+      opponentTag: "2NEW",
+    });
+    const client = buildRefreshClient(message);
+    const markPostedSpy = vi
+      .spyOn(WarMailLifecycleService.prototype, "markPosted")
+      .mockResolvedValue(true);
+    setFwaMailRefreshRendererForTest(async () =>
+      buildRenderedMail({
+        planText: "Rendered plan unavailable",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        mailRevisionDecision: {
+          confirmedRevisionBaseline: null,
+          effectiveRevisionFields: null,
+        },
+        renderResult: {
+          kind: "unavailable",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+          unavailableReasons: ["Tracked clan mail channel is not configured."],
+        },
+      }),
+    );
+
+    const result = await refreshWarMailPostByResolvedTargetForTest({
+      client,
+      guildId: "guild-1",
+      tag: "#AAA111",
+      channelId: "channel-1",
+      messageId: message.id,
+      expectedWarId: "1001",
+      expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+      fetchReason: "mail_refresh",
+      routine: true,
+      lifecycleStatus: "POSTED",
+    });
+
+    expect(result).toBe("skipped");
+    expect(message.edit).not.toHaveBeenCalled();
+    expect(markPostedSpy).not.toHaveBeenCalled();
+  });
 
   it.each(["WIN", "LOSE"] as const)(
     "still edits a posted FWA %s mail when the same-war rerender is resolved",
@@ -297,10 +503,102 @@ describe("routine war-mail refresh guard", () => {
       lifecycleStatus: "POSTED",
     });
 
-    expect(result).toBe("frozen");
-    expect(message.edit).toHaveBeenCalledWith({
-      components: [],
+  expect(result).toBe("frozen");
+  expect(message.edit).toHaveBeenCalledWith({
+    components: [],
+  });
+  expect(markPostedSpy).not.toHaveBeenCalled();
+  });
+
+  it("retries successfully after a skipped render and keeps the lifecycle posted", async () => {
+    const message = buildPostedMessage({
+      warId: "1001",
+      opponentTag: "2NEW",
     });
+    const client = buildRefreshClient(message);
+    const markPostedSpy = vi
+      .spyOn(WarMailLifecycleService.prototype, "markPosted")
+      .mockResolvedValue(true);
+
+    setFwaMailRefreshRendererForTest(async () =>
+      buildRenderedMail({
+        planText: "FWA plan unavailable (expected outcome unknown).",
+        matchType: "UNKNOWN",
+        expectedOutcome: null,
+        warId: null,
+        warStartMs: null,
+        opponentTag: null,
+        mailRevisionDecision: {
+          confirmedRevisionBaseline: null,
+          effectiveRevisionFields: null,
+        },
+        renderResult: {
+          kind: "unresolved_match_type",
+          matchType: "UNKNOWN",
+          expectedOutcome: "UNKNOWN",
+          unavailableReasons: [],
+        },
+      }),
+    );
+
+    const skipped = await refreshWarMailPostByResolvedTargetForTest({
+      client,
+      guildId: "guild-1",
+      tag: "#AAA111",
+      channelId: "channel-1",
+      messageId: message.id,
+      expectedWarId: "1001",
+      expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+      fetchReason: "mail_refresh",
+      routine: true,
+      lifecycleStatus: "POSTED",
+    });
+
+    expect(skipped).toBe("skipped");
+    expect(message.edit).not.toHaveBeenCalled();
     expect(markPostedSpy).not.toHaveBeenCalled();
+
+    setFwaMailRefreshRendererForTest(async () =>
+      buildRenderedMail({
+        planText: "Resolved WIN plan",
+        expectedOutcome: "WIN",
+        renderResult: {
+          kind: "resolved_fwa",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        mailRevisionDecision: {
+          confirmedRevisionBaseline: {
+            warId: "1001",
+            opponentTag: "#2NEW",
+            matchType: "FWA",
+            expectedOutcome: "WIN",
+          },
+          effectiveRevisionFields: {
+            warId: "1001",
+            opponentTag: "#2NEW",
+            matchType: "FWA",
+            expectedOutcome: "WIN",
+          },
+        },
+      }),
+    );
+
+    const refreshed = await refreshWarMailPostByResolvedTargetForTest({
+      client,
+      guildId: "guild-1",
+      tag: "#AAA111",
+      channelId: "channel-1",
+      messageId: message.id,
+      expectedWarId: "1001",
+      expectedWarStartMs: new Date("2026-03-12T00:00:00.000Z").getTime(),
+      fetchReason: "mail_refresh",
+      routine: true,
+      lifecycleStatus: "POSTED",
+    });
+
+    expect(refreshed).toBe("refreshed");
+    expect(message.edit).toHaveBeenCalledTimes(1);
+    expect(markPostedSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runForceMailUpdateCommand } from "../src/commands/Fwa";
+import {
+  runForceMailUpdateCommand,
+  setFwaMailRefreshRendererForTest,
+} from "../src/commands/Fwa";
 import { prisma } from "../src/prisma";
 import {
   WarMailLifecycleService,
@@ -54,6 +57,7 @@ function createInteraction(input?: { tag?: string; guildId?: string; client?: an
 
 describe("runForceMailUpdateCommand", () => {
   afterEach(() => {
+    setFwaMailRefreshRendererForTest(null);
     vi.restoreAllMocks();
   });
 
@@ -205,6 +209,103 @@ describe("runForceMailUpdateCommand", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith(
       "Could not refresh #R80L8VYG mail in place. The stored message was missing or inaccessible.",
+    );
+  });
+
+  it("skips the in-place edit when the active FWA render is unresolved", async () => {
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValueOnce({
+      tag: "#R80L8VYG",
+      name: "DARK EMPIRE",
+    } as never);
+    vi.spyOn(prisma.currentWar, "findUnique").mockResolvedValueOnce({
+      warId: 1000110,
+      startTime: new Date("2026-03-25T04:22:17.000Z"),
+      opponentTag: "#2NEW",
+    } as never);
+    vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValueOnce(
+      buildLifecycleResult({
+        status: "posted",
+        debug: {
+          ...buildLifecycleResult().debug,
+          trackedChannelId: "mail-channel-1",
+          trackedMessageId: "mail-message-1",
+          trackedMessageExists: "yes",
+          finalNormalizedStatus: "posted",
+          reconciliationOutcome: "exists",
+          reconciliationCertainty: "definitive",
+          debugReasonCode: "live_matching_post_exists",
+          debugReason: "Tracked lifecycle message exists for the active war.",
+          trackingCleared: false,
+        },
+      }),
+    );
+    const editMessageSpy = vi.fn().mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            isTextBased: () => true,
+            messages: {
+              fetch: vi.fn().mockResolvedValue({
+                id: "mail-message-1",
+                content: "Posted mail content",
+                embeds: [
+                  {
+                    footer: { text: "War ID: 1000110" },
+                    fields: [
+                      {
+                        name: "Opponent",
+                        value: "Enemy Clan (#2NEW)",
+                      },
+                    ],
+                  },
+                ],
+                edit: editMessageSpy,
+              }),
+            },
+          }),
+        },
+      },
+    });
+    setFwaMailRefreshRendererForTest(async () =>
+      ({
+        embed: { toJSON: () => ({}) },
+        planText: "FWA plan unavailable (expected outcome unknown).",
+        inferredMatchType: false,
+        mailChannelId: "mail-channel-1",
+        clanRoleId: null,
+        warId: null,
+        opponentTag: null,
+        warStartMs: null,
+        freezeRefresh: false,
+        unavailableReasons: [],
+        matchType: "UNKNOWN",
+        expectedOutcome: null,
+        mailRevisionDecision: {
+          confirmedRevisionBaseline: null,
+          effectiveRevisionFields: null,
+        },
+        renderResult: {
+          kind: "unresolved_match_type",
+          matchType: "UNKNOWN",
+          expectedOutcome: "UNKNOWN",
+          unavailableReasons: [],
+        },
+      } as any),
+    );
+
+    await runForceMailUpdateCommand(interaction);
+
+    expect(editMessageSpy).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Force mail update skipped for #R80L8VYG.",
+      ),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "The active FWA outcome is still unresolved or the render is otherwise incomplete",
+      ),
     );
   });
 });
