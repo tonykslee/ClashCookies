@@ -1362,7 +1362,6 @@ async function loadTrackedLeadRoleRefreshState(input: {
   guildId?: string;
   roleId: string;
   guild: Guild;
-  membersById: Map<string, AutoRoleGuildMemberLike>;
   cocService?: CoCService | null;
   telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<TrackedLeadRoleRefreshState | null> {
@@ -2837,7 +2836,6 @@ export class AutoRoleRefreshService {
           guildId: input.guildId,
           roleId: input.scope.discordRoleId,
           guild: input.guild,
-          membersById: getGuildCachedMembersMap(input.guild),
           cocService: input.cocService ?? null,
           telemetry: input.telemetry ?? null,
         });
