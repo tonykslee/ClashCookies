@@ -2644,7 +2644,6 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
-    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue(null),
       getCurrentWar: vi.fn().mockResolvedValue(null),
