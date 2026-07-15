@@ -5877,7 +5877,7 @@ describe("TodoSnapshotService", () => {
     );
   });
 
-  it("retains a live-verified retained-ended snapshot at 0/2 when the canonical same-war merge runs", async () => {
+  it("advances a live-verified retained-ended snapshot to 2/2 when the canonical same-war merge sees exact WarAttacks", async () => {
     const twcClanTag = "#29PCQGUV0";
     const playerTag = "#PYLQ0289";
     const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
@@ -5994,7 +5994,7 @@ describe("TodoSnapshotService", () => {
       warOwnerWarId: 1002,
       warOwnerVerifiedAt: verifiedAt,
       warActive: true,
-      warAttacksUsed: 0,
+      warAttacksUsed: 2,
       warPhase: "battle day",
       warEndsAt,
       warSourceUpdatedAt: attemptedAt,

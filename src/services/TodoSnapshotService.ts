@@ -307,6 +307,8 @@ type WarOwnerCandidateSource =
 
 type TodoWarOwnerSource = "LIVE_VERIFIED" | "PERSISTED_FALLBACK" | "NONE";
 
+type TodoWarAttackProgressSource = "exact_war_attacks" | "non_exact";
+
 type WarOwnerCandidateEntry = {
   clanTag: string;
   sources: Set<WarOwnerCandidateSource>;
@@ -2720,6 +2722,10 @@ export class TodoSnapshotService {
             warPhase,
             warEndsAt,
           };
+      const attackProgressSource: TodoWarAttackProgressSource =
+        canonicalRosterExactAttackState || trackedWarMemberExactAttackState
+          ? "exact_war_attacks"
+          : "non_exact";
       const warDecision = buildTodoWarOwnerDecision({
         existing: existing ?? null,
         attemptedState: attemptedWarState,
@@ -2730,6 +2736,7 @@ export class TodoSnapshotService {
           : bootstrapLiveVerified
             ? "live_verified"
             : warOwnerResolution.resolvedSource,
+        attackProgressSource,
       });
       const finalWarState = warDecision.finalState;
 
@@ -2823,6 +2830,7 @@ export class TodoSnapshotService {
           attemptedState: attemptedWarState,
           attemptedObservationAt: now,
           resolutionSource: warOwnerResolution.resolvedSource,
+          attackProgressSource,
         },
       });
     }
@@ -3886,6 +3894,7 @@ type TodoSnapshotWriteOperation = {
     attemptedState: TodoWarOwnerSnapshotState;
     attemptedObservationAt: Date;
     resolutionSource: WarOwnerResolutionSource;
+    attackProgressSource: TodoWarAttackProgressSource;
   };
 };
 
@@ -3969,7 +3978,10 @@ function buildTodoWarOwnerCanonicalMergeState(input: {
     warId: number | null;
     verifiedAt: Date | null;
   } | null;
+  attackProgressSource: TodoWarAttackProgressSource;
 }): TodoWarOwnerSnapshotState {
+  const existingWarAttacksUsed = clampInt(input.existing.warAttacksUsed ?? 0, 0, 2);
+  const attemptedWarAttacksUsed = clampInt(input.attemptedState.warAttacksUsed, 0, 2);
   return {
     warClanTag: input.attemptedState.warClanTag,
     warClanName: input.attemptedState.warClanName,
@@ -3979,7 +3991,10 @@ function buildTodoWarOwnerCanonicalMergeState(input: {
     warOwnerWarId: input.attemptedState.warOwnerWarId,
     warOwnerVerifiedAt: input.existingIdentity?.verifiedAt ?? null,
     warActive: Boolean(input.existing.warActive),
-    warAttacksUsed: clampInt(input.existing.warAttacksUsed ?? 0, 0, 2),
+    warAttacksUsed:
+      input.attackProgressSource === "exact_war_attacks"
+        ? Math.max(existingWarAttacksUsed, attemptedWarAttacksUsed)
+        : existingWarAttacksUsed,
     warAttacksMax: clampInt(input.existing.warAttacksMax ?? 2, 0, 2) || 2,
     warPhase: input.existing.warPhase ?? null,
     warEndsAt: input.existing.warEndsAt ?? null,
@@ -4016,6 +4031,7 @@ async function persistTodoSnapshotWrite(input: {
       attemptedObservationAt: input.write.warDecisionInput.attemptedObservationAt,
       currentWarByClanTag: input.currentWarByClanTag,
       resolutionSource: input.write.warDecisionInput.resolutionSource,
+      attackProgressSource: input.write.warDecisionInput.attackProgressSource,
     });
     const guardedUpdate = applyTodoWarOwnerStateToSnapshotData(
       input.write.update,
@@ -4040,6 +4056,7 @@ function buildTodoWarOwnerDecision(input: {
   attemptedObservationAt: Date;
   currentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
   resolutionSource: WarOwnerResolutionSource;
+  attackProgressSource: TodoWarAttackProgressSource;
 }): TodoWarOwnerWriteDecision {
   const existing = input.existing ?? null;
   const attemptedState = input.attemptedState;
@@ -4213,6 +4230,7 @@ function buildTodoWarOwnerDecision(input: {
         attemptedState,
         existingConfidence,
         existingIdentity,
+        attackProgressSource: input.attackProgressSource,
       }),
       preservationMode: "attempted",
       suppressionReason: null,
