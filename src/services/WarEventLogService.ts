@@ -4629,14 +4629,22 @@ export class WarEventLogService {
       (async (
         input: ActiveWarSyncResolutionInput,
       ): Promise<ActiveWarSyncAssignmentResult> => {
-        const fallbackSyncNumber =
+        const isNonFwaMatchType = toSyncIsFwa(
+          input.matchType as MatchType | null,
+        ) === false;
+        const proposedSyncNumber =
           input.currentWarCanonicalSyncNumber ??
           input.currentWarLegacySyncNumber ??
           input.sameWarPointsSyncNumber ??
           null;
+        const fallbackSyncNumber =
+          input.currentWarCanonicalSyncNumber ??
+          (isNonFwaMatchType ? null : input.currentWarLegacySyncNumber) ??
+          input.sameWarPointsSyncNumber ??
+          null;
         return {
           syncNumber: fallbackSyncNumber,
-          proposedSyncNumber: fallbackSyncNumber,
+          proposedSyncNumber,
           usable: fallbackSyncNumber !== null,
           source:
             input.currentWarCanonicalSyncNumber !== null
@@ -4676,12 +4684,11 @@ export class WarEventLogService {
           });
     const assignmentNeedsOwnership =
       Boolean(syncAssignment) &&
-      syncAssignment?.persistence !== "idempotent" &&
       currentWarCanonicalSyncNumber === null &&
-      syncAssignment?.source !== "not_fwa" &&
-      syncAssignment?.source !== "mirror_mode" &&
-      (syncAssignment?.source !== "existing_current_war" ||
-        currentWarLegacySyncNumber !== null);
+      (syncAssignment?.persistence === "conflict" ||
+        syncAssignment?.persistence === "revision_changed" ||
+        syncAssignment?.persistence === "identity_changed" ||
+        syncAssignment?.source === "active_cycle_conflict");
     if (syncAssignment?.persistence === "saved" && syncAssignment.persistedRevisionAt) {
       ownedCurrentWarRevisionAt = syncAssignment.persistedRevisionAt;
     } else if (assignmentNeedsOwnership) {
