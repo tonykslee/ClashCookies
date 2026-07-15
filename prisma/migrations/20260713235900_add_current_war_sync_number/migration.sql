@@ -1,0 +1,2 @@
+ALTER TABLE "CurrentWar"
+ADD COLUMN IF NOT EXISTS "syncNumber" INTEGER;
