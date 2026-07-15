@@ -4,14 +4,16 @@
 
 The sampled mismatch **predates the authoritative correction**.
 
-I can confirm that the affected `TodoPlayerSnapshot` rows were still stale when I sampled them, and that the corresponding `WarAttacks.attackOrder = 0` rows later reached `attacksUsed = 2`. What I **cannot** confirm yet is whether a later todo refresh happened after that write.
+I can confirm that the affected `TodoPlayerSnapshot` rows were still stale when I sampled them, and that the corresponding `WarAttacks.attackOrder = 0` rows later reached `attacksUsed = 2`. What I **cannot** confirm from production alone is whether a later todo refresh happened after that write.
 
-So the diagnosis is still **unresolved**:
+That leaves the production timeline unresolved:
 
 - propagation delay remains possible
 - durable confidence-preservation staleness remains possible
 - those two explanations stay indistinguishable until a post-write refresh is observed or reproduced
 - I should not call this a confirmed "normal propagation window"
+
+The code path itself is now reproduced and fixed in tests: the canonical same-identity merge was preserving the live-verified owner and the existing `warAttacksUsed` value even when exact same-war `WarAttacks` had already reached `2`. The fix threads exact attack provenance into the todo write decision and lets the snapshot advance monotonically to `2/2` without downgrading ownership confidence.
 
 ## Production evidence
 
@@ -73,26 +75,33 @@ I should not claim the next war is safe until I either observe one or prove the 
 
 ## Classification
 
-No A-F defect classification yet.
+Defect class: **F**
 
-The current evidence does not prove a durable failure.
+The proven defect is the durable confidence-preservation branch in `buildTodoWarOwnerDecision()`:
 
-The focused regression test reproduces the same retained-ended same-identity path in `buildTodoWarOwnerDecision()`: the canonical tracked-roster merge preserves the live-verified row and leaves `warAttacksUsed = 0` even when the same-war `WarAttacks` row has reached `2`.
+- `canonicalAttemptIsSameIdentity` preserved the live-verified owner correctly
+- the same branch also preserved `warAttacksUsed` from the existing row instead of the exact same-war `WarAttacks` count
+- that left the snapshot at `0/2` even though the authoritative attack row had already reached `2`
 
-If a later production refresh is observed and it still leaves the row at `0/2`, then the defect should be classified with the original A-F scale and the exact confidence-preservation branch is `canonicalAttemptIsSameIdentity` inside `persistTodoSnapshotWrite()`.
+The fixed invariant is:
+
+- same-war exact `WarAttacks` progress may advance the mutable WAR attack count
+- verified owner identity stays live-protected
+- monotonic progress never decreases once `2` has been observed
+- non-exact or stale fallback evidence still cannot override a verified owner
 
 ## Confidence
 
-Confidence: **66%**
+Confidence: **84%**
 
 Why not higher:
 
 - the sampled snapshot is definitely stale
 - the authoritative `WarAttacks` correction is definitely later
-- but a post-write todo refresh has not been observed yet
+- production still did not show a post-write todo refresh for the sampled players
 
 Why not lower:
 
 - the production rows and logs agree on the ordering
 - the reminder path already uses the corrected `WarAttacks` rows directly
-- the stale sample therefore cannot be called a confirmed normal propagation window
+- the focused regression test now reproduces the stale branch and proves the corrected same-war refresh advances the snapshot to `2/2`
