@@ -3924,7 +3924,7 @@ describe("WarEventLogService notify config ownership", () => {
     expect(prismaMock.warEvent.create).not.toHaveBeenCalled();
   });
 
-  it("reclaims an expired delivery lease and releases it after the message is durably saved", async () => {
+  it("reclaims an expired lease and retains the completed WarEvent after durable delivery", async () => {
     const send = vi.fn().mockResolvedValue({
       id: "message-1",
       createdTimestamp: Date.parse("2026-01-01T00:02:00.000Z"),
@@ -3932,15 +3932,57 @@ describe("WarEventLogService notify config ownership", () => {
     const service = makeWarEventDeliveryService(send);
     const expiredCreatedAt = new Date("2025-12-31T23:50:00.000Z");
     const claimedCreatedAt = new Date("2026-01-01T00:03:00.000Z");
+    const warEventRows: Array<{
+      warId: number;
+      clanTag: string;
+      eventType: string;
+      createdAt: Date;
+      payload: Record<string, unknown>;
+    }> = [
+      {
+        warId: 1001,
+        clanTag: "#C0CU2Q82",
+        eventType: "war_started",
+        createdAt: expiredCreatedAt,
+        payload: {},
+      },
+    ];
     prismaMock.clanPostedMessage.findFirst.mockResolvedValue(null);
-    prismaMock.warEvent.findFirst.mockResolvedValue({
-      createdAt: expiredCreatedAt,
+    prismaMock.warEvent.findFirst.mockImplementation(async ({ where }) => {
+      return (
+        warEventRows.find(
+          (row) =>
+            row.warId === where.warId &&
+            row.clanTag === where.clanTag &&
+            row.eventType === where.eventType,
+        ) ?? null
+      );
     });
-    prismaMock.warEvent.deleteMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 1 });
-    prismaMock.warEvent.create.mockResolvedValue({
-      createdAt: claimedCreatedAt,
+    prismaMock.warEvent.deleteMany.mockImplementation(async ({ where }) => {
+      const before = warEventRows.length;
+      for (let i = warEventRows.length - 1; i >= 0; i -= 1) {
+        const row = warEventRows[i];
+        if (
+          row.warId === where.warId &&
+          row.clanTag === where.clanTag &&
+          row.eventType === where.eventType &&
+          row.createdAt.getTime() === where.createdAt.getTime()
+        ) {
+          warEventRows.splice(i, 1);
+        }
+      }
+      return { count: before - warEventRows.length };
+    });
+    prismaMock.warEvent.create.mockImplementation(async ({ data }) => {
+      const createdRow = {
+        warId: data.warId,
+        clanTag: data.clanTag,
+        eventType: data.eventType,
+        createdAt: claimedCreatedAt,
+        payload: data.payload,
+      };
+      warEventRows.push(createdRow);
+      return createdRow;
     });
     prismaMock.clanPostedMessage.create.mockResolvedValue({
       id: "posted-1",
@@ -3957,29 +3999,16 @@ describe("WarEventLogService notify config ownership", () => {
       warId: "1001",
       guardCreatedAt: claimedCreatedAt,
     });
-    expect(prismaMock.warEvent.deleteMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          warId: 1001,
-          clanTag: "#C0CU2Q82",
-          eventType: "war_started",
-          createdAt: expiredCreatedAt,
-        }),
-      }),
-    );
-    expect(prismaMock.warEvent.deleteMany).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          warId: 1001,
-          clanTag: "#C0CU2Q82",
-          eventType: "war_started",
-          createdAt: claimedCreatedAt,
-        }),
-      }),
-    );
+    expect(prismaMock.warEvent.deleteMany).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
+    expect(warEventRows).toEqual([
+      expect.objectContaining({
+        warId: 1001,
+        clanTag: "#C0CU2Q82",
+        eventType: "war_started",
+        createdAt: claimedCreatedAt,
+      }),
+    ]);
   });
 
   it("releases the reservation when Discord send fails after the lease is claimed", async () => {
@@ -4059,6 +4088,153 @@ describe("WarEventLogService notify config ownership", () => {
         }),
       }),
     );
+  });
+
+  it("fails closed when posted-message lookup errors before any delivery reservation is touched", async () => {
+    const send = vi.fn();
+    const service = makeWarEventDeliveryService(send);
+    prismaMock.clanPostedMessage.findFirst.mockRejectedValueOnce(
+      new Error("lookup failed"),
+    );
+
+    const result = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(result).toEqual({
+      state: "unavailable",
+      warId: "1001",
+      reason: "existing_message_lookup_failed",
+    });
+    expect(prismaMock.warEvent.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.warEvent.create).not.toHaveBeenCalled();
+    expect(prismaMock.warEvent.deleteMany).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(prismaMock.clanPostedMessage.create).not.toHaveBeenCalled();
+    expect(prismaMock.clanPostedMessage.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps the completed WarEvent and dedupes later deliveries from the saved posted message", async () => {
+    const send = vi.fn().mockResolvedValue({
+      id: "message-1",
+      createdTimestamp: Date.parse("2026-01-01T00:02:00.000Z"),
+    });
+    const service = makeWarEventDeliveryService(send);
+    const createdAt = new Date("2026-01-01T00:03:00.000Z");
+    const warEventRows: Array<{
+      warId: number;
+      clanTag: string;
+      eventType: string;
+      createdAt: Date;
+      payload: Record<string, unknown>;
+    }> = [];
+    const postedMessages: Array<{
+      guildId: string;
+      clanTag: string;
+      warId: string | null;
+      type: string;
+      event: string | null;
+      channelId: string;
+      messageId: string;
+      messageUrl: string;
+      syncNum: number | null;
+      configHash: string | null;
+    }> = [];
+    prismaMock.clanPostedMessage.findFirst.mockImplementation(async ({ where }) => {
+      return (
+        postedMessages.find(
+          (row) =>
+            row.guildId === where.guildId &&
+            row.clanTag === where.clanTag &&
+            row.warId === where.warId &&
+            row.type === where.type &&
+            row.event === where.event,
+        ) ?? null
+      );
+    });
+    prismaMock.clanPostedMessage.create.mockImplementation(async ({ data }) => {
+      const row = {
+        guildId: data.guildId,
+        clanTag: data.clanTag,
+        warId: data.warId ?? null,
+        type: data.type,
+        event: data.event ?? null,
+        channelId: data.channelId,
+        messageId: data.messageId,
+        messageUrl: data.messageUrl,
+        syncNum: data.syncNum ?? null,
+        configHash: data.configHash ?? null,
+      };
+      postedMessages.push(row);
+      return row;
+    });
+    prismaMock.warEvent.findFirst.mockImplementation(async ({ where }) => {
+      return (
+        warEventRows.find(
+          (row) =>
+            row.warId === where.warId &&
+            row.clanTag === where.clanTag &&
+            row.eventType === where.eventType,
+        ) ?? null
+      );
+    });
+    prismaMock.warEvent.create.mockImplementation(async ({ data }) => {
+      const row = {
+        warId: data.warId,
+        clanTag: data.clanTag,
+        eventType: data.eventType,
+        createdAt,
+        payload: data.payload,
+      };
+      warEventRows.push(row);
+      return row;
+    });
+    prismaMock.warEvent.deleteMany.mockImplementation(async ({ where }) => {
+      const before = warEventRows.length;
+      for (let i = warEventRows.length - 1; i >= 0; i -= 1) {
+        const row = warEventRows[i];
+        if (
+          row.warId === where.warId &&
+          row.clanTag === where.clanTag &&
+          row.eventType === where.eventType &&
+          row.createdAt.getTime() === where.createdAt.getTime()
+        ) {
+          warEventRows.splice(i, 1);
+        }
+      }
+      return { count: before - warEventRows.length };
+    });
+
+    const firstResult = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+    const secondResult = await (service as any).dispatchDetectedEvent({
+      sub: makeWarEventSubscription(),
+      payload: makeWarStartedEventPayload(),
+      resolvedWarId: 1001,
+    });
+
+    expect(firstResult).toMatchObject({
+      state: "delivered_new",
+      warId: "1001",
+      guardCreatedAt: createdAt,
+    });
+    expect(secondResult).toEqual({
+      state: "delivered_existing",
+      warId: "1001",
+      existingMessage: {
+        channelId: notifyChannelId,
+        messageId: "message-1",
+      },
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.deleteMany).not.toHaveBeenCalled();
+    expect(warEventRows).toHaveLength(1);
+    expect(postedMessages).toHaveLength(1);
   });
 
   it("skips send when the posted message already exists", async () => {

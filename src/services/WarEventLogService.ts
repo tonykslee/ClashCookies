@@ -677,6 +677,11 @@ type EventDispatchResult =
       reason: string;
     }
   | {
+      state: "unavailable";
+      warId: string | null;
+      reason: string;
+    }
+  | {
       state: "failed";
       warId: string | null;
       reason: string;
@@ -5361,10 +5366,10 @@ export class WarEventLogService {
     }
     if (reserved.state === "unavailable") {
       console.warn(
-        `[war-events] event=war_event_delivery result=failed guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId ?? "none"} event_type=${payloadForDelivery.eventType} reason=${reserved.reason}`,
+        `[war-events] event=war_event_delivery result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${reserved.warId ?? "none"} event_type=${payloadForDelivery.eventType} reason=${reserved.reason}`,
       );
       return {
-        state: "failed",
+        state: "unavailable",
         warId: reserved.warId,
         reason: reserved.reason,
       };
@@ -5951,20 +5956,29 @@ export class WarEventLogService {
       };
     }
     const warIdText = String(Math.trunc(Number(warId)));
-    const existingMessage = await this.postedMessages
-      .findExistingMessage({
+    let existingMessage:
+      | Awaited<
+          ReturnType<PostedMessageService["findExistingMessage"]>
+        >
+      | null = null;
+    try {
+      existingMessage = await this.postedMessages.findExistingMessage({
         guildId: params.sub.guildId,
         clanTag,
         warId: warIdText,
         type: "notify",
         event: eventType,
-      })
-      .catch((err) => {
-        console.warn(
-          `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=existing_message_lookup_failed error=${formatError(err)}`,
-        );
-        return null;
       });
+    } catch (err) {
+      console.warn(
+        `[war-events] event=war_event_delivery_reservation result=unavailable guild=${params.sub.guildId} clan=${params.sub.clanTag} war_id=${warIdText} event_type=${eventType} reason=existing_message_lookup_failed error=${formatError(err)}`,
+      );
+      return {
+        state: "unavailable",
+        warId: warIdText,
+        reason: "existing_message_lookup_failed",
+      };
+    }
     if (existingMessage) {
       return {
         state: "delivered_existing",
@@ -6476,7 +6490,6 @@ export class WarEventLogService {
         }
       }
 
-      await releaseReservation("durable_delivery_complete");
       console.log(
         `[war-events] emit success guild=${guildId ?? "unknown"} channel=${channelId} message=${sent.id} clan=${payload.clanTag} event=${payload.eventType}`,
       );

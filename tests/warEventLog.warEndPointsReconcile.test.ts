@@ -2161,7 +2161,11 @@ describe("War-ended sync and metadata canonicalization", () => {
     });
     const reserveSpy = vi
       .spyOn(service as any, "reserveEventDelivery")
-      .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
+      .mockResolvedValue({
+        state: "claimed",
+        warId: "1001303",
+        guardCreatedAt: new Date("2026-03-10T00:00:00.000Z"),
+      });
     const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
 
     const persistSpy = vi.fn().mockResolvedValue(undefined);
@@ -2230,7 +2234,11 @@ describe("War-ended sync and metadata canonicalization", () => {
     });
     const reserveSpy = vi
       .spyOn(service as any, "reserveEventDelivery")
-      .mockResolvedValue({ allowed: true, existingMessage: null, warId: "1001303" });
+      .mockResolvedValue({
+        state: "claimed",
+        warId: "1001303",
+        guardCreatedAt: new Date("2026-03-10T00:00:00.000Z"),
+      });
     const emitSpy = vi.spyOn(service as any, "emitEvent").mockResolvedValue(undefined);
     const persistSpy = vi.fn().mockResolvedValue(undefined);
     (service as any).history = {
@@ -2378,7 +2386,7 @@ describe("Battle-day swap reminder dispatch", () => {
     const reserveSpy = vi
       .spyOn(service as any, "reserveEventDelivery")
       .mockResolvedValue({
-        allowed: false,
+        state: "delivered_existing",
         existingMessage: {
           channelId: "chan-1",
           messageId: "msg-1",

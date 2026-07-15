@@ -762,6 +762,90 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(currentWarStore.state.opponentStars).toBe(0);
   });
 
+  it("leaves the pending marker untouched when delivery becomes unavailable", async () => {
+    const clanTag = "#1AAAA";
+    const opponentTag = "#2AAAA";
+    const currentWarStore = createCurrentWarStore({
+      clanTag,
+      opponentTag,
+      warId: 5001,
+      syncNumber: 534,
+      syncNum: 534,
+      state: "preparation",
+      prepStartTime,
+      startTime: prepStartTime,
+      opponentName: "Old Opponent",
+    });
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      makeSubscriptionRow({
+        clanTag,
+        opponentTag,
+        warId: 5001,
+        syncNumber: 534,
+        syncNum: 534,
+        pointsSyncNum: 534,
+        state: "preparation",
+        startTime: prepStartTime,
+        prepStartTime,
+        opponentName: "Old Opponent",
+        pointsWarStartTime: prepStartTime,
+        updatedAt: currentWarStore.state.updatedAt,
+      }),
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({ warId: 5002 });
+    prismaMock.currentWar.findUnique.mockImplementation(async () =>
+      currentWarStore.snapshot(),
+    );
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: newWarStartTime,
+        opponentTag,
+      }),
+      currentWarStore,
+    );
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue({
+      state: "unavailable",
+      warId: "5002",
+      reason: "existing_message_lookup_failed",
+    });
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockReturnValue({
+        allowed: true,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).points.fetchSnapshot = vi.fn().mockImplementation(
+      async (tag: string) => ({
+        balance: 100,
+        winnerBoxTags: tag === clanTag ? [opponentTag] : [],
+        winnerBoxText: "Marked as an FWA match",
+        activeFwa: true,
+        notFound: false,
+        fetchedAtMs: Date.now(),
+        effectiveSync: null,
+      }),
+    );
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
+
+    await (service as any).processSubscription("guild-1", clanTag, {
+      previousSync: 534,
+      activeSync: 534,
+      resolveActiveSyncNumber,
+    });
+
+    expect((service as any).dispatchDetectedEvent).toHaveBeenCalledTimes(1);
+    expect(getCurrentWarUpdateManyCallsByKind("cleanup")).toHaveLength(0);
+    expect(currentWarStore.state).toMatchObject({
+      warId: 5002,
+      syncNumber: 535,
+      state: "inWar",
+      opponentTag,
+      pendingEventType: "battle_day",
+      pendingEventTargetState: "inWar",
+    });
+  });
+
   it("leaves a retryable pending marker when canonical assignment is unavailable", async () => {
     const clanTag = "#1AAAA";
     const oldOpponentTag = "#0PPX";
