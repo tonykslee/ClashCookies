@@ -2644,6 +2644,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue(null),
       getCurrentWar: vi.fn().mockResolvedValue(null),
@@ -6023,23 +6024,35 @@ describe("TodoSnapshotService", () => {
       warMemberAttacksUsed?: number | null;
       warAttacksRows?: Array<Record<string, unknown>>;
       txExistingWarAttacksUsedOverride?: number;
+      clanTag?: string;
+      playerTag?: string;
+      playerName?: string;
+      existingClanTag?: string;
+      attemptedClanTag?: string;
+      existingWarId?: number;
+      attemptedWarId?: number;
+      includeExistingSnapshot?: boolean;
     }): Promise<Record<string, unknown>> {
-      const twcClanTag = "#29PCQGUV0";
-      const playerTag = "#PYLQ0289";
+      const clanTag = input.clanTag ?? "#29PCQGUV0";
+      const playerTag = input.playerTag ?? "#PYLQ0289";
+      const playerName = input.playerName ?? "Party Blizzard";
+      const existingClanTag = input.existingClanTag ?? clanTag;
+      const attemptedClanTag = input.attemptedClanTag ?? clanTag;
+      const existingWarId = input.existingWarId ?? 1002;
+      const attemptedWarId = input.attemptedWarId ?? existingWarId;
       const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
       const attemptedAt = new Date("2026-03-26T12:06:00.000Z");
       const warEndsAt = new Date("2026-03-26T12:00:00.000Z");
-      const warId = 1002;
       const existingRow = buildSnapshotRow({
         playerTag,
-        playerName: "Party Blizzard",
-        clanTag: twcClanTag,
-        clanName: "TheWiseCowboys",
+        playerName,
+        clanTag: existingClanTag,
+        clanName: input.trackedClanName ?? "TheWiseCowboys",
         warActive: true,
-        warClanTag: twcClanTag,
-        warClanName: input.existingWarClanName ?? "TheWiseCowboys",
+        warClanTag: existingClanTag,
+        warClanName: input.existingWarClanName ?? (input.trackedClanName ?? "TheWiseCowboys"),
         warOwnerSource: "LIVE_VERIFIED",
-        warOwnerWarId: warId,
+        warOwnerWarId: existingWarId,
         warOwnerVerifiedAt: verifiedAt,
         warPosition: input.existingWarPosition ?? 8,
         warAttacksUsed: input.existingWarAttacksUsed,
@@ -6050,7 +6063,8 @@ describe("TodoSnapshotService", () => {
         lastUpdatedAt: verifiedAt,
         updatedAt: verifiedAt,
       });
-      const snapshotRows: Record<string, unknown>[] = [existingRow];
+      const snapshotRows: Record<string, unknown>[] =
+        input.includeExistingSnapshot === false ? [] : [existingRow];
       installMutableTodoSnapshotStore(snapshotRows);
       if (input.txExistingWarAttacksUsedOverride !== undefined) {
         txMock.todoPlayerSnapshot.findUnique.mockResolvedValue({
@@ -6063,8 +6077,8 @@ describe("TodoSnapshotService", () => {
       prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
         {
           playerTag,
-          clanTag: twcClanTag,
-          playerName: "Party Blizzard",
+          clanTag: attemptedClanTag,
+          playerName,
           sourceSyncedAt: verifiedAt,
         },
       ]);
@@ -6074,7 +6088,7 @@ describe("TodoSnapshotService", () => {
           : [
               {
                 playerTag,
-                clanTag: twcClanTag,
+                clanTag: attemptedClanTag,
                 position: input.attemptedWarPosition ?? 8,
                 attacks: input.warMemberAttacksUsed,
                 sourceSyncedAt: attemptedAt,
@@ -6083,8 +6097,8 @@ describe("TodoSnapshotService", () => {
       );
       prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
         {
-          clanTag: twcClanTag,
-          sourceWarId: warId,
+          clanTag: attemptedClanTag,
+          sourceWarId: attemptedWarId,
           sourceWarStartTime: new Date("2026-03-25T12:00:00.000Z"),
           sourceWarEndTime: warEndsAt,
           sourceWarState: "notInWar",
@@ -6093,17 +6107,17 @@ describe("TodoSnapshotService", () => {
       ]);
       prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
         {
-          clanTag: twcClanTag,
+          clanTag: attemptedClanTag,
           playerTag,
           position: input.attemptedWarPosition ?? 8,
-          playerName: "Party Blizzard",
+          playerName,
           townHall: 15,
         },
       ]);
       prismaMock.currentWar.findMany.mockResolvedValue([
         {
-          clanTag: twcClanTag,
-          warId,
+          clanTag: attemptedClanTag,
+          warId: attemptedWarId,
           state: "notInWar",
           startTime: new Date("2026-03-25T12:00:00.000Z"),
           endTime: warEndsAt,
@@ -6113,8 +6127,8 @@ describe("TodoSnapshotService", () => {
       prismaMock.warAttacks.findMany.mockResolvedValue(
         input.warAttacksRows ?? [
           {
-            warId,
-            clanTag: twcClanTag,
+            warId: attemptedWarId,
+            clanTag: attemptedClanTag,
             warStartTime: new Date("2026-03-25T12:00:00.000Z"),
             playerTag,
             playerPosition: input.attemptedWarPosition ?? 8,
@@ -6129,7 +6143,7 @@ describe("TodoSnapshotService", () => {
       );
       prismaMock.trackedClan.findMany.mockResolvedValue([
         {
-          tag: twcClanTag,
+          tag: attemptedClanTag,
           name: input.trackedClanName === undefined ? "TheWiseCowboys" : input.trackedClanName,
         },
       ]);
@@ -6153,6 +6167,52 @@ describe("TodoSnapshotService", () => {
 
       expect(cocService.getCurrentWar).not.toHaveBeenCalled();
       return getTodoSnapshotUpsertUpdateForPlayer(playerTag);
+    }
+
+    async function captureRetainedEndedExactSameWarTelemetrySnapshot(input: {
+      existingWarAttacksUsed: number;
+      attemptedWarAttacksUsed: number;
+      existingWarClanName?: string | null;
+      attemptedWarClanName?: string | null;
+      existingWarPosition?: number | null;
+      attemptedWarPosition?: number | null;
+      trackedClanName?: string | null;
+      warMemberAttacksUsed?: number | null;
+      warAttacksRows?: Array<Record<string, unknown>>;
+      txExistingWarAttacksUsedOverride?: number;
+      clanTag?: string;
+      playerTag?: string;
+      playerName?: string;
+      existingClanTag?: string;
+      attemptedClanTag?: string;
+      existingWarId?: number;
+      attemptedWarId?: number;
+      includeExistingSnapshot?: boolean;
+    }): Promise<{
+      update: Record<string, unknown>;
+      summaryLine: string;
+      sampleLine: string | null;
+      messages: string[];
+    }> {
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      try {
+        const update = await refreshRetainedEndedExactSameWarSnapshot(input);
+        const messages = getConsoleMessages(consoleInfoSpy);
+        const summaryLine = getSingleConsoleMessage(consoleInfoSpy, (message) =>
+          message.includes("event=todo_war_owner_resolution_summary"),
+        );
+        const sampleMessages = messages.filter((message) =>
+          message.includes("event=todo_war_owner_resolution_exact_same_war_attack_progress"),
+        );
+        return {
+          update,
+          summaryLine,
+          sampleLine: sampleMessages[0] ?? null,
+          messages,
+        };
+      } finally {
+        consoleInfoSpy.mockRestore();
+      }
     }
 
     it.each([
@@ -6263,19 +6323,15 @@ describe("TodoSnapshotService", () => {
       });
     });
 
-    it("reports bounded exact same-war healing samples in the summary", async () => {
+    it("reports bounded canonical exact same-war healing samples in the summary", async () => {
       const warEndsAt = new Date("2026-03-26T12:00:00.000Z");
       const attemptedAt = new Date("2026-03-26T12:06:00.000Z");
       const verifiedAt = new Date("2026-03-26T00:02:00.000Z");
-      const exactCases = [
-        { clanTag: "#29PCQGUV0", warId: 1002 },
-        { clanTag: "#2RYGLU2UY", warId: 1003 },
-        { clanTag: "#QGRJ2222", warId: 1004 },
-        { clanTag: "#LQQ99UV8", warId: 1005 },
-        { clanTag: "#2QG2C08UP", warId: 1006 },
-        { clanTag: "#VUVU2222", warId: 1007 },
-      ].map((entry, index) => ({
-        ...entry,
+      const clanTag = "#29PCQGUV0";
+      const warId = 1002;
+      const exactCases = Array.from({ length: 6 }, (_, index) => ({
+        clanTag,
+        warId,
         playerTag: buildValidPlayerTag(index),
         playerName: `Player ${index + 1}`,
         position: index + 1,
@@ -6285,10 +6341,10 @@ describe("TodoSnapshotService", () => {
           playerTag: entry.playerTag,
           playerName: entry.playerName,
           clanTag: entry.clanTag,
-          clanName: entry.clanTag === "#29PCQGUV0" ? "TheWiseCowboys" : `Clan ${entry.position}`,
+          clanName: "TheWiseCowboys",
           warActive: true,
           warClanTag: entry.clanTag,
-          warClanName: entry.clanTag === "#29PCQGUV0" ? "TheWiseCowboys" : `Clan ${entry.position}`,
+          warClanName: "TheWiseCowboys",
           warOwnerSource: "LIVE_VERIFIED",
           warOwnerWarId: entry.warId,
           warOwnerVerifiedAt: verifiedAt,
@@ -6315,14 +6371,16 @@ describe("TodoSnapshotService", () => {
       );
       prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
       prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue(
-        exactCases.map((entry) => ({
-          clanTag: entry.clanTag,
-          sourceWarId: entry.warId,
-          sourceWarStartTime: new Date("2026-03-25T12:00:00.000Z"),
-          sourceWarEndTime: warEndsAt,
-          sourceWarState: "notInWar",
-          sourceCurrentWarUpdatedAt: attemptedAt,
-        })),
+        [
+          {
+            clanTag,
+            sourceWarId: warId,
+            sourceWarStartTime: new Date("2026-03-25T12:00:00.000Z"),
+            sourceWarEndTime: warEndsAt,
+            sourceWarState: "notInWar",
+            sourceCurrentWarUpdatedAt: attemptedAt,
+          },
+        ],
       );
       prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue(
         exactCases.map((entry) => ({
@@ -6334,14 +6392,16 @@ describe("TodoSnapshotService", () => {
         })),
       );
       prismaMock.currentWar.findMany.mockResolvedValue(
-        exactCases.map((entry) => ({
-          clanTag: entry.clanTag,
-          warId: entry.warId,
-          state: "notInWar",
-          startTime: new Date("2026-03-25T12:00:00.000Z"),
-          endTime: warEndsAt,
-          updatedAt: attemptedAt,
-        })),
+        [
+          {
+            clanTag,
+            warId,
+            state: "notInWar",
+            startTime: new Date("2026-03-25T12:00:00.000Z"),
+            endTime: warEndsAt,
+            updatedAt: attemptedAt,
+          },
+        ],
       );
       prismaMock.warAttacks.findMany.mockResolvedValue(
         exactCases.map((entry) => ({
@@ -6359,10 +6419,7 @@ describe("TodoSnapshotService", () => {
         })),
       );
       prismaMock.trackedClan.findMany.mockResolvedValue(
-        exactCases.map((entry, index) => ({
-          tag: entry.clanTag,
-          name: index === 0 ? "TheWiseCowboys" : `Clan ${index + 1}`,
-        })),
+        [{ tag: clanTag, name: "TheWiseCowboys" }],
       );
       prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
       prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
@@ -6371,12 +6428,12 @@ describe("TodoSnapshotService", () => {
       prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
       prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
       prismaMock.botSetting.findMany.mockResolvedValue([]);
-      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
       const cocService = {
         getPlayerRaw: vi.fn().mockResolvedValue(null),
         getCurrentWar: vi.fn().mockResolvedValue(null),
       };
 
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
       await todoSnapshotService.refreshSnapshotsForPlayerTags({
         playerTags: exactCases.map((entry) => entry.playerTag),
         cocService: cocService as any,
@@ -6391,13 +6448,70 @@ describe("TodoSnapshotService", () => {
       );
       const exactCountMatch = summaryLine.match(/exact_same_war_attack_progress_count=(\d+)/);
       expect(exactCountMatch).not.toBeNull();
-      expect(Number(exactCountMatch?.[1] ?? -1)).toBeGreaterThanOrEqual(5);
+      expect(Number(exactCountMatch?.[1] ?? -1)).toBe(6);
       expect(sampleLine).toContain("sample_count=5");
       expect(sampleLine.match(/player_tag=/g)).toHaveLength(5);
       expect(sampleLine).toContain("previous_attacks_used=0");
       expect(sampleLine).toContain("final_attacks_used=2");
       expect(cocService.getCurrentWar).not.toHaveBeenCalled();
       consoleInfoSpy.mockRestore();
+    });
+
+    it.each([
+      {
+        label: "canonical same-war exact 0 to 2 increments the count",
+        existingWarAttacksUsed: 0,
+        attemptedWarAttacksUsed: 2,
+        expectedCount: 1,
+      },
+      {
+        label: "canonical same-war exact 1 to 2 increments the count",
+        existingWarAttacksUsed: 1,
+        attemptedWarAttacksUsed: 2,
+        expectedCount: 1,
+      },
+      {
+        label: "canonical same-war exact 2 to 1 does not increment the count",
+        existingWarAttacksUsed: 2,
+        attemptedWarAttacksUsed: 1,
+        expectedCount: 0,
+      },
+      {
+        label: "different war ID with exact WarAttacks does not increment the count",
+        existingWarAttacksUsed: 1,
+        attemptedWarAttacksUsed: 2,
+        attemptedWarId: 1003,
+        expectedCount: 0,
+      },
+      {
+        label: "different clan with exact WarAttacks does not increment the count",
+        existingWarAttacksUsed: 1,
+        attemptedWarAttacksUsed: 2,
+        existingClanTag: "#29PCQGUV0",
+        attemptedClanTag: "#2RYGLU2UY",
+        trackedClanName: "Other Clan",
+        expectedCount: 0,
+      },
+      {
+        label: "a newly created exact snapshot does not increment the count",
+        existingWarAttacksUsed: 0,
+        attemptedWarAttacksUsed: 2,
+        includeExistingSnapshot: false,
+        expectedCount: 0,
+      },
+    ])("$label", async ({ expectedCount, ...input }) => {
+      const result = await captureRetainedEndedExactSameWarTelemetrySnapshot(input as any);
+      const exactCountMatch = result.summaryLine.match(/exact_same_war_attack_progress_count=(\d+)/);
+      expect(exactCountMatch).not.toBeNull();
+      expect(Number(exactCountMatch?.[1] ?? -1)).toBe(expectedCount);
+
+      if (expectedCount > 0) {
+        expect(result.sampleLine).toContain("sample_count=1");
+        expect(result.sampleLine).toContain(`previous_attacks_used=${input.existingWarAttacksUsed}`);
+        expect(result.sampleLine).toContain(`final_attacks_used=${input.attemptedWarAttacksUsed}`);
+      } else {
+        expect(result.sampleLine).toBeNull();
+      }
     });
 
     it("bases exact healing counts on the final transaction decision instead of the pre-transaction snapshot", async () => {
@@ -6607,6 +6721,7 @@ describe("TodoSnapshotService", () => {
     prismaMock.cwlRoundMemberHistory.findMany.mockResolvedValue([]);
     prismaMock.cwlPlayerClanSeason.findMany.mockResolvedValue([]);
     prismaMock.botSetting.findMany.mockResolvedValue([]);
+    const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const cocService = {
       getPlayerRaw: vi.fn().mockResolvedValue(null),
       getCurrentWar: vi.fn().mockResolvedValue(null),
@@ -6618,6 +6733,15 @@ describe("TodoSnapshotService", () => {
       nowMs: Date.UTC(2026, 2, 26, 0, 0, 30, 0),
     });
 
+    const summaryLine = getSingleConsoleMessage(consoleInfoSpy, (message) =>
+      message.includes("event=todo_war_owner_resolution_summary"),
+    );
+    expect(summaryLine).toContain("exact_same_war_attack_progress_count=0");
+    expect(
+      getConsoleMessages(consoleInfoSpy).some((message) =>
+        message.includes("event=todo_war_owner_resolution_exact_same_war_attack_progress"),
+      ),
+    ).toBe(false);
     expect(cocService.getCurrentWar).not.toHaveBeenCalled();
     expect(prismaMock.todoPlayerSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6638,6 +6762,7 @@ describe("TodoSnapshotService", () => {
         }),
       }),
     );
+    consoleInfoSpy.mockRestore();
   });
 
   it("authoritatively clears a verified Rocky Road WAR owner when the live lineup excludes the player", async () => {

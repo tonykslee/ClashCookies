@@ -2917,7 +2917,7 @@ export class TodoSnapshotService {
           ) {
             verifiedOwnerClearedCount += 1;
           }
-          if (writeDecision.attackProgressIncreased) {
+          if (writeDecision.exactSameWarAttackProgressIncreased) {
             exactSameWarAttackProgressCount += 1;
             if (exactSameWarAttackProgressSamples.length < 5) {
               exactSameWarAttackProgressSamples.push(
@@ -3890,7 +3890,7 @@ type TodoWarOwnerWriteDecision = {
   finalState: TodoWarOwnerSnapshotState;
   existingWarAttacksUsed: number;
   finalWarAttacksUsed: number;
-  attackProgressIncreased: boolean;
+  exactSameWarAttackProgressIncreased: boolean;
   preservationMode:
     | "attempted"
     | "preserved_existing_verified"
@@ -4090,18 +4090,31 @@ function finalizeTodoWarOwnerDecision(input: {
   finalState: TodoWarOwnerSnapshotState;
   existingWarAttacksUsed: number;
   attackProgressSource: TodoWarAttackProgressSource;
+  resolutionSource: WarOwnerResolutionSource;
   baseDecision: Omit<
     TodoWarOwnerWriteDecision,
-    "finalState" | "existingWarAttacksUsed" | "finalWarAttacksUsed" | "attackProgressIncreased"
+    | "finalState"
+    | "existingWarAttacksUsed"
+    | "finalWarAttacksUsed"
+    | "exactSameWarAttackProgressIncreased"
   >;
 }): TodoWarOwnerWriteDecision {
   const finalWarAttacksUsed = clampInt(input.finalState.warAttacksUsed ?? 0, 0, 2);
+  const sameWarIdentity =
+    input.baseDecision.existingWarIdentity !== null &&
+    input.baseDecision.attemptedWarIdentity !== null &&
+    input.baseDecision.existingWarIdentity.clanTag === input.baseDecision.attemptedWarIdentity.clanTag &&
+    input.baseDecision.existingWarIdentity.warId !== null &&
+    input.baseDecision.attemptedWarIdentity.warId !== null &&
+    input.baseDecision.existingWarIdentity.warId === input.baseDecision.attemptedWarIdentity.warId;
   return {
     ...input.baseDecision,
     finalState: input.finalState,
     existingWarAttacksUsed: input.existingWarAttacksUsed,
     finalWarAttacksUsed,
-    attackProgressIncreased:
+    exactSameWarAttackProgressIncreased:
+      input.resolutionSource === "canonical_tracked_roster" &&
+      sameWarIdentity &&
       input.attackProgressSource === "exact_war_attacks" &&
       finalWarAttacksUsed > input.existingWarAttacksUsed,
   };
@@ -4212,6 +4225,7 @@ function buildTodoWarOwnerDecision(input: {
         }),
         existingWarAttacksUsed,
         attackProgressSource: input.attackProgressSource,
+        resolutionSource: input.resolutionSource,
         baseDecision: {
           preservationMode: "preserved_existing_verified",
           suppressionReason: "stale",
@@ -4240,6 +4254,7 @@ function buildTodoWarOwnerDecision(input: {
       },
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "attempted",
         suppressionReason: null,
@@ -4266,6 +4281,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "preserved_existing_verified",
         suppressionReason: "stale",
@@ -4286,6 +4302,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "preserved_existing_verified",
         suppressionReason: "stale",
@@ -4308,6 +4325,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "attempted",
         suppressionReason: null,
@@ -4333,6 +4351,7 @@ function buildTodoWarOwnerDecision(input: {
         }),
         existingWarAttacksUsed,
         attackProgressSource: input.attackProgressSource,
+        resolutionSource: input.resolutionSource,
         baseDecision: {
           preservationMode: "preserved_existing_verified",
           suppressionReason: "stale",
@@ -4352,6 +4371,7 @@ function buildTodoWarOwnerDecision(input: {
       },
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "attempted",
         suppressionReason: null,
@@ -4372,6 +4392,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "preserved_existing_verified",
         suppressionReason: "stale",
@@ -4396,6 +4417,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "preserved_existing_verified",
         suppressionReason,
@@ -4416,6 +4438,7 @@ function buildTodoWarOwnerDecision(input: {
       }),
       existingWarAttacksUsed,
       attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
       baseDecision: {
         preservationMode: "preserved_existing_bootstrap",
         suppressionReason: "lower_confidence",
@@ -4431,6 +4454,7 @@ function buildTodoWarOwnerDecision(input: {
     finalState: attemptedState,
     existingWarAttacksUsed,
     attackProgressSource: input.attackProgressSource,
+    resolutionSource: input.resolutionSource,
     baseDecision: {
       preservationMode: "attempted",
       suppressionReason: null,
