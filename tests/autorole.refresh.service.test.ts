@@ -164,6 +164,26 @@ function makeGuild(members: Map<string, GuildMemberLike>, roleIds: string[] = []
   } as any;
 }
 
+function makeRoleRefreshGuild(input: {
+  initialMembers: Map<string, GuildMemberLike>;
+  fullMembers: Map<string, GuildMemberLike>;
+  roleIds?: string[];
+  memberCount?: number;
+}) {
+  const guild = makeGuild(
+    input.initialMembers,
+    input.roleIds ?? [],
+    input.memberCount ?? input.fullMembers.size,
+  );
+  guild.members.fetch = vi.fn(async (discordUserId?: string) => {
+    if (typeof discordUserId === "string") {
+      return input.fullMembers.get(discordUserId) ?? null;
+    }
+    return input.fullMembers;
+  });
+  return guild;
+}
+
 function makeConfig(overrides: Record<string, unknown> = {}) {
   return {
     id: "config-1",
@@ -2122,7 +2142,7 @@ describe("AutoRoleRefreshService", () => {
       cocService: cocService as any,
     });
 
-    expect(guild.members.fetch).not.toHaveBeenCalledWith();
+    expect(guild.members.fetch).not.toHaveBeenCalled();
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
     expect(cocService.getClan).toHaveBeenCalledWith(clanTag);
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
@@ -2142,7 +2162,12 @@ describe("AutoRoleRefreshService", () => {
     const clanTag = "#2QG2C08UP";
     const staleHolderId = "111111111111111111";
     const staleHolder = makeMember(staleHolderId, [clanRoleId]);
-    const guild = makeGuild(new Map([[staleHolderId, staleHolder]]));
+    const guild = makeRoleRefreshGuild({
+      initialMembers: new Map(),
+      fullMembers: new Map([[staleHolderId, staleHolder]]),
+      roleIds: [clanRoleId],
+      memberCount: 1,
+    });
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
         if (tag === clanTag) {
@@ -2175,9 +2200,9 @@ describe("AutoRoleRefreshService", () => {
       }),
     ).rejects.toThrow("Tracked clan fetch failed");
 
-    expect(guild.members.fetch.mock.calls.some((args: unknown[]) => args.length === 0)).toBe(false);
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
     expect(cocService.getClan).toHaveBeenCalledWith(clanTag);
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
     expect(staleHolder.roles.remove).not.toHaveBeenCalled();
     expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
@@ -2192,23 +2217,133 @@ describe("AutoRoleRefreshService", () => {
     );
   });
 
-  it("keeps tracked-clan clan role refresh partial when one targeted member fetch rate limits", async () => {
+  it("creates and later clears pending removal for an uncached stale tracked-clan holder", async () => {
     const clanRoleId = "333333333333333333";
     const clanTag = "#2QG2C08UP";
-    const successUserId = "111111111111111111";
-    const rateLimitedUserId = "444444444444444444";
-    const successUser = makeMember(successUserId);
-    const rateLimitedUser = makeMember(rateLimitedUserId);
-    const guild = makeGuild(new Map(), [], 2);
-    const rateLimitError = new Error("Request with opcode 8 was rate limited. Retry after 12 seconds.");
-    guild.members.fetch = vi.fn(async (discordUserId?: string) => {
-      if (discordUserId === successUserId) {
-        return successUser;
-      }
-      if (discordUserId === rateLimitedUserId) {
-        throw rateLimitError;
-      }
-      return null;
+    const staleHolderId = "111111111111111111";
+    const staleHolder = makeMember(staleHolderId, [clanRoleId]);
+    const fullMembers = new Map<string, GuildMemberLike>([[staleHolderId, staleHolder]]);
+    const guild = makeRoleRefreshGuild({
+      initialMembers: new Map(),
+      fullMembers,
+      roleIds: [clanRoleId],
+      memberCount: 1,
+    });
+    const firstNow = new Date("2026-05-01T12:00:00.000Z");
+    const secondNow = new Date("2026-05-02T12:01:00.000Z");
+    const cocService = {
+      getClan: vi.fn(async (tag: string) => {
+        if (tag === clanTag) {
+          return {
+            tag: clanTag,
+            name: "Tracked Clan",
+            members: [],
+          };
+        }
+        throw new Error(`unexpected clan lookup ${tag}`);
+      }),
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerLinkRows(
+        [
+          makeLinkedAccount({
+            playerTag: "#OLD111",
+            discordUserId: staleHolderId,
+            playerName: "Stale Holder",
+          }),
+        ],
+        where,
+      );
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: clanTag, name: "Tracked Clan", shortName: "TC", clanRoleId, leadRoleId: null },
+    ]);
+    prismaMock.autoRolePendingRemoval.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          ruleId: "rule-1",
+          discordRoleId: clanRoleId,
+          firstMissingAt: firstNow,
+          lastCheckedAt: firstNow,
+        },
+      ] as any);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+        clanRoleRemovalDelayMinutes: 1440,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: clanTag,
+          discordRoleId: clanRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const firstResult = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: clanRoleId,
+      cocService: cocService as any,
+      now: firstNow,
+    });
+
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).not.toHaveBeenCalled();
+    expect(prismaMock.autoRolePendingRemoval.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.autoRolePendingRemoval.deleteMany).not.toHaveBeenCalled();
+    expect(firstResult).toMatchObject({
+      evaluatedCount: 1,
+      addedCount: 0,
+      removedCount: 0,
+      failedCount: 0,
+    });
+
+    const secondResult = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: clanRoleId,
+      cocService: cocService as any,
+      now: secondNow,
+    });
+
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(2);
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(clanRoleId);
+    expect(secondResult).toMatchObject({
+      evaluatedCount: 1,
+      addedCount: 0,
+      removedCount: 1,
+      failedCount: 0,
+    });
+    expect(prismaMock.autoRolePendingRemoval.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "111111111111111111",
+          discordUserId: staleHolderId,
+          discordRoleId: { in: [clanRoleId] },
+        }),
+      }),
+    );
+  });
+
+  it("hydrates a current tracked-clan member from the full guild fetch and keeps the role", async () => {
+    const clanRoleId = "333333333333333333";
+    const clanTag = "#2QG2C08UP";
+    const liveMemberId = "111111111111111111";
+    const liveMember = makeMember(liveMemberId);
+    const guild = makeRoleRefreshGuild({
+      initialMembers: new Map(),
+      fullMembers: new Map([[liveMemberId, liveMember]]),
+      roleIds: [clanRoleId],
+      memberCount: 1,
     });
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
@@ -2219,16 +2354,9 @@ describe("AutoRoleRefreshService", () => {
             members: [
               makeClanMember({
                 tag: "#PYLQ0289",
-                name: "Linked Member",
+                name: "Live Member",
                 role: "member",
                 townHallLevel: 16,
-                leagueName: "Legend League",
-              }),
-              makeClanMember({
-                tag: "#QGRJ2222",
-                name: "Rate Limited Member",
-                role: "member",
-                townHallLevel: 15,
                 leagueName: "Legend League",
               }),
             ],
@@ -2244,13 +2372,8 @@ describe("AutoRoleRefreshService", () => {
         [
           makeLinkedAccount({
             playerTag: "#PYLQ0289",
-            discordUserId: successUserId,
-            playerName: "Linked Member",
-          }),
-          makeLinkedAccount({
-            playerTag: "#QGRJ2222",
-            discordUserId: rateLimitedUserId,
-            playerName: "Rate Limited Member",
+            discordUserId: liveMemberId,
+            playerName: "Live Member",
           }),
         ],
         where,
@@ -2264,7 +2387,13 @@ describe("AutoRoleRefreshService", () => {
         applyNicknames: false,
         removeStaleManagedRoles: true,
       }),
-      rules: [],
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: clanTag,
+          discordRoleId: clanRoleId,
+        }),
+      ],
       exclusions: { users: [], roles: [] },
     } as any);
 
@@ -2275,19 +2404,11 @@ describe("AutoRoleRefreshService", () => {
       cocService: cocService as any,
     });
 
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
     expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
-    expect(guild.members.fetch.mock.calls.some((args: unknown[]) => args.length === 0)).toBe(false);
-    expect(guild.members.fetch).toHaveBeenCalledWith(successUserId);
-    expect(guild.members.fetch).toHaveBeenCalledWith(rateLimitedUserId);
-    expect(successUser.roles.add).toHaveBeenCalledWith(clanRoleId);
-    expect(rateLimitedUser.roles.add).not.toHaveBeenCalledWith(clanRoleId);
-    expect(result.memberSourceSummary).toMatchObject({
-      memberSourceMode: "partial_candidates",
-      targetedFetchRequestedCount: 2,
-      targetedFetchSucceededCount: 1,
-      targetedFetchFailedCount: 1,
-    });
+    expect(liveMember.roles.add).toHaveBeenCalledWith(clanRoleId);
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       evaluatedCount: 1,
       addedCount: 1,
@@ -2295,15 +2416,100 @@ describe("AutoRoleRefreshService", () => {
       skippedCount: 0,
       failedCount: 0,
     });
-    expect(prismaMock.autoRoleMemberState.upsert).toHaveBeenCalledTimes(1);
-    expect(prismaMock.autoRoleSyncRun.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: "run-1" },
-        data: expect.objectContaining({
-          status: "COMPLETED",
-        }),
+  });
+
+  it("aborts tracked-clan clan role refresh when the full guild fetch throws", async () => {
+    const clanRoleId = "333333333333333333";
+    const clanTag = "#2QG2C08UP";
+    const guild = makeGuild(new Map(), [clanRoleId], 1);
+    guild.members.fetch = vi.fn(async () => {
+      throw new Error("full member fetch failed");
+    });
+    const cocService = {
+      getClan: vi.fn(),
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: clanTag, name: "Tracked Clan", shortName: "TC", clanRoleId, leadRoleId: null },
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
       }),
-    );
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: clanTag,
+          discordRoleId: clanRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await expect(
+      autoRoleRefreshService.refreshRole({
+        guild,
+        guildId: "111111111111111111",
+        discordRoleId: clanRoleId,
+        cocService: cocService as any,
+      }),
+    ).rejects.toThrow("complete guild member fetch");
+
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+    expect(guild.members.fetch).not.toHaveBeenCalledWith("111111111111111111");
+  });
+
+  it("aborts tracked-clan clan role refresh when the full guild fetch remains incomplete", async () => {
+    const clanRoleId = "333333333333333333";
+    const clanTag = "#2QG2C08UP";
+    const staleHolderId = "111111111111111111";
+    const staleHolder = makeMember(staleHolderId, [clanRoleId]);
+    const guild = makeGuild(new Map(), [clanRoleId], 2);
+    guild.members.fetch = vi.fn(async () => new Map([[staleHolderId, staleHolder]]));
+    const cocService = {
+      getClan: vi.fn(),
+      getPlayerRaw: vi.fn(),
+    };
+
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: clanTag, name: "Tracked Clan", shortName: "TC", clanRoleId, leadRoleId: null },
+    ]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({
+        applyNicknames: false,
+        removeStaleManagedRoles: true,
+      }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: clanTag,
+          discordRoleId: clanRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await expect(
+      autoRoleRefreshService.refreshRole({
+        guild,
+        guildId: "111111111111111111",
+        discordRoleId: clanRoleId,
+        cocService: cocService as any,
+      }),
+    ).rejects.toThrow("Discord returned only 1/2 members");
+
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
+    expect(staleHolder.roles.remove).not.toHaveBeenCalled();
+    expect(prismaMock.autoRolePendingRemoval.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
   });
 
   it("refreshes a tracked-clan lead role from the owning clan profile without player fanout", async () => {
@@ -2439,23 +2645,25 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
-  it("fetches an uncached linked co-leader and skips a stale linked lead candidate without aborting the refresh", async () => {
+  it("creates and later clears pending removal for an uncached stale tracked-clan lead holder", async () => {
     const leadRoleId = "222222222222222222";
     const clanTag = "#2QG2C08UP";
-    const coLeaderUserId = "333333333333333333";
-    const staleUserId = "444444444444444444";
-    const coLeaderUser = makeMember(coLeaderUserId);
-    const staleUser = makeMember(staleUserId);
-    const guild = makeGuild(new Map(), [], 2);
-    guild.members.fetch = vi.fn(async (discordUserId?: string) => {
-      if (discordUserId === coLeaderUserId) {
-        return coLeaderUser;
-      }
-      if (discordUserId === staleUserId) {
-        throw new Error("member missing from guild");
-      }
-      return null;
+    const staleHolderId = "111111111111111111";
+    const leaderUserId = "333333333333333333";
+    const staleHolder = makeMember(staleHolderId, [leadRoleId]);
+    const leaderUser = makeMember(leaderUserId);
+    const fullMembers = new Map<string, GuildMemberLike>([
+      [staleHolderId, staleHolder],
+      [leaderUserId, leaderUser],
+    ]);
+    const guild = makeRoleRefreshGuild({
+      initialMembers: new Map(),
+      fullMembers,
+      roleIds: [leadRoleId],
+      memberCount: 2,
     });
+    const firstNow = new Date("2026-05-03T12:00:00.000Z");
+    const secondNow = new Date("2026-05-04T12:01:00.000Z");
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
         if (tag === clanTag) {
@@ -2463,13 +2671,6 @@ describe("AutoRoleRefreshService", () => {
             tag: clanTag,
             name: "Lead Clan",
             members: [
-              makeClanMember({
-                tag: "#GRJQ2222",
-                name: "CoLeader Player",
-                role: "coLeader",
-                townHallLevel: 15,
-                leagueName: "Master League I",
-              }),
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -2489,54 +2690,80 @@ describe("AutoRoleRefreshService", () => {
       return filterPlayerLinkRows(
         [
           makeLinkedAccount({
-            playerTag: "#GRJQ2222",
-            discordUserId: coLeaderUserId,
-            playerName: "CoLeader Player",
+            playerTag: "#PYLQ0289",
+            discordUserId: staleHolderId,
+            playerName: "Stale Holder",
           }),
           makeLinkedAccount({
             playerTag: "#QGRJ2222",
-            discordUserId: staleUserId,
-            playerName: "Stale Leader Player",
+            discordUserId: leaderUserId,
+            playerName: "Leader Player",
           }),
         ],
         where,
       );
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: clanTag, name: "Lead Clan", shortName: "LC", leadRoleId }]);
+    prismaMock.autoRolePendingRemoval.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          ruleId: "rule-1",
+          discordRoleId: leadRoleId,
+          firstMissingAt: firstNow,
+          lastCheckedAt: firstNow,
+        },
+      ] as any);
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({
         applyNicknames: false,
         removeStaleManagedRoles: true,
+        clanRoleRemovalDelayMinutes: 1440,
       }),
-      rules: [],
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.CLAN,
+          targetValue: clanTag,
+          discordRoleId: leadRoleId,
+        }),
+      ],
       exclusions: { users: [], roles: [] },
     } as any);
 
-    const result = await autoRoleRefreshService.refreshRole({
+    const firstResult = await autoRoleRefreshService.refreshRole({
       guild,
       guildId: "111111111111111111",
       discordRoleId: leadRoleId,
       cocService: cocService as any,
+      now: firstNow,
     });
 
-    expect(guild.members.fetch.mock.calls.some((args: unknown[]) => args.length === 0)).toBe(false);
-    expect(guild.members.fetch).toHaveBeenCalledWith(coLeaderUserId);
-    expect(guild.members.fetch).toHaveBeenCalledWith(staleUserId);
-    expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
-    expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).not.toHaveBeenCalled();
-    expect(coLeaderUser.roles.add).toHaveBeenCalledWith(leadRoleId);
-    expect(staleUser.roles.add).not.toHaveBeenCalledWith(leadRoleId);
-    expect(result.memberSourceSummary).toMatchObject({
-      memberSourceMode: "partial_candidates",
-      targetedFetchRequestedCount: 2,
-      targetedFetchSucceededCount: 1,
-      targetedFetchFailedCount: 1,
-    });
-    expect(result).toMatchObject({
-      evaluatedCount: 1,
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
+    expect(cocService.getClan).toHaveBeenCalledTimes(1);
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+    expect(staleHolder.roles.remove).not.toHaveBeenCalled();
+    expect(prismaMock.autoRolePendingRemoval.upsert).toHaveBeenCalledTimes(1);
+    expect(firstResult).toMatchObject({
+      evaluatedCount: 2,
       addedCount: 1,
       removedCount: 0,
-      skippedCount: 0,
+      failedCount: 0,
+    });
+
+    const secondResult = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: leadRoleId,
+      cocService: cocService as any,
+      now: secondNow,
+    });
+
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(2);
+    expect(staleHolder.roles.remove).toHaveBeenCalledWith(leadRoleId);
+    expect(secondResult).toMatchObject({
+      evaluatedCount: 2,
+      addedCount: 0,
+      removedCount: 1,
       failedCount: 0,
     });
   });
@@ -2546,7 +2773,12 @@ describe("AutoRoleRefreshService", () => {
     const clanTag = "#2QG2C08UP";
     const currentHolderId = "111111111111111111";
     const currentHolder = makeMember(currentHolderId, [leadRoleId]);
-    const guild = makeGuild(new Map([[currentHolderId, currentHolder]]));
+    const guild = makeRoleRefreshGuild({
+      initialMembers: new Map(),
+      fullMembers: new Map([[currentHolderId, currentHolder]]),
+      roleIds: [leadRoleId],
+      memberCount: 1,
+    });
     const cocService = {
       getClan: vi.fn(async (tag: string) => {
         if (tag === clanTag) {
@@ -2581,6 +2813,7 @@ describe("AutoRoleRefreshService", () => {
 
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
     expect(cocService.getClan).toHaveBeenCalledWith(clanTag);
+    expect(guild.members.fetch.mock.calls.filter((args: unknown[]) => args.length === 0)).toHaveLength(1);
     expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
     expect(playerCurrentService.refreshCurrentPlayersFromLiveTags).not.toHaveBeenCalled();
     expect(currentHolder.roles.remove).not.toHaveBeenCalled();
