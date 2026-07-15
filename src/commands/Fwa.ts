@@ -5755,7 +5755,24 @@ type FwaMailConfirmPreviousPostedSnapshot = Readonly<{
 }>;
 
 let buildWarMailEmbedForTagForConfirm = buildWarMailEmbedForTag;
-let buildWarMailEmbedForTagForRefresh = buildWarMailEmbedForTag;
+
+type FwaMailRefreshRenderer = (
+  guildId: string,
+  tag: string,
+  options?: {
+    fetchReason?: PointsApiFetchReason;
+    routine?: boolean;
+  },
+) => ReturnType<typeof buildWarMailEmbedForTag>;
+
+const buildWarMailEmbedForTagForRefreshDefault: FwaMailRefreshRenderer = async (
+  guildId,
+  tag,
+  options,
+) => buildWarMailEmbedForTag(new CoCService(), guildId, tag, options);
+
+let buildWarMailEmbedForTagForRefresh: FwaMailRefreshRenderer =
+  buildWarMailEmbedForTagForRefreshDefault;
 
 export function setFwaMailPreviewPayloadForTest(
   key: string,
@@ -5777,9 +5794,10 @@ export function setFwaMailConfirmRendererForTest(
 }
 
 export function setFwaMailRefreshRendererForTest(
-  renderer: typeof buildWarMailEmbedForTag | null,
+  renderer: FwaMailRefreshRenderer | null,
 ): void {
-  buildWarMailEmbedForTagForRefresh = renderer ?? buildWarMailEmbedForTag;
+  buildWarMailEmbedForTagForRefresh =
+    renderer ?? buildWarMailEmbedForTagForRefreshDefault;
 }
 
 function buildFwaMailConfirmExpectedIdentity(params: {
@@ -7495,9 +7513,7 @@ export async function refreshWarMailPostByResolvedTargetForTest(params: {
     if (params.key) stopWarMailPolling(params.key);
     return "frozen";
   }
-  const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTagForRefresh(
-    cocService,
     params.guildId,
     normalizedTag,
     {
