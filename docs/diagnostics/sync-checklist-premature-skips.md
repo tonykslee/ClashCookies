@@ -2,139 +2,114 @@
 
 ## Summary
 
-On July 15, 2026, the FWA sync root for guild `1324040917602013261` was tracked by sync message `1526856991119769693` with `syncEpochSeconds=1784149200`, which is `2026-07-15T21:00:00.000Z` or `2:00 PM America/Los_Angeles`.
+The July 15, 2026 incident mixes three different timestamps that should not be conflated:
 
-The Mail checklist published at `2026-07-15T21:01:45.959Z` and the Bases checklist published at `2026-07-15T21:17:46.176Z`. The Bases publish happened exactly at the fixed readiness gate expiry (`sync + 2 minutes + 15 minutes`).
+1. The Discord message snowflake creation time for the sync root message `1526856991119769693` is `2026-07-15T07:44:34.314Z`.
+2. The database `TrackedMessage.createdAt` for that same sync-root row is `2026-07-15T07:44:34.603Z`.
+3. A later, separate `SYNC_TIME_POST` tracked-message row exists at `2026-07-15T20:55:43.572Z` and is the source of the 20:55 contradiction.
 
-This incident is not one bug. It is two overlapping behaviors:
+The important production boundary is this:
 
-1. The checklist scheduler correctly held Bases until the readiness window expired and then published with the rows it had.
-2. The current-war ownership layer was stale for some clans during the window, so several clans rendered as unresolved or skipped rather than as exact active identities.
+- The scheduler recorded the Bases readiness gate expiring at `2026-07-15T21:17:00.000Z`.
+- The Bases publication claim was created later, at `2026-07-15T21:17:46.176Z`.
+- The published Bases tracked-message row was then created at `2026-07-15T21:17:46.618Z`.
 
-The Mail checklist checked state for RR and SH was current, not stale. The current message was updated by reaction events on the published Mail message, not inherited from a prior sync.
+So the right interpretation is not "the checklist was published exactly at gate expiry". It is "publication happened after the gate had already expired".
 
-## Production Timeline
+## What Is Proven
 
-| Time (UTC) | Time (America/Los_Angeles) | Event |
-| --- | --- | --- |
-| `2026-07-15T20:55:43.572Z` | `1:55:43 PM` | Sync tracked row created for message `1526856991119769693` |
-| `2026-07-15T21:01:45.959Z` | `2:01:45 PM` | Mail checklist claim created and Mail checklist posted as message `1527057612753867014` |
-| `2026-07-15T21:02:00.000Z` | `2:02:00 PM` | Bases checklist due time (`sync + 2 minutes`) |
-| `2026-07-15T21:17:00.000Z` | `2:17:00 PM` | Bases readiness gate expired (`due + 15 minutes`) |
-| `2026-07-15T21:17:46.176Z` | `2:17:46 PM` | Bases checklist claim created and Bases checklist posted as message `1527061640368099328` |
+### Sync root and publication claims
 
-## Production Evidence
+The sync-root tracked row for `1526856991119769693` is the authoritative root row for this incident. Its metadata includes `syncEpochSeconds=1784149200`, which corresponds to `2026-07-15T21:00:00.000Z`.
 
-### Sync root
+The scheduler created two publication claims on that sync root:
 
-The active sync root row is:
+- Mail: `2026-07-15T21:01:45.959Z`
+- Bases: `2026-07-15T21:17:46.176Z`
 
-- `messageId`: `1526856991119769693`
-- `createdAt`: `2026-07-15T07:44:34.603Z`
-- `expiresAt`: `2026-07-15T22:00:00.000Z`
-- `syncEpochSeconds`: `1784149200`
-- configured clans: RD, ZG, DE, SE, TWC, RR, AK, SH, EB
+### Persisted publication snapshots
 
-### Publication claims
+The persisted publication row for Mail is distinct from the gate-time state. Its metadata contains the exact 9 published rows, and the later checked state on that message is a separate reaction-driven update.
 
-The scheduler wrote one publication claim per checklist kind:
+The persisted publication row for Bases is also distinct from the gate-time state. Its metadata contains 9 exact rows, with 6 marked `not checked` and 3 marked `checked and all good`.
 
-| Kind | Claim created | Claim key |
-| --- | --- | --- |
-| Mail | `2026-07-15T21:01:45.959Z` | `fwa_match_checklist_publication|guild=1324040917602013261|sync=1526856991119769693|feature=FWA_MATCH_CHECKLIST|kind=mail_checklist` |
-| Bases | `2026-07-15T21:17:46.176Z` | `fwa_match_checklist_publication|guild=1324040917602013261|sync=1526856991119769693|feature=FWA_MATCH_CHECKLIST|kind=bases_checklist` |
+Those persisted Bases rows are the snapshot the message content was built from. They are not the same thing as the gate-time classification used to decide whether to apply badge reactions.
 
-### Scheduler logs
+### Gate-time decision logic
 
-The scheduler logs prove the exact timing and the gate math:
+`shouldApplyFwaMatchChecklistBadgeReaction(row, viewType)` returns `false` only when `viewType === "Bases"` and `row.basesStatus === "skipped"`.
 
-- `checklist_scheduled_due` for Mail at `2026-07-15T21:01:00.000Z`
-- `checklist_scheduled_due` for Bases at `2026-07-15T21:02:00.000Z`
-- `skipped_ready_gate` for Bases with `rowCount=9`, `skippedCount=6`, `expectedReactionCount=3`, `trackedClanCount=9`, `gateExpiresAt=2026-07-15T21:17:00.000Z`
-- `ready_gate_expired` for Bases with the same counts
-- `posted` for Mail message `1527057612753867014`
-- `posted` for Bases message `1527061640368099328`
+That means the reaction count is controlled by the gate-time row status, not by the later published text snapshot.
 
-## Per-Clan Classification
+The production log confirms the gate math:
 
-Legend:
-
-- A = intentionally skipped or unclaimed, correctly rendered skipped
-- B = participated in the sync but was still searching or unmatched when the readiness gate expired
-- C = live CoC had already moved on, but `CurrentWar` failed to roll forward or remained stale
-- D = live CoC was unavailable or errored
-- E = another proven condition
-
-| Clan | Tag | Mail at 2:01 | Bases at 2:17 | Latest refresh after 2:17 | Classification | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| RD | `#2YUYLJCGV` | `vs -` | `Skipped this sync` | current war still unresolved at the gate; later refresh showed a preparation row for the next cycle | B | Participated, but no exact active identity at gate expiry |
-| ZG | `#LQQ99UV8` | `vs -` | `Skipped this sync` | later refresh showed a preparation row with `DARK EMPIRE™!` | B | Same shape as RD |
-| DE | `#R80L8VYG` | `vs -` | `Skipped this sync` | later refresh showed a preparation row with `ZERO GRAVITY` | B | Same shape as RD |
-| SE | `#82YLR9Q2` | active identity rendered | active row selected for reaction | latest refresh kept an active matched war with `Téam Pokémon` | E | Active matched war; three Bases reactions included it |
-| TWC | `#29PCQGUV0` | `vs -` | `Skipped this sync` | later refresh showed a preparation row with `Tribal Chaos` | B | Still unmatched at gate expiry |
-| RR | `#2RYGLU2UY` | active identity rendered | active row selected for reaction | `CurrentWar` remained partially stale: `warId`/`syncNumber` were missing and sync assignment hit `persist_current_war source=conflict result=missing_row` | C | The exact first failed stage we captured is `sync-assignment` / `persist_current_war` |
-| AK | `#2RVV0L0VP` | active identity rendered | active row selected for reaction | latest refresh kept an active matched war with `REQ N LEAVE` | E | Active matched war; three Bases reactions included it |
-| SH | `#C0CU2Q82` | `vs -` | `Skipped this sync` | current mail reaction state was later updated on the live message, but gate-time row was still unresolved | B | RR and SH checked states were current reactions, not stale carry-over |
-| EB | `#2QVGPQP0U` | `vs -` | `Skipped this sync` | later refresh showed a preparation row with `outlander club` | B | Still unmatched at gate expiry |
-
-## RR and SH Checked State
-
-The Mail checklist message `1527057612753867014` now has `checkedClanTags` that include RR and SH, and the app logged current reaction events on that same message:
-
-- `fwa_checklist_reaction_received ... messageId=1527057612753867014 ... emojiName=Logo_RockyRoad reactionCount=2`
-- `fwa_checklist_reaction_matched ... clanTag=#2RYGLU2UY matched=true`
-- `fwa_checklist_reaction_received ... messageId=1527057612753867014 ... emojiName=Logo_StrawHats reactionCount=2`
-- `fwa_checklist_reaction_matched ... clanTag=#C0CU2Q82 matched=true`
-
-That is current-state evidence, not a stale-sync leak.
-
-## Why Only Three Bases Reactions Appeared
-
-The scheduler computed:
-
-- `trackedClanCount=9`
+- `rowCount=9`
 - `skippedCount=6`
 - `expectedReactionCount=3`
+- `trackedClanCount=9`
+- `gateExpiresAt=2026-07-15T21:17:00.000Z`
 
-The Bases renderer skips badge reactions for rows whose authoritative `CurrentWar` state is `notInWar`. That leaves the three active rows selected for reactions, which matches the production observation.
+So the checklists are doing what the code says: six rows were treated as skipped at gate time, and three rows were reaction-eligible.
 
-## Why Refreshing Did Not Repair the Post
+## Why The 07:44 vs 20:55 Contradiction Exists
 
-The checklist post was created from the persisted current-war snapshot that existed when the scheduler ran. Later refreshes updated the tracked rows and reaction state, but they did not change the fact that the original Bases publication was emitted after the readiness gate expired with six unresolved rows.
+The contradiction disappears once the rows are separated:
 
-Mail also protects against identity drift by requiring an exact active identity. When `CurrentWar` and live CoC do not agree on a real active identity, Mail intentionally renders `vs -` instead of inventing an opponent.
+- `2026-07-15T07:44:34.314Z` is the Discord creation time for the sync root message.
+- `2026-07-15T07:44:34.603Z` is the database `TrackedMessage.createdAt` for that same sync-root row.
+- `2026-07-15T20:55:43.365Z` / `2026-07-15T20:55:43.572Z` belong to a different `SYNC_TIME_POST` tracked-message row.
 
-## First Incorrect Architectural Layer
+Those are not competing timestamps for the same record. They are different records with different roles.
 
-For RR, the first incorrect layer was `sync-assignment` inside `ActiveWarSyncResolutionService`, specifically `persist_current_war` failing with `result=missing_row`. There were no later `current_war_rollover` or `current_war_finalization` CAS logs for that clan in the captured window.
+## What The Logs Do And Do Not Prove
 
-For the six unresolved clans, the checklist layer itself behaved as designed: it treated `notInWar` as skipped and withheld reactions. The unresolved rows were the result of stale or unavailable current-war evidence at the gate, not of the reaction code inventing state.
+### Mail
 
-## Root Cause Confidence
+The Mail checklist was published at `2026-07-15T21:01:45.959Z` and the message row was created at `2026-07-15T21:01:46.334Z`.
 
-High confidence:
+The current `checkedClanTags` on that Mail tracked row include RR and SH, but that is later reaction state, not the original publication snapshot.
 
-- the gate timing is proven by logs and tracked rows
-- the publication claims are present and match the two checklist kinds
-- the three reaction count is explained by the persisted row counts
-- RR and SH checked state is current, not leaked
-- RR has a distinct sync-assignment persistence failure
+### Bases
 
-Moderate confidence:
+The Bases checklist was published at `2026-07-15T21:17:46.176Z` and the message row was created at `2026-07-15T21:17:46.618Z`.
 
-- the six unresolved clans were still unmatched at gate expiry rather than intentionally skipped
+The first retained readiness-gate log is:
 
-Low confidence:
+- `event=ready_gate_expired guild=1324040917602013261 syncMessageId=1526856991119769693 kind=bases_checklist rowCount=9 skippedCount=6 expectedReactionCount=3 trackedClanCount=9 reason=bases_ready_gate_expired gateExpiresAt=2026-07-15T21:17:00.000Z`
 
-- any claim that the later refresh state is the same as the 2:01 or 2:17 snapshot without a captured Discord message snapshot from that exact moment
+That log proves the gate expired before publication and explains why only three reactions were expected.
 
-## Recommended Fix Boundary
+### Refresh behavior
 
-The smallest safe fix boundary is:
+The captured logs do not include a retained failure line such as `FWA match checklist refresh button failed`, `refresh failed message=...`, or `This checklist post can no longer be refreshed.`
 
-- keep Mail exact-identity suppression intact
-- keep Bases from inventing fallback opponents
-- distinguish `intentionally skipped`, `participating but unresolved`, `active matched war`, and `temporarily unavailable/stale data`
-- only map `notInWar` to `Skipped this sync` when `CurrentWar` is authoritative and stable for that clan at the render moment
+What we do have are later `fwa_checklist_bases_refresh_state` logs that show the state builder running again with `rowCount=9`. Those are later refresh-state observations, not evidence of the original gate-time snapshot.
+
+## Per-Clan Characterization
+
+The safest read is to separate what is directly proven from what is still unknown.
+
+| Clan | Tag | What is directly proven | Characterization |
+| --- | --- | --- | --- |
+| RD | `#2YUYLJCGV` | Appears in the published Bases snapshot as `checked and all good` | Not part of the six skipped rows in the publication snapshot |
+| ZG | `#LQQ99UV8` | Appears in the published Bases snapshot as `not checked` | The gate-time cause is not directly proven in the captured evidence |
+| DE | `#R80L8VYG` | Appears in the published Bases snapshot as `not checked` | The gate-time cause is not directly proven in the captured evidence |
+| SE | `#82YLR9Q2` | Reaction-eligible at gate time; also appears in later live refresh evidence | Directly supported as one of the three reaction-eligible clans |
+| TWC | `#29PCQGUV0` | Appears in the published Bases snapshot as `not checked` | The gate-time cause is not directly proven in the captured evidence |
+| RR | `#2RYGLU2UY` | Reaction-eligible at gate time; later logs show `persist_current_war result=missing_row` for a retained sync-assignment failure | Directly supported, but the retained log is the first retained failed stage, not necessarily the first failure |
+| AK | `#2RVV0L0VP` | Reaction-eligible at gate time; later logs show a live matched war | Directly supported as one of the three reaction-eligible clans |
+| SH | `#C0CU2Q82` | Appears in the published Bases snapshot as `checked and all good` | Not part of the six skipped rows in the publication snapshot |
+| EB | `#2QVGPQP0U` | Appears in the published Bases snapshot as `checked and all good` | Not part of the six skipped rows in the publication snapshot |
+
+The key constraint is that we do not have a retained per-clan gate-time snapshot for every one of the six skipped rows. Because of that, the evidence supports a conservative label of "unknown gate-time cause" rather than a stronger claim like "participated but unmatched" for every clan.
+
+## Root Cause Boundary
+
+The evidence supports this narrower diagnosis:
+
+- the scheduler published after the readiness gate had already expired
+- the gate-time row classification produced six skipped rows and three reaction-eligible rows
+- the persisted publication snapshots are not the same thing as the gate-time reaction decision
+- later refresh logs are not a substitute for the original gate-time snapshot
 
 This document intentionally stops at diagnosis and does not implement the behavior change.

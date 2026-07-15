@@ -103,7 +103,7 @@ function makeBasesChecklistRows(params?: {
   });
 }
 
-function makeProductionBasesChecklistRows() {
+function makeJuly15IncidentGateBasesRows() {
   return [
     {
       clanTag: "#2YUYLJCGV",
@@ -608,7 +608,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
       viewType: "Bases",
-      rows: makeProductionBasesChecklistRows(),
+      rows: makeJuly15IncidentGateBasesRows(),
       scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=production",
       checkedClanTags: [],
       referenceId: "1526856991119769693",
@@ -632,6 +632,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
       });
 
       expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+      expect(publishMock.publishFwaMatchChecklistMessageToChannel).toHaveBeenCalledTimes(1);
       expect(
         infoSpy.mock.calls.some((call) =>
           String(call[0] ?? "").includes("reason=bases_ready_gate_expired") &&
