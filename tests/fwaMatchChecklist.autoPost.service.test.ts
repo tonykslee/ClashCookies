@@ -103,6 +103,119 @@ function makeBasesChecklistRows(params?: {
   });
 }
 
+function makeProductionBasesChecklistRows() {
+  return [
+    {
+      clanTag: "#2YUYLJCGV",
+      compactCopyLine: "RD | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1363320268755435772",
+      badgeEmojiName: "Logo_RisingDawn",
+      badgeEmojiInline: "<:Logo_RisingDawn:1363320268755435772>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+    {
+      clanTag: "#LQQ99UV8",
+      compactCopyLine: "ZG | 🔴 | ❌ Bases not checked",
+      badgeEmojiId: "1363320272035385524",
+      badgeEmojiName: "Logo_ZeroGravity",
+      badgeEmojiInline: "<:Logo_ZeroGravity:1363320272035385524>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+    {
+      clanTag: "#R80L8VYG",
+      compactCopyLine: "DE | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1363320285595435148",
+      badgeEmojiName: "Logo_DarkEmpire",
+      badgeEmojiInline: "<:Logo_DarkEmpire:1363320285595435148>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+    {
+      clanTag: "#82YLR9Q2",
+      compactCopyLine: "SE | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1463680051261341799",
+      badgeEmojiName: "Logo_SteelEmpire",
+      badgeEmojiInline: "<:Logo_SteelEmpire:1463680051261341799>",
+      basesStatus: "not_checked",
+      matchType: "FWA",
+      warId: 1000627,
+      opponentTag: "#2PV0CC98V",
+      warStartTimeIso: "2026-07-16T20:08:41.000Z",
+    },
+    {
+      clanTag: "#29PCQGUV0",
+      compactCopyLine: "TWC | 🔴 | ❌ Bases not checked",
+      badgeEmojiId: "1367885051622195230",
+      badgeEmojiName: "Logo_TheWiseCowboys",
+      badgeEmojiInline: "<:Logo_TheWiseCowboys:1367885051622195230>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+    {
+      clanTag: "#2RYGLU2UY",
+      compactCopyLine: "RR | 🔴 | ❌ Bases not checked",
+      badgeEmojiId: "1463679964334526495",
+      badgeEmojiName: "Logo_RockyRoad",
+      badgeEmojiInline: "<:Logo_RockyRoad:1463679964334526495>",
+      basesStatus: "not_checked",
+      matchType: "FWA",
+      warId: null,
+      opponentTag: "#2J02UUJ8U",
+      warStartTimeIso: "2026-07-16T20:00:41.000Z",
+    },
+    {
+      clanTag: "#2RVV0L0VP",
+      compactCopyLine: "AK | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1464436468578517125",
+      badgeEmojiName: "Logo_Akatsuki",
+      badgeEmojiInline: "<:Logo_Akatsuki:1464436468578517125>",
+      basesStatus: "not_checked",
+      matchType: "FWA",
+      warId: 1000626,
+      opponentTag: "#2C90QQ0Q9",
+      warStartTimeIso: "2026-07-16T20:06:51.000Z",
+    },
+    {
+      clanTag: "#C0CU2Q82",
+      compactCopyLine: "SH | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1496617661264695296",
+      badgeEmojiName: "Logo_StrawHats",
+      badgeEmojiInline: "<:Logo_StrawHats:1496617661264695296>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+    {
+      clanTag: "#2QVGPQP0U",
+      compactCopyLine: "EB | 🟢 | ❌ Bases not checked",
+      badgeEmojiId: "1496617820115435702",
+      badgeEmojiName: "Logo_EternalBlaze",
+      badgeEmojiInline: "<:Logo_EternalBlaze:1496617820115435702>",
+      basesStatus: "skipped",
+      matchType: "UNKNOWN",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    },
+  ] as const;
+}
+
 describe("FwaMatchChecklistAutoPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -481,6 +594,51 @@ describe("FwaMatchChecklistAutoPostService", () => {
         infoSpy.mock.calls.some((call) =>
           String(call[0] ?? "").includes("reason=bases_ready_gate_expired") &&
           String(call[0] ?? "").includes("skippedCount=6"),
+        ),
+      ).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("reproduces the July 15 nine-clan readiness-gate shape", async () => {
+    const channel = makeChecklistChannel();
+    const cocFactory = vi.fn(() => ({} as any));
+    const service = new FwaMatchChecklistAutoPostService(undefined, cocFactory);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    renderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: makeProductionBasesChecklistRows(),
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=production",
+      checkedClanTags: [],
+      referenceId: "1526856991119769693",
+      expiresAt: new Date("2026-07-15T22:00:00.000Z"),
+      emptyMessage: null,
+    });
+
+    try {
+      const result = await service.postForSyncTrackedMessage({
+        client: makeClient({ channel }),
+        tracked: {
+          guildId: "guild-1",
+          channelId: "source-channel",
+          messageId: "1526856991119769693",
+          expiresAt: new Date("2026-07-15T22:00:00.000Z"),
+          checklistDueAt: new Date("2026-07-15T21:02:00.000Z"),
+        },
+        createdByUserId: "user-1",
+        viewType: "Bases",
+        nowMs: new Date("2026-07-15T21:17:46.176Z").getTime(),
+      });
+
+      expect(result).toEqual({ posted: 1, skipped: 0, failed: 0 });
+      expect(
+        infoSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("reason=bases_ready_gate_expired") &&
+          String(call[0] ?? "").includes("skippedCount=6") &&
+          String(call[0] ?? "").includes("expectedReactionCount=3") &&
+          String(call[0] ?? "").includes("trackedClanCount=9") &&
+          String(call[0] ?? "").includes("gateExpiresAt=2026-07-15T21:17:00.000Z"),
         ),
       ).toBe(true);
     } finally {

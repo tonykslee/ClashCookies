@@ -20,10 +20,27 @@ vi.mock("../src/services/CoCService", () => ({
   CoCService: vi.fn().mockImplementation(() => ({})),
 }));
 
+const warMailLifecycleMock = vi.hoisted(() => ({
+  resolveStatusForCurrentWar: vi.fn().mockResolvedValue({
+    status: "not_posted",
+    mailStatusEmoji: "📭",
+    debug: null,
+  }),
+}));
+
+vi.mock("../src/services/WarMailLifecycleService", () => ({
+  WarMailLifecycleService: class {
+    resolveStatusForCurrentWar(...args: unknown[]) {
+      return warMailLifecycleMock.resolveStatusForCurrentWar(...args);
+    }
+  },
+}));
+
 import { trackedMessageService } from "../src/services/TrackedMessageService";
-import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
+import { buildFwaMatchChecklistMessageContent } from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchBasesMessageContent } from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../src/services/FwaMatchChecklistStateService";
+import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
 
 function makeBaseSwapTrackedMessageRow(params: {
   messageId: string;
@@ -124,6 +141,146 @@ function makeLiveWarSnapshot(params: {
     },
     state: params.state ?? "preparation",
   } as any;
+}
+
+function makeProductionTrackedClans() {
+  return [
+    { tag: "#2YUYLJCGV", clanBadge: "<:Logo_RisingDawn:1363320268755435772>", name: "RISING DAWN", shortName: "RD" },
+    { tag: "#LQQ99UV8", clanBadge: "<:Logo_ZeroGravity:1363320272035385524>", name: "ZERO GRAVITY", shortName: "ZG" },
+    { tag: "#R80L8VYG", clanBadge: "<:Logo_DarkEmpire:1363320285595435148>", name: "DARK EMPIRE™!", shortName: "DE" },
+    { tag: "#82YLR9Q2", clanBadge: "<:Logo_SteelEmpire:1463680051261341799>", name: "Steel Empire 2", shortName: "SE" },
+    { tag: "#29PCQGUV0", clanBadge: "<:Logo_TheWiseCowboys:1367885051622195230>", name: "TheWiseCowboys", shortName: "TWC" },
+    { tag: "#2RYGLU2UY", clanBadge: "<:Logo_RockyRoad:1463679964334526495>", name: "Rocky Road", shortName: "RR" },
+    { tag: "#2RVV0L0VP", clanBadge: "<:Logo_Akatsuki:1464436468578517125>", name: '" ＡＫＡＴＳＵＫＩ "', shortName: "AK" },
+    { tag: "#C0CU2Q82", clanBadge: "<:Logo_StrawHats:1496617661264695296>", name: "StrawHats", shortName: "SH" },
+    { tag: "#2QVGPQP0U", clanBadge: "<:Logo_EternalBlaze:1496617820115435702>", name: "Eternal Blaze", shortName: "EB" },
+  ] as const;
+}
+
+function makeProductionCurrentWars() {
+  return [
+    {
+      clanTag: "#2YUYLJCGV",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+    {
+      clanTag: "#LQQ99UV8",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+    {
+      clanTag: "#R80L8VYG",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+    {
+      clanTag: "#82YLR9Q2",
+      warId: 1000627,
+      prepStartTime: null,
+      startTime: new Date("2026-07-16T20:08:41.000Z"),
+      endTime: new Date("2026-07-17T20:08:41.000Z"),
+      opponentTag: "#2PV0CC98V",
+      opponentName: "Téam Pokémon",
+      matchType: "FWA",
+      inferredMatchType: null,
+      outcome: "WIN",
+      state: "preparation",
+      pendingEventType: "war_started",
+      pendingEventTargetState: "preparation",
+    },
+    {
+      clanTag: "#29PCQGUV0",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+    {
+      clanTag: "#2RYGLU2UY",
+      warId: null,
+      prepStartTime: null,
+      startTime: new Date("2026-07-16T20:00:41.000Z"),
+      endTime: new Date("2026-07-17T20:00:41.000Z"),
+      opponentTag: "#2J02UUJ8U",
+      opponentName: "RISE FWA",
+      matchType: "FWA",
+      inferredMatchType: null,
+      outcome: "LOSE",
+      state: "preparation",
+    },
+    {
+      clanTag: "#2RVV0L0VP",
+      warId: 1000626,
+      prepStartTime: null,
+      startTime: new Date("2026-07-16T20:06:51.000Z"),
+      endTime: new Date("2026-07-17T20:06:51.000Z"),
+      opponentTag: "#2C90QQ0Q9",
+      opponentName: "REQ N LEAVE",
+      matchType: "FWA",
+      inferredMatchType: null,
+      outcome: "WIN",
+      state: "preparation",
+      pendingEventType: "war_started",
+      pendingEventTargetState: "preparation",
+    },
+    {
+      clanTag: "#C0CU2Q82",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+    {
+      clanTag: "#2QVGPQP0U",
+      warId: null,
+      prepStartTime: null,
+      startTime: null,
+      endTime: null,
+      opponentTag: null,
+      opponentName: null,
+      matchType: null,
+      inferredMatchType: null,
+      outcome: null,
+      state: "notInWar",
+    },
+  ] as const;
 }
 
 describe("FwaMatchChecklistStateService checklist expiry", () => {
@@ -994,6 +1151,81 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(resolveRelevant).not.toHaveBeenCalled();
     expect(findBaseSwap).not.toHaveBeenCalled();
     expect(findCompletion).not.toHaveBeenCalled();
+  });
+
+  it("reproduces the July 15 nine-clan checklist shape with six unresolved rows and three active rows", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue(makeProductionTrackedClans() as any);
+    prismaMock.currentWar.findMany.mockResolvedValue(makeProductionCurrentWars() as any);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    const resolveActiveSyncPostSpy = vi
+      .spyOn(trackedMessageService, "resolveLatestActiveSyncPost")
+      .mockResolvedValue({
+        messageId: "1526856991119769693",
+        referenceId: null,
+      } as any);
+    const liveWarByTag = new Map(
+      [
+        ["#82YLR9Q2", makeLiveWarSnapshot({
+          startTimeIso: "2026-07-16T20:08:41.000Z",
+          opponentTag: "#2PV0CC98V",
+          opponentName: "Téam Pokémon",
+          state: "preparation",
+        })],
+        ["#2RYGLU2UY", makeLiveWarSnapshot({
+          startTimeIso: "2026-07-16T20:00:41.000Z",
+          opponentTag: "#2J02UUJ8U",
+          opponentName: "RISE FWA",
+          state: "preparation",
+        })],
+        ["#2RVV0L0VP", makeLiveWarSnapshot({
+          startTimeIso: "2026-07-16T20:06:51.000Z",
+          opponentTag: "#2C90QQ0Q9",
+          opponentName: "REQ N LEAVE",
+          state: "preparation",
+        })],
+      ] as const,
+    );
+    const cocService = {
+      getCurrentWar: vi.fn(async (clanTag: string) => liveWarByTag.get(clanTag) ?? null),
+    } as any;
+
+    try {
+      const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+      const mailContent = buildFwaMatchChecklistMessageContent({
+        rows: mailState.rows,
+        checkedClanTags: mailState.checkedClanTags,
+      });
+
+      expect(mailState.rows).toHaveLength(9);
+      expect(mailContent.match(/vs `-`/g)).toHaveLength(6);
+      expect(mailContent).toContain("SE vs `Téam Pokémon` (`#2PV0CC98V`)");
+      expect(mailContent).toContain("RR vs `RISE FWA` (`#2J02UUJ8U`)");
+      expect(mailContent).toContain("AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)");
+
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+        syncMessageId: "1526856991119769693",
+      });
+      const basesContent = buildFwaMatchBasesMessageContent({
+        rows: basesState.rows,
+      });
+
+      expect(basesState.rows).toHaveLength(9);
+      expect(basesState.rows.filter((row) => row.basesStatus === "skipped")).toHaveLength(6);
+      expect(basesState.rows.filter((row) => row.basesStatus !== "skipped")).toHaveLength(3);
+      expect(basesContent.match(/Skipped this sync 😴/g)).toHaveLength(6);
+      expect(basesContent.match(/Bases not checked/g)).toHaveLength(3);
+    } finally {
+      resolveActiveSyncPostSpy.mockRestore();
+    }
   });
 
   it("treats fwa bases as a checklist issue for BL matches", async () => {
