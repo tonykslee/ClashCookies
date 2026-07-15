@@ -1244,6 +1244,67 @@ describe("WarEventLogService sync-number lifecycle", () => {
     );
   });
 
+  it("continues finalization and war attack refresh for a non-FWA legacy sync row", async () => {
+    const currentWarStore = createCurrentWarStore({
+      state: "inWar",
+      warId: 5001,
+      syncNumber: null,
+      syncNum: 534,
+      prepStartTime: sameWarStartTime,
+      startTime: sameWarStartTime,
+      opponentTag: "#0PPX",
+      opponentName: "Old Opponent",
+      clanName: "Rocky Road",
+      matchType: "MM",
+      inferredMatchType: false,
+    });
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      makeSubscriptionRow({
+        state: "inWar",
+        matchType: "MM",
+        syncNumber: null,
+        syncNum: 534,
+        prepStartTime: sameWarStartTime,
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+        opponentName: "Old Opponent",
+        pointsWarStartTime: sameWarStartTime,
+        updatedAt: currentWarStore.state.updatedAt,
+      }),
+    ]);
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+      }),
+      currentWarStore,
+    );
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber();
+
+    await expect(
+      (service as any).processSubscription("guild-1", testClanTag, {
+        previousSync: 533,
+        activeSync: 534,
+        resolveActiveSyncNumber,
+      }),
+    ).resolves.toBe(false);
+
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: 534,
+        matchType: "MM",
+        inferredMatchType: false,
+      }),
+    );
+    expect((service as any).syncWarAttacksFromWarSnapshot).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(currentWarStore.state.syncNumber).toBeNull();
+    expect(currentWarStore.state.syncNum).toBe(534);
+  });
+
   it("keeps a same-war sync intact if the resolver throws", async () => {
     const currentWarStore = createCurrentWarStore({
       state: "preparation",

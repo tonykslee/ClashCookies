@@ -135,6 +135,34 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores a legacy-only CurrentWar sync number for non-FWA wars without persisting", async () => {
+    const service = makeService();
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4002",
+        warStartTime: new Date("2026-03-13T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      currentWarLegacySyncNumber: 322,
+      matchType: "MM",
+      inferredMatchType: false,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "existing_current_war",
+      persistence: "not_needed",
+      shouldPersist: false,
+      usable: false,
+      proposedSyncNumber: 322,
+    });
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+  });
+
   it("fails closed without an expected revision when persistence is required", async () => {
     const service = new ActiveWarSyncResolutionService({
       findLatestSyncNum: vi.fn().mockResolvedValue(500),

@@ -416,6 +416,13 @@ export function logActiveWarSyncAssignment(input: {
   clanTag: string;
   resolution: ActiveWarSyncAssignmentResult;
 }): void {
+  const ignoredLegacyNonFwaSync =
+    input.stage === "existing_current_war_legacy" &&
+    input.resolution.source === "existing_current_war" &&
+    input.resolution.persistence === "not_needed" &&
+    input.resolution.usable === false &&
+    input.resolution.syncNumber === null &&
+    input.resolution.proposedSyncNumber !== null;
   const line =
     `[sync-assignment] stage=${input.stage} guild=${String(input.guildId ?? "none")}` +
     ` clan=#${normalizeTag(input.clanTag) ?? "unknown"}` +
@@ -429,7 +436,8 @@ export function logActiveWarSyncAssignment(input: {
     ` latest_persisted_sync=${input.resolution.latestPersistedSyncNumber ?? "none"}` +
     ` active_cycle_sync=${input.resolution.activeCycleSyncNumber ?? "none"}` +
     ` same_war_points_sync=${input.resolution.sameWarPointsSyncNumber ?? "none"}` +
-    ` resolved_sync=${input.resolution.syncNumber ?? "none"}`;
+    ` resolved_sync=${input.resolution.syncNumber ?? "none"}` +
+    (ignoredLegacyNonFwaSync ? " reason=legacy_non_fwa_ignored" : "");
   if (
     input.resolution.persistence === "conflict" ||
     input.resolution.persistence === "revision_changed" ||
