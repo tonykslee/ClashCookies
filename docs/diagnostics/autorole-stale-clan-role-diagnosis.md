@@ -8,14 +8,14 @@ Three separate behaviors are involved:
 
 - `/accounts` is a read-path issue caused by stale persisted player state and stale activity fallback.
 - Targeted user refresh is a live-refresh / delay-flow issue whose historical production execution cannot be proven from retained logs.
-- Tracked-clan role refresh is a candidate-discovery issue for cache-absent current holders.
+- Tracked-clan role refresh is a confirmed candidate-discovery issue for cache-absent current holders.
 - Guild-wide and scheduled refresh preserve a stale positive tracked-clan role because they merge live positive evidence over persisted player state and do not treat roster absence as authoritative negative evidence for a specific clan.
 
 Confidence:
 
 - `/accounts` stale read-path diagnosis: ~97%
 - guild-wide stale-positive preservation: ~92%
-- tracked-clan role candidate omission: ~96%
+- tracked-clan role candidate omission: confirmed / ~99%
 - historical targeted-user execution: unresolved / low confidence
 
 ## `/accounts`
@@ -49,24 +49,26 @@ This confirms the intended user-scope behavior without claiming that the histori
 
 ## Tracked-clan role refresh
 
-Tracked-clan role refresh does not rely on stale persisted `PlayerCurrent` for departed players.
+Tracked-clan role refresh is a confirmed candidate-discovery root cause for cache-absent current holders.
 
 Current role-holder discovery currently begins from `guild.members.cache`.
 
 That means a role holder who is absent from the initial cache and absent from the current live roster is never discovered.
 
-The confirmed temporary reproduction showed:
+The confirmed temporary reproduction observed:
 
-- the user was absent from `currentHolderIds`
-- the user was absent from candidate ids
+- `currentHolderIds` was empty
+- candidate ids were empty
 - `guild.members.fetch(userId)` was never called
 - the user was never evaluated
 - no pending-removal row was created
 - the role was neither removed nor queued
 
-This is a candidate-discovery defect in role-scoped refresh.
+This is a candidate-discovery defect in role-scoped refresh and is separate from stale `PlayerCurrent` in guild-wide or scheduled refresh.
 
 ## Guild-wide and scheduled refresh
+
+Stale `PlayerCurrent` definitively explains why the latest guild-wide or scheduled refresh preserved the affected Rising Dawn role.
 
 Guild refresh loads persisted `PlayerCurrent`.
 
@@ -74,9 +76,9 @@ It merges positive live tracked-clan roster observations over that persisted sta
 
 It does not use live roster absence as authoritative negative evidence for a specific tracked clan.
 
-A stale positive `PlayerCurrent.currentClanTag` can therefore survive.
+The role-scoped outcome is governed by candidate discovery and live roster evidence.
 
-That is why the latest guild-wide or scheduled refresh preserved the affected Rising Dawn role.
+Historical targeted-user execution remains unknown because retained logs are unavailable.
 
 ## Architecture and ownership
 
@@ -100,6 +102,7 @@ The eventual implementation must:
 - retain the `removeStaleManagedRoles` opt-in gate
 - abort before role writes when required clan or guild-member data is incomplete
 - leave `PlayerCurrentService` and `AutoRoleApplyService` unchanged unless tests prove otherwise
+- add a permanent regression test for cache-absent tracked-clan holder discovery in role refresh
 
 ## Reproduced outcomes
 
