@@ -562,6 +562,15 @@ function getCurrentWarUpdateManyCallsByKind(kind: CurrentWarUpdateManyKind) {
     .filter((args) => classifyCurrentWarUpdateManyCall(args) === kind);
 }
 
+function getCurrentWarUpdateManyCallsWithNullMatchState() {
+  return prismaMock.currentWar.updateMany.mock.calls
+    .map(([args]) => args as { data?: any; where?: any })
+    .filter(
+      (args) =>
+        args?.data?.outcome === null || args?.data?.matchType === null,
+    );
+}
+
 function expectNoPreliminarySyncClear() {
   expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(0);
 }
@@ -722,6 +731,11 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(4);
     const [rolloverCall, assignmentCall, finalizationCall, cleanupCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
+    expect(getCurrentWarUpdateManyCallsWithNullMatchState()).toHaveLength(1);
+    expect(rolloverCall.data).toMatchObject({
+      outcome: null,
+      matchType: null,
+    });
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedCurrentWarRevisionAt: rolloverCall.data.updatedAt,
@@ -1084,10 +1098,18 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prepStartTime,
       startTime: sameWarStartTime,
       opponentTag: "#0PPX",
+      matchType: "FWA",
+      outcome: "WIN",
     });
     prismaMock.$queryRaw.mockResolvedValueOnce([
       makeSubscriptionRow({
         state: "preparation",
+        matchType: "FWA",
+        outcome: "WIN",
+        pointsConfirmedByClanMail: true,
+        pointsNeedsValidation: false,
+        pointsLastKnownMatchType: "FWA",
+        pointsLastKnownOutcome: "WIN",
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
@@ -1115,6 +1137,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       }),
     );
     expectNoPreliminarySyncClear();
+    expect(getCurrentWarUpdateManyCallsWithNullMatchState()).toHaveLength(0);
     expect(currentWarStore.state.syncNumber).toBe(534);
   });
 
@@ -1124,10 +1147,18 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prepStartTime,
       startTime: sameWarStartTime,
       opponentTag: "#0PPX",
+      matchType: "FWA",
+      outcome: "WIN",
     });
     prismaMock.$queryRaw.mockResolvedValueOnce([
       makeSubscriptionRow({
         state: "inWar",
+        matchType: "FWA",
+        outcome: "WIN",
+        pointsConfirmedByClanMail: true,
+        pointsNeedsValidation: false,
+        pointsLastKnownMatchType: "FWA",
+        pointsLastKnownOutcome: "WIN",
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
@@ -1155,6 +1186,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       }),
     );
     expectNoPreliminarySyncClear();
+    expect(getCurrentWarUpdateManyCallsWithNullMatchState()).toHaveLength(0);
     expect(currentWarStore.state.syncNumber).toBe(534);
   });
 

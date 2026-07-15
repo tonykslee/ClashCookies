@@ -5175,6 +5175,7 @@ async function buildWarMailEmbedForTag(
   matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
   mailRevisionDecision: MailRevisionDecisionContract;
+  renderResult: WarMailEmbedRenderResult;
 }> {
   const normalizedTag = normalizeTag(tag);
   const trackedConfig = await getTrackedClanMailConfig(normalizedTag);
@@ -5710,6 +5711,12 @@ async function buildWarMailEmbedForTag(
     });
   }
 
+  const renderResult = buildWarMailEmbedRenderResult({
+    matchType: mailMatchType,
+    expectedOutcome: mailExpectedOutcome,
+    unavailableReasons,
+  });
+
   return {
     embed,
     planText,
@@ -5724,6 +5731,7 @@ async function buildWarMailEmbedForTag(
     matchType: mailMatchType,
     expectedOutcome: mailExpectedOutcome,
     mailRevisionDecision,
+    renderResult,
   };
 }
 
@@ -5747,6 +5755,7 @@ type FwaMailConfirmPreviousPostedSnapshot = Readonly<{
 }>;
 
 let buildWarMailEmbedForTagForConfirm = buildWarMailEmbedForTag;
+let buildWarMailEmbedForTagForRefresh = buildWarMailEmbedForTag;
 
 export function setFwaMailPreviewPayloadForTest(
   key: string,
@@ -5765,6 +5774,12 @@ export function setFwaMailConfirmRendererForTest(
   renderer: typeof buildWarMailEmbedForTag | null,
 ): void {
   buildWarMailEmbedForTagForConfirm = renderer ?? buildWarMailEmbedForTag;
+}
+
+export function setFwaMailRefreshRendererForTest(
+  renderer: typeof buildWarMailEmbedForTag | null,
+): void {
+  buildWarMailEmbedForTagForRefresh = renderer ?? buildWarMailEmbedForTag;
 }
 
 function buildFwaMailConfirmExpectedIdentity(params: {
@@ -6446,6 +6461,63 @@ type MailRevisionDecisionContract = {
   mailBlockedReason: string | null;
 };
 
+export type WarMailEmbedRenderResult =
+  | {
+      kind: "resolved_fwa";
+      matchType: "FWA";
+      expectedOutcome: "WIN" | "LOSE";
+    }
+  | {
+      kind: "resolved_blmm";
+      matchType: "BL" | "MM";
+      expectedOutcome: null;
+    }
+  | {
+      kind: "unresolved_fwa_expected_outcome";
+      matchType: "FWA";
+      expectedOutcome: "UNKNOWN" | null;
+    }
+  | {
+      kind: "unavailable";
+      matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+      expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+      unavailableReasons: string[];
+    };
+
+function buildWarMailEmbedRenderResult(input: {
+  matchType: "FWA" | "BL" | "MM" | "UNKNOWN";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  unavailableReasons: string[];
+}): WarMailEmbedRenderResult {
+  if (input.unavailableReasons.length > 0 || input.matchType === "UNKNOWN") {
+    return {
+      kind: "unavailable",
+      matchType: input.matchType,
+      expectedOutcome: input.expectedOutcome,
+      unavailableReasons: [...input.unavailableReasons],
+    };
+  }
+  if (input.matchType === "FWA") {
+    if (input.expectedOutcome === "WIN" || input.expectedOutcome === "LOSE") {
+      return {
+        kind: "resolved_fwa",
+        matchType: "FWA",
+        expectedOutcome: input.expectedOutcome,
+      };
+    }
+    return {
+      kind: "unresolved_fwa_expected_outcome",
+      matchType: "FWA",
+      expectedOutcome: input.expectedOutcome,
+    };
+  }
+  return {
+    kind: "resolved_blmm",
+    matchType: input.matchType,
+    expectedOutcome: null,
+  };
+}
+
 type MailSendGateDecision = {
   mailStatus: ResolvedLiveWarMailStatus;
   liveRevisionFields: MatchRevisionFields | null;
@@ -7074,7 +7146,7 @@ function resolveWarMailRefreshIdentityDecision(params: {
 async function refreshWarMailPost(
   client: Client,
   key: string,
-): Promise<"refreshed" | "frozen" | "missing"> {
+): Promise<"refreshed" | "frozen" | "missing" | "skipped"> {
   const parsed = parseWarMailPollKey(key);
   if (!parsed || parsed.warId === null) {
     stopWarMailPolling(key);
@@ -7115,8 +7187,9 @@ async function refreshWarMailPost(
       })),
     fetchReason: "mail_refresh",
     routine: true,
+    lifecycleStatus: lifecycle.status,
   });
-  if (refreshed !== "refreshed") {
+  if (refreshed === "missing") {
     stopWarMailPolling(key);
   }
   return refreshed;
@@ -7134,7 +7207,8 @@ async function refreshWarMailPostByResolvedTarget(params: {
   expectedOpponentTag?: string | null;
   fetchReason?: PointsApiFetchReason;
   routine?: boolean;
-}): Promise<"refreshed" | "frozen" | "missing"> {
+  lifecycleStatus?: "POSTED" | "NOT_POSTED" | "DELETED" | null;
+}): Promise<"refreshed" | "frozen" | "missing" | "skipped"> {
   const normalizedTag = normalizeTag(params.tag);
   if (!normalizedTag) return "missing";
   const logIdentityDecision = (input: {
@@ -7308,7 +7382,7 @@ async function refreshWarMailPostByResolvedTarget(params: {
     return "frozen";
   }
   const cocService = new CoCService();
-  const rendered = await buildWarMailEmbedForTag(
+  const rendered = await buildWarMailEmbedForTagForRefresh(
     cocService,
     params.guildId,
     normalizedTag,
@@ -7344,6 +7418,26 @@ async function refreshWarMailPostByResolvedTarget(params: {
       .catch(() => undefined);
     if (params.key) stopWarMailPolling(params.key);
     return "frozen";
+  }
+  if (
+    params.routine &&
+    params.lifecycleStatus === "POSTED" &&
+    renderedIdentityDecision.action === "edit" &&
+    rendered.matchType === "FWA" &&
+    rendered.renderResult.kind === "unresolved_fwa_expected_outcome"
+  ) {
+    const confirmedBaselineAvailable = Boolean(
+      rendered.mailRevisionDecision.confirmedRevisionBaseline,
+    );
+    const warStartTimeText =
+      typeof rendered.warStartMs === "number" &&
+      Number.isFinite(rendered.warStartMs)
+        ? new Date(Math.trunc(rendered.warStartMs)).toISOString()
+        : "unknown";
+    console.info(
+      `[fwa-mail-refresh] event=war_mail_refresh result=skipped reason=unresolved_expected_outcome guild=${params.guildId} clan=#${normalizedTag} war_id=${rendered.warId ?? "unknown"} war_start_time=${warStartTimeText} opponent=${rendered.opponentTag ? `#${rendered.opponentTag}` : "unknown"} lifecycle_status=${params.lifecycleStatus ?? "unknown"} confirmed_baseline=${confirmedBaselineAvailable ? "1" : "0"}`,
+    );
+    return "skipped";
   }
   const nextWarIdText =
     rendered.warId !== null &&
@@ -7410,6 +7504,9 @@ async function refreshWarMailPostByResolvedTarget(params: {
   }
   return rendered.freezeRefresh ? "frozen" : "refreshed";
 }
+
+export const refreshWarMailPostByResolvedTargetForTest =
+  refreshWarMailPostByResolvedTarget;
 
 function extractWarMailTagFromMessage(
   message: ButtonInteraction["message"],
@@ -10459,6 +10556,8 @@ export async function handleFwaMailRefreshButton(
       content:
         refreshedByKey === "frozen"
           ? "War mail frozen for the ended war."
+          : refreshedByKey === "skipped"
+            ? "War mail refresh skipped until the expected outcome is resolved."
           : "War mail refreshed.",
     });
     return;
@@ -10513,6 +10612,7 @@ export async function handleFwaMailRefreshButton(
     expectedOpponentTag: fallbackOpponentTag,
     fetchReason: "mail_refresh",
     routine: true,
+    lifecycleStatus: "POSTED",
   }).catch(() => "missing" as const);
   await interaction.reply({
     ephemeral: true,
@@ -10583,10 +10683,11 @@ export async function refreshAllTrackedWarMailPosts(
       expectedOpponentTag: row.opponentTag ?? null,
       fetchReason: "mail_refresh",
       routine: true,
+      lifecycleStatus: lifecycle.status.toUpperCase() as "POSTED" | "NOT_POSTED" | "DELETED",
     }).catch(() => "missing" as const);
     if (refreshed === "refreshed") {
       startWarMailPolling(client, pollKey);
-    } else {
+    } else if (refreshed !== "skipped") {
       stopWarMailPolling(pollKey);
     }
   }
@@ -10712,6 +10813,15 @@ export async function runForceMailUpdateCommand(
   if (refreshed === "missing") {
     await interaction.editReply(
       `Could not refresh #${tag} mail in place. The stored message was missing or inaccessible.`,
+    );
+    return;
+  }
+  if (refreshed === "skipped") {
+    await interaction.editReply(
+      [
+        `Force mail update skipped for #${tag}.`,
+        "The active FWA outcome is still unresolved, so the existing message was left unchanged.",
+      ].join("\n"),
     );
     return;
   }
