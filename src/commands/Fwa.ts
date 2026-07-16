@@ -10459,7 +10459,7 @@ async function handleFwaMailConfirmAction(
         interactionChannelId: interaction.channelId,
         interactionUserId: parsed.userId,
       });
-      await releaseFwaMailSendClaimForConfirm({
+      const releaseSucceeded = await releaseFwaMailSendClaimForConfirm({
         guildId: exactCurrentWarIdentity.guildId,
         clanTag: exactCurrentWarIdentity.clanTag,
         warId: exactCurrentWarIdentity.warId,
@@ -10471,8 +10471,9 @@ async function handleFwaMailConfirmAction(
         channelId: channel.id,
       });
       await interaction.editReply({
-        content:
-          "Cannot send mail because the active war changed. Please run /fwa match again.",
+        content: releaseSucceeded
+          ? "Cannot send mail because the active war changed. Please run /fwa match again."
+          : "The active war changed, but the previous send lock could not be released. Please contact an administrator.",
         embeds: [],
         components: [],
       });
@@ -10510,7 +10511,7 @@ async function handleFwaMailConfirmAction(
         interactionChannelId: interaction.channelId,
         interactionUserId: parsed.userId,
       });
-      await releaseFwaMailSendClaimForConfirm({
+      const releaseSucceeded = await releaseFwaMailSendClaimForConfirm({
         guildId: exactCurrentWarIdentity.guildId,
         clanTag: exactCurrentWarIdentity.clanTag,
         warId: exactCurrentWarIdentity.warId,
@@ -10522,8 +10523,9 @@ async function handleFwaMailConfirmAction(
         channelId: channel.id,
       });
       await interaction.editReply({
-        content:
-          "War data refreshed while mail was being sent. Please try Send Mail again.",
+        content: releaseSucceeded
+          ? "War data refreshed while mail was being sent. Please try Send Mail again."
+          : "War data refreshed, but the send lock could not be released. Please contact an administrator.",
         embeds: [],
         components: [],
       });
