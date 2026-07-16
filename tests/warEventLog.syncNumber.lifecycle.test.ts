@@ -1190,6 +1190,122 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(currentWarStore.state.syncNumber).toBe(534);
   });
 
+  it("self-heals the incident row by persisting the war ID before recovering sync 534", async () => {
+    const incidentStartTime = new Date("2026-07-16T20:03:41.000Z");
+    const initialRevision = new Date("2026-07-16T03:16:54.876Z");
+    const incidentOpponentTag = "#2RU0J9QQJ";
+    const currentWarStore = createCurrentWarStore({
+      warId: null,
+      syncNumber: null,
+      syncNum: null,
+      state: "preparation",
+      prepStartTime: incidentStartTime,
+      startTime: incidentStartTime,
+      endTime: null,
+      opponentTag: incidentOpponentTag,
+      opponentName: "Confirmed Opponent",
+      clanName: "Rocky Road",
+      matchType: "FWA",
+      inferredMatchType: true,
+      fwaPoints: 120,
+      opponentFwaPoints: 120,
+      outcome: null,
+      warStartFwaPoints: null,
+      warEndFwaPoints: null,
+      clanStars: null,
+      opponentStars: null,
+      updatedAt: initialRevision,
+    });
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        makeSubscriptionRow({
+          warId: null,
+          syncNumber: null,
+          syncNum: null,
+          state: "preparation",
+          prepStartTime: incidentStartTime,
+          startTime: incidentStartTime,
+          endTime: null,
+          opponentTag: incidentOpponentTag,
+          opponentName: "Confirmed Opponent",
+          clanName: "Rocky Road",
+          matchType: "FWA",
+          inferredMatchType: true,
+          fwaPoints: 120,
+          opponentFwaPoints: 120,
+          outcome: null,
+          warStartFwaPoints: null,
+          warEndFwaPoints: null,
+          clanStars: null,
+          opponentStars: null,
+          pointsConfirmedByClanMail: true,
+          pointsNeedsValidation: false,
+          pointsLastKnownMatchType: "FWA",
+          pointsLastKnownOutcome: null,
+          pointsLastKnownSyncNumber: 534,
+          pointsSyncNum: 534,
+          pointsWarId: null,
+          pointsWarStartTime: incidentStartTime,
+          pointsOpponentTag: incidentOpponentTag,
+          updatedAt: initialRevision,
+        }),
+      ])
+      .mockResolvedValueOnce([{ warId: 1000609n }]);
+
+    const service = makeService(
+      makeWarSnapshot({
+        state: "preparation",
+        startTime: incidentStartTime,
+        opponentTag: incidentOpponentTag,
+        opponentName: "Confirmed Opponent",
+      }),
+      currentWarStore,
+    );
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber(534);
+    const initialUpdatedAt = currentWarStore.state.updatedAt.getTime();
+
+    const processed = await (service as any).processSubscription(
+      "guild-1",
+      testClanTag,
+      {
+        previousSync: 533,
+        activeSync: 533,
+        resolveActiveSyncNumber,
+      },
+    );
+
+    expect(processed).toBe(false);
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: null,
+        sameWarPointsSyncNumber: 534,
+      }),
+    );
+
+    const updateCalls = prismaMock.currentWar.updateMany.mock.calls.map(
+      ([args]) => args as { data?: any; where?: any },
+    );
+    const warIdWriteIndex = updateCalls.findIndex(
+      (args) => Number(args.data?.warId) > 0 && args.data?.syncNumber === undefined,
+    );
+    const syncWriteIndex = updateCalls.findIndex(
+      (args) => Number(args.data?.syncNumber) === 534,
+    );
+
+    expect(warIdWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(syncWriteIndex).toBeGreaterThan(warIdWriteIndex);
+    expect(currentWarStore.state).toMatchObject({
+      warId: 1000609,
+      syncNumber: 534,
+      state: "preparation",
+      opponentTag: incidentOpponentTag,
+    });
+    expect(currentWarStore.state.updatedAt.getTime()).toBeGreaterThan(
+      initialUpdatedAt,
+    );
+  });
+
   it("retains the canonical sync number for the same physical war", async () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([makeSubscriptionRow()]);
     const service = makeService(

@@ -36,7 +36,7 @@ describe("ActiveWarSyncResolutionService resolver", () => {
 
     expect(identity.warId).toBeNull();
     expect(identity.warStartTime?.toISOString()).toBe("2026-03-12T09:00:00.000Z");
-    expect(identity.opponentTag).toBe("2OLD");
+    expect(identity.opponentTag).toBe("20LD");
     expect(identity.positivelyResolved).toBe(true);
   });
 

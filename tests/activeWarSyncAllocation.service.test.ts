@@ -12,6 +12,7 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 const originalPollingMode = process.env.POLLING_MODE;
+const testGuildId = "guild-1";
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
@@ -49,9 +50,188 @@ function makeService(pointsBaseline = 500) {
   });
 }
 
+function createCurrentWarStore(overrides?: {
+  guildId?: string;
+  clanTag?: string;
+  warId?: number | null;
+  syncNumber?: number | null;
+  syncNum?: number | null;
+  state?: string | null;
+  startTime?: Date | null;
+  opponentTag?: string | null;
+  updatedAt?: Date;
+}) {
+  const state = {
+    guildId: testGuildId,
+    clanTag: "#2YUYLJCGV",
+    warId: null as number | null,
+    syncNumber: null as number | null,
+    syncNum: null as number | null,
+    state: "preparation" as string | null,
+    startTime: new Date("2026-07-16T20:03:41.000Z"),
+    opponentTag: "#2RU0J9QQJ",
+    updatedAt: new Date("2026-07-16T03:16:54.876Z"),
+    ...overrides,
+  };
+  return {
+    state,
+    findFirst: vi.fn(async (args?: { where?: Record<string, unknown> }) => {
+      const where = args?.where ?? {};
+      if (
+        where.guildId !== undefined &&
+        where.guildId !== state.guildId
+      ) {
+        return null;
+      }
+      if (
+        where.clanTag !== undefined &&
+        String(where.clanTag ?? "").replace(/^#/, "").toUpperCase() !==
+          String(state.clanTag ?? "").replace(/^#/, "").toUpperCase()
+      ) {
+        return null;
+      }
+      if (
+        where.startTime instanceof Date &&
+        state.startTime instanceof Date &&
+        where.startTime.getTime() !== state.startTime.getTime()
+      ) {
+        return null;
+      }
+      return {
+        ...state,
+      };
+    }),
+    updateMany: vi.fn(async (args?: {
+      where?: Record<string, unknown>;
+      data?: Record<string, unknown>;
+    }) => {
+      const where = args?.where ?? {};
+      if (
+        where.guildId !== undefined &&
+        where.guildId !== state.guildId
+      ) {
+        return { count: 0 };
+      }
+      if (
+        where.clanTag !== undefined &&
+        String(where.clanTag ?? "").replace(/^#/, "").toUpperCase() !==
+          String(state.clanTag ?? "").replace(/^#/, "").toUpperCase()
+      ) {
+        return { count: 0 };
+      }
+      if (
+        where.updatedAt instanceof Date &&
+        state.updatedAt.getTime() !== where.updatedAt.getTime()
+      ) {
+        return { count: 0 };
+      }
+      if (
+        where.startTime instanceof Date &&
+        state.startTime instanceof Date &&
+        where.startTime.getTime() !== state.startTime.getTime()
+      ) {
+        return { count: 0 };
+      }
+      if (
+        where.opponentTag !== undefined &&
+        String(where.opponentTag ?? "").replace(/^#/, "").toUpperCase() !==
+          String(state.opponentTag ?? "").replace(/^#/, "").toUpperCase()
+      ) {
+        return { count: 0 };
+      }
+      if (where.warId === null && state.warId !== null) {
+        return { count: 0 };
+      }
+
+      const data = args?.data ?? {};
+      if (Object.prototype.hasOwnProperty.call(data, "warId")) {
+        state.warId =
+          data.warId === null || data.warId === undefined
+            ? null
+            : Number(data.warId);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, "syncNumber")) {
+        state.syncNumber =
+          data.syncNumber === null || data.syncNumber === undefined
+            ? null
+            : Number(data.syncNumber);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, "syncNum")) {
+        state.syncNum =
+          data.syncNum === null || data.syncNum === undefined
+            ? null
+            : Number(data.syncNum);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, "updatedAt")) {
+        state.updatedAt =
+          data.updatedAt instanceof Date
+            ? new Date(data.updatedAt)
+            : state.updatedAt;
+      }
+      return { count: 1 };
+    }),
+  };
+}
+
 const allocationRevision = new Date("2026-03-12T00:00:00.000Z");
 
 describe("ActiveWarSyncResolutionService allocation", () => {
+  it("uses canonical hashed CurrentWar database keys for exact sync persistence", async () => {
+    const incidentStartTime = new Date("2026-07-16T20:03:41.000Z");
+    const currentWarStore = createCurrentWarStore({
+      guildId: testGuildId,
+      clanTag: "#2YUYLJCGV",
+      warId: null,
+      syncNumber: null,
+      syncNum: null,
+      state: "preparation",
+      startTime: incidentStartTime,
+      opponentTag: "#2RU0J9QQJ",
+      updatedAt: new Date("2026-07-16T03:16:54.876Z"),
+    });
+
+    prismaMock.currentWar.findFirst.mockImplementation(currentWarStore.findFirst);
+    prismaMock.currentWar.updateMany.mockImplementation(currentWarStore.updateMany);
+    const service = makeService(534);
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2YUYLJCGV",
+      identity: buildActiveWarSyncIdentity({
+        warState: "preparation",
+        warId: null,
+        warStartTime: incidentStartTime,
+        opponentTag: "#2RU0J9QQJ",
+      }),
+      sameWarPointsSyncNumber: 534,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: currentWarStore.state.updatedAt,
+      allowAllocation: true,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 534,
+      source: "same_war_points_recovery",
+      usable: true,
+      shouldPersist: true,
+      persistence: "saved",
+    });
+
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalled();
+    const firstUpdate = prismaMock.currentWar.updateMany.mock.calls[0]?.[0] as {
+      where?: Record<string, unknown>;
+    };
+    expect(firstUpdate.where).toMatchObject({
+      guildId: testGuildId,
+      clanTag: "#2YUYLJCGV",
+      opponentTag: "#2RU0J9QQJ",
+    });
+    expect(String(firstUpdate.where?.clanTag ?? "")).not.toBe("2YUYLJCGV");
+    expect(String(firstUpdate.where?.opponentTag ?? "")).not.toBe("2RU0J9QQJ");
+    expect(currentWarStore.state.syncNumber).toBe(534);
+  });
+
   it("reuses an existing canonical CurrentWar sync number without writing", async () => {
     const service = makeService();
 
