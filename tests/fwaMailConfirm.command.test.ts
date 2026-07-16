@@ -11,7 +11,7 @@ import {
   buildFwaMatchTypeConfirmationUpsertInputForTest,
   clearFwaMailPreviewPayloadsForTest,
   clearFwaMatchCopyPayloadsForTest,
-  setFwaMailConfirmRendererForTest,
+  setFwaMailConfirmRuntimeFactoryForTest,
   setFwaMailPreviewPayloadForTest,
 } from "../src/commands/Fwa";
 import { prisma } from "../src/prisma";
@@ -180,6 +180,11 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+let refreshNotifySpy: ReturnType<typeof vi.fn>;
+let confirmRuntimeFactorySpy: ReturnType<typeof vi.fn>;
+let confirmRuntimeRenderSpy: ReturnType<typeof vi.fn>;
+let confirmRuntimeRefreshSpy: ReturnType<typeof vi.fn>;
+
 async function seedConfirmPayloadAndRenderer(input?: {
   previewKey?: string;
   rendered?: ReturnType<typeof buildRenderedMail>;
@@ -193,7 +198,9 @@ async function seedConfirmPayloadAndRenderer(input?: {
     tag: "R80L8VYG",
     revisionOverride: null,
   });
-  setFwaMailConfirmRendererForTest(async () => input?.rendered ?? buildRenderedMail());
+  confirmRuntimeRenderSpy.mockResolvedValueOnce(
+    input?.rendered ?? buildRenderedMail(),
+  );
   prismaMock.currentWar.findUnique.mockResolvedValueOnce(
     input?.currentWarRow ?? buildCurrentWarRow(),
   );
@@ -206,7 +213,6 @@ async function seedConfirmPayloadAndRenderer(input?: {
 }
 
 describe("fwa mail confirm button", () => {
-  let refreshNotifySpy: ReturnType<typeof vi.spyOn>;
   let pollSpy: ReturnType<typeof vi.spyOn>;
   let refreshBattleDayPostsSpy: ReturnType<typeof vi.spyOn>;
 
@@ -220,25 +226,29 @@ describe("fwa mail confirm button", () => {
     pointsSyncMock.markNeedsValidation.mockResolvedValue(undefined);
     pointsSyncMock.clearNeedsValidation.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    confirmRuntimeRenderSpy = vi.fn().mockResolvedValue(buildRenderedMail());
+    confirmRuntimeRefreshSpy = vi.fn().mockResolvedValue(true);
+    confirmRuntimeFactorySpy = vi.fn(() => ({
+      render: confirmRuntimeRenderSpy,
+      refreshCurrentNotifyPost: confirmRuntimeRefreshSpy,
+    }));
+    refreshNotifySpy = confirmRuntimeRefreshSpy;
+    setFwaMailConfirmRuntimeFactoryForTest(confirmRuntimeFactorySpy);
     pollSpy = vi.spyOn(WarEventLogService.prototype, "poll").mockResolvedValue(
       undefined,
     );
     refreshBattleDayPostsSpy = vi
       .spyOn(WarEventLogService.prototype, "refreshBattleDayPosts")
       .mockResolvedValue(undefined);
-    refreshNotifySpy = vi
-      .spyOn(WarEventLogService.prototype, "refreshCurrentNotifyPost")
-      .mockResolvedValue(undefined);
     vi.spyOn(globalThis, "setInterval").mockImplementation((() => 1) as any);
   });
 
   afterEach(() => {
-    setFwaMailConfirmRendererForTest(null);
+    setFwaMailConfirmRuntimeFactoryForTest(null);
     clearFwaMailPreviewPayloadsForTest();
     clearFwaMatchCopyPayloadsForTest();
     pollSpy.mockRestore();
     refreshBattleDayPostsSpy.mockRestore();
-    refreshNotifySpy.mockRestore();
     vi.restoreAllMocks();
   });
 
@@ -1195,8 +1205,13 @@ describe("fwa mail confirm button", () => {
         tag: "R80L8VYG",
         revisionOverride: null,
       });
-      const fakeRenderer = vi.fn().mockResolvedValue(buildRenderedMail());
-      setFwaMailConfirmRendererForTest(fakeRenderer);
+      const fakeRender = vi.fn().mockResolvedValue(buildRenderedMail());
+      const fakeRefresh = vi.fn().mockResolvedValue(true);
+      const runtimeFactory = vi.fn(() => ({
+        render: fakeRender,
+        refreshCurrentNotifyPost: fakeRefresh,
+      }));
+      setFwaMailConfirmRuntimeFactoryForTest(runtimeFactory);
       prismaMock.currentWar.findUnique.mockResolvedValueOnce(
         buildCurrentWarRow(),
       );
@@ -1221,8 +1236,9 @@ describe("fwa mail confirm button", () => {
 
       await handleFwaMailConfirmButton(interaction as any);
 
-      expect(fakeRenderer).toHaveBeenCalledTimes(1);
-      expect(fakeRenderer).toHaveBeenCalledWith(
+      expect(runtimeFactory).toHaveBeenCalledTimes(1);
+      expect(fakeRender).toHaveBeenCalledTimes(1);
+      expect(fakeRender).toHaveBeenCalledWith(
         "guild-1",
         "R80L8VYG",
         expect.objectContaining({
@@ -1231,6 +1247,8 @@ describe("fwa mail confirm button", () => {
           targetedWarReconcileClient: interaction.client,
         }),
       );
+      expect(fakeRefresh).toHaveBeenCalledTimes(1);
+      expect(fakeRefresh).toHaveBeenCalledWith("guild-1", "R80L8VYG");
       expect(send).toHaveBeenCalledTimes(1);
       expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(1);
       expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
@@ -1248,6 +1266,64 @@ describe("fwa mail confirm button", () => {
     }
   });
 
+  it("creates one shared CoC dependency in the default mail-confirm runtime", async () => {
+    const sharedCoc = {
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+    const renderQueryRaw = vi.fn().mockResolvedValue([
+      {
+        tag: "#R80L8VYG",
+        name: "Clan",
+        mailChannelId: "mail-channel-1",
+        clanRoleId: "123456789",
+      },
+    ]);
+    const refreshSpy = vi.fn().mockResolvedValue(true);
+    const cocServiceConstructorSpy = vi.fn(() => sharedCoc);
+    const captured = {
+      cocService: null as unknown,
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/prisma", () => ({
+      prisma: {
+        $queryRaw: renderQueryRaw,
+      },
+    }));
+    vi.doMock("../src/services/CoCService", () => ({
+      CoCService: cocServiceConstructorSpy,
+    }));
+    vi.doMock("../src/services/FwaSourceOfTruthService", () => ({
+      getSourceOfTruthSync: vi.fn().mockResolvedValue(0),
+    }));
+    vi.doMock("../src/services/WarEventLogService", () => ({
+      WarEventLogService: vi.fn().mockImplementation((client, cocService) => {
+        captured.cocService = cocService;
+        return {
+          refreshCurrentNotifyPost: refreshSpy,
+        };
+      }),
+    }));
+
+    const { createFwaMailConfirmRuntimeDefaultForTest } = await import(
+      "../src/commands/Fwa"
+    );
+    const fakeClient = { id: "client-1" } as any;
+    const runtime = createFwaMailConfirmRuntimeDefaultForTest(fakeClient);
+
+    await runtime.render("guild-1", "R80L8VYG", {
+      fetchReason: "pre_fwa_validation",
+      targetedWarReconcileClient: fakeClient,
+    }).catch(() => undefined);
+    expect(cocServiceConstructorSpy).toHaveBeenCalledTimes(1);
+    expect(sharedCoc.getCurrentWar).toHaveBeenCalledTimes(1);
+
+    await runtime.refreshCurrentNotifyPost("guild-1", "R80L8VYG");
+    expect(captured.cocService).toBe(sharedCoc);
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    vi.resetModules();
+  });
+
   it("prevents two concurrent confirmations from producing two public posts", async () => {
     const previewKey = "preview-concurrent";
     setFwaMailPreviewPayloadForTest(previewKey, {
@@ -1256,7 +1332,6 @@ describe("fwa mail confirm button", () => {
       tag: "R80L8VYG",
       revisionOverride: null,
     });
-    setFwaMailConfirmRendererForTest(async () => buildRenderedMail());
     const currentWarState = buildCurrentWarRow();
     const rereadUpdatedAts: string[] = [];
     prismaMock.currentWar.findUnique.mockImplementation(async () => {
@@ -1571,7 +1646,6 @@ describe("fwa mail confirm button", () => {
       tag: "R80L8VYG",
       revisionOverride: null,
     });
-    setFwaMailConfirmRendererForTest(async () => buildRenderedMail());
     prismaMock.currentWar.findUnique.mockResolvedValueOnce(buildCurrentWarRow());
     prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
     prismaMock.trackedClan.findUnique.mockResolvedValueOnce({

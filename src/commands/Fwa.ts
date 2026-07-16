@@ -5888,14 +5888,36 @@ type FwaMailConfirmRenderer = (
     >,
 ) => ReturnType<typeof buildWarMailEmbedForTag>;
 
-const buildWarMailEmbedForTagForConfirmDefault: FwaMailConfirmRenderer = async (
-  guildId,
-  tag,
-  options,
-) => buildWarMailEmbedForTag(new CoCService(), guildId, tag, options);
+type FwaMailConfirmRuntime = {
+  render: FwaMailConfirmRenderer;
+  refreshCurrentNotifyPost: (
+    guildId: string,
+    clanTag: string,
+  ) => Promise<boolean>;
+};
 
-let buildWarMailEmbedForTagForConfirm: FwaMailConfirmRenderer =
-  buildWarMailEmbedForTagForConfirmDefault;
+type FwaMailConfirmRuntimeFactory = (client: Client) => FwaMailConfirmRuntime;
+
+const createFwaMailConfirmRuntimeDefault: FwaMailConfirmRuntimeFactory = (
+  client,
+) => {
+  const cocService = new CoCService();
+  return {
+    render: (guildId, tag, options) =>
+      buildWarMailEmbedForTag(cocService, guildId, tag, options),
+    refreshCurrentNotifyPost: (guildId, clanTag) =>
+      new WarEventLogService(client, cocService).refreshCurrentNotifyPost(
+        guildId,
+        clanTag,
+      ),
+  };
+};
+
+export const createFwaMailConfirmRuntimeDefaultForTest =
+  createFwaMailConfirmRuntimeDefault;
+
+let createFwaMailConfirmRuntime: FwaMailConfirmRuntimeFactory =
+  createFwaMailConfirmRuntimeDefault;
 
 export function setFwaMailPreviewPayloadForTest(
   key: string,
@@ -5917,8 +5939,19 @@ export function clearFwaMailPreviewPayloadsForTest(): void {
 export function setFwaMailConfirmRendererForTest(
   renderer: FwaMailConfirmRenderer | null,
 ): void {
-  buildWarMailEmbedForTagForConfirm =
-    renderer ?? buildWarMailEmbedForTagForConfirmDefault;
+  createFwaMailConfirmRuntime = renderer
+    ? (client) => ({
+        render: renderer,
+        refreshCurrentNotifyPost: () => Promise.resolve(true),
+      })
+    : createFwaMailConfirmRuntimeDefault;
+}
+
+export function setFwaMailConfirmRuntimeFactoryForTest(
+  factory: FwaMailConfirmRuntimeFactory | null,
+): void {
+  createFwaMailConfirmRuntime =
+    factory ?? createFwaMailConfirmRuntimeDefault;
 }
 
 export function setFwaMailRefreshRendererForTest(
@@ -10076,9 +10109,10 @@ async function handleFwaMailConfirmAction(
       content: "Sending war mail... please wait.",
       embeds: [],
       components: [],
-  })
+    })
     .catch(() => undefined);
-  const rendered = await buildWarMailEmbedForTagForConfirm(
+  const runtime = createFwaMailConfirmRuntime(interaction.client);
+  const rendered = await runtime.render(
     normalizedGuildId,
     normalizedClanTag,
     {
@@ -10848,8 +10882,7 @@ async function handleFwaMailConfirmAction(
     channelId: channel.id,
     mailConfig: nextMailConfig,
   });
-  const cocService = {} as CoCService;
-  await new WarEventLogService(interaction.client, cocService)
+  await runtime
     .refreshCurrentNotifyPost(normalizedGuildId, normalizedClanTag)
     .catch((err) => {
       console.error(
