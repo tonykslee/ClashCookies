@@ -313,3 +313,316 @@ describe("Current-war lookup and allocation diagnostics", () => {
     expect(rerenderWarId).toBeNull();
   });
 });
+
+type IdentityCompletionRow = {
+  warId: number | null;
+  state: "preparation" | "inWar";
+  startTime: Date;
+  opponentTag: string | null;
+  updatedAt: Date;
+};
+
+function makeIdentityCompletionRow(
+  overrides?: Partial<IdentityCompletionRow>,
+): IdentityCompletionRow {
+  return {
+    warId: null,
+    state: "preparation",
+    startTime: new Date("2026-07-16T20:03:41.000Z"),
+    opponentTag: "2RU0J9QQJ",
+    updatedAt: new Date("2026-07-16T05:40:28.027Z"),
+    ...overrides,
+  };
+}
+
+describe("Current-war identity completion CAS", () => {
+  const guildId = "1324040917602013261";
+  const clanTag = "#2YUYLJCGV";
+  const liveStartTime = new Date("2026-07-16T20:03:41.000Z");
+  const liveOpponentTag = "#2RU0J9QQJ";
+  const expectedRevisionAt = new Date("2026-07-16T05:40:28.027Z");
+
+  function buildHarness(input: {
+    exactRow: IdentityCompletionRow | null;
+    rereadRow?: IdentityCompletionRow | null;
+    allocatedWarId?: number;
+    updateCount?: number;
+  }) {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const service = new WarEventLogService({} as any, {} as any);
+    const readRows = [input.exactRow, input.rereadRow];
+
+    prismaMock.$queryRaw.mockResolvedValue([
+      { warId: input.allocatedWarId ?? 1000611 },
+    ]);
+    prismaMock.currentWar.findUnique.mockImplementation(async () => readRows.shift() ?? null);
+    prismaMock.currentWar.updateMany.mockImplementation(async () => ({
+      count: input.updateCount ?? 1,
+    }));
+
+    return {
+      service,
+      infoSpy,
+      warnSpy,
+      queryRawSpy: prismaMock.$queryRaw,
+      findUniqueSpy: prismaMock.currentWar.findUnique,
+      updateManySpy: prismaMock.currentWar.updateMany,
+    };
+  }
+
+  async function runIdentityCompletion(
+    service: WarEventLogService,
+    opponentTag = liveOpponentTag,
+    warStartTime = liveStartTime,
+  ) {
+    return (service as any).ensureCurrentWarIdentityCompletion({
+      guildId,
+      clanTag,
+      warState: "preparation",
+      warStartTime,
+      opponentTag,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("self-heals a bare stored opponent by matching the raw tag in the CAS and canonicalizing on write", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "2RU0J9QQJ",
+      }),
+      allocatedWarId: 1000611,
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "saved",
+      warId: 1000611,
+      persistedRevisionAt: expect.any(Date),
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(1);
+    expect(harness.queryRawSpy).toHaveBeenCalledTimes(1);
+    expect(harness.updateManySpy).toHaveBeenCalledTimes(1);
+    expect(harness.updateManySpy.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        guildId,
+        clanTag,
+        updatedAt: expectedRevisionAt,
+        state: "preparation",
+        startTime: liveStartTime,
+        opponentTag: "2RU0J9QQJ",
+        warId: null,
+      },
+      data: {
+        warId: 1000611,
+        opponentTag: "#2RU0J9QQJ",
+        updatedAt: expect.any(Date),
+      },
+    });
+    expect(harness.infoSpy.mock.calls.at(-1)?.[0]).toContain(
+      "stored_opponent_tag_form=bare",
+    );
+    expect(harness.warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps a canonical stored opponent idempotent without writing again", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "#2RU0J9QQJ",
+        warId: 1000611,
+      }),
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "idempotent",
+      warId: 1000611,
+      persistedRevisionAt: expectedRevisionAt,
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(1);
+    expect(harness.queryRawSpy).not.toHaveBeenCalled();
+    expect(harness.updateManySpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the live opponent is a different physical war", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "#OLDOPP",
+      }),
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "identity_changed",
+      warId: null,
+      persistedRevisionAt: expectedRevisionAt,
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(1);
+    expect(harness.queryRawSpy).not.toHaveBeenCalled();
+    expect(harness.updateManySpy).not.toHaveBeenCalled();
+    expect(harness.warnSpy.mock.calls.at(-1)?.[0]).toContain(
+      "stored_opponent_tag_form=canonical",
+    );
+  });
+
+  it("accepts a reread that upgrades the raw representation and already owns a positive war id", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "2RU0J9QQJ",
+      }),
+      rereadRow: makeIdentityCompletionRow({
+        warId: 1000611,
+        opponentTag: "#2RU0J9QQJ",
+        updatedAt: new Date("2026-07-16T05:40:28.028Z"),
+      }),
+      updateCount: 0,
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "idempotent",
+      warId: 1000611,
+      persistedRevisionAt: new Date("2026-07-16T05:40:28.028Z"),
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(2);
+    expect(harness.queryRawSpy).toHaveBeenCalledTimes(1);
+    expect(harness.updateManySpy).toHaveBeenCalledTimes(1);
+    expect(harness.infoSpy.mock.calls.at(-1)?.[0]).toContain(
+      "stored_opponent_tag_form=bare",
+    );
+    expect(harness.infoSpy.mock.calls.at(-1)?.[0]).toContain(
+      "reread_opponent_tag_form=canonical",
+    );
+  });
+
+  it("keeps a reread with the same physical identity and null war id in conflict", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "2RU0J9QQJ",
+      }),
+      rereadRow: makeIdentityCompletionRow({
+        warId: null,
+        opponentTag: "#2RU0J9QQJ",
+        updatedAt: new Date("2026-07-16T05:40:28.029Z"),
+      }),
+      updateCount: 0,
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "conflict",
+      warId: null,
+      persistedRevisionAt: null,
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(2);
+    expect(harness.queryRawSpy).toHaveBeenCalledTimes(1);
+    expect(harness.updateManySpy).toHaveBeenCalledTimes(1);
+    expect(harness.warnSpy.mock.calls.at(-1)?.[0]).toContain(
+      "stored_opponent_tag_form=bare",
+    );
+    expect(harness.warnSpy.mock.calls.at(-1)?.[0]).toContain(
+      "reread_opponent_tag_form=canonical",
+    );
+  });
+
+  it("treats a reread identity change as identity_changed and does not reuse any fallback id", async () => {
+    const harness = buildHarness({
+      exactRow: makeIdentityCompletionRow({
+        opponentTag: "2RU0J9QQJ",
+      }),
+      rereadRow: makeIdentityCompletionRow({
+        warId: null,
+        startTime: new Date("2026-07-16T20:04:41.000Z"),
+        opponentTag: "#2RU0J9QQJ",
+        updatedAt: new Date("2026-07-16T05:40:28.030Z"),
+      }),
+      updateCount: 0,
+    });
+
+    const result = await runIdentityCompletion(harness.service);
+
+    expect(result).toEqual({
+      state: "identity_changed",
+      warId: null,
+      persistedRevisionAt: new Date("2026-07-16T05:40:28.030Z"),
+    });
+    expect(harness.findUniqueSpy).toHaveBeenCalledTimes(2);
+    expect(harness.queryRawSpy).toHaveBeenCalledTimes(1);
+    expect(harness.updateManySpy).toHaveBeenCalledTimes(1);
+    expect(harness.warnSpy.mock.calls.at(-1)?.[0]).toContain(
+      "reread_opponent_tag_form=canonical",
+    );
+  });
+
+  it.each([
+    {
+      guildId: "1324040917602013261",
+      clanTag: "#2YUYLJCGV",
+      opponentTag: "2RU0J9QQJ",
+      allocatedWarId: 1000611,
+    },
+    {
+      guildId: "1324040917602013262",
+      clanTag: "#7ABC1234",
+      opponentTag: "2XTEST99",
+      allocatedWarId: 1000612,
+    },
+  ])(
+    "repairs bare stored opponents independently for %s",
+    async ({ guildId: rowGuildId, clanTag: rowClanTag, opponentTag, allocatedWarId }) => {
+      const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const service = new WarEventLogService({} as any, {} as any);
+      prismaMock.$queryRaw.mockResolvedValue([{ warId: allocatedWarId }]);
+      prismaMock.currentWar.findUnique.mockResolvedValue(
+        makeIdentityCompletionRow({
+          opponentTag,
+        }),
+      );
+      prismaMock.currentWar.updateMany.mockResolvedValue({ count: 1 });
+      const liveOpponentTagForRow = opponentTag.startsWith("#")
+        ? opponentTag
+        : `#${opponentTag}`;
+
+      const result = await (service as any).ensureCurrentWarIdentityCompletion({
+        guildId: rowGuildId,
+        clanTag: rowClanTag,
+        warState: "preparation",
+        warStartTime: liveStartTime,
+        opponentTag: liveOpponentTagForRow,
+      });
+
+      expect(result).toEqual({
+        state: "saved",
+        warId: allocatedWarId,
+        persistedRevisionAt: expect.any(Date),
+      });
+      expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            guildId: rowGuildId,
+            clanTag: rowClanTag,
+            opponentTag,
+          }),
+          data: expect.objectContaining({
+            opponentTag: liveOpponentTagForRow,
+          }),
+        }),
+      );
+      expect(infoSpy.mock.calls.at(-1)?.[0]).toContain(
+        "stored_opponent_tag_form=bare",
+      );
+    },
+  );
+});
