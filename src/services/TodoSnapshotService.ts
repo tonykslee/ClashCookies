@@ -307,6 +307,8 @@ type WarOwnerCandidateSource =
 
 type TodoWarOwnerSource = "LIVE_VERIFIED" | "PERSISTED_FALLBACK" | "NONE";
 
+type TodoWarAttackProgressSource = "exact_war_attacks" | "non_exact";
+
 type WarOwnerCandidateEntry = {
   clanTag: string;
   sources: Set<WarOwnerCandidateSource>;
@@ -1941,9 +1943,11 @@ export class TodoSnapshotService {
     let staleWriteSuppressedCount = 0;
     let verifiedOwnerReplacedCount = 0;
     let verifiedOwnerClearedCount = 0;
+    let exactSameWarAttackProgressCount = 0;
     const warOwnerResolutionAmbiguousSamples: string[] = [];
     const warOwnerResolutionUnresolvedCanonicalSamples: string[] = [];
     const warOwnerResolutionStaleCorrectionSamples: string[] = [];
+    const exactSameWarAttackProgressSamples: string[] = [];
 
     for (const playerTag of normalizedTags) {
       const existing = existingByTag.get(playerTag) ?? null;
@@ -2720,6 +2724,10 @@ export class TodoSnapshotService {
             warPhase,
             warEndsAt,
           };
+      const attackProgressSource: TodoWarAttackProgressSource =
+        canonicalRosterExactAttackState || trackedWarMemberExactAttackState
+          ? "exact_war_attacks"
+          : "non_exact";
       const warDecision = buildTodoWarOwnerDecision({
         existing: existing ?? null,
         attemptedState: attemptedWarState,
@@ -2730,6 +2738,7 @@ export class TodoSnapshotService {
           : bootstrapLiveVerified
             ? "live_verified"
             : warOwnerResolution.resolvedSource,
+        attackProgressSource,
       });
       const finalWarState = warDecision.finalState;
 
@@ -2823,6 +2832,7 @@ export class TodoSnapshotService {
           attemptedState: attemptedWarState,
           attemptedObservationAt: now,
           resolutionSource: warOwnerResolution.resolvedSource,
+          attackProgressSource,
         },
       });
     }
@@ -2907,6 +2917,20 @@ export class TodoSnapshotService {
           ) {
             verifiedOwnerClearedCount += 1;
           }
+          if (writeDecision.exactSameWarAttackProgressIncreased) {
+            exactSameWarAttackProgressCount += 1;
+            if (exactSameWarAttackProgressSamples.length < 5) {
+              exactSameWarAttackProgressSamples.push(
+                [
+                  `player_tag=${write.where.playerTag}`,
+                  `clan_tag=${writeDecision.finalState.warClanTag ?? "none"}`,
+                  `war_id=${writeDecision.finalState.warOwnerWarId ?? "none"}`,
+                  `previous_attacks_used=${writeDecision.existingWarAttacksUsed}`,
+                  `final_attacks_used=${writeDecision.finalWarAttacksUsed}`,
+                ].join(" "),
+              );
+            }
+          }
         },
       );
     } catch (err) {
@@ -2917,7 +2941,7 @@ export class TodoSnapshotService {
     }
 
     console.info(
-      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} verified_continuity_preserved_count=${verifiedContinuityPreservedCount} lower_confidence_write_suppressed_count=${lowerConfidenceWriteSuppressedCount} stale_write_suppressed_count=${staleWriteSuppressedCount} verified_owner_replaced_count=${verifiedOwnerReplacedCount} verified_owner_cleared_count=${verifiedOwnerClearedCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} authoritative_clear_count=${warOwnerResolutionAuthoritativeClearCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount} unresolved_canonical_count=${warOwnerResolutionUnresolvedCanonicalCount} tracked_authoritative_count=${trackedRosterAuthoritativeCount} tracked_legacy_fallback_count=${trackedRosterLegacyFallbackCount} tracked_stale_identity_rejected_count=${trackedRosterStaleIdentityRejectedCount} tracked_roster_inactive_rejected_count=${trackedRosterInactiveRejectedCount} tracked_ambiguous_count=${trackedRosterAmbiguousCount} tracked_owner_corrected_count=${trackedRosterOwnerCorrectedCount} tracked_retained_ended_count=${trackedRosterRetainedEndedCount} tracked_roster_canonical_write_count=${trackedRosterCanonicalWriteCount} tracked_roster_canonical_write_suppressed_stale_count=${trackedRosterCanonicalWriteSuppressedStaleCount} tracked_roster_preloaded_live_confirmed_count=${trackedRosterPreloadedLiveConfirmedCount} tracked_roster_preloaded_live_rejected_count=${trackedRosterPreloadedLiveRejectedCount}`,
+      `[todo-snapshot] event=todo_war_owner_resolution_summary player_count=${warOwnerResolutionPlayerCount} multi_candidate_player_count=${warOwnerResolutionMultiplePersistedCount} live_confirmed_count=${warOwnerResolutionLiveConfirmedCount} verified_continuity_preserved_count=${verifiedContinuityPreservedCount} lower_confidence_write_suppressed_count=${lowerConfidenceWriteSuppressedCount} stale_write_suppressed_count=${staleWriteSuppressedCount} verified_owner_replaced_count=${verifiedOwnerReplacedCount} verified_owner_cleared_count=${verifiedOwnerClearedCount} exact_same_war_attack_progress_count=${exactSameWarAttackProgressCount} stale_correction_count=${warOwnerResolutionStaleCorrectionCount} degraded_fallback_count=${warOwnerResolutionDegradedFallbackCount} authoritative_clear_count=${warOwnerResolutionAuthoritativeClearCount} ambiguous_live_match_count=${warOwnerResolutionAmbiguousLiveCount} unresolved_count=${warOwnerResolutionUnresolvedCount} unresolved_canonical_count=${warOwnerResolutionUnresolvedCanonicalCount} tracked_authoritative_count=${trackedRosterAuthoritativeCount} tracked_legacy_fallback_count=${trackedRosterLegacyFallbackCount} tracked_stale_identity_rejected_count=${trackedRosterStaleIdentityRejectedCount} tracked_roster_inactive_rejected_count=${trackedRosterInactiveRejectedCount} tracked_ambiguous_count=${trackedRosterAmbiguousCount} tracked_owner_corrected_count=${trackedRosterOwnerCorrectedCount} tracked_retained_ended_count=${trackedRosterRetainedEndedCount} tracked_roster_canonical_write_count=${trackedRosterCanonicalWriteCount} tracked_roster_canonical_write_suppressed_stale_count=${trackedRosterCanonicalWriteSuppressedStaleCount} tracked_roster_preloaded_live_confirmed_count=${trackedRosterPreloadedLiveConfirmedCount} tracked_roster_preloaded_live_rejected_count=${trackedRosterPreloadedLiveRejectedCount}`,
     );
     if (warOwnerResolutionAmbiguousSamples.length > 0) {
       console.warn(
@@ -2937,6 +2961,11 @@ export class TodoSnapshotService {
     if (trackedRosterCanonicalWriteSuppressedSamples.length > 0) {
       console.warn(
         `[todo-snapshot] event=tracked_roster_canonical_write_suppressed sample_count=${trackedRosterCanonicalWriteSuppressedSamples.length} sample_matches=${trackedRosterCanonicalWriteSuppressedSamples.join("|")}`,
+      );
+    }
+    if (exactSameWarAttackProgressSamples.length > 0) {
+      console.info(
+        `[todo-snapshot] event=todo_war_owner_resolution_exact_same_war_attack_progress sample_count=${exactSameWarAttackProgressSamples.length} sample_matches=${exactSameWarAttackProgressSamples.join("|")}`,
       );
     }
 
@@ -3859,6 +3888,9 @@ type TodoWarOwnerSnapshotState = {
 
 type TodoWarOwnerWriteDecision = {
   finalState: TodoWarOwnerSnapshotState;
+  existingWarAttacksUsed: number;
+  finalWarAttacksUsed: number;
+  exactSameWarAttackProgressIncreased: boolean;
   preservationMode:
     | "attempted"
     | "preserved_existing_verified"
@@ -3886,6 +3918,7 @@ type TodoSnapshotWriteOperation = {
     attemptedState: TodoWarOwnerSnapshotState;
     attemptedObservationAt: Date;
     resolutionSource: WarOwnerResolutionSource;
+    attackProgressSource: TodoWarAttackProgressSource;
   };
 };
 
@@ -3969,17 +4002,27 @@ function buildTodoWarOwnerCanonicalMergeState(input: {
     warId: number | null;
     verifiedAt: Date | null;
   } | null;
+  attackProgressSource: TodoWarAttackProgressSource;
 }): TodoWarOwnerSnapshotState {
+  const existingWarAttacksUsed = clampInt(input.existing.warAttacksUsed ?? 0, 0, 2);
+  const attemptedWarAttacksUsed = clampInt(input.attemptedState.warAttacksUsed, 0, 2);
+  const existingWarClanName = sanitizeDisplayText(input.existing.warClanName ?? "") || null;
+  const attemptedWarClanName = sanitizeDisplayText(input.attemptedState.warClanName ?? "") || null;
+  const existingWarPosition = toPositiveWarPosition(input.existing.warPosition ?? null);
+  const attemptedWarPosition = toPositiveWarPosition(input.attemptedState.warPosition ?? null);
   return {
     warClanTag: input.attemptedState.warClanTag,
-    warClanName: input.attemptedState.warClanName,
-    warPosition: input.attemptedState.warPosition,
+    warClanName: attemptedWarClanName ?? existingWarClanName,
+    warPosition: attemptedWarPosition ?? existingWarPosition,
     warSourceUpdatedAt: input.attemptedState.warSourceUpdatedAt,
     warOwnerSource: input.existingConfidence,
     warOwnerWarId: input.attemptedState.warOwnerWarId,
     warOwnerVerifiedAt: input.existingIdentity?.verifiedAt ?? null,
     warActive: Boolean(input.existing.warActive),
-    warAttacksUsed: clampInt(input.existing.warAttacksUsed ?? 0, 0, 2),
+    warAttacksUsed:
+      input.attackProgressSource === "exact_war_attacks"
+        ? Math.max(existingWarAttacksUsed, attemptedWarAttacksUsed)
+        : existingWarAttacksUsed,
     warAttacksMax: clampInt(input.existing.warAttacksMax ?? 2, 0, 2) || 2,
     warPhase: input.existing.warPhase ?? null,
     warEndsAt: input.existing.warEndsAt ?? null,
@@ -4000,6 +4043,14 @@ function getTodoWarOwnerFreshnessMs(input: {
   return null;
 }
 
+function toPositiveWarPosition(input: unknown): number | null {
+  const value = toFiniteIntOrNull(input);
+  if (value === null || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
 async function persistTodoSnapshotWrite(input: {
   write: TodoSnapshotWriteOperation;
   currentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
@@ -4016,6 +4067,7 @@ async function persistTodoSnapshotWrite(input: {
       attemptedObservationAt: input.write.warDecisionInput.attemptedObservationAt,
       currentWarByClanTag: input.currentWarByClanTag,
       resolutionSource: input.write.warDecisionInput.resolutionSource,
+      attackProgressSource: input.write.warDecisionInput.attackProgressSource,
     });
     const guardedUpdate = applyTodoWarOwnerStateToSnapshotData(
       input.write.update,
@@ -4034,12 +4086,47 @@ async function persistTodoSnapshotWrite(input: {
   });
 }
 
+function finalizeTodoWarOwnerDecision(input: {
+  finalState: TodoWarOwnerSnapshotState;
+  existingWarAttacksUsed: number;
+  attackProgressSource: TodoWarAttackProgressSource;
+  resolutionSource: WarOwnerResolutionSource;
+  baseDecision: Omit<
+    TodoWarOwnerWriteDecision,
+    | "finalState"
+    | "existingWarAttacksUsed"
+    | "finalWarAttacksUsed"
+    | "exactSameWarAttackProgressIncreased"
+  >;
+}): TodoWarOwnerWriteDecision {
+  const finalWarAttacksUsed = clampInt(input.finalState.warAttacksUsed ?? 0, 0, 2);
+  const sameWarIdentity =
+    input.baseDecision.existingWarIdentity !== null &&
+    input.baseDecision.attemptedWarIdentity !== null &&
+    input.baseDecision.existingWarIdentity.clanTag === input.baseDecision.attemptedWarIdentity.clanTag &&
+    input.baseDecision.existingWarIdentity.warId !== null &&
+    input.baseDecision.attemptedWarIdentity.warId !== null &&
+    input.baseDecision.existingWarIdentity.warId === input.baseDecision.attemptedWarIdentity.warId;
+  return {
+    ...input.baseDecision,
+    finalState: input.finalState,
+    existingWarAttacksUsed: input.existingWarAttacksUsed,
+    finalWarAttacksUsed,
+    exactSameWarAttackProgressIncreased:
+      input.resolutionSource === "canonical_tracked_roster" &&
+      sameWarIdentity &&
+      input.attackProgressSource === "exact_war_attacks" &&
+      finalWarAttacksUsed > input.existingWarAttacksUsed,
+  };
+}
+
 function buildTodoWarOwnerDecision(input: {
   existing: TodoSnapshotRecord | null;
   attemptedState: TodoWarOwnerSnapshotState;
   attemptedObservationAt: Date;
   currentWarByClanTag: Map<string, TodoTrackedCurrentWarRow>;
   resolutionSource: WarOwnerResolutionSource;
+  attackProgressSource: TodoWarAttackProgressSource;
 }): TodoWarOwnerWriteDecision {
   const existing = input.existing ?? null;
   const attemptedState = input.attemptedState;
@@ -4059,6 +4146,7 @@ function buildTodoWarOwnerDecision(input: {
     : null;
   const existingFreshnessMs = getTodoWarOwnerFreshnessMs(existing);
   const attemptedFreshnessMs = input.attemptedObservationAt.getTime();
+  const existingWarAttacksUsed = clampInt(existing?.warAttacksUsed ?? 0, 0, 2);
 
   const existingWarClanTag = normalizeClanTag(existing?.warClanTag ?? "");
   const existingCurrentWar = existingWarClanTag
@@ -4129,22 +4217,27 @@ function buildTodoWarOwnerDecision(input: {
 
   if (input.resolutionSource === "authoritative_clear") {
     if (existing && existingFreshnessMs !== null && attemptedFreshnessMs < existingFreshnessMs) {
-      return {
+      return finalizeTodoWarOwnerDecision({
         finalState: buildTodoWarOwnerPreservedState({
           existing,
           existingConfidence,
           existingIdentity,
         }),
-        preservationMode: "preserved_existing_verified",
-        suppressionReason: "stale",
-        existingConfidence,
-        attemptedConfidence,
-        existingWarIdentity: existingIdentity,
-        attemptedWarIdentity: attemptedIdentity,
-      };
+        existingWarAttacksUsed,
+        attackProgressSource: input.attackProgressSource,
+        resolutionSource: input.resolutionSource,
+        baseDecision: {
+          preservationMode: "preserved_existing_verified",
+          suppressionReason: "stale",
+          existingConfidence,
+          attemptedConfidence,
+          existingWarIdentity: existingIdentity,
+          attemptedWarIdentity: attemptedIdentity,
+        },
+      });
     }
 
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: {
         warClanTag: null,
         warClanName: null,
@@ -4159,13 +4252,18 @@ function buildTodoWarOwnerDecision(input: {
         warPhase: null,
         warEndsAt: null,
       },
-      preservationMode: "attempted",
-      suppressionReason: null,
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "attempted",
+        suppressionReason: null,
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
   }
 
   if (
@@ -4175,52 +4273,68 @@ function buildTodoWarOwnerDecision(input: {
     (existingFreshnessMs === null || attemptedFreshnessMs < existingFreshnessMs) &&
     existing
   ) {
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: buildTodoWarOwnerPreservedState({
         existing,
         existingConfidence,
         existingIdentity,
       }),
-      preservationMode: "preserved_existing_verified",
-      suppressionReason: "stale",
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "preserved_existing_verified",
+        suppressionReason: "stale",
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
   }
 
   if (canonicalAttemptIsStale && existing) {
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: buildTodoWarOwnerPreservedState({
         existing,
         existingConfidence,
         existingIdentity,
       }),
-      preservationMode: "preserved_existing_verified",
-      suppressionReason: "stale",
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "preserved_existing_verified",
+        suppressionReason: "stale",
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
   }
 
   if (canonicalAttemptIsSameIdentity && existing) {
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: buildTodoWarOwnerCanonicalMergeState({
         existing,
         attemptedState,
         existingConfidence,
         existingIdentity,
+        attackProgressSource: input.attackProgressSource,
       }),
-      preservationMode: "attempted",
-      suppressionReason: null,
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "attempted",
+        suppressionReason: null,
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
   }
 
   if (canonicalAttemptIsDifferentIdentity && existing) {
@@ -4229,50 +4343,65 @@ function buildTodoWarOwnerDecision(input: {
       existingFreshnessMs !== null &&
       attemptedFreshnessMs < existingFreshnessMs
     ) {
-      return {
+      return finalizeTodoWarOwnerDecision({
         finalState: buildTodoWarOwnerPreservedState({
           existing,
           existingConfidence,
           existingIdentity,
         }),
+        existingWarAttacksUsed,
+        attackProgressSource: input.attackProgressSource,
+        resolutionSource: input.resolutionSource,
+        baseDecision: {
+          preservationMode: "preserved_existing_verified",
+          suppressionReason: "stale",
+          existingConfidence,
+          attemptedConfidence,
+          existingWarIdentity: existingIdentity,
+          attemptedWarIdentity: attemptedIdentity,
+        },
+      });
+    }
+
+    return finalizeTodoWarOwnerDecision({
+      finalState: {
+        ...attemptedState,
+        warOwnerSource: "PERSISTED_FALLBACK",
+        warOwnerVerifiedAt: null,
+      },
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "attempted",
+        suppressionReason: null,
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
+  }
+
+  if (existingVerifiedStaleLowerConfidence && existing) {
+    return finalizeTodoWarOwnerDecision({
+      finalState: buildTodoWarOwnerPreservedState({
+        existing,
+        existingConfidence,
+        existingIdentity,
+      }),
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
         preservationMode: "preserved_existing_verified",
         suppressionReason: "stale",
         existingConfidence,
         attemptedConfidence,
         existingWarIdentity: existingIdentity,
         attemptedWarIdentity: attemptedIdentity,
-      };
-    }
-
-    return {
-      finalState: {
-        ...attemptedState,
-        warOwnerSource: "PERSISTED_FALLBACK",
-        warOwnerVerifiedAt: null,
       },
-      preservationMode: "attempted",
-      suppressionReason: null,
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
-  }
-
-  if (existingVerifiedStaleLowerConfidence && existing) {
-    return {
-      finalState: buildTodoWarOwnerPreservedState({
-        existing,
-        existingConfidence,
-        existingIdentity,
-      }),
-      preservationMode: "preserved_existing_verified",
-      suppressionReason: "stale",
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+    });
   }
 
   if (existingVerifiedContinuity && attemptedConfidence !== "LIVE_VERIFIED" && existing) {
@@ -4280,46 +4409,61 @@ function buildTodoWarOwnerDecision(input: {
       existing.lastUpdatedAt.getTime() > input.attemptedObservationAt.getTime()
         ? "stale"
         : "lower_confidence";
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: buildTodoWarOwnerPreservedState({
         existing,
         existingConfidence,
         existingIdentity,
       }),
-      preservationMode: "preserved_existing_verified",
-      suppressionReason,
-      existingConfidence,
-      attemptedConfidence,
-      existingWarIdentity: existingIdentity,
-      attemptedWarIdentity: attemptedIdentity,
-    };
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "preserved_existing_verified",
+        suppressionReason,
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
   }
 
   if (existingBootstrapProtectedFallback) {
-    return {
+    return finalizeTodoWarOwnerDecision({
       finalState: buildTodoWarOwnerPreservedState({
         existing,
         existingConfidence,
         existingIdentity,
       }),
-      preservationMode: "preserved_existing_bootstrap",
-      suppressionReason: "lower_confidence",
+      existingWarAttacksUsed,
+      attackProgressSource: input.attackProgressSource,
+      resolutionSource: input.resolutionSource,
+      baseDecision: {
+        preservationMode: "preserved_existing_bootstrap",
+        suppressionReason: "lower_confidence",
+        existingConfidence,
+        attemptedConfidence,
+        existingWarIdentity: existingIdentity,
+        attemptedWarIdentity: attemptedIdentity,
+      },
+    });
+  }
+
+  return finalizeTodoWarOwnerDecision({
+    finalState: attemptedState,
+    existingWarAttacksUsed,
+    attackProgressSource: input.attackProgressSource,
+    resolutionSource: input.resolutionSource,
+    baseDecision: {
+      preservationMode: "attempted",
+      suppressionReason: null,
       existingConfidence,
       attemptedConfidence,
       existingWarIdentity: existingIdentity,
       attemptedWarIdentity: attemptedIdentity,
-    };
-  }
-
-  return {
-    finalState: attemptedState,
-    preservationMode: "attempted",
-    suppressionReason: null,
-    existingConfidence,
-    attemptedConfidence,
-    existingWarIdentity: existingIdentity,
-    attemptedWarIdentity: attemptedIdentity,
-  };
+    },
+  });
 }
 
 /** Purpose: build a consistent unresolved WAR owner result for guarded fallbacks. */

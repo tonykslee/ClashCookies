@@ -299,6 +299,133 @@ async function loadGuildMembersByIdsAllowPartial(input: {
   };
 }
 
+function logRoleHolderDiscovery(input: {
+  guildId: string;
+  roleId: string;
+  subtype: RoleScopeDiscoverySubtype;
+  guildMemberCount: number;
+  initialCachedCount: number;
+  fullFetchRequired: boolean;
+  hydratedCount: number;
+  holderCount: number;
+  candidateCount: number;
+  cacheCoverageComplete: boolean;
+  action: "continue" | "abort_before_apply";
+  reason?: string | null;
+  error?: unknown;
+}): void {
+  const message =
+    `[autorole] event=role_holder_discovery guild_id=${input.guildId} target_role=${input.roleId} subtype=${input.subtype} guild_member_count=${input.guildMemberCount} initial_cached_count=${input.initialCachedCount} full_fetch_required=${input.fullFetchRequired ? "true" : "false"} hydrated_count=${input.hydratedCount} holder_count=${input.holderCount} candidate_count=${input.candidateCount} completeness_status=${input.cacheCoverageComplete ? "complete" : "incomplete"} action=${input.action}` +
+    (input.reason ? ` reason=${input.reason}` : "") +
+    (input.error !== undefined ? ` error=${formatError(input.error)}` : "");
+  if (input.action === "abort_before_apply") {
+    dozzleLog.warn(message);
+    return;
+  }
+  dozzleLog.info(message);
+}
+
+async function loadCompleteGuildMembersForRoleRefresh(input: {
+  guild: Guild;
+  guildId: string;
+  roleId: string;
+  subtype: RoleScopeDiscoverySubtype;
+  telemetry?: AutoRoleRefreshTelemetry | null;
+}): Promise<RoleScopeGuildMemberLoadState> {
+  const cachedMembersById = getGuildCachedMembersMap(input.guild);
+  const cachedMemberCount = cachedMembersById.size;
+  const guildMemberCount = Math.trunc(Number(input.guild.memberCount ?? cachedMemberCount));
+  const cacheCoverageComplete = guildMemberCount <= cachedMemberCount;
+  if (cacheCoverageComplete) {
+    return {
+      membersById: cachedMembersById,
+      cachedMemberCount,
+      hydratedMemberCount: cachedMemberCount,
+      guildMemberCount,
+      cacheCoverageComplete: true,
+      fullFetchRequired: false,
+    };
+  }
+
+  let fetchedMembers: unknown;
+  try {
+    fetchedMembers = await input.guild.members.fetch();
+  } catch (error) {
+    logRoleHolderDiscovery({
+      guildId: input.guildId,
+      roleId: input.roleId,
+      subtype: input.subtype,
+      guildMemberCount,
+      initialCachedCount: cachedMemberCount,
+      fullFetchRequired: true,
+      hydratedCount: 0,
+      holderCount: 0,
+      candidateCount: 0,
+      cacheCoverageComplete: false,
+      action: "abort_before_apply",
+      reason: "full_member_fetch_failed",
+      error,
+    });
+    throw new Error(
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a complete guild member fetch.`,
+    );
+  }
+
+  let membersById: Map<string, AutoRoleGuildMemberLike>;
+  try {
+    membersById = memberCollectionToMap(fetchedMembers as AutoRoleMemberCollectionLike);
+  } catch (error) {
+    logRoleHolderDiscovery({
+      guildId: input.guildId,
+      roleId: input.roleId,
+      subtype: input.subtype,
+      guildMemberCount,
+      initialCachedCount: cachedMemberCount,
+      fullFetchRequired: true,
+      hydratedCount: 0,
+      holderCount: 0,
+      candidateCount: 0,
+      cacheCoverageComplete: false,
+      action: "abort_before_apply",
+      reason: "full_member_fetch_unusable",
+      error,
+    });
+    throw new Error(
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a usable complete guild member fetch.`,
+    );
+  }
+
+  const hydratedMemberCount = membersById.size;
+  if (hydratedMemberCount < guildMemberCount) {
+    logRoleHolderDiscovery({
+      guildId: input.guildId,
+      roleId: input.roleId,
+      subtype: input.subtype,
+      guildMemberCount,
+      initialCachedCount: cachedMemberCount,
+      fullFetchRequired: true,
+      hydratedCount: hydratedMemberCount,
+      holderCount: 0,
+      candidateCount: 0,
+      cacheCoverageComplete: false,
+      action: "abort_before_apply",
+      reason: "full_member_fetch_incomplete",
+    });
+    throw new Error(
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a complete guild member fetch, but Discord returned only ${hydratedMemberCount}/${guildMemberCount} members.`,
+    );
+  }
+
+  return {
+    membersById,
+    cachedMemberCount,
+    hydratedMemberCount,
+    guildMemberCount,
+    cacheCoverageComplete: true,
+    fullFetchRequired: true,
+  };
+}
+
 function mergeTrackedClanPlayerCurrentOverlay(input: {
   baseByTag: Map<string, PlayerCurrentLike>;
   overlayByTag: Map<string, PlayerCurrentLike>;
@@ -983,6 +1110,17 @@ type TrackedFwaClanRefreshState = {
   failedClanTags: string[];
 };
 
+type RoleScopeDiscoverySubtype = "tracked_clan" | "tracked_lead";
+
+type RoleScopeGuildMemberLoadState = {
+  membersById: Map<string, AutoRoleGuildMemberLike>;
+  cachedMemberCount: number;
+  hydratedMemberCount: number;
+  guildMemberCount: number;
+  cacheCoverageComplete: boolean;
+  fullFetchRequired: boolean;
+};
+
 type TrackedLeadRoleRefreshState = {
   requestedClanCount: number;
   configuredClanTags: string[];
@@ -1000,8 +1138,12 @@ type TrackedLeadRoleRefreshState = {
   membersById: Map<string, AutoRoleGuildMemberLike>;
   candidateUserIds: Set<string>;
   loadedCandidateUserIds: Set<string>;
+  currentHolderCount: number;
   cachedMemberCount: number;
+  hydratedMemberCount: number;
   guildMemberCount: number;
+  cacheCoverageComplete: boolean;
+  fullFetchRequired: boolean;
   targetedFetchRequestedCount: number;
   targetedFetchSucceededCount: number;
   targetedFetchFailedCount: number;
@@ -1026,8 +1168,12 @@ type TrackedClanRoleRefreshState = {
   candidateUserIds: Set<string>;
   membersById: Map<string, AutoRoleGuildMemberLike>;
   loadedCandidateUserIds: Set<string>;
+  currentHolderCount: number;
   cachedMemberCount: number;
+  hydratedMemberCount: number;
   guildMemberCount: number;
+  cacheCoverageComplete: boolean;
+  fullFetchRequired: boolean;
   targetedFetchRequestedCount: number;
   targetedFetchSucceededCount: number;
   targetedFetchFailedCount: number;
@@ -1216,7 +1362,6 @@ async function loadTrackedLeadRoleRefreshState(input: {
   guildId?: string;
   roleId: string;
   guild: Guild;
-  membersById: Map<string, AutoRoleGuildMemberLike>;
   cocService?: CoCService | null;
   telemetry?: AutoRoleRefreshTelemetry | null;
 }): Promise<TrackedLeadRoleRefreshState | null> {
@@ -1249,7 +1394,14 @@ async function loadTrackedLeadRoleRefreshState(input: {
     return null;
   }
 
-  const cachedMembersById = input.membersById;
+  const guildMembers = await loadCompleteGuildMembersForRoleRefresh({
+    guild: input.guild,
+    guildId: input.guildId ?? "",
+    roleId,
+    subtype: "tracked_lead",
+    telemetry: input.telemetry,
+  });
+  const cachedMembersById = guildMembers.membersById;
   const currentHolderIds = collectCurrentRoleHolders(cachedMembersById, new Set([roleId]));
   const failedClanTags = new Set<string>();
   const configuredClanTags = new Set<string>();
@@ -1365,6 +1517,7 @@ async function loadTrackedLeadRoleRefreshState(input: {
     });
   }
 
+  const currentHolderCount = currentHolderIds.size;
   const leaderLinkedAccountsByUserId = await loadLinkedAccountsForPlayerTags({
     playerTags: [...leaderMemberTags],
   });
@@ -1373,12 +1526,12 @@ async function loadTrackedLeadRoleRefreshState(input: {
     candidateUserIds.add(userId);
   }
 
-  const memberSource = await loadGuildMembersByIdsAllowPartial({
-    guild: input.guild,
-    userIds: candidateUserIds,
-  });
-  const membersById = memberSource.membersById;
-  const loadedCandidateUserIds = new Set<string>(membersById.keys());
+  const loadedCandidateUserIds = new Set<string>();
+  for (const userId of candidateUserIds) {
+    if (cachedMembersById.has(userId)) {
+      loadedCandidateUserIds.add(userId);
+    }
+  }
   const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
     guildMemberIds: [...loadedCandidateUserIds],
   });
@@ -1397,14 +1550,18 @@ async function loadTrackedLeadRoleRefreshState(input: {
     },
     playerCurrentByTag,
     linkedAccountsByUserId,
-    membersById,
+    membersById: cachedMembersById,
     candidateUserIds,
     loadedCandidateUserIds,
-    cachedMemberCount: cachedMembersById.size,
-    guildMemberCount: input.guild.memberCount,
-    targetedFetchRequestedCount: memberSource.targetedFetchRequestedCount,
-    targetedFetchSucceededCount: memberSource.targetedFetchSucceededCount,
-    targetedFetchFailedCount: memberSource.targetedFetchFailedCount,
+    currentHolderCount,
+    cachedMemberCount: guildMembers.cachedMemberCount,
+    hydratedMemberCount: guildMembers.hydratedMemberCount,
+    guildMemberCount: guildMembers.guildMemberCount,
+    cacheCoverageComplete: guildMembers.cacheCoverageComplete,
+    fullFetchRequired: guildMembers.fullFetchRequired,
+    targetedFetchRequestedCount: 0,
+    targetedFetchSucceededCount: 0,
+    targetedFetchFailedCount: 0,
     clanFetchCount,
     failedClanTags: [...failedClanTags].sort(),
   };
@@ -1446,7 +1603,14 @@ async function loadTrackedClanRoleRefreshState(input: {
     throw new Error("Tracked clan role refresh requires CoC clan data.");
   }
 
-  const cachedMembersById = getGuildCachedMembersMap(input.guild);
+  const guildMembers = await loadCompleteGuildMembersForRoleRefresh({
+    guild: input.guild,
+    guildId: input.guildId ?? "",
+    roleId,
+    subtype: "tracked_clan",
+    telemetry: input.telemetry,
+  });
+  const cachedMembersById = guildMembers.membersById;
   const currentHolderIds = collectCurrentRoleHolders(cachedMembersById, new Set([roleId]));
   const failedClanTags = new Set<string>();
   const configuredClanTags = new Set<string>();
@@ -1489,7 +1653,7 @@ async function loadTrackedClanRoleRefreshState(input: {
   const fwaMemberTags = new Set<string>();
   const candidatePlayerTags = new Set<string>();
   let clanFetchCount = 0;
-  const cachedMemberCount = cachedMembersById.size;
+  const currentHolderCount = currentHolderIds.size;
 
   for (const lookup of successfulLookups) {
     clanFetchCount += 1;
@@ -1577,12 +1741,12 @@ async function loadTrackedClanRoleRefreshState(input: {
     candidateUserIds.add(userId);
   }
 
-  const memberSource = await loadGuildMembersByIdsAllowPartial({
-    guild: input.guild,
-    userIds: candidateUserIds,
-  });
-  const membersById = memberSource.membersById;
-  const loadedCandidateUserIds = new Set<string>(membersById.keys());
+  const loadedCandidateUserIds = new Set<string>();
+  for (const userId of candidateUserIds) {
+    if (cachedMembersById.has(userId)) {
+      loadedCandidateUserIds.add(userId);
+    }
+  }
 
   const linkedAccountsByUserId = await loadLinkedAccountsForGuildMemberIds({
     guildMemberIds: [...loadedCandidateUserIds],
@@ -1603,13 +1767,17 @@ async function loadTrackedClanRoleRefreshState(input: {
     playerCurrentByTag,
     linkedAccountsByUserId,
     candidateUserIds,
-    membersById,
+    membersById: cachedMembersById,
     loadedCandidateUserIds,
-    cachedMemberCount,
-    guildMemberCount: input.guild.memberCount,
-    targetedFetchRequestedCount: memberSource.targetedFetchRequestedCount,
-    targetedFetchSucceededCount: memberSource.targetedFetchSucceededCount,
-    targetedFetchFailedCount: memberSource.targetedFetchFailedCount,
+    currentHolderCount,
+    cachedMemberCount: guildMembers.cachedMemberCount,
+    hydratedMemberCount: guildMembers.hydratedMemberCount,
+    guildMemberCount: guildMembers.guildMemberCount,
+    cacheCoverageComplete: guildMembers.cacheCoverageComplete,
+    fullFetchRequired: guildMembers.fullFetchRequired,
+    targetedFetchRequestedCount: 0,
+    targetedFetchSucceededCount: 0,
+    targetedFetchFailedCount: 0,
     clanFetchCount,
     failedClanTags: [...failedClanTags].sort(),
   };
@@ -2573,8 +2741,6 @@ export class AutoRoleRefreshService {
       }
 
       if (input.scope.kind === "role") {
-        const roleMembersById = getGuildCachedMembersMap(input.guild);
-        const roleCacheCoverageComplete = input.guild.memberCount <= roleMembersById.size;
         const clanRoleState = await loadTrackedClanRoleRefreshState({
           guildId: input.guildId,
           roleId: input.scope.discordRoleId,
@@ -2606,17 +2772,28 @@ export class AutoRoleRefreshService {
             throw error;
           }
 
-          const currentHolderCount = collectCurrentRoleHolders(
-            clanRoleState.membersById,
-            new Set([input.scope.discordRoleId]),
-          ).size;
-          const visitorRoleAdditionsSuppressed = visitorRoleConfigured && !roleCacheCoverageComplete;
+          const currentHolderCount = clanRoleState.currentHolderCount;
+          const candidateCount = clanRoleState.loadedCandidateUserIds.size;
+          logRoleHolderDiscovery({
+            guildId: input.guildId,
+            roleId: input.scope.discordRoleId,
+            subtype: "tracked_clan",
+            guildMemberCount: clanRoleState.guildMemberCount,
+            initialCachedCount: clanRoleState.cachedMemberCount,
+            fullFetchRequired: clanRoleState.fullFetchRequired,
+            hydratedCount: clanRoleState.hydratedMemberCount,
+            holderCount: currentHolderCount,
+            candidateCount,
+            cacheCoverageComplete: clanRoleState.cacheCoverageComplete,
+            action: "continue",
+          });
+          const visitorRoleAdditionsSuppressed = visitorRoleConfigured && !clanRoleState.cacheCoverageComplete;
           const memberSourceSummary = buildMemberSourceSummary({
             scope: input.scope,
             guildMemberCount: clanRoleState.guildMemberCount,
             cachedMemberCount: clanRoleState.cachedMemberCount,
-            cacheCoverageComplete: roleCacheCoverageComplete,
-            candidateUserCount: clanRoleState.candidateUserIds.size,
+            cacheCoverageComplete: clanRoleState.cacheCoverageComplete,
+            candidateUserCount: candidateCount,
             targetedFetchRequestedCount: clanRoleState.targetedFetchRequestedCount,
             targetedFetchSucceededCount: clanRoleState.targetedFetchSucceededCount,
             targetedFetchFailedCount: clanRoleState.targetedFetchFailedCount,
@@ -2625,15 +2802,15 @@ export class AutoRoleRefreshService {
             trackedClanOverlayCount: clanRoleState.playerCurrentByTag.size,
           });
           dozzleLog.info(
-            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} clan_role_clans=${clanRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${clanRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} clan_member_tags=${clanRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${clanRoleState.clanFetchCount} player_current_tags=${clanRoleState.playerCurrentByTag.size} member_fetch_mode=targeted`,
+            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} clan_role_clans=${clanRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${clanRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} clan_member_tags=${clanRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${clanRoleState.clanFetchCount} player_current_tags=${clanRoleState.playerCurrentByTag.size} member_fetch_mode=${clanRoleState.fullFetchRequired ? "full_fetch" : "cache_complete"}`,
           );
 
           const result = await runRefreshPass({
-          guildId: input.guildId,
-          scope: input.scope,
-          runTrigger: input.runContext.trigger,
-          guild: input.guild,
-          snapshot,
+            guildId: input.guildId,
+            scope: input.scope,
+            runTrigger: input.runContext.trigger,
+            guild: input.guild,
+            snapshot,
             trackedClans: clanRoleState.trackedClans,
             membersById: clanRoleState.membersById,
             linkedAccountsByUserId: clanRoleState.linkedAccountsByUserId,
@@ -2659,7 +2836,6 @@ export class AutoRoleRefreshService {
           guildId: input.guildId,
           roleId: input.scope.discordRoleId,
           guild: input.guild,
-          membersById: roleMembersById,
           cocService: input.cocService ?? null,
           telemetry: input.telemetry ?? null,
         });
@@ -2687,17 +2863,28 @@ export class AutoRoleRefreshService {
             throw error;
           }
 
-          const currentHolderCount = collectCurrentRoleHolders(
-            roleMembersById,
-            new Set([input.scope.discordRoleId]),
-          ).size;
-          const visitorRoleAdditionsSuppressed = visitorRoleConfigured && !roleCacheCoverageComplete;
+          const currentHolderCount = leadRoleState.currentHolderCount;
+          const candidateCount = leadRoleState.loadedCandidateUserIds.size;
+          logRoleHolderDiscovery({
+            guildId: input.guildId,
+            roleId: input.scope.discordRoleId,
+            subtype: "tracked_lead",
+            guildMemberCount: leadRoleState.guildMemberCount,
+            initialCachedCount: leadRoleState.cachedMemberCount,
+            fullFetchRequired: leadRoleState.fullFetchRequired,
+            hydratedCount: leadRoleState.hydratedMemberCount,
+            holderCount: currentHolderCount,
+            candidateCount,
+            cacheCoverageComplete: leadRoleState.cacheCoverageComplete,
+            action: "continue",
+          });
+          const visitorRoleAdditionsSuppressed = visitorRoleConfigured && !leadRoleState.cacheCoverageComplete;
           const memberSourceSummary = buildMemberSourceSummary({
             scope: input.scope,
             guildMemberCount: leadRoleState.guildMemberCount,
             cachedMemberCount: leadRoleState.cachedMemberCount,
-            cacheCoverageComplete: roleCacheCoverageComplete,
-            candidateUserCount: leadRoleState.candidateUserIds.size,
+            cacheCoverageComplete: leadRoleState.cacheCoverageComplete,
+            candidateUserCount: candidateCount,
             targetedFetchRequestedCount: leadRoleState.targetedFetchRequestedCount,
             targetedFetchSucceededCount: leadRoleState.targetedFetchSucceededCount,
             targetedFetchFailedCount: leadRoleState.targetedFetchFailedCount,
@@ -2706,7 +2893,7 @@ export class AutoRoleRefreshService {
             trackedClanOverlayCount: leadRoleState.playerCurrentByTag.size,
           });
           dozzleLog.info(
-            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} lead_clans=${leadRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${leadRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} lead_member_tags=${leadRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${leadRoleState.clanFetchCount} player_current_tags=${leadRoleState.playerCurrentByTag.size}`,
+            `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} target_role=${input.scope.discordRoleId} lead_clans=${leadRoleState.trackedClans.length} current_holders=${currentHolderCount} linked_users=${leadRoleState.linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} lead_member_tags=${leadRoleState.trackedMembershipScope.fwaMemberTags.size} clan_fetches=${leadRoleState.clanFetchCount} player_current_tags=${leadRoleState.playerCurrentByTag.size} member_fetch_mode=${leadRoleState.fullFetchRequired ? "full_fetch" : "cache_complete"}`,
           );
 
           const result = await runRefreshPass({
