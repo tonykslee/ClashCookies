@@ -107,7 +107,7 @@ function makeJuly15IncidentGateBasesRows() {
   return [
     {
       clanTag: "#2YUYLJCGV",
-      compactCopyLine: "RD | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "RD | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1363320268755435772",
       badgeEmojiName: "Logo_RisingDawn",
       badgeEmojiInline: "<:Logo_RisingDawn:1363320268755435772>",
@@ -119,7 +119,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#LQQ99UV8",
-      compactCopyLine: "ZG | 🔴 | ❌ Bases not checked",
+      compactCopyLine: "ZG | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1363320272035385524",
       badgeEmojiName: "Logo_ZeroGravity",
       badgeEmojiInline: "<:Logo_ZeroGravity:1363320272035385524>",
@@ -131,7 +131,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#R80L8VYG",
-      compactCopyLine: "DE | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "DE | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1363320285595435148",
       badgeEmojiName: "Logo_DarkEmpire",
       badgeEmojiInline: "<:Logo_DarkEmpire:1363320285595435148>",
@@ -143,7 +143,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#82YLR9Q2",
-      compactCopyLine: "SE | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "SE | \u{1f4d0} | \u274c Bases not checked",
       badgeEmojiId: "1463680051261341799",
       badgeEmojiName: "Logo_SteelEmpire",
       badgeEmojiInline: "<:Logo_SteelEmpire:1463680051261341799>",
@@ -155,7 +155,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#29PCQGUV0",
-      compactCopyLine: "TWC | 🔴 | ❌ Bases not checked",
+      compactCopyLine: "TWC | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1367885051622195230",
       badgeEmojiName: "Logo_TheWiseCowboys",
       badgeEmojiInline: "<:Logo_TheWiseCowboys:1367885051622195230>",
@@ -167,7 +167,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#2RYGLU2UY",
-      compactCopyLine: "RR | 🔴 | ❌ Bases not checked",
+      compactCopyLine: "RR | \u{1f534} | \u274c Bases not checked",
       badgeEmojiId: "1463679964334526495",
       badgeEmojiName: "Logo_RockyRoad",
       badgeEmojiInline: "<:Logo_RockyRoad:1463679964334526495>",
@@ -179,7 +179,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#2RVV0L0VP",
-      compactCopyLine: "AK | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "AK | \u{1f4d0} | \u274c Bases not checked",
       badgeEmojiId: "1464436468578517125",
       badgeEmojiName: "Logo_Akatsuki",
       badgeEmojiInline: "<:Logo_Akatsuki:1464436468578517125>",
@@ -191,7 +191,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#C0CU2Q82",
-      compactCopyLine: "SH | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "SH | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1496617661264695296",
       badgeEmojiName: "Logo_StrawHats",
       badgeEmojiInline: "<:Logo_StrawHats:1496617661264695296>",
@@ -203,7 +203,7 @@ function makeJuly15IncidentGateBasesRows() {
     },
     {
       clanTag: "#2QVGPQP0U",
-      compactCopyLine: "EB | 🟢 | ❌ Bases not checked",
+      compactCopyLine: "EB | \u{1f4d0} | Skipped this sync \u{1f634}",
       badgeEmojiId: "1496617820115435702",
       badgeEmojiName: "Logo_EternalBlaze",
       badgeEmojiInline: "<:Logo_EternalBlaze:1496617820115435702>",
@@ -215,7 +215,6 @@ function makeJuly15IncidentGateBasesRows() {
     },
   ] as const;
 }
-
 describe("FwaMatchChecklistAutoPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
