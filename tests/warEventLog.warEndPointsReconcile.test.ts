@@ -6,6 +6,7 @@ import { MaintenanceWindowService } from "../src/services/MaintenanceWindowServi
 import {
   WarEventLogService,
   buildWarEndDiscrepancyFingerprintForTest,
+  buildNotifyWarRefreshCustomId,
 } from "../src/services/WarEventLogService";
 
 vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
@@ -3350,5 +3351,327 @@ describe("War-start notify refresh sync fallback", () => {
     expect(initial.payloadSyncNumber).toBe(482);
     expect(refresh.payloadSyncNumber).toBe(482);
     expect(initial.payloadSyncNumber).toBe(refresh.payloadSyncNumber);
+  });
+});
+
+describe("War refresh identity retention", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function buildNotifyRefreshHarness(input: {
+    currentWarId: number;
+    refreshedWarId: number;
+    lookupWarId: number;
+    liveStartTime: Date;
+    liveOpponentTag: string;
+    liveOpponentName: string;
+    liveClanName: string;
+    resolvedSyncNumber: number;
+  }) {
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const messageFetch = vi.fn().mockResolvedValue({
+      content: "War declared against Enemy",
+      embeds: [],
+      edit: messageEdit,
+    });
+    const channelFetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      messages: { fetch: messageFetch },
+    });
+    const service = new WarEventLogService(
+      { channels: { fetch: channelFetch } } as unknown as Client,
+      {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "preparation",
+          clan: { name: input.liveClanName, stars: 0 },
+          opponent: {
+            tag: input.liveOpponentTag,
+            name: input.liveOpponentName,
+            stars: 0,
+          },
+          preparationStartTime: "20260311T010000.000Z",
+          startTime: input.liveStartTime.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, ".000Z"),
+          endTime: null,
+        }),
+      } as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: input.currentWarId,
+      startTime: input.liveStartTime,
+      prepStartTime: new Date(input.liveStartTime.getTime() - 86400000),
+      endTime: null,
+      opponentTag: input.liveOpponentTag,
+      opponentName: input.liveOpponentName,
+      clanName: input.liveClanName,
+      state: "preparation",
+    });
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    const ensureSpy = vi
+      .spyOn(service as any, "ensureCurrentWarId")
+      .mockResolvedValue(input.refreshedWarId);
+    const resolveSyncSpy = vi
+      .spyOn(service as any, "resolveNotifyEventSyncNumber")
+      .mockResolvedValue(input.resolvedSyncNumber);
+    const buildSpy = vi
+      .spyOn(service as any, "buildWarStartedRefreshEmbed")
+      .mockResolvedValue(new EmbedBuilder());
+    const postedLookupSpy = vi.fn().mockImplementation(({ warId }) => {
+      if (Number(warId) === input.lookupWarId) {
+        return {
+          channelId: "chan-1",
+          messageId: "msg-1",
+          syncNum: 482,
+        };
+      }
+      return null;
+    });
+
+    (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(sub);
+    (service as any).postedMessages = {
+      findExistingMessage: postedLookupSpy,
+    };
+
+    const ok = await service.refreshCurrentNotifyPost("guild-1", "#AAA111");
+    return {
+      ok,
+      updateSpy,
+      ensureSpy,
+      resolveSyncSpy,
+      buildSpy,
+      postedLookupSpy,
+      messageEdit,
+      messageFetch,
+    };
+  }
+
+  async function buildBattleDayRefreshHarness(input: {
+    currentWarId: number;
+    refreshedWarId: number;
+    lookupWarId: number;
+    liveStartTime: Date;
+    liveOpponentTag: string;
+    liveOpponentName: string;
+    liveClanName: string;
+    resolvedSyncNumber: number;
+  }) {
+    const messageEdit = vi.fn().mockResolvedValue(undefined);
+    const messageFetch = vi.fn().mockResolvedValue({
+      content: "War declared against Enemy",
+      embeds: [new EmbedBuilder().setTitle("Battle Day")],
+      edit: messageEdit,
+    });
+    const channelFetch = vi.fn().mockResolvedValue({
+      isTextBased: () => true,
+      messages: { fetch: messageFetch },
+    });
+    const service = new WarEventLogService(
+      { channels: { fetch: channelFetch } } as unknown as Client,
+      {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "inWar",
+          clan: {
+            name: input.liveClanName,
+            stars: 0,
+            attacks: 0,
+            destructionPercentage: 0,
+          },
+          opponent: {
+            tag: input.liveOpponentTag,
+            name: input.liveOpponentName,
+            stars: 0,
+            attacks: 0,
+            destructionPercentage: 0,
+          },
+          preparationStartTime: "20260311T010000.000Z",
+          startTime: input.liveStartTime.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, ".000Z"),
+          endTime: null,
+          teamSize: 50,
+          attacksPerMember: 2,
+        }),
+      } as any,
+    );
+    const sub = makeSubscription({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      warId: input.currentWarId,
+      startTime: input.liveStartTime,
+      prepStartTime: new Date(input.liveStartTime.getTime() - 86400000),
+      endTime: null,
+      opponentTag: input.liveOpponentTag,
+      opponentName: input.liveOpponentName,
+      clanName: input.liveClanName,
+      state: "inWar",
+    });
+    const updateSpy = vi.spyOn(prisma.currentWar, "update").mockResolvedValue({} as any);
+    const ensureSpy = vi
+      .spyOn(service as any, "ensureCurrentWarId")
+      .mockResolvedValue(input.refreshedWarId);
+    const resolveSyncSpy = vi
+      .spyOn(service as any, "resolveNotifyEventSyncNumber")
+      .mockResolvedValue(input.resolvedSyncNumber);
+    const buildSpy = vi
+      .spyOn(service as any, "buildBattleDayRefreshEmbed")
+      .mockResolvedValue(new EmbedBuilder());
+    const postedLookupSpy = vi.fn().mockImplementation(({ warId }) => {
+      if (Number(warId) === input.lookupWarId) {
+        return {
+          channelId: "chan-1",
+          messageId: "msg-1",
+          syncNum: 482,
+        };
+      }
+      return null;
+    });
+    const interaction = {
+      customId: buildNotifyWarRefreshCustomId("guild-1", "#AAA111"),
+      channelId: "chan-1",
+      message: { id: "msg-1" },
+      deferReply: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    (service as any).findSubscriptionByGuildAndTag = vi.fn().mockResolvedValue(sub);
+    (service as any).postedMessages = {
+      findExistingMessage: postedLookupSpy,
+    };
+
+    await (service as any).refreshBattleDayPostByInteraction(interaction);
+    return {
+      interaction,
+      updateSpy,
+      ensureSpy,
+      resolveSyncSpy,
+      buildSpy,
+      postedLookupSpy,
+      messageEdit,
+      messageFetch,
+    };
+  }
+
+  it("retains the current war ID on same-war notify refresh without preserving blindly", async () => {
+    const liveStartTime = new Date("2026-03-12T00:00:00.000Z");
+    const result = await buildNotifyRefreshHarness({
+      currentWarId: 1000608,
+      refreshedWarId: 1000608,
+      lookupWarId: 1000608,
+      liveStartTime,
+      liveOpponentTag: "#0PP123",
+      liveOpponentName: "Enemy",
+      liveClanName: "Alpha",
+      resolvedSyncNumber: 534,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.ensureSpy).toHaveBeenCalledTimes(1);
+    expect(result.ensureSpy.mock.calls[0]?.[0]?.preserveExistingWarId).toBeUndefined();
+    expect(result.updateSpy).toHaveBeenCalledTimes(1);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.warId).toBe(1000608);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.startTime).toEqual(liveStartTime);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.opponentTag).toBe("#0PP123");
+    expect(result.postedLookupSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000608" }),
+    );
+    expect(result.messageEdit).toHaveBeenCalledTimes(1);
+    expect(result.buildSpy).toHaveBeenCalledTimes(1);
+    expect(result.resolveSyncSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a new war ID on changed notify refresh and leaves the old posted message untouched", async () => {
+    const liveStartTime = new Date("2026-03-13T00:00:00.000Z");
+    const result = await buildNotifyRefreshHarness({
+      currentWarId: 1000608,
+      refreshedWarId: 1000609,
+      lookupWarId: 1000609,
+      liveStartTime,
+      liveOpponentTag: "#0PP999",
+      liveOpponentName: "New Enemy",
+      liveClanName: "Alpha",
+      resolvedSyncNumber: 535,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.ensureSpy).toHaveBeenCalledTimes(1);
+    expect(result.ensureSpy.mock.calls[0]?.[0]?.preserveExistingWarId).toBeUndefined();
+    expect(result.updateSpy).toHaveBeenCalledTimes(1);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.warId).toBe(1000609);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.startTime).toEqual(liveStartTime);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.opponentTag).toBe("#0PP999");
+    expect(result.postedLookupSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000609" }),
+    );
+    expect(result.postedLookupSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000608" }),
+    );
+    expect(result.messageEdit).toHaveBeenCalledTimes(1);
+    expect(result.buildSpy).toHaveBeenCalledTimes(1);
+    expect(result.resolveSyncSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the current war ID on same-war battle-day refresh without preserving blindly", async () => {
+    const liveStartTime = new Date("2026-03-12T00:00:00.000Z");
+    const result = await buildBattleDayRefreshHarness({
+      currentWarId: 1000608,
+      refreshedWarId: 1000608,
+      lookupWarId: 1000608,
+      liveStartTime,
+      liveOpponentTag: "#0PP123",
+      liveOpponentName: "Enemy",
+      liveClanName: "Alpha",
+      resolvedSyncNumber: 534,
+    });
+
+    expect(result.ensureSpy).toHaveBeenCalledTimes(1);
+    expect(result.ensureSpy.mock.calls[0]?.[0]?.preserveExistingWarId).toBeUndefined();
+    expect(result.updateSpy).toHaveBeenCalledTimes(1);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.warId).toBe(1000608);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.startTime).toEqual(liveStartTime);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.opponentTag).toBe("#0PP123");
+    expect(result.postedLookupSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000608" }),
+    );
+    expect(result.messageEdit).toHaveBeenCalledTimes(1);
+    expect(result.resolveSyncSpy).toHaveBeenCalledTimes(1);
+    expect(result.interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "Battle day embed refreshed." }),
+    );
+  });
+
+  it("resolves a new war ID on changed battle-day refresh and leaves the old posted message untouched", async () => {
+    const liveStartTime = new Date("2026-03-13T00:00:00.000Z");
+    const result = await buildBattleDayRefreshHarness({
+      currentWarId: 1000608,
+      refreshedWarId: 1000609,
+      lookupWarId: 1000608,
+      liveStartTime,
+      liveOpponentTag: "#0PP999",
+      liveOpponentName: "New Enemy",
+      liveClanName: "Alpha",
+      resolvedSyncNumber: 535,
+    });
+
+    expect(result.ensureSpy).toHaveBeenCalledTimes(1);
+    expect(result.ensureSpy.mock.calls[0]?.[0]?.preserveExistingWarId).toBeUndefined();
+    expect(result.updateSpy).toHaveBeenCalledTimes(1);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.warId).toBe(1000609);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.startTime).toEqual(liveStartTime);
+    expect(result.updateSpy.mock.calls[0]?.[0]?.data?.opponentTag).toBe("#0PP999");
+    expect(result.postedLookupSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000609" }),
+    );
+    expect(result.postedLookupSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ warId: "1000608" }),
+    );
+    expect(result.messageEdit).toHaveBeenCalledTimes(1);
+    expect(result.buildSpy).toHaveBeenCalledTimes(1);
+    expect(result.resolveSyncSpy).toHaveBeenCalledTimes(1);
+    expect(result.interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Battle day embed refreshed.",
+      }),
+    );
   });
 });

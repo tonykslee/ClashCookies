@@ -2016,6 +2016,49 @@ function shouldPreserveWarIdentityDuringOutageRecovery(input: {
   });
 }
 
+type CurrentWarIdentityCompletionState =
+  | "saved"
+  | "idempotent"
+  | "conflict"
+  | "identity_changed"
+  | "not_needed";
+
+type CurrentWarIdentityCompletionResult = {
+  state: CurrentWarIdentityCompletionState;
+  warId: number | null;
+  persistedRevisionAt: Date | null;
+};
+
+/** Purpose: emit one bounded structured event for active CurrentWar identity completion. */
+function logCurrentWarIdentityCompletion(input: {
+  result: Exclude<CurrentWarIdentityCompletionState, "not_needed">;
+  guildId: string;
+  clanTag: string;
+  dbClanTag: string;
+  dbOpponentTag: string | null;
+  warId: number | null;
+  warStartTime: Date | null;
+  expectedRevisionAt: Date | null;
+  persistedRevisionAt: Date | null;
+}): void {
+  const line =
+    `[war-events] event=current_war_identity_completion result=${input.result}` +
+    ` guild=${input.guildId}` +
+    ` clan=#${normalizeTagBare(input.clanTag) ?? "unknown"}` +
+    ` db_clan_tag=${input.dbClanTag}` +
+    ` db_opponent_tag=${input.dbOpponentTag ?? "none"}` +
+    ` war_id=${input.warId ?? "none"}` +
+    ` war_start=${input.warStartTime?.toISOString() ?? "none"}` +
+    ` opponent=${input.dbOpponentTag ?? "none"}` +
+    ` expected_revision=${input.expectedRevisionAt?.toISOString() ?? "none"}` +
+    ` persisted_revision=${input.persistedRevisionAt?.toISOString() ?? "none"}`;
+  if (input.result === "conflict" || input.result === "identity_changed") {
+    console.warn(line);
+    return;
+  }
+  console.info(line);
+}
+
 export const advanceCocWarOutageStateForTest = advanceCocWarOutageState;
 export const resolveActiveWarTimingForTest = resolveActiveWarTiming;
 export const applyWarEndedMaintenanceGuardForTest =
@@ -3638,6 +3681,227 @@ export class WarEventLogService {
     return Number.isFinite(warId) ? Math.trunc(warId) : null;
   }
 
+  /** Purpose: complete the live CurrentWar physical identity before sync assignment depends on it. */
+  private async ensureCurrentWarIdentityCompletion(input: {
+    guildId: string;
+    clanTag: string;
+    warState: WarState;
+    warStartTime: Date | null;
+    opponentTag: string | null;
+  }): Promise<CurrentWarIdentityCompletionResult> {
+    const dbClanTag = normalizeTag(input.clanTag) ?? "";
+    const dbOpponentTag = input.opponentTag ? normalizeTag(input.opponentTag) : null;
+    if (
+      !dbClanTag ||
+      !dbOpponentTag ||
+      !input.warStartTime ||
+      !isActiveWarState(input.warState)
+    ) {
+      return {
+        state: "not_needed",
+        warId: null,
+        persistedRevisionAt: null,
+      };
+    }
+
+    const readExactRow = async () =>
+      prisma.currentWar.findUnique({
+        where: {
+          clanTag_guildId: {
+            guildId: input.guildId,
+            clanTag: dbClanTag,
+          },
+        },
+        select: {
+          warId: true,
+          updatedAt: true,
+          state: true,
+          startTime: true,
+          opponentTag: true,
+        },
+      });
+
+    const exactRow = await readExactRow();
+    if (!exactRow) {
+      return {
+        state: "conflict",
+        warId: null,
+        persistedRevisionAt: null,
+      };
+    }
+
+    const exactStartTime = exactRow.startTime ?? null;
+    const exactOpponentTag = normalizeTag(exactRow.opponentTag ?? null);
+    const exactWarId =
+      exactRow.warId !== null && exactRow.warId !== undefined
+        ? Math.trunc(Number(exactRow.warId))
+        : null;
+    const samePhysicalIdentity =
+      isActiveWarState((exactRow.state ?? "notInWar") as WarState) &&
+      exactStartTime !== null &&
+      exactStartTime.getTime() === input.warStartTime.getTime() &&
+      exactOpponentTag === dbOpponentTag;
+
+    if (!samePhysicalIdentity) {
+      return {
+        state: "identity_changed",
+        warId: exactWarId !== null && exactWarId > 0 ? exactWarId : null,
+        persistedRevisionAt: exactRow.updatedAt ?? null,
+      };
+    }
+
+    if (exactWarId !== null && exactWarId > 0) {
+      return {
+        state: "idempotent",
+        warId: exactWarId,
+        persistedRevisionAt: exactRow.updatedAt ?? null,
+      };
+    }
+
+    const expectedRevisionAt = exactRow.updatedAt ?? null;
+    if (!expectedRevisionAt) {
+      return {
+        state: "conflict",
+        warId: null,
+        persistedRevisionAt: null,
+      };
+    }
+
+    const allocatedWarId = await this.allocateNextWarId();
+    if (!allocatedWarId || allocatedWarId <= 0) {
+      return {
+        state: "conflict",
+        warId: null,
+        persistedRevisionAt: null,
+      };
+    }
+
+    const persistedRevisionAt = new Date(
+      Math.max(Date.now(), expectedRevisionAt.getTime() + 1),
+    );
+    const updated = await prisma.currentWar.updateMany({
+      where: {
+        guildId: input.guildId,
+        clanTag: dbClanTag,
+        updatedAt: expectedRevisionAt,
+        state: exactRow.state,
+        startTime: exactStartTime,
+        opponentTag: dbOpponentTag,
+        warId: null,
+      },
+      data: {
+        warId: allocatedWarId,
+        updatedAt: persistedRevisionAt,
+      },
+    });
+
+    if (updated.count === 1) {
+      logCurrentWarIdentityCompletion({
+        result: "saved",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        warId: allocatedWarId,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt,
+        persistedRevisionAt,
+      });
+      return {
+        state: "saved",
+        warId: allocatedWarId,
+        persistedRevisionAt,
+      };
+    }
+
+    const rereadExactRow = await readExactRow();
+    if (!rereadExactRow) {
+      logCurrentWarIdentityCompletion({
+        result: "conflict",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        warId: null,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt,
+        persistedRevisionAt: null,
+      });
+      return {
+        state: "conflict",
+        warId: null,
+        persistedRevisionAt: null,
+      };
+    }
+
+    const rereadStartTime = rereadExactRow.startTime ?? null;
+    const rereadOpponentTag = normalizeTag(rereadExactRow.opponentTag ?? null);
+    const rereadWarId =
+      rereadExactRow.warId !== null && rereadExactRow.warId !== undefined
+        ? Math.trunc(Number(rereadExactRow.warId))
+        : null;
+    const rereadSameIdentity =
+      isActiveWarState((rereadExactRow.state ?? "notInWar") as WarState) &&
+      rereadStartTime !== null &&
+      rereadStartTime.getTime() === input.warStartTime.getTime() &&
+      rereadOpponentTag === dbOpponentTag;
+
+    if (!rereadSameIdentity) {
+      logCurrentWarIdentityCompletion({
+        result: "identity_changed",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        warId: rereadWarId,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt,
+        persistedRevisionAt: rereadExactRow.updatedAt ?? null,
+      });
+      return {
+        state: "identity_changed",
+        warId: rereadWarId !== null && rereadWarId > 0 ? rereadWarId : null,
+        persistedRevisionAt: rereadExactRow.updatedAt ?? null,
+      };
+    }
+
+    if (rereadWarId !== null && rereadWarId > 0) {
+      logCurrentWarIdentityCompletion({
+        result: "idempotent",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        warId: rereadWarId,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt,
+        persistedRevisionAt: rereadExactRow.updatedAt ?? null,
+      });
+      return {
+        state: "idempotent",
+        warId: rereadWarId,
+        persistedRevisionAt: rereadExactRow.updatedAt ?? null,
+      };
+    }
+
+    logCurrentWarIdentityCompletion({
+      result: "conflict",
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      dbClanTag,
+      dbOpponentTag,
+      warId: null,
+      warStartTime: input.warStartTime,
+      expectedRevisionAt,
+      persistedRevisionAt: rereadExactRow.updatedAt ?? null,
+    });
+    return {
+      state: "conflict",
+      warId: null,
+      persistedRevisionAt: null,
+    };
+  }
+
   private async ensureCurrentWarId(params: {
     sub: SubscriptionRow;
     warStartTime: Date | null;
@@ -3963,7 +4227,6 @@ export class WarEventLogService {
     ) {
       return false;
     }
-    let preserveExistingWarId = false;
     let effectiveWarIdentityChanged = warIdentityChanged;
     if (
       shouldPreserveWarIdentityDuringOutageRecovery({
@@ -3978,7 +4241,6 @@ export class WarEventLogService {
         now: pollNow,
       })
     ) {
-      preserveExistingWarId = true;
       effectiveWarIdentityChanged = false;
       eventType = null;
       currentState = prevState;
@@ -4161,6 +4423,7 @@ export class WarEventLogService {
     )
       ? Number((war as { opponent?: { stars?: number } }).opponent?.stars)
       : sub.opponentStars;
+    let ownedCurrentWarRevisionAt = new Date(sub.updatedAt);
     const nextClanAttacks = Number.isFinite(Number(war?.clan?.attacks))
       ? Number(war?.clan?.attacks)
       : null;
@@ -4299,20 +4562,54 @@ export class WarEventLogService {
     let nextInferredMatchType =
       resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
 
-    resolvedWarId = await this.ensureCurrentWarId({
-      sub,
-      warStartTime: nextWarStartTime,
-      currentState,
-      preserveExistingWarId,
-    });
+    const currentSubscriptionWarId =
+      sub.warId !== null &&
+      sub.warId !== undefined &&
+      Number.isFinite(Number(sub.warId))
+        ? Math.trunc(Number(sub.warId))
+        : null;
+    if (currentState !== "notInWar") {
+      if (effectiveWarIdentityChanged) {
+        resolvedWarId = await this.ensureCurrentWarId({
+          sub,
+          warStartTime: nextWarStartTime,
+          currentState,
+        });
+      } else if (currentSubscriptionWarId !== null && currentSubscriptionWarId > 0) {
+        resolvedWarId = await this.ensureCurrentWarId({
+          sub,
+          warStartTime: nextWarStartTime,
+          currentState,
+          preserveExistingWarId: true,
+        });
+      } else {
+        const identityCompletion = await this.ensureCurrentWarIdentityCompletion({
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          warState: currentState,
+          warStartTime: nextWarStartTime,
+          opponentTag: nextOpponentTag || null,
+        });
+        if (
+          (identityCompletion.state === "saved" ||
+            identityCompletion.state === "idempotent") &&
+          identityCompletion.warId !== null &&
+          identityCompletion.warId > 0 &&
+          identityCompletion.persistedRevisionAt !== null
+        ) {
+          resolvedWarId = identityCompletion.warId;
+          ownedCurrentWarRevisionAt = identityCompletion.persistedRevisionAt;
+        } else {
+          return false;
+        }
+      }
+    } else {
+      resolvedWarId = currentSubscriptionWarId;
+    }
     const resolvedWarIdText =
       resolvedWarId !== null && resolvedWarId !== undefined
         ? String(Math.trunc(Number(resolvedWarId)))
-        : currentState === "notInWar" &&
-            sub.warId !== null &&
-            sub.warId !== undefined
-          ? String(Math.trunc(Number(sub.warId)))
-          : null;
+        : null;
     const intendedActiveWarOpponentTag =
       nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
     const sameWarPointsSyncNumber = resolveExactSameWarPointsSyncNumber({
@@ -4352,7 +4649,6 @@ export class WarEventLogService {
       opponentTag: normalizeTag(sub.opponentTag ?? null),
       syncNumber: toValidSyncNumber(sub.syncNumber ?? null),
     };
-    let ownedCurrentWarRevisionAt = new Date(sub.updatedAt);
     type CurrentWarRolloverClassification =
       | "original"
       | "intended_next_sync_null"

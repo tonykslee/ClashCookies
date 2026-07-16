@@ -305,7 +305,7 @@ describe("fwa targeted war-mail identity reconciliation", () => {
 
   it("reconciles a stale row through pollClan and replaces the render row with the fresh exact row", async () => {
     const staleRow = buildRenderRow({
-      warId: 1000609,
+      warId: null,
       matchType: "FWA",
       inferredMatchType: true,
       outcome: "WIN",
@@ -335,6 +335,7 @@ describe("fwa targeted war-mail identity reconciliation", () => {
       opponentStars: 14,
     });
     prismaMock.currentWar.findUnique.mockResolvedValueOnce(freshRow);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const result = await resolveWarMailCurrentWarRenderContextForTest({
       client: { channels: { fetch: vi.fn() } } as any,
@@ -368,6 +369,9 @@ describe("fwa targeted war-mail identity reconciliation", () => {
       clanTag: "LYPLQQUC",
       sendBattleDaySwapReminders: false,
     });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("targeted_processed_unresolved"),
+    );
     expect(warEventLogServiceMock.poll).not.toHaveBeenCalled();
     expect(warEventLogServiceMock.refreshBattleDayPosts).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.findUnique).toHaveBeenCalledTimes(1);

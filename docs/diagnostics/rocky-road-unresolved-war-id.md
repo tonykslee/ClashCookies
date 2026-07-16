@@ -350,3 +350,41 @@ Operationally, this means the command path now has three distinct outcomes for a
 3. mirror mode refuses repair work and returns the existing unresolved state
 
 That is the intended safety boundary for the current design.
+
+## 16. July 16 fix summary
+
+This section records the production fix that closes the Rocky Road gap without changing ownership boundaries.
+
+### Exact defect pair
+
+- The sync service was mixing bare and hashed tags at exact `CurrentWar` boundaries. A local bare helper was being used where the database key needed canonical `#TAG` form, so exact `clanTag` and `opponentTag` predicates could miss an otherwise matching row.
+- The active poll path could allocate a positive `CurrentWar.warId` and then attempt sync persistence before that identity was durably written, which meant the later sync write could require a war ID that still was not present on the row.
+
+### July 16, 2026 production evidence
+
+The incident logs from July 16, 2026 showed the failure mode directly:
+
+- `[sync-assignment] stage=persist_current_war source=conflict ... result=missing_row`
+- `[sync-assignment] stage=same_war_points_recovery ... persistence=conflict usable=0 ... validation=missing_local`
+- `[fwa-mail] event=targeted_war_reconcile ... result=unresolved reason=targeted_processed_unresolved`
+
+Those lines are consistent with the repaired row never getting a durable physical identity before sync assignment depended on it.
+
+### PR #1682 note
+
+PR #1682 is relevant because it prevents incomplete active identities from healing too early, but this diagnosis does not claim that PR created every original null `warId` row. The more precise takeaway is that the system still needs the dedicated identity-completion step before sync assignment can safely proceed.
+
+### Repaired lifecycle
+
+The corrected lifecycle is now:
+
+1. Read the exact active `CurrentWar` row by guild and canonical hashed clan tag.
+2. If the row has the live active state, the exact live start time, the exact live opponent tag, and a null war ID, allocate a positive war ID.
+3. Persist that war ID with an optimistic CAS on the owned revision, exact start, exact opponent, active state, and null war ID.
+4. Use the newly owned revision for canonical sync assignment.
+5. Let sync assignment recover `534` from the exact same-war points evidence when it is available.
+6. Finish finalization against the latest owned revision and the exact physical identity.
+
+### Mail guard remains fail-closed
+
+The final Send Mail guard still rejects unresolved active-war identity. That behavior is unchanged in meaning: if the exact active war cannot be proven after repair attempts, the send path refuses to post rather than guessing.
