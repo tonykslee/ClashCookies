@@ -3219,6 +3219,23 @@ export function clearFwaBaseSwapSplitPostPayloadsForTest(): void {
   fwaBaseSwapSplitPostPayloads.clear();
 }
 
+export function setFwaMatchCopyPayloadForTest(
+  key: string,
+  payload: FwaMatchCopyPayload | null,
+): void {
+  const normalizedKey = String(key ?? "").trim();
+  if (!normalizedKey) return;
+  if (!payload) {
+    fwaMatchCopyPayloads.delete(normalizedKey);
+    return;
+  }
+  fwaMatchCopyPayloads.set(normalizedKey, payload);
+}
+
+export function clearFwaMatchCopyPayloadsForTest(): void {
+  fwaMatchCopyPayloads.clear();
+}
+
 /** Purpose: normalize any war id input to a comparable string key. */
 function normalizeWarIdText(
   warId: string | number | null | undefined,
@@ -5962,6 +5979,7 @@ function canonicalizeStoredOpponentTag(
 }
 
 type FwaMailPreSendGuardOutcomeReason =
+  | "exact_identity"
   | "row_missing"
   | "war_inactive"
   | "identity_changed"
@@ -6048,50 +6066,6 @@ async function updateExactCurrentWarAfterFwaMailConfirm(params: {
     data,
   });
   return result.count;
-}
-
-function logWarMailPreSendGuardSucceeded(params: {
-  guildId: string;
-  clanTag: string;
-  warId: number;
-  startTime: Date;
-  opponentTag: string;
-  channelId: string;
-  interactionChannelId: string;
-  interactionUserId: string;
-}): void {
-  console.info(
-    `[fwa-mail] event=pre_send_guard_succeeded guild=${params.guildId} clan=#${params.clanTag} war_id=${params.warId} war_start=${params.startTime.toISOString()} opponent=#${params.opponentTag} mail_channel_id=${params.channelId} interaction_channel_id=${params.interactionChannelId} interaction_user_id=${params.interactionUserId} result=success`,
-  );
-}
-
-function logWarMailPreSendGuardStale(params: {
-  guildId: string;
-  clanTag: string;
-  warId: number;
-  startTime: Date;
-  opponentTag: string;
-  interactionChannelId: string;
-  interactionUserId: string;
-}): void {
-  console.warn(
-    `[fwa-mail] event=pre_send_guard_stale guild=${params.guildId} clan=#${params.clanTag} war_id=${params.warId} war_start=${params.startTime.toISOString()} opponent=#${params.opponentTag} interaction_channel_id=${params.interactionChannelId} interaction_user_id=${params.interactionUserId} result=stale reason=identity_changed`,
-  );
-}
-
-function logWarMailPreSendGuardFailed(params: {
-  guildId: string;
-  clanTag: string;
-  warId: number;
-  startTime: Date;
-  opponentTag: string;
-  interactionChannelId: string;
-  interactionUserId: string;
-  error: unknown;
-}): void {
-  console.error(
-    `[fwa-mail] event=pre_send_guard_failed guild=${params.guildId} clan=#${params.clanTag} war_id=${params.warId} war_start=${params.startTime.toISOString()} opponent=#${params.opponentTag} interaction_channel_id=${params.interactionChannelId} interaction_user_id=${params.interactionUserId} result=failed error=${formatError(params.error)}`,
-  );
 }
 
 function logWarMailDiscordSendFailed(params: {
@@ -8569,6 +8543,80 @@ async function showProcessingNotice(
   };
 }
 
+function buildFwaMatchTypeConfirmationUpsertInput(params: {
+  guildId: string;
+  channelId: string;
+  tag: string;
+  matchType: "FWA" | "BL" | "MM";
+  expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  identityPatch: ReturnType<typeof resolveActiveWarIdentityPatch> | null;
+}): Parameters<typeof prisma.currentWar.upsert>[0] {
+  const normalizedTag = normalizeTag(params.tag);
+  const canonicalOpponentTag = params.identityPatch
+    ? normalizeClashTagWithHash(params.identityPatch.patch.opponentTag)
+    : "";
+  return {
+    where: {
+      clanTag_guildId: {
+        guildId: params.guildId,
+        clanTag: `#${normalizedTag}`,
+      },
+    },
+    create: {
+      guildId: params.guildId,
+      clanTag: `#${normalizedTag}`,
+      channelId: params.channelId,
+      notify: false,
+      matchType: params.matchType,
+      inferredMatchType: false,
+      outcome:
+        params.matchType === "FWA" &&
+        (params.expectedOutcome === "WIN" || params.expectedOutcome === "LOSE")
+          ? params.expectedOutcome
+          : null,
+      ...(params.identityPatch
+        ? {
+            state: params.identityPatch.patch.state,
+            prepStartTime: params.identityPatch.patch.prepStartTime,
+            startTime: params.identityPatch.patch.startTime,
+            endTime: params.identityPatch.patch.endTime,
+            opponentTag:
+              canonicalOpponentTag || params.identityPatch.patch.opponentTag,
+            opponentName: params.identityPatch.patch.opponentName,
+            clanName: params.identityPatch.patch.clanName,
+            warId: params.identityPatch.patch.warId,
+          }
+        : {}),
+    },
+    update: {
+      matchType: params.matchType,
+      inferredMatchType: false,
+      outcome:
+        params.matchType === "FWA" &&
+        (params.expectedOutcome === "WIN" || params.expectedOutcome === "LOSE")
+          ? params.expectedOutcome
+          : null,
+      ...(params.identityPatch
+        ? {
+            state: params.identityPatch.patch.state,
+            prepStartTime: params.identityPatch.patch.prepStartTime,
+            startTime: params.identityPatch.patch.startTime,
+            endTime: params.identityPatch.patch.endTime,
+            opponentTag:
+              canonicalOpponentTag || params.identityPatch.patch.opponentTag,
+            opponentName: params.identityPatch.patch.opponentName,
+            clanName: params.identityPatch.patch.clanName,
+            warId: params.identityPatch.patch.warId,
+          }
+        : {}),
+      updatedAt: new Date(),
+    },
+  };
+}
+
+export const buildFwaMatchTypeConfirmationUpsertInputForTest =
+  buildFwaMatchTypeConfirmationUpsertInput;
+
 export async function handleFwaMatchTypeActionButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -8657,71 +8705,21 @@ export async function handleFwaMatchTypeActionButton(
           liveWar: liveCurrentWar,
           currentWar: confirmationWar,
         });
-        const canonicalOpponentTag = identityPatch
-          ? normalizeClashTagWithHash(identityPatch.patch.opponentTag)
-          : "";
         if (identityPatch) {
           console.info(
             `[fwa-match-identity] action=confirmed guild=${interaction.guildId} clan=#${parsed.tag} warStart=${identityPatch.patch.startTime.toISOString()} opponent=#${identityPatch.patch.opponentTag} matchType=${selection.explicitConfirmation.matchType}`,
           );
         }
-        await prisma.currentWar.upsert({
-          where: {
-            clanTag_guildId: {
-              guildId: interaction.guildId,
-              clanTag: `#${parsed.tag}`,
-            },
-          },
-          create: {
+        await prisma.currentWar.upsert(
+          buildFwaMatchTypeConfirmationUpsertInput({
             guildId: interaction.guildId,
-            clanTag: `#${parsed.tag}`,
             channelId: interaction.channelId,
-            notify: false,
+            tag: parsed.tag,
             matchType: selection.explicitConfirmation.matchType,
-            inferredMatchType: false,
-            outcome:
-              selection.explicitConfirmation.matchType === "FWA" &&
-              (selection.explicitConfirmation.expectedOutcome === "WIN" ||
-                selection.explicitConfirmation.expectedOutcome === "LOSE")
-                ? selection.explicitConfirmation.expectedOutcome
-                : null,
-            ...(identityPatch
-              ? {
-                  state: identityPatch.patch.state,
-                  prepStartTime: identityPatch.patch.prepStartTime,
-                  startTime: identityPatch.patch.startTime,
-                  endTime: identityPatch.patch.endTime,
-                  opponentTag: canonicalOpponentTag || identityPatch.patch.opponentTag,
-                  opponentName: identityPatch.patch.opponentName,
-                  clanName: identityPatch.patch.clanName,
-                  warId: identityPatch.patch.warId,
-                }
-              : {}),
-          },
-          update: {
-            matchType: selection.explicitConfirmation.matchType,
-            inferredMatchType: false,
-            outcome:
-              selection.explicitConfirmation.matchType === "FWA" &&
-              (selection.explicitConfirmation.expectedOutcome === "WIN" ||
-                selection.explicitConfirmation.expectedOutcome === "LOSE")
-                ? selection.explicitConfirmation.expectedOutcome
-                : null,
-            ...(identityPatch
-              ? {
-                  state: identityPatch.patch.state,
-                  prepStartTime: identityPatch.patch.prepStartTime,
-                  startTime: identityPatch.patch.startTime,
-                  endTime: identityPatch.patch.endTime,
-                  opponentTag: canonicalOpponentTag || identityPatch.patch.opponentTag,
-                  opponentName: identityPatch.patch.opponentName,
-                  clanName: identityPatch.patch.clanName,
-                  warId: identityPatch.patch.warId,
-                }
-              : {}),
-            updatedAt: new Date(),
-          },
-        });
+            expectedOutcome: selection.explicitConfirmation.expectedOutcome,
+            identityPatch,
+          }),
+        );
         await markMatchLiveDataChanged({
           guildId: interaction.guildId,
           tag: parsed.tag,
@@ -10175,6 +10173,19 @@ async function handleFwaMailConfirmAction(
     opponentTag: rendered.opponentTag ?? null,
   });
   if (!exactCurrentWarIdentity) {
+    logWarMailPreSendGuardOutcome({
+      guildId: normalizedGuildId,
+      clanTag: normalizedClanTag,
+      warId: renderedWarIdNumber ?? -1,
+      startTime: renderedWarStartTime ?? new Date(0),
+      opponentTag: normalizeTag(rendered.opponentTag ?? ""),
+      storedOpponentTagForm: describeStoredOpponentTagForm(rendered.opponentTag),
+      result: "stale",
+      reason: "identity_changed",
+      initialUpdateCount: 0,
+      interactionChannelId: interaction.channelId,
+      interactionUserId: parsed.userId,
+    });
     await interaction.editReply({
       content:
         "Cannot send mail because the active war changed. Please run /fwa match again.",
@@ -10187,12 +10198,16 @@ async function handleFwaMailConfirmAction(
     exactCurrentWarIdentity,
   );
   if (!rereadCurrentWarRow) {
-    logWarMailPreSendGuardStale({
+    logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
       startTime: exactCurrentWarIdentity.startTime,
       opponentTag: exactCurrentWarIdentity.opponentTag,
+      storedOpponentTagForm: "missing",
+      result: "stale",
+      reason: "row_missing",
+      initialUpdateCount: 0,
       interactionChannelId: interaction.channelId,
       interactionUserId: parsed.userId,
     });
@@ -10208,12 +10223,18 @@ async function handleFwaMailConfirmAction(
     !(rereadCurrentWarRow.updatedAt instanceof Date) ||
     !Number.isFinite(rereadCurrentWarRow.updatedAt.getTime())
   ) {
-    logWarMailPreSendGuardStale({
+    logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
       startTime: exactCurrentWarIdentity.startTime,
       opponentTag: exactCurrentWarIdentity.opponentTag,
+      storedOpponentTagForm: describeStoredOpponentTagForm(
+        rereadCurrentWarRow.opponentTag,
+      ),
+      result: "stale",
+      reason: "revision_changed",
+      initialUpdateCount: 0,
       interactionChannelId: interaction.channelId,
       interactionUserId: parsed.userId,
     });
@@ -10234,12 +10255,18 @@ async function handleFwaMailConfirmAction(
     revision: rendered.mailRevisionDecision.effectiveRevisionFields,
   });
   if (!sendKey) {
-    logWarMailPreSendGuardStale({
+    logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
       startTime: exactCurrentWarIdentity.startTime,
       opponentTag: exactCurrentWarIdentity.opponentTag,
+      storedOpponentTagForm: describeStoredOpponentTagForm(
+        rereadCurrentWarRow.opponentTag,
+      ),
+      result: "stale",
+      reason: "revision_changed",
+      initialUpdateCount: 0,
       interactionChannelId: interaction.channelId,
       interactionUserId: parsed.userId,
     });
@@ -10332,29 +10359,27 @@ async function handleFwaMailConfirmAction(
     renderedWarIdNumber,
     rendered.warStartMs,
   );
-  let updatedCount = 0;
-  try {
-    updatedCount = await updateExactCurrentWarAfterFwaMailConfirm({
-      identity: guardIdentity,
-      channelId: channel.id,
-      currentWarState: confirmedCurrentWarState,
-    });
-  } catch (error) {
+  const respondToPreSendGuardDbError = async (params: {
+    releaseReason: string;
+    storedOpponentTagForm: "bare" | "canonical" | "missing";
+    initialUpdateCount: number;
+    retryUpdateCount?: number | null;
+    error: unknown;
+  }): Promise<void> => {
     logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
       startTime: exactCurrentWarIdentity.startTime,
       opponentTag: exactCurrentWarIdentity.opponentTag,
-      storedOpponentTagForm: describeStoredOpponentTagForm(
-        guardIdentity.storedOpponentTag,
-      ),
+      storedOpponentTagForm: params.storedOpponentTagForm,
       result: "failed",
       reason: "db_error",
-      initialUpdateCount: 0,
+      initialUpdateCount: params.initialUpdateCount,
+      retryUpdateCount: params.retryUpdateCount ?? null,
       interactionChannelId: interaction.channelId,
       interactionUserId: parsed.userId,
-      error,
+      error: params.error,
     });
     await releaseFwaMailSendClaimForConfirm({
       guildId: exactCurrentWarIdentity.guildId,
@@ -10364,22 +10389,52 @@ async function handleFwaMailConfirmAction(
       opponentTag: exactCurrentWarIdentity.opponentTag,
       sendKey,
       claimToken,
-      reason: "currentWar_update_failed",
+      reason: params.releaseReason,
       channelId: channel.id,
     });
     await interaction.editReply({
       content:
-        "Cannot send mail because the active war changed. Please run /fwa match again.",
+        "Could not verify the active war due to a temporary database error. Please try Send Mail again.",
       embeds: [],
       components: [],
+    });
+  };
+  let updatedCount = 0;
+  try {
+    updatedCount = await updateExactCurrentWarAfterFwaMailConfirm({
+      identity: guardIdentity,
+      channelId: channel.id,
+      currentWarState: confirmedCurrentWarState,
+    });
+  } catch (error) {
+    await respondToPreSendGuardDbError({
+      releaseReason: "currentWar_update_failed",
+      storedOpponentTagForm: describeStoredOpponentTagForm(
+        guardIdentity.storedOpponentTag,
+      ),
+      initialUpdateCount: 0,
+      error,
     });
     return;
   }
   if (updatedCount !== 1) {
-    const rereadCurrentWarAfterGuard = await loadWarMailCurrentWarRenderRow({
-      guildId: normalizedGuildId,
-      normalizedTag: normalizedClanTag,
-    });
+    let rereadCurrentWarAfterGuard: WarMailCurrentWarRenderRow | null;
+    try {
+      rereadCurrentWarAfterGuard = await loadWarMailCurrentWarRenderRow({
+        guildId: normalizedGuildId,
+        normalizedTag: normalizedClanTag,
+      });
+    } catch (error) {
+      await respondToPreSendGuardDbError({
+        releaseReason: "currentWar_update_no_rows",
+        storedOpponentTagForm: describeStoredOpponentTagForm(
+          guardIdentity.storedOpponentTag,
+        ),
+        initialUpdateCount: updatedCount,
+        error,
+      });
+      return;
+    }
     const retryDecision = classifyFwaMailPreSendGuardRetryDecision({
       expectedIdentity: guardIdentity,
       storedOpponentTag: guardIdentity.storedOpponentTag,
@@ -10426,37 +10481,12 @@ async function handleFwaMailConfirmAction(
         currentWarState: confirmedCurrentWarState,
       });
     } catch (error) {
-      logWarMailPreSendGuardOutcome({
-        guildId: exactCurrentWarIdentity.guildId,
-        clanTag: exactCurrentWarIdentity.clanTag,
-        warId: exactCurrentWarIdentity.warId,
-        startTime: exactCurrentWarIdentity.startTime,
-        opponentTag: exactCurrentWarIdentity.opponentTag,
+      await respondToPreSendGuardDbError({
+        releaseReason: "currentWar_update_no_rows",
         storedOpponentTagForm: retryDecision.storedOpponentTagForm,
-        result: "failed",
-        reason: "db_error",
         initialUpdateCount: updatedCount,
         retryUpdateCount: retryUpdatedCount,
-        interactionChannelId: interaction.channelId,
-        interactionUserId: parsed.userId,
         error,
-      });
-      await releaseFwaMailSendClaimForConfirm({
-        guildId: exactCurrentWarIdentity.guildId,
-        clanTag: exactCurrentWarIdentity.clanTag,
-        warId: exactCurrentWarIdentity.warId,
-        startTime: exactCurrentWarIdentity.startTime,
-        opponentTag: exactCurrentWarIdentity.opponentTag,
-        sendKey,
-        claimToken,
-        reason: "currentWar_update_no_rows",
-        channelId: channel.id,
-      });
-      await interaction.editReply({
-        content:
-          "Cannot send mail because the active war changed. Please run /fwa match again.",
-        embeds: [],
-        components: [],
       });
       return;
     }
@@ -10509,13 +10539,18 @@ async function handleFwaMailConfirmAction(
       interactionUserId: parsed.userId,
     });
   } else {
-    logWarMailPreSendGuardSucceeded({
+    logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
       startTime: exactCurrentWarIdentity.startTime,
       opponentTag: exactCurrentWarIdentity.opponentTag,
-      channelId: channel.id,
+      storedOpponentTagForm: describeStoredOpponentTagForm(
+        guardIdentity.storedOpponentTag,
+      ),
+      result: "owned",
+      reason: "exact_identity",
+      initialUpdateCount: updatedCount,
       interactionChannelId: interaction.channelId,
       interactionUserId: parsed.userId,
     });

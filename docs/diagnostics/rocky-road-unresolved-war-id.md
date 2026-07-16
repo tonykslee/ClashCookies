@@ -218,6 +218,16 @@ The incident is still reproduced by the production trace itself:
 
 The new tests also reproduce the same logic locally without changing production behavior.
 
+## 8. Follow-up guard note
+
+The safe fix for this class of failure is to keep the final send guard fail-closed when the active war cannot be re-verified, especially across reread and CAS retry errors.
+
+That means:
+
+- do not preserve a stale physical identity through a live reread that has not proven the row is still the same war
+- do not convert a database verification failure into an active-war changed message
+- release the exact in-flight send claim and ask the user to retry Send Mail after a temporary database error
+
 ## 8. Definitive root cause
 
 Primary root cause:
