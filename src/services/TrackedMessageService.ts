@@ -136,6 +136,7 @@ export type FwaMatchChecklistTrackedMetadata = {
   scopeKey?: string | null;
   referenceId?: string | null;
   checkedClanTags?: string[];
+  basesReactionBaselines?: FwaMatchChecklistReactionBaseline[];
   rows: FwaMatchChecklistTrackedRow[];
   guildId?: string | null;
   channelId?: string | null;
@@ -145,6 +146,12 @@ export type FwaMatchChecklistTrackedMetadata = {
   warId?: string | number | null;
   opponentTag?: string | null;
   warStartTimeIso?: string | null;
+};
+
+export type FwaMatchChecklistReactionBaseline = {
+  contextKey: string;
+  reactionKey: string;
+  userCount: number;
 };
 
 export type FwaBaseSwapTrackedMessageSnapshot = {
@@ -1131,6 +1138,14 @@ export function parseFwaMatchChecklistMetadata(
         ),
       ]
     : [];
+  const basesReactionBaselines = Array.isArray(value.basesReactionBaselines)
+    ? [...new Map(
+        value.basesReactionBaselines
+          .map((baseline) => parseFwaMatchChecklistReactionBaseline(baseline))
+          .filter((baseline): baseline is FwaMatchChecklistReactionBaseline => Boolean(baseline))
+          .map((baseline) => [buildFwaMatchChecklistReactionBaselineKey(baseline), baseline]),
+      ).values()]
+    : [];
   const rows = value.rows
     .map((row) => parseFwaMatchChecklistRow(row))
     .filter(
@@ -1145,6 +1160,7 @@ export function parseFwaMatchChecklistMetadata(
     scopeKey: scopeKey || null,
     referenceId: String(value.referenceId ?? "").trim() || null,
     checkedClanTags,
+    basesReactionBaselines,
     rows,
   };
 }
@@ -1159,6 +1175,134 @@ type FwaMatchChecklistReactionCache = {
   size?: number;
   values(): IterableIterator<FwaMatchChecklistReactionCacheEntry>;
 };
+
+function parseFwaMatchChecklistReactionBaseline(
+  value: unknown,
+): FwaMatchChecklistReactionBaseline | null {
+  if (!isObject(value)) return null;
+  const contextKey = String(value.contextKey ?? "").trim();
+  const reactionKey = String(value.reactionKey ?? "").trim();
+  const userCount = Math.max(0, Math.trunc(Number(value.userCount ?? 0)));
+  if (!contextKey || !reactionKey) return null;
+  return {
+    contextKey,
+    reactionKey,
+    userCount,
+  };
+}
+
+function buildFwaMatchChecklistReactionKey(input: {
+  emojiId: string | null;
+  emojiName: string | null;
+}): string | null {
+  const emojiId = String(input.emojiId ?? "").trim();
+  if (emojiId) return `custom:${emojiId}`;
+  const emojiName = normalizeChecklistEmojiName(input.emojiName);
+  if (!emojiName) return null;
+  return `unicode:${emojiName}`;
+}
+
+function buildFwaMatchChecklistReactionBaselineKey(
+  baseline: Pick<FwaMatchChecklistReactionBaseline, "contextKey" | "reactionKey">,
+): string {
+  return `${baseline.contextKey}::${baseline.reactionKey}`;
+}
+
+function getFwaMatchChecklistReactionUserCount(
+  reaction: Pick<FwaMatchChecklistReactionCacheEntry, "count" | "me">,
+): number {
+  return Math.max(0, Math.trunc(Number(reaction.count ?? 0)) - (reaction.me === true ? 1 : 0));
+}
+
+function findFwaMatchChecklistReactionEntry(
+  cache: FwaMatchChecklistReactionCache,
+  row: Pick<FwaMatchChecklistTrackedRow, "badgeEmojiId" | "badgeEmojiName">,
+): FwaMatchChecklistReactionCacheEntry | undefined {
+  return [...cache.values()].find((candidate) =>
+    emojiMatches(candidate, {
+      emojiId: row.badgeEmojiId,
+      emojiName: row.badgeEmojiName,
+    }),
+  );
+}
+
+function findFwaMatchChecklistReactionBaseline(
+  baselines: Iterable<FwaMatchChecklistReactionBaseline>,
+  row: Pick<FwaMatchChecklistTrackedRow, "contextKey" | "badgeEmojiId" | "badgeEmojiName">,
+): FwaMatchChecklistReactionBaseline | null {
+  const contextKey = String(row.contextKey ?? "").trim();
+  if (!contextKey) return null;
+  const reactionKey = buildFwaMatchChecklistReactionKey({
+    emojiId: row.badgeEmojiId,
+    emojiName: row.badgeEmojiName,
+  });
+  if (!reactionKey) return null;
+  const baselineKey = buildFwaMatchChecklistReactionBaselineKey({
+    contextKey,
+    reactionKey,
+  });
+  return [...baselines].find(
+    (baseline) => buildFwaMatchChecklistReactionBaselineKey(baseline) === baselineKey,
+  ) ?? null;
+}
+
+function buildFwaMatchChecklistReactionBaselinesByKey(
+  baselines: Iterable<FwaMatchChecklistReactionBaseline>,
+): Map<string, FwaMatchChecklistReactionBaseline> {
+  return new Map(
+    [...baselines].map((baseline) => [buildFwaMatchChecklistReactionBaselineKey(baseline), baseline]),
+  );
+}
+
+function collectFwaMatchChecklistReactionBaselines(params: {
+  rows: FwaMatchChecklistTrackedRow[];
+  previousRowsByTag: Map<string, FwaMatchChecklistTrackedRow>;
+  reactionCache: FwaMatchChecklistReactionCache;
+  existingBaselines?: Iterable<FwaMatchChecklistReactionBaseline>;
+}): FwaMatchChecklistReactionBaseline[] {
+  const existingByKey = buildFwaMatchChecklistReactionBaselinesByKey(
+    params.existingBaselines ?? [],
+  );
+  const nextByKey = new Map<string, FwaMatchChecklistReactionBaseline>();
+  for (const row of params.rows) {
+    if (!shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")) continue;
+    const contextKey = String(row.contextKey ?? "").trim();
+    if (!contextKey) continue;
+    const reactionKey = buildFwaMatchChecklistReactionKey({
+      emojiId: row.badgeEmojiId,
+      emojiName: row.badgeEmojiName,
+    });
+    if (!reactionKey) continue;
+    const baselineKey = buildFwaMatchChecklistReactionBaselineKey({
+      contextKey,
+      reactionKey,
+    });
+    const previousRow = params.previousRowsByTag.get(normalizeChecklistClanTag(row.clanTag)) ?? null;
+    const previousContextKey = String(previousRow?.contextKey ?? "").trim();
+    const previousReactionKey = previousRow
+      ? buildFwaMatchChecklistReactionKey({
+          emojiId: previousRow.badgeEmojiId,
+          emojiName: previousRow.badgeEmojiName,
+        })
+      : null;
+    const shouldCapture =
+      (previousRow?.basesStatus === "skipped" && row.basesStatus !== "skipped") ||
+      (previousContextKey !== "" && previousContextKey !== contextKey && row.basesStatus !== "skipped") ||
+      (previousReactionKey !== null && previousReactionKey !== reactionKey && row.basesStatus !== "skipped");
+    if (!shouldCapture) {
+      const existing = existingByKey.get(baselineKey);
+      if (existing) nextByKey.set(baselineKey, existing);
+      continue;
+    }
+    const reaction = findFwaMatchChecklistReactionEntry(params.reactionCache, row);
+    nextByKey.set(baselineKey, {
+      contextKey,
+      reactionKey,
+      userCount: reaction ? getFwaMatchChecklistReactionUserCount(reaction) : 0,
+    });
+  }
+  return [...nextByKey.values()];
+}
 
 async function hydrateFwaMatchChecklistReactionCache(params: {
   guildId: string;
@@ -3518,26 +3662,40 @@ export class TrackedMessageService {
         `[fwa_checklist_bases_refresh_state] checklistMessageId=${message.id} trackedReferenceId=${tracked.referenceId ?? "none"} syncIdentityUsed=${syncReferenceId ?? "none"} rowCount=${(options?.rows ?? metadata.rows).length}`,
       );
       const sourceRows = options?.rows ?? metadata.rows;
+      const previousRowsByTag = new Map(
+        metadata.rows.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
+      );
+      let observedReactionCacheHydrated = false;
       if (!hydratedReactionCache) {
-        const sourceRowsNeedReactionDiscovery = sourceRows.some((row) =>
+        const sourceRowsNeedReactionObservation = sourceRows.some((row) =>
           shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"),
         );
-        if (sourceRowsNeedReactionDiscovery) {
+        if (sourceRowsNeedReactionObservation || change?.kind === "remove") {
           const currentReactionCache = message.reactions.cache;
           const currentReactionEntries = [...currentReactionCache.values()] as FwaMatchChecklistReactionCacheEntry[];
-          const shouldHydrateForDiscovery =
+          const shouldHydrateForObservation =
             message.partial === true ||
             currentReactionEntries.length === 0 ||
             currentReactionEntries.some((entry) => entry.me === undefined);
-          hydratedReactionCache = shouldHydrateForDiscovery
+          hydratedReactionCache = shouldHydrateForObservation
             ? await hydrateFwaMatchChecklistReactionCache({
                 guildId: tracked.guildId,
                 messageId: message.id,
                 message,
               })
             : currentReactionCache;
+          observedReactionCacheHydrated = shouldHydrateForObservation;
         }
       }
+
+      const reactionCacheForObservation = hydratedReactionCache ?? message.reactions.cache;
+      const sourceTransitionBaselines = collectFwaMatchChecklistReactionBaselines({
+        rows: sourceRows,
+        previousRowsByTag,
+        reactionCache: reactionCacheForObservation,
+        existingBaselines: metadata.basesReactionBaselines ?? [],
+      });
+      const handledChangeRowTags = new Set<string>();
 
       const persistBasesCheckedStateForRow = async (
         row: FwaMatchChecklistTrackedRow,
@@ -3591,9 +3749,29 @@ export class TrackedMessageService {
           `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? (matchedRow.basesStatus === "skipped" ? "skipped_row" : "matched_row") : "row_not_found"}`,
         );
         if (matchedRow && matchedRow.basesStatus !== "skipped") {
+          handledChangeRowTags.add(changedRowTag);
+          const matchedReaction = findFwaMatchChecklistReactionEntry(
+            reactionCacheForObservation,
+            matchedRow,
+          );
+          const matchedReactionCount = matchedReaction?.count ?? reactionChange.reaction.count ?? 0;
+          const matchedReactionUserCount = matchedReaction
+            ? getFwaMatchChecklistReactionUserCount(matchedReaction)
+            : Math.max(0, Math.trunc(Number(matchedReactionCount ?? 0)));
+          const matchedReactionKey = buildFwaMatchChecklistReactionKey({
+            emojiId: matchedRow.badgeEmojiId,
+            emojiName: matchedRow.badgeEmojiName,
+          });
+          const matchedBaseline = findFwaMatchChecklistReactionBaseline(
+            sourceTransitionBaselines,
+            matchedRow,
+          );
           const checked =
             reactionChange.kind === "add" ||
-            (reactionChange.kind === "remove" && (reactionChange.reaction.count ?? 0) > 1);
+            (reactionChange.kind === "remove" &&
+              (matchedBaseline
+                ? matchedReactionUserCount > matchedBaseline.userCount
+                : Math.trunc(Number(matchedReactionCount ?? 0)) > 1));
           const persisted = await persistBasesCheckedStateForRow(matchedRow, checked);
           if (
             persisted &&
@@ -3635,43 +3813,90 @@ export class TrackedMessageService {
             });
           }
         }
-      } else if (!change) {
-        const reactionCache = hydratedReactionCache ?? message.reactions.cache;
-        for (const row of sourceRows) {
-          const reaction = [...reactionCache.values()].find((candidate) =>
-            emojiMatches(candidate, {
-              emojiId: row.badgeEmojiId,
-              emojiName: row.badgeEmojiName,
-            }),
-          );
-          console.debug(
-            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=${Boolean(reaction && (reaction.count ?? 0) > 1)} reason=${reaction ? (reaction.count ?? 0) > 1 ? "reaction_count_gt_1" : "reaction_count_le_1" : "no_reaction"}`,
-          );
-          if (!reaction) continue;
-          if (row.basesStatus === "skipped") {
-            console.debug(
-              `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=false reason=skipped_row`,
-            );
-            continue;
-          }
-          if ((reaction.count ?? 0) > 1) {
-            await persistBasesCheckedStateForRow(row, true);
-          }
-        }
       }
 
       const [stateService, checklistService] = await Promise.all([
         import("./FwaMatchChecklistStateService"),
         import("./FwaMatchChecklistService"),
       ]);
-      const checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
+      let checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
         cocService: {} as any,
         guildId: tracked.guildId,
         client: (message as { client?: Client }).client ?? ({} as Client),
         viewType: "Bases",
         syncMessageId: syncReferenceId,
       });
-      const effectiveRows = checklistState.rows;
+      let effectiveRows = checklistState.rows;
+      let effectiveReactionCache = hydratedReactionCache ?? message.reactions.cache;
+      const effectiveReactionCacheEntries = [...effectiveReactionCache.values()] as FwaMatchChecklistReactionCacheEntry[];
+      const hasEligibleEffectiveRows = effectiveRows.some((row) =>
+        shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"),
+      );
+      if (
+        hasEligibleEffectiveRows &&
+        !observedReactionCacheHydrated &&
+        (message.partial === true ||
+          effectiveReactionCacheEntries.length === 0 ||
+          effectiveReactionCacheEntries.some((entry) => entry.me === undefined))
+      ) {
+        effectiveReactionCache = await hydrateFwaMatchChecklistReactionCache({
+          guildId: tracked.guildId,
+          messageId: message.id,
+          message,
+        });
+      }
+      let finalReactionBaselines = collectFwaMatchChecklistReactionBaselines({
+        rows: effectiveRows,
+        previousRowsByTag,
+        reactionCache: effectiveReactionCache,
+        existingBaselines: metadata.basesReactionBaselines ?? [],
+      });
+      let completionStateChanged = false;
+      for (const row of effectiveRows) {
+        if (!shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")) continue;
+        const reaction = findFwaMatchChecklistReactionEntry(effectiveReactionCache, row);
+        console.debug(
+          `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=${Boolean(reaction && (reaction.count ?? 0) > 1)} reason=${reaction ? (reaction.count ?? 0) > 1 ? "reaction_count_gt_1" : "reaction_count_le_1" : "no_reaction"}`,
+        );
+        if (!reaction) continue;
+        const rowTag = normalizeChecklistClanTag(row.clanTag);
+        if (handledChangeRowTags.has(rowTag)) {
+          continue;
+        }
+        if (row.basesStatus === "skipped") {
+          console.debug(
+            `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${row.clanTag} matched=false reason=skipped_row`,
+          );
+          continue;
+        }
+        const baseline = findFwaMatchChecklistReactionBaseline(finalReactionBaselines, row);
+        const currentUserCount = getFwaMatchChecklistReactionUserCount(reaction);
+        const shouldPersist = baseline
+          ? currentUserCount > baseline.userCount
+          : (reaction.count ?? 0) > 1;
+        if (shouldPersist) {
+          const persisted = await persistBasesCheckedStateForRow(row, true);
+          if (persisted) {
+            completionStateChanged = true;
+          }
+        }
+      }
+      if (completionStateChanged) {
+        checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
+          cocService: {} as any,
+          guildId: tracked.guildId,
+          client: (message as { client?: Client }).client ?? ({} as Client),
+          viewType: "Bases",
+          syncMessageId: syncReferenceId,
+        });
+        effectiveRows = checklistState.rows;
+        finalReactionBaselines = collectFwaMatchChecklistReactionBaselines({
+          rows: effectiveRows,
+          previousRowsByTag,
+          reactionCache: effectiveReactionCache,
+          existingBaselines: metadata.basesReactionBaselines ?? [],
+        });
+      }
       const content = checklistService.buildFwaMatchBasesMessageContent({
         rows: effectiveRows,
       });
@@ -3694,6 +3919,7 @@ export class TrackedMessageService {
             scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
             referenceId: tracked.referenceId ?? null,
             checkedClanTags: [],
+            basesReactionBaselines: finalReactionBaselines,
             rows: effectiveRows.map((row) => ({ ...row })),
             guildId: tracked.guildId,
             channelId: tracked.channelId,

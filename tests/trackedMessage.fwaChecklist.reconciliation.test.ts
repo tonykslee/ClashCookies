@@ -246,7 +246,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any),
     ).resolves.toBe(true);
 
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:alpha:111>");
     expect(edit).toHaveBeenCalledTimes(1);

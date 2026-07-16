@@ -2809,6 +2809,143 @@ describe("fwa checklist tracked messages", () => {
     expect(edit).toHaveBeenCalled();
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("# Clan Bases Checklist");
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Bases not checked");
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            basesReactionBaselines: expect.arrayContaining([
+              expect.objectContaining({
+                contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+                reactionKey: "custom:111",
+                userCount: 0,
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("persists a skipped-to-active baseline and ignores a stale pre-activation user reaction on later no-event refreshes", async () => {
+    const trackedRow = makeSkippedThenActiveBasesTrackedChecklistRow();
+    const refreshedRows = makeBasesTrackedChecklistRow().metadata.rows.map((row) => ({
+      ...row,
+      basesStatus: "not_checked",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+    }));
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(trackedRow as any);
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(
+      makeBasesTrackedChecklistRow() as any,
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYPY",
+        clanBadge: "<:alpha:111>",
+        name: "Alpha",
+        shortName: "Alpha",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "BL",
+        inferredMatchType: "BL",
+        outcome: null,
+        state: "preparation",
+      },
+    ]);
+    const setCompletion = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue(true);
+    const recordBasesChecklistChecked = vi.spyOn(
+      repWorkActivityService,
+      "recordBasesChecklistChecked",
+    );
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
+      null,
+    );
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestFwaMatchChecklistBasesCompletionForClan",
+    ).mockResolvedValue(null);
+
+    const reactionCache = new Map<string, any>();
+    const existingReaction = {
+      emoji: { id: "111", name: "alpha" },
+      count: 1,
+      me: false,
+      remove: vi.fn().mockImplementation(async () => {
+        reactionCache.delete("alpha");
+      }),
+    };
+    reactionCache.set("alpha", existingReaction);
+    const react = vi.fn().mockImplementation(async () => {
+      existingReaction.count += 1;
+      existingReaction.me = true;
+      return undefined;
+    });
+    const fetch = vi.fn().mockImplementation(async () => ({
+      id: "bases-message-1",
+      reactions: {
+        cache: reactionCache,
+      },
+    }));
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "bases-message-1",
+      client: {} as any,
+      react,
+      fetch,
+      reactions: {
+        cache: reactionCache,
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: refreshedRows,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
+    expect(react).toHaveBeenCalledTimes(1);
+    expect(setCompletion).not.toHaveBeenCalled();
+    expect(recordBasesChecklistChecked).not.toHaveBeenCalled();
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            basesReactionBaselines: expect.arrayContaining([
+              expect.objectContaining({
+                contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+                reactionKey: "custom:111",
+                userCount: 1,
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: refreshedRows,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
+
+    expect(react).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(setCompletion).toHaveBeenCalledTimes(1);
+    expect(recordBasesChecklistChecked).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(2);
   });
 
   it("logs hydration failures but preserves the supplied bases issue rows", async () => {
@@ -2982,6 +3119,86 @@ describe("fwa checklist tracked messages", () => {
       }),
     );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("❌ Bases not checked");
+  });
+
+  it("keeps a skipped-to-active bases row from being re-checked on removal when the remaining user count matches the activation baseline", async () => {
+    const trackedRow = makeSkippedThenActiveBasesTrackedChecklistRow();
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...trackedRow,
+      metadata: {
+        ...trackedRow.metadata,
+        basesReactionBaselines: [
+          {
+            contextKey: "ctx-alpha",
+            reactionKey: "custom:111",
+            userCount: 1,
+          },
+        ],
+      },
+    } as any);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYPY",
+        clanBadge: "<:alpha:111>",
+        name: "Alpha",
+        shortName: "A",
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "fwa",
+        inferredMatchType: "fwa",
+        outcome: null,
+        state: "battle",
+      },
+    ]);
+    const setCompletion = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue(true);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
+      null,
+    );
+    vi.spyOn(
+      trackedMessageService,
+      "findLatestFwaMatchChecklistBasesCompletionForClan",
+    ).mockResolvedValue(null);
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "bases-message-1",
+      client: {} as any,
+      reactions: {
+        cache: new Map([
+          [
+            "alpha",
+            {
+              emoji: { id: "111", name: "alpha" },
+              count: 2,
+              me: true,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+        kind: "remove",
+        reaction: {
+          emoji: { id: "111", name: "alpha" },
+          count: 1,
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(setCompletion).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalled();
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Bases not checked");
   });
 
   it("keeps a base-swap issue ahead of an all-good bases completion on reaction add", async () => {
