@@ -2364,6 +2364,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "111", name: "alpha" },
               count: 2,
+              me: true,
             },
           ],
         ]),
@@ -2564,6 +2565,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "111", name: "alpha" },
               count: 2,
+              me: true,
             },
           ],
         ]),
@@ -2753,6 +2755,7 @@ describe("fwa checklist tracked messages", () => {
     const staleReaction = {
       emoji: { id: "111", name: "alpha" },
       count: 2,
+      me: true,
       remove: vi.fn().mockImplementation(async () => {
         reactionCache.delete("alpha");
       }),
@@ -2762,6 +2765,7 @@ describe("fwa checklist tracked messages", () => {
       reactionCache.set("alpha", {
         emoji: { id: "111", name: "alpha" },
         count: 1,
+        me: true,
       });
       return undefined;
     });

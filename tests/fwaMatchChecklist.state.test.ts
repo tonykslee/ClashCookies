@@ -564,6 +564,7 @@ function makeJuly15InitialBasesReactionCache() {
       {
         emoji: { id: "1463680051261341799", name: "Logo_SteelEmpire" },
         count: 1,
+        me: true,
       },
     ],
     [
@@ -571,6 +572,7 @@ function makeJuly15InitialBasesReactionCache() {
       {
         emoji: { id: "1463679964334526495", name: "Logo_RockyRoad" },
         count: 1,
+        me: true,
       },
     ],
     [
@@ -578,6 +580,7 @@ function makeJuly15InitialBasesReactionCache() {
       {
         emoji: { id: "1464436468578517125", name: "Logo_Akatsuki" },
         count: 1,
+        me: true,
       },
     ],
   ]);
@@ -1517,10 +1520,23 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     );
 
     const edit = vi.fn().mockResolvedValue(undefined);
-    const react = vi.fn().mockResolvedValue(undefined);
+    const reactionCache = makeJuly15InitialBasesReactionCache();
+    const react = vi.fn().mockImplementation(async (emoji: string) => {
+      const normalized = String(emoji ?? "").trim();
+      const custom = /^<a?:([A-Za-z0-9_]{2,32}):(\d{1,22})>$/.exec(normalized);
+      const key = custom ? `custom:${custom[2] ?? ""}` : `unicode:${normalized}`;
+      reactionCache.set(key, {
+        emoji: custom
+          ? { id: custom[2] ?? null, name: custom[1] ?? null }
+          : { id: null, name: normalized },
+        count: 1,
+        me: true,
+      });
+      return undefined;
+    });
     const fetch = vi.fn().mockResolvedValue({
       reactions: {
-        cache: makeJuly15InitialBasesReactionCache(),
+        cache: reactionCache,
       },
     });
     const checklistMessage = {
@@ -1528,7 +1544,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       react,
       fetch,
       reactions: {
-        cache: makeJuly15InitialBasesReactionCache(),
+        cache: reactionCache,
       },
       edit,
     } as any;
@@ -1546,7 +1562,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       } as any),
     ).resolves.toBe(true);
 
-    expect(react).not.toHaveBeenCalled();
+    expect(react).toHaveBeenCalledTimes(6);
     expect(fetch).not.toHaveBeenCalled();
     expect(edit).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
@@ -1652,10 +1668,23 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     );
 
     const edit = vi.fn().mockResolvedValue(undefined);
-    const react = vi.fn().mockResolvedValue(undefined);
+    const reactionCache = makeJuly15InitialBasesReactionCache();
+    const react = vi.fn().mockImplementation(async (emoji: string) => {
+      const normalized = String(emoji ?? "").trim();
+      const custom = /^<a?:([A-Za-z0-9_]{2,32}):(\d{1,22})>$/.exec(normalized);
+      const key = custom ? `custom:${custom[2] ?? ""}` : `unicode:${normalized}`;
+      reactionCache.set(key, {
+        emoji: custom
+          ? { id: custom[2] ?? null, name: custom[1] ?? null }
+          : { id: null, name: normalized },
+        count: 1,
+        me: true,
+      });
+      return undefined;
+    });
     const fetch = vi.fn().mockResolvedValue({
       reactions: {
-        cache: makeJuly15InitialBasesReactionCache(),
+        cache: reactionCache,
       },
     });
     const checklistMessage = {
@@ -1663,7 +1692,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       react,
       fetch,
       reactions: {
-        cache: makeJuly15InitialBasesReactionCache(),
+        cache: reactionCache,
       },
       edit,
     } as any;

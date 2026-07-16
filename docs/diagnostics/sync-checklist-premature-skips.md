@@ -133,3 +133,5 @@ The publication still happened after the readiness gate expired, so the timing r
 The diagnosis intentionally avoids claiming exact action ordering from retained evidence that is not reproduced in this document.
 
 This document intentionally stops at diagnosis and does not implement the fix.
+
+Final invariant: after any successful checklist refresh, the bot-managed badge reactions are an idempotent additive reconciliation of the final effective checklist rows.
