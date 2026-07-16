@@ -2029,6 +2029,17 @@ type CurrentWarIdentityCompletionResult = {
   persistedRevisionAt: Date | null;
 };
 
+type StoredOpponentTagForm = "bare" | "canonical" | "missing";
+
+/** Purpose: classify the stored opponent-tag representation for bounded identity logging. */
+function describeStoredOpponentTagForm(
+  opponentTag: string | null | undefined,
+): StoredOpponentTagForm {
+  const rawOpponentTag = String(opponentTag ?? "").trim();
+  if (!rawOpponentTag) return "missing";
+  return rawOpponentTag.startsWith("#") ? "canonical" : "bare";
+}
+
 /** Purpose: emit one bounded structured event for active CurrentWar identity completion. */
 function logCurrentWarIdentityCompletion(input: {
   result: Exclude<CurrentWarIdentityCompletionState, "not_needed">;
@@ -2036,6 +2047,8 @@ function logCurrentWarIdentityCompletion(input: {
   clanTag: string;
   dbClanTag: string;
   dbOpponentTag: string | null;
+  storedOpponentTagForm: StoredOpponentTagForm;
+  rereadOpponentTagForm?: StoredOpponentTagForm;
   warId: number | null;
   warStartTime: Date | null;
   expectedRevisionAt: Date | null;
@@ -2047,6 +2060,10 @@ function logCurrentWarIdentityCompletion(input: {
     ` clan=#${normalizeTagBare(input.clanTag) ?? "unknown"}` +
     ` db_clan_tag=${input.dbClanTag}` +
     ` db_opponent_tag=${input.dbOpponentTag ?? "none"}` +
+    ` stored_opponent_tag_form=${input.storedOpponentTagForm}` +
+    (input.rereadOpponentTagForm
+      ? ` reread_opponent_tag_form=${input.rereadOpponentTagForm}`
+      : "") +
     ` war_id=${input.warId ?? "none"}` +
     ` war_start=${input.warStartTime?.toISOString() ?? "none"}` +
     ` opponent=${input.dbOpponentTag ?? "none"}` +
@@ -3723,6 +3740,18 @@ export class WarEventLogService {
 
     const exactRow = await readExactRow();
     if (!exactRow) {
+      logCurrentWarIdentityCompletion({
+        result: "conflict",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        storedOpponentTagForm: "missing",
+        warId: null,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt: null,
+        persistedRevisionAt: null,
+      });
       return {
         state: "conflict",
         warId: null,
@@ -3731,11 +3760,14 @@ export class WarEventLogService {
     }
 
     const exactStartTime = exactRow.startTime ?? null;
-    const exactOpponentTag = normalizeTag(exactRow.opponentTag ?? null);
+    const exactOpponentTagRaw = exactRow.opponentTag ?? null;
+    const exactOpponentTag = normalizeTag(exactOpponentTagRaw);
     const exactWarId =
       exactRow.warId !== null && exactRow.warId !== undefined
         ? Math.trunc(Number(exactRow.warId))
         : null;
+    const exactStoredOpponentTagForm =
+      describeStoredOpponentTagForm(exactOpponentTagRaw);
     const samePhysicalIdentity =
       isActiveWarState((exactRow.state ?? "notInWar") as WarState) &&
       exactStartTime !== null &&
@@ -3743,6 +3775,18 @@ export class WarEventLogService {
       exactOpponentTag === dbOpponentTag;
 
     if (!samePhysicalIdentity) {
+      logCurrentWarIdentityCompletion({
+        result: "identity_changed",
+        guildId: input.guildId,
+        clanTag: input.clanTag,
+        dbClanTag,
+        dbOpponentTag,
+        storedOpponentTagForm: exactStoredOpponentTagForm,
+        warId: exactWarId !== null && exactWarId > 0 ? exactWarId : null,
+        warStartTime: input.warStartTime,
+        expectedRevisionAt: exactRow.updatedAt ?? null,
+        persistedRevisionAt: exactRow.updatedAt ?? null,
+      });
       return {
         state: "identity_changed",
         warId: exactWarId !== null && exactWarId > 0 ? exactWarId : null,
@@ -3786,11 +3830,12 @@ export class WarEventLogService {
         updatedAt: expectedRevisionAt,
         state: exactRow.state,
         startTime: exactStartTime,
-        opponentTag: dbOpponentTag,
+        opponentTag: exactOpponentTagRaw,
         warId: null,
       },
       data: {
         warId: allocatedWarId,
+        opponentTag: dbOpponentTag,
         updatedAt: persistedRevisionAt,
       },
     });
@@ -3802,6 +3847,7 @@ export class WarEventLogService {
         clanTag: input.clanTag,
         dbClanTag,
         dbOpponentTag,
+        storedOpponentTagForm: exactStoredOpponentTagForm,
         warId: allocatedWarId,
         warStartTime: input.warStartTime,
         expectedRevisionAt,
@@ -3822,6 +3868,7 @@ export class WarEventLogService {
         clanTag: input.clanTag,
         dbClanTag,
         dbOpponentTag,
+        storedOpponentTagForm: exactStoredOpponentTagForm,
         warId: null,
         warStartTime: input.warStartTime,
         expectedRevisionAt,
@@ -3835,11 +3882,15 @@ export class WarEventLogService {
     }
 
     const rereadStartTime = rereadExactRow.startTime ?? null;
-    const rereadOpponentTag = normalizeTag(rereadExactRow.opponentTag ?? null);
+    const rereadOpponentTagRaw = rereadExactRow.opponentTag ?? null;
+    const rereadOpponentTag = normalizeTag(rereadOpponentTagRaw);
     const rereadWarId =
       rereadExactRow.warId !== null && rereadExactRow.warId !== undefined
         ? Math.trunc(Number(rereadExactRow.warId))
         : null;
+    const rereadStoredOpponentTagForm = describeStoredOpponentTagForm(
+      rereadOpponentTagRaw,
+    );
     const rereadSameIdentity =
       isActiveWarState((rereadExactRow.state ?? "notInWar") as WarState) &&
       rereadStartTime !== null &&
@@ -3853,6 +3904,8 @@ export class WarEventLogService {
         clanTag: input.clanTag,
         dbClanTag,
         dbOpponentTag,
+        storedOpponentTagForm: exactStoredOpponentTagForm,
+        rereadOpponentTagForm: rereadStoredOpponentTagForm,
         warId: rereadWarId,
         warStartTime: input.warStartTime,
         expectedRevisionAt,
@@ -3872,6 +3925,8 @@ export class WarEventLogService {
         clanTag: input.clanTag,
         dbClanTag,
         dbOpponentTag,
+        storedOpponentTagForm: exactStoredOpponentTagForm,
+        rereadOpponentTagForm: rereadStoredOpponentTagForm,
         warId: rereadWarId,
         warStartTime: input.warStartTime,
         expectedRevisionAt,
@@ -3890,6 +3945,8 @@ export class WarEventLogService {
       clanTag: input.clanTag,
       dbClanTag,
       dbOpponentTag,
+      storedOpponentTagForm: exactStoredOpponentTagForm,
+      rereadOpponentTagForm: rereadStoredOpponentTagForm,
       warId: null,
       warStartTime: input.warStartTime,
       expectedRevisionAt,
