@@ -76,6 +76,7 @@ function makeGuild(id = "111111111111111111"): GuildLike {
 
 describe("AutoRoleSchedulerService", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-18T12:00:00.000Z"));
     vi.clearAllMocks();
