@@ -218,7 +218,17 @@ The incident is still reproduced by the production trace itself:
 
 The new tests also reproduce the same logic locally without changing production behavior.
 
-## 8. Definitive root cause
+## 8. Follow-up guard note
+
+The safe fix for this class of failure is to keep the final send guard fail-closed when the active war cannot be re-verified, especially across reread and CAS retry errors.
+
+That means:
+
+- do not preserve a stale physical identity through a live reread that has not proven the row is still the same war
+- do not convert a database verification failure into an active-war changed message
+- release the exact in-flight send claim and ask the user to retry Send Mail after a temporary database error
+
+## 9. Definitive root cause
 
 Primary root cause:
 
@@ -243,7 +253,7 @@ Whether recovery would have happened:
 - `/force poll war-events` is a likely recovery, not a guaranteed one. It only guarantees recovery when the live CoC identity is complete enough for the poller to stamp `CurrentWar.warId`.
 - The issue is not permanently blocked by design, but it can remain blocked for as long as the poller cannot materialize a valid ID.
 
-## 9. Recommended implementation design
+## 10. Recommended implementation design
 
 Do not switch ownership. Keep the architecture contract intact.
 
@@ -268,7 +278,7 @@ Exact files and functions that should be revisited for the fix later:
 
 The fix should live in the active-war identity path, not in ended-war history.
 
-## 10. Test plan
+## 11. Test plan
 
 The diagnosis suite added in this branch already covers the current behavior. The next implementation task should keep those tests and add more around the final shared resolver.
 
@@ -284,7 +294,7 @@ Coverage goals for the eventual fix:
 
 The most important assertion is that the send path never attaches mail lifecycle state to an unresolved or mismatched war.
 
-## 11. Observability improvements
+## 12. Observability improvements
 
 Add targeted logging around the final mail confirmation path so future incidents are easier to diagnose:
 
@@ -295,7 +305,7 @@ Add targeted logging around the final mail confirmation path so future incidents
 
 The current logs were good enough to reconstruct the incident, but the failure itself did not leave a single explicit "why warId was null right now" line.
 
-## 12. Exact proposed implementation files and functions
+## 13. Exact proposed implementation files and functions
 
 These are the specific places to change in the next task:
 
@@ -310,7 +320,7 @@ These are the specific places to change in the next task:
 
 The fix should live in the active-war identity path, not in ended-war history.
 
-## 13. Concurrency and ID allocation risk
+## 14. Concurrency and ID allocation risk
 
 `WarEventLogService.allocateNextWarId` currently uses a naked `MAX(...) + 1` query across `WarLookup`, `CurrentWar`, and `WarAttacks`, and `ensureCurrentWarId` simply returns that value when no matching current row exists. The eventual persistence step is a separate `await prisma.currentWar.update(...)` in `processSubscription`, so allocation and persistence are not wrapped in one transaction.
 
@@ -324,7 +334,7 @@ That means:
 
 The new concurrency test reproduces the overlapping-read behavior directly.
 
-## 14. Separate stale-war-ID correctness risk
+## 15. Separate stale-war-ID correctness risk
 
 This is distinct from the null-ID race.
 
@@ -334,7 +344,7 @@ The safe part of the pipeline is `resolveCurrentWarSyncIdentity`, which validate
 
 The new test `returns the persisted current-war id without validating the supplied war-start time` captures that risk so the next implementation task can decide whether to keep, replace, or wrap that helper with a shared canonical resolver.
 
-## 15. Follow-up implementation notes
+## 16. Follow-up implementation notes
 
 The remaining PR #1681 work tightened the targeted war-mail repair path without changing the ownership model described above:
 
@@ -351,7 +361,7 @@ Operationally, this means the command path now has three distinct outcomes for a
 
 That is the intended safety boundary for the current design.
 
-## 16. July 16 fix summary
+## 17. July 16 fix summary
 
 This section records the production fix that closes the Rocky Road gap without changing ownership boundaries.
 
@@ -389,7 +399,7 @@ The corrected lifecycle is now:
 
 The final Send Mail guard still rejects unresolved active-war identity. That behavior is unchanged in meaning: if the exact active war cannot be proven after repair attempts, the send path refuses to post rather than guessing.
 
-## 17. Second-layer identity-completion defect
+## 18. Second-layer identity-completion defect
 
 Production inspection on `2026-07-16` confirmed the remaining failure was a raw stored opponent-tag mismatch inside active CurrentWar identity completion, not a timestamp precision problem.
 
