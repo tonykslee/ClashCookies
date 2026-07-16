@@ -4089,19 +4089,33 @@ export class TrackedMessageService {
       return true;
     }
 
+    const effectiveRows = options?.rows ?? metadata.rows;
+    let reactionObservation: FwaChecklistReactionObservation = {
+      cache: message.reactions.cache,
+      fetchAttempted: false,
+      fetchSucceeded: false,
+    };
+    reactionObservation = await observeFwaMatchChecklistReactionCacheForRows({
+      guildId: tracked.guildId,
+      messageId: message.id,
+      viewType: "Mail",
+      message,
+      rows: effectiveRows,
+      observation: reactionObservation,
+    });
+    const reactionCacheForObservation = reactionObservation.cache;
     const persistedCheckedTags = new Set(
       (metadata.checkedClanTags ?? [])
         .map((clanTag) => normalizeChecklistClanTag(clanTag))
         .filter((clanTag): clanTag is string => Boolean(clanTag)),
     );
     const reactedTags = new Set<string>(persistedCheckedTags);
-    const sourceRows = options?.rows ?? metadata.rows;
     const changedRowTag = change
-      ? findChecklistRowTagForReaction(sourceRows, change.reaction)
+      ? findChecklistRowTagForReaction(effectiveRows, change.reaction)
       : null;
     if (change && changedRowTag) {
       const reactionChange = change;
-      const matchedRow = sourceRows.find(
+      const matchedRow = effectiveRows.find(
         (row) => normalizeChecklistClanTag(row.clanTag) === changedRowTag,
       );
       console.debug(
@@ -4142,13 +4156,8 @@ export class TrackedMessageService {
         });
       }
     }
-    for (const row of sourceRows) {
-      const reaction = [...message.reactions.cache.values()].find((candidate) =>
-        emojiMatches(candidate, {
-          emojiId: row.badgeEmojiId,
-          emojiName: row.badgeEmojiName,
-        }),
-      );
+    for (const row of effectiveRows) {
+      const reaction = findFwaMatchChecklistReactionEntry(reactionCacheForObservation, row);
       if (!reaction) continue;
       if ((reaction.count ?? 0) > 1) {
         reactedTags.add(normalizeChecklistClanTag(row.clanTag));
@@ -4163,7 +4172,6 @@ export class TrackedMessageService {
       }
     }
 
-    const effectiveRows = options?.rows ?? metadata.rows;
     const content = buildFwaMatchChecklistMessageContent({
       rows: effectiveRows,
       checkedClanTags: reactedTags,
@@ -4179,9 +4187,7 @@ export class TrackedMessageService {
     await prisma.trackedMessage.update({
       where: { messageId: message.id },
       data: {
-        ...(extendedExpiresAt
-          ? { expiresAt: extendedExpiresAt }
-          : {}),
+        ...(extendedExpiresAt ? { expiresAt: extendedExpiresAt } : {}),
         metadata: {
           createdByUserId: metadata.createdByUserId,
           createdAtIso: metadata.createdAtIso,
@@ -4191,6 +4197,15 @@ export class TrackedMessageService {
           rows: effectiveRows.map((row) => ({ ...row })),
         } as any,
       },
+    });
+    await reconcileChecklistBadgeReactions({
+      guildId: tracked.guildId,
+      messageId: message.id,
+      message,
+      rows: effectiveRows,
+      source: reconcileSource,
+      viewType: "Mail",
+      reactionObservation,
     });
     return true;
   }

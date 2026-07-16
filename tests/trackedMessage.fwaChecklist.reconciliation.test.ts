@@ -22,8 +22,103 @@ import {
   TRACKED_MESSAGE_STATUS,
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
-import { buildFwaMatchBasesMessageContent } from "../src/services/FwaMatchChecklistService";
+import {
+  buildFwaMatchBasesMessageContent,
+  buildFwaMatchChecklistMessageContent,
+} from "../src/services/FwaMatchChecklistService";
 import { repWorkActivityService } from "../src/services/RepWorkActivityService";
+
+function makeMailTrackedChecklistRow() {
+  return {
+    id: "tracked-mail-1",
+    guildId: "guild-1",
+    channelId: "channel-1",
+    messageId: "mail-message-1",
+    featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+    status: TRACKED_MESSAGE_STATUS.ACTIVE,
+    referenceId: "sync-message-1",
+    clanTag: "#PYPY",
+    expiresAt: new Date("2030-06-13T22:00:00.000Z"),
+    createdAt: new Date("2026-06-13T17:00:00.000Z"),
+    metadata: {
+      kind: "mail_checklist",
+      createdByUserId: "user-1",
+      createdAtIso: "2026-06-13T17:00:00.000Z",
+      scopeKey: "fwa_match_mail|guild=guild-1|clan=all|rows=alpha",
+      checkedClanTags: [],
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          badgeEmojiInline: "<:alpha:111>",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-06-13T18:00:00.000Z",
+          detailLines: null,
+          contextKey: "ctx-alpha",
+        },
+        {
+          clanTag: "#TWC",
+          compactCopyLine: "Bravo | [ ] | Mail not checked",
+          badgeEmojiId: "222",
+          badgeEmojiName: "bravo",
+          badgeEmojiInline: "<:bravo:222>",
+          warId: 1002,
+          opponentTag: "#OPP2",
+          warStartTimeIso: "2026-06-13T19:00:00.000Z",
+          detailLines: null,
+          contextKey: "ctx-bravo",
+        },
+      ],
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "mail-message-1",
+      clanTag: "#PYPY",
+      warId: 1001,
+      opponentTag: "#OPP1",
+      warStartTimeIso: "2026-06-13T18:00:00.000Z",
+    },
+  };
+}
+
+function makeMailRow(params: {
+  clanTag: string;
+  compactCopyLine: string;
+  badgeEmojiInline: string;
+  badgeEmojiId: string | null;
+  badgeEmojiName: string | null;
+  warId?: number | null;
+  opponentTag?: string | null;
+  warStartTimeIso?: string | null;
+  contextKey?: string | null;
+}) {
+  return {
+    ...makeMailTrackedChecklistRow().metadata.rows[0],
+    clanTag: params.clanTag,
+    compactCopyLine: params.compactCopyLine,
+    badgeEmojiInline: params.badgeEmojiInline,
+    badgeEmojiId: params.badgeEmojiId,
+    badgeEmojiName: params.badgeEmojiName,
+    warId: params.warId ?? 1001,
+    opponentTag: params.opponentTag ?? "#OPP1",
+    warStartTimeIso: params.warStartTimeIso ?? "2026-06-13T18:00:00.000Z",
+    contextKey: params.contextKey ?? "ctx-reconcile",
+  };
+}
+
+function makeMailTrackedChecklistRowWithRows(rows: any[], checkedClanTags: string[] = []) {
+  const row = makeMailTrackedChecklistRow();
+  return {
+    ...row,
+    metadata: {
+      ...row.metadata,
+      rows: rows.map((item) => ({ ...item })),
+      checkedClanTags: [...checkedClanTags],
+    },
+  } as any;
+}
 
 function makeBasesTrackedChecklistRow() {
   return {
@@ -1436,6 +1531,378 @@ describe("fwa checklist badge reaction reconciliation", () => {
           ]),
         );
       }
+    });
+  });
+
+  describe("mail checklist badge reaction reconciliation", () => {
+    beforeEach(() => {
+      vi.spyOn(repWorkActivityService, "recordMailChecked").mockResolvedValue(true);
+    });
+
+    it("adds a newly introduced Mail badge on a listener refresh", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const recordMailChecked = vi.spyOn(repWorkActivityService, "recordMailChecked");
+      const { message, fetch, react, edit } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [],
+      });
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+          kind: "add",
+          reactorUserId: "111111111111111111",
+          reaction: {
+            emoji: { id: "111", name: "alpha" },
+            count: 1,
+          },
+        } as any),
+      ).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledWith("<:alpha:111>");
+      expect(edit).toHaveBeenCalledTimes(1);
+      expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+        buildFwaMatchChecklistMessageContent({
+          rows: finalRows as any,
+          checkedClanTags: ["#PYPY"],
+        }),
+      );
+      expect(recordMailChecked).toHaveBeenCalledTimes(1);
+      expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { messageId: "mail-message-1" },
+          data: expect.objectContaining({
+            metadata: expect.objectContaining({
+              checkedClanTags: ["#PYPY"],
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("repairs a missing Mail badge on a button refresh", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const { message, fetch, react, edit } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [],
+      });
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_mail|guild=guild-1|clan=all|rows=ctx-alpha",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
+      ).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledWith("<:alpha:111>");
+      expect(edit).toHaveBeenCalledTimes(1);
+      expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+        buildFwaMatchChecklistMessageContent({
+          rows: finalRows as any,
+          checkedClanTags: [],
+        }),
+      );
+    });
+
+    it("preserves a user-only Mail reaction while the bot adds its own reaction", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const { message, fetch, react, reactionCache } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [
+          {
+            emojiInline: "<:alpha:111>",
+            count: 1,
+            me: false,
+          },
+        ],
+      });
+
+      await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(react).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledWith("<:alpha:111>");
+      expect(reactionCache.get("custom:111")).toMatchObject({
+        count: 2,
+        me: true,
+      });
+    });
+
+    it("fetches once from a partial nonempty cache and discovers the missing Mail target", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const { message, fetch, react } = makeRefreshMessage({
+        id: "mail-message-1",
+        partial: true,
+        reactionEntries: [
+          {
+            emojiInline: "<:bravo:222>",
+            count: 1,
+            me: true,
+          },
+        ],
+      });
+      fetch.mockResolvedValueOnce({
+        id: "mail-message-1",
+        reactions: {
+          cache: new Map([
+            [
+              "custom:222",
+              {
+                emoji: { id: "222", name: "bravo" },
+                count: 1,
+                me: true,
+              },
+            ],
+          ]),
+        },
+      });
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_mail|guild=guild-1|clan=all|rows=ctx-alpha",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
+      ).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledWith("<:alpha:111>");
+    });
+
+    it("accepts an authoritative empty fetched Mail cache", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { message, fetch, react } = makeRefreshMessage({
+        id: "mail-message-1",
+        partial: true,
+        reactionEntries: [],
+      });
+      fetch.mockResolvedValueOnce({
+        id: "mail-message-1",
+        reactions: {
+          cache: new Map(),
+        },
+      });
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_mail|guild=guild-1|clan=all|rows=ctx-alpha",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
+      ).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledTimes(1);
+      expect(react).toHaveBeenCalledWith("<:alpha:111>");
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it("persists a Mail checked tag and records Rep Work when fetch hydration fails during an add", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const recordMailChecked = vi.spyOn(repWorkActivityService, "recordMailChecked");
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { message, fetch, react, edit } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [],
+      });
+      fetch.mockRejectedValueOnce(new Error("hydrate failed"));
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+          kind: "add",
+          reactorUserId: "111111111111111111",
+          reaction: {
+            emoji: { id: "111", name: "alpha" },
+            count: 1,
+          },
+        } as any),
+      ).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(react).not.toHaveBeenCalled();
+      expect(edit).toHaveBeenCalledTimes(1);
+      expect(recordMailChecked).toHaveBeenCalledTimes(1);
+      expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { messageId: "mail-message-1" },
+          data: expect.objectContaining({
+            metadata: expect.objectContaining({
+              checkedClanTags: ["#PYPY"],
+            }),
+          }),
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalled();
+    });
+
+    it("keeps later Mail badge reactions moving when one reaction add fails", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+        makeMailRow({
+          clanTag: "#TWC",
+          compactCopyLine: "Bravo | [ ] | Mail not checked",
+          badgeEmojiInline: "<:bravo:222>",
+          badgeEmojiId: "222",
+          badgeEmojiName: "bravo",
+          contextKey: "ctx-bravo",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { message, react, edit } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [],
+        reactFailures: ["<:alpha:111>"],
+      });
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_mail|guild=guild-1|clan=all|rows=ctx-reconcile",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
+      ).resolves.toBe(true);
+
+      expect(react).toHaveBeenCalledTimes(2);
+      expect(react.mock.calls.map((call) => call[0])).toEqual([
+        "<:alpha:111>",
+        "<:bravo:222>",
+      ]);
+      expect(edit).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("failure=unknown_error"));
+    });
+
+    it("stays idempotent when all Mail bot reactions already exist", async () => {
+      const finalRows = [
+        makeMailRow({
+          clanTag: "#PYPY",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-alpha",
+        }),
+        makeMailRow({
+          clanTag: "#TWC",
+          compactCopyLine: "Bravo | [ ] | Mail not checked",
+          badgeEmojiInline: "<:bravo:222>",
+          badgeEmojiId: "222",
+          badgeEmojiName: "bravo",
+          contextKey: "ctx-bravo",
+        }),
+      ];
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(
+        makeMailTrackedChecklistRowWithRows(finalRows),
+      );
+      const { message, fetch, react, edit } = makeRefreshMessage({
+        id: "mail-message-1",
+        reactionEntries: [
+          {
+            emojiInline: "<:alpha:111>",
+            count: 1,
+            me: true,
+          },
+          {
+            emojiInline: "<:bravo:222>",
+            count: 1,
+            me: true,
+          },
+        ],
+      });
+
+      await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+      await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(react).not.toHaveBeenCalled();
+      expect(edit).toHaveBeenCalledTimes(2);
     });
   });
 
