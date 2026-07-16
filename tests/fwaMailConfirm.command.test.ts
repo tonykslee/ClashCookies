@@ -1184,6 +1184,70 @@ describe("fwa mail confirm button", () => {
     });
   });
 
+  it("does not require a CoC API token when a custom confirm renderer is installed", async () => {
+    const originalApiToken = process.env.COC_API_TOKEN;
+    delete process.env.COC_API_TOKEN;
+    try {
+      const previewKey = "preview-no-coc-token";
+      setFwaMailPreviewPayloadForTest(previewKey, {
+        userId: "owner-1",
+        guildId: "guild-1",
+        tag: "R80L8VYG",
+        revisionOverride: null,
+      });
+      const fakeRenderer = vi.fn().mockResolvedValue(buildRenderedMail());
+      setFwaMailConfirmRendererForTest(fakeRenderer);
+      prismaMock.currentWar.findUnique.mockResolvedValueOnce(
+        buildCurrentWarRow(),
+      );
+      prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
+      prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+        mailConfig: null,
+      });
+      prismaMock.trackedClan.update.mockResolvedValueOnce({});
+      pointsSyncMock.getCurrentSyncForClan.mockResolvedValueOnce(null);
+      pointsSyncMock.markConfirmedByClanMail.mockResolvedValueOnce(undefined);
+      lifecycleMock.getLifecycleForWar.mockResolvedValueOnce(null);
+      repWorkActivityMock.recordMailSent.mockResolvedValueOnce(undefined);
+      const send = vi.fn().mockResolvedValue({
+        id: "sent-no-token",
+        delete: vi.fn().mockResolvedValue(undefined),
+      });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const interaction = createInteraction({
+        customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+        send,
+      });
+
+      await handleFwaMailConfirmButton(interaction as any);
+
+      expect(fakeRenderer).toHaveBeenCalledTimes(1);
+      expect(fakeRenderer).toHaveBeenCalledWith(
+        "guild-1",
+        "R80L8VYG",
+        expect.objectContaining({
+          fetchReason: "pre_fwa_validation",
+          revisionOverride: null,
+          targetedWarReconcileClient: interaction.client,
+        }),
+      );
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(prisma.currentWar.updateMany).toHaveBeenCalledTimes(1);
+      expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+      expect(lifecycleMock.finalizeSendClaim).toHaveBeenCalledTimes(1);
+      expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("COC_API_TOKEN missing"),
+      );
+    } finally {
+      if (originalApiToken === undefined) {
+        delete process.env.COC_API_TOKEN;
+      } else {
+        process.env.COC_API_TOKEN = originalApiToken;
+      }
+    }
+  });
+
   it("prevents two concurrent confirmations from producing two public posts", async () => {
     const previewKey = "preview-concurrent";
     setFwaMailPreviewPayloadForTest(previewKey, {

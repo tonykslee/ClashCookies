@@ -5854,8 +5854,6 @@ type FwaMailConfirmPreviousPostedSnapshot = Readonly<{
   expectedOutcome: "WIN" | "LOSE" | "UNKNOWN" | null;
 }>;
 
-let buildWarMailEmbedForTagForConfirm = buildWarMailEmbedForTag;
-
 type FwaMailRefreshRenderer = (
   guildId: string,
   tag: string,
@@ -5873,6 +5871,31 @@ const buildWarMailEmbedForTagForRefreshDefault: FwaMailRefreshRenderer = async (
 
 let buildWarMailEmbedForTagForRefresh: FwaMailRefreshRenderer =
   buildWarMailEmbedForTagForRefreshDefault;
+
+type FwaMailConfirmRendererOptions = NonNullable<
+  Parameters<typeof buildWarMailEmbedForTag>[3]
+>;
+
+type FwaMailConfirmRenderer = (
+  guildId: string,
+  tag: string,
+  options: FwaMailConfirmRendererOptions &
+    Required<
+      Pick<
+        FwaMailConfirmRendererOptions,
+        "fetchReason" | "targetedWarReconcileClient"
+      >
+    >,
+) => ReturnType<typeof buildWarMailEmbedForTag>;
+
+const buildWarMailEmbedForTagForConfirmDefault: FwaMailConfirmRenderer = async (
+  guildId,
+  tag,
+  options,
+) => buildWarMailEmbedForTag(new CoCService(), guildId, tag, options);
+
+let buildWarMailEmbedForTagForConfirm: FwaMailConfirmRenderer =
+  buildWarMailEmbedForTagForConfirmDefault;
 
 export function setFwaMailPreviewPayloadForTest(
   key: string,
@@ -5892,9 +5915,10 @@ export function clearFwaMailPreviewPayloadsForTest(): void {
 }
 
 export function setFwaMailConfirmRendererForTest(
-  renderer: typeof buildWarMailEmbedForTag | null,
+  renderer: FwaMailConfirmRenderer | null,
 ): void {
-  buildWarMailEmbedForTagForConfirm = renderer ?? buildWarMailEmbedForTag;
+  buildWarMailEmbedForTagForConfirm =
+    renderer ?? buildWarMailEmbedForTagForConfirmDefault;
 }
 
 export function setFwaMailRefreshRendererForTest(
@@ -10054,9 +10078,7 @@ async function handleFwaMailConfirmAction(
       components: [],
   })
     .catch(() => undefined);
-  const cocService = new CoCService();
   const rendered = await buildWarMailEmbedForTagForConfirm(
-    cocService,
     normalizedGuildId,
     normalizedClanTag,
     {
@@ -10826,6 +10848,7 @@ async function handleFwaMailConfirmAction(
     channelId: channel.id,
     mailConfig: nextMailConfig,
   });
+  const cocService = {} as CoCService;
   await new WarEventLogService(interaction.client, cocService)
     .refreshCurrentNotifyPost(normalizedGuildId, normalizedClanTag)
     .catch((err) => {
