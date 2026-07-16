@@ -2834,10 +2834,25 @@ describe("fwa checklist tracked messages", () => {
       basesStatus: "not_checked",
       contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
     }));
+    let persistedTrackedRow = {
+      ...trackedRow,
+      metadata: {
+        ...trackedRow.metadata,
+        rows: trackedRow.metadata.rows.map((row) => ({ ...row })),
+      },
+    } as any;
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(trackedRow as any);
-    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(
-      makeBasesTrackedChecklistRow() as any,
-    );
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => persistedTrackedRow);
+    prismaMock.trackedMessage.update.mockImplementation(async ({ data }) => {
+      persistedTrackedRow = {
+        ...persistedTrackedRow,
+        metadata: {
+          ...(data.metadata as any),
+          rows: (data.metadata as any).rows.map((row: any) => ({ ...row })),
+        },
+      };
+      return persistedTrackedRow;
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
         tag: "#PYPY",
@@ -2943,9 +2958,18 @@ describe("fwa checklist tracked messages", () => {
 
     expect(react).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalled();
-    expect(setCompletion).toHaveBeenCalledTimes(1);
+    expect(setCompletion).not.toHaveBeenCalled();
     expect(recordBasesChecklistChecked).not.toHaveBeenCalled();
     expect(edit).toHaveBeenCalledTimes(2);
+    expect(persistedTrackedRow.metadata.basesReactionBaselines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+          reactionKey: "custom:111",
+          userCount: 1,
+        }),
+      ]),
+    );
   });
 
   it("logs hydration failures but preserves the supplied bases issue rows", async () => {

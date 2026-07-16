@@ -1563,7 +1563,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     ).resolves.toBe(true);
 
     expect(react).toHaveBeenCalledTimes(6);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(edit).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
       buildFwaMatchBasesMessageContent({ rows: refreshedBasesRows }),
@@ -1713,7 +1713,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(react.mock.calls.map((call) => call[0])).toEqual(
       transitionedRows.map((row) => row.badgeEmojiInline),
     );
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(edit).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
       buildFwaMatchBasesMessageContent({ rows: refreshedBasesRows }),

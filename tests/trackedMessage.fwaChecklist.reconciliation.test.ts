@@ -221,6 +221,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         badgeEmojiInline: "<:alpha:111>",
         badgeEmojiId: "111",
         badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
       }),
     ];
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
@@ -246,7 +247,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any),
     ).resolves.toBe(true);
 
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:alpha:111>");
     expect(edit).toHaveBeenCalledTimes(1);
@@ -588,6 +589,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         badgeEmojiInline: "<:alpha:111>",
         badgeEmojiId: "111",
         badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
       }),
     ];
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
@@ -624,6 +626,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         badgeEmojiInline: "<:alpha:111>",
         badgeEmojiId: "111",
         badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
       }),
     ];
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
@@ -652,6 +655,81 @@ describe("fwa checklist badge reaction reconciliation", () => {
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:alpha:111>");
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds an active final-row reaction from an empty authoritative cache after a skipped source row", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: [
+          {
+            ...makeBasesTrackedChecklistRow().metadata.rows[0],
+            basesStatus: "skipped",
+            compactCopyLine: "Alpha | ðŸ”˜ | Skipped this sync ðŸ˜´",
+            matchType: "UNKNOWN",
+            warId: null,
+            opponentTag: null,
+            warStartTimeIso: null,
+            contextKey: null,
+          },
+        ],
+      },
+    } as any);
+
+    const finalRows = [
+      makeBasesRow({
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+        badgeEmojiInline: "<:alpha:111>",
+        badgeEmojiId: "111",
+        badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      }),
+    ];
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
+      rows: finalRows,
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+      expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+    } as any);
+
+    const { message, fetch, react, edit } = makeRefreshMessage({
+      id: "bases-message-1",
+      partial: true,
+      reactionEntries: [],
+    });
+    fetch.mockResolvedValueOnce({
+      id: "bases-message-1",
+      reactions: {
+        cache: new Map(),
+      },
+    });
+
+    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(react).toHaveBeenCalledTimes(1);
+    expect(react).toHaveBeenCalledWith("<:alpha:111>");
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+      buildFwaMatchBasesMessageContent({ rows: finalRows as any }),
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            basesReactionBaselines: expect.arrayContaining([
+              expect.objectContaining({
+                contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+                reactionKey: "custom:111",
+                userCount: 0,
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
   });
 
   it("does no reaction work when the final checklist rows have no eligible badges", async () => {

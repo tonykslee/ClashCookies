@@ -3828,6 +3828,7 @@ export class TrackedMessageService {
       });
       let effectiveRows = checklistState.rows;
       let effectiveReactionCache = hydratedReactionCache ?? message.reactions.cache;
+      let effectiveReactionCacheHydrated = observedReactionCacheHydrated;
       const effectiveReactionCacheEntries = [...effectiveReactionCache.values()] as FwaMatchChecklistReactionCacheEntry[];
       const hasEligibleEffectiveRows = effectiveRows.some((row) =>
         shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"),
@@ -3844,6 +3845,7 @@ export class TrackedMessageService {
           messageId: message.id,
           message,
         });
+        effectiveReactionCacheHydrated = true;
       }
       let finalReactionBaselines = collectFwaMatchChecklistReactionBaselines({
         rows: effectiveRows,
@@ -3935,8 +3937,8 @@ export class TrackedMessageService {
         rows: effectiveRows,
         source: reconcileSource,
         viewType: "Bases",
-        reactionCache: hydratedReactionCache ?? message.reactions.cache,
-        reactionCacheHydrated: hydratedReactionCache != null,
+        reactionCache: effectiveReactionCache,
+        reactionCacheHydrated: effectiveReactionCacheHydrated,
       });
       return true;
     }
