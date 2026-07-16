@@ -531,8 +531,6 @@ describe("fwa checklist badge reaction reconciliation", () => {
   });
 
   it("matches both Unicode and custom emoji against existing bot reactions", async () => {
-    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeBasesTrackedChecklistRow());
-
     const finalRows = [
       makeBasesRow({
         clanTag: "#PYPY",
@@ -550,6 +548,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
         contextKey: "ctx-bravo",
       }),
     ];
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: finalRows.map((row) => ({ ...row })),
+      },
+    } as any);
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
     vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
       rows: finalRows,
@@ -580,8 +585,6 @@ describe("fwa checklist badge reaction reconciliation", () => {
   });
 
   it("keeps custom emoji identities exact even when the names match", async () => {
-    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeBasesTrackedChecklistRow());
-
     const finalRows = [
       makeBasesRow({
         clanTag: "#PYPY",
@@ -592,6 +595,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
         contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
       }),
     ];
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: finalRows.map((row) => ({ ...row })),
+      },
+    } as any);
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
     vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
       rows: finalRows,
@@ -599,9 +609,14 @@ describe("fwa checklist badge reaction reconciliation", () => {
       expiresAt: new Date("2026-06-13T22:00:00.000Z"),
     } as any);
 
-    const { message, react } = makeRefreshMessage({
+    const { message, fetch, react } = makeRefreshMessage({
       id: "bases-message-1",
       reactionEntries: [
+        {
+          emojiInline: "<:alpha:111>",
+          count: 1,
+          me: true,
+        },
         {
           emojiInline: "<:alpha:222>",
           count: 1,
@@ -612,8 +627,8 @@ describe("fwa checklist badge reaction reconciliation", () => {
 
     await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
 
-    expect(react).toHaveBeenCalledTimes(1);
-    expect(react).toHaveBeenCalledWith("<:alpha:111>");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(react).not.toHaveBeenCalled();
   });
 
   it("treats an empty fetched reaction cache as a normal empty refresh", async () => {
@@ -655,6 +670,201 @@ describe("fwa checklist badge reaction reconciliation", () => {
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:alpha:111>");
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("fetches when the cache only has unrelated reactions before reconciling a target row", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: [
+          makeBasesRow({
+            clanTag: "#PYPY",
+            compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+            badgeEmojiInline: "<:alpha:111>",
+            badgeEmojiId: "111",
+            badgeEmojiName: "alpha",
+            contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+          }),
+        ],
+      },
+    } as any);
+
+    const finalRows = [
+      makeBasesRow({
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+        badgeEmojiInline: "<:alpha:111>",
+        badgeEmojiId: "111",
+        badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      }),
+    ];
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
+      rows: finalRows,
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+      expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+    } as any);
+
+    const { message, fetch, react } = makeRefreshMessage({
+      id: "bases-message-1",
+      reactionEntries: [
+        {
+          emojiInline: "<:bravo:222>",
+          count: 1,
+          me: true,
+        },
+      ],
+    });
+    fetch.mockResolvedValueOnce({
+      id: "bases-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "alpha",
+            {
+              emoji: { id: "111", name: "alpha" },
+              count: 1,
+              me: true,
+            },
+          ],
+          [
+            "bravo",
+            {
+              emoji: { id: "222", name: "bravo" },
+              count: 1,
+              me: true,
+            },
+          ],
+        ]),
+      },
+    });
+
+    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(react).not.toHaveBeenCalled();
+  });
+
+  it("fetches when the target reaction exists but bot membership is still undefined", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: [
+          makeBasesRow({
+            clanTag: "#PYPY",
+            compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+            badgeEmojiInline: "<:alpha:111>",
+            badgeEmojiId: "111",
+            badgeEmojiName: "alpha",
+            contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+          }),
+        ],
+      },
+    } as any);
+
+    const finalRows = [
+      makeBasesRow({
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+        badgeEmojiInline: "<:alpha:111>",
+        badgeEmojiId: "111",
+        badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      }),
+    ];
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
+      rows: finalRows,
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+      expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+    } as any);
+
+    const { message, fetch, react } = makeRefreshMessage({
+      id: "bases-message-1",
+      reactionEntries: [
+        {
+          emojiInline: "<:alpha:111>",
+          count: 1,
+        },
+      ],
+    });
+    const alphaReaction = message.reactions.cache.get("custom:111") as { me?: boolean | null } | undefined;
+    if (alphaReaction) {
+      delete alphaReaction.me;
+    }
+    fetch.mockResolvedValueOnce({
+      id: "bases-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "alpha",
+            {
+              emoji: { id: "111", name: "alpha" },
+              count: 1,
+              me: true,
+            },
+          ],
+        ]),
+      },
+    });
+
+    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(react).not.toHaveBeenCalled();
+  });
+
+  it("continues the refresh when a hydration fetch fails during activation", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: [
+          makeBasesRow({
+            clanTag: "#PYPY",
+            compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+            badgeEmojiInline: "<:alpha:111>",
+            badgeEmojiId: "111",
+            badgeEmojiName: "alpha",
+            contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+          }),
+        ],
+      },
+    } as any);
+
+    const finalRows = [
+      makeBasesRow({
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+        badgeEmojiInline: "<:alpha:111>",
+        badgeEmojiId: "111",
+        badgeEmojiName: "alpha",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      }),
+    ];
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
+      rows: finalRows,
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+      expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+    } as any);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { message, fetch, react, edit } = makeRefreshMessage({
+      id: "bases-message-1",
+      reactionEntries: [],
+    });
+    fetch.mockRejectedValueOnce(new Error("hydrate failed"));
+
+    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(react).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("rebuilds an active final-row reaction from an empty authoritative cache after a skipped source row", async () => {

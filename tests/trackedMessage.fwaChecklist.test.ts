@@ -3104,6 +3104,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "111", name: "alpha" },
               count: 1,
+              me: true,
             },
           ],
         ]),
