@@ -7014,7 +7014,6 @@ export class WarEventLogService {
       sub,
       warStartTime,
       currentState: state,
-      preserveExistingWarId: true,
     });
 
     await prisma.currentWar.update({
@@ -7252,7 +7251,6 @@ export class WarEventLogService {
       sub,
       warStartTime,
       currentState: "inWar",
-      preserveExistingWarId: true,
     });
     await prisma.currentWar.update({
       where: {
