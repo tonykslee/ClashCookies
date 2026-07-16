@@ -388,3 +388,33 @@ The corrected lifecycle is now:
 ### Mail guard remains fail-closed
 
 The final Send Mail guard still rejects unresolved active-war identity. That behavior is unchanged in meaning: if the exact active war cannot be proven after repair attempts, the send path refuses to post rather than guessing.
+
+## 17. Second-layer identity-completion defect
+
+Production inspection on `2026-07-16` confirmed the remaining failure was a raw stored opponent-tag mismatch inside active CurrentWar identity completion, not a timestamp precision problem.
+
+### Read-only production evidence
+
+For guild `1324040917602013261` and clan `#2YUYLJCGV`, the raw `CurrentWar` row was:
+
+- `opponentTag=2RU0J9QQJ`
+- `opponent_tag_length=9`
+- `opponent_tag_hex=325255304a3951514a`
+- `warId=NULL`
+- `syncNumber=NULL`
+- `state=preparation`
+- `startTime=2026-07-16T20:03:41.000Z`
+- `updatedAt=2026-07-16T05:46:25.119000+00`
+
+The column precision query showed:
+
+- `startTime` precision `3`
+- `updatedAt` precision `3`
+
+So the row was already at millisecond precision, and the only mismatch was the legacy bare opponent representation.
+
+### Confirmed repair shape
+
+The identity-completion CAS now keeps normalized comparison for semantics, but matches the exact stored opponent representation in the `WHERE` clause and writes back the canonical `#TAG` form on success.
+
+That keeps the row ownership model intact while allowing a legacy bare stored opponent tag to self-heal into the canonical representation without a schema change or widened CAS window.
