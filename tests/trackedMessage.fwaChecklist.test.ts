@@ -2710,7 +2710,7 @@ describe("fwa checklist tracked messages", () => {
     expect(edit).toHaveBeenCalled();
   });
 
-  it("clears a stale skipped-phase bases reaction before arming the newly active row", async () => {
+  it("keeps a skipped-to-active bases refresh additive without deleting the existing reaction", async () => {
     const trackedRow = makeSkippedThenActiveBasesTrackedChecklistRow();
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(trackedRow as any);
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(
@@ -2752,23 +2752,16 @@ describe("fwa checklist tracked messages", () => {
     ).mockResolvedValue(null);
 
     const reactionCache = new Map<string, any>();
-    const staleReaction = {
+    const existingReaction = {
       emoji: { id: "111", name: "alpha" },
-      count: 2,
+      count: 1,
       me: true,
       remove: vi.fn().mockImplementation(async () => {
         reactionCache.delete("alpha");
       }),
     };
-    reactionCache.set("alpha", staleReaction);
-    const react = vi.fn().mockImplementation(async () => {
-      reactionCache.set("alpha", {
-        emoji: { id: "111", name: "alpha" },
-        count: 1,
-        me: true,
-      });
-      return undefined;
-    });
+    reactionCache.set("alpha", existingReaction);
+    const react = vi.fn();
     const fetch = vi.fn().mockImplementation(async () => ({
       id: "bases-message-1",
       reactions: {
@@ -2808,9 +2801,9 @@ describe("fwa checklist tracked messages", () => {
       }),
     ).resolves.toBe(true);
 
-    expect(staleReaction.remove).toHaveBeenCalledTimes(1);
-    expect(react).toHaveBeenCalledWith("<:alpha:111>");
-    expect(react).toHaveBeenCalledTimes(1);
+    expect(existingReaction.remove).not.toHaveBeenCalled();
+    expect(react).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
     expect(setCompletion).not.toHaveBeenCalled();
     expect(recordBasesChecklistChecked).not.toHaveBeenCalled();
     expect(edit).toHaveBeenCalled();

@@ -1189,13 +1189,6 @@ async function hydrateFwaMatchChecklistReactionCache(params: {
     const fetchedMessage = await params.message.fetch();
     const fetchedCache = fetchedMessage?.reactions?.cache as FwaMatchChecklistReactionCache | null;
     if (fetchedCache) {
-      const fetchedEntries = [...fetchedCache.values()];
-      if (fetchedEntries.length > 0) {
-        return fetchedCache;
-      }
-      console.error(
-        `[tracked-message] fwa checklist bases reaction hydration unavailable guild=${params.guildId} message=${params.messageId} reason=empty_after_fetch cache_size=${currentEntries.length}`,
-      );
       return fetchedCache;
     }
     console.error(
@@ -1312,11 +1305,15 @@ function emojiMatches(
   reaction: { emoji: { id: string | null; name: string | null } },
   target: { emojiId: string | null; emojiName: string | null },
 ): boolean {
-  if (reaction.emoji.id && target.emojiId && reaction.emoji.id === target.emojiId) return true;
-  return (
-    normalizeChecklistEmojiName(reaction.emoji.name) ===
-    normalizeChecklistEmojiName(target.emojiName)
-  );
+  const reactionEmojiId = String(reaction.emoji.id ?? "").trim();
+  const targetEmojiId = String(target.emojiId ?? "").trim();
+  if (reactionEmojiId || targetEmojiId) {
+    return Boolean(reactionEmojiId && targetEmojiId && reactionEmojiId === targetEmojiId);
+  }
+  const reactionEmojiName = normalizeChecklistEmojiName(reaction.emoji.name);
+  const targetEmojiName = normalizeChecklistEmojiName(target.emojiName);
+  if (!reactionEmojiName || !targetEmojiName) return false;
+  return reactionEmojiName === targetEmojiName;
 }
 
 /** Purpose: normalize checklist emoji names so Unicode reactions compare consistently across refreshes. */
@@ -3521,77 +3518,6 @@ export class TrackedMessageService {
         `[fwa_checklist_bases_refresh_state] checklistMessageId=${message.id} trackedReferenceId=${tracked.referenceId ?? "none"} syncIdentityUsed=${syncReferenceId ?? "none"} rowCount=${(options?.rows ?? metadata.rows).length}`,
       );
       const sourceRows = options?.rows ?? metadata.rows;
-      const previousRowsByTag = new Map(
-        metadata.rows.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
-      );
-      const transitionedRows = sourceRows.filter((row) => {
-        const previousRow = previousRowsByTag.get(normalizeChecklistClanTag(row.clanTag)) ?? null;
-        return (
-          previousRow?.basesStatus === "skipped" &&
-          row.basesStatus !== "skipped" &&
-          shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")
-        );
-      });
-      if (transitionedRows.length > 0) {
-        hydratedReactionCache = await hydrateFwaMatchChecklistReactionCache({
-          guildId: tracked.guildId,
-          messageId: message.id,
-          message,
-        });
-        if (typeof message.fetch !== "function" || typeof message.react !== "function") {
-          console.error(
-            `[tracked-message] fwa checklist bases transition recovery unavailable guild=${tracked.guildId} message=${message.id} reason=${typeof message.fetch !== "function" ? "fetch_unavailable" : "react_unavailable"} transitioned=${transitionedRows.map((row) => normalizeChecklistClanTag(row.clanTag)).join("|")}`,
-          );
-        } else {
-          for (const row of transitionedRows) {
-            const reaction = [...hydratedReactionCache.values()].find((candidate) =>
-              emojiMatches(candidate, {
-                emojiId: row.badgeEmojiId,
-                emojiName: row.badgeEmojiName,
-              }),
-            ) as (FwaMatchChecklistReactionCacheEntry & { remove?: () => Promise<unknown> }) | undefined;
-            if (reaction) {
-              if (typeof reaction.remove !== "function") {
-                console.error(
-                  `[tracked-message] fwa checklist bases transition cleanup unavailable guild=${tracked.guildId} message=${message.id} clan=${row.clanTag} emoji=${row.badgeEmojiInline} reason=remove_unavailable`,
-                );
-              } else {
-                try {
-                  await reaction.remove();
-                } catch (err) {
-                  console.error(
-                    `[tracked-message] fwa checklist bases transition cleanup failed guild=${tracked.guildId} message=${message.id} clan=${row.clanTag} emoji=${row.badgeEmojiInline} error=${formatError(err)}`,
-                  );
-                }
-              }
-            }
-            try {
-              await message.react(row.badgeEmojiInline);
-            } catch (err) {
-              console.error(
-                `[tracked-message] fwa checklist bases transition arm failed guild=${tracked.guildId} message=${message.id} clan=${row.clanTag} emoji=${row.badgeEmojiInline} error=${formatError(err)}`,
-              );
-            }
-          }
-          const refreshedMessage = await message.fetch().catch((err) => {
-            console.error(
-              `[tracked-message] fwa checklist bases transition refresh failed guild=${tracked.guildId} message=${message.id} error=${formatError(err)}`,
-            );
-            return null;
-          });
-          const refreshedReactionCache = refreshedMessage?.reactions?.cache ?? null;
-          if (refreshedReactionCache) {
-            hydratedReactionCache = refreshedReactionCache;
-          } else {
-            console.error(
-              `[tracked-message] fwa checklist bases transition refresh missing reaction cache guild=${tracked.guildId} message=${message.id}`,
-            );
-          }
-        }
-        if (!hydratedReactionCache) {
-          hydratedReactionCache = message.reactions.cache;
-        }
-      }
       if (!hydratedReactionCache) {
         const sourceRowsNeedReactionDiscovery = sourceRows.some((row) =>
           shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"),
