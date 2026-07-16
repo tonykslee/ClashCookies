@@ -5887,6 +5887,10 @@ export function setFwaMailPreviewPayloadForTest(
   fwaMailPreviewPayloads.set(normalizedKey, payload);
 }
 
+export function clearFwaMailPreviewPayloadsForTest(): void {
+  fwaMailPreviewPayloads.clear();
+}
+
 export function setFwaMailConfirmRendererForTest(
   renderer: typeof buildWarMailEmbedForTag | null,
 ): void {
@@ -10381,7 +10385,7 @@ async function handleFwaMailConfirmAction(
       interactionUserId: parsed.userId,
       error: params.error,
     });
-    await releaseFwaMailSendClaimForConfirm({
+    const releaseSucceeded = await releaseFwaMailSendClaimForConfirm({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
       warId: exactCurrentWarIdentity.warId,
@@ -10393,8 +10397,9 @@ async function handleFwaMailConfirmAction(
       channelId: channel.id,
     });
     await interaction.editReply({
-      content:
-        "Could not verify the active war due to a temporary database error. Please try Send Mail again.",
+      content: releaseSucceeded
+        ? "Could not verify the active war due to a temporary database error. Please try Send Mail again."
+        : "Could not verify the active war, and the send lock could not be released. Please contact an administrator.",
       embeds: [],
       components: [],
     });
