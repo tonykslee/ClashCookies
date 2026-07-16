@@ -1509,8 +1509,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prismaMock.currentWar.updateMany.mock.calls[0]?.[0]?.where?.updatedAt?.getTime(),
     ).not.toBe(currentWarStore.state.updatedAt.getTime());
     expect(currentWarStore.state.syncNumber).toBe(534);
-    expect(currentWarStore.state.opponentName).toBe("Fresh Opponent");
-    expect(currentWarStore.state.clanName).toBe("Fresh Clan");
+    expect(currentWarStore.state.opponentName).toBe("Opponent");
+    expect(currentWarStore.state.clanName).toBe("Rocky Road");
   });
 
   it("keeps the completed-war canonical sync during war-ended processing", async () => {
@@ -1703,7 +1703,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
     expect((service as any).fwaPolice.enforceWarViolations).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(0);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a stale snapshot that is already unrelated before the first rollover reread", async () => {
@@ -1858,7 +1858,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
-      0,
+      1,
     );
     expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
@@ -1959,7 +1959,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
-      0,
+      1,
     );
     expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();

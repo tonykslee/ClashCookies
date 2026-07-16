@@ -4562,40 +4562,54 @@ export class WarEventLogService {
     let nextInferredMatchType =
       resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
 
+    const currentSubscriptionWarId =
+      sub.warId !== null &&
+      sub.warId !== undefined &&
+      Number.isFinite(Number(sub.warId))
+        ? Math.trunc(Number(sub.warId))
+        : null;
     if (currentState !== "notInWar") {
-      const identityCompletion = await this.ensureCurrentWarIdentityCompletion({
-        guildId: sub.guildId,
-        clanTag: sub.clanTag,
-        warState: currentState,
-        warStartTime: nextWarStartTime,
-        opponentTag: nextOpponentTag || null,
-      });
-      if (
-        identityCompletion.state === "saved" ||
-        identityCompletion.state === "idempotent"
-      ) {
-        resolvedWarId = identityCompletion.warId;
-        if (identityCompletion.persistedRevisionAt) {
-          ownedCurrentWarRevisionAt = identityCompletion.persistedRevisionAt;
-        }
-      } else {
+      if (effectiveWarIdentityChanged) {
         resolvedWarId = await this.ensureCurrentWarId({
           sub,
           warStartTime: nextWarStartTime,
           currentState,
         });
+      } else if (currentSubscriptionWarId !== null && currentSubscriptionWarId > 0) {
+        resolvedWarId = await this.ensureCurrentWarId({
+          sub,
+          warStartTime: nextWarStartTime,
+          currentState,
+          preserveExistingWarId: true,
+        });
+      } else {
+        const identityCompletion = await this.ensureCurrentWarIdentityCompletion({
+          guildId: sub.guildId,
+          clanTag: sub.clanTag,
+          warState: currentState,
+          warStartTime: nextWarStartTime,
+          opponentTag: nextOpponentTag || null,
+        });
+        if (
+          (identityCompletion.state === "saved" ||
+            identityCompletion.state === "idempotent") &&
+          identityCompletion.warId !== null &&
+          identityCompletion.warId > 0 &&
+          identityCompletion.persistedRevisionAt !== null
+        ) {
+          resolvedWarId = identityCompletion.warId;
+          ownedCurrentWarRevisionAt = identityCompletion.persistedRevisionAt;
+        } else {
+          return false;
+        }
       }
     } else {
-      resolvedWarId = sub.warId ?? null;
+      resolvedWarId = currentSubscriptionWarId;
     }
     const resolvedWarIdText =
       resolvedWarId !== null && resolvedWarId !== undefined
         ? String(Math.trunc(Number(resolvedWarId)))
-        : currentState === "notInWar" &&
-            sub.warId !== null &&
-            sub.warId !== undefined
-          ? String(Math.trunc(Number(sub.warId)))
-          : null;
+        : null;
     const intendedActiveWarOpponentTag =
       nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
     const sameWarPointsSyncNumber = resolveExactSameWarPointsSyncNumber({
@@ -7000,6 +7014,7 @@ export class WarEventLogService {
       sub,
       warStartTime,
       currentState: state,
+      preserveExistingWarId: true,
     });
 
     await prisma.currentWar.update({
@@ -7237,6 +7252,7 @@ export class WarEventLogService {
       sub,
       warStartTime,
       currentState: "inWar",
+      preserveExistingWarId: true,
     });
     await prisma.currentWar.update({
       where: {
