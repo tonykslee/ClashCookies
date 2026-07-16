@@ -1190,6 +1190,122 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(currentWarStore.state.syncNumber).toBe(534);
   });
 
+  it("self-heals the incident row by persisting the war ID before recovering sync 534", async () => {
+    const incidentStartTime = new Date("2026-07-16T20:03:41.000Z");
+    const initialRevision = new Date("2026-07-16T03:16:54.876Z");
+    const incidentOpponentTag = "#2RU0J9QQJ";
+    const currentWarStore = createCurrentWarStore({
+      warId: null,
+      syncNumber: null,
+      syncNum: null,
+      state: "preparation",
+      prepStartTime: incidentStartTime,
+      startTime: incidentStartTime,
+      endTime: null,
+      opponentTag: incidentOpponentTag,
+      opponentName: "Confirmed Opponent",
+      clanName: "Rocky Road",
+      matchType: "FWA",
+      inferredMatchType: true,
+      fwaPoints: 120,
+      opponentFwaPoints: 120,
+      outcome: null,
+      warStartFwaPoints: null,
+      warEndFwaPoints: null,
+      clanStars: null,
+      opponentStars: null,
+      updatedAt: initialRevision,
+    });
+    prismaMock.$queryRaw
+      .mockResolvedValueOnce([
+        makeSubscriptionRow({
+          warId: null,
+          syncNumber: null,
+          syncNum: null,
+          state: "preparation",
+          prepStartTime: incidentStartTime,
+          startTime: incidentStartTime,
+          endTime: null,
+          opponentTag: incidentOpponentTag,
+          opponentName: "Confirmed Opponent",
+          clanName: "Rocky Road",
+          matchType: "FWA",
+          inferredMatchType: true,
+          fwaPoints: 120,
+          opponentFwaPoints: 120,
+          outcome: null,
+          warStartFwaPoints: null,
+          warEndFwaPoints: null,
+          clanStars: null,
+          opponentStars: null,
+          pointsConfirmedByClanMail: true,
+          pointsNeedsValidation: false,
+          pointsLastKnownMatchType: "FWA",
+          pointsLastKnownOutcome: null,
+          pointsLastKnownSyncNumber: 534,
+          pointsSyncNum: 534,
+          pointsWarId: null,
+          pointsWarStartTime: incidentStartTime,
+          pointsOpponentTag: incidentOpponentTag,
+          updatedAt: initialRevision,
+        }),
+      ])
+      .mockResolvedValueOnce([{ warId: 1000609n }]);
+
+    const service = makeService(
+      makeWarSnapshot({
+        state: "preparation",
+        startTime: incidentStartTime,
+        opponentTag: incidentOpponentTag,
+        opponentName: "Confirmed Opponent",
+      }),
+      currentWarStore,
+    );
+    const resolveActiveSyncNumber = makeResolveActiveSyncNumber(534);
+    const initialUpdatedAt = currentWarStore.state.updatedAt.getTime();
+
+    const processed = await (service as any).processSubscription(
+      "guild-1",
+      testClanTag,
+      {
+        previousSync: 533,
+        activeSync: 533,
+        resolveActiveSyncNumber,
+      },
+    );
+
+    expect(processed).toBe(false);
+    expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentWarCanonicalSyncNumber: null,
+        currentWarLegacySyncNumber: null,
+        sameWarPointsSyncNumber: 534,
+      }),
+    );
+
+    const updateCalls = prismaMock.currentWar.updateMany.mock.calls.map(
+      ([args]) => args as { data?: any; where?: any },
+    );
+    const warIdWriteIndex = updateCalls.findIndex(
+      (args) => Number(args.data?.warId) > 0 && args.data?.syncNumber === undefined,
+    );
+    const syncWriteIndex = updateCalls.findIndex(
+      (args) => Number(args.data?.syncNumber) === 534,
+    );
+
+    expect(warIdWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(syncWriteIndex).toBeGreaterThan(warIdWriteIndex);
+    expect(currentWarStore.state).toMatchObject({
+      warId: 1000609,
+      syncNumber: 534,
+      state: "preparation",
+      opponentTag: incidentOpponentTag,
+    });
+    expect(currentWarStore.state.updatedAt.getTime()).toBeGreaterThan(
+      initialUpdatedAt,
+    );
+  });
+
   it("retains the canonical sync number for the same physical war", async () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([makeSubscriptionRow()]);
     const service = makeService(
@@ -1393,8 +1509,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       prismaMock.currentWar.updateMany.mock.calls[0]?.[0]?.where?.updatedAt?.getTime(),
     ).not.toBe(currentWarStore.state.updatedAt.getTime());
     expect(currentWarStore.state.syncNumber).toBe(534);
-    expect(currentWarStore.state.opponentName).toBe("Opponent");
-    expect(currentWarStore.state.clanName).toBe("Rocky Road");
+    expect(currentWarStore.state.opponentName).toBe("Fresh Opponent");
+    expect(currentWarStore.state.clanName).toBe("Fresh Clan");
   });
 
   it("keeps the completed-war canonical sync during war-ended processing", async () => {
@@ -1587,7 +1703,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect((service as any).syncWarAttacksFromWarSnapshot).not.toHaveBeenCalled();
     expect((service as any).fwaPolice.enforceWarViolations).not.toHaveBeenCalled();
     expect((service as any).dispatchDetectedEvent).not.toHaveBeenCalled();
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(0);
   });
 
   it("rejects a stale snapshot that is already unrelated before the first rollover reread", async () => {
@@ -1742,7 +1858,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
-      1,
+      0,
     );
     expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
@@ -1843,7 +1959,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
 
     expect(resolveActiveSyncNumber).not.toHaveBeenCalled();
     expect(getCurrentWarUpdateManyCallsByKind("preliminary_rollover")).toHaveLength(
-      1,
+      0,
     );
     expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
     expect((service as any).currentSyncs.upsertPointsSync).not.toHaveBeenCalled();
