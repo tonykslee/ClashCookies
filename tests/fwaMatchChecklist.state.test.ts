@@ -25,7 +25,7 @@ vi.mock("../src/services/CoCService", () => ({
 const warMailLifecycleMock = vi.hoisted(() => ({
   resolveStatusForCurrentWar: vi.fn().mockResolvedValue({
     status: "not_posted",
-    mailStatusEmoji: "📭",
+    mailStatusEmoji: "ðŸ“­",
     debug: null,
   }),
 }));
@@ -39,10 +39,6 @@ vi.mock("../src/services/WarMailLifecycleService", () => ({
 }));
 
 import { trackedMessageService } from "../src/services/TrackedMessageService";
-import {
-  addFwaMatchChecklistReactionsForTest,
-  buildFwaMatchChecklistMessageContent,
-} from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchBasesMessageContent } from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../src/services/FwaMatchChecklistStateService";
 import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
@@ -153,11 +149,11 @@ function makeJuly15TrackedClansForPublicationSnapshot() {
   return [
     { tag: "#2YUYLJCGV", clanBadge: "<:Logo_RisingDawn:1363320268755435772>", name: "RISING DAWN", shortName: "RD" },
     { tag: "#LQQ99UV8", clanBadge: "<:Logo_ZeroGravity:1363320272035385524>", name: "ZERO GRAVITY", shortName: "ZG" },
-    { tag: "#R80L8VYG", clanBadge: "<:Logo_DarkEmpire:1363320285595435148>", name: "DARK EMPIRE™!", shortName: "DE" },
+    { tag: "#R80L8VYG", clanBadge: "<:Logo_DarkEmpire:1363320285595435148>", name: "DARK EMPIREâ„¢!", shortName: "DE" },
     { tag: "#82YLR9Q2", clanBadge: "<:Logo_SteelEmpire:1463680051261341799>", name: "Steel Empire 2", shortName: "SE" },
     { tag: "#29PCQGUV0", clanBadge: "<:Logo_TheWiseCowboys:1367885051622195230>", name: "TheWiseCowboys", shortName: "TWC" },
     { tag: "#2RYGLU2UY", clanBadge: "<:Logo_RockyRoad:1463679964334526495>", name: "Rocky Road", shortName: "RR" },
-    { tag: "#2RVV0L0VP", clanBadge: "<:Logo_Akatsuki:1464436468578517125>", name: '" ＡＫＡＴＳＵＫＩ "', shortName: "AK" },
+    { tag: "#2RVV0L0VP", clanBadge: "<:Logo_Akatsuki:1464436468578517125>", name: '" ï¼¡ï¼«ï¼¡ï¼´ï¼³ï¼µï¼«ï¼© "', shortName: "AK" },
     { tag: "#C0CU2Q82", clanBadge: "<:Logo_StrawHats:1496617661264695296>", name: "StrawHats", shortName: "SH" },
     { tag: "#2QVGPQP0U", clanBadge: "<:Logo_EternalBlaze:1496617820115435702>", name: "Eternal Blaze", shortName: "EB" },
   ] as const;
@@ -211,7 +207,7 @@ function makeJuly15CurrentWarsForPublicationSnapshot() {
       startTime: new Date("2026-07-16T20:08:41.000Z"),
       endTime: new Date("2026-07-17T20:08:41.000Z"),
       opponentTag: "#2PV0CC98V",
-      opponentName: "Téam Pokémon",
+      opponentName: "TÃ©am PokÃ©mon",
       matchType: "FWA",
       inferredMatchType: null,
       outcome: "WIN",
@@ -296,7 +292,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1363320268755435772",
       badgeEmojiName: "Logo_RisingDawn",
-      compactCopyLine: "📭 | 🟢 | RD vs `DARK DELUX` (`#2RU0J9QQJ`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | RD vs `DARK DELUX` (`#2RU0J9QQJ`)",
       badgeEmojiInline: "<:Logo_RisingDawn:1363320268755435772>",
     },
     {
@@ -304,7 +300,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1363320272035385524",
       badgeEmojiName: "Logo_ZeroGravity",
-      compactCopyLine: "📭 | 🔴 | ZG vs `DARK EMPIRE™!` (`#R80L8VYG`)",
+      compactCopyLine: "ðŸ“­ | ðŸ”´ | ZG vs `DARK EMPIREâ„¢!` (`#R80L8VYG`)",
       badgeEmojiInline: "<:Logo_ZeroGravity:1363320272035385524>",
     },
     {
@@ -312,7 +308,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1363320285595435148",
       badgeEmojiName: "Logo_DarkEmpire",
-      compactCopyLine: "📭 | 🟢 | DE vs `ZERO GRAVITY` (`#LQQ99UV8`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | DE vs `ZERO GRAVITY` (`#LQQ99UV8`)",
       badgeEmojiInline: "<:Logo_DarkEmpire:1363320285595435148>",
     },
     {
@@ -320,7 +316,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: "clan=#82YLR9Q2|war=1000627|opponent=#2PV0CC98V",
       badgeEmojiId: "1463680051261341799",
       badgeEmojiName: "Logo_SteelEmpire",
-      compactCopyLine: "📭 | 🟢 | SE vs `Téam Pokémon` (`#2PV0CC98V`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | SE vs `TÃ©am PokÃ©mon` (`#2PV0CC98V`)",
       badgeEmojiInline: "<:Logo_SteelEmpire:1463680051261341799>",
     },
     {
@@ -328,7 +324,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1367885051622195230",
       badgeEmojiName: "Logo_TheWiseCowboys",
-      compactCopyLine: "📭 | 🔴 | TWC vs `Tribal Chaos` (`#2JQ2JJGGG`)",
+      compactCopyLine: "ðŸ“­ | ðŸ”´ | TWC vs `Tribal Chaos` (`#2JQ2JJGGG`)",
       badgeEmojiInline: "<:Logo_TheWiseCowboys:1367885051622195230>",
     },
     {
@@ -336,7 +332,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1463679964334526495",
       badgeEmojiName: "Logo_RockyRoad",
-      compactCopyLine: "📭 | 🔴 | RR vs `RISE FWA` (`#2J02UUJ8U`)",
+      compactCopyLine: "ðŸ“­ | ðŸ”´ | RR vs `RISE FWA` (`#2J02UUJ8U`)",
       badgeEmojiInline: "<:Logo_RockyRoad:1463679964334526495>",
     },
     {
@@ -344,7 +340,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: "clan=#2RVV0L0VP|war=1000626|opponent=#2C90QQ0Q9",
       badgeEmojiId: "1464436468578517125",
       badgeEmojiName: "Logo_Akatsuki",
-      compactCopyLine: "📭 | 🟢 | AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)",
       badgeEmojiInline: "<:Logo_Akatsuki:1464436468578517125>",
     },
     {
@@ -352,7 +348,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1496617661264695296",
       badgeEmojiName: "Logo_StrawHats",
-      compactCopyLine: "📭 | 🟢 | SH vs `Farm X2` (`#99RULR9Q`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | SH vs `Farm X2` (`#99RULR9Q`)",
       badgeEmojiInline: "<:Logo_StrawHats:1496617661264695296>",
     },
     {
@@ -360,7 +356,7 @@ function makeJuly15PublishedMailRows() {
       contextKey: null,
       badgeEmojiId: "1496617820115435702",
       badgeEmojiName: "Logo_EternalBlaze",
-      compactCopyLine: "📭 | 🟢 | EB vs `outlander club` (`#9GP2YGQG`)",
+      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | EB vs `outlander club` (`#9GP2YGQG`)",
       badgeEmojiInline: "<:Logo_EternalBlaze:1496617820115435702>",
     },
   ] as const;
@@ -610,6 +606,60 @@ function makeJuly15IncidentGateBasesRows() {
   ] as const;
 }
 
+function makeJuly15TrackedBasesChecklistSnapshot(rows: readonly unknown[]) {
+  return {
+    id: "tracked-bases-july-15",
+    guildId: "guild-1",
+    channelId: "channel-1",
+    messageId: "bases-message-july-15",
+    featureType: "FWA_MATCH_CHECKLIST",
+    status: "ACTIVE",
+    referenceId: "1526856991119769693",
+    clanTag: null,
+    createdAt: new Date("2026-07-15T21:17:46.618Z"),
+    expiresAt: new Date("2026-07-15T22:00:00.000Z"),
+    metadata: {
+      kind: "bases_checklist",
+      createdByUserId: "user-1",
+      createdAtIso: "2026-07-15T21:17:46.618Z",
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=production",
+      referenceId: "1526856991119769693",
+      checkedClanTags: [],
+      rows,
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "bases-message-july-15",
+      clanTag: null,
+    },
+  } as any;
+}
+
+function makeJuly15InitialBasesReactionCache() {
+  return new Map([
+    [
+      "se",
+      {
+        emoji: { id: "1463680051261341799", name: "Logo_SteelEmpire" },
+        count: 1,
+      },
+    ],
+    [
+      "rr",
+      {
+        emoji: { id: "1463679964334526495", name: "Logo_RockyRoad" },
+        count: 1,
+      },
+    ],
+    [
+      "ak",
+      {
+        emoji: { id: "1464436468578517125", name: "Logo_Akatsuki" },
+        count: 1,
+      },
+    ],
+  ]);
+}
+
 const july15CurrentMailCheckedClanTags = [
   "#2RYGLU2UY",
   "#C0CU2Q82",
@@ -663,7 +713,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     ).mockResolvedValue(null as any);
     vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValue({
       status: "posted",
-      mailStatusEmoji: "📬",
+      mailStatusEmoji: "ðŸ“¬",
       debug: {
         currentWarId: null,
         trackedMailWarId: null,
@@ -1067,11 +1117,11 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.viewType).toBe("Bases");
     expect(state.rows).toHaveLength(2);
     expect(state.rows[0].compactCopyLine).toContain("A |");
-    expect(state.rows[0].compactCopyLine).toContain("⚠️ Bases checked - issues found");
+    expect(state.rows[0].compactCopyLine).toContain("\u{26A0}\u{FE0F} Bases checked - issues found");
     expect(state.rows[0].compactCopyLine).toContain("[base-swap post](");
     expect(state.rows[0].detailLines).toBeNull();
     expect(state.rows[1].compactCopyLine).toContain("Bravo |");
-    expect(state.rows[1].compactCopyLine).toContain("✅ Bases checked and all good");
+    expect(state.rows[1].compactCopyLine).toContain("\u{2705} Bases checked and all good");
     expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: "guild-1",
@@ -1140,8 +1190,8 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       viewType: "Bases",
     });
 
-    expect(state.rows[0].compactCopyLine).toContain("✅ Bases checked and all good");
-    expect(state.rows[0].compactCopyLine).not.toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).toContain("\u{2705} Bases checked and all good");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{274C} Bases not checked");
     expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).not.toHaveBeenCalled();
   });
 
@@ -1250,7 +1300,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     const content = buildFwaMatchBasesMessageContent({ rows: state.rows });
-    expect(content).toContain("❌ Bases not checked");
+    expect(content).toContain("\u{274C} Bases not checked");
     expect(content).not.toContain("[base-swap post](");
     expect(content).not.toContain("old-base-swap-message");
   });
@@ -1371,7 +1421,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.referenceId).toBe("sync-message-expired");
-    expect(state.rows[0].compactCopyLine).not.toContain("âŒ Bases not checked");
+    expect(state.rows[0].compactCopyLine).not.toContain("\u{274C} Bases not checked");
     expect(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: "guild-1",
@@ -1420,7 +1470,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0].compactCopyLine).toContain("A |");
-    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).toContain("\u{274C} Bases not checked");
     expect(state.rows[0].detailLines).toBeNull();
   });
 
@@ -1475,7 +1525,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0]).toMatchObject({
-      compactCopyLine: "Alpha | 🔘 | Skipped this sync 😴",
+      compactCopyLine: "Alpha | \u{1F518} | Skipped this sync \u{1F634}",
       basesStatus: "skipped",
       matchType: "UNKNOWN",
       warId: null,
@@ -1488,7 +1538,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(findCompletion).not.toHaveBeenCalled();
   });
 
-  it("separates the July 15 initial publication from the later refreshed Bases state", async () => {
+  it("tracks the July 15 Bases refresh path through listener and button refreshes", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue(
       makeJuly15TrackedClansForPublicationSnapshot() as any,
     );
@@ -1497,347 +1547,229 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     );
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
 
-    const publishedMailRows = makeJuly15PublishedMailRows();
     const initialBasesRows = makeJuly15IncidentGateBasesRows();
     const refreshedBasesRows = makeJuly15LatestRetainedRefreshedBasesRows();
-    const initialMailContent = buildFwaMatchChecklistMessageContent({
-      rows: publishedMailRows,
-      checkedClanTags: [],
+    const initialEligibleClanTags = initialBasesRows
+      .filter((row) => shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"))
+      .map((row) => row.clanTag);
+    const transitionedRows = refreshedBasesRows.filter((row) => {
+      const previousRow = initialBasesRows.find(
+        (candidate) => candidate.clanTag === row.clanTag,
+      );
+      return (
+        previousRow?.basesStatus === "skipped" &&
+        row.basesStatus !== "skipped" &&
+        shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")
+      );
     });
-    const currentMailContent = buildFwaMatchChecklistMessageContent({
-      rows: publishedMailRows,
-      checkedClanTags: july15CurrentMailCheckedClanTags,
-    });
-    const initialBasesContent = buildFwaMatchBasesMessageContent({
-      rows: initialBasesRows,
-    });
-    const refreshedBasesContent = buildFwaMatchBasesMessageContent({
-      rows: refreshedBasesRows,
-    });
 
-    expect(publishedMailRows).toHaveLength(9);
-    expect(publishedMailRows.map((row) => row.compactCopyLine)).toEqual([
-      "\u{1f4ed} | \u{1f7e2} | RD vs `DARK DELUX` (`#2RU0J9QQJ`)",
-      "\u{1f4ed} | \u{1f534} | ZG vs `DARK EMPIRE\u2122!` (`#R80L8VYG`)",
-      "\u{1f4ed} | \u{1f7e2} | DE vs `ZERO GRAVITY` (`#LQQ99UV8`)",
-      "\u{1f4ed} | \u{1f7e2} | SE vs `T\u00e9am Pok\u00e9mon` (`#2PV0CC98V`)",
-      "\u{1f4ed} | \u{1f534} | TWC vs `Tribal Chaos` (`#2JQ2JJGGG`)",
-      "\u{1f4ed} | \u{1f534} | RR vs `RISE FWA` (`#2J02UUJ8U`)",
-      "\u{1f4ed} | \u{1f7e2} | AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)",
-      "\u{1f4ed} | \u{1f7e2} | SH vs `Farm X2` (`#99RULR9Q`)",
-      "\u{1f4ed} | \u{1f7e2} | EB vs `outlander club` (`#9GP2YGQG`)",
-    ]);
-    expect(initialMailContent).toBe([
-      '# Clan Mail Checklist',
-      '',
-      "React with your clan's badge to indicate that the in-game mails have been sent.",
-      '',
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | RD vs `DARK DELUX` (`#2RU0J9QQJ`)",
-      "\u{1f4ed} | \u{1f534} | \u2610 | ZG vs `DARK EMPIRE\u2122!` (`#R80L8VYG`)",
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | DE vs `ZERO GRAVITY` (`#LQQ99UV8`)",
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | SE vs `T\u00e9am Pok\u00e9mon` (`#2PV0CC98V`)",
-      "\u{1f4ed} | \u{1f534} | \u2610 | TWC vs `Tribal Chaos` (`#2JQ2JJGGG`)",
-      "\u{1f4ed} | \u{1f534} | \u2610 | RR vs `RISE FWA` (`#2J02UUJ8U`)",
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)",
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | SH vs `Farm X2` (`#99RULR9Q`)",
-      "\u{1f4ed} | \u{1f7e2} | \u2610 | EB vs `outlander club` (`#9GP2YGQG`)",
-    ].join('\n'));
-    expect(currentMailContent).toContain('RD vs `DARK DELUX` (`#2RU0J9QQJ`)');
-    expect(currentMailContent).toContain('RR vs `RISE FWA` (`#2J02UUJ8U`)');
-    expect(currentMailContent).toContain('AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)');
-    expect(currentMailContent).toContain("\u{2705}");
-
-    expect(initialBasesRows).toHaveLength(9);
-    expect(initialBasesRows.map((row) => row.compactCopyLine)).toEqual([
-      "RD | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "ZG | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "DE | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "SE | \u{1f4d0} | \u274c Bases not checked",
-      "TWC | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "RR | \u{1f534} | \u274c Bases not checked",
-      "AK | \u{1f4d0} | \u274c Bases not checked",
-      "SH | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "EB | \u{1f4d0} | Skipped this sync \u{1f634}",
-    ]);
-    expect(initialBasesContent).toBe([
-      '# Clan Bases Checklist',
-      '',
-      "RD | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "ZG | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "DE | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "SE | \u{1f4d0} | \u274c Bases not checked",
-      "TWC | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "RR | \u{1f534} | \u274c Bases not checked",
-      "AK | \u{1f4d0} | \u274c Bases not checked",
-      "SH | \u{1f4d0} | Skipped this sync \u{1f634}",
-      "EB | \u{1f4d0} | Skipped this sync \u{1f634}",
-    ].join('\n'));
-    expect(initialBasesRows.filter((row) => shouldApplyFwaMatchChecklistBadgeReaction(row, 'Bases')).map((row) => row.clanTag)).toEqual([
-      '#82YLR9Q2',
-      '#2RYGLU2UY',
-      '#2RVV0L0VP',
-    ]);
-
-    expect(refreshedBasesRows).toHaveLength(9);
-    expect(refreshedBasesRows.map((row) => row.compactCopyLine)).toEqual([
-      "RD | \u{1f7e2} | \u2705 Bases checked and all good",
-      "ZG | \u{1f534} | \u274c Bases not checked",
-      "DE | \u{1f7e2} | \u274c Bases not checked",
-      "SE | \u{1f7e2} | \u274c Bases not checked",
-      "TWC | \u{1f534} | \u274c Bases not checked",
-      "RR | \u{1f534} | \u274c Bases not checked",
-      "AK | \u{1f7e2} | \u274c Bases not checked",
-      "SH | \u{1f7e2} | \u2705 Bases checked and all good",
-      "EB | \u{1f7e2} | \u2705 Bases checked and all good",
-    ]);
-    expect(refreshedBasesContent).toBe([
-      '# Clan Bases Checklist',
-      '',
-      "RD | \u{1f7e2} | \u2705 Bases checked and all good",
-      "ZG | \u{1f534} | \u274c Bases not checked",
-      "DE | \u{1f7e2} | \u274c Bases not checked",
-      "SE | \u{1f7e2} | \u274c Bases not checked",
-      "TWC | \u{1f534} | \u274c Bases not checked",
-      "RR | \u{1f534} | \u274c Bases not checked",
-      "AK | \u{1f7e2} | \u274c Bases not checked",
-      "SH | \u{1f7e2} | \u2705 Bases checked and all good",
-      "EB | \u{1f7e2} | \u2705 Bases checked and all good",
-    ].join('\n'));
-    expect(refreshedBasesContent).toContain("RD | \u{1f7e2} | \u2705 Bases checked and all good");
-    expect(refreshedBasesContent).toContain("SH | \u{1f7e2} | \u2705 Bases checked and all good");
-
-    const react = vi.fn().mockResolvedValue(undefined);
-    await addFwaMatchChecklistReactionsForTest(
-      {
-        id: 'bases-message',
-        react,
-      } as any,
-      initialBasesRows as any,
-      'Bases',
-    );
-    expect(react).toHaveBeenCalledTimes(3);
-    expect(react.mock.calls.map((call) => call[0])).toEqual([
-      '<:Logo_SteelEmpire:1463680051261341799>',
-      '<:Logo_RockyRoad:1463679964334526495>',
-      '<:Logo_Akatsuki:1464436468578517125>',
-    ]);
-  });
-
-  it("updates newly resolved Bases rows without reconciling missing badge reactions", async () => {
-    prismaMock.trackedClan.findMany.mockResolvedValue(
-      makeJuly15TrackedClansForPublicationSnapshot() as any,
-    );
-    prismaMock.currentWar.findMany.mockResolvedValue([
-      {
-        clanTag: "#2YUYLJCGV",
-        warId: 1000628,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:03:41.000Z"),
-        endTime: new Date("2026-07-17T20:03:41.000Z"),
-        opponentTag: "#2RU0J9QQJ",
-        opponentName: "DARK DELUX",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-      {
-        clanTag: "#LQQ99UV8",
-        warId: 1000629,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:00:41.000Z"),
-        endTime: new Date("2026-07-17T20:00:41.000Z"),
-        opponentTag: "#R80L8VYG",
-        opponentName: "DARK EMPIRE™!",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "LOSE",
-        state: "preparation",
-      },
-      {
-        clanTag: "#R80L8VYG",
-        warId: 1000630,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:00:41.000Z"),
-        endTime: new Date("2026-07-17T20:00:41.000Z"),
-        opponentTag: "#LQQ99UV8",
-        opponentName: "ZERO GRAVITY",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-      {
-        clanTag: "#82YLR9Q2",
-        warId: 1000627,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:08:41.000Z"),
-        endTime: new Date("2026-07-17T20:08:41.000Z"),
-        opponentTag: "#2PV0CC98V",
-        opponentName: "Téam Pokémon",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-      {
-        clanTag: "#29PCQGUV0",
-        warId: 1000631,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:00:51.000Z"),
-        endTime: new Date("2026-07-17T20:00:51.000Z"),
-        opponentTag: "#2JQ2JJGGG",
-        opponentName: "Tribal Chaos",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "LOSE",
-        state: "preparation",
-      },
-      {
-        clanTag: "#2RYGLU2UY",
-        warId: 1000632,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:00:41.000Z"),
-        endTime: new Date("2026-07-17T20:00:41.000Z"),
-        opponentTag: "#2J02UUJ8U",
-        opponentName: "RISE FWA",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "LOSE",
-        state: "preparation",
-      },
-      {
-        clanTag: "#2RVV0L0VP",
-        warId: 1000626,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:06:51.000Z"),
-        endTime: new Date("2026-07-17T20:06:51.000Z"),
-        opponentTag: "#2C90QQ0Q9",
-        opponentName: "REQ N LEAVE",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-      {
-        clanTag: "#C0CU2Q82",
-        warId: 1000633,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:01:51.000Z"),
-        endTime: new Date("2026-07-17T20:01:51.000Z"),
-        opponentTag: "#99RULR9Q",
-        opponentName: "Farm X2",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-      {
-        clanTag: "#2QVGPQP0U",
-        warId: 1000634,
-        prepStartTime: null,
-        startTime: new Date("2026-07-16T20:00:51.000Z"),
-        endTime: new Date("2026-07-17T20:00:51.000Z"),
-        opponentTag: "#9GP2YGQG",
-        opponentName: "outlander club",
-        matchType: "FWA",
-        inferredMatchType: null,
-        outcome: "WIN",
-        state: "preparation",
-      },
-    ] as any);
-    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
-    prismaMock.trackedMessage.findUnique.mockResolvedValue({
-      id: "tracked-bases-july-15",
-      guildId: "guild-1",
-      channelId: "channel-1",
-      messageId: "bases-message-july-15",
-      featureType: "FWA_MATCH_CHECKLIST",
-      status: "ACTIVE",
-      referenceId: "1526856991119769693",
-      clanTag: null,
-      createdAt: new Date("2026-07-15T21:17:46.618Z"),
-      expiresAt: new Date("2026-07-15T22:00:00.000Z"),
-      metadata: {
-        kind: "bases_checklist",
-        createdByUserId: "user-1",
-        createdAtIso: "2026-07-15T21:17:46.618Z",
-        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=production",
-        referenceId: "1526856991119769693",
-        checkedClanTags: [],
-        rows: makeJuly15LatestRetainedRefreshedBasesRows(),
-        guildId: "guild-1",
-        channelId: "channel-1",
-        messageId: "bases-message-july-15",
-        clanTag: null,
-      } as any,
-    } as any);
-
-    const initialBasesRows = makeJuly15IncidentGateBasesRows();
-    const refreshedBasesRows = makeJuly15LatestRetainedRefreshedBasesRows();
     expect(initialBasesRows.filter((row) => row.basesStatus === "skipped")).toHaveLength(6);
-    expect(
-      initialBasesRows
-        .filter((row) => shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases"))
-        .map((row) => row.clanTag),
-    ).toEqual(["#82YLR9Q2", "#2RYGLU2UY", "#2RVV0L0VP"]);
+    expect(initialEligibleClanTags).toEqual(["#82YLR9Q2", "#2RYGLU2UY", "#2RVV0L0VP"]);
+    expect(transitionedRows.map((row) => row.clanTag)).toEqual([
+      "#2YUYLJCGV",
+      "#LQQ99UV8",
+      "#R80L8VYG",
+      "#29PCQGUV0",
+      "#C0CU2Q82",
+      "#2QVGPQP0U",
+    ]);
 
+    let trackedMessageSnapshot = makeJuly15TrackedBasesChecklistSnapshot(initialBasesRows);
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => trackedMessageSnapshot);
+    prismaMock.trackedMessage.update.mockImplementation(async ({ data }: any) => {
+      trackedMessageSnapshot = {
+        ...trackedMessageSnapshot,
+        ...(data?.expiresAt ? { expiresAt: data.expiresAt } : {}),
+        ...(data?.status ? { status: data.status } : {}),
+        ...(data?.metadata ? { metadata: data.metadata } : {}),
+      } as any;
+      return trackedMessageSnapshot;
+    });
+
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    const buildStateSpy = vi
+      .spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild")
+      .mockResolvedValue({
+        rows: refreshedBasesRows,
+        scopeKey: trackedMessageSnapshot.metadata.scopeKey,
+        expiresAt: trackedMessageSnapshot.expiresAt,
+      } as any);
+    const setCompletionSpy = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue(true);
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
       null,
     );
-    vi.spyOn(
-      trackedMessageService,
-      "findLatestFwaMatchChecklistBasesCompletionForClan",
-    ).mockImplementation(async (params: any) => {
-      if (
-        ["#2YUYLJCGV", "#C0CU2Q82", "#2QVGPQP0U"].includes(String(params.clanTag ?? "").toUpperCase())
-      ) {
-        return {
-          id: `completion-${params.clanTag}`,
-          metadata: { checked: true },
-        } as any;
-      }
-      return null;
-    });
 
     const edit = vi.fn().mockResolvedValue(undefined);
     const react = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      reactions: {
+        cache: makeJuly15InitialBasesReactionCache(),
+      },
+    });
+    const checklistMessage = {
+      id: "bases-message-july-15",
+      react,
+      fetch,
+      reactions: {
+        cache: makeJuly15InitialBasesReactionCache(),
+      },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(checklistMessage, {
+        kind: "add",
+        reaction: {
+          emoji: {
+            id: "1463680051261341799",
+            name: "Logo_SteelEmpire",
+          },
+          count: 1,
+        },
+      } as any),
+    ).resolves.toBe(true);
+
+    expect(react).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+      buildFwaMatchBasesMessageContent({ rows: refreshedBasesRows }),
+    );
+    expect(setCompletionSpy).toHaveBeenCalledTimes(1);
+    expect(setCompletionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#82YLR9Q2",
+        checked: true,
+      }),
+    );
+    expect(trackedMessageSnapshot.metadata.rows.map((row: any) => row.compactCopyLine)).toEqual(
+      refreshedBasesRows.map((row) => row.compactCopyLine),
+    );
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "bases-message-july-15" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            rows: expect.arrayContaining(
+              refreshedBasesRows.map((row) =>
+                expect.objectContaining({
+                  clanTag: row.clanTag,
+                  compactCopyLine: row.compactCopyLine,
+                }),
+              ),
+            ),
+          }),
+        }),
+      }),
+    );
+
+    react.mockClear();
+    fetch.mockClear();
+    edit.mockClear();
+
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(
+        checklistMessage,
+        null,
         {
-          id: "bases-message-july-15",
-          react,
-          reactions: {
-            cache: new Map([
-              [
-                "se",
-                {
-                  emoji: { id: "1463680051261341799", name: "Logo_SteelEmpire" },
-                  count: 1,
-                },
-              ],
-              [
-                "rr",
-                {
-                  emoji: { id: "1463679964334526495", name: "Logo_RockyRoad" },
-                  count: 1,
-                },
-              ],
-              [
-                "ak",
-                {
-                  emoji: { id: "1464436468578517125", name: "Logo_Akatsuki" },
-                  count: 1,
-                },
-              ],
-            ]),
-          },
-          edit,
+          rows: trackedMessageSnapshot.metadata.rows,
+          scopeKey: trackedMessageSnapshot.metadata.scopeKey,
+          expiresAt: trackedMessageSnapshot.expiresAt,
         } as any,
       ),
     ).resolves.toBe(true);
 
     expect(react).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+      buildFwaMatchBasesMessageContent({ rows: refreshedBasesRows }),
+    );
+    expect(buildStateSpy).toHaveBeenCalledTimes(2);
+    expect(setCompletionSpy).toHaveBeenCalledTimes(1);
+    expect(trackedMessageSnapshot.metadata.rows.filter((row: any) => row.basesStatus === "skipped")).toHaveLength(0);
+  });
+
+  it("reconciles newly eligible Bases reactions on a direct button refresh from skipped metadata", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue(
+      makeJuly15TrackedClansForPublicationSnapshot() as any,
+    );
+    prismaMock.currentWar.findMany.mockResolvedValue(
+      makeJuly15CurrentWarsForPublicationSnapshot() as any,
+    );
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+
+    const initialBasesRows = makeJuly15IncidentGateBasesRows();
+    const refreshedBasesRows = makeJuly15LatestRetainedRefreshedBasesRows();
+    const transitionedRows = refreshedBasesRows.filter((row) => {
+      const previousRow = initialBasesRows.find(
+        (candidate) => candidate.clanTag === row.clanTag,
+      );
+      return (
+        previousRow?.basesStatus === "skipped" &&
+        row.basesStatus !== "skipped" &&
+        shouldApplyFwaMatchChecklistBadgeReaction(row, "Bases")
+      );
+    });
+
+    let trackedMessageSnapshot = makeJuly15TrackedBasesChecklistSnapshot(initialBasesRows);
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => trackedMessageSnapshot);
+    prismaMock.trackedMessage.update.mockImplementation(async ({ data }: any) => {
+      trackedMessageSnapshot = {
+        ...trackedMessageSnapshot,
+        ...(data?.expiresAt ? { expiresAt: data.expiresAt } : {}),
+        ...(data?.status ? { status: data.status } : {}),
+        ...(data?.metadata ? { metadata: data.metadata } : {}),
+      } as any;
+      return trackedMessageSnapshot;
+    });
+
+    const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
+    vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
+      rows: refreshedBasesRows,
+      scopeKey: trackedMessageSnapshot.metadata.scopeKey,
+      expiresAt: trackedMessageSnapshot.expiresAt,
+    } as any);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
+      null,
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const react = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockResolvedValue({
+      reactions: {
+        cache: makeJuly15InitialBasesReactionCache(),
+      },
+    });
+    const checklistMessage = {
+      id: "bases-message-july-15",
+      react,
+      fetch,
+      reactions: {
+        cache: makeJuly15InitialBasesReactionCache(),
+      },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(
+        checklistMessage,
+        null,
+        {
+          rows: refreshedBasesRows,
+          scopeKey: trackedMessageSnapshot.metadata.scopeKey,
+          expiresAt: trackedMessageSnapshot.expiresAt,
+        } as any,
+      ),
+    ).resolves.toBe(true);
+
+    expect(react).toHaveBeenCalledTimes(transitionedRows.length);
+    expect(react.mock.calls.map((call) => call[0])).toEqual(
+      transitionedRows.map((row) => row.badgeEmojiInline),
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(edit).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
       buildFwaMatchBasesMessageContent({ rows: refreshedBasesRows }),
@@ -1924,7 +1856,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows).toHaveLength(1);
-    expect(state.rows[0].compactCopyLine).toContain("⚠️ Bases checked - issues found");
+    expect(state.rows[0].compactCopyLine).toContain("\u{26A0}\u{FE0F} Bases checked - issues found");
     expect(state.rows[0].compactCopyLine).toContain("[base-swap post](");
     expect(state.rows[0].detailLines).toBeNull();
   });
@@ -1981,7 +1913,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows).toHaveLength(1);
-    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).toContain("\u{274C} Bases not checked");
     expect(state.rows[0].compactCopyLine).not.toContain("[base-swap post](");
     expect(state.rows[0].detailLines).toBeNull();
   });
@@ -2056,7 +1988,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows).toHaveLength(1);
-    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).toContain("\u{274C} Bases not checked");
     expect(state.rows[0].compactCopyLine).not.toContain("[base-swap post](");
     expect(state.rows[0].detailLines).toBeNull();
   });
@@ -2421,6 +2353,6 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       viewType: "Bases",
     });
 
-    expect(state.rows[0].compactCopyLine).toContain("❌ Bases not checked");
+    expect(state.rows[0].compactCopyLine).toContain("\u{274C} Bases not checked");
   });
 });
