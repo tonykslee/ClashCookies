@@ -23,15 +23,15 @@ For the initial publication, the same row array was used for all of the followin
 The user-captured initial Bases post was:
 
 ```text
-RD | ?? | Skipped this sync ??
-ZG | ?? | Skipped this sync ??
-DE | ?? | Skipped this sync ??
-SE | ?? | ? Bases not checked
-TWC | ?? | Skipped this sync ??
-RR | ?? | ? Bases not checked
-AK | ?? | ? Bases not checked
-SH | ?? | Skipped this sync ??
-EB | ?? | Skipped this sync ??
+RD | 🔘 | Skipped this sync 😴
+ZG | 🔘 | Skipped this sync 😴
+DE | 🔘 | Skipped this sync 😴
+SE | 🔘 | ❌ Bases not checked
+TWC | 🔘 | Skipped this sync 😴
+RR | 🔴 | ❌ Bases not checked
+AK | 🔘 | ❌ Bases not checked
+SH | 🔘 | Skipped this sync 😴
+EB | 🔘 | Skipped this sync 😴
 ```
 
 Exactly three clans were reaction-eligible in that initial state:
@@ -73,15 +73,15 @@ The current retained tracked-message rows are mutable state after one or more re
 The later retained Bases state for the same incident is:
 
 ```text
-RD | ?? | ? Bases checked and all good
-ZG | ?? | ? Bases not checked
-DE | ?? | ? Bases not checked
-SE | ?? | ? Bases not checked
-TWC | ?? | ? Bases not checked
-RR | ?? | ? Bases not checked
-AK | ?? | ? Bases not checked
-SH | ?? | ? Bases checked and all good
-EB | ?? | ? Bases checked and all good
+RD | 🟢 | ✅ Bases checked and all good
+ZG | 🔴 | ❌ Bases not checked
+DE | 🟢 | ❌ Bases not checked
+SE | 🟢 | ❌ Bases not checked
+TWC | 🔴 | ❌ Bases not checked
+RR | 🔴 | ❌ Bases not checked
+AK | 🟢 | ❌ Bases not checked
+SH | 🟢 | ✅ Bases checked and all good
+EB | 🟢 | ✅ Bases checked and all good
 ```
 
 That later state shows the content converging to the correct matches, but it does not imply the reaction set was reconciled.
@@ -97,7 +97,7 @@ That is direct confirmation of a real production defect:
 
 - `content/state refresh succeeds while reaction set remains stale`
 
-Retained logs support the listener-driven refresh sequence, but they do not prove the exact user-action ordering end to end. The logs show the relevant reaction and refresh markers on the affected checklist message, but they do not include a distinct button-specific marker that would distinguish a later refresh click from a reaction-triggered refresh with certainty.
+The code path and characterization tests strongly support the listener-driven transition-loss mechanism. The user-confirmed production state proves the checklist content eventually resolved while Discord still showed only three reactions. Retained evidence does not prove the exact production action ordering.
 
 ## What This Is Not
 
@@ -130,6 +130,6 @@ Recommended reconciliation behavior for A:
 
 The publication still happened after the readiness gate expired, so the timing regression remains part of the timeline. But the confirmed, separate production defect is the stale reaction set after content refresh.
 
-The retained logs are useful for reconstructing the listener-triggered refresh sequence, but they are not sufficient to prove the exact sequence of user actions around the button refresh.
+The diagnosis intentionally avoids claiming exact action ordering from retained evidence that is not reproduced in this document.
 
 This document intentionally stops at diagnosis and does not implement the fix.

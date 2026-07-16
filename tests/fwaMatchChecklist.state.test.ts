@@ -25,7 +25,7 @@ vi.mock("../src/services/CoCService", () => ({
 const warMailLifecycleMock = vi.hoisted(() => ({
   resolveStatusForCurrentWar: vi.fn().mockResolvedValue({
     status: "not_posted",
-    mailStatusEmoji: "ðŸ“­",
+    mailStatusEmoji: "\u{1F4ED}",
     debug: null,
   }),
 }));
@@ -149,11 +149,11 @@ function makeJuly15TrackedClansForPublicationSnapshot() {
   return [
     { tag: "#2YUYLJCGV", clanBadge: "<:Logo_RisingDawn:1363320268755435772>", name: "RISING DAWN", shortName: "RD" },
     { tag: "#LQQ99UV8", clanBadge: "<:Logo_ZeroGravity:1363320272035385524>", name: "ZERO GRAVITY", shortName: "ZG" },
-    { tag: "#R80L8VYG", clanBadge: "<:Logo_DarkEmpire:1363320285595435148>", name: "DARK EMPIREâ„¢!", shortName: "DE" },
+    { tag: "#R80L8VYG", clanBadge: "<:Logo_DarkEmpire:1363320285595435148>", name: "DARK EMPIRE\u2122!", shortName: "DE" },
     { tag: "#82YLR9Q2", clanBadge: "<:Logo_SteelEmpire:1463680051261341799>", name: "Steel Empire 2", shortName: "SE" },
     { tag: "#29PCQGUV0", clanBadge: "<:Logo_TheWiseCowboys:1367885051622195230>", name: "TheWiseCowboys", shortName: "TWC" },
     { tag: "#2RYGLU2UY", clanBadge: "<:Logo_RockyRoad:1463679964334526495>", name: "Rocky Road", shortName: "RR" },
-    { tag: "#2RVV0L0VP", clanBadge: "<:Logo_Akatsuki:1464436468578517125>", name: '" ï¼¡ï¼«ï¼¡ï¼´ï¼³ï¼µï¼«ï¼© "', shortName: "AK" },
+    { tag: "#2RVV0L0VP", clanBadge: "<:Logo_Akatsuki:1464436468578517125>", name: '" \uFF21\uFF2B\uFF21\uFF34\uFF33\uFF35\uFF2B\uFF29 "', shortName: "AK" },
     { tag: "#C0CU2Q82", clanBadge: "<:Logo_StrawHats:1496617661264695296>", name: "StrawHats", shortName: "SH" },
     { tag: "#2QVGPQP0U", clanBadge: "<:Logo_EternalBlaze:1496617820115435702>", name: "Eternal Blaze", shortName: "EB" },
   ] as const;
@@ -207,7 +207,7 @@ function makeJuly15CurrentWarsForPublicationSnapshot() {
       startTime: new Date("2026-07-16T20:08:41.000Z"),
       endTime: new Date("2026-07-17T20:08:41.000Z"),
       opponentTag: "#2PV0CC98V",
-      opponentName: "TÃ©am PokÃ©mon",
+      opponentName: "T\u00E9am Pok\u00E9mon",
       matchType: "FWA",
       inferredMatchType: null,
       outcome: "WIN",
@@ -281,83 +281,6 @@ function makeJuly15CurrentWarsForPublicationSnapshot() {
       inferredMatchType: null,
       outcome: null,
       state: "notInWar",
-    },
-  ] as const;
-}
-
-function makeJuly15PublishedMailRows() {
-  return [
-    {
-      clanTag: "#2YUYLJCGV",
-      contextKey: null,
-      badgeEmojiId: "1363320268755435772",
-      badgeEmojiName: "Logo_RisingDawn",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | RD vs `DARK DELUX` (`#2RU0J9QQJ`)",
-      badgeEmojiInline: "<:Logo_RisingDawn:1363320268755435772>",
-    },
-    {
-      clanTag: "#LQQ99UV8",
-      contextKey: null,
-      badgeEmojiId: "1363320272035385524",
-      badgeEmojiName: "Logo_ZeroGravity",
-      compactCopyLine: "ðŸ“­ | ðŸ”´ | ZG vs `DARK EMPIREâ„¢!` (`#R80L8VYG`)",
-      badgeEmojiInline: "<:Logo_ZeroGravity:1363320272035385524>",
-    },
-    {
-      clanTag: "#R80L8VYG",
-      contextKey: null,
-      badgeEmojiId: "1363320285595435148",
-      badgeEmojiName: "Logo_DarkEmpire",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | DE vs `ZERO GRAVITY` (`#LQQ99UV8`)",
-      badgeEmojiInline: "<:Logo_DarkEmpire:1363320285595435148>",
-    },
-    {
-      clanTag: "#82YLR9Q2",
-      contextKey: "clan=#82YLR9Q2|war=1000627|opponent=#2PV0CC98V",
-      badgeEmojiId: "1463680051261341799",
-      badgeEmojiName: "Logo_SteelEmpire",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | SE vs `TÃ©am PokÃ©mon` (`#2PV0CC98V`)",
-      badgeEmojiInline: "<:Logo_SteelEmpire:1463680051261341799>",
-    },
-    {
-      clanTag: "#29PCQGUV0",
-      contextKey: null,
-      badgeEmojiId: "1367885051622195230",
-      badgeEmojiName: "Logo_TheWiseCowboys",
-      compactCopyLine: "ðŸ“­ | ðŸ”´ | TWC vs `Tribal Chaos` (`#2JQ2JJGGG`)",
-      badgeEmojiInline: "<:Logo_TheWiseCowboys:1367885051622195230>",
-    },
-    {
-      clanTag: "#2RYGLU2UY",
-      contextKey: null,
-      badgeEmojiId: "1463679964334526495",
-      badgeEmojiName: "Logo_RockyRoad",
-      compactCopyLine: "ðŸ“­ | ðŸ”´ | RR vs `RISE FWA` (`#2J02UUJ8U`)",
-      badgeEmojiInline: "<:Logo_RockyRoad:1463679964334526495>",
-    },
-    {
-      clanTag: "#2RVV0L0VP",
-      contextKey: "clan=#2RVV0L0VP|war=1000626|opponent=#2C90QQ0Q9",
-      badgeEmojiId: "1464436468578517125",
-      badgeEmojiName: "Logo_Akatsuki",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | AK vs `REQ N LEAVE` (`#2C90QQ0Q9`)",
-      badgeEmojiInline: "<:Logo_Akatsuki:1464436468578517125>",
-    },
-    {
-      clanTag: "#C0CU2Q82",
-      contextKey: null,
-      badgeEmojiId: "1496617661264695296",
-      badgeEmojiName: "Logo_StrawHats",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | SH vs `Farm X2` (`#99RULR9Q`)",
-      badgeEmojiInline: "<:Logo_StrawHats:1496617661264695296>",
-    },
-    {
-      clanTag: "#2QVGPQP0U",
-      contextKey: null,
-      badgeEmojiId: "1496617820115435702",
-      badgeEmojiName: "Logo_EternalBlaze",
-      compactCopyLine: "ðŸ“­ | ðŸŸ¢ | EB vs `outlander club` (`#9GP2YGQG`)",
-      badgeEmojiInline: "<:Logo_EternalBlaze:1496617820115435702>",
     },
   ] as const;
 }
@@ -660,14 +583,6 @@ function makeJuly15InitialBasesReactionCache() {
   ]);
 }
 
-const july15CurrentMailCheckedClanTags = [
-  "#2RYGLU2UY",
-  "#C0CU2Q82",
-  "#82YLR9Q2",
-  "#2QVGPQP0U",
-  "#2YUYLJCGV",
-] as const;
-
 describe("FwaMatchChecklistStateService checklist expiry", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -713,7 +628,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     ).mockResolvedValue(null as any);
     vi.spyOn(WarMailLifecycleService.prototype, "resolveStatusForCurrentWar").mockResolvedValue({
       status: "posted",
-      mailStatusEmoji: "ðŸ“¬",
+      mailStatusEmoji: "\u{1F4EC}",
       debug: {
         currentWarId: null,
         trackedMailWarId: null,

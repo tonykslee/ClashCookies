@@ -396,7 +396,7 @@ describe("FwaMatchChecklistAutoPostService", () => {
       rows: [
         {
           clanTag: "#PYPY",
-          compactCopyLine: "Alpha | âš« | âŒ Bases not checked",
+          compactCopyLine: "Alpha | \u{26AB} | \u{274C} Bases not checked",
           badgeEmojiId: "111",
           badgeEmojiName: "rr",
           badgeEmojiInline: "<:rr:111>",
