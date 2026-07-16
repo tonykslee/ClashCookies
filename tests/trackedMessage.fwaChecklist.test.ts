@@ -1916,7 +1916,8 @@ describe("fwa checklist tracked messages", () => {
             "rr",
             {
               emoji: { id: "111", name: "rr" },
-              count: 2,
+              count: 1,
+              me: false,
             },
           ],
           [
@@ -1924,6 +1925,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "222", name: "twc" },
               count: 1,
+              me: true,
             },
           ],
         ]),
@@ -1980,7 +1982,8 @@ describe("fwa checklist tracked messages", () => {
             "rr",
             {
               emoji: { id: "111", name: "rr" },
-              count: 2,
+              count: 1,
+              me: false,
             },
           ],
         ]),
@@ -2030,7 +2033,8 @@ describe("fwa checklist tracked messages", () => {
             "rr",
             {
               emoji: { id: "111", name: "rr" },
-              count: 2,
+              count: 1,
+              me: false,
             },
           ],
           [
@@ -2084,6 +2088,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "111", name: "rr" },
               count: 1,
+              me: false,
             },
           ],
           [
@@ -2091,6 +2096,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "222", name: "twc" },
               count: 2,
+              me: true,
             },
           ],
         ]),
@@ -2157,6 +2163,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "111", name: "rr" },
               count: 1,
+              me: true,
             },
           ],
           [
@@ -2164,6 +2171,7 @@ describe("fwa checklist tracked messages", () => {
             {
               emoji: { id: "222", name: "twc" },
               count: 2,
+              me: true,
             },
           ],
         ]),
@@ -2178,7 +2186,7 @@ describe("fwa checklist tracked messages", () => {
           emoji: { id: "111", name: "rr" },
           count: 1,
         },
-      }),
+      } as any),
     ).resolves.toBe(true);
 
     const payload = edit.mock.calls[0]?.[0] as any;
@@ -2199,6 +2207,99 @@ describe("fwa checklist tracked messages", () => {
       }),
     );
     expect(recordMailChecked).not.toHaveBeenCalled();
+  });
+
+  it("retains another user on Mail remove when the authoritative reaction still has non-bot users", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(
+      makeTrackedChecklistRowWithState(["RR"]),
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 2,
+              me: true,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+        kind: "remove",
+        reaction: {
+          emoji: { id: "111", name: "rr" },
+          count: 2,
+        },
+      } as any),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["RR"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("retains a persisted Mail checked tag when a remove refresh cannot hydrate the authoritative reaction", async () => {
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(
+      makeTrackedChecklistRowWithState(["RR"]),
+    );
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn().mockRejectedValueOnce(new Error("hydrate failed"));
+    const message = {
+      id: "checklist-message-1",
+      partial: true,
+      fetch,
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            {
+              emoji: { id: "111", name: "rr" },
+              count: 1,
+            },
+          ],
+        ]),
+      },
+      edit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, {
+        kind: "remove",
+        reaction: {
+          emoji: { id: "111", name: "rr" },
+          count: 1,
+        },
+      } as any),
+    ).resolves.toBe(true);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(prismaMock.trackedMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { messageId: "checklist-message-1" },
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkedClanTags: ["RR"],
+          }),
+        }),
+      }),
+    );
   });
 
   it("keeps persisted checked clans when a refresh sees only bot-seeded reactions", async () => {

@@ -341,6 +341,14 @@ describe("fwa checklist badge reaction reconciliation", () => {
         badgeEmojiName: "alpha",
         contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
       }),
+      makeBasesRow({
+        clanTag: "#TWC",
+        compactCopyLine: "Bravo | âš« | âŒ Bases not checked",
+        badgeEmojiInline: "<:bravo:222>",
+        badgeEmojiId: "222",
+        badgeEmojiName: "bravo",
+        contextKey: "clan=#TWC|war=1002|opponent=OPP2",
+      }),
     ];
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
     vi.spyOn(stateServiceModule, "buildFwaMatchChecklistRenderStateForGuild").mockResolvedValue({
@@ -352,7 +360,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const { message, fetch, react, edit } = makeRefreshMessage({
       id: "bases-message-1",
-      reactionEntries: [],
+      reactionEntries: [
+        {
+          emojiInline: "<:alpha:111>",
+          count: 1,
+          me: true,
+        },
+      ],
     });
 
     await expect(
@@ -367,7 +381,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledTimes(1);
-    expect(react).toHaveBeenCalledWith("<:alpha:111>");
+    expect(react).toHaveBeenCalledWith("<:bravo:222>");
     expect(edit).toHaveBeenCalledTimes(1);
     expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
       buildFwaMatchBasesMessageContent({ rows: finalRows as any }),

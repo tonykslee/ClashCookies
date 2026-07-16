@@ -1676,8 +1676,10 @@ async function reconcileChecklistBadgeReactions(params: {
   source: FwaMatchChecklistReconcileSource;
   viewType: "Mail" | "Bases";
   reactionObservation: FwaChecklistReactionObservation;
+  blockedReactionKeys?: ReadonlySet<string>;
 }): Promise<void> {
   const targets: FwaMatchChecklistReconcileTarget[] = [];
+  const deferredTargets = new Set<string>();
   let failedCount = 0;
   for (const row of params.rows) {
     if (!shouldApplyFwaMatchChecklistBadgeReaction(row, params.viewType)) continue;
@@ -1687,6 +1689,14 @@ async function reconcileChecklistBadgeReactions(params: {
       console.warn(
         `[fwa-checklist] event=reaction_reconcile_failed guild=${params.guildId} message=${params.messageId} badge=${normalizeChecklistClanTag(row.clanTag)} emoji_type=invalid failure=invalid_emoji_config`,
       );
+      continue;
+    }
+    const targetKey = buildFwaMatchChecklistReactionBaselineKey({
+      contextKey: String(row.contextKey ?? "").trim(),
+      reactionKey: target.reactionKey,
+    });
+    if (params.blockedReactionKeys?.has(targetKey)) {
+      deferredTargets.add(targetKey);
       continue;
     }
     targets.push(target);
@@ -1745,7 +1755,7 @@ async function reconcileChecklistBadgeReactions(params: {
   }
 
   console.debug(
-    `[fwa-checklist] event=reaction_reconcile guild=${params.guildId} message=${params.messageId} expected=${uniqueTargets.length} existing=${existingTargets.length} added=${addedCount} failed=${failedCount} source=${params.source}`,
+    `[fwa-checklist] event=reaction_reconcile guild=${params.guildId} message=${params.messageId} expected=${uniqueTargets.length} existing=${existingTargets.length} added=${addedCount} failed=${failedCount} deferred=${deferredTargets.size} source=${params.source}`,
   );
 }
 
@@ -4046,6 +4056,16 @@ export class TrackedMessageService {
           existingBaselines: metadata.basesReactionBaselines ?? [],
         });
       }
+      const blockedReactionKeys = new Set(
+        finalReactionBaselines
+          .filter(isFwaMatchChecklistReactionBaselinePending)
+          .map((baseline) =>
+            buildFwaMatchChecklistReactionBaselineKey({
+              contextKey: baseline.contextKey,
+              reactionKey: baseline.reactionKey,
+            }),
+          ),
+      );
       const content = checklistService.buildFwaMatchBasesMessageContent({
         rows: effectiveRows,
       });
@@ -4085,6 +4105,7 @@ export class TrackedMessageService {
         source: reconcileSource,
         viewType: "Bases",
         reactionObservation,
+        blockedReactionKeys,
       });
       return true;
     }
@@ -4158,18 +4179,23 @@ export class TrackedMessageService {
     }
     for (const row of effectiveRows) {
       const reaction = findFwaMatchChecklistReactionEntry(reactionCacheForObservation, row);
-      if (!reaction) continue;
-      if ((reaction.count ?? 0) > 1) {
-        reactedTags.add(normalizeChecklistClanTag(row.clanTag));
+      const rowTag = normalizeChecklistClanTag(row.clanTag);
+      if (!reaction) {
+        if (reactionObservation.fetchSucceeded === true) {
+          reactedTags.delete(rowTag);
+        }
+        continue;
+      }
+      if (reaction.me === undefined) continue;
+      const userCount = getFwaMatchChecklistReactionUserCount(reaction);
+      if (userCount > 0) {
+        reactedTags.add(rowTag);
+      } else {
+        reactedTags.delete(rowTag);
       }
     }
-    if (change && changedRowTag) {
-      const changeCount = Math.trunc(Number(change.reaction.count ?? 0));
-      if (change.kind === "add") {
-        reactedTags.add(changedRowTag);
-      } else if (change.kind === "remove" && changeCount <= 1) {
-        reactedTags.delete(changedRowTag);
-      }
+    if (change && changedRowTag && change.kind === "add") {
+      reactedTags.add(changedRowTag);
     }
 
     const content = buildFwaMatchChecklistMessageContent({
