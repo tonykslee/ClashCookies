@@ -426,6 +426,7 @@ type FwaBaseSwapSplitPostPayload = {
   swapReminder: boolean;
   createdAtIso: string;
   syncMessageId?: string | null;
+  warId?: string | number | null;
   warStartTime?: Date | null;
   opponentTag?: string | null;
   splitContents: [string, string];
@@ -652,6 +653,9 @@ export async function handleFwaBaseSwapSplitPostButton(
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
             syncMessageId,
+            warId: payload.warId ?? null,
+            warStartTimeIso: payload.warStartTime?.toISOString() ?? null,
+            opponentTag: payload.opponentTag ?? null,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -671,6 +675,9 @@ export async function handleFwaBaseSwapSplitPostButton(
             createdByUserId: payload.userId,
             createdAtIso: payload.createdAtIso,
             syncMessageId,
+            warId: payload.warId ?? null,
+            warStartTimeIso: payload.warStartTime?.toISOString() ?? null,
+            opponentTag: payload.opponentTag ?? null,
             entries: payload.entries,
             layoutLinks: payload.layoutLinks,
             phaseTimingLine: payload.phaseTimingLine,
@@ -16669,8 +16676,9 @@ export const Fwa: Command = {
           swapReminder: effectiveSwapReminder,
           createdAtIso,
           syncMessageId,
+          warId: resolvedRosterResult.roster.currentWarIdentity?.warId ?? null,
           warStartTime: resolvedRosterResult.roster.currentWarIdentity?.startTime ?? null,
-          opponentTag: null,
+          opponentTag: resolvedRosterResult.roster.currentWarIdentity?.opponentTag ?? null,
           splitContents: renderPlan.splitContents,
         });
 
@@ -16735,6 +16743,11 @@ export const Fwa: Command = {
               createdByUserId: interaction.user.id,
               createdAtIso,
               syncMessageId,
+              warId: resolvedRosterResult.roster.currentWarIdentity?.warId ?? null,
+              warStartTimeIso:
+                resolvedRosterResult.roster.currentWarIdentity?.startTime?.toISOString() ?? null,
+              opponentTag:
+                resolvedRosterResult.roster.currentWarIdentity?.opponentTag ?? null,
               entries,
               layoutLinks,
               phaseTimingLine: baseSwapPhaseTimingLine,

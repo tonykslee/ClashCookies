@@ -32,6 +32,9 @@ export type FwaBaseSwapTrackedMetadata = {
   createdByUserId: string;
   createdAtIso: string;
   syncMessageId?: string | null;
+  warId?: string | number | null;
+  warStartTimeIso?: string | null;
+  opponentTag?: string | null;
   clanRoleId?: string | null;
   pingRoleId?: string | null;
   swapReminder: boolean;
@@ -54,6 +57,14 @@ export type FwaBaseSwapTrackedMetadata = {
     townhall: number;
     layoutLink: string;
   }>;
+};
+
+export type FwaBaseSwapCurrentWarIdentity = {
+  warId?: string | number | null;
+  prepStartTime?: Date | null;
+  startTime?: Date | null;
+  endTime?: Date | null;
+  opponentTag?: string | null;
 };
 
 export type FwaBaseSwapReminderCandidate = {
@@ -468,6 +479,49 @@ function normalizeDateTimeIso(input: Date | null | undefined): string | null {
 function normalizeDateMs(input: Date | null | undefined): number | null {
   if (!(input instanceof Date)) return null;
   return Number.isFinite(input.getTime()) ? input.getTime() : null;
+}
+
+function isCurrentWarOwnedUnscopedBaseSwap(input: {
+  rowCreatedAt: Date;
+  metadata: FwaBaseSwapTrackedMetadata;
+  currentWar?: FwaBaseSwapCurrentWarIdentity | null;
+  now: Date;
+}): { owned: boolean; reason: "current_war_identity" | "legacy_time_window" | "previous_war" | "no_safe_current_war_candidate" } {
+  const currentWar = input.currentWar ?? null;
+  if (!currentWar) return { owned: false, reason: "no_safe_current_war_candidate" };
+  const metadataWarId = normalizeWarIdText(input.metadata.warId ?? null);
+  const currentWarId = normalizeWarIdText(currentWar.warId ?? null);
+  const metadataStartMs = input.metadata.warStartTimeIso
+    ? Date.parse(input.metadata.warStartTimeIso)
+    : null;
+  const currentStartMs = normalizeDateMs(currentWar.startTime ?? null);
+  const metadataOpponent = normalizeChecklistClanTag(input.metadata.opponentTag ?? "");
+  const currentOpponent = normalizeChecklistClanTag(currentWar.opponentTag ?? "");
+  const hasPersistedIdentity = Boolean(metadataWarId || Number.isFinite(metadataStartMs));
+
+  if (hasPersistedIdentity) {
+    if (metadataWarId && (!currentWarId || metadataWarId !== currentWarId)) {
+      return { owned: false, reason: "previous_war" };
+    }
+    if (Number.isFinite(metadataStartMs) && (currentStartMs === null || metadataStartMs !== currentStartMs)) {
+      return { owned: false, reason: "previous_war" };
+    }
+    if (metadataOpponent && (!currentOpponent || metadataOpponent !== currentOpponent)) {
+      return { owned: false, reason: "previous_war" };
+    }
+    return { owned: true, reason: "current_war_identity" };
+  }
+
+  const createdAtMs = normalizeDateMs(input.rowCreatedAt);
+  const prepStartMs = normalizeDateMs(currentWar.prepStartTime ?? null);
+  const endMs = normalizeDateMs(currentWar.endTime ?? null);
+  if (createdAtMs === null || prepStartMs === null) {
+    return { owned: false, reason: "no_safe_current_war_candidate" };
+  }
+  if (createdAtMs < prepStartMs || createdAtMs > input.now.getTime() || (endMs !== null && createdAtMs >= endMs)) {
+    return { owned: false, reason: "previous_war" };
+  }
+  return { owned: true, reason: "legacy_time_window" };
 }
 
 async function resolveChecklistWarStartTimeFromCurrentWar(input: {
@@ -887,6 +941,12 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     value.swapReminder === true ||
     String(value.swapReminder ?? "").trim().toLowerCase() === "true";
   const syncMessageId = normalizeTrackedMessageId(value.syncMessageId as string | null | undefined);
+  const warId = normalizeWarIdText(value.warId as string | number | null | undefined);
+  const warStartTimeIsoRaw = String(value.warStartTimeIso ?? "").trim();
+  const warStartTimeIso = warStartTimeIsoRaw && Number.isFinite(Date.parse(warStartTimeIsoRaw))
+    ? new Date(warStartTimeIsoRaw).toISOString()
+    : null;
+  const opponentTag = normalizeChecklistClanTag(String(value.opponentTag ?? "")) || null;
   const clanRoleId = String(value.clanRoleId ?? "").trim() || null;
   const pingRoleId = String(value.pingRoleId ?? "").trim() || null;
   const entries = value.entries
@@ -954,6 +1014,9 @@ export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMeta
     createdByUserId,
     createdAtIso,
     syncMessageId,
+    ...(Object.prototype.hasOwnProperty.call(value, "warId") ? { warId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(value, "warStartTimeIso") ? { warStartTimeIso } : {}),
+    ...(Object.prototype.hasOwnProperty.call(value, "opponentTag") ? { opponentTag } : {}),
     clanRoleId,
     pingRoleId,
     renderVariant,
@@ -1874,12 +1937,13 @@ export class TrackedMessageService {
     });
   }
 
-  /** Purpose: resolve the latest current-scoped FWA base-swap tracked message for a clan. */
+  /** Purpose: resolve the latest sync-scoped or current-war-safe FWA base-swap tracked message for a clan. */
   async findLatestActiveFwaBaseSwapTrackedMessageForClan(params: {
     guildId: string;
     clanTag: string;
     syncMessageId?: string | null;
     clanKind?: "FWA" | "CWL";
+    currentWar?: FwaBaseSwapCurrentWarIdentity | null;
   }): Promise<FwaBaseSwapTrackedMessageSnapshot | null> {
     const guildId = String(params.guildId ?? "").trim();
     const normalizedClanTag = normalizeChecklistClanTag(String(params.clanTag ?? ""));
@@ -1959,11 +2023,22 @@ export class TrackedMessageService {
         }
         continue;
       }
-      if (!rowSyncIdentity && row.status === TRACKED_MESSAGE_STATUS.ACTIVE) {
+      if (!rowSyncIdentity) {
+        const ownership = isCurrentWarOwnedUnscopedBaseSwap({
+          rowCreatedAt: row.createdAt,
+          metadata,
+          currentWar: params.currentWar,
+          now,
+        });
+        if (ownership.owned) {
+          console.debug(
+            `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} selection=matched_current_war_unscoped reason=${ownership.reason} status=${row.status} messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
+          );
+          return snapshot;
+        }
         console.debug(
-          `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} selection=matched_unscoped messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
+          `[tracked-message] fwa_base_swap_lookup guild=${guildId} clan=${normalizedClanTag} selection=${ownership.reason === "no_safe_current_war_candidate" ? "no_safe_current_war_candidate" : "rejected_previous_war_unscoped"} status=${row.status} messageId=${row.messageId} createdAt=${row.createdAt.toISOString()}`,
         );
-        return snapshot;
       }
     }
     if (syncIdentity) {
@@ -3839,10 +3914,39 @@ export class TrackedMessageService {
       ): Promise<boolean> => {
         const warStartTime = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
         const hasWarIdentity = Boolean(row.warId || row.opponentTag || warStartTime);
+        const currentWar = syncReferenceId
+          ? null
+          : await prisma.currentWar.findFirst({
+              where: {
+                guildId: tracked.guildId,
+                OR: [
+                  { clanTag: row.clanTag },
+                  { clanTag: row.clanTag.replace(/^#/, "") },
+                  { clanTag: `#${row.clanTag.replace(/^#/, "")}` },
+                ],
+              },
+              orderBy: [{ updatedAt: "desc" }],
+              select: {
+                warId: true,
+                opponentTag: true,
+                prepStartTime: true,
+                startTime: true,
+                endTime: true,
+              },
+            }).catch(() => null);
         const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
           guildId: tracked.guildId,
           clanTag: row.clanTag,
           syncMessageId: syncReferenceId,
+          currentWar: currentWar
+            ? {
+                warId: currentWar.warId,
+                opponentTag: currentWar.opponentTag,
+                prepStartTime: currentWar.prepStartTime,
+                startTime: currentWar.startTime,
+                endTime: currentWar.endTime,
+              }
+            : null,
         }).catch(() => null);
         if (checked && activeBaseSwap) {
           const issueSummary = buildFwaBaseSwapIssueSummary(

@@ -33,6 +33,8 @@ export type BaseSwapRosterResolution = {
   rosterMembers: BaseSwapRosterMember[];
   phaseTiming: BaseSwapPhaseTiming | null;
   currentWarIdentity: {
+    warId: string | number | null;
+    opponentTag: string | null;
     state: string | null;
     prepStartTime: Date | null;
     startTime: Date | null;
@@ -227,6 +229,8 @@ async function loadFwaBaseSwapRoster(input: {
     },
     orderBy: [{ updatedAt: "desc" }],
     select: {
+      warId: true,
+      opponentTag: true,
       state: true,
       prepStartTime: true,
       startTime: true,
@@ -272,6 +276,8 @@ async function loadFwaBaseSwapRoster(input: {
       rosterMembers,
       currentWarIdentity: currentWarRow
         ? {
+            warId: currentWarRow.warId ?? null,
+            opponentTag: currentWarRow.opponentTag ?? null,
             state: String(currentWarRow.state ?? "").trim() || null,
             prepStartTime: currentWarRow.prepStartTime ?? null,
             startTime: currentWarRow.startTime ?? null,
