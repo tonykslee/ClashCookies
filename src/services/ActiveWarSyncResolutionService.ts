@@ -59,6 +59,7 @@ export type ActiveWarSyncPersistenceState =
 export type ActiveWarSyncPollCycle = {
   activeSyncNumber: number | null;
   recordActiveSyncNumber: (syncNumber: number) => void;
+  clearActiveSyncNumber: () => void;
 };
 
 export type ResolveOrAllocateActiveWarSyncNumberInput = {
@@ -587,14 +588,11 @@ export class ActiveWarSyncResolutionService {
         });
       const usable =
         persistence.state === "saved" || persistence.state === "idempotent";
-      const canRecordPollCycleSync =
-        input.pollCycle &&
-        !activeCycleDiscovery.conflict &&
-        (input.pollCycle.activeSyncNumber === null ||
-          input.pollCycle.activeSyncNumber === currentWarCanonicalSyncNumber ||
-          input.pollCycle.activeSyncNumber === sameWarPointsSyncNumber);
-      if (usable && canRecordPollCycleSync) {
-        input.pollCycle?.recordActiveSyncNumber(sameWarPointsSyncNumber);
+      if (usable) {
+        await this.reconcilePollCycleAfterExactEvidence({
+          pollCycle: input.pollCycle,
+          resolvedSyncNumber: sameWarPointsSyncNumber,
+        });
       }
       return finish("exact_same_war_reconcile", {
         syncNumber: usable ? sameWarPointsSyncNumber : null,
@@ -860,6 +858,28 @@ export class ActiveWarSyncResolutionService {
       conflict: false,
       candidates,
     };
+  }
+
+  /** Purpose: revalidate global active-cycle ownership after an exact row repair before trusting the poll cache. */
+  private async reconcilePollCycleAfterExactEvidence(input: {
+    pollCycle: ActiveWarSyncPollCycle | null | undefined;
+    resolvedSyncNumber: number;
+  }): Promise<void> {
+    if (!input.pollCycle) return;
+    input.pollCycle.clearActiveSyncNumber();
+    try {
+      const postRepairDiscovery = await this.findPersistedActiveSyncNumber();
+      if (
+        !postRepairDiscovery.conflict &&
+        postRepairDiscovery.syncNumber === input.resolvedSyncNumber
+      ) {
+        input.pollCycle.recordActiveSyncNumber(input.resolvedSyncNumber);
+      }
+    } catch (error) {
+      console.warn(
+        `[sync-assignment] stage=exact_same_war_reconcile outcome=cache_invalidated reason=post_repair_discovery_failed error=${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /** Purpose: persist one canonical sync number to the exact current-war identity. */

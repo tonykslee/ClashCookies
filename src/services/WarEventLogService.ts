@@ -762,6 +762,7 @@ type ActiveWarSyncResolutionInput = {
   pollCycle?: {
     activeSyncNumber: number | null;
     recordActiveSyncNumber: (syncNumber: number) => void;
+    clearActiveSyncNumber: () => void;
   };
 };
 
@@ -2195,6 +2196,10 @@ export class WarEventLogService {
           activeSync = Math.trunc(syncNumber);
           if (pollCycle) pollCycle.activeSyncNumber = activeSync;
         }
+      },
+      clearActiveSyncNumber: () => {
+        activeSync = null;
+        if (pollCycle) pollCycle.activeSyncNumber = null;
       },
     };
     return {
