@@ -225,7 +225,8 @@ function sanitizeCwlName(input: unknown, fallback: string | null = null): string
 
 function normalizeSeasonKey(input: unknown, fallback: string): string {
   const normalized = String(input ?? "").trim();
-  return /^\d{4}-\d{2}$/.test(normalized) ? normalized : fallback;
+  const match = /^(\d{4}-\d{2})(?:-\d{2})?$/.exec(normalized);
+  return match?.[1] ?? fallback;
 }
 
 function normalizePlayerTags(input: string[]): string[] {
@@ -1888,10 +1889,12 @@ export class CwlStateService {
     let currentMemberCount = 0;
     let historyRoundCount = 0;
     let historyMemberCount = 0;
+    let persistedClanCount = 0;
 
     for (const observed of observedStates) {
       if (!observed.fetched) continue;
-      const eventInstanceId = observed.eventInstanceId ?? "";
+      try {
+        const eventInstanceId = observed.eventInstanceId ?? "";
 
       const currentRoundPlan = observed.currentRound
         ? {
@@ -2048,6 +2051,7 @@ export class CwlStateService {
               },
               update: {
                 eventInstanceId,
+                season: observed.season,
                 roundDay: currentRoundPlan.roundDay,
                 clanName: currentRoundPlan.clanName,
                 opponentTag: currentRoundPlan.opponentTag,
@@ -2065,7 +2069,6 @@ export class CwlStateService {
             await tx.cwlRoundMemberCurrent.deleteMany({
               where: {
                 eventInstanceId,
-                season: observed.season,
                 clanTag: observed.clanTag,
               },
             });
@@ -2076,10 +2079,10 @@ export class CwlStateService {
             }
           } else {
             await tx.cwlRoundMemberCurrent.deleteMany({
-              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, clanTag: observed.clanTag },
             });
             await tx.currentCwlRound.deleteMany({
-              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, clanTag: observed.clanTag },
             });
           }
           logCwlPersistPhase({
@@ -2143,6 +2146,7 @@ export class CwlStateService {
               },
               update: {
                 eventInstanceId,
+                season: observed.season,
                 roundDay: currentPrepSnapshotPlan.roundDay,
                 clanName: currentPrepSnapshotPlan.clanName,
                 opponentTag: currentPrepSnapshotPlan.opponentTag,
@@ -2158,7 +2162,7 @@ export class CwlStateService {
             });
           } else {
             await tx.currentCwlPrepSnapshot.deleteMany({
-              where: { eventInstanceId, season: observed.season, clanTag: observed.clanTag },
+              where: { eventInstanceId, clanTag: observed.clanTag },
             });
           }
           logCwlPersistPhase({
@@ -2224,6 +2228,7 @@ export class CwlStateService {
               },
               update: {
                 eventInstanceId,
+                season: observed.season,
                 clanName: round.clanName,
                 opponentTag: round.opponentTag,
                 opponentName: round.opponentName,
@@ -2277,7 +2282,6 @@ export class CwlStateService {
             await tx.cwlRoundMemberHistory.deleteMany({
               where: {
                 eventInstanceId,
-                season: observed.season,
                 clanTag: observed.clanTag,
                 roundDay: round.roundDay,
               },
@@ -2314,12 +2318,18 @@ export class CwlStateService {
         historyRoundCount: historyRoundCountForClan,
         historyMemberCount: historyMemberCountForClan,
       });
+      persistedClanCount += 1;
+      } catch (error) {
+        console.error(
+          `[cwl-state] event=tracked_cwl_clan_persist_failed season=${observed.season} clan_tag=${observed.clanTag} error=${formatError(error)}`,
+        );
+      }
     }
 
     return {
       season: input.season,
       trackedClanCount: trackedClanTags.length,
-      refreshedClanCount: observedStates.filter((state) => state.fetched).length,
+      refreshedClanCount: persistedClanCount,
       currentRoundCount,
       currentMemberCount,
       historyRoundCount,
