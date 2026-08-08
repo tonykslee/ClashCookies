@@ -423,6 +423,112 @@ describe("fwa bases checklist reminder service", () => {
     });
   });
 
+  it("suppresses a reminder for a current-war unscoped ACTIVE base-swap", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValueOnce([
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        endTime: new Date("2026-05-27T18:00:00.000Z"),
+        state: "preparation",
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce({
+      status: "ACTIVE",
+      messageId: "unscoped-active",
+    } as any);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [{
+        clanTag: "#PYPY",
+        compactCopyLine: `Alpha | ⚫ | ❌ Bases not checked`,
+        basesStatus: "not_checked",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-26T18:00:00.000Z",
+      }],
+    });
+
+    await expect(findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    })).resolves.toEqual([]);
+    expect(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncMessageId: null,
+        currentWar: expect.objectContaining({ warId: 1001, prepStartTime: expect.any(Date) }),
+      }),
+    );
+  });
+
+  it("suppresses a reminder for a current-war unscoped COMPLETED base-swap", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValueOnce([
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        endTime: new Date("2026-05-27T18:00:00.000Z"),
+        state: "preparation",
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce({
+      status: "COMPLETED",
+      messageId: "unscoped-completed",
+    } as any);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [{
+        clanTag: "#PYPY",
+        compactCopyLine: `Alpha | ⚫ | ❌ Bases not checked`,
+        basesStatus: "not_checked",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-26T18:00:00.000Z",
+      }],
+    });
+
+    await expect(findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    })).resolves.toEqual([]);
+  });
+
+  it("continues producing a reminder when a prior-war unscoped row is rejected", async () => {
+    prismaMock.currentWar.findMany.mockResolvedValueOnce([
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        endTime: new Date("2026-05-27T18:00:00.000Z"),
+        state: "preparation",
+      },
+    ]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce(null);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [{
+        clanTag: "#PYPY",
+        compactCopyLine: `Alpha | ⚫ | ❌ Bases not checked`,
+        basesStatus: "not_checked",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-26T18:00:00.000Z",
+      }],
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+    expect(candidates).toHaveLength(1);
+  });
+
   it("still creates a reminder when only a stale unscoped base-swap row exists", async () => {
     vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
       id: "sync-track-1",

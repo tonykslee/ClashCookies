@@ -33,6 +33,8 @@ export type FwaBasesChecklistReminderCandidate = {
     | "none";
   warId: string | number | null;
   opponentTag: string | null;
+  prepStartTime: Date | null;
+  endTime: Date | null;
   battleDayStart: Date;
   dueBucketHours: number;
   remainingBucketHours: number[];
@@ -51,7 +53,10 @@ type TrackedClanRow = {
 type CurrentWarGuildRow = {
   guildId: string;
   clanTag: string;
+  warId: string | number | null;
+  opponentTag: string | null;
   prepStartTime: Date | null;
+  endTime: Date | null;
   startTime: Date | null;
   state: string | null;
 };
@@ -160,8 +165,11 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
     select: {
       guildId: true,
       clanTag: true,
+      warId: true,
+      opponentTag: true,
       prepStartTime: true,
       startTime: true,
+      endTime: true,
       state: true,
     },
   })) as CurrentWarGuildRow[];
@@ -178,7 +186,7 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
   const trackedClanByTag = new Map<string, TrackedClanRow>();
   const currentWarByGuildAndTag = new Map<
     string,
-    { prepStartTime: Date | null; startTime: Date | null; state: string | null }
+    { warId: string | number | null; opponentTag: string | null; prepStartTime: Date | null; startTime: Date | null; endTime: Date | null; state: string | null }
   >();
   for (const clan of trackedClans) {
     const clanTag = normalizeClanTag(clan.tag);
@@ -190,8 +198,11 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
     const clanTag = normalizeClanTag(String(row.clanTag ?? ""));
     if (!guildId || !clanTag) continue;
     currentWarByGuildAndTag.set(`${guildId}:${clanTag}`, {
+      warId: row.warId ?? null,
+      opponentTag: row.opponentTag ?? null,
       prepStartTime: row.prepStartTime instanceof Date ? row.prepStartTime : null,
       startTime: row.startTime instanceof Date ? row.startTime : null,
+      endTime: row.endTime instanceof Date ? row.endTime : null,
       state: row.state ?? null,
     });
   }
@@ -263,11 +274,27 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
         `[fwa bases-check reminder] sync_identity_resolved guildId=${guildId} clanTag=${clanTag} warId=${row.warId ?? "missing"} opponentTag=${row.opponentTag ?? "missing"} warStartTimeIso=${row.warStartTimeIso ?? "missing"} source=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"}`,
       );
 
+      const currentWarIdentity = currentWarRow && (
+        currentWarRow.warId !== null ||
+        Boolean(currentWarRow.opponentTag) ||
+        currentWarRow.prepStartTime instanceof Date ||
+        currentWarRow.startTime instanceof Date ||
+        currentWarRow.endTime instanceof Date
+      )
+        ? {
+            warId: currentWarRow.warId,
+            opponentTag: currentWarRow.opponentTag,
+            prepStartTime: currentWarRow.prepStartTime,
+            startTime: currentWarRow.startTime,
+            endTime: currentWarRow.endTime,
+          }
+        : null;
       const currentBaseSwap = await trackedMessageService
         .findLatestActiveFwaBaseSwapTrackedMessageForClan({
           guildId,
           clanTag,
           syncMessageId: currentSyncIdentity,
+          ...(currentWarIdentity ? { currentWar: currentWarIdentity } : {}),
         })
         .catch(() => null);
       const currentBaseSwapStatus = currentBaseSwap?.status ?? null;
@@ -327,6 +354,8 @@ export async function findPendingFwaBasesChecklistReminderCandidates(input: {
         reminderMessageId,
         warId: row.warId ?? null,
         opponentTag: row.opponentTag ?? null,
+        prepStartTime: currentWarRow?.prepStartTime ?? null,
+        endTime: currentWarRow?.endTime ?? null,
         battleDayStart,
         dueBucketHours,
         remainingBucketHours: resolveRemainingFwaBasesChecklistDueOffsets({

@@ -141,7 +141,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { cwlStateService } from "../src/services/CwlStateService";
+import {
+  CwlTrackedStateRefreshPartialError,
+  cwlStateService,
+} from "../src/services/CwlStateService";
 
 describe("CwlStateService", () => {
   beforeEach(() => {
@@ -292,7 +295,6 @@ describe("CwlStateService", () => {
     expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
       where: {
         eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-        season: "2026-04",
         clanTag: "#2QG2C08UP",
       },
     });
@@ -351,7 +353,6 @@ describe("CwlStateService", () => {
       expect.objectContaining({
         where: {
           eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-          season: "2026-04",
           cwlClanTag: "#2QG2C08UP",
           playerTag: {
             notIn: [
@@ -751,7 +752,7 @@ describe("CwlStateService", () => {
     ).toHaveLength(1);
   });
 
-  it("preserves the Prisma code and actual attempt count when serializable retries are exhausted", async () => {
+  it("isolates a clan after serializable season-roster retries are exhausted", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.$transaction.mockImplementation(async (_fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
       if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
@@ -780,8 +781,12 @@ describe("CwlStateService", () => {
         season: "2026-04",
       }),
     ).rejects.toMatchObject({
-      code: "P2034",
-      attempts: 3,
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        refreshedClanCount: 0,
+        failedClanCount: 1,
+        failedClanTagSample: ["#2QG2C08UP"],
+      },
     });
     expect(
       prismaMock.$transaction.mock.calls.filter(([, options]) =>
@@ -790,7 +795,7 @@ describe("CwlStateService", () => {
     ).toHaveLength(3);
   });
 
-  it("attempts non-retryable season roster failures only once", async () => {
+  it("isolates a non-retryable season-roster failure after one attempt", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
     prismaMock.$transaction.mockImplementation(async (_fn: (tx: typeof txMock) => Promise<unknown>, options?: unknown) => {
       if (options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable) {
@@ -814,16 +819,73 @@ describe("CwlStateService", () => {
     };
 
     await expect(
-      cwlStateService.refreshTrackedCwlState({
+      cwlStateService.refreshTrackedCwlStateForClan({
         cocService: cocService as any,
+        clanTag: "#2QG2C08UP",
         season: "2026-04",
       }),
-    ).rejects.toThrow("boom");
+    ).rejects.toMatchObject({
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        trackedClanCount: 1,
+        refreshedClanCount: 0,
+        failedClanCount: 1,
+        failedClanTagSample: ["#2QG2C08UP"],
+      },
+    });
     expect(
       prismaMock.$transaction.mock.calls.filter(([, options]) =>
         Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
       ),
     ).toHaveLength(1);
+  });
+
+  it("continues persisting later tracked clans after one history-member replacement fails", async () => {
+    const firstClanTag = "#2QG2C08UP";
+    const secondClanTag = "#2CCUGYG8V";
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { tag: firstClanTag },
+      { tag: secondClanTag },
+    ]);
+    txMock.cwlRoundMemberHistory.createMany.mockRejectedValueOnce(new Error("history replacement failed"));
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockImplementation(async (clanTag: string) => ({
+        season: "2026-04",
+        state: "warEnded",
+        clans: [{ tag: clanTag, members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }] }],
+        rounds: [{ warTags: [clanTag === firstClanTag ? DEFAULT_WAR_TAG_1 : DEFAULT_WAR_TAG_2] }],
+      })),
+      getClanWarLeagueWar: vi.fn().mockImplementation(async (warTag: string) => ({
+        state: "warEnded",
+        attacksPerMember: 1,
+        teamSize: 15,
+        clan: {
+          tag: warTag === DEFAULT_WAR_TAG_1 ? firstClanTag : secondClanTag,
+          name: "CWL Alpha",
+          members: [{ tag: "#PYLQ0289", name: "Alpha", mapPosition: 1, townhallLevel: 16, attacks: [] }],
+        },
+        opponent: { tag: "#Q2V8P9L2", name: "Opponent One", members: [] },
+      })),
+    };
+
+    await expect(
+      cwlStateService.refreshTrackedCwlState({
+        cocService: cocService as any,
+        season: "2026-04",
+      }),
+    ).rejects.toMatchObject({
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        trackedClanCount: 2,
+        refreshedClanCount: 1,
+        failedClanCount: 1,
+        failedClanTagSample: [firstClanTag],
+        currentRoundCount: 0,
+        historyRoundCount: 1,
+        historyMemberCount: 1,
+      },
+    });
+    expect(txMock.cwlRoundMemberHistory.createMany).toHaveBeenCalledTimes(2);
   });
 
   it("does not let season roster reconciliation own currentCwlPrepSnapshot writes", async () => {
@@ -1095,14 +1157,12 @@ describe("CwlStateService", () => {
     expect(txMock.currentCwlRound.deleteMany).toHaveBeenCalledWith({
       where: {
         eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-        season: "2026-04",
         clanTag: "#2QG2C08UP",
       },
     });
     expect(txMock.currentCwlPrepSnapshot.deleteMany).toHaveBeenCalledWith({
       where: {
         eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-        season: "2026-04",
         clanTag: "#2QG2C08UP",
       },
     });
@@ -1131,6 +1191,74 @@ describe("CwlStateService", () => {
         ]),
       }),
     );
+  });
+
+  it("normalizes Clash league seasons across event-owned history and roster replacement", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(2);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 1 });
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue({
+      season: "2026-08",
+      clanTag: "#2QG2C08UP",
+      authoritativeRosterCount: 1,
+      reconciledAt: new Date("2026-08-01T00:00:00.000Z"),
+    } as any);
+    const cocService = {
+      getClanWarLeagueGroup: vi.fn().mockResolvedValue({
+        season: "2026-07-01",
+        state: "warEnded",
+        clans: [{ tag: "#2QG2C08UP", members: [{ tag: "#PYLQ0289", name: "Alpha", townHallLevel: 16 }] }],
+        rounds: [{ warTags: [DEFAULT_WAR_TAG_1] }],
+      }),
+      getClanWarLeagueWar: vi.fn().mockResolvedValue({
+        state: "warEnded",
+        preparationStartTime: "20260701T120000.000Z",
+        startTime: "20260702T120000.000Z",
+        endTime: "20260703T120000.000Z",
+        attacksPerMember: 1,
+        teamSize: 15,
+        clan: {
+          tag: "#2QG2C08UP",
+          name: "CWL Alpha",
+          members: [{ tag: "#PYLQ0289", name: "Alpha", mapPosition: 1, townhallLevel: 16, attacks: [] }],
+        },
+        opponent: { tag: "#Q2V8P9L2", name: "Opponent One", members: [] },
+      }),
+    };
+
+    await cwlStateService.refreshTrackedCwlState({
+      cocService: cocService as any,
+      season: "2026-08",
+    });
+
+    expect(txMock.cwlRoundMemberHistory.deleteMany).toHaveBeenCalledWith({
+      where: { eventInstanceId: DEFAULT_EVENT_INSTANCE_ID, clanTag: "#2QG2C08UP", roundDay: 1 },
+    });
+    expect(txMock.cwlRoundMemberHistory.createMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.arrayContaining([expect.objectContaining({ season: "2026-07", playerTag: "#PYLQ0289" })]),
+    }));
+    expect(txMock.cwlRoundHistory.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ season: "2026-07" }),
+    }));
+    expect(txMock.cwlPlayerClanSeason.count).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        cwlClanTag: "#2QG2C08UP",
+      },
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ season: "2026-07" }),
+    }));
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        cwlClanTag: "#2QG2C08UP",
+        playerTag: { notIn: ["#PYLQ0289"] },
+      },
+    });
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ season: "2026-07" }),
+    }));
   });
 
   it("keeps an existing seasonal CWL mapping without running live discovery", async () => {

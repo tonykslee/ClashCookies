@@ -212,6 +212,17 @@ export class FwaBasesChecklistReminderSchedulerService {
             guildId: candidate.guildId,
             clanTag: candidate.clanTag,
             syncMessageId: currentSyncIdentity,
+            ...(!currentSyncIdentity
+              ? {
+                  currentWar: {
+                    warId: candidate.warId,
+                    opponentTag: candidate.opponentTag,
+                    prepStartTime: candidate.prepStartTime,
+                    startTime: candidate.battleDayStart,
+                    endTime: candidate.endTime,
+                  },
+                }
+              : {}),
           })
           .catch(() => null);
         const currentBaseSwapStatus = currentBaseSwap?.status ?? null;

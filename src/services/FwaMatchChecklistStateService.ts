@@ -577,12 +577,19 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         currentSyncIdentitySource = rowSyncIdentitySource;
       }
     }
-    const currentBaseSwap = rowSyncIdentity
+    const currentBaseSwap = activeCurrentWar
       ? await trackedMessageService
           .findLatestActiveFwaBaseSwapTrackedMessageForClan({
             guildId: params.guildId,
             clanTag,
             syncMessageId: rowSyncIdentity,
+            currentWar: {
+              warId: activeCurrentWar.warId ?? null,
+              prepStartTime: activeCurrentWar.prepStartTime ?? null,
+              startTime: activeCurrentWar.startTime ?? null,
+              endTime: activeCurrentWar.endTime ?? null,
+              opponentTag: activeCurrentWar.opponentTag ?? null,
+            },
           })
           .catch(() => null)
       : null;

@@ -133,7 +133,10 @@ import {
   resetTodoSnapshotServiceForTest,
   todoSnapshotService,
 } from "../src/services/TodoSnapshotService";
-import { cwlStateService } from "../src/services/CwlStateService";
+import {
+  CwlTrackedStateRefreshPartialError,
+  cwlStateService,
+} from "../src/services/CwlStateService";
 import { todoLastViewedTypeService } from "../src/services/TodoLastViewedTypeService";
 import { cwlRotationService } from "../src/services/CwlRotationService";
 
@@ -5673,6 +5676,45 @@ describe("/todo refresh button", () => {
       type: "GAMES",
     });
     expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh player snapshots when targeted CWL persistence partially fails", async () => {
+    const cwlRefreshSpy = vi
+      .spyOn(cwlStateService, "refreshTrackedCwlStateForPlayerTags")
+      .mockRejectedValue(
+        new CwlTrackedStateRefreshPartialError({
+          season: "2026-03",
+          trackedClanCount: 1,
+          refreshedClanCount: 0,
+          failedClanCount: 1,
+          failedClanTagSample: ["#2QG2C08UP"],
+          currentRoundCount: 0,
+          currentMemberCount: 0,
+          historyRoundCount: 0,
+          historyMemberCount: 0,
+        }),
+      );
+    const refreshSpy = vi.spyOn(todoSnapshotService, "refreshSnapshotsForPlayerTags");
+    const bumpSpy = vi.spyOn(TodoServiceModule, "bumpTodoRenderCacheGenerationForUser");
+    const interaction = makeTodoButtonInteraction({
+      customId: buildTodoRefreshButtonCustomId({
+        guildScopeId: "123456789012345678",
+        requesterUserId: "111111111111111111",
+        targetUserId: "222222222222222222",
+        type: "CWL",
+      }),
+      userId: "111111111111111111",
+      guildId: "123456789012345678",
+    });
+
+    await handleTodoRefreshButtonInteraction(interaction as any, makeCocServiceSpy() as any);
+
+    expect(cwlRefreshSpy).toHaveBeenCalledTimes(1);
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(bumpSpy).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ ephemeral: true }),
+    );
   });
 
   it("refreshes WAR rows from live current-war fallback and rerenders active lineup players", async () => {
