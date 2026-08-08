@@ -32,6 +32,7 @@ export type FwaBaseSwapTrackedMetadata = {
   createdByUserId: string;
   createdAtIso: string;
   syncMessageId?: string | null;
+  /** Derived CurrentWar identity snapshot for safe message scoping; CurrentWar remains authoritative. */
   warId?: string | number | null;
   warStartTimeIso?: string | null;
   opponentTag?: string | null;
@@ -3875,6 +3876,55 @@ export class TrackedMessageService {
         `[fwa_checklist_bases_refresh_state] checklistMessageId=${message.id} trackedReferenceId=${tracked.referenceId ?? "none"} syncIdentityUsed=${syncReferenceId ?? "none"} rowCount=${(options?.rows ?? metadata.rows).length}`,
       );
       const sourceRows = options?.rows ?? metadata.rows;
+      const currentWarByClanTag = new Map<
+        string,
+        {
+          warId: string | number | null;
+          opponentTag: string | null;
+          prepStartTime: Date | null;
+          startTime: Date | null;
+          endTime: Date | null;
+        }
+      >();
+      if (!syncReferenceId && sourceRows.length > 0) {
+        const clanTagVariants = [
+          ...new Set(
+            sourceRows.flatMap((row) => {
+              const normalized = normalizeChecklistClanTag(row.clanTag);
+              const bare = normalized.replace(/^#/, "");
+              return bare ? [bare, `#${bare}`] : [];
+            }),
+          ),
+        ];
+        if (clanTagVariants.length > 0) {
+          const currentWarRows = await prisma.currentWar.findMany({
+            where: {
+              guildId: tracked.guildId,
+              clanTag: { in: clanTagVariants },
+            },
+            orderBy: [{ updatedAt: "desc" }],
+            select: {
+              clanTag: true,
+              warId: true,
+              opponentTag: true,
+              prepStartTime: true,
+              startTime: true,
+              endTime: true,
+            },
+          }).catch(() => []);
+          for (const currentWar of currentWarRows) {
+            const clanTag = normalizeChecklistClanTag(String(currentWar.clanTag ?? ""));
+            if (!clanTag || currentWarByClanTag.has(clanTag)) continue;
+            currentWarByClanTag.set(clanTag, {
+              warId: currentWar.warId ?? null,
+              opponentTag: currentWar.opponentTag ?? null,
+              prepStartTime: currentWar.prepStartTime ?? null,
+              startTime: currentWar.startTime ?? null,
+              endTime: currentWar.endTime ?? null,
+            });
+          }
+        }
+      }
       const previousRowsByTag = new Map(
         metadata.rows.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
       );
@@ -3916,24 +3966,7 @@ export class TrackedMessageService {
         const hasWarIdentity = Boolean(row.warId || row.opponentTag || warStartTime);
         const currentWar = syncReferenceId
           ? null
-          : await prisma.currentWar.findFirst({
-              where: {
-                guildId: tracked.guildId,
-                OR: [
-                  { clanTag: row.clanTag },
-                  { clanTag: row.clanTag.replace(/^#/, "") },
-                  { clanTag: `#${row.clanTag.replace(/^#/, "")}` },
-                ],
-              },
-              orderBy: [{ updatedAt: "desc" }],
-              select: {
-                warId: true,
-                opponentTag: true,
-                prepStartTime: true,
-                startTime: true,
-                endTime: true,
-              },
-            }).catch(() => null);
+          : currentWarByClanTag.get(normalizeChecklistClanTag(row.clanTag)) ?? null;
         const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
           guildId: tracked.guildId,
           clanTag: row.clanTag,

@@ -124,6 +124,94 @@ describe("BaseSwapRosterService", () => {
     expect(cocService.getCurrentWar).toHaveBeenCalledWith("2QG2C08UP");
   });
 
+  it("returns persisted FWA war identity when it matches the live CoC war", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: fwaClanTag, name: "Alpha FWA" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1001,
+      opponentTag,
+      state: "preparation",
+      prepStartTime: new Date("2026-05-01T06:00:00.000Z"),
+      startTime: new Date("2026-05-01T12:00:00.000Z"),
+      endTime: new Date("2026-05-02T12:00:00.000Z"),
+    });
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        startTime: "2026-05-01T12:00:00.000Z",
+        clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
+        opponent: { tag: opponentTag, name: "Opponent", members: [] },
+      }),
+    };
+
+    const result = await resolveBaseSwapRosterForClan({
+      clanRef: `fwa:${fwaClanTag}`,
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      roster: {
+        currentWarIdentity: {
+          warId: 1001,
+          startTime: new Date("2026-05-01T12:00:00.000Z"),
+          opponentTag,
+        },
+      },
+    });
+  });
+
+  it("does not stamp a previous-war persisted identity when live CoC has a new war", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: fwaClanTag, name: "Alpha FWA" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1000,
+      opponentTag,
+      state: "inWar",
+      prepStartTime: new Date("2026-04-30T06:00:00.000Z"),
+      startTime: new Date("2026-04-30T12:00:00.000Z"),
+      endTime: new Date("2026-05-01T12:00:00.000Z"),
+    });
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        startTime: "2026-05-01T12:00:00.000Z",
+        clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
+        opponent: { tag: "#NEWOPP", name: "New Opponent", members: [] },
+      }),
+    };
+
+    const result = await resolveBaseSwapRosterForClan({
+      clanRef: `fwa:${fwaClanTag}`,
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({ ok: true, roster: { currentWarIdentity: null, phaseTiming: null } });
+  });
+
+  it("fails closed when the persisted/live FWA war identity is incomplete", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: fwaClanTag, name: "Alpha FWA" });
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1001,
+      state: "preparation",
+      startTime: new Date("2026-05-01T12:00:00.000Z"),
+      opponentTag: null,
+    });
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
+        opponent: { tag: null, members: [] },
+      }),
+    };
+
+    const result = await resolveBaseSwapRosterForClan({
+      clanRef: `fwa:${fwaClanTag}`,
+      guildId: "guild-1",
+      cocService: cocService as any,
+    });
+
+    expect(result).toMatchObject({ ok: true, roster: { currentWarIdentity: null } });
+  });
+
   it("prefers the CWL prep snapshot and preserves its actual map positions without calling live CoC", async () => {
     const cocService = {
       getCurrentWar: vi.fn(),

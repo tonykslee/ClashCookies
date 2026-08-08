@@ -581,6 +581,63 @@ describe("FWA match checklist service", () => {
     expect(followUp).not.toHaveBeenCalled();
   });
 
+  it("refreshes a referenceId-null Bases checklist with the current-war unscoped state", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "manual-bases-message",
+        edit,
+        reactions: { cache: { values: () => [][Symbol.iterator]() } },
+      },
+    } as any;
+
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "ACTIVE",
+      referenceId: null,
+      metadata: { kind: "bases_checklist" },
+    } as any);
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [{
+        clanTag: "#PYPY",
+        compactCopyLine: "Alpha | ⚫ | ⚠️ Bases checked - issues found",
+        basesStatus: "issues",
+        badgeEmojiId: "111",
+        badgeEmojiName: "rr",
+        badgeEmojiInline: "<:rr:111>",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+      }],
+      scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-rr",
+      checkedClanTags: [],
+      referenceId: null,
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    });
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(true);
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild).toHaveBeenCalledWith(
+      expect.objectContaining({ viewType: "Bases", syncMessageId: null }),
+    );
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "manual-bases-message" }),
+      null,
+      expect.objectContaining({
+        rows: [expect.objectContaining({ basesStatus: "issues" })],
+      }),
+    );
+  });
+
   it("returns a clear failure response when a checklist refresh can no longer be applied", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const followUp = vi.fn().mockResolvedValue(undefined);

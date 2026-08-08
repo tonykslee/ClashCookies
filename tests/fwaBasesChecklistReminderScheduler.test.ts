@@ -66,6 +66,8 @@ function makeCandidate(overrides: Partial<FwaBasesChecklistReminderCandidate> = 
     reminderMessageId: "fwa_match_checklist_bases_reminder|guild=guild-1|clan=#ABC|war=1001|opponent=OPP1|start=2026-05-26T18:00:00.000Z|bucket=3",
     warId: 1001,
     opponentTag: "#OPP1",
+    prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+    endTime: new Date("2026-05-27T18:00:00.000Z"),
     battleDayStart: new Date("2026-05-26T18:00:00.000Z"),
     dueBucketHours: 3,
     remainingBucketHours: [1],
@@ -279,6 +281,31 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     });
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
       expect.stringContaining("reason=base_swap_completed"),
+    );
+  });
+
+  it("passes current-war identity on the final recheck when no sync identity exists", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate({ syncMessageId: null, syncIdentitySource: "none" })]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValueOnce({
+      status: "ACTIVE",
+      messageId: "unscoped-active",
+    } as any);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts.sent).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncMessageId: null,
+        currentWar: expect.objectContaining({
+          warId: 1001,
+          prepStartTime: expect.any(Date),
+          endTime: expect.any(Date),
+        }),
+      }),
     );
   });
 

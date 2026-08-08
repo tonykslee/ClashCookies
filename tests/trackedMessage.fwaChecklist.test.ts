@@ -552,6 +552,52 @@ describe("fwa checklist tracked messages", () => {
     expect(edit).toHaveBeenCalled();
   });
 
+  it("bulk-loads CurrentWar once for a no-sync multi-row Bases reconciliation", async () => {
+    const tracked = makeBasesTrackedChecklistRow();
+    tracked.referenceId = null;
+    tracked.metadata.rows = [
+      tracked.metadata.rows[0],
+      {
+        ...tracked.metadata.rows[0],
+        clanTag: "#PYPL",
+        warId: 1002,
+        opponentTag: "#OPP2",
+      },
+    ];
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(tracked);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+      },
+      {
+        clanTag: "#PYPL",
+        warId: 1002,
+        opponentTag: "#OPP2",
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(null);
+    vi.spyOn(trackedMessageService, "findLatestFwaMatchChecklistBasesCompletionForClan").mockResolvedValue(null);
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage({
+        id: "bases-message-1",
+        reactions: { cache: new Map() },
+        edit,
+      } as any),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("stores and resolves bases completion for the current war identity", async () => {
     const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
     await trackedMessageService.setFwaMatchChecklistBasesCompletion({
