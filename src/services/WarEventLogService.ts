@@ -762,6 +762,7 @@ type ActiveWarSyncResolutionInput = {
   pollCycle?: {
     activeSyncNumber: number | null;
     recordActiveSyncNumber: (syncNumber: number) => void;
+    clearActiveSyncNumber: () => void;
   };
 };
 
@@ -2195,6 +2196,10 @@ export class WarEventLogService {
           activeSync = Math.trunc(syncNumber);
           if (pollCycle) pollCycle.activeSyncNumber = activeSync;
         }
+      },
+      clearActiveSyncNumber: () => {
+        activeSync = null;
+        if (pollCycle) pollCycle.activeSyncNumber = null;
       },
     };
     return {
@@ -5037,12 +5042,17 @@ export class WarEventLogService {
           });
     const assignmentNeedsOwnership =
       Boolean(syncAssignment) &&
-      currentWarCanonicalSyncNumber === null &&
+      (currentWarCanonicalSyncNumber === null ||
+        syncAssignment?.source === "exact_same_war_reconcile") &&
       (syncAssignment?.persistence === "conflict" ||
         syncAssignment?.persistence === "revision_changed" ||
         syncAssignment?.persistence === "identity_changed" ||
         syncAssignment?.source === "active_cycle_conflict");
-    if (syncAssignment?.persistence === "saved" && syncAssignment.persistedRevisionAt) {
+    if (
+      (syncAssignment?.persistence === "saved" ||
+        syncAssignment?.persistence === "idempotent") &&
+      syncAssignment.persistedRevisionAt
+    ) {
       ownedCurrentWarRevisionAt = syncAssignment.persistedRevisionAt;
     } else if (assignmentNeedsOwnership) {
       return false;
