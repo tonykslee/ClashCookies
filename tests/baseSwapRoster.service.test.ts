@@ -137,7 +137,7 @@ describe("BaseSwapRosterService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     const cocService = {
       getCurrentWar: vi.fn().mockResolvedValue({
-        startTime: "2026-05-01T12:00:00.000Z",
+        startTime: "20260501T120000.000Z",
         clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
         opponent: { tag: opponentTag, name: "Opponent", members: [] },
       }),
@@ -173,9 +173,9 @@ describe("BaseSwapRosterService", () => {
     });
     const cocService = {
       getCurrentWar: vi.fn().mockResolvedValue({
-        startTime: "2026-05-01T12:00:00.000Z",
+        startTime: "20260502T120000.000Z",
         clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
-        opponent: { tag: "#NEWOPP", name: "New Opponent", members: [] },
+        opponent: { tag: opponentTag, name: "Opponent", members: [] },
       }),
     };
 
@@ -199,7 +199,8 @@ describe("BaseSwapRosterService", () => {
     const cocService = {
       getCurrentWar: vi.fn().mockResolvedValue({
         clan: { members: [{ tag: playerAlphaTag, name: "Alpha", mapPosition: 1, townhallLevel: 18 }] },
-        opponent: { tag: null, members: [] },
+        startTime: "not-a-clash-timestamp",
+        opponent: { tag: opponentTag, members: [] },
       }),
     };
 

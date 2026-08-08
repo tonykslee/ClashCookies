@@ -9,6 +9,7 @@ import {
   normalizePersistedPlayerName,
 } from "./PlayerLinkService";
 import { listPlayerLinksForClanMembers } from "./PlayerLinkService";
+import { parseCocApiTime } from "../utils/cocTime";
 
 export type BaseSwapClanKind = "FWA" | "CWL";
 
@@ -201,10 +202,10 @@ function isBaseSwapRosterMember(
   return member !== null;
 }
 
-function parseLiveWarStartTime(value: unknown): Date | null {
-  if (value instanceof Date && Number.isFinite(value.getTime())) return value;
-  const parsed = new Date(String(value ?? "").trim());
-  return Number.isFinite(parsed.getTime()) ? parsed : null;
+function resolveLiveWarStartDate(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const parsedMs = parseCocApiTime(value.trim());
+  return parsedMs === null ? null : new Date(parsedMs);
 }
 
 function resolveVerifiedFwaCurrentWarIdentity(input: {
@@ -227,7 +228,7 @@ function resolveVerifiedFwaCurrentWarIdentity(input: {
   const persistedStart = persisted?.startTime instanceof Date && Number.isFinite(persisted.startTime.getTime())
     ? persisted.startTime
     : null;
-  const liveStart = parseLiveWarStartTime(live?.startTime);
+  const liveStart = resolveLiveWarStartDate(live?.startTime);
   const persistedOpponent = normalizeClanTag(String(persisted?.opponentTag ?? ""));
   const liveOpponent = normalizeClanTag(String(live?.opponent?.tag ?? ""));
   if (!persisted || !persistedStart || !liveStart || !persistedOpponent || !liveOpponent) {
