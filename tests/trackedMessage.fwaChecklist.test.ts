@@ -3062,6 +3062,59 @@ describe("fwa checklist tracked messages", () => {
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("❌ Bases not checked");
   });
 
+  it("fails closed when a manual checklist row belongs to an inactive CurrentWar", async () => {
+    const tracked = makeManualBasesTrackedChecklistRow();
+    tracked.metadata.rows[0].warId = 1001;
+    tracked.metadata.rows[0].opponentTag = "#OPP1";
+    tracked.metadata.rows[0].warStartTimeIso = "2026-06-13T18:00:00.000Z";
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(tracked as any);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:alpha:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTime: new Date("2026-06-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        state: "notInWar",
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue(null);
+    const setCompletion = vi.spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion");
+    const recordBasesChecklistChecked = vi.spyOn(
+      repWorkActivityService,
+      "recordBasesChecklistChecked",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(
+        {
+          id: tracked.messageId,
+          reactions: {
+            cache: new Map([[
+              "alpha",
+              { emoji: { id: "111", name: "alpha" }, count: 2, me: true },
+            ]]),
+          },
+          edit,
+        } as any,
+        {
+          kind: "add",
+          reactorUserId: "user-2",
+          reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(setCompletion).not.toHaveBeenCalled();
+    expect(recordBasesChecklistChecked).not.toHaveBeenCalled();
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("all good");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reason=current_war_inactive"));
+  });
+
   it("does not record rep-work activity when the completion write returns false", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(makeBasesTrackedChecklistRow());
     const setCompletion = vi

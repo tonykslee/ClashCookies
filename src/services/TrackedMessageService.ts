@@ -4019,6 +4019,12 @@ export class TrackedMessageService {
           logPersistenceFailure(row, "current_war_identity_mismatch", checked);
           return false;
         }
+
+        if (!syncReferenceId && currentWar && currentWarIsExplicitlyInactive) {
+          logPersistenceFailure(row, "current_war_inactive", checked);
+          return false;
+        }
+
         const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
           guildId: tracked.guildId,
           clanTag: row.clanTag,
