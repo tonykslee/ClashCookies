@@ -508,6 +508,12 @@ describe("ready listener startup", () => {
       (cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason as any).mock.invocationCallOrder[0],
     ).toBeLessThan((cwlStateService.refreshTrackedCwlState as any).mock.invocationCallOrder[0]);
     expect(warEventCwlBaseSwapBattleDayRemindersMock).toHaveBeenCalledTimes(1);
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "war_event_poll_cycle",
+      expect.objectContaining({
+        displayName: "War event poll",
+      }),
+    );
     expect(
       (cwlStateService.refreshTrackedCwlState as any).mock.invocationCallOrder[0],
     ).toBeLessThan(
@@ -587,16 +593,35 @@ describe("ready listener startup", () => {
     expect(todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots).toHaveBeenCalledTimes(1);
   });
 
-  it("skips CWL base-swap reminders when tracked CWL state refresh fails", async () => {
+  it("records partial CWL persistence as a failed poll and skips CWL base-swap reminders", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    cwlStateService.refreshTrackedCwlState.mockRejectedValueOnce(new Error("cwl refresh boom"));
+    cwlStateService.refreshTrackedCwlState.mockRejectedValueOnce(
+      new Error(
+        "[cwl-state] tracked state refresh partially persisted failed_clan_count=1 failed_clan_tag_sample=#2QG2C08UP",
+      ),
+    );
 
     await runStartup();
 
     expect(cwlStateService.refreshTrackedCwlState).toHaveBeenCalledTimes(1);
     expect(warEventCwlBaseSwapBattleDayRemindersMock).not.toHaveBeenCalled();
+    expect(statusServiceMock.markFailed).toHaveBeenCalledWith(
+      "war_event_poll_cycle",
+      expect.any(Error),
+      expect.objectContaining({
+        displayName: "War event poll",
+      }),
+    );
+    expect(
+      statusServiceMock.markSucceeded.mock.calls.some(
+        ([jobKey]: [string]) => jobKey === "war_event_poll_cycle",
+      ),
+    ).toBe(false);
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("stage=cwl_state_refresh"),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("failed_clan_count=1"),
     );
   });
 
