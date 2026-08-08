@@ -9,6 +9,7 @@ import {
   normalizePersistedPlayerName,
 } from "./PlayerLinkService";
 import { listPlayerLinksForClanMembers } from "./PlayerLinkService";
+import { parseCocApiTime } from "../utils/cocTime";
 
 export type BaseSwapClanKind = "FWA" | "CWL";
 
@@ -33,6 +34,8 @@ export type BaseSwapRosterResolution = {
   rosterMembers: BaseSwapRosterMember[];
   phaseTiming: BaseSwapPhaseTiming | null;
   currentWarIdentity: {
+    warId: string | number | null;
+    opponentTag: string | null;
     state: string | null;
     prepStartTime: Date | null;
     startTime: Date | null;
@@ -199,6 +202,57 @@ function isBaseSwapRosterMember(
   return member !== null;
 }
 
+function resolveLiveWarStartDate(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const parsedMs = parseCocApiTime(value.trim());
+  return parsedMs === null ? null : new Date(parsedMs);
+}
+
+function resolveVerifiedFwaCurrentWarIdentity(input: {
+  persisted: {
+    warId?: string | number | null;
+    opponentTag?: string | null;
+    state?: string | null;
+    prepStartTime?: Date | null;
+    startTime?: Date | null;
+    endTime?: Date | null;
+  } | null;
+  live: {
+    startTime?: unknown;
+    opponent?: { tag?: unknown } | null;
+  } | null;
+  clanTag: string;
+}): BaseSwapRosterResolution["currentWarIdentity"] {
+  const persisted = input.persisted;
+  const live = input.live;
+  const persistedStart = persisted?.startTime instanceof Date && Number.isFinite(persisted.startTime.getTime())
+    ? persisted.startTime
+    : null;
+  const liveStart = resolveLiveWarStartDate(live?.startTime);
+  const persistedOpponent = normalizeClanTag(String(persisted?.opponentTag ?? ""));
+  const liveOpponent = normalizeClanTag(String(live?.opponent?.tag ?? ""));
+  if (!persisted || !persistedStart || !liveStart || !persistedOpponent || !liveOpponent) {
+    console.debug(
+      `[fwa base-swap] current-war identity unavailable clan=#${input.clanTag} reason=missing_identity persistedStart=${persistedStart?.toISOString() ?? "missing"} liveStart=${liveStart?.toISOString() ?? "missing"} persistedOpponent=${persistedOpponent || "missing"} liveOpponent=${liveOpponent || "missing"}`,
+    );
+    return null;
+  }
+  if (persistedStart.getTime() !== liveStart.getTime() || persistedOpponent !== liveOpponent) {
+    console.debug(
+      `[fwa base-swap] current-war identity rejected clan=#${input.clanTag} reason=live_mismatch persistedStart=${persistedStart.toISOString()} liveStart=${liveStart.toISOString()} persistedOpponent=${persistedOpponent} liveOpponent=${liveOpponent}`,
+    );
+    return null;
+  }
+  return {
+    warId: persisted.warId ?? null,
+    opponentTag: persisted.opponentTag ?? null,
+    state: String(persisted.state ?? "").trim() || null,
+    prepStartTime: persisted.prepStartTime ?? null,
+    startTime: persisted.startTime ?? null,
+    endTime: persisted.endTime ?? null,
+  };
+}
+
 async function loadFwaBaseSwapRoster(input: {
   clanTag: string;
   guildId: string;
@@ -227,6 +281,8 @@ async function loadFwaBaseSwapRoster(input: {
     },
     orderBy: [{ updatedAt: "desc" }],
     select: {
+      warId: true,
+      opponentTag: true,
       state: true,
       prepStartTime: true,
       startTime: true,
@@ -263,6 +319,12 @@ async function loadFwaBaseSwapRoster(input: {
     discordUserId: linkByTag.get(member.playerTag)?.discordUserId ?? null,
   }));
 
+  const verifiedCurrentWarIdentity = resolveVerifiedFwaCurrentWarIdentity({
+    persisted: currentWarRow,
+    live: war,
+    clanTag: input.clanTag,
+  });
+
   return {
     ok: true,
     roster: {
@@ -270,19 +332,12 @@ async function loadFwaBaseSwapRoster(input: {
       clanTag: input.clanTag,
       clanName: normalizeDisplayName(trackedClan.name) ?? `#${input.clanTag}`,
       rosterMembers,
-      currentWarIdentity: currentWarRow
-        ? {
-            state: String(currentWarRow.state ?? "").trim() || null,
-            prepStartTime: currentWarRow.prepStartTime ?? null,
-            startTime: currentWarRow.startTime ?? null,
-            endTime: currentWarRow.endTime ?? null,
-          }
-        : null,
-      phaseTiming: currentWarRow
+      currentWarIdentity: verifiedCurrentWarIdentity,
+      phaseTiming: verifiedCurrentWarIdentity
         ? buildPhaseTimingLineSource({
-            roundState: String(currentWarRow.state ?? "").trim(),
-            startTime: currentWarRow.startTime ?? null,
-            endTime: currentWarRow.endTime ?? null,
+            roundState: String(verifiedCurrentWarIdentity.state ?? "").trim(),
+            startTime: verifiedCurrentWarIdentity.startTime ?? null,
+            endTime: verifiedCurrentWarIdentity.endTime ?? null,
           })
         : null,
     },

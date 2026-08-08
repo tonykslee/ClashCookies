@@ -552,6 +552,52 @@ describe("fwa checklist tracked messages", () => {
     expect(edit).toHaveBeenCalled();
   });
 
+  it("bulk-loads CurrentWar once for a no-sync multi-row Bases reconciliation", async () => {
+    const tracked = makeBasesTrackedChecklistRow();
+    tracked.referenceId = null;
+    tracked.metadata.rows = [
+      tracked.metadata.rows[0],
+      {
+        ...tracked.metadata.rows[0],
+        clanTag: "#PYPL",
+        warId: 1002,
+        opponentTag: "#OPP2",
+      },
+    ];
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(tracked);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+      },
+      {
+        clanTag: "#PYPL",
+        warId: 1002,
+        opponentTag: "#OPP2",
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime: new Date("2026-05-13T18:00:00.000Z"),
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+      },
+    ]);
+    vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(null);
+    vi.spyOn(trackedMessageService, "findLatestFwaMatchChecklistBasesCompletionForClan").mockResolvedValue(null);
+
+    const edit = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage({
+        id: "bases-message-1",
+        reactions: { cache: new Map() },
+        edit,
+      } as any),
+    ).resolves.toBe(true);
+
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("stores and resolves bases completion for the current war identity", async () => {
     const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
     await trackedMessageService.setFwaMatchChecklistBasesCompletion({
@@ -1335,6 +1381,126 @@ describe("fwa checklist tracked messages", () => {
       expect.stringContaining("selection=rejected_stale_unscoped"),
     );
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("selection=no_match"));
+  });
+
+  it("matches a current-war unscoped active row when the sync root is absent", async () => {
+    const row = makeUnscopedBaseSwapRow({
+      id: "swap-current-active",
+      messageId: "swap-current-active-message",
+      clanTag: "#PYPY",
+      createdAtIso: "2026-06-13T14:00:00.000Z",
+    });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([row]);
+    await expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: null,
+        currentWar: {
+          warId: 1001,
+          opponentTag: "#OPP1",
+          prepStartTime: new Date("2026-06-13T13:00:00.000Z"),
+          startTime: new Date("2026-06-13T18:00:00.000Z"),
+          endTime: new Date("2026-06-14T18:00:00.000Z"),
+        },
+      }),
+    ).resolves.toMatchObject({ messageId: "swap-current-active-message", status: "ACTIVE" });
+  });
+
+  it("matches a current-war unscoped completed row when the sync root is absent", async () => {
+    const row = makeUnscopedBaseSwapRow({
+      id: "swap-current-completed",
+      messageId: "swap-current-completed-message",
+      clanTag: "#PYPY",
+      createdAtIso: "2026-06-13T14:00:00.000Z",
+    });
+    row.status = TRACKED_MESSAGE_STATUS.COMPLETED;
+    prismaMock.trackedMessage.findMany.mockResolvedValue([row]);
+    await expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        currentWar: {
+          warId: 1001,
+          opponentTag: "#OPP1",
+          prepStartTime: new Date("2026-06-13T13:00:00.000Z"),
+          startTime: new Date("2026-06-13T18:00:00.000Z"),
+          endTime: new Date("2026-06-14T18:00:00.000Z"),
+        },
+      }),
+    ).resolves.toMatchObject({ messageId: "swap-current-completed-message", status: "COMPLETED" });
+  });
+
+  it("rejects an unscoped row created before the current war prep window", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      makeUnscopedBaseSwapRow({
+        id: "swap-previous-war",
+        messageId: "swap-previous-war-message",
+        clanTag: "#PYPY",
+        createdAtIso: "2026-06-13T12:59:59.000Z",
+      }),
+    ]);
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    await expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        currentWar: {
+          warId: 1001,
+          opponentTag: "#OPP1",
+          prepStartTime: new Date("2026-06-13T13:00:00.000Z"),
+          startTime: new Date("2026-06-13T18:00:00.000Z"),
+          endTime: new Date("2026-06-14T18:00:00.000Z"),
+        },
+      }),
+    ).resolves.toBeNull();
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("selection=rejected_previous_war_unscoped"));
+  });
+
+  it("fails closed for a legacy unscoped row when no safe current-war boundary exists", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      makeUnscopedBaseSwapRow({
+        id: "swap-ambiguous",
+        messageId: "swap-ambiguous-message",
+        clanTag: "#PYPY",
+        createdAtIso: "2026-06-13T14:00:00.000Z",
+      }),
+    ]);
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    await expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        syncMessageId: null,
+      }),
+    ).resolves.toBeNull();
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("selection=no_safe_current_war_candidate"));
+  });
+
+  it("rejects persisted unscoped war identity from a different war", async () => {
+    const row = makeUnscopedBaseSwapRow({
+      id: "swap-stale-identity",
+      messageId: "swap-stale-identity-message",
+      clanTag: "#PYPY",
+      createdAtIso: "2026-06-13T14:00:00.000Z",
+    });
+    row.metadata.warId = 999;
+    row.metadata.warStartTimeIso = "2026-06-13T18:00:00.000Z";
+    row.metadata.opponentTag = "#OLDOPP";
+    prismaMock.trackedMessage.findMany.mockResolvedValue([row]);
+    await expect(
+      trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        currentWar: {
+          warId: 1001,
+          opponentTag: "#OPP1",
+          prepStartTime: new Date("2026-06-13T13:00:00.000Z"),
+          startTime: new Date("2026-06-13T18:00:00.000Z"),
+          endTime: new Date("2026-06-14T18:00:00.000Z"),
+        },
+      }),
+    ).resolves.toBeNull();
   });
 
   it("resolves the latest relevant expired sync post for a clan war in the real 24h prep-window case", async () => {
