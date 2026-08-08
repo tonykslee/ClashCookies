@@ -1212,6 +1212,69 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows[0].compactCopyLine).toContain("Bases checked and all good");
   });
 
+  it("renders an exact current-war Bases completion without a sync root", async () => {
+    const currentWarStartTime = new Date("2026-05-13T18:00:00.000Z");
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PYPY",
+        warId: 1001,
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime: currentWarStartTime,
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: null,
+        outcome: null,
+        state: "preparation",
+      },
+    ]);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue(null);
+    vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockResolvedValue(null);
+    vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(null);
+    vi.mocked(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).mockResolvedValue({
+      id: "completion-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "completion-current-war",
+      referenceId: null,
+      clanTag: "#PYPY",
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      expiresAt: null,
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: "1001",
+        opponentTag: "OPP1",
+        warStartTimeIso: currentWarStartTime.toISOString(),
+      },
+    } as any);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService: { getCurrentWar: vi.fn().mockResolvedValue(null) } as any,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(state.referenceId).toBeNull();
+    expect(state.rows[0].basesStatus).toBe("all_good");
+    expect(state.rows[0].compactCopyLine).toContain("✅ Bases checked and all good");
+    expect(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      warId: 1001,
+      warStartTime: currentWarStartTime,
+      opponentTag: "#OPP1",
+    });
+  });
+
   it("ignores stale current-war timing and falls back to the provided sync+48h expiry", async () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {

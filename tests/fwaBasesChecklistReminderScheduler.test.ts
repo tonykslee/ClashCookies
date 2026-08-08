@@ -45,7 +45,7 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { trackedMessageService } from "../src/services/TrackedMessageService";
+import { TrackedMessageService, trackedMessageService } from "../src/services/TrackedMessageService";
 
 type ClientLike = {
   channels: {
@@ -216,6 +216,61 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     });
     expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).not.toHaveBeenCalled();
     expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=bases_completion_exists"),
+    );
+  });
+
+  it("suppresses a candidate created before a manual completion using the real final lookup", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate({ syncMessageId: null })]);
+    const completionMessageId =
+      "fwa_match_checklist_bases_completion|guild=guild-1|clan=ABC|war=1001|opponent=OPP1|start=2026-05-26T18:00:00.000Z";
+    prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+      where?.messageId === completionMessageId
+        ? {
+            id: "completion-1",
+            guildId: "guild-1",
+            channelId: "channel-1",
+            messageId: completionMessageId,
+            featureType: "FWA_MATCH_CHECKLIST",
+            status: "ACTIVE",
+            referenceId: null,
+            clanTag: "#ABC",
+            createdAt: new Date("2026-05-26T15:01:00.000Z"),
+            expiresAt: null,
+            metadata: {
+              kind: "bases_completion",
+              createdByUserId: "user-1",
+              createdAtIso: "2026-05-26T15:01:00.000Z",
+              clanTag: "#ABC",
+              clanName: "Alpha Clan",
+              checked: true,
+              warId: "1001",
+              opponentTag: "OPP1",
+              warStartTimeIso: "2026-05-26T18:00:00.000Z",
+            },
+          }
+        : null,
+    );
+    vi.mocked(trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan).mockImplementation(
+      (params) => new TrackedMessageService().findLatestActiveFwaMatchChecklistBasesCompletionForClan(params),
+    );
+    await expect(
+      new TrackedMessageService().findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#ABC",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTime: new Date("2026-05-26T18:00:00.000Z"),
+      }),
+    ).resolves.toBeTruthy();
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:02:00.000Z").getTime());
+
+    expect(counts).toMatchObject({ evaluated: 1, sent: 0, skipped: 1 });
     expect(send).not.toHaveBeenCalled();
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
       expect.stringContaining("reason=bases_completion_exists"),
