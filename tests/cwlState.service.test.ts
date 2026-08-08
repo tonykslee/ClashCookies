@@ -353,7 +353,6 @@ describe("CwlStateService", () => {
       expect.objectContaining({
         where: {
           eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
-          season: "2026-04",
           cwlClanTag: "#2QG2C08UP",
           playerTag: {
             notIn: [
@@ -1194,8 +1193,16 @@ describe("CwlStateService", () => {
     );
   });
 
-  it("normalizes Clash league season dates before replacing event-owned history members", async () => {
+  it("normalizes Clash league seasons across event-owned history and roster replacement", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([{ tag: "#2QG2C08UP" }]);
+    txMock.cwlPlayerClanSeason.count.mockResolvedValue(2);
+    txMock.cwlPlayerClanSeason.deleteMany.mockResolvedValue({ count: 1 });
+    txMock.cwlSeasonRosterState.findUnique.mockResolvedValue({
+      season: "2026-08",
+      clanTag: "#2QG2C08UP",
+      authoritativeRosterCount: 1,
+      reconciledAt: new Date("2026-08-01T00:00:00.000Z"),
+    } as any);
     const cocService = {
       getClanWarLeagueGroup: vi.fn().mockResolvedValue({
         season: "2026-07-01",
@@ -1231,6 +1238,25 @@ describe("CwlStateService", () => {
       data: expect.arrayContaining([expect.objectContaining({ season: "2026-07", playerTag: "#PYLQ0289" })]),
     }));
     expect(txMock.cwlRoundHistory.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ season: "2026-07" }),
+    }));
+    expect(txMock.cwlPlayerClanSeason.count).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        cwlClanTag: "#2QG2C08UP",
+      },
+    });
+    expect(txMock.cwlPlayerClanSeason.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ season: "2026-07" }),
+    }));
+    expect(txMock.cwlPlayerClanSeason.deleteMany).toHaveBeenCalledWith({
+      where: {
+        eventInstanceId: DEFAULT_EVENT_INSTANCE_ID,
+        cwlClanTag: "#2QG2C08UP",
+        playerTag: { notIn: ["#PYLQ0289"] },
+      },
+    });
+    expect(txMock.cwlSeasonRosterState.upsert).toHaveBeenCalledWith(expect.objectContaining({
       update: expect.objectContaining({ season: "2026-07" }),
     }));
   });

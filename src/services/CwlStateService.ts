@@ -543,7 +543,6 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
           const previousPersistedCount = await tx.cwlPlayerClanSeason.count({
             where: {
               eventInstanceId: input.eventInstanceId,
-              season: input.season,
               cwlClanTag: input.clanTag,
             },
           });
@@ -595,6 +594,7 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
               },
               update: {
                 eventInstanceId: input.eventInstanceId,
+                season: input.season,
                 cwlClanTag: input.clanTag,
                 playerName: rosterMember.playerName,
                 townHall: rosterMember.townHall,
@@ -609,7 +609,6 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
             const deleted = await tx.cwlPlayerClanSeason.deleteMany({
               where: {
                 eventInstanceId: input.eventInstanceId,
-                season: input.season,
                 cwlClanTag: input.clanTag,
                 playerTag: { notIn: candidateRosterTags },
               },
@@ -634,6 +633,7 @@ async function runCwlSeasonRosterReconciliationWithRetry(input: {
             },
             update: {
               eventInstanceId: input.eventInstanceId,
+              season: input.season,
               authoritativeRosterCount: candidateRosterCount,
               reconciledAt,
             },
