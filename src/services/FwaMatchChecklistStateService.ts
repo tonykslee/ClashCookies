@@ -626,6 +626,12 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       Boolean(currentBaseSwap) &&
       currentBaseSwapStatus === TRACKED_MESSAGE_STATUS.COMPLETED &&
       !issueSummary.hasIssues;
+    const hasSafeCurrentWarIdentity = Boolean(
+      activeCurrentWar &&
+        (activeCurrentWar.warId !== null ||
+          (activeCurrentWar.startTime instanceof Date &&
+            Number.isFinite(activeCurrentWar.startTime.getTime()))),
+    );
     const baseSwapSource = currentBaseSwap
       ? currentBaseSwapCompleted
         ? "base_swap_completed"
@@ -636,20 +642,35 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? "no_match"
         : "no_sync";
     const exactCompletion =
-      currentBaseSwapCompleted || issueSummary.hasIssues || !rowSyncIdentity
+      currentBaseSwapCompleted || issueSummary.hasIssues
         ? null
-        : await trackedMessageService
-            .findLatestFwaMatchChecklistBasesCompletionForClan({
-              guildId: params.guildId,
-              clanTag,
-              warId: activeCurrentWar?.warId ?? null,
-              warStartTime: activeCurrentWar?.startTime ?? null,
-              opponentTag: activeCurrentWar?.opponentTag ?? null,
-              syncMessageId: rowSyncIdentity,
-            })
-            .catch(() => null);
+        : rowSyncIdentity
+          ? await trackedMessageService
+              .findLatestFwaMatchChecklistBasesCompletionForClan({
+                guildId: params.guildId,
+                clanTag,
+                warId: activeCurrentWar?.warId ?? null,
+                warStartTime: activeCurrentWar?.startTime ?? null,
+                opponentTag: activeCurrentWar?.opponentTag ?? null,
+                syncMessageId: rowSyncIdentity,
+              })
+              .catch(() => null)
+          : hasSafeCurrentWarIdentity
+            ? await trackedMessageService
+                .findLatestFwaMatchChecklistBasesCompletionForClan({
+                  guildId: params.guildId,
+                  clanTag,
+                  warId: activeCurrentWar?.warId ?? null,
+                  warStartTime: activeCurrentWar?.startTime ?? null,
+                  opponentTag: activeCurrentWar?.opponentTag ?? null,
+                })
+                .catch(() => null)
+            : null;
     const fallbackCompletion =
-      currentBaseSwapCompleted || exactCompletion || issueSummary.hasIssues || !rowSyncIdentity
+      currentBaseSwapCompleted ||
+      exactCompletion ||
+      issueSummary.hasIssues ||
+      (!hasSafeCurrentWarIdentity && !rowSyncIdentity)
         ? null
         : await trackedMessageService
             .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
