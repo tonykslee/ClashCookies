@@ -259,6 +259,299 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
 
+  it("repairs a stale canonical sync from exact same-war points evidence", async () => {
+    const warStartTime = new Date("2026-03-12T09:00:00.000Z");
+    const currentWarStore = createCurrentWarStore({
+      clanTag: "#2QG2C08UP",
+      warId: 4001,
+      syncNumber: 534,
+      startTime: warStartTime,
+      opponentTag: "#0PP123",
+      updatedAt: allocationRevision,
+    });
+    prismaMock.currentWar.updateMany.mockImplementation(
+      currentWarStore.updateMany,
+    );
+    const pollCycle = {
+      activeSyncNumber: null,
+      recordActiveSyncNumber: vi.fn((syncNumber: number) => {
+        pollCycle.activeSyncNumber = syncNumber;
+      }),
+    };
+    const service = makeService();
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4001",
+        warStartTime,
+        opponentTag: "#0PP123",
+      }),
+      currentWarSyncNumber: 534,
+      sameWarPointsSyncNumber: 544,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: allocationRevision,
+      pollCycle,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 544,
+      proposedSyncNumber: 544,
+      usable: true,
+      source: "exact_same_war_reconcile",
+      shouldPersist: true,
+      persistence: "saved",
+      validation: "mismatch",
+    });
+    expect(currentWarStore.state.syncNumber).toBe(544);
+    expect(pollCycle.activeSyncNumber).toBe(544);
+    expect(pollCycle.recordActiveSyncNumber).toHaveBeenCalledWith(544);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          syncNumber: 534,
+          updatedAt: allocationRevision,
+          warId: 4001,
+        }),
+        data: expect.objectContaining({ syncNumber: 544 }),
+      }),
+    );
+  });
+
+  it("does not write when the canonical sync already matches exact same-war points", async () => {
+    const pollCycle = {
+      activeSyncNumber: null,
+      recordActiveSyncNumber: vi.fn(),
+    };
+    const service = makeService();
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4002",
+        warStartTime: new Date("2026-03-13T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      currentWarSyncNumber: 544,
+      sameWarPointsSyncNumber: 544,
+      matchType: "FWA",
+      inferredMatchType: true,
+      pollCycle,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 544,
+      source: "existing_current_war",
+      persistence: "not_needed",
+      usable: true,
+      validation: "matched",
+    });
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(pollCycle.recordActiveSyncNumber).toHaveBeenCalledWith(544);
+  });
+
+  it("does not rewrite a canonical sync from the latest global baseline when exact points evidence is missing", async () => {
+    const service = makeService(544);
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4003",
+        warStartTime: new Date("2026-03-14T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      currentWarSyncNumber: 534,
+      sameWarPointsSyncNumber: null,
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 534,
+      source: "existing_current_war",
+      persistence: "not_needed",
+      usable: true,
+    });
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["MM", "BL", "SKIP"])(
+    "does not reconcile a canonical sync for %s evidence",
+    async (matchType) => {
+      const service = makeService();
+
+      const result = await service.resolveOrAllocateActiveSyncNumber({
+        guildId: testGuildId,
+        clanTag: "#2QG2C08UP",
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: "4004",
+          warStartTime: new Date("2026-03-15T09:00:00.000Z"),
+          opponentTag: "#OPP123",
+        }),
+        currentWarSyncNumber: 534,
+        sameWarPointsSyncNumber: 544,
+        matchType,
+        inferredMatchType: false,
+      });
+
+      expect(result).toMatchObject({
+        syncNumber: 534,
+        source: "existing_current_war",
+        persistence: "not_needed",
+        usable: true,
+      });
+      expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed when the exact current war identity changes before stale-sync repair", async () => {
+    const service = makeService();
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.currentWar.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        syncNumber: 544,
+        warId: 4999,
+        startTime: new Date("2026-03-12T09:00:00.000Z"),
+        opponentTag: "#OPP999",
+        updatedAt: new Date("2026-03-12T09:01:00.000Z"),
+      });
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4005",
+        warStartTime: new Date("2026-03-12T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      currentWarSyncNumber: 534,
+      sameWarPointsSyncNumber: 544,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: allocationRevision,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "exact_same_war_reconcile",
+      persistence: "identity_changed",
+      usable: false,
+    });
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ syncNumber: 534, warId: 4005 }),
+      }),
+    );
+  });
+
+  it("fails closed when the exact current war revision changes before stale-sync repair", async () => {
+    const service = makeService();
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({
+      syncNumber: 534,
+      warId: 4006,
+      startTime: new Date("2026-03-12T09:00:00.000Z"),
+      opponentTag: "#OPP123",
+      state: "inWar",
+      updatedAt: new Date("2026-03-12T09:01:00.000Z"),
+    });
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4006",
+        warStartTime: new Date("2026-03-12T09:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      currentWarSyncNumber: 534,
+      sameWarPointsSyncNumber: 544,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: allocationRevision,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "exact_same_war_reconcile",
+      persistence: "revision_changed",
+      usable: false,
+    });
+  });
+
+  it("converges active-cycle discovery after exact stale-sync repair", async () => {
+    const warStartTime = new Date("2026-03-12T09:00:00.000Z");
+    const rows = [
+      {
+        guildId: testGuildId,
+        clanTag: "#STALE",
+        warId: 4007,
+        syncNumber: 534,
+        startTime: warStartTime,
+        opponentTag: "#OPP123",
+        matchType: "FWA",
+        inferredMatchType: true,
+      },
+      {
+        guildId: testGuildId,
+        clanTag: "#CORRECT",
+        warId: 4008,
+        syncNumber: 544,
+        startTime: warStartTime,
+        opponentTag: "#OPP456",
+        matchType: "FWA",
+        inferredMatchType: true,
+      },
+    ];
+    prismaMock.currentWar.findMany.mockImplementation(async () => rows);
+    prismaMock.currentWar.updateMany.mockImplementation(async (args: any) => {
+      if (args.where?.clanTag === "#STALE" && args.where?.syncNumber === 534) {
+        rows[0]!.syncNumber = 544;
+        return { count: 1 };
+      }
+      return { count: 0 };
+    });
+    const service = makeService();
+
+    const first = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#STALE",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4007",
+        warStartTime,
+        opponentTag: "#OPP123",
+      }),
+      currentWarSyncNumber: 534,
+      sameWarPointsSyncNumber: 544,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: allocationRevision,
+    });
+    const discovery = await service.findPersistedActiveSyncNumber();
+
+    expect(first).toMatchObject({
+      syncNumber: 544,
+      source: "exact_same_war_reconcile",
+      usable: true,
+    });
+    expect(discovery).toMatchObject({
+      syncNumber: 544,
+      conflict: false,
+    });
+  });
+
   it("does not promote same-war points sync in mirror mode when CurrentWar syncNumber is absent", async () => {
     process.env.POLLING_MODE = "mirror";
     const service = makeService();
