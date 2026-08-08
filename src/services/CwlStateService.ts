@@ -130,11 +130,26 @@ export type RefreshTrackedCwlStateResult = {
   season: string;
   trackedClanCount: number;
   refreshedClanCount: number;
+  failedClanCount: number;
+  failedClanTagSample: string[];
   currentRoundCount: number;
   currentMemberCount: number;
   historyRoundCount: number;
   historyMemberCount: number;
 };
+
+/** Purpose: prevent callers from treating a partially persisted tracked-CWL refresh as complete. */
+export class CwlTrackedStateRefreshPartialError extends Error {
+  readonly result: RefreshTrackedCwlStateResult;
+
+  constructor(result: RefreshTrackedCwlStateResult) {
+    super(
+      `[cwl-state] tracked state refresh partially persisted failed_clan_count=${result.failedClanCount} failed_clan_tag_sample=${result.failedClanTagSample.join(",") || "none"}`,
+    );
+    this.name = "CwlTrackedStateRefreshPartialError";
+    this.result = result;
+  }
+}
 
 export type RefreshSeasonalCwlClanMappingsResult = {
   season: string;
@@ -1729,6 +1744,8 @@ export class CwlStateService {
         season,
         trackedClanCount: 0,
         refreshedClanCount: 0,
+        failedClanCount: 0,
+        failedClanTagSample: [],
         currentRoundCount: 0,
         currentMemberCount: 0,
         historyRoundCount: 0,
@@ -1832,6 +1849,8 @@ export class CwlStateService {
         season,
         trackedClanCount: 0,
         refreshedClanCount: 0,
+        failedClanCount: 0,
+        failedClanTagSample: [],
         currentRoundCount: 0,
         currentMemberCount: 0,
         historyRoundCount: 0,
@@ -1864,6 +1883,8 @@ export class CwlStateService {
         season: input.season,
         trackedClanCount: 0,
         refreshedClanCount: 0,
+        failedClanCount: 0,
+        failedClanTagSample: [],
         currentRoundCount: 0,
         currentMemberCount: 0,
         historyRoundCount: 0,
@@ -1890,6 +1911,8 @@ export class CwlStateService {
     let historyRoundCount = 0;
     let historyMemberCount = 0;
     let persistedClanCount = 0;
+    let failedClanCount = 0;
+    const failedClanTagSample: string[] = [];
 
     for (const observed of observedStates) {
       if (!observed.fetched) continue;
@@ -1997,11 +2020,6 @@ export class CwlStateService {
         daysParticipated: rosterMember.daysParticipated,
         lastRoundDay: rosterMember.lastRoundDay,
       }));
-
-      currentRoundCount += currentRoundCountForClan;
-      currentMemberCount += currentMemberCountForClan;
-      historyRoundCount += historyRoundCountForClan;
-      historyMemberCount += historyMemberCountForClan;
 
       await runCwlPersistPhase({
         season: observed.season,
@@ -2318,23 +2336,37 @@ export class CwlStateService {
         historyRoundCount: historyRoundCountForClan,
         historyMemberCount: historyMemberCountForClan,
       });
+      currentRoundCount += currentRoundCountForClan;
+      currentMemberCount += currentMemberCountForClan;
+      historyRoundCount += historyRoundCountForClan;
+      historyMemberCount += historyMemberCountForClan;
       persistedClanCount += 1;
       } catch (error) {
+        failedClanCount += 1;
+        if (failedClanTagSample.length < 5) {
+          failedClanTagSample.push(observed.clanTag);
+        }
         console.error(
           `[cwl-state] event=tracked_cwl_clan_persist_failed season=${observed.season} clan_tag=${observed.clanTag} error=${formatError(error)}`,
         );
       }
     }
 
-    return {
+    const result = {
       season: input.season,
       trackedClanCount: trackedClanTags.length,
       refreshedClanCount: persistedClanCount,
+      failedClanCount,
+      failedClanTagSample,
       currentRoundCount,
       currentMemberCount,
       historyRoundCount,
       historyMemberCount,
     };
+    if (failedClanCount > 0) {
+      throw new CwlTrackedStateRefreshPartialError(result);
+    }
+    return result;
   }
 
   /** Purpose: load one persisted current/prep CWL round with sorted member rows for a tracked clan. */

@@ -46,7 +46,10 @@ import {
   CwlAllianceBaselineValidationError,
 } from "../src/services/CwlAllianceBaselineService";
 import { GoogleSheetsAuthError } from "../src/services/GoogleSheetsService";
-import { cwlStateService } from "../src/services/CwlStateService";
+import {
+  CwlTrackedStateRefreshPartialError,
+  cwlStateService,
+} from "../src/services/CwlStateService";
 import { resolveCurrentCwlSeasonKey } from "../src/services/CwlRegistryService";
 import { rosterService } from "../src/services/RosterService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
@@ -3485,7 +3488,17 @@ describe("/cwl command", () => {
     const refreshId = getComponentButtonCustomIds(selectInteraction).find((id) => id.includes(":refresh:"));
     expect(refreshId).toBeTruthy();
     const refreshSpy = vi.spyOn(cwlStateService, "refreshTrackedCwlStateForClan").mockRejectedValue(
-      new Error("boom"),
+      new CwlTrackedStateRefreshPartialError({
+        season: "2026-04",
+        trackedClanCount: 1,
+        refreshedClanCount: 0,
+        failedClanCount: 1,
+        failedClanTagSample: ["#2QG2C08UP"],
+        currentRoundCount: 0,
+        currentMemberCount: 0,
+        historyRoundCount: 0,
+        historyMemberCount: 0,
+      }),
     );
     const refreshInteraction = {
       customId: "cwl-rot-show:refresh:111111111111111111:#2QG2C08UP:2026-04:0:1",

@@ -141,7 +141,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { cwlStateService } from "../src/services/CwlStateService";
+import {
+  CwlTrackedStateRefreshPartialError,
+  cwlStateService,
+} from "../src/services/CwlStateService";
 
 describe("CwlStateService", () => {
   beforeEach(() => {
@@ -773,11 +776,19 @@ describe("CwlStateService", () => {
       getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
-    const result = await cwlStateService.refreshTrackedCwlState({
-      cocService: cocService as any,
-      season: "2026-04",
+    await expect(
+      cwlStateService.refreshTrackedCwlState({
+        cocService: cocService as any,
+        season: "2026-04",
+      }),
+    ).rejects.toMatchObject({
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        refreshedClanCount: 0,
+        failedClanCount: 1,
+        failedClanTagSample: ["#2QG2C08UP"],
+      },
     });
-    expect(result.refreshedClanCount).toBe(0);
     expect(
       prismaMock.$transaction.mock.calls.filter(([, options]) =>
         Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
@@ -808,11 +819,21 @@ describe("CwlStateService", () => {
       getClanWarLeagueWar: vi.fn().mockResolvedValue(buildNeutralLeagueWar("#2QG2C08UP")),
     };
 
-    const result = await cwlStateService.refreshTrackedCwlState({
-      cocService: cocService as any,
-      season: "2026-04",
+    await expect(
+      cwlStateService.refreshTrackedCwlStateForClan({
+        cocService: cocService as any,
+        clanTag: "#2QG2C08UP",
+        season: "2026-04",
+      }),
+    ).rejects.toMatchObject({
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        trackedClanCount: 1,
+        refreshedClanCount: 0,
+        failedClanCount: 1,
+        failedClanTagSample: ["#2QG2C08UP"],
+      },
     });
-    expect(result.refreshedClanCount).toBe(0);
     expect(
       prismaMock.$transaction.mock.calls.filter(([, options]) =>
         Boolean(options && (options as any).isolationLevel === Prisma.TransactionIsolationLevel.Serializable),
@@ -848,12 +869,23 @@ describe("CwlStateService", () => {
       })),
     };
 
-    const result = await cwlStateService.refreshTrackedCwlState({
-      cocService: cocService as any,
-      season: "2026-04",
+    await expect(
+      cwlStateService.refreshTrackedCwlState({
+        cocService: cocService as any,
+        season: "2026-04",
+      }),
+    ).rejects.toMatchObject({
+      name: CwlTrackedStateRefreshPartialError.name,
+      result: {
+        trackedClanCount: 2,
+        refreshedClanCount: 1,
+        failedClanCount: 1,
+        failedClanTagSample: [firstClanTag],
+        currentRoundCount: 0,
+        historyRoundCount: 1,
+        historyMemberCount: 1,
+      },
     });
-
-    expect(result).toMatchObject({ trackedClanCount: 2, refreshedClanCount: 1 });
     expect(txMock.cwlRoundMemberHistory.createMany).toHaveBeenCalledTimes(2);
   });
 
