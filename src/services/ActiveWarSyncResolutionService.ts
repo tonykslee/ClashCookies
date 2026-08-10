@@ -8,6 +8,8 @@ export type ActiveWarSyncState = "preparation" | "inWar" | "notInWar";
 export type ActiveWarSyncResolutionSource =
   | "same_war_persisted"
   | "refresh_posted_sync"
+  | "active_cycle_reuse"
+  | "active_cycle_conflict"
   | "derived_latest_plus_one"
   | "historical_latest_persisted"
   | "none";
@@ -297,6 +299,8 @@ export function resolveActiveWarSyncNumber(input: {
   identity: ActiveWarSyncIdentity;
   latestPersistedSyncNumber: number | null;
   sameWarPersistedSyncNumber: number | null | undefined;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
   postedSyncNumber?: number | null;
   allowPostedSyncReuse?: boolean;
 }): ActiveWarSyncResolutionResult {
@@ -305,6 +309,9 @@ export function resolveActiveWarSyncNumber(input: {
   );
   const sameWarPersistedSyncNumber = normalizeSyncNumber(
     input.sameWarPersistedSyncNumber,
+  );
+  const activeCycleSyncNumber = normalizeSyncNumber(
+    input.activeCycleSyncNumber ?? null,
   );
   const postedSyncNumber = normalizeSyncNumber(input.postedSyncNumber ?? null);
   if (sameWarPersistedSyncNumber !== null) {
@@ -334,6 +341,28 @@ export function resolveActiveWarSyncNumber(input: {
   const isActiveWar =
     input.identity.warState === "preparation" || input.identity.warState === "inWar";
   if (isActiveWar) {
+    if (input.identity.positivelyResolved && input.activeCycleConflict) {
+      return {
+        syncNumber: null,
+        source: "active_cycle_conflict",
+        isDerived: false,
+        identity: input.identity,
+        latestPersistedSyncNumber,
+        sameWarPersistedSyncNumber,
+        postedSyncNumber,
+      };
+    }
+    if (input.identity.positivelyResolved && activeCycleSyncNumber !== null) {
+      return {
+        syncNumber: activeCycleSyncNumber,
+        source: "active_cycle_reuse",
+        isDerived: false,
+        identity: input.identity,
+        latestPersistedSyncNumber,
+        sameWarPersistedSyncNumber,
+        postedSyncNumber,
+      };
+    }
     if (input.identity.positivelyResolved && latestPersistedSyncNumber !== null) {
       return {
         syncNumber: latestPersistedSyncNumber + 1,

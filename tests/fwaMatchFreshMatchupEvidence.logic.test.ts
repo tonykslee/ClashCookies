@@ -209,6 +209,17 @@ describe("fwa points sync numbering regression", () => {
     expect(formatFwaPointsSyncDisplayForTest(545)).toContain("#545");
   });
 
+  it("reuses an existing active cycle when this clan has not propagated its same-war row yet", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
+        activeCycleSyncNumber: 545,
+      }),
+    ).toBe(545);
+  });
+
   it("preserves the guarded latest-plus-one derivation for a genuinely new active war", () => {
     expect(
       resolveFwaPointsCurrentSyncForTest({
@@ -217,6 +228,17 @@ describe("fwa points sync numbering regression", () => {
         sameWarPersistedSyncNumber: null,
       }),
     ).toBe(546);
+  });
+
+  it("fails closed on an active-cycle conflict instead of deriving latest plus one", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
+        activeCycleConflict: true,
+      }),
+    ).toBeNull();
   });
 
   it("treats winner-box sync 545 as current, while sync 544 remains stale", () => {
@@ -257,5 +279,10 @@ describe("fwa points sync numbering regression", () => {
         sourceSync: freshnessBaseline,
       }),
     ).toBe(false);
+  });
+
+  it("keeps alliance and tag-specific output on the same active sync", () => {
+    expect(formatFwaPointsSyncFooterForTest(545)).toBe("Sync#: #545");
+    expect(formatFwaPointsSyncDisplayForTest(545)).toBe("#545 (Low Sync)");
   });
 });

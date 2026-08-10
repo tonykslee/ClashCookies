@@ -127,6 +127,7 @@ import {
 import { PostedMessageService } from "../services/PostedMessageService";
 import { repWorkActivityService } from "../services/RepWorkActivityService";
 import {
+  ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
   resolveActiveWarSyncNumber,
@@ -287,6 +288,9 @@ const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const warMailLifecycleService = new WarMailLifecycleService();
 const pointsSyncService = new PointsSyncService();
+const activeWarSyncResolutionService = new ActiveWarSyncResolutionService(
+  pointsSyncService,
+);
 const warComplianceService = new WarComplianceService();
 const pointsDirectFetchGate = new PointsDirectFetchGateService();
 
@@ -11728,11 +11732,15 @@ function resolveFwaPointsCurrentSync(input: {
   identity: ActiveWarSyncIdentity;
   sourceSync: number | null;
   sameWarPersistedSyncNumber?: number | null;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
 }): number | null {
   return resolveActiveWarSyncNumber({
     identity: input.identity,
     latestPersistedSyncNumber: input.sourceSync,
     sameWarPersistedSyncNumber: input.sameWarPersistedSyncNumber ?? null,
+    activeCycleSyncNumber: input.activeCycleSyncNumber ?? null,
+    activeCycleConflict: input.activeCycleConflict ?? false,
   }).syncNumber;
 }
 
@@ -17381,6 +17389,8 @@ export const Fwa: Command = {
           : [];
       const warScopedSyncRowsByClanTag =
         groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
+      const activeCycleDiscovery =
+        await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
 
       const baselineWarStartMs =
         activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
@@ -17429,6 +17439,8 @@ export const Fwa: Command = {
             identity: syncIdentity,
             sourceSync,
             sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+            activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+            activeCycleConflict: activeCycleDiscovery.conflict,
           });
           const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
             sourceSync,
@@ -18602,10 +18614,14 @@ export const Fwa: Command = {
               ],
             })
           : null;
+      const activeCycleDiscovery =
+        await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
       const resolvedCurrentSync = resolveFwaPointsCurrentSync({
         identity: syncIdentity,
         sourceSync,
         sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+        activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+        activeCycleConflict: activeCycleDiscovery.conflict,
       });
       const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
         sourceSync,
