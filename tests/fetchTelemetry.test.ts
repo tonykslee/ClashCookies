@@ -28,8 +28,8 @@ describe("fetch telemetry persistence guards", () => {
 
     const { recordFetchEvent } = await import("../src/helper/fetchTelemetry");
     recordFetchEvent({
-      namespace: "fwastats_weight",
-      operation: "weight_age_fetch",
+      namespace: "test_fetch",
+      operation: "test_operation",
       source: "api",
     });
 
@@ -60,13 +60,13 @@ describe("fetch telemetry persistence guards", () => {
 
     const { recordFetchEvent } = await import("../src/helper/fetchTelemetry");
     recordFetchEvent({
-      namespace: "fwastats_weight",
-      operation: "weight_age_fetch",
+      namespace: "test_fetch",
+      operation: "test_operation",
       source: "api",
     });
     recordFetchEvent({
-      namespace: "fwastats_weight",
-      operation: "weight_age_fetch",
+      namespace: "test_fetch",
+      operation: "test_operation",
       source: "api",
     });
 
