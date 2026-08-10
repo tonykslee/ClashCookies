@@ -24,6 +24,7 @@ describe("FwaStatsClient parsing", () => {
           isWarLogPublic: "true",
           th18Count: "2",
           estimatedWeight: "145000",
+          weightSubmitDate: "2026-08-09T05:37:17Z",
         },
         { tag: "", name: "" },
       ],
@@ -43,6 +44,23 @@ describe("FwaStatsClient parsing", () => {
       th18Count: 2,
       estimatedWeight: 145000,
     });
+    expect(rows[0]?.weightSubmitDate?.toISOString()).toBe("2026-08-09T05:37:17.000Z");
+  });
+
+  it("normalizes missing and malformed Clans.json weight submission dates to null", async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: [
+        { tag: "AAA111", name: "Missing Date" },
+        { tag: "BBB222", name: "Malformed Date", weightSubmitDate: "not-a-date" },
+      ],
+    } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    const rows = await client.fetchClans();
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.weightSubmitDate)).toEqual([null, null]);
   });
 
   it("parses Members.json rows with tag/number/bool normalization", async () => {

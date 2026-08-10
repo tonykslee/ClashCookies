@@ -43,6 +43,7 @@ Behavior:
 Mirror mode behavior:
 - Disables duplicated external polling owners (activity observe, war-event poll, FWA feed scheduler, user-activity reminder scheduler).
 - Runs scheduled full-overwrite sync for mirrored runtime tables:
+  - `FwaClanCatalog`
   - `CwlEventInstance`
   - `CwlEventWarTag`
   - `CwlEventClan`

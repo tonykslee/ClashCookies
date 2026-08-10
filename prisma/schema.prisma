@@ -1865,6 +1865,7 @@ model FwaClanCatalog {
   th8Count         Int?
   thLowCount       Int?
   estimatedWeight  Int?
+  weightSubmitDate DateTime?
   firstSeenAt      DateTime @default(now())
   lastSeenAt       DateTime
   lastSyncedAt     DateTime

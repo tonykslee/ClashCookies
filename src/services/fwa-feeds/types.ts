@@ -29,6 +29,7 @@ export type FwaClansFeedRow = {
   th8Count: number | null;
   thLowCount: number | null;
   estimatedWeight: number | null;
+  weightSubmitDate: Date | null;
 };
 
 export type FwaClanMemberFeedRow = {
