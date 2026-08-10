@@ -190,6 +190,7 @@ export class FwaStatsClient {
       th8Count: toIntOrNull(row.th8Count),
       thLowCount: toIntOrNull(row.thLowCount),
       estimatedWeight: toIntOrNull(row.estimatedWeight),
+      weightSubmitDate: toDateOrNull(row.weightSubmitDate),
     };
   }
 

@@ -14,6 +14,7 @@ import {
   type CurrentCwlRound,
   type CurrentWar,
   type ExternalPlayerWeightCurrent,
+  type FwaClanCatalog,
   type CwlRotationPlan,
   type CwlRotationPlanDay,
   type CwlRotationPlanMember,
@@ -40,6 +41,7 @@ import {
 } from "./PollingModeService";
 
 export const MIRRORED_RUNTIME_TABLES = [
+  "FwaClanCatalog",
   "TrackedClan",
   "TrackedClanRep",
   "TrackedClanRepUserProfile",
@@ -102,6 +104,7 @@ type DeleteManyResult = { count: number };
 type CreateManyResult = { count: number };
 
 type MirrorSyncSourceClient = {
+  fwaClanCatalog: { findMany: (args?: unknown) => Promise<FwaClanCatalog[]> };
   trackedClan: { findMany: (args?: unknown) => Promise<TrackedClan[]> };
   trackedClanRep: { findMany: (args?: unknown) => Promise<TrackedClanRep[]> };
   trackedClanRepUserProfile: { findMany: (args?: unknown) => Promise<TrackedClanRepUserProfile[]> };
@@ -154,6 +157,10 @@ type MirrorSyncSourceClient = {
 };
 
 type MirrorSyncTargetClient = {
+  fwaClanCatalog: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: FwaClanCatalog[] }) => Promise<CreateManyResult>;
+  };
   trackedClan: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: TrackedClan[] }) => Promise<CreateManyResult>;
@@ -296,6 +303,7 @@ type SyncSafetyContext = {
 };
 
 type MirrorSyncSourceRows = {
+  FwaClanCatalog: FwaClanCatalog[];
   TrackedClan: TrackedClan[];
   TrackedClanRep: TrackedClanRep[];
   TrackedClanRepUserProfile: TrackedClanRepUserProfile[];
@@ -569,6 +577,9 @@ export class MirrorSyncService {
     sourceClient: MirrorSyncSourceClient,
   ): Promise<MirrorSyncSourceRows> {
     return {
+      FwaClanCatalog: await sourceClient.fwaClanCatalog.findMany({
+        orderBy: [{ clanTag: "asc" }],
+      }),
       TrackedClan: await sourceClient.trackedClan.findMany({
         orderBy: [{ id: "asc" }],
       }),
@@ -669,6 +680,14 @@ export class MirrorSyncService {
     table: MirrorTableName,
     rows: readonly unknown[],
   ): Promise<MirrorSyncTableSummary> {
+    if (table === "FwaClanCatalog") {
+      const deletedRows = (await tx.fwaClanCatalog.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as FwaClanCatalog[], (batch) =>
+        tx.fwaClanCatalog.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
     if (table === "TrackedClan") {
       const deletedRows = (await tx.trackedClan.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as TrackedClan[], (batch) =>
