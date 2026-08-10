@@ -61,7 +61,7 @@ import {
   type CompoReplacementResolution,
 } from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
-import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
+import { buildFwaWeightPageUrl } from "../services/FwaWeightCatalogService";
 import { blacklistHeatmapRefService } from "../services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
 import {

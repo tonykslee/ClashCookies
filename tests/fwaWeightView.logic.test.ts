@@ -1,118 +1,61 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildWeightAuthFailureNote,
   formatWeightAgeLine,
   formatWeightHealthLine,
   getWeightHealthState,
-  isWeightAuthFailureStatus,
 } from "../src/commands/fwa/weightView";
-import { type FwaStatsWeightAge } from "../src/services/FwaStatsWeightService";
+import {
+  buildFwaWeightPageUrl,
+  deriveFwaCatalogWeightAge,
+} from "../src/services/FwaWeightCatalogService";
 
-function makeResult(input: Partial<FwaStatsWeightAge>): FwaStatsWeightAge {
-  return {
-    clanTag: "#ABC123",
-    sourceUrl: "https://fwastats.com/Clan/ABC123/Weight",
-    ageText: "2d ago",
-    ageDays: 2,
-    scrapedAt: new Date("2026-01-01T00:00:00.000Z"),
-    status: "ok",
-    httpStatus: 200,
-    fromCache: false,
-    error: null,
-    authErrorCode: null,
-    ...input,
-  };
-}
+const NOW = new Date("2026-08-09T12:00:00.000Z");
 
 describe("weight view helpers", () => {
-  it("maps ages into health states", () => {
-    expect(getWeightHealthState(2)).toBe("recent");
-    expect(getWeightHealthState(14)).toBe("outdated");
-    expect(getWeightHealthState(31)).toBe("severely_outdated");
+  it("preserves the 7-day and 30-day health boundaries", () => {
+    expect(getWeightHealthState(7)).toBe("recent");
+    expect(getWeightHealthState(7.001)).toBe("outdated");
+    expect(getWeightHealthState(30)).toBe("severely_outdated");
     expect(getWeightHealthState(null)).toBe("unknown");
   });
 
-  it("formats weight-age lines for success and auth failures", () => {
-    const success = formatWeightAgeLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({}),
-    });
-    const missingCookie = formatWeightAgeLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({ status: "login_required_no_cookie", ageText: null, ageDays: null }),
-    });
-    const rejectedCookie = formatWeightAgeLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({
-        status: "login_required_cookie_rejected",
-        ageText: null,
-        ageDays: null,
-      }),
-    });
-
-    expect(success).toContain("Alpha (#ABC123) — 2d ago");
-    expect(missingCookie).toContain("unavailable (auth cookie missing)");
-    expect(rejectedCookie).toContain("unavailable (auth cookie rejected/expired)");
+  it("clamps future submission timestamps to a non-negative age", () => {
+    const result = deriveFwaCatalogWeightAge(
+      "#ABC123",
+      new Date("2026-08-10T12:00:00.000Z"),
+      NOW,
+    );
+    expect(result.ageDays).toBe(0);
+    expect(result.ageText).toBe("0d 0h ago");
   });
 
-  it("formats health lines with legend emojis", () => {
-    const recent = formatWeightHealthLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({ ageText: "2d ago", ageDays: 2 }),
-    });
-    const outdated = formatWeightHealthLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({ ageText: "14d ago", ageDays: 14 }),
-    });
-    const severe = formatWeightHealthLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({ ageText: "31d ago", ageDays: 31 }),
-    });
-    const unavailable = formatWeightHealthLine({
-      clanName: "Alpha",
-      clanTag: "ABC123",
-      result: makeResult({ status: "parse_error", ageText: null, ageDays: null }),
-    });
-
-    expect(recent).toContain("✅");
-    expect(outdated).toContain("⚠️");
-    expect(severe).toContain("❌");
-    expect(unavailable).toContain("❓");
+  it("preserves the existing weight-link URL shape", () => {
+    expect(buildFwaWeightPageUrl("#ABC123")).toBe(
+      "https://fwastats.com/Clan/ABC123/Weight",
+    );
   });
 
-  it("returns auth note when auth failures are present", () => {
-    const noCookie = makeResult({
-      status: "login_required_no_cookie",
-      ageText: null,
-      ageDays: null,
-      authErrorCode: "FWASTATS_AUTH_REQUIRED",
+  it("formats recent, stale, severe, and unknown rows with established icons", () => {
+    const make = (ageDays: number | null) => ({
+      clanTag: "#ABC123",
+      weightSubmitDate: ageDays === null ? null : NOW,
+      ageDays,
+      ageText: ageDays === null ? null : `${ageDays}d 0h ago`,
     });
-    const rejected = makeResult({
-      status: "login_required_cookie_rejected",
-      ageText: null,
-      ageDays: null,
-      authErrorCode: "FWASTATS_AUTH_EXPIRED",
-    });
-    const loginDetected = makeResult({
-      status: "login_required_cookie_rejected",
-      ageText: null,
-      ageDays: null,
-      authErrorCode: "FWASTATS_LOGIN_PAGE_DETECTED",
-    });
-
-    expect(isWeightAuthFailureStatus(noCookie.status)).toBe(true);
-    expect(isWeightAuthFailureStatus("parse_error")).toBe(false);
-    expect(buildWeightAuthFailureNote([noCookie])).toContain("Recovery steps:");
-    expect(buildWeightAuthFailureNote([noCookie])).toContain("/fwa weight-cookie");
-    expect(buildWeightAuthFailureNote([rejected])).toContain("rejected or expired");
-    expect(buildWeightAuthFailureNote([rejected])).toContain("https://i.imgur.com/HFzGNQD.png");
-    expect(buildWeightAuthFailureNote([loginDetected])).toContain("login page");
-    expect(buildWeightAuthFailureNote([makeResult({})])).toBeNull();
+    expect(
+      formatWeightAgeLine({ clanName: "Alpha", clanTag: "ABC123", result: make(2) }),
+    ).toContain("Alpha (#ABC123) \u2014 2d 0h ago");
+    expect(
+      formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(2) }),
+    ).toContain("\u2705");
+    expect(
+      formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(14) }),
+    ).toContain("\u26a0\ufe0f");
+    expect(
+      formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(30) }),
+    ).toContain("\u274c");
+    expect(
+      formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(null) }),
+    ).toContain("\u2753");
   });
 });

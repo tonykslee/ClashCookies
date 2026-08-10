@@ -13,7 +13,7 @@ import {
   getHeatMapRefBandMidpoint,
   getHeatMapRefAdviceMidpoint,
 } from "./compoHeatMap";
-import { buildFwaWeightPageUrl } from "../services/FwaStatsWeightService";
+import { buildFwaWeightPageUrl } from "../services/FwaWeightCatalogService";
 import type { CompoWarBucketCounts } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
 
