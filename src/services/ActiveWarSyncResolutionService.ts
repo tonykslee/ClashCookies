@@ -8,6 +8,7 @@ export type ActiveWarSyncState = "preparation" | "inWar" | "notInWar";
 export type ActiveWarSyncResolutionSource =
   | "same_war_persisted"
   | "refresh_posted_sync"
+  | "current_war_canonical"
   | "active_cycle_reuse"
   | "active_cycle_conflict"
   | "derived_latest_plus_one"
@@ -406,6 +407,51 @@ export function resolveActiveWarSyncNumber(input: {
     sameWarPersistedSyncNumber,
     postedSyncNumber,
   };
+}
+
+/** Purpose: resolve a command read without allocating, honoring exact and already-assigned canonical evidence. */
+export function resolveActiveWarSyncNumberReadOnly(input: {
+  identity: ActiveWarSyncIdentity;
+  latestPersistedSyncNumber: number | null;
+  sameWarPersistedSyncNumber: number | null | undefined;
+  currentWarSyncNumber?: number | null;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
+}): ActiveWarSyncResolutionResult {
+  const currentWarSyncNumber = normalizeSyncNumber(
+    input.currentWarSyncNumber ?? null,
+  );
+  const isActiveWar =
+    input.identity.warState === "preparation" || input.identity.warState === "inWar";
+  const sameWarPersistedSyncNumber = normalizeSyncNumber(
+    input.sameWarPersistedSyncNumber,
+  );
+  if (
+    sameWarPersistedSyncNumber === null &&
+    isActiveWar &&
+    input.identity.positivelyResolved &&
+    currentWarSyncNumber !== null
+  ) {
+    const latestPersistedSyncNumber = normalizeSyncNumber(
+      input.latestPersistedSyncNumber,
+    );
+    return {
+      syncNumber: currentWarSyncNumber,
+      source: "current_war_canonical",
+      isDerived: false,
+      identity: input.identity,
+      latestPersistedSyncNumber,
+      sameWarPersistedSyncNumber,
+      postedSyncNumber: null,
+    };
+  }
+  return resolveActiveWarSyncNumber({
+    identity: input.identity,
+    latestPersistedSyncNumber: input.latestPersistedSyncNumber,
+    sameWarPersistedSyncNumber,
+    activeCycleSyncNumber: input.activeCycleSyncNumber ?? null,
+    activeCycleConflict: input.activeCycleConflict ?? false,
+  });
 }
 
 /** Purpose: log shared sync resolution decisions in one structured format. */

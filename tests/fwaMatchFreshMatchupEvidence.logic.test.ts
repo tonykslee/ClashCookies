@@ -5,6 +5,7 @@ import {
   isPointsValidationCurrentForMatchupForTest,
   resolveFreshMatchupEvidenceForTest,
   resolveFwaPointsCurrentSyncForTest,
+  resolveFwaPointsFooterSyncForTest,
   resolveManualMatchupFreshnessSourceSyncForTest,
 } from "../src/commands/Fwa";
 import { buildSyncMismatchWarning } from "../src/commands/fwa/matchState";
@@ -198,6 +199,34 @@ describe("fwa points sync numbering regression", () => {
     expect(formatFwaPointsSyncFooterForTest(545)).toBe("Sync#: #545");
   });
 
+  it("uses the unambiguous active-cycle sync for the alliance footer", () => {
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleSyncNumber: 545,
+      }),
+    ).toBe(545);
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(546);
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+      }),
+    ).toBe(545);
+    expect(
+      formatFwaPointsSyncFooterForTest(
+        resolveFwaPointsFooterSyncForTest({
+          sourceSync: 545,
+          activeCycleConflict: true,
+        }),
+      ),
+    ).toBe("Sync#: unknown");
+  });
+
   it("keeps tag-specific points on an already-resolved current sync", () => {
     expect(
       resolveFwaPointsCurrentSyncForTest({
@@ -216,6 +245,29 @@ describe("fwa points sync numbering regression", () => {
         sourceSync: 545,
         sameWarPersistedSyncNumber: null,
         activeCycleSyncNumber: 545,
+      }),
+    ).toBe(545);
+  });
+
+  it("prefers the canonical CurrentWar sync over an active-cycle conflict", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        currentWarSyncNumber: 545,
+        activeCycleConflict: true,
+      }),
+    ).toBe(545);
+  });
+
+  it("lets exact same-war points evidence supersede stale canonical CurrentWar sync", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: 545,
+        currentWarSyncNumber: 546,
+        activeCycleConflict: true,
       }),
     ).toBe(545);
   });

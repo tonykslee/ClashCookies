@@ -131,6 +131,7 @@ import {
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
   resolveActiveWarSyncNumber,
+  resolveActiveWarSyncNumberReadOnly,
   resolveCurrentWarSyncIdentity,
   type ActiveWarSyncIdentity,
 } from "../services/ActiveWarSyncResolutionService";
@@ -11722,6 +11723,16 @@ function formatFwaPointsSyncFooter(syncNumber: number | null): string {
     : `Sync#: #${comparableSyncNumber}`;
 }
 
+/** Purpose: select one safe alliance-footer sync without applying presentation arithmetic. */
+function resolveFwaPointsFooterSync(input: {
+  sourceSync: number | null;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
+}): number | null {
+  if (input.activeCycleConflict) return null;
+  return input.activeCycleSyncNumber ?? input.sourceSync;
+}
+
 /** Purpose: render the resolved current sync used by tag-specific points output. */
 function formatFwaPointsSyncDisplay(syncNumber: number | null): string {
   return formatResolvedSyncDisplay(syncNumber);
@@ -11732,19 +11743,22 @@ function resolveFwaPointsCurrentSync(input: {
   identity: ActiveWarSyncIdentity;
   sourceSync: number | null;
   sameWarPersistedSyncNumber?: number | null;
+  currentWarSyncNumber?: number | null;
   activeCycleSyncNumber?: number | null;
   activeCycleConflict?: boolean;
 }): number | null {
-  return resolveActiveWarSyncNumber({
+  return resolveActiveWarSyncNumberReadOnly({
     identity: input.identity,
     latestPersistedSyncNumber: input.sourceSync,
     sameWarPersistedSyncNumber: input.sameWarPersistedSyncNumber ?? null,
+    currentWarSyncNumber: input.currentWarSyncNumber ?? null,
     activeCycleSyncNumber: input.activeCycleSyncNumber ?? null,
     activeCycleConflict: input.activeCycleConflict ?? false,
   }).syncNumber;
 }
 
 export const formatFwaPointsSyncFooterForTest = formatFwaPointsSyncFooter;
+export const resolveFwaPointsFooterSyncForTest = resolveFwaPointsFooterSync;
 export const formatFwaPointsSyncDisplayForTest = formatFwaPointsSyncDisplay;
 export const resolveFwaPointsCurrentSyncForTest = resolveFwaPointsCurrentSync;
 
@@ -17502,7 +17516,13 @@ export const Fwa: Command = {
       if (forbiddenCount > 0) {
         summary += `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      summary += `\n${formatFwaPointsSyncFooter(sourceSync)}`;
+      summary += `\n${formatFwaPointsSyncFooter(
+        resolveFwaPointsFooterSync({
+          sourceSync,
+          activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+          activeCycleConflict: activeCycleDiscovery.conflict,
+        }),
+      )}`;
       if (missedSyncTags.size > 0) {
         summary += `\nIgnored for Sync#: ${missedSyncTags.size} missed-sync clan(s).`;
       }
@@ -18576,6 +18596,7 @@ export const Fwa: Command = {
             },
             select: {
               warId: true,
+              syncNumber: true,
               startTime: true,
               opponentTag: true,
               fwaPoints: true,
@@ -18620,6 +18641,15 @@ export const Fwa: Command = {
         identity: syncIdentity,
         sourceSync,
         sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+        currentWarSyncNumber:
+          syncIdentity.positivelyResolved &&
+          syncIdentity.warStartTime &&
+          subscription?.startTime &&
+          syncIdentity.warStartTime.getTime() === subscription.startTime.getTime() &&
+          normalizeTag(String(syncIdentity.opponentTag ?? "")) ===
+            normalizeTag(String(subscription?.opponentTag ?? ""))
+            ? subscription?.syncNumber ?? null
+            : null,
         activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
         activeCycleConflict: activeCycleDiscovery.conflict,
       });
