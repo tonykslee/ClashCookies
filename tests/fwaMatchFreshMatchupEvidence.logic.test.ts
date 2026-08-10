@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatFwaPointsSyncDisplayForTest,
+  formatFwaPointsSyncFooterForTest,
   isPointsValidationCurrentForMatchupForTest,
   resolveFreshMatchupEvidenceForTest,
+  resolveFwaPointsCurrentSyncForTest,
   resolveManualMatchupFreshnessSourceSyncForTest,
 } from "../src/commands/Fwa";
+import { buildSyncMismatchWarning } from "../src/commands/fwa/matchState";
+import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
 
 function buildSnapshot(overrides: Record<string, unknown>): any {
   return {
@@ -179,5 +184,78 @@ describe("fwa manual fresh matchup evidence", () => {
 
     expect(resolved.siteCurrent).toBe(false);
     expect(resolved.usedTrackedFallback).toBe(false);
+  });
+});
+
+describe("fwa points sync numbering regression", () => {
+  const activeIdentity = buildActiveWarSyncIdentity({
+    warState: "inWar",
+    warStartTime: new Date("2026-08-10T20:00:00.000Z"),
+    opponentTag: "2OPP",
+  });
+
+  it("keeps the alliance footer on the exact persisted sync", () => {
+    expect(formatFwaPointsSyncFooterForTest(545)).toBe("Sync#: #545");
+  });
+
+  it("keeps tag-specific points on an already-resolved current sync", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: 545,
+      }),
+    ).toBe(545);
+    expect(formatFwaPointsSyncDisplayForTest(545)).toContain("#545");
+  });
+
+  it("preserves the guarded latest-plus-one derivation for a genuinely new active war", () => {
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: activeIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
+      }),
+    ).toBe(546);
+  });
+
+  it("treats winner-box sync 545 as current, while sync 544 remains stale", () => {
+    const freshnessBaseline =
+      resolveManualMatchupFreshnessSourceSyncForTest({
+        sourceSync: 545,
+        resolvedCurrentSyncNum: 545,
+      });
+    const currentSnapshot = buildSnapshot({
+      winnerBoxTags: ["2TRACK", "2OPP"],
+      winnerBoxSync: 545,
+      effectiveSync: 545,
+    });
+    const staleSnapshot = buildSnapshot({
+      winnerBoxTags: ["2TRACK", "2OPP"],
+      winnerBoxSync: 544,
+      effectiveSync: 544,
+    });
+
+    expect(freshnessBaseline).toBe(544);
+    expect(buildSyncMismatchWarning(545, 545)).toBeNull();
+    expect(buildSyncMismatchWarning(545, 544)).toBe(
+      "⚠️ Sync # mismatch: expected #545, site #544.",
+    );
+    expect(
+      isPointsValidationCurrentForMatchupForTest({
+        primarySnapshot: currentSnapshot,
+        opponentSnapshot: null,
+        opponentTag: "2OPP",
+        sourceSync: freshnessBaseline,
+      }),
+    ).toBe(true);
+    expect(
+      isPointsValidationCurrentForMatchupForTest({
+        primarySnapshot: staleSnapshot,
+        opponentSnapshot: null,
+        opponentTag: "2OPP",
+        sourceSync: freshnessBaseline,
+      }),
+    ).toBe(false);
   });
 });

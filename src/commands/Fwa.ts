@@ -110,8 +110,6 @@ import {
   deriveOpponentBalanceFromPrimarySnapshot,
   formatMatchTypeLabel,
   formatWarStateLabel,
-  getCurrentSyncFromPrevious,
-  getSyncDisplay,
   getWarStateRemaining,
   isMissedSyncClan,
   isPointsSiteUpdatedForOpponent,
@@ -11712,6 +11710,36 @@ function formatResolvedSyncDisplay(syncNumber: number | null): string {
   return `#${comparableSyncNumber}`;
 }
 
+/** Purpose: render the exact persisted sync number used by the alliance points footer. */
+function formatFwaPointsSyncFooter(syncNumber: number | null): string {
+  const comparableSyncNumber = toComparableSyncNumber(syncNumber);
+  return comparableSyncNumber === null
+    ? "Sync#: unknown"
+    : `Sync#: #${comparableSyncNumber}`;
+}
+
+/** Purpose: render the resolved current sync used by tag-specific points output. */
+function formatFwaPointsSyncDisplay(syncNumber: number | null): string {
+  return formatResolvedSyncDisplay(syncNumber);
+}
+
+/** Purpose: resolve points-command syncs through the canonical active-war resolver. */
+function resolveFwaPointsCurrentSync(input: {
+  identity: ActiveWarSyncIdentity;
+  sourceSync: number | null;
+  sameWarPersistedSyncNumber?: number | null;
+}): number | null {
+  return resolveActiveWarSyncNumber({
+    identity: input.identity,
+    latestPersistedSyncNumber: input.sourceSync,
+    sameWarPersistedSyncNumber: input.sameWarPersistedSyncNumber ?? null,
+  }).syncNumber;
+}
+
+export const formatFwaPointsSyncFooterForTest = formatFwaPointsSyncFooter;
+export const formatFwaPointsSyncDisplayForTest = formatFwaPointsSyncDisplay;
+export const resolveFwaPointsCurrentSyncForTest = resolveFwaPointsCurrentSync;
+
 /** Purpose: normalize optional sync values into comparable integers. */
 function toComparableSyncNumber(
   value: number | null | undefined,
@@ -17297,6 +17325,7 @@ export const Fwa: Command = {
       let forbiddenCount = 0;
       const warStateByTag = new Map<string, WarStateForSync>();
       const warStartMsByTag = new Map<string, number | null>();
+      const warByTag = new Map<string, CurrentWarResult | null>();
       const activeWarStarts: number[] = [];
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
@@ -17309,6 +17338,7 @@ export const Fwa: Command = {
         const warStartMs = parseCocApiTime(war?.startTime);
         warStateByTag.set(trackedTag, warState);
         warStartMsByTag.set(trackedTag, warStartMs);
+        warByTag.set(trackedTag, war);
         if (
           warState !== "notInWar" &&
           warStartMs !== null &&
@@ -17317,6 +17347,40 @@ export const Fwa: Command = {
           activeWarStarts.push(warStartMs);
         }
       }
+
+      const warScopedSyncRows =
+        interaction.guildId && activeWarStarts.length > 0
+          ? await prisma.clanPointsSync.findMany({
+              where: {
+                guildId: interaction.guildId,
+                clanTag: { in: tracked.map((clan) => `#${normalizeTag(clan.tag)}`) },
+                needsValidation: false,
+                warStartTime: {
+                  in: [...new Set(activeWarStarts)].map((value) => new Date(value)),
+                },
+              },
+              select: {
+                clanTag: true,
+                warId: true,
+                warStartTime: true,
+                syncNum: true,
+                opponentTag: true,
+                clanPoints: true,
+                opponentPoints: true,
+                isFwa: true,
+                needsValidation: true,
+                lastSuccessfulPointsApiFetchAt: true,
+                syncFetchedAt: true,
+              },
+              orderBy: [
+                { warStartTime: "desc" },
+                { syncFetchedAt: "desc" },
+                { updatedAt: "desc" },
+              ],
+            })
+          : [];
+      const warScopedSyncRowsByClanTag =
+        groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
 
       const baselineWarStartMs =
         activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
@@ -17341,19 +17405,40 @@ export const Fwa: Command = {
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
-          const war = await getCurrentWarCached(
-            cocService,
-            trackedTag,
-            warLookupCache,
-          ).catch(() => null);
+          const war =
+            warByTag.get(trackedTag) ??
+            (await getCurrentWarCached(
+              cocService,
+              trackedTag,
+              warLookupCache,
+            ).catch(() => null));
           const warState =
             warStateByTag.get(trackedTag) ?? deriveWarState(war?.state);
-          const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+          const syncIdentity = buildActiveWarSyncIdentity({
+            warState,
+            warStartTime: getWarStartDateForSync(null, war),
+            opponentTag: String(war?.opponent?.tag ?? ""),
+          });
+          const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+            rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
+            warId: syncIdentity.warId,
+            warStartTime: syncIdentity.warStartTime,
+            opponentTag: syncIdentity.opponentTag,
+          });
+          const resolvedCurrentSync = resolveFwaPointsCurrentSync({
+            identity: syncIdentity,
+            sourceSync,
+            sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+          });
+          const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
+            sourceSync,
+            resolvedCurrentSyncNum: resolvedCurrentSync,
+          });
           const result = await getClanPointsCached(
             settings,
             cocService,
             trackedTag,
-            currentSync,
+            resolvedCurrentSync,
             warLookupCache,
             { fetchReason: "points_command" },
           );
@@ -17371,7 +17456,11 @@ export const Fwa: Command = {
           );
           const mismatch =
             trueOpponentTag &&
-            isPointsSiteUpdatedForOpponent(result, trueOpponentTag, sourceSync)
+            isPointsSiteUpdatedForOpponent(
+              result,
+              trueOpponentTag,
+              freshnessBaseline,
+            )
               ? buildPointsMismatchWarning(
                   label,
                   subByTag.get(trackedTag)?.fwaPoints ?? null,
@@ -17401,11 +17490,7 @@ export const Fwa: Command = {
       if (forbiddenCount > 0) {
         summary += `\n${forbiddenCount} request(s) were blocked by points.fwafarm.com (HTTP 403).`;
       }
-      summary += `\nSync#: ${
-        sourceSync !== null && Number.isFinite(sourceSync)
-          ? `#${Math.trunc(sourceSync) + 1}`
-          : "unknown"
-      }`;
+      summary += `\n${formatFwaPointsSyncFooter(sourceSync)}`;
       if (missedSyncTags.size > 0) {
         summary += `\nIgnored for Sync#: ${missedSyncTags.size} missed-sync clan(s).`;
       }
@@ -18469,12 +18554,68 @@ export const Fwa: Command = {
       ).catch(() => null);
       const warState = deriveWarState(war?.state);
       const warRemaining = getWarStateRemaining(war, warState);
-      const currentSync = getCurrentSyncFromPrevious(sourceSync, warState);
+      const subscription = interaction.guildId
+        ? await prisma.currentWar.findUnique({
+            where: {
+              clanTag_guildId: {
+                guildId: interaction.guildId,
+                clanTag: `#${tag}`,
+              },
+            },
+            select: {
+              warId: true,
+              startTime: true,
+              opponentTag: true,
+              fwaPoints: true,
+              outcome: true,
+              matchType: true,
+            },
+          })
+        : null;
+      const syncIdentity = resolveCurrentWarSyncIdentity({
+        clanTag: tag,
+        warState,
+        liveWarStartTime: war?.startTime ?? null,
+        liveOpponentTag: war?.opponent?.tag ?? null,
+        currentWarId: subscription?.warId ?? null,
+        currentWarStartTime: subscription?.startTime ?? null,
+        currentWarOpponentTag: subscription?.opponentTag ?? null,
+      });
+      const sameWarSyncRow =
+        interaction.guildId && syncIdentity.positivelyResolved
+          ? await prisma.clanPointsSync.findFirst({
+              where: {
+                guildId: interaction.guildId,
+                clanTag: `#${tag}`,
+                needsValidation: false,
+                ...(syncIdentity.warStartTime
+                  ? { warStartTime: syncIdentity.warStartTime }
+                  : { warId: syncIdentity.warId }),
+                ...(syncIdentity.opponentTag
+                  ? { opponentTag: `#${syncIdentity.opponentTag}` }
+                  : {}),
+              },
+              select: { syncNum: true },
+              orderBy: [
+                { syncFetchedAt: "desc" },
+                { updatedAt: "desc" },
+              ],
+            })
+          : null;
+      const resolvedCurrentSync = resolveFwaPointsCurrentSync({
+        identity: syncIdentity,
+        sourceSync,
+        sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+      });
+      const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
+        sourceSync,
+        resolvedCurrentSyncNum: resolvedCurrentSync,
+      });
       const result = await getClanPointsCached(
         settings,
         cocService,
         tag,
-        currentSync,
+        resolvedCurrentSync,
         warLookupCache,
         { fetchReason: "points_command" },
       );
@@ -18511,20 +18652,13 @@ export const Fwa: Command = {
               .catch(() => null);
       const displayName =
         trackedName ?? scrapedName ?? apiName ?? "Unknown Clan";
-      const subscription = interaction.guildId
-        ? await prisma.currentWar.findUnique({
-            where: {
-              clanTag_guildId: {
-                guildId: interaction.guildId,
-                clanTag: `#${tag}`,
-              },
-            },
-            select: { fwaPoints: true, outcome: true, matchType: true },
-          })
-        : null;
       const trueOpponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
       const siteUpdatedForCurrentWar = trueOpponentTag
-        ? isPointsSiteUpdatedForOpponent(result, trueOpponentTag, sourceSync)
+        ? isPointsSiteUpdatedForOpponent(
+            result,
+            trueOpponentTag,
+            freshnessBaseline,
+          )
         : false;
       const pointsMismatch = siteUpdatedForCurrentWar
         ? buildPointsMismatchWarning(
@@ -18533,7 +18667,7 @@ export const Fwa: Command = {
             balance,
           )
         : null;
-      const expectedSync = getCurrentSyncFromPrevious(sourceSync, warState);
+      const expectedSync = resolvedCurrentSync;
       const siteSyncObserved = result.winnerBoxSync ?? null;
       const syncMismatch = siteUpdatedForCurrentWar
         ? buildSyncMismatchWarning(expectedSync, siteSyncObserved)
@@ -18570,9 +18704,8 @@ export const Fwa: Command = {
       await editReplySafe(
         `Clan Name: **${displayName}**\nTag: #${tag}\nPoint Balance: **${formatPoints(
           balance,
-        )}**\nWar state: ${formatWarStateLabel(warState)}\nTime remaining: ${warRemaining}\nSync: ${getSyncDisplay(
-          sourceSync,
-          warState,
+        )}**\nWar state: ${formatWarStateLabel(warState)}\nTime remaining: ${warRemaining}\nSync: ${formatFwaPointsSyncDisplay(
+          resolvedCurrentSync,
         )}\n${syncStatusLine}${mismatchLines ? `\n${mismatchLines}` : ""}\n${buildOfficialPointsUrl(tag)}`,
       );
     } catch (err) {
