@@ -11728,9 +11728,64 @@ function resolveFwaPointsFooterSync(input: {
   sourceSync: number | null;
   activeCycleSyncNumber?: number | null;
   activeCycleConflict?: boolean;
+  resolvedActiveSyncNumbers?: number[];
+  exactResolvedActiveSyncNumbers?: number[];
+  activeCurrentClanCount?: number;
 }): number | null {
-  if (input.activeCycleConflict) return null;
-  return input.activeCycleSyncNumber ?? input.sourceSync;
+  const resolvedActiveSyncNumbers = [
+    ...(input.resolvedActiveSyncNumbers ?? []),
+  ]
+    .map((value) => toComparableSyncNumber(value))
+    .filter((value): value is number => value !== null);
+  const distinctResolvedSyncNumbers = [...new Set(resolvedActiveSyncNumbers)];
+  const exactResolvedActiveSyncNumbers = [
+    ...(input.exactResolvedActiveSyncNumbers ?? []),
+  ]
+    .map((value) => toComparableSyncNumber(value))
+    .filter((value): value is number => value !== null);
+  const distinctExactResolvedSyncNumbers = [
+    ...new Set(exactResolvedActiveSyncNumbers),
+  ];
+  if (input.activeCycleConflict) {
+    return distinctExactResolvedSyncNumbers.length === 1
+      ? distinctExactResolvedSyncNumbers[0]
+      : null;
+  }
+  if (input.activeCycleSyncNumber !== null && input.activeCycleSyncNumber !== undefined) {
+    return toComparableSyncNumber(input.activeCycleSyncNumber);
+  }
+  if ((input.activeCurrentClanCount ?? 0) > 0) {
+    return distinctResolvedSyncNumbers.length === 1
+      ? distinctResolvedSyncNumbers[0]
+      : null;
+  }
+  return input.sourceSync;
+}
+
+/** Purpose: prove that CurrentWar metadata independently matches the live war before trusting its canonical sync. */
+function isFwaPointsCurrentWarSyncEligible(input: {
+  liveWarStartTime: string | null | undefined;
+  liveOpponentTag: string | null | undefined;
+  currentWarStartTime: Date | null | undefined;
+  currentWarOpponentTag: string | null | undefined;
+}): boolean {
+  const liveWarStartMs = parseCocApiTime(input.liveWarStartTime ?? null);
+  const currentWarStartMs =
+    input.currentWarStartTime instanceof Date
+      ? input.currentWarStartTime.getTime()
+      : NaN;
+  const liveOpponentTag = normalizeTag(String(input.liveOpponentTag ?? ""));
+  const currentWarOpponentTag = normalizeTag(
+    String(input.currentWarOpponentTag ?? ""),
+  );
+  return (
+    liveWarStartMs !== null &&
+    Number.isFinite(currentWarStartMs) &&
+    liveWarStartMs === currentWarStartMs &&
+    liveOpponentTag !== "" &&
+    currentWarOpponentTag !== "" &&
+    liveOpponentTag === currentWarOpponentTag
+  );
 }
 
 /** Purpose: render the resolved current sync used by tag-specific points output. */
@@ -11759,6 +11814,8 @@ function resolveFwaPointsCurrentSync(input: {
 
 export const formatFwaPointsSyncFooterForTest = formatFwaPointsSyncFooter;
 export const resolveFwaPointsFooterSyncForTest = resolveFwaPointsFooterSync;
+export const isFwaPointsCurrentWarSyncEligibleForTest =
+  isFwaPointsCurrentWarSyncEligible;
 export const formatFwaPointsSyncDisplayForTest = formatFwaPointsSyncDisplay;
 export const resolveFwaPointsCurrentSyncForTest = resolveFwaPointsCurrentSync;
 
@@ -17426,6 +17483,9 @@ export const Fwa: Command = {
         }
       }
 
+      const resolvedActiveSyncNumbers: number[] = [];
+      const exactResolvedActiveSyncNumbers: number[] = [];
+      let activeCurrentClanCount = 0;
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         try {
@@ -17456,6 +17516,18 @@ export const Fwa: Command = {
             activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
             activeCycleConflict: activeCycleDiscovery.conflict,
           });
+          if (
+            !missedSyncTags.has(trackedTag) &&
+            warState !== "notInWar"
+          ) {
+            activeCurrentClanCount += 1;
+            if (resolvedCurrentSync !== null) {
+              resolvedActiveSyncNumbers.push(resolvedCurrentSync);
+              if (sameWarSyncRow?.syncNum === resolvedCurrentSync) {
+                exactResolvedActiveSyncNumbers.push(resolvedCurrentSync);
+              }
+            }
+          }
           const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
             sourceSync,
             resolvedCurrentSyncNum: resolvedCurrentSync,
@@ -17521,6 +17593,9 @@ export const Fwa: Command = {
           sourceSync,
           activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
           activeCycleConflict: activeCycleDiscovery.conflict,
+          resolvedActiveSyncNumbers,
+          exactResolvedActiveSyncNumbers,
+          activeCurrentClanCount,
         }),
       )}`;
       if (missedSyncTags.size > 0) {
@@ -18641,15 +18716,14 @@ export const Fwa: Command = {
         identity: syncIdentity,
         sourceSync,
         sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
-        currentWarSyncNumber:
-          syncIdentity.positivelyResolved &&
-          syncIdentity.warStartTime &&
-          subscription?.startTime &&
-          syncIdentity.warStartTime.getTime() === subscription.startTime.getTime() &&
-          normalizeTag(String(syncIdentity.opponentTag ?? "")) ===
-            normalizeTag(String(subscription?.opponentTag ?? ""))
-            ? subscription?.syncNumber ?? null
-            : null,
+        currentWarSyncNumber: isFwaPointsCurrentWarSyncEligible({
+          liveWarStartTime: war?.startTime ?? null,
+          liveOpponentTag: war?.opponent?.tag ?? null,
+          currentWarStartTime: subscription?.startTime ?? null,
+          currentWarOpponentTag: subscription?.opponentTag ?? null,
+        })
+          ? subscription?.syncNumber ?? null
+          : null,
         activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
         activeCycleConflict: activeCycleDiscovery.conflict,
       });

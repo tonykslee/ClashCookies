@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatFwaPointsSyncDisplayForTest,
   formatFwaPointsSyncFooterForTest,
+  isFwaPointsCurrentWarSyncEligibleForTest,
   isPointsValidationCurrentForMatchupForTest,
   resolveFreshMatchupEvidenceForTest,
   resolveFwaPointsCurrentSyncForTest,
@@ -9,7 +10,10 @@ import {
   resolveManualMatchupFreshnessSourceSyncForTest,
 } from "../src/commands/Fwa";
 import { buildSyncMismatchWarning } from "../src/commands/fwa/matchState";
-import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
+import {
+  buildActiveWarSyncIdentity,
+  resolveCurrentWarSyncIdentity,
+} from "../src/services/ActiveWarSyncResolutionService";
 
 function buildSnapshot(overrides: Record<string, unknown>): any {
   return {
@@ -218,6 +222,27 @@ describe("fwa points sync numbering regression", () => {
       }),
     ).toBe(545);
     expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        resolvedActiveSyncNumbers: [546, 546],
+        activeCurrentClanCount: 2,
+      }),
+    ).toBe(546);
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        resolvedActiveSyncNumbers: [545, 546],
+        activeCurrentClanCount: 2,
+      }),
+    ).toBeNull();
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        resolvedActiveSyncNumbers: [546],
+        activeCurrentClanCount: 1,
+      }),
+    ).toBe(546);
+    expect(
       formatFwaPointsSyncFooterForTest(
         resolveFwaPointsFooterSyncForTest({
           sourceSync: 545,
@@ -336,5 +361,68 @@ describe("fwa points sync numbering regression", () => {
   it("keeps alliance and tag-specific output on the same active sync", () => {
     expect(formatFwaPointsSyncFooterForTest(545)).toBe("Sync#: #545");
     expect(formatFwaPointsSyncDisplayForTest(545)).toBe("#545 (Low Sync)");
+  });
+});
+
+describe("fwa tagged CurrentWar canonical sync live-identity eligibility", () => {
+  const currentWarStartTime = new Date("2026-08-10T20:00:00.000Z");
+
+  it("accepts a full live start/opponent match", () => {
+    expect(
+      isFwaPointsCurrentWarSyncEligibleForTest({
+        liveWarStartTime: "20260810T200000.000Z",
+        liveOpponentTag: "#2OPP",
+        currentWarStartTime,
+        currentWarOpponentTag: "#2OPP",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["start mismatch", "20260810T210000.000Z", "#2OPP"],
+    ["opponent mismatch", "20260810T200000.000Z", "#2OTHER"],
+    ["missing live start", null, "#2OPP"],
+    ["missing live opponent", "20260810T200000.000Z", null],
+  ])("rejects %s", (_label, liveWarStartTime, liveOpponentTag) => {
+    expect(
+      isFwaPointsCurrentWarSyncEligibleForTest({
+        liveWarStartTime,
+        liveOpponentTag,
+        currentWarStartTime,
+        currentWarOpponentTag: "#2OPP",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not let partial live identity self-confirm stale CurrentWar sync", () => {
+    const identity = resolveCurrentWarSyncIdentity({
+      clanTag: "2TRACK",
+      warState: "inWar",
+      liveWarStartTime: "20260810T200000.000Z",
+      liveOpponentTag: null,
+      currentWarId: 7001,
+      currentWarStartTime,
+      currentWarOpponentTag: "#2OPP",
+    });
+
+    expect(identity.positivelyResolved).toBe(true);
+    const currentWarSyncEligible = isFwaPointsCurrentWarSyncEligibleForTest({
+      liveWarStartTime: "20260810T200000.000Z",
+      liveOpponentTag: null,
+      currentWarStartTime,
+      currentWarOpponentTag: "#2OPP",
+    });
+    expect(currentWarSyncEligible).toBe(false);
+    const staleCanonicalSync = 545;
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity,
+        sourceSync: 545,
+        currentWarSyncNumber: currentWarSyncEligible
+          ? staleCanonicalSync
+          : null,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(546);
   });
 });
