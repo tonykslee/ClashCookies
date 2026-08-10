@@ -232,6 +232,20 @@ function makeSchemaColumns(
       ],
     ]),
   ) as Record<(typeof MIRRORED_RUNTIME_TABLES)[number], ColumnRow[]>;
+  defaults.FwaClanCatalog = [
+    {
+      column_name: "clanTag",
+      udt_name: "text",
+      is_nullable: "NO",
+      column_default: null,
+    },
+    {
+      column_name: "weightSubmitDate",
+      udt_name: "timestamp",
+      is_nullable: "YES",
+      column_default: null,
+    },
+  ];
   return {
     ...defaults,
     ...(override ?? {}),
@@ -249,7 +263,13 @@ function buildSourceClient(
   const disconnect = vi.fn(async () => undefined);
   return {
     fwaClanCatalog: {
-      findMany: vi.fn(async () => cloneRows(store.FwaClanCatalog)),
+      findMany: vi.fn(async (args?: { select?: Record<string, boolean> }) => {
+        const rows = cloneRows(store.FwaClanCatalog);
+        if (!args?.select?.weightSubmitDate) {
+          for (const row of rows) delete row.weightSubmitDate;
+        }
+        return rows;
+      }),
     },
     trackedClan: {
       findMany: vi.fn(async () => cloneRows(store.TrackedClan)),
@@ -553,6 +573,11 @@ describe("MirrorSyncService", () => {
     expect(result.tableSummaries).toHaveLength(MIRRORED_RUNTIME_TABLES.length);
     expect(targetStore.TrackedClan).toEqual(sourceStore.TrackedClan);
     expect(targetStore.FwaClanCatalog).toEqual(sourceStore.FwaClanCatalog);
+    expect(sourceClient.fwaClanCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ weightSubmitDate: true }),
+      }),
+    );
     expect(targetStore.TrackedClanRep).toEqual(sourceStore.TrackedClanRep);
     expect(targetStore.CurrentWar).toEqual(sourceStore.CurrentWar);
     expect(targetStore.WarAttacks).toEqual(sourceStore.WarAttacks);
@@ -603,6 +628,61 @@ describe("MirrorSyncService", () => {
     expect(logger.info).toHaveBeenCalledWith(
       expect.stringContaining("[mirror-sync] event=manual_completed"),
     );
+  });
+
+  it("mirrors an older FwaClanCatalog source schema with a null target-only date", async () => {
+    const sourceStore = makeDefaultTableStore();
+    const targetStore = makeDefaultTableStore();
+    const sourceSchema = makeSchemaColumns({
+      FwaClanCatalog: [
+        {
+          column_name: "clanTag",
+          udt_name: "text",
+          is_nullable: "NO",
+          column_default: null,
+        },
+      ],
+    });
+    const targetSchema = makeSchemaColumns({
+      FwaClanCatalog: [
+        {
+          column_name: "clanTag",
+          udt_name: "text",
+          is_nullable: "NO",
+          column_default: null,
+        },
+        {
+          column_name: "weightSubmitDate",
+          udt_name: "timestamp",
+          is_nullable: "YES",
+          column_default: null,
+        },
+      ],
+    });
+    const sourceClient = buildSourceClient(sourceStore, sourceSchema);
+    const targetClient = buildTargetClient(targetStore, targetSchema);
+
+    const service = new MirrorSyncService({
+      env: {
+        POLLING_MODE: "mirror",
+        POLLING_ENV: "staging",
+        MIRROR_SOURCE_DATABASE_URL:
+          "postgresql://src:pass@127.0.0.1:5432/clashcookies?schema=public",
+        DATABASE_URL:
+          "postgresql://dst:pass@127.0.0.1:5432/clashcookies_staging?schema=public",
+      } as NodeJS.ProcessEnv,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      targetClient: targetClient as any,
+      createSourceClient: () => sourceClient as any,
+    });
+
+    await expect(service.syncNow("manual")).resolves.toEqual(expect.objectContaining({
+      trigger: "manual",
+    }));
+
+    const sourceSelect = sourceClient.fwaClanCatalog.findMany.mock.calls[0]?.[0]?.select;
+    expect(sourceSelect).not.toHaveProperty("weightSubmitDate");
+    expect(targetStore.FwaClanCatalog[0]?.weightSubmitDate).toBeNull();
   });
 
   it("blocks execution when polling mode is not mirror", async () => {

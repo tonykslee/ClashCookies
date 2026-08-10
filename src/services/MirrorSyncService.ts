@@ -73,6 +73,40 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ExternalPlayerWeightCurrent",
 ] as const;
 
+const FWA_CLAN_CATALOG_SOURCE_SELECT = {
+  clanTag: true,
+  name: true,
+  level: true,
+  points: true,
+  type: true,
+  location: true,
+  requiredTrophies: true,
+  warFrequency: true,
+  winStreak: true,
+  wins: true,
+  ties: true,
+  losses: true,
+  isWarLogPublic: true,
+  imageUrl: true,
+  description: true,
+  th18Count: true,
+  th17Count: true,
+  th16Count: true,
+  th15Count: true,
+  th14Count: true,
+  th13Count: true,
+  th12Count: true,
+  th11Count: true,
+  th10Count: true,
+  th9Count: true,
+  th8Count: true,
+  thLowCount: true,
+  estimatedWeight: true,
+  firstSeenAt: true,
+  lastSeenAt: true,
+  lastSyncedAt: true,
+} as const;
+
 type MirrorTableName = (typeof MIRRORED_RUNTIME_TABLES)[number];
 type MirrorSyncTrigger = "scheduled" | "manual";
 
@@ -400,9 +434,9 @@ export class MirrorSyncService {
     let sourceClient: MirrorSyncSourceClient | null = null;
     try {
       sourceClient = await this.createSourceClient(safety.sourceDatabaseUrl);
-      await this.assertSchemaCompatibility(sourceClient);
+      const sourceColumnsByTable = await this.assertSchemaCompatibility(sourceClient);
 
-      const sourceRows = await this.readAllSourceRows(sourceClient);
+      const sourceRows = await this.readAllSourceRows(sourceClient, sourceColumnsByTable);
       const tableSummaries = await this.targetClient.$transaction(
         async (tx) => {
           const summaries: MirrorSyncTableSummary[] = [];
@@ -510,7 +544,8 @@ export class MirrorSyncService {
 
   private async assertSchemaCompatibility(
     sourceClient: MirrorSyncSourceClient,
-  ): Promise<void> {
+  ): Promise<ReadonlyMap<MirrorTableName, MirrorSyncColumnRow[]>> {
+    const sourceColumnsByTable = new Map<MirrorTableName, MirrorSyncColumnRow[]>();
     for (const table of MIRRORED_RUNTIME_TABLES) {
       const sourceColumns = await this.readTableColumns(sourceClient, table);
       const targetColumns = await this.readTableColumns(this.targetClient, table);
@@ -550,7 +585,9 @@ export class MirrorSyncService {
             .join(", ")}.`,
         );
       }
+      sourceColumnsByTable.set(table, sourceColumns);
     }
+    return sourceColumnsByTable;
   }
 
   private async readTableColumns(
@@ -575,11 +612,29 @@ export class MirrorSyncService {
 
   private async readAllSourceRows(
     sourceClient: MirrorSyncSourceClient,
+    sourceColumnsByTable: ReadonlyMap<MirrorTableName, MirrorSyncColumnRow[]>,
   ): Promise<MirrorSyncSourceRows> {
+    const fwaClanCatalogSelect: Record<string, boolean> = {
+      ...FWA_CLAN_CATALOG_SOURCE_SELECT,
+    };
+    if (
+      sourceColumnsByTable
+        .get("FwaClanCatalog")
+        ?.some((column) => column.column_name === "weightSubmitDate")
+    ) {
+      fwaClanCatalogSelect.weightSubmitDate = true;
+    }
+
+    const fwaClanCatalogRows = await sourceClient.fwaClanCatalog.findMany({
+      orderBy: [{ clanTag: "asc" }],
+      select: fwaClanCatalogSelect,
+    });
+
     return {
-      FwaClanCatalog: await sourceClient.fwaClanCatalog.findMany({
-        orderBy: [{ clanTag: "asc" }],
-      }),
+      FwaClanCatalog: fwaClanCatalogRows.map((row) => ({
+        ...row,
+        weightSubmitDate: row.weightSubmitDate ?? null,
+      })),
       TrackedClan: await sourceClient.trackedClan.findMany({
         orderBy: [{ id: "asc" }],
       }),
