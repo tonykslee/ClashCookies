@@ -78,7 +78,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Staging mirror sync now includes the runtime-owned CWL round/history tables plus CWL planner tables so `/todo cwl` and `/cwl rotations` render consistently against mirrored prod data. CWL sheet import reads public published sheet URLs without Google Sheets credentials, while export uses writable Google Sheets auth.
 - War-mail and match embeds use consistent effective-state color mapping for BL/MM/FWA/unresolved states.
 - Notification and posting flows include operational logging controls (`/bot-logs`, `/say`, telemetry report + schedule commands).
-- FWA stats and operations commands include weight-age/health tooling, compliance checks, and layout management.
+- FWA stats and operations commands include persisted `/fwa weight-age` and `/fwa weight-health` reads from `FwaClanCatalog.weightSubmitDate` populated by the FWAStats `Clans.json` feed, plus compliance checks and layout management. These commands no longer scrape the HTML weight page or require cookie authentication; `/fwa weight-cookie` was removed, while `/fwa weight-link` remains unchanged.
 - `/potion calc` statelessly estimates upgrade completion timing for builder, research, pet, and clock tower potion boosts.
 - FWAStats feed ingestion is DB-backed (`FwaFeedSyncState`, `FwaClanWarsWatchState`, related current-state tables) with bounded scheduler cadence.
 - Autorole can apply Discord roles and ClashPerk-style nicknames from linked accounts, permanent FWA tracked-clan membership, and guild-managed autorole rules.

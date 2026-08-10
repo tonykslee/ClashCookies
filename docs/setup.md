@@ -43,6 +43,7 @@ Behavior:
 Mirror mode behavior:
 - Disables duplicated external polling owners (activity observe, war-event poll, FWA feed scheduler, user-activity reminder scheduler).
 - Runs scheduled full-overwrite sync for mirrored runtime tables:
+  - `FwaClanCatalog`
   - `CwlEventInstance`
   - `CwlEventWarTag`
   - `CwlEventClan`
@@ -82,16 +83,9 @@ npm run sync:mirror
 Notes:
 - The FWA-vs-FWA auto-adjust timing is still treated as unverified; the default policy keeps conservative periodic validation checks.
 
-## Optional FWA Stats Weight Auth
-- `FWASTATS_WEIGHT_COOKIE` - optional fallback cookie header used for scraping `https://fwastats.com/Clan/<tag>/Weight` in `/fwa weight-age` and `/fwa weight-health`.
-
-Operational notes:
-- Preferred runtime path is `/fwa weight-cookie application-cookie:<value-or-name=value> antiforgery-cookie:<value-or-name=value> [antiforgery-cookie-name:<name>]` (saved in `BotSetting`), with `FWASTATS_WEIGHT_COOKIE` kept as env fallback. If no antiforgery name is provided, default is `.AspNetCore.Antiforgery.oBHtDLr47-0`.
-- `/fwa weight-cookie` (no cookie args) shows status, runtime source, and expiry metadata when parseable.
-- Store cookie values only in your secret manager or bot settings, never in git-tracked files.
-- Rotate cookies when telemetry reports `FWASTATS_AUTH_EXPIRED` or `FWASTATS_LOGIN_PAGE_DETECTED`.
-- If telemetry reports `FWASTATS_AUTH_REQUIRED`, no usable cookie is configured.
-- Auth failures are intentionally not cached for long so recovery is fast after cookie updates.
+## FWA Stats Weight Age
+- `/fwa weight-age` and `/fwa weight-health` read persisted `FwaClanCatalog.weightSubmitDate` populated by the active Clans.json feed owner.
+- Commands remain DB-backed and do not scrape or authenticate to FWAStats; mirror runtimes consume the mirrored catalog state.
 
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.

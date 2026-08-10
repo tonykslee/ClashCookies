@@ -5,7 +5,7 @@
 - Administrator users can always use commands regardless of role whitelist.
 - `/fwa compliance` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa police` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
-- `/fwa weight-age`, `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-cookie` default to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/fwa weight-age`, `/fwa weight-link`, and `/fwa weight-health` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/repwork` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/unlinked` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
@@ -54,8 +54,6 @@ Examples:
   - Covers `/fwa police configure|show|show-default|show-all|set|set-default|reset|reset-default|send`.
 - Lock only `/fwa weight-health` to role `@RoleX`:
   - `/permission add command:fwa:weight-health role:@RoleX`
-- Lock only `/fwa weight-cookie` to role `@RoleX`:
-  - `/permission add command:fwa:weight-cookie role:@RoleX`
 - Lock only `/repwork` to role `@RoleX`:
   - `/permission add command:repwork role:@RoleX`
 - Lock only `/defer` to role `@RoleX`:

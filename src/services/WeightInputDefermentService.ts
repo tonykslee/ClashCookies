@@ -4,7 +4,7 @@ import { prisma } from "../prisma";
 import { CommandPermissionService } from "./CommandPermissionService";
 import { SettingsService } from "./SettingsService";
 import { playerCurrentService } from "./PlayerCurrentService";
-import { buildFwaWeightPageUrl } from "./FwaStatsWeightService";
+import { buildFwaWeightPageUrl } from "./FwaWeightCatalogService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
 import type { CoCService } from "./CoCService";
 
