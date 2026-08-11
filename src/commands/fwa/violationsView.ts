@@ -197,6 +197,8 @@ export function formatWarPlanViolationsViolationTypeLabel(violationType: string)
       return "Early non-mirror triple";
     case "STRICT_WINDOW_MIRROR_MISS_WIN":
       return "Missed mirror during WIN strict window";
+    case "WIN_UNCLEARED_MIRROR":
+      return "Required mirror uncleared after open (win)";
     case "STRICT_WINDOW_MIRROR_MISS_LOSS":
       return "Missed mirror during LOSS strict window";
     case "EARLY_NON_MIRROR_2STAR":
