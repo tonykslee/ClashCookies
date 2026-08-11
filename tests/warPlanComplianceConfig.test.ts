@@ -101,6 +101,7 @@ describe("warPlanComplianceConfig", () => {
       nonMirrorMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
       nonMirrorTripleMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
       allBasesOpenHoursLeft: DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+      traditionalRequireMirrorAfterOpen: false,
     });
     expect(tripleTop30).toBeNull();
     expect(
@@ -127,5 +128,41 @@ describe("warPlanComplianceConfig", () => {
         config: null,
       }),
     ).toBe("Compliance rules: targets #1-30 only | attacks must earn 1-3★ | clan cap: 90★");
+  });
+
+  it("resolves the Traditional mirror-after-open flag with custom -> default -> false precedence", () => {
+    const custom = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: true },
+      fallback: { traditionalRequireMirrorAfterOpen: false },
+    });
+    const inherited = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: null },
+      fallback: { traditionalRequireMirrorAfterOpen: true },
+    });
+    const customFalse = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: false },
+      fallback: { traditionalRequireMirrorAfterOpen: true },
+    });
+    const builtIn = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: null,
+      fallback: null,
+    });
+
+    expect(custom?.traditionalRequireMirrorAfterOpen).toBe(true);
+    expect(inherited?.traditionalRequireMirrorAfterOpen).toBe(true);
+    expect(customFalse?.traditionalRequireMirrorAfterOpen).toBe(false);
+    expect(builtIn?.traditionalRequireMirrorAfterOpen).toBe(false);
   });
 });

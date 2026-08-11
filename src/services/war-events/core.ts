@@ -15,6 +15,8 @@ export type FwaLoseStyle = "TRIPLE_TOP_30" | "TRADITIONAL";
 
 export const TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON =
   "strict-window cleanup must target a non-mirror base in traditional loss";
+export const TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON =
+  "uncleared mirror after open in traditional loss";
 
 export type WarEndResultSnapshot = {
   clanStars: number | null;
@@ -54,6 +56,7 @@ export type WarComplianceAttack = {
 export type WarComplianceWinGateConfig = {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
+  traditionalRequireMirrorAfterOpen?: boolean;
 };
 
 const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
@@ -321,6 +324,7 @@ function resolveEffectiveGateConfigForCompliance(input: {
           DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
         allBasesOpenHoursLeft:
           DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+        traditionalRequireMirrorAfterOpen: false,
       }
     );
   }
@@ -537,7 +541,11 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
   attacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
   linkedGroups?: WarComplianceLinkedGroup[] | null;
+  traditionalRequireMirrorAfterOpen?: boolean;
 }): TraditionalClanEvaluation {
+  const traditionalRequireMirrorAfterOpen = Boolean(
+    input.traditionalRequireMirrorAfterOpen,
+  );
   const participants = [...input.participants].sort((a, b) => {
     const posA = a.playerPosition ?? Number.MAX_SAFE_INTEGER;
     const posB = b.playerPosition ?? Number.MAX_SAFE_INTEGER;
@@ -577,12 +585,18 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       const tag = normalizeTag(participant.playerTag);
       const playerPosition = ownerPositionByTag.get(tag) ?? null;
       if (!tag || playerPosition === null) return null;
-      const hasStrictAttack = orderedAttacks.some((attack) => {
-        if (normalizeTag(attack.playerTag) !== tag) return false;
-        const ctx = input.attackContextByAttack.get(attack);
-        return Boolean(ctx?.isStrictWindow);
-      });
-      if (!hasStrictAttack) return null;
+      const playerAttacks = orderedAttacks.filter(
+        (attack) => normalizeTag(attack.playerTag) === tag,
+      );
+      if (playerAttacks.length === 0) return null;
+      if (
+        !traditionalRequireMirrorAfterOpen &&
+        !playerAttacks.some((attack) =>
+          Boolean(input.attackContextByAttack.get(attack)?.isStrictWindow),
+        )
+      ) {
+        return null;
+      }
       return { ownerTag: tag, ownerPosition: playerPosition };
     })
     .filter(
@@ -598,7 +612,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
   const consumedSubstitutionAttackOrders = new Set<number>();
   for (const attack of orderedAttacks) {
     const ctx = input.attackContextByAttack.get(attack);
-    if (!ctx?.isStrictWindow) continue;
+    if (!ctx?.isStrictWindow && !traditionalRequireMirrorAfterOpen) continue;
     if (Math.max(0, Math.trunc(Number(attack.stars ?? 0))) !== 2) continue;
     const defenderPosition = Number(attack.defenderPosition ?? NaN);
     if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
@@ -734,18 +748,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                   }
                 : null;
             }
-          } else if (stars === 1 && !ownSatisfied) {
-            isBreach = true;
-            hasAttackLevelViolation = true;
-            if (reasonLabel === null) {
-              reasonLabel = "strict-window mirror miss in traditional loss";
-              firstBreachContext = ctx
-                ? {
-                    starsBeforeAttack: ctx.starsBeforeAttack,
-                    timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-                  }
-                : null;
-            }
           }
         } else if (stars !== 0) {
           isBreach = true;
@@ -796,23 +798,39 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       playerAttacksOrdered.length,
       Math.max(0, Math.trunc(Number(participant.attacksUsed ?? 0))),
     );
+    const lastPlayerAttack =
+      playerAttacksOrdered[playerAttacksOrdered.length - 1] ?? null;
+    const strictObligationStillApplicable = lastPlayerAttack
+      ? Boolean(input.attackContextByAttack.get(lastPlayerAttack)?.isStrictWindow)
+      : hasStrictParticipation;
+    const mirrorObligationApplies = traditionalRequireMirrorAfterOpen
+      ? true
+      : strictObligationStillApplicable;
     const hasUnmetMirrorViolation =
-      hasStrictParticipation &&
+      mirrorObligationApplies &&
       playerPosition !== null &&
       !ownSatisfied &&
       effectiveAttacksUsed >= 2 &&
       !hasAttackLevelViolation;
+    const isUnclearedMirrorAfterOpen =
+      hasUnmetMirrorViolation &&
+      traditionalRequireMirrorAfterOpen &&
+      !strictObligationStillApplicable;
     const finalReason: WarComplianceReason = hasAttackLevelViolation || hasUnmetMirrorViolation
       ? {
           label:
             reasonLabel ??
             (hasUnmetMirrorViolation
-              ? "strict-window mirror miss in traditional loss"
+              ? isUnclearedMirrorAfterOpen
+                ? TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON
+                : "strict-window mirror miss in traditional loss"
               : "didn't follow lose-style rules"),
           strictWindowContext: hasAttackLevelViolation
             ? firstBreachContext
             : hasUnmetMirrorViolation
-              ? firstStrictContext
+              ? isUnclearedMirrorAfterOpen
+                ? null
+                : firstStrictContext
               : null,
           breachAttackOrders,
           hasViolation: true,
@@ -1163,6 +1181,8 @@ export function computeWarComplianceForTest(input: {
         attacks,
         attackContextByAttack,
         linkedGroups: input.linkedGroups,
+        traditionalRequireMirrorAfterOpen:
+          effectiveWinGateConfig?.traditionalRequireMirrorAfterOpen ?? false,
       });
       const orderedResults = [...traditionalEvaluation.resultsByPlayerTag.values()].sort(
         (a, b) => {
