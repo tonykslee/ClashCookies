@@ -2401,7 +2401,7 @@ describe("WarComplianceService", () => {
     ]);
   });
 
-  it("assigns an unmet mirror violation only after both attacks are used", async () => {
+  it("does not carry a strict mirror obligation into the open window when the option is disabled", async () => {
     const warStartTime = new Date("2026-03-01T00:00:00.000Z");
     const warEndTime = new Date("2026-03-02T00:00:00.000Z");
     const participants = [
@@ -2480,14 +2480,7 @@ describe("WarComplianceService", () => {
     });
 
     expect(report).not.toBeNull();
-    const owner4 = report?.notFollowingPlan.find((row) => row.playerName === "owner4");
-    expect(report?.notFollowingPlan.map((row) => row.playerName)).toEqual(["owner4"]);
-    expect(owner4?.reasonLabel).toBe("strict-window mirror miss in traditional loss");
-    expect(owner4?.attackDetails?.map((detail) => detail.isBreach)).toEqual([
-      false,
-      false,
-    ]);
-    expect(owner4?.breachContext).toBeNull();
+    expect(report?.notFollowingPlan).toEqual([]);
   });
 
   it("does not allow cross-user mirror substitution between unrelated linked users", async () => {
@@ -2671,6 +2664,97 @@ describe("WarComplianceService", () => {
     expect(result.scope).toBe("current");
     expect(result.warId).toBe(1001);
     expect(result.report?.missedBoth).toEqual([]);
+  });
+
+  it("carries the effective Traditional mirror-after-open flag into the report and evaluator", async () => {
+    const warStartTime = new Date("2026-02-01T00:00:00.000Z");
+    const warEndTime = new Date("2026-02-02T00:00:00.000Z");
+    const currentRow = {
+      warId: 1002,
+      startTime: warStartTime,
+      endTime: warEndTime,
+      matchType: "FWA",
+      outcome: "LOSE",
+    };
+    const participants = [
+      {
+        playerName: "owner",
+        playerTag: "#OWNER",
+        attacksUsed: 2,
+        playerPosition: 5,
+        warStartTime,
+      },
+    ];
+    const attacks = [
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 1,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: new Date("2026-02-01T13:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+        warStartTime,
+      },
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 2,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-02-01T14:00:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+        warStartTime,
+      },
+    ];
+
+    vi.spyOn(prisma.currentWar, "findFirst").mockResolvedValue(
+      currentRow as any,
+    );
+    const warAttacksFindManySpy = vi.spyOn(
+      prisma.warAttacks,
+      "findMany",
+    ) as unknown as {
+      mockImplementation: (fn: (args?: any) => any) => any;
+    };
+    warAttacksFindManySpy.mockImplementation((args?: any) => {
+      if (args?.where?.attackOrder === 0) return participants as any;
+      if (typeof args?.where?.attackOrder === "object") return attacks as any;
+      return [] as any;
+    });
+    vi.spyOn(prisma.trackedClan, "findFirst").mockResolvedValue({
+      loseStyle: "TRADITIONAL",
+    } as any);
+    vi.spyOn(prisma.clanWarPlan, "findFirst")
+      .mockResolvedValueOnce({
+        nonMirrorTripleMinClanStars: null,
+        allBasesOpenHoursLeft: null,
+        traditionalRequireMirrorAfterOpen: true,
+      } as any)
+      .mockResolvedValueOnce({
+        nonMirrorTripleMinClanStars: null,
+        allBasesOpenHoursLeft: null,
+        traditionalRequireMirrorAfterOpen: false,
+      } as any);
+
+    const service = new WarComplianceService();
+    const result = await service.evaluateComplianceForCommand({
+      guildId: "guild-1",
+      clanTag: "#TEST",
+      scope: "current",
+      warId: 1002,
+    });
+
+    expect(result.report?.fwaWinGateConfig?.traditionalRequireMirrorAfterOpen).toBe(
+      true,
+    );
+    expect(result.report?.notFollowingPlan.map((row) => row.playerName)).toEqual([
+      "owner",
+    ]);
   });
 
   it("resolves the requested clan current war by the explicit current warId", async () => {
