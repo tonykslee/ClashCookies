@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WarPlanViolationType } from "@prisma/client";
 import { prisma } from "../src/prisma";
 import {
+  buildRulesFingerprint,
   WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
   WarPlanViolationService,
 } from "../src/services/WarPlanViolationService";
+import {
+  TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+  TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+} from "../src/services/war-events/core";
 
 function buildZeroViolationReport() {
   return {
@@ -155,6 +161,49 @@ function buildViolationReport() {
   };
 }
 
+function buildTraditionalViolationReport(input: {
+  reasonLabel: string;
+  actualBehavior: string;
+  attackDetails: Array<Record<string, unknown>>;
+  traditionalRequireMirrorAfterOpen: boolean;
+}) {
+  return {
+    clanTag: "#AAA111",
+    clanName: "Alpha",
+    opponentName: "Beta",
+    warId: 1,
+    warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+    warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+    matchType: "FWA" as const,
+    expectedOutcome: "LOSE" as const,
+    loseStyle: "TRADITIONAL" as const,
+    missedBoth: [],
+    notFollowingPlan: [
+      {
+        playerTag: "#P5",
+        playerName: "Traditional Five",
+        playerPosition: 5,
+        ruleType: "not_following_plan" as const,
+        expectedBehavior: "Follow the traditional loss mirror policy.",
+        actualBehavior: input.actualBehavior,
+        reasonLabel: input.reasonLabel,
+        attackDetails: input.attackDetails,
+        breachContext: {
+          starsAtBreach: 8,
+          timeRemaining: "4h 0m left",
+        },
+      },
+    ],
+    participantsCount: 10,
+    attacksCount: 20,
+    fwaWinGateConfig: {
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 12,
+      traditionalRequireMirrorAfterOpen: input.traditionalRequireMirrorAfterOpen,
+    },
+  };
+}
+
 function buildEvaluationRow(params?: Partial<Record<string, unknown>>) {
   return {
     id: "eval-1",
@@ -167,6 +216,7 @@ function buildEvaluationRow(params?: Partial<Record<string, unknown>>) {
     loseStyle: null,
     nonMirrorTripleMinClanStars: null,
     allBasesOpenHoursLeft: null,
+    traditionalRequireMirrorAfterOpen: null,
     rulesFingerprint: null,
     attemptCount: 0,
     lastAttemptAt: null,
@@ -886,6 +936,227 @@ describe("WarPlanViolationService", () => {
       violationType: "OTHER_PLAN_VIOLATION",
     });
     expect(compliance.evaluateComplianceForCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: "strict cleanup target",
+      reasonLabel: TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+      actualBehavior: "#5 (1-star) : strict cleanup used on own mirror",
+      attackDetails: [
+        {
+          defenderPosition: 5,
+          stars: 1,
+          attackOrder: 2,
+          isBreach: true,
+        },
+      ],
+      expectedViolationType: WarPlanViolationType.TRADITIONAL_INVALID_CLEANUP_TARGET,
+    },
+    {
+      name: "uncleared mirror after open",
+      reasonLabel: TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+      actualBehavior: "#22 (2-star) : required mirror uncleared after open",
+      attackDetails: [
+        {
+          defenderPosition: 22,
+          stars: 2,
+          attackOrder: 18,
+          isBreach: true,
+        },
+      ],
+      expectedViolationType: WarPlanViolationType.TRADITIONAL_UNCLEARED_MIRROR,
+    },
+  ])(
+    "persists the precise durable type and evidence for $name",
+    async ({
+      reasonLabel,
+      actualBehavior,
+      attackDetails,
+      expectedViolationType,
+    }) => {
+      const compliance = {
+        evaluateComplianceForCommand: vi.fn(async () => ({
+          status: "ok",
+          report: buildTraditionalViolationReport({
+            reasonLabel,
+            actualBehavior,
+            attackDetails,
+            traditionalRequireMirrorAfterOpen: true,
+          }),
+        })),
+      } as any;
+      const service = new WarPlanViolationService(compliance);
+      const evaluationRow = buildEvaluationRow({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        warHistory: {
+          warId: 1,
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          opponentName: "Beta",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          actualOutcome: "LOSE",
+          warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+          warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+        },
+      });
+      const { state, updateManySpy } = installEvaluationStateMock(evaluationRow);
+      vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+      const { createdViolations } = installTransactionMock(state);
+
+      const result = await service.finalizeEvaluation({
+        guildId: "g1",
+        warId: 1,
+      });
+
+      expect(result?.status).toBe("COMPLETED");
+      expect(createdViolations).toHaveLength(1);
+      expect(createdViolations[0]).toMatchObject({
+        violationType: expectedViolationType,
+        reasonLabel,
+        actualBehavior,
+        breachStarsAt: 8,
+        breachTimeRemaining: "4h 0m left",
+      });
+      expect((createdViolations[0]?.attackDetails as any)?.attackDetails).toEqual(
+        attackDetails,
+      );
+      expect(state.row).toMatchObject({
+        engineVersion: "war-plan-compliance-v2",
+        traditionalRequireMirrorAfterOpen: true,
+        rulesFingerprint: expect.any(String),
+      });
+      expect(updateManySpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([false, true])(
+    "snapshots Traditional require-mirror-after-open=%s",
+    async (traditionalRequireMirrorAfterOpen) => {
+      const compliance = {
+        evaluateComplianceForCommand: vi.fn(async () => ({
+          status: "ok",
+          report: buildTraditionalViolationReport({
+            reasonLabel: "unknown traditional mismatch",
+            actualBehavior: "unknown traditional mismatch",
+            attackDetails: [],
+            traditionalRequireMirrorAfterOpen,
+          }),
+        })),
+      } as any;
+      const service = new WarPlanViolationService(compliance);
+      const evaluationRow = buildEvaluationRow({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      });
+      const { state } = installEvaluationStateMock(evaluationRow);
+      vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+      installTransactionMock(state);
+
+      await service.finalizeEvaluation({ guildId: "g1", warId: 1 });
+
+      expect(state.row).toMatchObject({
+        traditionalRequireMirrorAfterOpen,
+        engineVersion: "war-plan-compliance-v2",
+      });
+    },
+  );
+
+  it("snapshots null for an irrelevant plan config", async () => {
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(async () => ({
+        status: "ok",
+        report: {
+          ...buildZeroViolationReport(),
+          fwaWinGateConfig: null,
+        },
+      })),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const { state } = installEvaluationStateMock();
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+    installTransactionMock(state);
+
+    await service.finalizeEvaluation({ guildId: "g1", warId: 1 });
+
+    expect(state.row).toMatchObject({
+      traditionalRequireMirrorAfterOpen: null,
+      engineVersion: "war-plan-compliance-v2",
+    });
+  });
+
+  it("changes the fingerprint when only the Traditional toggle changes and remains deterministic", async () => {
+    const finalizeWithToggle = async (traditionalRequireMirrorAfterOpen: boolean) => {
+      const compliance = {
+        evaluateComplianceForCommand: vi.fn(async () => ({
+          status: "ok",
+          report: buildTraditionalViolationReport({
+            reasonLabel: "unknown traditional mismatch",
+            actualBehavior: "unknown traditional mismatch",
+            attackDetails: [],
+            traditionalRequireMirrorAfterOpen,
+          }),
+        })),
+      } as any;
+      const service = new WarPlanViolationService(compliance);
+      const { state } = installEvaluationStateMock(buildEvaluationRow({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      }));
+      vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+      vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+      installTransactionMock(state);
+      await service.finalizeEvaluation({ guildId: "g1", warId: 1 });
+      return state.row.rulesFingerprint;
+    };
+
+    const falseFingerprint = await finalizeWithToggle(false);
+    vi.restoreAllMocks();
+    const trueFingerprint = await finalizeWithToggle(true);
+    vi.restoreAllMocks();
+    const falseFingerprintAgain = await finalizeWithToggle(false);
+
+    expect(falseFingerprint).not.toBe(trueFingerprint);
+    expect(falseFingerprintAgain).toBe(falseFingerprint);
+  });
+
+  it("includes the v2 engine identity in the deterministic fingerprint", () => {
+    const policy = {
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 12,
+      traditionalRequireMirrorAfterOpen: false,
+    };
+
+    expect(
+      buildRulesFingerprint({
+        engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+        ...policy,
+      }),
+    ).not.toBe(
+      buildRulesFingerprint({
+        engineVersion: "war-plan-compliance-v1",
+        ...policy,
+      }),
+    );
   });
 
   it("marks unexpected failures retryable and reconciles them on the next poll", async () => {

@@ -794,6 +794,12 @@ describe("war plan violations view helpers", () => {
     expect(
       formatWarPlanViolationsViolationTypeLabel("TRADITIONAL_INVALID_STAR_COUNT"),
     ).toBe("Invalid star count in traditional loss");
+    expect(
+      formatWarPlanViolationsViolationTypeLabel("TRADITIONAL_INVALID_CLEANUP_TARGET"),
+    ).toBe("Invalid strict cleanup target");
+    expect(
+      formatWarPlanViolationsViolationTypeLabel("TRADITIONAL_UNCLEARED_MIRROR"),
+    ).toBe("Required mirror uncleared after open");
     expect(formatWarPlanViolationsViolationTypeLabel("ANY_3STAR")).toBe("3-star plan violation");
     expect(formatWarPlanViolationsViolationTypeLabel("LOWER20_ANY_STARS")).toBe(
       "Attack on a lower-20 base",
