@@ -9,14 +9,13 @@ import {
   Client,
   ComponentType,
   EmbedBuilder,
-  ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
 import type {
   APILabelComponent,
   APIModalInteractionResponseCallbackData,
-} from "discord-api-types/v10";
+} from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
@@ -801,9 +800,7 @@ export const WarPlan: Command = {
         prefill,
         modalConfig,
       });
-      // Discord API supports Label/Checkbox modal components before discord.js
-      // exposes matching builders; send the typed callback payload directly.
-      await interaction.showModal(modal as unknown as ModalBuilder);
+      await interaction.showModal(modal);
 
       try {
         const submitted = await interaction.awaitModalSubmit({
