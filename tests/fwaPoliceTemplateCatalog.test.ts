@@ -9,6 +9,7 @@ import {
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
   TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+  WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
 } from "../src/services/war-events/core";
 
 function buildCanonicalIssue(input: {
@@ -30,10 +31,11 @@ function buildCanonicalIssue(input: {
 }
 
 describe("FwaPoliceTemplateCatalog", () => {
-  it("defines exactly eleven canonical violation enums", () => {
+  it("defines exactly twelve canonical violation enums", () => {
     expect(FWA_POLICE_VIOLATIONS).toEqual([
       "EARLY_NON_MIRROR_TRIPLE",
       "STRICT_WINDOW_MIRROR_MISS_WIN",
+      "WIN_UNCLEARED_MIRROR",
       "STRICT_WINDOW_MIRROR_MISS_LOSS",
       "EARLY_NON_MIRROR_2STAR",
       "TRADITIONAL_INVALID_STAR_COUNT",
@@ -98,6 +100,24 @@ describe("FwaPoliceTemplateCatalog", () => {
           starsAtBreach: 10,
           timeRemaining: "6h 30m left",
         },
+      },
+      {
+        reasonLabel: WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+        expected: "WIN_UNCLEARED_MIRROR",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRIPLE_TOP_30",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 1,
+            stars: 2,
+            attackOrder: 3,
+            isBreach: false,
+          },
+        ],
+        breachContext: null,
       },
       {
         reasonLabel: "strict-window mirror miss in traditional loss",
@@ -310,6 +330,30 @@ describe("FwaPoliceTemplateCatalog", () => {
           loseStyle: "TRIPLE_TOP_30",
         }),
       ).toBe(false);
+    }
+  });
+
+  it("limits the WIN uncleared-after-open type to FWA WIN without strict context", () => {
+    expect(FWA_POLICE_VIOLATION_CHOICES.map((choice) => choice.value)).toContain(
+      "WIN_UNCLEARED_MIRROR",
+    );
+    const metadata = FWA_POLICE_VIOLATION_METADATA.WIN_UNCLEARED_MIRROR;
+    expect(metadata.builtInTemplate).toContain(
+      "without clearing the required mirror after the open window",
+    );
+    expect(
+      metadata.isApplicable({
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+      }),
+    ).toBe(true);
+    for (const context of [
+      { matchType: "FWA" as const, expectedOutcome: "LOSE" as const, loseStyle: "TRADITIONAL" as const },
+      { matchType: "BL" as const, expectedOutcome: "WIN" as const, loseStyle: "TRIPLE_TOP_30" as const },
+      { matchType: "MM" as const, expectedOutcome: "WIN" as const, loseStyle: "TRIPLE_TOP_30" as const },
+    ]) {
+      expect(metadata.isApplicable(context)).toBe(false);
     }
   });
 

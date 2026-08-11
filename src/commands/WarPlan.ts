@@ -60,6 +60,7 @@ const PLAN_MODAL_MIN_STARS_INPUT_ID = "non-mirror-min-stars";
 const PLAN_MODAL_OPEN_HOURS_INPUT_ID = "all-bases-open-hours-left";
 const PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID =
   "traditional-require-mirror-after-open";
+const PLAN_MODAL_WIN_MIRROR_CHECKBOX_ID = "win-require-mirror-after-open";
 const WARPLAN_OVERVIEW_PAGE_SIZE = 10;
 const WARPLAN_OVERVIEW_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -280,12 +281,14 @@ function getModalCompliancePrefillDefaults(
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
   traditionalRequireMirrorAfterOpen: boolean;
+  winRequireMirrorAfterOpen: boolean;
 } {
   return {
     nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
     allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
     traditionalRequireMirrorAfterOpen:
       resolvedConfig.traditionalRequireMirrorAfterOpen ?? false,
+    winRequireMirrorAfterOpen: resolvedConfig.winRequireMirrorAfterOpen ?? false,
   };
 }
 
@@ -310,33 +313,68 @@ function isModalCheckboxSubmissionField(
   return field.type === ComponentType.Checkbox && typeof field.value === "boolean";
 }
 
-/** Purpose: read the supported Discord checkbox submission value with a narrow compatibility guard. */
-function getTraditionalMirrorCheckboxValue(submitted: {
-  fields: { getField: (customId: string) => unknown };
-}): boolean {
+/** Purpose: read one supported Discord checkbox submission value with a narrow compatibility guard. */
+function getMirrorCheckboxValue(
+  submitted: {
+    fields: { getField: (customId: string) => unknown };
+  },
+  customId: string,
+): boolean {
   try {
-    const field = submitted.fields.getField(
-      PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
-    );
+    const field = submitted.fields.getField(customId);
     return isModalCheckboxSubmissionField(field) ? field.value : false;
   } catch {
     return false;
   }
 }
 
-function buildTraditionalMirrorCheckbox(
-  checked: boolean,
-): APILabelComponent {
+function getTraditionalMirrorCheckboxValue(submitted: {
+  fields: { getField: (customId: string) => unknown };
+}): boolean {
+  return getMirrorCheckboxValue(
+    submitted,
+    PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
+  );
+}
+
+function buildMirrorCheckbox(input: {
+  customId: string;
+  label: string;
+  description: string;
+  checked: boolean;
+}): APILabelComponent {
   return {
     type: ComponentType.Label,
-    label: "Require uncleared 2★ mirror after open",
-    description: "If enabled, an uncleared mirror must still be 2★ after bases open.",
+    label: input.label,
+    description: input.description,
     component: {
       type: ComponentType.Checkbox,
-      custom_id: PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
-      default: checked,
+      custom_id: input.customId,
+      default: input.checked,
     },
   };
+}
+
+function buildTraditionalMirrorCheckbox(checked: boolean): APILabelComponent {
+  return buildMirrorCheckbox({
+    customId: PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
+    label: "Require uncleared 2★ mirror after open",
+    description: "If enabled, an uncleared mirror must still be 2★ after bases open.",
+    checked,
+  });
+}
+
+function buildWinMirrorCheckbox(checked: boolean): APILabelComponent {
+  return buildMirrorCheckbox({
+    customId: PLAN_MODAL_WIN_MIRROR_CHECKBOX_ID,
+    label: "Require uncleared 3★ mirror after open",
+    description: "If enabled, an uncleared mirror must still be 3★ after bases open.",
+    checked,
+  });
+}
+
+function isWinPlanTarget(target: PlanTarget): boolean {
+  return target.matchType === "FWA" && target.outcome === "WIN";
 }
 
 /** Purpose: build the contextual compliance line shown in `/warplan show`. */
@@ -444,6 +482,8 @@ function buildWarPlanEditModal(input: {
         input.prefill.traditionalRequireMirrorAfterOpen,
       ),
     );
+  } else if (isWinPlanTarget(input.target)) {
+    components.push(buildWinMirrorCheckbox(input.prefill.winRequireMirrorAfterOpen));
   }
 
   return {
@@ -510,6 +550,7 @@ async function getCurrentOrDefaultPlanData(params: {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
   traditionalRequireMirrorAfterOpen: boolean;
+  winRequireMirrorAfterOpen: boolean;
 }> {
   const existing = await prisma.clanWarPlan.findUnique({
     where: {
@@ -527,6 +568,7 @@ async function getCurrentOrDefaultPlanData(params: {
       nonMirrorTripleMinClanStars: true,
       allBasesOpenHoursLeft: true,
       traditionalRequireMirrorAfterOpen: true,
+      winRequireMirrorAfterOpen: true,
     },
   });
 
@@ -534,6 +576,7 @@ async function getCurrentOrDefaultPlanData(params: {
     nonMirrorTripleMinClanStars: number | null;
     allBasesOpenHoursLeft: number | null;
     traditionalRequireMirrorAfterOpen: boolean | null;
+    winRequireMirrorAfterOpen: boolean | null;
   } | null = null;
   if (params.scope === "CUSTOM") {
     const defaultRow = await prisma.clanWarPlan.findUnique({
@@ -551,6 +594,7 @@ async function getCurrentOrDefaultPlanData(params: {
         nonMirrorTripleMinClanStars: true,
         allBasesOpenHoursLeft: true,
         traditionalRequireMirrorAfterOpen: true,
+        winRequireMirrorAfterOpen: true,
       },
     });
     fallbackConfig = defaultRow;
@@ -588,6 +632,7 @@ async function getCurrentOrDefaultPlanData(params: {
     allBasesOpenHoursLeft: modalDefaults.allBasesOpenHoursLeft,
     traditionalRequireMirrorAfterOpen:
       modalDefaults.traditionalRequireMirrorAfterOpen,
+    winRequireMirrorAfterOpen: modalDefaults.winRequireMirrorAfterOpen,
   };
 }
 
@@ -597,6 +642,10 @@ export const buildTraditionalMirrorCheckboxForTest =
   buildTraditionalMirrorCheckbox;
 export const getTraditionalMirrorCheckboxValueForTest =
   getTraditionalMirrorCheckboxValue;
+export const buildWinMirrorCheckboxForTest = buildWinMirrorCheckbox;
+export const getWinMirrorCheckboxValueForTest = (submitted: {
+  fields: { getField: (customId: string) => unknown };
+}) => getMirrorCheckboxValue(submitted, PLAN_MODAL_WIN_MIRROR_CHECKBOX_ID);
 export const buildWarPlanEditModalForTest = buildWarPlanEditModal;
 export const buildComplianceConfigLineForTest = buildComplianceConfigLineForTarget;
 export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
@@ -839,6 +888,9 @@ export const WarPlan: Command = {
         const traditionalRequireMirrorAfterOpen = isTraditionalPlanTarget(target)
           ? getTraditionalMirrorCheckboxValue(submitted)
           : null;
+        const winRequireMirrorAfterOpen = isWinPlanTarget(target)
+          ? getMirrorCheckboxValue(submitted, PLAN_MODAL_WIN_MIRROR_CHECKBOX_ID)
+          : null;
 
         const planText = await resolveWarPlanEmojiShortcodes({
           text: normalizedPlanText,
@@ -865,7 +917,9 @@ export const WarPlan: Command = {
               allBasesOpenHoursLeft: parsedOpenHours.value,
               ...(isTraditionalPlanTarget(target)
                 ? { traditionalRequireMirrorAfterOpen }
-                : {}),
+                : isWinPlanTarget(target)
+                  ? { winRequireMirrorAfterOpen }
+                  : {}),
             }
           : {};
 
@@ -1102,6 +1156,7 @@ export const WarPlan: Command = {
           nonMirrorTripleMinClanStars: true,
           allBasesOpenHoursLeft: true,
           traditionalRequireMirrorAfterOpen: true,
+          winRequireMirrorAfterOpen: true,
         },
       });
       const rowByKey = new Map<
@@ -1111,6 +1166,7 @@ export const WarPlan: Command = {
           nonMirrorTripleMinClanStars: number | null;
           allBasesOpenHoursLeft: number | null;
           traditionalRequireMirrorAfterOpen: boolean | null;
+          winRequireMirrorAfterOpen: boolean | null;
         }
       >();
       for (const row of rows) {
@@ -1120,6 +1176,7 @@ export const WarPlan: Command = {
           allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
           traditionalRequireMirrorAfterOpen:
             row.traditionalRequireMirrorAfterOpen,
+          winRequireMirrorAfterOpen: row.winRequireMirrorAfterOpen,
         });
       }
 
@@ -1129,6 +1186,7 @@ export const WarPlan: Command = {
           nonMirrorTripleMinClanStars: number | null;
           allBasesOpenHoursLeft: number | null;
           traditionalRequireMirrorAfterOpen: boolean | null;
+          winRequireMirrorAfterOpen: boolean | null;
         }
       >();
       if (mode === "CUSTOM") {
@@ -1150,6 +1208,7 @@ export const WarPlan: Command = {
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
             traditionalRequireMirrorAfterOpen: true,
+            winRequireMirrorAfterOpen: true,
           },
         });
         for (const row of defaultRows) {
@@ -1158,6 +1217,7 @@ export const WarPlan: Command = {
             allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
             traditionalRequireMirrorAfterOpen:
               row.traditionalRequireMirrorAfterOpen,
+            winRequireMirrorAfterOpen: row.winRequireMirrorAfterOpen,
           });
         }
       }

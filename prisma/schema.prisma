@@ -725,6 +725,7 @@ enum WarPlanComplianceEvaluationStatus {
 enum WarPlanViolationType {
   EARLY_NON_MIRROR_TRIPLE
   STRICT_WINDOW_MIRROR_MISS_WIN
+  WIN_UNCLEARED_MIRROR
   STRICT_WINDOW_MIRROR_MISS_LOSS
   EARLY_NON_MIRROR_2STAR
   TRADITIONAL_INVALID_STAR_COUNT
@@ -1639,6 +1640,7 @@ model WarPlanComplianceEvaluation {
   nonMirrorTripleMinClanStars Int?
   allBasesOpenHoursLeft       Int?
   traditionalRequireMirrorAfterOpen Boolean?
+  winRequireMirrorAfterOpen   Boolean?
   rulesFingerprint            String?
   attemptCount                Int                               @default(0)
   lastAttemptAt               DateTime?
@@ -1822,6 +1824,7 @@ model ClanWarPlan {
   nonMirrorTripleMinClanStars Int?
   allBasesOpenHoursLeft       Int?
   traditionalRequireMirrorAfterOpen Boolean?
+  winRequireMirrorAfterOpen    Boolean?
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
 

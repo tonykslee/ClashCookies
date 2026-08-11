@@ -9,6 +9,7 @@ import {
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
   TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+  WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
 } from "../src/services/war-events/core";
 
 function buildZeroViolationReport() {
@@ -38,6 +39,7 @@ function buildZeroViolationReport() {
     fwaWinGateConfig: {
       nonMirrorTripleMinClanStars: 101,
       allBasesOpenHoursLeft: 12,
+      winRequireMirrorAfterOpen: false,
     },
   };
 }
@@ -157,6 +159,39 @@ function buildViolationReport() {
     fwaWinGateConfig: {
       nonMirrorTripleMinClanStars: 101,
       allBasesOpenHoursLeft: 12,
+      winRequireMirrorAfterOpen: false,
+    },
+  };
+}
+
+function buildWinOpenViolationReport() {
+  return {
+    ...buildZeroViolationReport(),
+    notFollowingPlan: [
+      {
+        playerTag: "#P1",
+        playerName: "Alpha One",
+        playerPosition: 1,
+        ruleType: "not_following_plan" as const,
+        expectedBehavior:
+          "Triple the required mirror; if it remains uncleared, it is still required after open. Avoid off-mirror triples/zeros during the strict window.",
+        actualBehavior: "#1 (2-star), #2 (1-star) : uncleared mirror after open",
+        reasonLabel: WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+        attackDetails: [
+          {
+            defenderPosition: 2,
+            stars: 1,
+            attackOrder: 2,
+            isBreach: false,
+          },
+        ],
+        breachContext: null,
+      },
+    ],
+    fwaWinGateConfig: {
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 12,
+      winRequireMirrorAfterOpen: true,
     },
   };
 }
@@ -217,6 +252,7 @@ function buildEvaluationRow(params?: Partial<Record<string, unknown>>) {
     nonMirrorTripleMinClanStars: null,
     allBasesOpenHoursLeft: null,
     traditionalRequireMirrorAfterOpen: null,
+    winRequireMirrorAfterOpen: null,
     rulesFingerprint: null,
     attemptCount: 0,
     lastAttemptAt: null,
@@ -498,6 +534,7 @@ describe("WarPlanViolationService", () => {
     expect(state.row).toMatchObject({
       status: "COMPLETED",
       engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+      winRequireMirrorAfterOpen: false,
       nextAttemptAt: null,
       failureCode: null,
       failureMessage: null,
@@ -1028,13 +1065,50 @@ describe("WarPlanViolationService", () => {
         attackDetails,
       );
       expect(state.row).toMatchObject({
-        engineVersion: "war-plan-compliance-v2",
+        engineVersion: "war-plan-compliance-v3",
         traditionalRequireMirrorAfterOpen: true,
         rulesFingerprint: expect.any(String),
       });
       expect(updateManySpy).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("persists the WIN uncleared-after-open type without fabricated breach data", async () => {
+    const compliance = {
+      evaluateComplianceForCommand: vi.fn(async () => ({
+        status: "ok",
+        report: buildWinOpenViolationReport(),
+      })),
+    } as any;
+    const service = new WarPlanViolationService(compliance);
+    const evaluationRow = buildEvaluationRow({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "TRIPLE_TOP_30",
+    });
+    const { state } = installEvaluationStateMock(evaluationRow);
+    vi.spyOn(prisma.clanWarParticipation, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.fwaClanMemberCurrent, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.fwaPlayerCatalog, "findMany").mockResolvedValue([] as any);
+    vi.spyOn(prisma.playerCurrent, "findMany").mockResolvedValue([] as any);
+    const { createdViolations } = installTransactionMock(state);
+
+    await service.finalizeEvaluation({ guildId: "g1", warId: 1 });
+
+    expect(createdViolations).toHaveLength(1);
+    expect(createdViolations[0]).toMatchObject({
+      violationType: WarPlanViolationType.WIN_UNCLEARED_MIRROR,
+      reasonLabel: WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+      expectedBehavior:
+        "Triple the required mirror; if it remains uncleared, it is still required after open. Avoid off-mirror triples/zeros during the strict window.",
+      breachStarsAt: null,
+      breachTimeRemaining: null,
+    });
+    expect(state.row).toMatchObject({
+      engineVersion: "war-plan-compliance-v3",
+      winRequireMirrorAfterOpen: true,
+    });
+  });
 
   it.each([false, true])(
     "snapshots Traditional require-mirror-after-open=%s",
@@ -1067,7 +1141,7 @@ describe("WarPlanViolationService", () => {
 
       expect(state.row).toMatchObject({
         traditionalRequireMirrorAfterOpen,
-        engineVersion: "war-plan-compliance-v2",
+        engineVersion: "war-plan-compliance-v3",
       });
     },
   );
@@ -1094,7 +1168,7 @@ describe("WarPlanViolationService", () => {
 
     expect(state.row).toMatchObject({
       traditionalRequireMirrorAfterOpen: null,
-      engineVersion: "war-plan-compliance-v2",
+      engineVersion: "war-plan-compliance-v3",
     });
   });
 
@@ -1136,7 +1210,7 @@ describe("WarPlanViolationService", () => {
     expect(falseFingerprintAgain).toBe(falseFingerprint);
   });
 
-  it("includes the v2 engine identity in the deterministic fingerprint", () => {
+  it("includes the v3 engine identity in the deterministic fingerprint", () => {
     const policy = {
       matchType: "FWA",
       expectedOutcome: "LOSE",
@@ -1144,6 +1218,7 @@ describe("WarPlanViolationService", () => {
       nonMirrorTripleMinClanStars: 101,
       allBasesOpenHoursLeft: 12,
       traditionalRequireMirrorAfterOpen: false,
+      winRequireMirrorAfterOpen: null,
     };
 
     expect(
@@ -1157,6 +1232,31 @@ describe("WarPlanViolationService", () => {
         ...policy,
       }),
     );
+  });
+
+  it("hashes the effective WIN mirror-after-open toggle and remains deterministic", () => {
+    const policy = {
+      engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "TRIPLE_TOP_30",
+      nonMirrorTripleMinClanStars: 101,
+      allBasesOpenHoursLeft: 12,
+      traditionalRequireMirrorAfterOpen: null,
+    };
+    const disabled = buildRulesFingerprint({
+      ...policy,
+      winRequireMirrorAfterOpen: false,
+    });
+    const enabled = buildRulesFingerprint({
+      ...policy,
+      winRequireMirrorAfterOpen: true,
+    });
+
+    expect(disabled).not.toBe(enabled);
+    expect(
+      buildRulesFingerprint({ ...policy, winRequireMirrorAfterOpen: false }),
+    ).toBe(disabled);
   });
 
   it("marks unexpected failures retryable and reconciles them on the next poll", async () => {
