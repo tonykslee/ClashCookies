@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFwaPointsStrictLiveSyncIdentityForTest,
   formatFwaPointsSyncDisplayForTest,
   formatFwaPointsSyncFooterForTest,
   isFwaPointsCurrentWarSyncEligibleForTest,
@@ -243,6 +244,33 @@ describe("fwa points sync numbering regression", () => {
       }),
     ).toBe(546);
     expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleSyncNumber: 546,
+        resolvedActiveSyncNumbers: [545],
+        exactResolvedActiveSyncNumbers: [545],
+        activeCurrentClanCount: 1,
+      }),
+    ).toBe(545);
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleSyncNumber: 546,
+        resolvedActiveSyncNumbers: [545, 546],
+        exactResolvedActiveSyncNumbers: [545],
+        activeCurrentClanCount: 2,
+      }),
+    ).toBeNull();
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleSyncNumber: 545,
+        resolvedActiveSyncNumbers: [545],
+        exactResolvedActiveSyncNumbers: [545],
+        activeCurrentClanCount: 1,
+      }),
+    ).toBe(545);
+    expect(
       formatFwaPointsSyncFooterForTest(
         resolveFwaPointsFooterSyncForTest({
           sourceSync: 545,
@@ -366,6 +394,13 @@ describe("fwa points sync numbering regression", () => {
 
 describe("fwa tagged CurrentWar canonical sync live-identity eligibility", () => {
   const currentWarStartTime = new Date("2026-08-10T20:00:00.000Z");
+  const oldWarStartTime = new Date("2026-08-10T20:00:00.000Z");
+  const newWarStartTime = new Date("2026-08-11T20:00:00.000Z");
+  const fallbackFilledIdentity = buildActiveWarSyncIdentity({
+    warState: "inWar",
+    warStartTime: oldWarStartTime,
+    opponentTag: "2OPP",
+  });
 
   it("accepts a full live start/opponent match", () => {
     expect(
@@ -376,6 +411,27 @@ describe("fwa tagged CurrentWar canonical sync live-identity eligibility", () =>
         currentWarOpponentTag: "#2OPP",
       }),
     ).toBe(true);
+  });
+
+  it("keeps exact same-war points evidence when strict live identity is complete", () => {
+    const strictLiveIdentity = buildFwaPointsStrictLiveSyncIdentityForTest({
+      warState: "inWar",
+      liveWarStartTime: "20260810T200000.000Z",
+      liveOpponentTag: "#2OPP",
+    });
+
+    expect(strictLiveIdentity.positivelyResolved).toBe(true);
+    expect(strictLiveIdentity.warStartTime).toEqual(oldWarStartTime);
+    expect(strictLiveIdentity.opponentTag).toBe("20PP");
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: strictLiveIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: 545,
+        currentWarSyncNumber: 546,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(545);
   });
 
   it.each([
@@ -421,6 +477,62 @@ describe("fwa tagged CurrentWar canonical sync live-identity eligibility", () =>
         currentWarSyncNumber: currentWarSyncEligible
           ? staleCanonicalSync
           : null,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(546);
+  });
+
+  it("does not use an old points row when live start is missing", () => {
+    const strictLiveIdentity = buildFwaPointsStrictLiveSyncIdentityForTest({
+      warState: "inWar",
+      liveWarStartTime: null,
+      liveOpponentTag: "#2OPP",
+    });
+
+    expect(strictLiveIdentity.positivelyResolved).toBe(false);
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: fallbackFilledIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(546);
+  });
+
+  it("does not use an old points row when live opponent is missing", () => {
+    const strictLiveIdentity = buildFwaPointsStrictLiveSyncIdentityForTest({
+      warState: "inWar",
+      liveWarStartTime: "20260810T200000.000Z",
+      liveOpponentTag: null,
+    });
+
+    expect(strictLiveIdentity.positivelyResolved).toBe(false);
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: fallbackFilledIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
+        activeCycleSyncNumber: 546,
+      }),
+    ).toBe(546);
+  });
+
+  it("scopes exact points evidence to the new live start during rollover", () => {
+    const strictLiveIdentity = buildFwaPointsStrictLiveSyncIdentityForTest({
+      warState: "inWar",
+      liveWarStartTime: "20260811T200000.000Z",
+      liveOpponentTag: "#2OPP",
+    });
+
+    expect(strictLiveIdentity.positivelyResolved).toBe(true);
+    expect(strictLiveIdentity.warStartTime).toEqual(newWarStartTime);
+    expect(strictLiveIdentity.warStartTime).not.toEqual(oldWarStartTime);
+    expect(
+      resolveFwaPointsCurrentSyncForTest({
+        identity: strictLiveIdentity,
+        sourceSync: 545,
+        sameWarPersistedSyncNumber: null,
         activeCycleSyncNumber: 546,
       }),
     ).toBe(546);

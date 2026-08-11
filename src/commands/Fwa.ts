@@ -11746,10 +11746,18 @@ function resolveFwaPointsFooterSync(input: {
   const distinctExactResolvedSyncNumbers = [
     ...new Set(exactResolvedActiveSyncNumbers),
   ];
+  if (distinctExactResolvedSyncNumbers.length > 1) return null;
+  if (distinctExactResolvedSyncNumbers.length === 1) {
+    const exactSyncNumber = distinctExactResolvedSyncNumbers[0];
+    return distinctResolvedSyncNumbers.length === 1 &&
+      distinctResolvedSyncNumbers[0] === exactSyncNumber
+      ? exactSyncNumber
+      : distinctResolvedSyncNumbers.length === 0
+        ? exactSyncNumber
+        : null;
+  }
   if (input.activeCycleConflict) {
-    return distinctExactResolvedSyncNumbers.length === 1
-      ? distinctExactResolvedSyncNumbers[0]
-      : null;
+    return null;
   }
   if (input.activeCycleSyncNumber !== null && input.activeCycleSyncNumber !== undefined) {
     return toComparableSyncNumber(input.activeCycleSyncNumber);
@@ -11788,6 +11796,21 @@ function isFwaPointsCurrentWarSyncEligible(input: {
   );
 }
 
+/** Purpose: keep exact points-row lookup on independently observed live war identity. */
+function buildFwaPointsStrictLiveSyncIdentity(input: {
+  warState: WarStateForSync;
+  liveWarStartTime: string | null | undefined;
+  liveOpponentTag: string | null | undefined;
+}): ActiveWarSyncIdentity {
+  const liveWarStartMs = parseCocApiTime(input.liveWarStartTime ?? null);
+  return buildActiveWarSyncIdentity({
+    warState: input.warState,
+    warStartTime:
+      liveWarStartMs === null ? null : new Date(liveWarStartMs),
+    opponentTag: input.liveOpponentTag ?? null,
+  });
+}
+
 /** Purpose: render the resolved current sync used by tag-specific points output. */
 function formatFwaPointsSyncDisplay(syncNumber: number | null): string {
   return formatResolvedSyncDisplay(syncNumber);
@@ -11816,6 +11839,8 @@ export const formatFwaPointsSyncFooterForTest = formatFwaPointsSyncFooter;
 export const resolveFwaPointsFooterSyncForTest = resolveFwaPointsFooterSync;
 export const isFwaPointsCurrentWarSyncEligibleForTest =
   isFwaPointsCurrentWarSyncEligible;
+export const buildFwaPointsStrictLiveSyncIdentityForTest =
+  buildFwaPointsStrictLiveSyncIdentity;
 export const formatFwaPointsSyncDisplayForTest = formatFwaPointsSyncDisplay;
 export const resolveFwaPointsCurrentSyncForTest = resolveFwaPointsCurrentSync;
 
@@ -18689,19 +18714,25 @@ export const Fwa: Command = {
         currentWarStartTime: subscription?.startTime ?? null,
         currentWarOpponentTag: subscription?.opponentTag ?? null,
       });
+      const strictLiveSyncIdentity = buildFwaPointsStrictLiveSyncIdentity({
+        warState,
+        liveWarStartTime: war?.startTime ?? null,
+        liveOpponentTag: war?.opponent?.tag ?? null,
+      });
+      const strictLiveWarStartTime = strictLiveSyncIdentity.warStartTime;
+      const strictLiveOpponentTag = strictLiveSyncIdentity.opponentTag;
       const sameWarSyncRow =
-        interaction.guildId && syncIdentity.positivelyResolved
+        interaction.guildId &&
+        strictLiveSyncIdentity.positivelyResolved &&
+        strictLiveWarStartTime !== null &&
+        strictLiveOpponentTag !== null
           ? await prisma.clanPointsSync.findFirst({
               where: {
                 guildId: interaction.guildId,
                 clanTag: `#${tag}`,
                 needsValidation: false,
-                ...(syncIdentity.warStartTime
-                  ? { warStartTime: syncIdentity.warStartTime }
-                  : { warId: syncIdentity.warId }),
-                ...(syncIdentity.opponentTag
-                  ? { opponentTag: `#${syncIdentity.opponentTag}` }
-                  : {}),
+                warStartTime: strictLiveWarStartTime,
+                opponentTag: `#${strictLiveOpponentTag}`,
               },
               select: { syncNum: true },
               orderBy: [
