@@ -785,6 +785,9 @@ describe("war plan violations view helpers", () => {
     expect(formatWarPlanViolationsViolationTypeLabel("STRICT_WINDOW_MIRROR_MISS_WIN")).toBe(
       "Missed mirror during WIN strict window",
     );
+    expect(formatWarPlanViolationsViolationTypeLabel("WIN_UNCLEARED_MIRROR")).toBe(
+      "Required mirror uncleared after open (win)",
+    );
     expect(formatWarPlanViolationsViolationTypeLabel("STRICT_WINDOW_MIRROR_MISS_LOSS")).toBe(
       "Missed mirror during LOSS strict window",
     );

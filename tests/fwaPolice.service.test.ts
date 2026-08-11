@@ -54,6 +54,7 @@ import { classifyFwaPoliceViolation } from "../src/services/FwaPoliceTemplateCat
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
   TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+  WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
 } from "../src/services/war-events/core";
 
 function buildIssue(overrides?: Record<string, unknown>) {
@@ -77,7 +78,7 @@ function buildIssue(overrides?: Record<string, unknown>) {
   } as any;
 }
 
-it("classifies strict own-mirror cleanup as its canonical police violation", () => {
+  it("classifies strict own-mirror cleanup as its canonical police violation", () => {
   expect(
     classifyFwaPoliceViolation({
       issue: buildIssue({
@@ -104,6 +105,22 @@ it("classifies strict own-mirror cleanup as its canonical police violation", () 
       },
     }),
   ).toBe("TRADITIONAL_INVALID_CLEANUP_TARGET");
+});
+
+it("classifies the open-phase WIN reason without strict breach context", () => {
+  expect(
+    classifyFwaPoliceViolation({
+      issue: buildIssue({
+        reasonLabel: WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+        breachContext: null,
+      }),
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+      },
+    }),
+  ).toBe("WIN_UNCLEARED_MIRROR");
 });
 
 describe("FwaPoliceService", () => {
@@ -1164,6 +1181,98 @@ describe("FwaPoliceService", () => {
     expect(prismaMock.warAttacks.findMany).not.toHaveBeenCalled();
     expect(prismaMock.warAttacks.findFirst).toHaveBeenCalledTimes(1);
     expect(evaluateComplianceForCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("delivers and dedupes the open-phase WIN reason through the existing DM/log path", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#2QG2C08UP",
+      name: "Alpha",
+      loseStyle: "TRIPLE_TOP_30",
+      fwaPoliceDmEnabled: true,
+      fwaPoliceLogEnabled: true,
+      logChannelId: "channel-1",
+      notifyChannelId: null,
+      mailChannelId: null,
+    });
+    prismaMock.fwaPoliceHandledViolation.create
+      .mockResolvedValueOnce({ id: "handled-1" })
+      .mockRejectedValueOnce({ code: "P2002" });
+    playerLinkServiceMock.listPlayerLinksForClanMembers.mockResolvedValue([
+      {
+        playerTag: "#P2YLC8R0",
+        discordUserId: "222222222222222222",
+      },
+    ]);
+
+    const dmSend = vi.fn().mockResolvedValue({});
+    const logSend = vi.fn().mockResolvedValue({});
+    const client = {
+      users: {
+        fetch: vi.fn().mockResolvedValue({
+          createDM: vi.fn().mockResolvedValue({ send: dmSend }),
+        }),
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue({
+          isTextBased: () => true,
+          send: logSend,
+        }),
+      },
+    } as any;
+    const evaluateComplianceForCommand = vi.fn().mockResolvedValue({
+      status: "ok",
+      report: {
+        warId: 12349,
+        clanName: "Alpha",
+        opponentName: "Bravo",
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        loseStyle: "TRIPLE_TOP_30",
+        notFollowingPlan: [
+          buildIssue({
+            reasonLabel: WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+            breachContext: null,
+          }),
+        ],
+      },
+    });
+
+    const service = new FwaPoliceService();
+    const firstResult = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12349,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+    const secondResult = await service.enforceWarViolations({
+      client,
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      warId: 12349,
+      warCompliance: { evaluateComplianceForCommand } as any,
+    });
+
+    expect(firstResult).toEqual({
+      evaluatedViolations: 1,
+      created: 1,
+      deduped: 0,
+      dmSent: 1,
+      logSent: 1,
+    });
+    expect(secondResult).toEqual({
+      evaluatedViolations: 1,
+      created: 0,
+      deduped: 1,
+      dmSent: 0,
+      logSent: 0,
+    });
+    expect(String(dmSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "finished their attacks without clearing the required mirror after the open window",
+    );
+    expect(String(logSend.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "finished their attacks without clearing the required mirror after the open window",
+    );
   });
 
   it.each([

@@ -3,6 +3,7 @@ import { type WarComplianceIssue } from "./WarComplianceService";
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
   TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+  WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
   type FwaLoseStyle,
   type MatchType,
 } from "./war-events/core";
@@ -10,6 +11,7 @@ import {
 export const FWA_POLICE_VIOLATIONS = [
   "EARLY_NON_MIRROR_TRIPLE",
   "STRICT_WINDOW_MIRROR_MISS_WIN",
+  "WIN_UNCLEARED_MIRROR",
   "STRICT_WINDOW_MIRROR_MISS_LOSS",
   "EARLY_NON_MIRROR_2STAR",
   "TRADITIONAL_INVALID_STAR_COUNT",
@@ -70,6 +72,13 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
     label: "Mirror missed during strict window (win)",
     builtInTemplate:
       "{offender} missed a required mirror triple during the strict window. Linked user: {user}.",
+    isApplicable: (context) =>
+      context.matchType === "FWA" && context.expectedOutcome === "WIN",
+  },
+  WIN_UNCLEARED_MIRROR: {
+    label: "Required mirror uncleared after open (win)",
+    builtInTemplate:
+      "{offender} finished their attacks without clearing the required mirror after the open window. Linked user: {user}.",
     isApplicable: (context) =>
       context.matchType === "FWA" && context.expectedOutcome === "WIN",
   },
@@ -163,6 +172,7 @@ const CANONICAL_REASON_LABEL_TO_VIOLATION: Record<
 > = {
   "tripled non-mirror in strict window": "EARLY_NON_MIRROR_TRIPLE",
   "didn't triple mirror": "STRICT_WINDOW_MIRROR_MISS_WIN",
+  [WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON.toLowerCase()]: "WIN_UNCLEARED_MIRROR",
   "strict-window mirror miss in traditional loss":
     "STRICT_WINDOW_MIRROR_MISS_LOSS",
   [TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON]:

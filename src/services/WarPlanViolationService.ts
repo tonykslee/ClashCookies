@@ -17,7 +17,7 @@ import {
 } from "./WarComplianceService";
 import { normalizeTag } from "./war-events/core";
 
-export const WAR_PLAN_COMPLIANCE_ENGINE_VERSION = "war-plan-compliance-v2";
+export const WAR_PLAN_COMPLIANCE_ENGINE_VERSION = "war-plan-compliance-v3";
 const MAX_RECONCILE_LIMIT = 20;
 const RETRY_BASE_DELAY_MS = 15 * 60 * 1000;
 const RETRY_MAX_DELAY_MS = 6 * 60 * 60 * 1000;
@@ -111,6 +111,7 @@ export function buildRulesFingerprint(input: {
   nonMirrorTripleMinClanStars: number | null;
   allBasesOpenHoursLeft: number | null;
   traditionalRequireMirrorAfterOpen: boolean | null;
+  winRequireMirrorAfterOpen: boolean | null;
 }): string {
   return createHash("sha256")
     .update(JSON.stringify(input))
@@ -1102,6 +1103,8 @@ export class WarPlanViolationService {
       input.report.fwaWinGateConfig?.allBasesOpenHoursLeft ?? null;
     const traditionalRequireMirrorAfterOpen =
       input.report.fwaWinGateConfig?.traditionalRequireMirrorAfterOpen ?? null;
+    const winRequireMirrorAfterOpen =
+      input.report.fwaWinGateConfig?.winRequireMirrorAfterOpen ?? null;
     const rulesFingerprint = buildRulesFingerprint({
       engineVersion: WAR_PLAN_COMPLIANCE_ENGINE_VERSION,
       matchType: input.report.matchType,
@@ -1110,6 +1113,7 @@ export class WarPlanViolationService {
       nonMirrorTripleMinClanStars,
       allBasesOpenHoursLeft,
       traditionalRequireMirrorAfterOpen,
+      winRequireMirrorAfterOpen,
     });
     const completedAt = new Date();
     const violationRows = resolvedViolations.map(({ issue, violationType }) => ({
@@ -1143,6 +1147,7 @@ export class WarPlanViolationService {
           nonMirrorTripleMinClanStars,
           allBasesOpenHoursLeft,
           traditionalRequireMirrorAfterOpen,
+          winRequireMirrorAfterOpen,
           rulesFingerprint,
           attemptCount: input.attemptCount,
           lastAttemptAt: input.attemptAt,

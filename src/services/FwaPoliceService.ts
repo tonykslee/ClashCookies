@@ -316,6 +316,9 @@ function buildSampleExpectedBehavior(violation: FwaPoliceViolation): string {
   if (violation === "STRICT_WINDOW_MIRROR_MISS_WIN") {
     return "Mirror triple in strict window.";
   }
+  if (violation === "WIN_UNCLEARED_MIRROR") {
+    return "Clear the required mirror before finishing both attacks, including after open when required.";
+  }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_LOSS") {
     return "Mirror 2-star in traditional loss strict window.";
   }
@@ -349,6 +352,9 @@ function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_WIN") {
     return "#15 (* * -) : missed mirror triple during strict window";
+  }
+  if (violation === "WIN_UNCLEARED_MIRROR") {
+    return "#15 (* * -) : required mirror uncleared after open";
   }
   if (violation === "STRICT_WINDOW_MIRROR_MISS_LOSS") {
     return "#15 (* - -) : mirror 2-star missed in traditional loss";
