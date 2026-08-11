@@ -8,6 +8,9 @@ export type ActiveWarSyncState = "preparation" | "inWar" | "notInWar";
 export type ActiveWarSyncResolutionSource =
   | "same_war_persisted"
   | "refresh_posted_sync"
+  | "current_war_canonical"
+  | "active_cycle_reuse"
+  | "active_cycle_conflict"
   | "derived_latest_plus_one"
   | "historical_latest_persisted"
   | "none";
@@ -297,6 +300,8 @@ export function resolveActiveWarSyncNumber(input: {
   identity: ActiveWarSyncIdentity;
   latestPersistedSyncNumber: number | null;
   sameWarPersistedSyncNumber: number | null | undefined;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
   postedSyncNumber?: number | null;
   allowPostedSyncReuse?: boolean;
 }): ActiveWarSyncResolutionResult {
@@ -305,6 +310,9 @@ export function resolveActiveWarSyncNumber(input: {
   );
   const sameWarPersistedSyncNumber = normalizeSyncNumber(
     input.sameWarPersistedSyncNumber,
+  );
+  const activeCycleSyncNumber = normalizeSyncNumber(
+    input.activeCycleSyncNumber ?? null,
   );
   const postedSyncNumber = normalizeSyncNumber(input.postedSyncNumber ?? null);
   if (sameWarPersistedSyncNumber !== null) {
@@ -334,6 +342,28 @@ export function resolveActiveWarSyncNumber(input: {
   const isActiveWar =
     input.identity.warState === "preparation" || input.identity.warState === "inWar";
   if (isActiveWar) {
+    if (input.identity.positivelyResolved && input.activeCycleConflict) {
+      return {
+        syncNumber: null,
+        source: "active_cycle_conflict",
+        isDerived: false,
+        identity: input.identity,
+        latestPersistedSyncNumber,
+        sameWarPersistedSyncNumber,
+        postedSyncNumber,
+      };
+    }
+    if (input.identity.positivelyResolved && activeCycleSyncNumber !== null) {
+      return {
+        syncNumber: activeCycleSyncNumber,
+        source: "active_cycle_reuse",
+        isDerived: false,
+        identity: input.identity,
+        latestPersistedSyncNumber,
+        sameWarPersistedSyncNumber,
+        postedSyncNumber,
+      };
+    }
     if (input.identity.positivelyResolved && latestPersistedSyncNumber !== null) {
       return {
         syncNumber: latestPersistedSyncNumber + 1,
@@ -377,6 +407,51 @@ export function resolveActiveWarSyncNumber(input: {
     sameWarPersistedSyncNumber,
     postedSyncNumber,
   };
+}
+
+/** Purpose: resolve a command read without allocating, honoring exact and already-assigned canonical evidence. */
+export function resolveActiveWarSyncNumberReadOnly(input: {
+  identity: ActiveWarSyncIdentity;
+  latestPersistedSyncNumber: number | null;
+  sameWarPersistedSyncNumber: number | null | undefined;
+  currentWarSyncNumber?: number | null;
+  activeCycleSyncNumber?: number | null;
+  activeCycleConflict?: boolean;
+}): ActiveWarSyncResolutionResult {
+  const currentWarSyncNumber = normalizeSyncNumber(
+    input.currentWarSyncNumber ?? null,
+  );
+  const isActiveWar =
+    input.identity.warState === "preparation" || input.identity.warState === "inWar";
+  const sameWarPersistedSyncNumber = normalizeSyncNumber(
+    input.sameWarPersistedSyncNumber,
+  );
+  if (
+    sameWarPersistedSyncNumber === null &&
+    isActiveWar &&
+    input.identity.positivelyResolved &&
+    currentWarSyncNumber !== null
+  ) {
+    const latestPersistedSyncNumber = normalizeSyncNumber(
+      input.latestPersistedSyncNumber,
+    );
+    return {
+      syncNumber: currentWarSyncNumber,
+      source: "current_war_canonical",
+      isDerived: false,
+      identity: input.identity,
+      latestPersistedSyncNumber,
+      sameWarPersistedSyncNumber,
+      postedSyncNumber: null,
+    };
+  }
+  return resolveActiveWarSyncNumber({
+    identity: input.identity,
+    latestPersistedSyncNumber: input.latestPersistedSyncNumber,
+    sameWarPersistedSyncNumber,
+    activeCycleSyncNumber: input.activeCycleSyncNumber ?? null,
+    activeCycleConflict: input.activeCycleConflict ?? false,
+  });
 }
 
 /** Purpose: log shared sync resolution decisions in one structured format. */
