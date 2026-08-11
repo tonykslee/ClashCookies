@@ -22,16 +22,18 @@ import {
 } from "./WarComplianceService";
 import { type FwaLoseStyle, type MatchType, normalizeOutcome } from "./war-events/core";
 import {
-  classifyFwaPoliceViolation,
+  classifyFwaPoliceViolationForEnforcement,
   FWA_POLICE_VIOLATIONS,
   FWA_POLICE_VIOLATION_METADATA,
   normalizeFwaPoliceText,
   renderFwaPoliceTemplate,
   type FwaPoliceApplicabilityContext,
-  type FwaPoliceViolation,
+  type FwaPoliceEnforcementViolation,
 } from "./FwaPoliceTemplateCatalog";
 import { emojiResolverService } from "./emoji/EmojiResolverService";
 import { BotLogChannelService } from "./BotLogChannelService";
+
+type FwaPoliceViolation = FwaPoliceEnforcementViolation;
 
 type TrackedClanPoliceRow = {
   tag: string;
@@ -325,6 +327,12 @@ function buildSampleExpectedBehavior(violation: FwaPoliceViolation): string {
   if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
     return "Use the correct star count for the current traditional-loss phase.";
   }
+  if (violation === "TRADITIONAL_INVALID_CLEANUP_TARGET") {
+    return "Use a non-mirror base for strict-window 0-1-star cleanup.";
+  }
+  if (violation === "TRADITIONAL_UNCLEARED_MIRROR") {
+    return "Clear the required 2-star mirror before finishing both attacks.";
+  }
   if (violation === "ANY_3STAR") {
     return "Avoid 3-star attacks in traditional FWA-loss flow.";
   }
@@ -352,6 +360,12 @@ function buildSampleActualBehavior(violation: FwaPoliceViolation): string {
   }
   if (violation === "TRADITIONAL_INVALID_STAR_COUNT") {
     return "#18 (* - -) : invalid star count in traditional loss";
+  }
+  if (violation === "TRADITIONAL_INVALID_CLEANUP_TARGET") {
+    return "#5 (* - -) : strict cleanup used on own mirror";
+  }
+  if (violation === "TRADITIONAL_UNCLEARED_MIRROR") {
+    return "#18 (* * -), #22 (* - -) : required mirror uncleared after open";
   }
   if (violation === "ANY_3STAR") {
     return "#16 (* * *) : 3-star in loss-traditional flow";
@@ -1286,7 +1300,7 @@ export class FwaPoliceService {
     const classifiedIssues = issues
       .map((issue) => ({
         issue,
-        violation: classifyFwaPoliceViolation({ issue, context }),
+        violation: classifyFwaPoliceViolationForEnforcement({ issue, context }),
       }))
       .filter(
         (
