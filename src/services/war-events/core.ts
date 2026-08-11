@@ -13,6 +13,9 @@ export type EventType = "war_started" | "battle_day" | "war_ended";
 export type MatchType = "FWA" | "BL" | "MM" | "SKIP" | null;
 export type FwaLoseStyle = "TRIPLE_TOP_30" | "TRADITIONAL";
 
+export const TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON =
+  "strict-window cleanup must target a non-mirror base in traditional loss";
+
 export type WarEndResultSnapshot = {
   clanStars: number | null;
   opponentStars: number | null;
@@ -704,18 +707,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                 }
               : null;
           }
-        } else if (stars === 0) {
-          isBreach = true;
-          hasAttackLevelViolation = true;
-          if (reasonLabel === null) {
-            reasonLabel = "invalid star count in traditional loss";
-            firstBreachContext = ctx
-              ? {
-                  starsBeforeAttack: ctx.starsBeforeAttack,
-                  timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-                }
-              : null;
-          }
         } else if (stars === 2) {
           if (!isOwnMirror && !isConsumedSubstitution) {
             isBreach = true;
@@ -730,8 +721,20 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                 : null;
             }
           }
-        } else if (stars === 1) {
-          if (!ownSatisfied) {
+        } else if (stars === 1 || stars === 0) {
+          if (isOwnMirror) {
+            isBreach = true;
+            hasAttackLevelViolation = true;
+            if (reasonLabel === null) {
+              reasonLabel = TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON;
+              firstBreachContext = ctx
+                ? {
+                    starsBeforeAttack: ctx.starsBeforeAttack,
+                    timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
+                  }
+                : null;
+            }
+          } else if (stars === 1 && !ownSatisfied) {
             isBreach = true;
             hasAttackLevelViolation = true;
             if (reasonLabel === null) {
@@ -744,7 +747,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                 : null;
             }
           }
-        } else {
+        } else if (stars !== 0) {
           isBreach = true;
           hasAttackLevelViolation = true;
           if (reasonLabel === null) {
@@ -757,11 +760,13 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
               : null;
           }
         }
-      } else if (stars !== 2) {
+      } else if (stars > 2) {
         isBreach = true;
         hasAttackLevelViolation = true;
         if (reasonLabel === null) {
-          reasonLabel = "invalid star count in traditional loss";
+          reasonLabel = stars === 3
+            ? "any 3-star in traditional loss"
+            : "invalid star count in traditional loss";
           firstBreachContext = ctx
             ? {
                 starsBeforeAttack: ctx.starsBeforeAttack,

@@ -50,6 +50,7 @@ vi.mock("../src/services/BotLogChannelService", () => ({
 }));
 
 import { FwaPoliceService } from "../src/services/FwaPoliceService";
+import { classifyFwaPoliceViolation } from "../src/services/FwaPoliceTemplateCatalog";
 
 function buildIssue(overrides?: Record<string, unknown>) {
   return {
@@ -71,6 +72,35 @@ function buildIssue(overrides?: Record<string, unknown>) {
     ...overrides,
   } as any;
 }
+
+it("keeps strict own-mirror cleanup on the generic violation path", () => {
+  expect(
+    classifyFwaPoliceViolation({
+      issue: buildIssue({
+        reasonLabel:
+          "strict-window cleanup must target a non-mirror base in traditional loss",
+        attackDetails: [
+          {
+            defenderPosition: 5,
+            stars: 1,
+            attackOrder: 2,
+            isBreach: true,
+          },
+        ],
+        playerPosition: 5,
+        breachContext: {
+          starsAtBreach: 2,
+          timeRemaining: "22h 0m left",
+        },
+      }),
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    }),
+  ).toBeNull();
+});
 
 describe("FwaPoliceService", () => {
   beforeEach(() => {

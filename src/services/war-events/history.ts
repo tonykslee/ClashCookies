@@ -416,9 +416,9 @@ export class WarEventHistoryService {
       }
       return [
         `# \ud83d\udd34 __**LOSE**__ vs ${opponentName} \u2764\ufe0f`,
-        "\ud83d\udde1\ufe0f 1st Attack: \u2605 \u2605 \u2606 -> Mirror",
-        "\ud83d\udde1\ufe0f 2nd Attack: \u2605 \u2606 \u2606 -> any",
-        "\u23f3 Last 12hrs: \u2605 \u2605 \u2606 -> any",
+        "\ud83d\udde1\ufe0f 1st Attack: 2\u2605 -> Mirror",
+        "\ud83d\udde1\ufe0f 2nd Attack: 0-1\u2605 -> non-mirror",
+        "\u23f3 Last 12hrs: 0-2\u2605 -> any",
         "\ud83c\udfaf Do NOT surpass 100 \u2605",
       ].join("\n");
     }

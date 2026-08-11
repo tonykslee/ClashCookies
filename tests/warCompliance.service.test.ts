@@ -2156,7 +2156,7 @@ describe("WarComplianceService", () => {
 
     expect(report).not.toBeNull();
     const violatedTags = report?.notFollowingPlan.map((row) => row.playerTag) ?? [];
-    expect(violatedTags).toEqual(["#LR0WNER", "#LR0UT"]);
+    expect(violatedTags).toEqual(["#LR0UT"]);
   });
 
   it("keeps grouped LOSS_TRADITIONAL ownership deterministic and does not double-count one attack", async () => {
