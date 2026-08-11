@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyFwaPoliceViolation,
+  classifyFwaPoliceViolationForEnforcement,
+  FWA_POLICE_VIOLATION_CHOICES,
   FWA_POLICE_VIOLATIONS,
+  FWA_POLICE_VIOLATION_METADATA,
   renderFwaPoliceTemplate,
 } from "../src/services/FwaPoliceTemplateCatalog";
+import {
+  TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+  TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+} from "../src/services/war-events/core";
 
 function buildCanonicalIssue(input: {
   reasonLabel: string;
@@ -24,13 +31,15 @@ function buildCanonicalIssue(input: {
 }
 
 describe("FwaPoliceTemplateCatalog", () => {
-  it("defines exactly nine canonical violation enums", () => {
+  it("defines exactly eleven canonical violation enums", () => {
     expect(FWA_POLICE_VIOLATIONS).toEqual([
       "EARLY_NON_MIRROR_TRIPLE",
       "STRICT_WINDOW_MIRROR_MISS_WIN",
       "STRICT_WINDOW_MIRROR_MISS_LOSS",
       "EARLY_NON_MIRROR_2STAR",
       "TRADITIONAL_INVALID_STAR_COUNT",
+      "TRADITIONAL_INVALID_CLEANUP_TARGET",
+      "TRADITIONAL_UNCLEARED_MIRROR",
       "ANY_3STAR",
       "LOWER20_ANY_STARS",
       "CLAN_STAR_CAP_EXCEEDED",
@@ -104,6 +113,42 @@ describe("FwaPoliceTemplateCatalog", () => {
             defenderPosition: 5,
             stars: 2,
             attackOrder: 4,
+            isBreach: false,
+          },
+        ],
+        breachContext: null,
+      },
+      {
+        reasonLabel: TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+        expected: "TRADITIONAL_INVALID_CLEANUP_TARGET",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 5,
+            stars: 1,
+            attackOrder: 5,
+            isBreach: true,
+          },
+        ],
+        breachContext: null,
+      },
+      {
+        reasonLabel: TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+        expected: "TRADITIONAL_UNCLEARED_MIRROR",
+        context: {
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        },
+        attackDetails: [
+          {
+            defenderPosition: 22,
+            stars: 2,
+            attackOrder: 18,
             isBreach: false,
           },
         ],
@@ -220,7 +265,7 @@ describe("FwaPoliceTemplateCatalog", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const violation = classifyFwaPoliceViolation({
+      const violation = classifyFwaPoliceViolationForEnforcement({
         issue: buildCanonicalIssue({
           reasonLabel: testCase.reasonLabel,
           attackDetails: testCase.attackDetails as any,
@@ -230,6 +275,66 @@ describe("FwaPoliceTemplateCatalog", () => {
       });
       expect(violation).toBe(testCase.expected);
     }
+  });
+
+  it("exposes the Phase-3 choices and limits both new types to traditional FWA loss", () => {
+    expect(FWA_POLICE_VIOLATION_CHOICES.map((choice) => choice.value)).toContain(
+      "TRADITIONAL_INVALID_CLEANUP_TARGET",
+    );
+    expect(FWA_POLICE_VIOLATION_CHOICES.map((choice) => choice.value)).toContain(
+      "TRADITIONAL_UNCLEARED_MIRROR",
+    );
+
+    for (const violation of [
+      "TRADITIONAL_INVALID_CLEANUP_TARGET",
+      "TRADITIONAL_UNCLEARED_MIRROR",
+    ] as const) {
+      const isApplicable = FWA_POLICE_VIOLATION_METADATA[violation].isApplicable;
+      expect(
+        isApplicable({
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRADITIONAL",
+        }),
+      ).toBe(true);
+      expect(
+        isApplicable({
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          loseStyle: "TRADITIONAL",
+        }),
+      ).toBe(false);
+      expect(
+        isApplicable({
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("prioritizes the exact uncleared-after-open reason over open 2-star detail fallback", () => {
+    const violation = classifyFwaPoliceViolationForEnforcement({
+      issue: buildCanonicalIssue({
+        reasonLabel: TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+        attackDetails: [
+          {
+            defenderPosition: 22,
+            stars: 2,
+            attackOrder: 18,
+            isBreach: true,
+          },
+        ],
+      }),
+      context: {
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      },
+    });
+
+    expect(violation).toBe("TRADITIONAL_UNCLEARED_MIRROR");
   });
 
   it("rejects exact didn't triple mirror without strict-window breach context in FWA-WIN", () => {

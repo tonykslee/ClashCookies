@@ -2,6 +2,7 @@ import type { ApplicationCommandOptionChoiceData } from "discord.js";
 import { type WarComplianceIssue } from "./WarComplianceService";
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+  TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
   type FwaLoseStyle,
   type MatchType,
 } from "./war-events/core";
@@ -12,13 +13,19 @@ export const FWA_POLICE_VIOLATIONS = [
   "STRICT_WINDOW_MIRROR_MISS_LOSS",
   "EARLY_NON_MIRROR_2STAR",
   "TRADITIONAL_INVALID_STAR_COUNT",
+  "TRADITIONAL_INVALID_CLEANUP_TARGET",
+  "TRADITIONAL_UNCLEARED_MIRROR",
   "ANY_3STAR",
   "LOWER20_ANY_STARS",
   "CLAN_STAR_CAP_EXCEEDED",
   "TOP30_ZERO_STARS",
 ] as const;
 
-export type FwaPoliceViolation = (typeof FWA_POLICE_VIOLATIONS)[number];
+export type FwaPoliceEnforcementViolation = (typeof FWA_POLICE_VIOLATIONS)[number];
+export type FwaPoliceViolation = Exclude<
+  FwaPoliceEnforcementViolation,
+  "TRADITIONAL_INVALID_CLEANUP_TARGET" | "TRADITIONAL_UNCLEARED_MIRROR"
+>;
 
 export type FwaPoliceApplicabilityContext = {
   matchType: MatchType;
@@ -53,7 +60,7 @@ export const FWA_POLICE_VIOLATION_CHOICES: ApplicationCommandOptionChoiceData<st
 
 /** Purpose: expose canonical metadata (label/template/applicability) for every supported police violation. */
 export const FWA_POLICE_VIOLATION_METADATA: Record<
-  FwaPoliceViolation,
+  FwaPoliceEnforcementViolation,
   FwaPoliceViolationMetadata
 > = {
   EARLY_NON_MIRROR_TRIPLE: {
@@ -92,6 +99,24 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
     label: "Invalid star count in traditional loss",
     builtInTemplate:
       "{offender} used an invalid star count in traditional loss. Linked user: {user}.",
+    isApplicable: (context) =>
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      context.loseStyle === "TRADITIONAL",
+  },
+  TRADITIONAL_INVALID_CLEANUP_TARGET: {
+    label: "Strict cleanup attack used on own mirror",
+    builtInTemplate:
+      "{offender} used their strict-window cleanup attack on their own mirror instead of a non-mirror base. Linked user: {user}.",
+    isApplicable: (context) =>
+      context.matchType === "FWA" &&
+      context.expectedOutcome === "LOSE" &&
+      context.loseStyle === "TRADITIONAL",
+  },
+  TRADITIONAL_UNCLEARED_MIRROR: {
+    label: "Required mirror uncleared after open",
+    builtInTemplate:
+      "{offender} finished their attacks without clearing the required 2-star mirror after the open window. Linked user: {user}.",
     isApplicable: (context) =>
       context.matchType === "FWA" &&
       context.expectedOutcome === "LOSE" &&
@@ -136,11 +161,18 @@ export const FWA_POLICE_VIOLATION_METADATA: Record<
   },
 };
 
-const CANONICAL_REASON_LABEL_TO_VIOLATION: Record<string, FwaPoliceViolation> = {
+const CANONICAL_REASON_LABEL_TO_VIOLATION: Record<
+  string,
+  FwaPoliceEnforcementViolation
+> = {
   "tripled non-mirror in strict window": "EARLY_NON_MIRROR_TRIPLE",
   "didn't triple mirror": "STRICT_WINDOW_MIRROR_MISS_WIN",
   "strict-window mirror miss in traditional loss":
     "STRICT_WINDOW_MIRROR_MISS_LOSS",
+  [TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON]:
+    "TRADITIONAL_INVALID_CLEANUP_TARGET",
+  [TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON]:
+    "TRADITIONAL_UNCLEARED_MIRROR",
   "early non-mirror 2-star in traditional loss": "EARLY_NON_MIRROR_2STAR",
   "invalid star count in traditional loss": "TRADITIONAL_INVALID_STAR_COUNT",
   "any 3-star in traditional loss": "ANY_3STAR",
@@ -165,13 +197,15 @@ export function renderFwaPoliceTemplate(input: {
 
 function classifyUsingCanonicalReasonLabel(
   labelRaw: string,
-): FwaPoliceViolation | null {
+): FwaPoliceEnforcementViolation | null {
   const label = normalizeFwaPoliceText(labelRaw).toLowerCase();
   if (!label) return null;
   return CANONICAL_REASON_LABEL_TO_VIOLATION[label] ?? null;
 }
 
-function classifyUsingReasonLabel(labelRaw: string): FwaPoliceViolation | null {
+function classifyUsingReasonLabel(
+  labelRaw: string,
+): FwaPoliceEnforcementViolation | null {
   const label = normalizeFwaPoliceText(labelRaw).toLowerCase();
   if (!label) return null;
   if (label.includes("cap exceeded") || label.includes("star cap")) return "CLAN_STAR_CAP_EXCEEDED";
@@ -187,7 +221,7 @@ function classifyUsingReasonLabel(labelRaw: string): FwaPoliceViolation | null {
 }
 
 function isViolationApplicableToContext(
-  violation: FwaPoliceViolation,
+  violation: FwaPoliceEnforcementViolation,
   context: FwaPoliceApplicabilityContext,
 ): boolean {
   return FWA_POLICE_VIOLATION_METADATA[violation].isApplicable(context);
@@ -219,13 +253,10 @@ function hasStrictWindowBreachContext(issue: WarComplianceIssue): boolean {
 }
 
 /** Purpose: map one canonical compliance issue to the single supported police violation enum used by template resolution. */
-export function classifyFwaPoliceViolation(input: {
+export function classifyFwaPoliceViolationForEnforcement(input: {
   issue: WarComplianceIssue;
   context: FwaPoliceApplicabilityContext;
-}): FwaPoliceViolation | null {
-  if (input.issue.reasonLabel === TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON) {
-    return null;
-  }
+}): FwaPoliceEnforcementViolation | null {
   const exactFromLabel = classifyUsingCanonicalReasonLabel(
     input.issue.reasonLabel ?? "",
   );
@@ -335,4 +366,19 @@ export function classifyFwaPoliceViolation(input: {
   }
 
   return null;
+}
+
+/** Purpose: preserve the durable war-plan history contract; Police-only classifications remain generic there. */
+export function classifyFwaPoliceViolation(input: {
+  issue: WarComplianceIssue;
+  context: FwaPoliceApplicabilityContext;
+}): FwaPoliceViolation | null {
+  const violation = classifyFwaPoliceViolationForEnforcement(input);
+  if (
+    violation === "TRADITIONAL_INVALID_CLEANUP_TARGET" ||
+    violation === "TRADITIONAL_UNCLEARED_MIRROR"
+  ) {
+    return null;
+  }
+  return violation;
 }
