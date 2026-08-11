@@ -11,6 +11,7 @@ export type WarPlanComplianceConfig = {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
   traditionalRequireMirrorAfterOpen?: boolean;
+  winRequireMirrorAfterOpen?: boolean;
 };
 
 type MaybeConfig = {
@@ -18,12 +19,14 @@ type MaybeConfig = {
   nonMirrorTripleMinClanStars?: number | null;
   allBasesOpenHoursLeft?: number | null;
   traditionalRequireMirrorAfterOpen?: boolean | null;
+  winRequireMirrorAfterOpen?: boolean | null;
 };
 
 type BuiltInFallback = {
   nonMirrorMinClanStars: number;
   allBasesOpenHoursLeft: number;
   traditionalRequireMirrorAfterOpen?: boolean;
+  winRequireMirrorAfterOpen?: boolean;
 };
 
 type ParseResult =
@@ -51,6 +54,15 @@ function resolveTraditionalMirrorAfterOpen(
     return null;
   }
   return value.traditionalRequireMirrorAfterOpen;
+}
+
+function resolveWinMirrorAfterOpen(
+  value: MaybeConfig | null | undefined,
+): boolean | null {
+  if (value?.winRequireMirrorAfterOpen === undefined || value.winRequireMirrorAfterOpen === null) {
+    return null;
+  }
+  return value.winRequireMirrorAfterOpen;
 }
 
 /** Purpose: parse optional integer input for the non-mirror star gate; blank means unset/default. */
@@ -112,6 +124,7 @@ export function resolveWarPlanComplianceConfig(input: {
   fallback?: MaybeConfig | null;
   builtInFallback?: BuiltInFallback | null;
   includeTraditionalMirrorAfterOpen?: boolean;
+  includeWinMirrorAfterOpen?: boolean;
 }): WarPlanComplianceConfig {
   const primaryMin = resolveNonMirrorMinClanStars(input.primary);
   const fallbackMin = resolveNonMirrorMinClanStars(input.fallback);
@@ -122,6 +135,12 @@ export function resolveWarPlanComplianceConfig(input: {
     : null;
   const fallbackTraditionalMirror = input.includeTraditionalMirrorAfterOpen
     ? resolveTraditionalMirrorAfterOpen(input.fallback)
+    : null;
+  const primaryWinMirror = input.includeWinMirrorAfterOpen
+    ? resolveWinMirrorAfterOpen(input.primary)
+    : null;
+  const fallbackWinMirror = input.includeWinMirrorAfterOpen
+    ? resolveWinMirrorAfterOpen(input.fallback)
     : null;
   const builtInFallback = input.builtInFallback ?? {
     nonMirrorMinClanStars: DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
@@ -143,6 +162,13 @@ export function resolveWarPlanComplianceConfig(input: {
       ? builtInFallback.traditionalRequireMirrorAfterOpen
       : null) ??
     null;
+  const resolvedWinMirror =
+    primaryWinMirror ??
+    fallbackWinMirror ??
+    (input.includeWinMirrorAfterOpen
+      ? builtInFallback.winRequireMirrorAfterOpen
+      : null) ??
+    null;
 
   return {
     nonMirrorMinClanStars: resolvedMin,
@@ -151,6 +177,9 @@ export function resolveWarPlanComplianceConfig(input: {
     ...(resolvedTraditionalMirror === null
       ? {}
       : { traditionalRequireMirrorAfterOpen: resolvedTraditionalMirror }),
+    ...(resolvedWinMirror === null
+      ? {}
+      : { winRequireMirrorAfterOpen: resolvedWinMirror }),
   };
 }
 
@@ -173,7 +202,9 @@ export function resolveWarPlanComplianceConfigForPlan(input: {
       builtInFallback: {
         nonMirrorMinClanStars: DEFAULT_NON_MIRROR_MIN_CLAN_STARS,
         allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+        winRequireMirrorAfterOpen: false,
       },
+      includeWinMirrorAfterOpen: true,
     });
   }
 

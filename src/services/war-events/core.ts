@@ -17,6 +17,8 @@ export const TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON =
   "strict-window cleanup must target a non-mirror base in traditional loss";
 export const TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON =
   "uncleared mirror after open in traditional loss";
+export const WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON =
+  "uncleared mirror after open in FWA win";
 
 export type WarEndResultSnapshot = {
   clanStars: number | null;
@@ -57,6 +59,7 @@ export type WarComplianceWinGateConfig = {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
   traditionalRequireMirrorAfterOpen?: boolean;
+  winRequireMirrorAfterOpen?: boolean;
 };
 
 const LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS = 100;
@@ -314,6 +317,7 @@ function resolveEffectiveGateConfigForCompliance(input: {
       input.winGateConfig ?? {
         nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
         allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+        winRequireMirrorAfterOpen: false,
       }
     );
   }
@@ -484,15 +488,16 @@ export function buildAttackContextByAttack(
   return result;
 }
 
-/** Purpose: collect defender positions that were actually tripled inside the strict window. */
+/** Purpose: collect defender positions tripled during the configured mirror-obligation phase. */
 function buildStrictWindowTripledPositions(
   allAttacks: WarComplianceAttack[],
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>,
+  includeOpenWindow = false,
 ): Set<number> {
   const result = new Set<number>();
   for (const attack of allAttacks) {
     const ctx = attackContextByAttack.get(attack);
-    if (!ctx?.isStrictWindow) continue;
+    if (!ctx || (!includeOpenWindow && !ctx.isStrictWindow)) continue;
     if (Math.max(0, Number(attack.stars ?? 0)) < 3) continue;
     const defenderPosition = Math.trunc(Number(attack.defenderPosition ?? NaN));
     if (!Number.isFinite(defenderPosition) || defenderPosition <= 0) continue;
@@ -967,11 +972,14 @@ function classifyWinReason(input: {
   allAttacks: WarComplianceAttack[];
   attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
   playerAttacksUsed?: number | null;
+  winRequireMirrorAfterOpen?: boolean;
 }): WarComplianceReason {
   const orderedPlayerAttacks = sortAttacksForComplianceOrder(input.playerAttacks);
+  const winRequireMirrorAfterOpen = Boolean(input.winRequireMirrorAfterOpen);
   const tripledPositions = buildStrictWindowTripledPositions(
     input.allAttacks,
     input.attackContextByAttack,
+    winRequireMirrorAfterOpen,
   );
   const playerPosition = orderedPlayerAttacks.find(
     (attack) => Number.isFinite(Number(attack.playerPosition ?? NaN)) && Number(attack.playerPosition ?? 0) > 0,
@@ -980,6 +988,10 @@ function classifyWinReason(input: {
     orderedPlayerAttacks.length,
     Math.max(0, Math.trunc(Number(input.playerAttacksUsed ?? 0))),
   );
+  const finalPlayerAttack = orderedPlayerAttacks.at(-1) ?? null;
+  const finalPlayerContext = finalPlayerAttack
+    ? input.attackContextByAttack.get(finalPlayerAttack) ?? null
+    : null;
   let firstStrictWindowContext: WarComplianceReason["strictWindowContext"] = null;
   let firstStrictAttackOrder: number | null = null;
   for (const attack of orderedPlayerAttacks) {
@@ -1016,11 +1028,27 @@ function classifyWinReason(input: {
     playerPosition !== null &&
     !tripledPositions.has(Math.trunc(Number(playerPosition)))
   ) {
-    if (effectiveAttacksUsed >= 2 && firstStrictWindowContext) {
+    const hadStrictAttack = firstStrictWindowContext !== null;
+    const mirrorObligationApplies =
+      effectiveAttacksUsed >= 2 &&
+      (winRequireMirrorAfterOpen
+        ? true
+        : hadStrictAttack && Boolean(finalPlayerContext?.isStrictWindow));
+    if (mirrorObligationApplies) {
+      const isOpenPhaseFinalObligation =
+        winRequireMirrorAfterOpen && !finalPlayerContext?.isStrictWindow;
       return {
-        label: "didn't triple mirror",
-        strictWindowContext: firstStrictWindowContext,
-        breachAttackOrders: firstStrictAttackOrder !== null ? [firstStrictAttackOrder] : [],
+        label: isOpenPhaseFinalObligation
+          ? WIN_UNCLEARED_MIRROR_AFTER_OPEN_REASON
+          : "didn't triple mirror",
+        strictWindowContext: isOpenPhaseFinalObligation
+          ? null
+          : firstStrictWindowContext,
+        breachAttackOrders: isOpenPhaseFinalObligation
+          ? []
+          : firstStrictAttackOrder !== null
+            ? [firstStrictAttackOrder]
+            : [],
         hasViolation: true,
       };
     }
@@ -1042,6 +1070,7 @@ export function classifyComplianceReasonForPlayer(input: {
   attackIndexByAttack: Map<WarComplianceAttack, number>;
   starsAfterByAttackIndex: Map<number, number>;
   playerAttacksUsed?: number | null;
+  winRequireMirrorAfterOpen?: boolean;
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
@@ -1052,6 +1081,7 @@ export function classifyComplianceReasonForPlayer(input: {
       allAttacks: input.allAttacks,
       attackContextByAttack: input.attackContextByAttack,
       playerAttacksUsed: input.playerAttacksUsed,
+      winRequireMirrorAfterOpen: input.winRequireMirrorAfterOpen,
     });
   }
 
@@ -1145,6 +1175,8 @@ export function computeWarComplianceForTest(input: {
           attackIndexByAttack,
           starsAfterByAttackIndex,
           playerAttacksUsed: participant.attacksUsed,
+          winRequireMirrorAfterOpen:
+            effectiveWinGateConfig?.winRequireMirrorAfterOpen ?? false,
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,
