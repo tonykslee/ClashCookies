@@ -203,6 +203,10 @@ export function formatWarPlanViolationsViolationTypeLabel(violationType: string)
       return "Early non-mirror 2-star";
     case "TRADITIONAL_INVALID_STAR_COUNT":
       return "Invalid star count in traditional loss";
+    case "TRADITIONAL_INVALID_CLEANUP_TARGET":
+      return "Invalid strict cleanup target";
+    case "TRADITIONAL_UNCLEARED_MIRROR":
+      return "Required mirror uncleared after open";
     case "ANY_3STAR":
       return "3-star plan violation";
     case "LOWER20_ANY_STARS":

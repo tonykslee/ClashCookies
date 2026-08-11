@@ -101,6 +101,7 @@ describe("warPlanComplianceConfig", () => {
       nonMirrorMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
       nonMirrorTripleMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
       allBasesOpenHoursLeft: DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+      traditionalRequireMirrorAfterOpen: false,
     });
     expect(tripleTop30).toBeNull();
     expect(
@@ -118,7 +119,17 @@ describe("warPlanComplianceConfig", () => {
         loseStyle: "TRADITIONAL",
         config: traditional,
       }),
-    ).toContain("non-mirror 2★ opens at 150 clan stars or 12h left | clan cap: 100★");
+    ).toBe(
+      "Compliance gate: open at 150 clan stars or 12h left | open attacks: 0-2★ any | uncleared mirror after open: not required | clan cap: 100★",
+    );
+    expect(
+      formatWarPlanComplianceLine({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        config: { ...traditional, traditionalRequireMirrorAfterOpen: true },
+      }),
+    ).toContain("uncleared mirror after open: required");
     expect(
       formatWarPlanComplianceLine({
         matchType: "FWA",
@@ -127,5 +138,41 @@ describe("warPlanComplianceConfig", () => {
         config: null,
       }),
     ).toBe("Compliance rules: targets #1-30 only | attacks must earn 1-3★ | clan cap: 90★");
+  });
+
+  it("resolves the Traditional mirror-after-open flag with custom -> default -> false precedence", () => {
+    const custom = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: true },
+      fallback: { traditionalRequireMirrorAfterOpen: false },
+    });
+    const inherited = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: null },
+      fallback: { traditionalRequireMirrorAfterOpen: true },
+    });
+    const customFalse = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: false },
+      fallback: { traditionalRequireMirrorAfterOpen: true },
+    });
+    const builtIn = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: null,
+      fallback: null,
+    });
+
+    expect(custom?.traditionalRequireMirrorAfterOpen).toBe(true);
+    expect(inherited?.traditionalRequireMirrorAfterOpen).toBe(true);
+    expect(customFalse?.traditionalRequireMirrorAfterOpen).toBe(false);
+    expect(builtIn?.traditionalRequireMirrorAfterOpen).toBe(false);
   });
 });

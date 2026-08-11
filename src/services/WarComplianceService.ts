@@ -405,7 +405,7 @@ function describeExpectedPlanBehavior(input: {
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     return input.loseStyle === "TRIPLE_TOP_30"
       ? "Lose style TRIPLE_TOP_30: attack only top-30 bases and stay under the 90-star cap."
-      : "Lose style TRADITIONAL: mirror 2-star in the strict window, follow with 1-star cleanup, and stay under the 100-star cap.";
+      : "Lose style TRADITIONAL: mirror 2-star in the strict window, then use 0-1-star non-mirror cleanup; use 0-2 stars on any base in the last 12 hours, and stay under the 100-star cap.";
   }
   return "Mirror-based fallback plan applies when expected outcome is unknown.";
 }
@@ -1969,6 +1969,7 @@ export class WarComplianceService {
             DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
           allBasesOpenHoursLeft:
             DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+          traditionalRequireMirrorAfterOpen: false,
         };
       }
       return null;
@@ -1999,6 +2000,7 @@ export class WarComplianceService {
           select: {
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
+            traditionalRequireMirrorAfterOpen: true,
           },
         }),
         prisma.clanWarPlan.findFirst({
@@ -2013,6 +2015,7 @@ export class WarComplianceService {
           select: {
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
+            traditionalRequireMirrorAfterOpen: true,
           },
         }),
       ]);
@@ -2043,6 +2046,12 @@ export class WarComplianceService {
         nonMirrorTripleMinClanStars:
           resolved.nonMirrorTripleMinClanStars ?? resolved.nonMirrorMinClanStars,
         allBasesOpenHoursLeft: resolved.allBasesOpenHoursLeft,
+        ...(isTraditionalLoss
+          ? {
+              traditionalRequireMirrorAfterOpen:
+                resolved.traditionalRequireMirrorAfterOpen ?? false,
+            }
+          : {}),
       };
     } catch {
       return {
@@ -2054,6 +2063,9 @@ export class WarComplianceService {
           isWinPlan
             ? DEFAULT_ALL_BASES_OPEN_HOURS_LEFT
             : DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
+        ...(isTraditionalLoss
+          ? { traditionalRequireMirrorAfterOpen: false }
+          : {}),
       };
     }
   }
@@ -2091,6 +2103,8 @@ export class WarComplianceService {
             attacks: context.attacks,
             attackContextByAttack,
             linkedGroups,
+            traditionalRequireMirrorAfterOpen:
+              fwaWinGateConfig?.traditionalRequireMirrorAfterOpen ?? false,
           })
         : null;
 
