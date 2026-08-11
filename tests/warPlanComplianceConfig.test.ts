@@ -145,6 +145,13 @@ describe("warPlanComplianceConfig", () => {
       primary: { traditionalRequireMirrorAfterOpen: null },
       fallback: { traditionalRequireMirrorAfterOpen: true },
     });
+    const customFalse = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+      primary: { traditionalRequireMirrorAfterOpen: false },
+      fallback: { traditionalRequireMirrorAfterOpen: true },
+    });
     const builtIn = resolveWarPlanComplianceConfigForPlan({
       matchType: "FWA",
       expectedOutcome: "LOSE",
@@ -155,6 +162,7 @@ describe("warPlanComplianceConfig", () => {
 
     expect(custom?.traditionalRequireMirrorAfterOpen).toBe(true);
     expect(inherited?.traditionalRequireMirrorAfterOpen).toBe(true);
+    expect(customFalse?.traditionalRequireMirrorAfterOpen).toBe(false);
     expect(builtIn?.traditionalRequireMirrorAfterOpen).toBe(false);
   });
 });

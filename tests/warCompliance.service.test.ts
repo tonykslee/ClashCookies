@@ -5,6 +5,7 @@ import { WarEventHistoryService } from "../src/services/war-events/history";
 import {
   buildAttackContextByAttack,
   computeWarComplianceForTest,
+  TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
 } from "../src/services/war-events/core";
 import * as PlayerLinkService from "../src/services/PlayerLinkService";
 
@@ -1135,7 +1136,7 @@ describe("WarComplianceService", () => {
         defenderPosition: 1,
         stars: 1,
         attackOrder: 2,
-        isBreach: true,
+        isBreach: false,
         timeRemaining: "12h 50m left",
       },
     ]);
@@ -1994,8 +1995,8 @@ describe("WarComplianceService", () => {
     expect(owner5?.playerPosition).toBe(5);
     expect(owner5?.reasonLabel).toBe("strict-window mirror miss in traditional loss");
     expect(owner5?.attackDetails?.map((detail) => detail.isBreach)).toEqual([
-      true,
-      true,
+      false,
+      false,
     ]);
   });
 
@@ -2755,6 +2756,9 @@ describe("WarComplianceService", () => {
     expect(result.report?.notFollowingPlan.map((row) => row.playerName)).toEqual([
       "owner",
     ]);
+    expect(result.report?.notFollowingPlan[0]?.reasonLabel).toBe(
+      TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+    );
   });
 
   it("resolves the requested clan current war by the explicit current warId", async () => {

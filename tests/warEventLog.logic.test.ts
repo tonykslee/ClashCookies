@@ -32,6 +32,7 @@ import {
 import {
   buildAttackContextByAttack,
   evaluateFwaTraditionalLossComplianceForTest,
+  TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
 } from "../src/services/war-events/core";
 import { buildActiveWarSyncIdentity } from "../src/services/ActiveWarSyncResolutionService";
 import * as reminderSchedulerService from "../src/services/reminders/ReminderSchedulerService";
@@ -1594,6 +1595,174 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     });
 
     expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it.each([0, 1])(
+    "FWA LOSE Traditional plan: strict non-mirror %s-star followed by open attack expires the disabled obligation",
+    (stars) => {
+      const result = computeWarComplianceForTest({
+        clanTag: "#CLAN",
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+        ],
+        attacks: [
+          {
+            playerTag: "#OWNER",
+            playerName: "owner",
+            playerPosition: 5,
+            defenderPosition: 1,
+            stars,
+            trueStars: stars,
+            attackSeenAt: dateAt(1),
+            warEndTime: dateAt(24),
+            attackOrder: 1,
+          },
+          {
+            playerTag: "#OWNER",
+            playerName: "owner",
+            playerPosition: 5,
+            defenderPosition: 2,
+            stars: 0,
+            trueStars: 0,
+            attackSeenAt: dateAt(13),
+            warEndTime: dateAt(24),
+            attackOrder: 2,
+          },
+        ],
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      });
+
+      expect(result.notFollowingPlan).toEqual([]);
+    },
+  );
+
+  it("FWA LOSE Traditional plan: two strict attacks with uncleared mirror retain the strict mirror-miss reason", () => {
+    const attacks = [
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 1,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: dateAt(1),
+        warEndTime: dateAt(24),
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 2,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: dateAt(2),
+        warEndTime: dateAt(24),
+        attackOrder: 2,
+      },
+    ];
+    const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: attacks as any,
+      attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+        nonMirrorTripleMinClanStars: 150,
+        allBasesOpenHoursLeft: 12,
+      }),
+    });
+
+    const result = evaluation.resultsByPlayerTag.get("#0WNER");
+    expect(result?.hasViolation).toBe(true);
+    expect(result?.reason.label).toBe("strict-window mirror miss in traditional loss");
+  });
+
+  it("FWA LOSE Traditional plan: enabled mirror-after-open uses the distinct open-phase mirror reason", () => {
+    const attacks = [
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 1,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: dateAt(1),
+        warEndTime: dateAt(24),
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 2,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: dateAt(13),
+        warEndTime: dateAt(24),
+        attackOrder: 2,
+      },
+    ];
+    const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: attacks as any,
+      attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+        nonMirrorTripleMinClanStars: 150,
+        allBasesOpenHoursLeft: 12,
+      }),
+      traditionalRequireMirrorAfterOpen: true,
+    });
+
+    const result = evaluation.resultsByPlayerTag.get("#0WNER");
+    expect(result?.hasViolation).toBe(true);
+    expect(result?.reason.label).toBe(
+      TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+    );
+  });
+
+  it("FWA LOSE Traditional plan: open-only two attacks with the enabled option use the distinct open-phase mirror reason", () => {
+    const attacks = [
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 1,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: dateAt(13),
+        warEndTime: dateAt(24),
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 2,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: dateAt(14),
+        warEndTime: dateAt(24),
+        attackOrder: 2,
+      },
+    ];
+    const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: attacks as any,
+      attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+        nonMirrorTripleMinClanStars: 150,
+        allBasesOpenHoursLeft: 12,
+      }),
+      traditionalRequireMirrorAfterOpen: true,
+    });
+
+    expect(evaluation.resultsByPlayerTag.get("#0WNER")?.reason.label).toBe(
+      TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
+    );
   });
 
   it("FWA LOSE Traditional plan: enabled mirror-after-open flag reports two open attacks without a mirror", () => {

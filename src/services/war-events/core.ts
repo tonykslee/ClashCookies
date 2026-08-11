@@ -15,6 +15,8 @@ export type FwaLoseStyle = "TRIPLE_TOP_30" | "TRADITIONAL";
 
 export const TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON =
   "strict-window cleanup must target a non-mirror base in traditional loss";
+export const TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON =
+  "uncleared mirror after open in traditional loss";
 
 export type WarEndResultSnapshot = {
   clanStars: number | null;
@@ -746,18 +748,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                   }
                 : null;
             }
-          } else if (stars === 1 && !ownSatisfied) {
-            isBreach = true;
-            hasAttackLevelViolation = true;
-            if (reasonLabel === null) {
-              reasonLabel = "strict-window mirror miss in traditional loss";
-              firstBreachContext = ctx
-                ? {
-                    starsBeforeAttack: ctx.starsBeforeAttack,
-                    timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-                  }
-                : null;
-            }
           }
         } else if (stars !== 0) {
           isBreach = true;
@@ -822,17 +812,25 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
       !ownSatisfied &&
       effectiveAttacksUsed >= 2 &&
       !hasAttackLevelViolation;
+    const isUnclearedMirrorAfterOpen =
+      hasUnmetMirrorViolation &&
+      traditionalRequireMirrorAfterOpen &&
+      !strictObligationStillApplicable;
     const finalReason: WarComplianceReason = hasAttackLevelViolation || hasUnmetMirrorViolation
       ? {
           label:
             reasonLabel ??
             (hasUnmetMirrorViolation
-              ? "strict-window mirror miss in traditional loss"
+              ? isUnclearedMirrorAfterOpen
+                ? TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON
+                : "strict-window mirror miss in traditional loss"
               : "didn't follow lose-style rules"),
           strictWindowContext: hasAttackLevelViolation
             ? firstBreachContext
             : hasUnmetMirrorViolation
-              ? firstStrictContext
+              ? isUnclearedMirrorAfterOpen
+                ? null
+                : firstStrictContext
               : null,
           breachAttackOrders,
           hasViolation: true,
