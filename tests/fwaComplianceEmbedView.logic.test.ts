@@ -85,6 +85,7 @@ describe("buildFwaComplianceEmbedView", () => {
     const summary = embed.fields?.[0]?.value ?? "";
     const warPlan = embed.fields?.[1]?.value ?? "";
     const plan = embed.fields?.[2]?.value ?? "";
+    expect(embed.description).toContain("uncleared mirror after open: not required");
     expect(embed.description).toContain(
       "Compliance gate: non-mirror 3★ opens at 101 clan stars or 8h left",
     );

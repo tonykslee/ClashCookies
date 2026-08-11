@@ -239,9 +239,13 @@ export function formatWarPlanComplianceLine(input: {
     return "Automated warplan compliance is disabled.";
   }
 
-  if (expectedOutcome === "WIN") {
+  if (matchType === "FWA" && expectedOutcome === "WIN") {
     if (!input.config) return "Automated warplan compliance is disabled.";
-    return `Compliance gate: non-mirror 3★ opens at ${input.config.nonMirrorMinClanStars} clan stars or ${input.config.allBasesOpenHoursLeft}h left`;
+    const mirrorAfterOpen =
+      input.config.winRequireMirrorAfterOpen === true
+        ? "required"
+        : "not required";
+    return `Compliance gate: non-mirror 3★ opens at ${input.config.nonMirrorMinClanStars} clan stars or ${input.config.allBasesOpenHoursLeft}h left | uncleared mirror after open: ${mirrorAfterOpen}`;
   }
 
   if (expectedOutcome === "LOSE" && loseStyle === "TRADITIONAL") {
