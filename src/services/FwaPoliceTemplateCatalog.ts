@@ -1,6 +1,10 @@
 import type { ApplicationCommandOptionChoiceData } from "discord.js";
 import { type WarComplianceIssue } from "./WarComplianceService";
-import { type FwaLoseStyle, type MatchType } from "./war-events/core";
+import {
+  TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
+  type FwaLoseStyle,
+  type MatchType,
+} from "./war-events/core";
 
 export const FWA_POLICE_VIOLATIONS = [
   "EARLY_NON_MIRROR_TRIPLE",
@@ -219,6 +223,9 @@ export function classifyFwaPoliceViolation(input: {
   issue: WarComplianceIssue;
   context: FwaPoliceApplicabilityContext;
 }): FwaPoliceViolation | null {
+  if (input.issue.reasonLabel === TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON) {
+    return null;
+  }
   const exactFromLabel = classifyUsingCanonicalReasonLabel(
     input.issue.reasonLabel ?? "",
   );

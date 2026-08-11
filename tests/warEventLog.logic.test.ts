@@ -1220,6 +1220,54 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     expect(result.notFollowingPlan).toEqual([]);
   });
 
+  it.each([1, 0])(
+    "FWA LOSE Traditional plan: strict-window %s-star cleanup on the own mirror remains a target violation",
+    (cleanupStars) => {
+      const warEndTime = dateAt(24);
+      const attacks = [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(1),
+          warEndTime,
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 5,
+          stars: cleanupStars,
+          trueStars: cleanupStars,
+          attackSeenAt: dateAt(2),
+          warEndTime,
+          attackOrder: 2,
+        },
+      ];
+      const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+        ],
+        attacks: attacks as any,
+        attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+          nonMirrorTripleMinClanStars: 150,
+          allBasesOpenHoursLeft: 12,
+        }),
+      });
+      const result = evaluation.resultsByPlayerTag.get("#0WNER");
+
+      expect(result?.hasViolation).toBe(true);
+      expect(result?.attackDetails[1]?.isBreach).toBe(true);
+      expect(result?.reason.label).toBe(
+        "strict-window cleanup must target a non-mirror base in traditional loss",
+      );
+    },
+  );
+
   it.each([0, 1])(
     "FWA LOSE Traditional plan: a strict-window %s-star cleanup before the mirror does not erase the obligation",
     (cleanupStars) => {
@@ -1439,6 +1487,36 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
 
     expect(result.notFollowingPlan).toEqual([]);
   });
+
+  it.each([0, 1, 2])(
+    "FWA LOSE Traditional plan: open-window %s-star attack on the own mirror remains compliant",
+    (stars) => {
+      const result = computeWarComplianceForTest({
+        clanTag: "#CLAN",
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 1, playerPosition: 5 },
+        ],
+        attacks: [
+          {
+            playerTag: "#OWNER",
+            playerName: "owner",
+            playerPosition: 5,
+            defenderPosition: 5,
+            stars,
+            trueStars: stars,
+            attackSeenAt: dateAt(13),
+            warEndTime: dateAt(24),
+            attackOrder: 1,
+          },
+        ],
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      });
+
+      expect(result.notFollowingPlan).toEqual([]);
+    },
+  );
 
   it("FWA LOSE Traditional plan: open-window 3-star remains an ANY_3STAR violation", () => {
     const attacks = [
