@@ -195,6 +195,64 @@ describe("PlayerCurrentService", () => {
     );
   });
 
+  it("persists external-clan and clanless results through the bounded live-tag refresh path", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({
+        playerTag: "#PYLQ0289",
+        currentClanTag: "#CLANA",
+        currentClanName: "Tracked A",
+      }),
+      makeCurrentRow({
+        playerTag: "#QGRJ2222",
+        currentClanTag: "#CLANA",
+        currentClanName: "Tracked A",
+      }),
+    ]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async (tag: string) =>
+        tag === "#PYLQ0289"
+          ? makeLivePlayer({
+              tag,
+              clan: { tag: "#2QG2C08UP", name: "External X" },
+            })
+          : makeLivePlayer({ tag, clan: null }),
+      ),
+    } as any;
+
+    const result = await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService,
+      source: "live_refresh",
+      now: new Date("2026-08-11T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      playerCount: 2,
+      successCount: 2,
+      failedPlayerTags: [],
+    });
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        create: expect.objectContaining({
+          currentClanTag: "#2QG2C08UP",
+          currentClanName: "External X",
+          lastSource: "live_refresh",
+        }),
+      }),
+    );
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#QGRJ2222" },
+        create: expect.objectContaining({
+          currentClanTag: null,
+          currentClanName: null,
+          lastSource: "live_refresh",
+        }),
+      }),
+    );
+  });
+
   it("falls back to legacy league when leagueTier is missing", async () => {
     prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);

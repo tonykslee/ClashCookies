@@ -116,8 +116,9 @@ function resolveAccountClanState(input: {
 }): "known" | "no_clan" | "unknown" {
   const currentClanTag = sanitizeDisplayText(input.playerCurrent?.currentClanTag);
   const activityClanTag = sanitizeDisplayText(input.playerActivity?.clanTag);
-  if (currentClanTag || activityClanTag) return "known";
+  if (currentClanTag) return "known";
   if (isConfirmedClanlessSource(input.playerCurrent?.lastSource)) return "no_clan";
+  if (activityClanTag) return "known";
   return "unknown";
 }
 
@@ -260,8 +261,11 @@ export async function buildAccountsRows(input: {
             : null,
         });
     const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
-    const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
-    const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
+    const isTrackedFwaClan = Boolean(
+      clanState === "known" && clanTag && trackedClanNameByTag.has(clanTag),
+    );
+    const trackedClanSortOrder =
+      clanState === "known" && clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
 
     return {
       tag,
