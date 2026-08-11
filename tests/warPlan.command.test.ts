@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { ApplicationCommandOptionType } from "discord.js";
+import { ApplicationCommandOptionType, ComponentType } from "discord.js";
 
 const prismaMock = vi.hoisted(() => ({
   clanWarPlan: {
@@ -22,6 +22,7 @@ vi.mock("../src/prisma", () => ({
 
 import {
   WarPlan,
+  buildWarPlanEditModalForTest,
   buildWarPlanOverviewClanFieldValueForTest,
   paginateWarPlanOverviewFieldsForTest,
   resolveWarPlanOverviewOverrideTypeForTest,
@@ -44,6 +45,8 @@ function createInteraction(input?: {
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply: vi.fn().mockResolvedValue(undefined),
     fetchReply: vi.fn(),
+    showModal: vi.fn().mockResolvedValue(undefined),
+    awaitModalSubmit: vi.fn(),
   } as any;
 }
 
@@ -194,6 +197,39 @@ describe("/warplan show overview", () => {
     expect(embed?.title).toBe("War Plans");
   });
 
+  it.each([true, false])(
+    "shows the effective Traditional open-window mirror state: %s",
+    async (required) => {
+      prismaMock.clanWarPlan.findMany
+        .mockResolvedValueOnce([
+          {
+            matchType: "FWA",
+            outcome: "LOSE",
+            loseStyle: "TRADITIONAL",
+            planText: "Traditional plan",
+            nonMirrorTripleMinClanStars: 150,
+            allBasesOpenHoursLeft: 12,
+            traditionalRequireMirrorAfterOpen: required,
+          },
+        ])
+        .mockResolvedValueOnce([]);
+      const interaction = createInteraction({
+        strings: {
+          "clan-tag": "AAA111",
+          "match-type": "FWA_LOSE_TRADITIONAL",
+        },
+      });
+
+      await WarPlan.run({} as any, interaction, {} as any);
+
+      const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+      const embed = payload?.embeds?.[0]?.toJSON?.();
+      expect(embed?.fields?.[0]?.value).toContain(
+        `Compliance gate: open at 150 clan stars or 12h left | open attacks: 0-2★ any | uncleared mirror after open: ${required ? "required" : "not required"} | clan cap: 100★`,
+      );
+    },
+  );
+
   it("maps only supported exact custom override types", () => {
     expect(
       resolveWarPlanOverviewOverrideTypeForTest({
@@ -231,5 +267,153 @@ describe("/warplan show overview", () => {
     expect(pages).toHaveLength(2);
     expect(pages[0]).toHaveLength(10);
     expect(pages[1]).toHaveLength(1);
+  });
+});
+
+describe("/warplan edit modal Traditional mirror checkbox", () => {
+  const traditionalTarget = {
+    matchType: "FWA" as const,
+    outcome: "LOSE" as const,
+    loseStyle: "TRADITIONAL" as const,
+  };
+  const traditionalConfig = {
+    minStarsLabel: "Clan stars before non-mirror 2★ opens",
+    minStarsDefault: 150,
+    openHoursDefault: 12,
+    openHoursDefaultText: "12h",
+  };
+  const prefill = {
+    planText: "Traditional plan",
+    nonMirrorTripleMinClanStars: 150,
+    allBasesOpenHoursLeft: 12,
+    traditionalRequireMirrorAfterOpen: true,
+  };
+
+  it("renders exactly one checkbox after the existing Traditional fields", () => {
+    const modal = buildWarPlanEditModalForTest({
+      modalId: "modal-1",
+      target: traditionalTarget,
+      prefill,
+      modalConfig: traditionalConfig,
+    });
+    const payload = modal as any;
+    const labels = payload.components.filter(
+      (component: any) => component.type === ComponentType.Label,
+    );
+    const checkboxes = payload.components.flatMap((component: any) =>
+      component.type === ComponentType.Label && component.component?.type === ComponentType.Checkbox
+        ? [component.component]
+        : [],
+    );
+
+    expect(payload.components).toHaveLength(4);
+    expect(labels).toHaveLength(1);
+    expect(checkboxes).toHaveLength(1);
+    expect(payload.components.at(-1).label).toBe(
+      "Require uncleared 2★ mirror after open",
+    );
+    expect(payload.components.at(-1).description).toBe(
+      "If enabled, an uncleared mirror must still be 2★ after bases open.",
+    );
+    expect(checkboxes[0]).toMatchObject({
+      custom_id: "traditional-require-mirror-after-open",
+      default: true,
+    });
+  });
+
+  it("uses an unchecked default when the effective Traditional value is false", () => {
+    const modal = buildWarPlanEditModalForTest({
+      modalId: "modal-2",
+      target: traditionalTarget,
+      prefill: { ...prefill, traditionalRequireMirrorAfterOpen: false },
+      modalConfig: traditionalConfig,
+    });
+    const payload = modal as any;
+    expect(payload.components.at(-1).component.default).toBe(false);
+  });
+
+  it.each([
+    ["FWA WIN", { matchType: "FWA", outcome: "WIN", loseStyle: "ANY" }],
+    ["TRIPLE_TOP_30", { matchType: "FWA", outcome: "LOSE", loseStyle: "TRIPLE_TOP_30" }],
+    ["BL", { matchType: "BL", outcome: "ANY", loseStyle: "ANY" }],
+    ["MM", { matchType: "MM", outcome: "ANY", loseStyle: "ANY" }],
+  ])("does not render a checkbox for %s", (_label, target) => {
+    const modal = buildWarPlanEditModalForTest({
+      modalId: "modal-nontraditional",
+      target: target as any,
+      prefill,
+      modalConfig: null,
+    });
+    const payload = modal as any;
+    expect(
+      payload.components.some(
+        (component: any) => component.type === ComponentType.Label,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("/warplan Traditional mirror checkbox persistence", () => {
+  async function saveTraditional(input: {
+    subcommand: "set" | "set-default";
+    checked: boolean;
+  }) {
+    prismaMock.clanWarPlan.findUnique
+      .mockReset()
+      .mockResolvedValueOnce({
+        planText: "Existing Traditional plan",
+        nonMirrorTripleMinClanStars: 150,
+        allBasesOpenHoursLeft: 12,
+        traditionalRequireMirrorAfterOpen: false,
+      })
+      .mockResolvedValueOnce(null);
+    prismaMock.clanWarPlan.upsert.mockReset().mockResolvedValue({});
+
+    const interaction = createInteraction({
+      subcommand: input.subcommand,
+      strings: {
+        "clan-tag": "AAA111",
+        "match-type": "FWA_LOSE_TRADITIONAL",
+      },
+    });
+    interaction.awaitModalSubmit.mockResolvedValue({
+      customId: "ignored-by-mock",
+      user: { id: "user-1" },
+      fields: {
+        getTextInputValue: vi.fn((customId: string) =>
+          customId === "plan-text"
+            ? "Saved Traditional plan"
+            : customId === "non-mirror-min-stars"
+              ? "150"
+              : "12",
+        ),
+        getField: vi.fn().mockReturnValue({
+          type: ComponentType.Checkbox,
+          value: input.checked,
+        }),
+      },
+      reply: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await WarPlan.run({} as any, interaction, {} as any);
+    return prismaMock.clanWarPlan.upsert.mock.calls[0]?.[0] as any;
+  }
+
+  it.each([true, false])("persists an explicit Traditional value: %s", async (checked) => {
+    const args = await saveTraditional({ subcommand: "set", checked });
+    expect(args.update.traditionalRequireMirrorAfterOpen).toBe(checked);
+    expect(args.create.traditionalRequireMirrorAfterOpen).toBe(checked);
+    expect(args.where.guildId_scope_clanTag_matchType_outcome_loseStyle.scope).toBe(
+      "CUSTOM",
+    );
+  });
+
+  it("persists the checkbox on the DEFAULT row for set-default", async () => {
+    const args = await saveTraditional({ subcommand: "set-default", checked: true });
+    expect(args.where.guildId_scope_clanTag_matchType_outcome_loseStyle).toMatchObject({
+      scope: "DEFAULT",
+      clanTag: "",
+    });
+    expect(args.create.traditionalRequireMirrorAfterOpen).toBe(true);
   });
 });

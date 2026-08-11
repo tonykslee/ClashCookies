@@ -214,10 +214,17 @@ export function formatWarPlanComplianceLine(input: {
   }
 
   if (expectedOutcome === "LOSE" && loseStyle === "TRADITIONAL") {
-    if (!input.config) {
-      return `Compliance gate: non-mirror 2★ opens at ${DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS} clan stars or ${DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT}h left | clan cap: 100★`;
-    }
-    return `Compliance gate: non-mirror 2★ opens at ${input.config.nonMirrorMinClanStars} clan stars or ${input.config.allBasesOpenHoursLeft}h left | clan cap: 100★`;
+    const minClanStars =
+      input.config?.nonMirrorMinClanStars ??
+      DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS;
+    const openHoursLeft =
+      input.config?.allBasesOpenHoursLeft ??
+      DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT;
+    const mirrorAfterOpen =
+      input.config?.traditionalRequireMirrorAfterOpen === true
+        ? "required"
+        : "not required";
+    return `Compliance gate: open at ${minClanStars} clan stars or ${openHoursLeft}h left | open attacks: 0-2★ any | uncleared mirror after open: ${mirrorAfterOpen} | clan cap: 100★`;
   }
 
   if (expectedOutcome === "LOSE" && loseStyle === "TRIPLE_TOP_30") {
