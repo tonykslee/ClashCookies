@@ -655,6 +655,56 @@ describe("/accounts command", () => {
     });
   });
 
+  it("renders a persisted tracked-clan move without invoking live Refresh", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        playerName: "Moved Alpha",
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerCurrent.findMany.mockResolvedValue([
+      makePlayerCurrentRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Moved Alpha",
+        currentClanTag: "#CLANA",
+        currentClanName: "Clan A",
+      }),
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Moved Alpha", clanTag: "#CLANA", clanName: "Clan A" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#CLANB",
+        townHall: 16,
+        weight: 210000,
+        sourceSyncedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLANA", name: "Clan A" },
+      { tag: "#CLANB", name: "Clan B" },
+    ]);
+    const cocService = makeCocService({
+      "#PYLQ0289": {
+        name: "Moved Alpha",
+        clan: { tag: "#CLANA", name: "Clan A" },
+      },
+    });
+    const interaction = makeInteraction();
+
+    await Accounts.run({} as any, interaction as any, cocService as any);
+
+    const description = getEmbedDescription(interaction);
+    expect(description).toContain(
+      "**[Clan B](https://link.clashofclans.com/en?action=OpenClanProfile&tag=CLANB)**",
+    );
+    expect(description).not.toContain("Clan A");
+    expect(cocService.getPlayerRaw).not.toHaveBeenCalled();
+  });
+
   it("falls back to PlayerCurrent, external manual weights, and open deferments in order", async () => {
     const freeClanTag = "#PQLQ0289";
     vi.spyOn(

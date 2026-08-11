@@ -93,15 +93,16 @@ function normalizePositiveInteger(input: unknown): number | null {
 
 function pickPreferredFwaMemberRow(
   rows: FwaClanMemberCurrentRow[],
-  clanTag: string | null,
 ): FwaClanMemberCurrentRow | null {
   if (rows.length === 0) return null;
-  const normalizedClanTag = normalizeTag(clanTag ?? "");
-  if (normalizedClanTag) {
-    const exactMatch = rows.find((row) => normalizeTag(row.clanTag) === normalizedClanTag);
-    if (exactMatch) return exactMatch;
-  }
-  return [...rows].sort((a, b) => b.sourceSyncedAt.getTime() - a.sourceSyncedAt.getTime())[0] ?? null;
+  return [...rows].sort((a, b) => {
+    const leftSyncedAt = a.sourceSyncedAt.getTime();
+    const rightSyncedAt = b.sourceSyncedAt.getTime();
+    const leftTime = Number.isFinite(leftSyncedAt) ? leftSyncedAt : Number.NEGATIVE_INFINITY;
+    const rightTime = Number.isFinite(rightSyncedAt) ? rightSyncedAt : Number.NEGATIVE_INFINITY;
+    if (leftTime !== rightTime) return rightTime - leftTime;
+    return a.clanTag.localeCompare(b.clanTag, undefined, { sensitivity: "base" });
+  })[0] ?? null;
 }
 
 function isConfirmedClanlessSource(source: string | null | undefined): boolean {
@@ -212,6 +213,9 @@ export async function buildAccountsRows(input: {
       ...activity
         .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
         .filter(Boolean),
+      ...fwaMemberRows
+        .map((row) => (row.clanTag ? normalizeTag(row.clanTag) : ""))
+        .filter(Boolean),
     ]),
   ];
 
@@ -237,19 +241,24 @@ export async function buildAccountsRows(input: {
     const linkedName = input.linkedNameByTag.get(tag) ?? null;
     const currentClanTag = playerCurrent?.currentClanTag ? normalizeTag(playerCurrent.currentClanTag) : null;
     const fallbackClanTag = fallback?.clanTag ? normalizeTag(fallback.clanTag) : null;
-    const clanTag = currentClanTag ?? fallbackClanTag ?? null;
     const currentClanName = sanitizeDisplayText(playerCurrent?.currentClanName);
     const fallbackClanName = sanitizeDisplayText(fallback?.clanName);
-    const clanName =
-      currentClanName ?? fallbackClanName ?? (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
-    const clanState = resolveAccountClanState({
-      playerCurrent,
-      playerActivity: fallback
-        ? { clanTag: fallback.clanTag ?? null, clanName: fallback.clanName ?? null }
-        : null,
-    });
     const memberRows = fwaMemberRowsByTag.get(tag) ?? [];
-    const preferredMemberRow = pickPreferredFwaMemberRow(memberRows, clanTag);
+    const preferredMemberRow = pickPreferredFwaMemberRow(memberRows);
+    const trackedMemberRows = memberRows.filter((row) => trackedClanNameByTag.has(row.clanTag));
+    const preferredTrackedMemberRow = pickPreferredFwaMemberRow(trackedMemberRows);
+    const clanTag = preferredTrackedMemberRow?.clanTag ?? currentClanTag ?? fallbackClanTag ?? null;
+    const clanName = preferredTrackedMemberRow
+      ? trackedClanNameByTag.get(preferredTrackedMemberRow.clanTag) ?? null
+      : currentClanName ?? fallbackClanName ?? (clanTag ? trackedClanNameByTag.get(clanTag) ?? null : null);
+    const clanState = preferredTrackedMemberRow
+      ? "known"
+      : resolveAccountClanState({
+          playerCurrent,
+          playerActivity: fallback
+            ? { clanTag: fallback.clanTag ?? null, clanName: fallback.clanName ?? null }
+            : null,
+        });
     const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
     const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
     const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
