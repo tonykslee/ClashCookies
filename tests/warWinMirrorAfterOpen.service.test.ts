@@ -180,6 +180,131 @@ describe("WarComplianceService FWA-WIN mirror-after-open policy", () => {
     expect(result.report?.notFollowingPlan[0]?.breachContext).toBeNull();
   });
 
+  it("describes the OFF mirror obligation as expiring after open", async () => {
+    const result = await evaluateCurrent({
+      participants: [owner],
+      attacks: [
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 1,
+          stars: 2,
+          attackOrder: 1,
+          hour: 1,
+        }),
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 2,
+          stars: 3,
+          attackOrder: 2,
+          hour: 2,
+        }),
+      ],
+      customPlan: {
+        nonMirrorTripleMinClanStars: 100,
+        allBasesOpenHoursLeft: 12,
+        winRequireMirrorAfterOpen: false,
+      },
+      defaultPlan: null,
+    });
+
+    expect(result.report?.notFollowingPlan[0]?.expectedBehavior).toBe(
+      "Triple the required mirror while the strict window applies; after open, an uncleared mirror is no longer required. Avoid off-mirror triples/zeros during the strict window.",
+    );
+  });
+
+  it("describes the ON mirror obligation as continuing after open", async () => {
+    const result = await evaluateCurrent({
+      participants: [owner],
+      attacks: [
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 1,
+          stars: 2,
+          attackOrder: 1,
+          hour: 1,
+        }),
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 2,
+          stars: 3,
+          attackOrder: 2,
+          hour: 2,
+        }),
+      ],
+      customPlan: {
+        nonMirrorTripleMinClanStars: 100,
+        allBasesOpenHoursLeft: 12,
+        winRequireMirrorAfterOpen: true,
+      },
+      defaultPlan: null,
+    });
+
+    expect(result.report?.notFollowingPlan[0]?.expectedBehavior).toBe(
+      "Triple the required mirror; if it remains uncleared, it is still required after open. Avoid off-mirror triples/zeros during the strict window.",
+    );
+  });
+
+  it("lets a strict linked-member mirror triple satisfy another linked owner's obligation", async () => {
+    const linkedMember: Participant = {
+      playerName: "linked-member",
+      playerTag: "#Q",
+      attacksUsed: 1,
+      playerPosition: 2,
+    };
+    const result = await evaluateCurrent({
+      participants: [owner, linkedMember],
+      attacks: [
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 2,
+          stars: 1,
+          attackOrder: 1,
+          hour: 1,
+        }),
+        attack({
+          playerTag: "#P",
+          playerName: "owner",
+          playerPosition: 1,
+          defenderPosition: 3,
+          stars: 1,
+          attackOrder: 2,
+          hour: 2,
+        }),
+        attack({
+          playerTag: "#Q",
+          playerName: "linked-member",
+          playerPosition: 2,
+          defenderPosition: 1,
+          stars: 3,
+          attackOrder: 3,
+          hour: 3,
+        }),
+      ],
+      customPlan: {
+        nonMirrorTripleMinClanStars: 100,
+        allBasesOpenHoursLeft: 12,
+        winRequireMirrorAfterOpen: true,
+      },
+      defaultPlan: null,
+      links: [
+        { playerTag: "#P", discordUserId: "user-1" },
+        { playerTag: "#Q", discordUserId: "user-1" },
+      ],
+    });
+
+    expect(result.report?.notFollowingPlan).toEqual([]);
+  });
+
   it("allows a linked member's open triple to satisfy the owner's ON obligation", async () => {
     const linkedOwner = { ...owner, playerName: "linked-owner" };
     const linkedMember: Participant = {

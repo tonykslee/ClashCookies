@@ -398,12 +398,15 @@ function describeExpectedPlanBehavior(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winRequireMirrorAfterOpen?: boolean;
 }): string {
   if (input.matchType === "BL" || input.matchType === "MM") {
     return "War-plan compliance enforcement is disabled for BL/MM wars.";
   }
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    return "Mirror triple in strict window; avoid off-mirror triples/zeros.";
+    return input.winRequireMirrorAfterOpen
+      ? "Triple the required mirror; if it remains uncleared, it is still required after open. Avoid off-mirror triples/zeros during the strict window."
+      : "Triple the required mirror while the strict window applies; after open, an uncleared mirror is no longer required. Avoid off-mirror triples/zeros during the strict window.";
   }
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     return input.loseStyle === "TRIPLE_TOP_30"
@@ -2176,6 +2179,8 @@ export class WarComplianceService {
       matchType: context.matchType,
       expectedOutcome: context.expectedOutcome,
       loseStyle,
+      winRequireMirrorAfterOpen:
+        fwaWinGateConfig?.winRequireMirrorAfterOpen ?? false,
     });
     const notFollowingPlanIssues = traditionalEvaluation
       ? buildTraditionalLossIssuesFromEvaluation({
