@@ -9,9 +9,12 @@ import {
   Client,
   ComponentType,
   EmbedBuilder,
-  ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+} from "discord.js";
+import type {
+  APILabelComponent,
+  APIModalInteractionResponseCallbackData,
 } from "discord.js";
 import { Command } from "../Command";
 import { prisma } from "../prisma";
@@ -55,6 +58,8 @@ const PLAN_MODAL_PREFIX = "warplan-edit";
 const PLAN_MODAL_INPUT_ID = "plan-text";
 const PLAN_MODAL_MIN_STARS_INPUT_ID = "non-mirror-min-stars";
 const PLAN_MODAL_OPEN_HOURS_INPUT_ID = "all-bases-open-hours-left";
+const PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID =
+  "traditional-require-mirror-after-open";
 const WARPLAN_OVERVIEW_PAGE_SIZE = 10;
 const WARPLAN_OVERVIEW_PAGINATOR_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -274,10 +279,63 @@ function getModalCompliancePrefillDefaults(
 ): {
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
+  traditionalRequireMirrorAfterOpen: boolean;
 } {
   return {
     nonMirrorTripleMinClanStars: resolvedConfig.nonMirrorTripleMinClanStars,
     allBasesOpenHoursLeft: resolvedConfig.allBasesOpenHoursLeft,
+    traditionalRequireMirrorAfterOpen:
+      resolvedConfig.traditionalRequireMirrorAfterOpen ?? false,
+  };
+}
+
+function isTraditionalPlanTarget(target: PlanTarget): boolean {
+  return (
+    target.matchType === "FWA" &&
+    target.outcome === "LOSE" &&
+    target.loseStyle === "TRADITIONAL"
+  );
+}
+
+type ModalCheckboxSubmissionField = {
+  type: ComponentType.Checkbox;
+  value: boolean;
+};
+
+function isModalCheckboxSubmissionField(
+  value: unknown,
+): value is ModalCheckboxSubmissionField {
+  if (!value || typeof value !== "object") return false;
+  const field = value as { type?: unknown; value?: unknown };
+  return field.type === ComponentType.Checkbox && typeof field.value === "boolean";
+}
+
+/** Purpose: read the supported Discord checkbox submission value with a narrow compatibility guard. */
+function getTraditionalMirrorCheckboxValue(submitted: {
+  fields: { getField: (customId: string) => unknown };
+}): boolean {
+  try {
+    const field = submitted.fields.getField(
+      PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
+    );
+    return isModalCheckboxSubmissionField(field) ? field.value : false;
+  } catch {
+    return false;
+  }
+}
+
+function buildTraditionalMirrorCheckbox(
+  checked: boolean,
+): APILabelComponent {
+  return {
+    type: ComponentType.Label,
+    label: "Require uncleared 2★ mirror after open",
+    description: "If enabled, an uncleared mirror must still be 2★ after bases open.",
+    component: {
+      type: ComponentType.Checkbox,
+      custom_id: PLAN_MODAL_TRADITIONAL_MIRROR_CHECKBOX_ID,
+      default: checked,
+    },
   };
 }
 
@@ -327,6 +385,76 @@ function getModalComplianceFieldConfigForTarget(target: PlanTarget): {
   }
 
   return null;
+}
+
+type WarPlanModalPrefill = ReturnType<
+  typeof getModalCompliancePrefillDefaults
+> & { planText: string };
+type ModalComplianceFieldConfig = NonNullable<
+  ReturnType<typeof getModalComplianceFieldConfigForTarget>
+>;
+
+function buildWarPlanEditModal(input: {
+  modalId: string;
+  target: PlanTarget;
+  prefill: WarPlanModalPrefill;
+  modalConfig: ModalComplianceFieldConfig | null;
+}): APIModalInteractionResponseCallbackData {
+  const planTextInput = new TextInputBuilder()
+    .setCustomId(PLAN_MODAL_INPUT_ID)
+    .setLabel("Plan text")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1500)
+    .setPlaceholder(
+      "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>",
+    )
+    .setValue(input.prefill.planText);
+  const modalRows: ActionRowBuilder<TextInputBuilder>[] = [
+    new ActionRowBuilder<TextInputBuilder>().addComponents(planTextInput),
+  ];
+  if (input.modalConfig) {
+    const minStarsInput = new TextInputBuilder()
+      .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
+      .setLabel(input.modalConfig.minStarsLabel)
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setMaxLength(4)
+      .setPlaceholder(`Default: ${input.modalConfig.minStarsDefault}`)
+      .setValue(String(input.prefill.nonMirrorTripleMinClanStars));
+    const openHoursInput = new TextInputBuilder()
+      .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
+      .setLabel("All bases open time cutoff (H or Hh)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setMaxLength(3)
+      .setPlaceholder(`Default: ${input.modalConfig.openHoursDefaultText}`)
+      .setValue(String(input.prefill.allBasesOpenHoursLeft));
+    modalRows.push(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput),
+    );
+  }
+
+  const components: APIModalInteractionResponseCallbackData["components"] =
+    modalRows.map((row) => row.toJSON());
+  if (isTraditionalPlanTarget(input.target)) {
+    components.push(
+      buildTraditionalMirrorCheckbox(
+        input.prefill.traditionalRequireMirrorAfterOpen,
+      ),
+    );
+  }
+
+  return {
+    custom_id: input.modalId,
+    title: `Edit ${formatKeyLabel(
+      input.target.matchType,
+      input.target.outcome,
+      input.target.loseStyle,
+    )}`,
+    components,
+  };
 }
 
 async function getDefaultPlanText(
@@ -381,6 +509,7 @@ async function getCurrentOrDefaultPlanData(params: {
   planText: string;
   nonMirrorTripleMinClanStars: number;
   allBasesOpenHoursLeft: number;
+  traditionalRequireMirrorAfterOpen: boolean;
 }> {
   const existing = await prisma.clanWarPlan.findUnique({
     where: {
@@ -397,12 +526,14 @@ async function getCurrentOrDefaultPlanData(params: {
       planText: true,
       nonMirrorTripleMinClanStars: true,
       allBasesOpenHoursLeft: true,
+      traditionalRequireMirrorAfterOpen: true,
     },
   });
 
   let fallbackConfig: {
     nonMirrorTripleMinClanStars: number | null;
     allBasesOpenHoursLeft: number | null;
+    traditionalRequireMirrorAfterOpen: boolean | null;
   } | null = null;
   if (params.scope === "CUSTOM") {
     const defaultRow = await prisma.clanWarPlan.findUnique({
@@ -419,6 +550,7 @@ async function getCurrentOrDefaultPlanData(params: {
       select: {
         nonMirrorTripleMinClanStars: true,
         allBasesOpenHoursLeft: true,
+        traditionalRequireMirrorAfterOpen: true,
       },
     });
     fallbackConfig = defaultRow;
@@ -454,11 +586,18 @@ async function getCurrentOrDefaultPlanData(params: {
     planText,
     nonMirrorTripleMinClanStars: modalDefaults.nonMirrorTripleMinClanStars,
     allBasesOpenHoursLeft: modalDefaults.allBasesOpenHoursLeft,
+    traditionalRequireMirrorAfterOpen:
+      modalDefaults.traditionalRequireMirrorAfterOpen,
   };
 }
 
 export const resolveWarPlanEmojiShortcodesForTest =
   resolveWarPlanEmojiShortcodes;
+export const buildTraditionalMirrorCheckboxForTest =
+  buildTraditionalMirrorCheckbox;
+export const getTraditionalMirrorCheckboxValueForTest =
+  getTraditionalMirrorCheckboxValue;
+export const buildWarPlanEditModalForTest = buildWarPlanEditModal;
 export const buildComplianceConfigLineForTest = buildComplianceConfigLineForTarget;
 export const getCurrentOrDefaultPlanDataForTest = getCurrentOrDefaultPlanData;
 export const resolveWarPlanOverviewOverrideTypeForTest =
@@ -655,47 +794,12 @@ export const WarPlan: Command = {
 
       const modalConfig = getModalComplianceFieldConfigForTarget(target);
       const modalId = `${PLAN_MODAL_PREFIX}:${mode}:${clanTag || "_"}:${target.matchType}:${target.outcome}:${target.loseStyle}`;
-      const modal = new ModalBuilder()
-        .setCustomId(modalId)
-        .setTitle(
-          `Edit ${formatKeyLabel(target.matchType, target.outcome, target.loseStyle)}`,
-        );
-      const input = new TextInputBuilder()
-        .setCustomId(PLAN_MODAL_INPUT_ID)
-        .setLabel("Plan text")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMaxLength(1500)
-        .setPlaceholder(
-          "Bold: **text** | Italic: *text* | Code: `text` | Block: ```text``` | Emoji: :name: or <:name:id>",
-        )
-        .setValue(prefill.planText);
-      const modalRows: ActionRowBuilder<TextInputBuilder>[] = [
-        new ActionRowBuilder<TextInputBuilder>().addComponents(input),
-      ];
-      if (modalConfig) {
-        const minStarsInput = new TextInputBuilder()
-          .setCustomId(PLAN_MODAL_MIN_STARS_INPUT_ID)
-          .setLabel(modalConfig.minStarsLabel)
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(4)
-          .setPlaceholder(`Default: ${modalConfig.minStarsDefault}`)
-          .setValue(String(prefill.nonMirrorTripleMinClanStars));
-        const openHoursInput = new TextInputBuilder()
-          .setCustomId(PLAN_MODAL_OPEN_HOURS_INPUT_ID)
-          .setLabel("All bases open time cutoff (H or Hh)")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setMaxLength(3)
-          .setPlaceholder(`Default: ${modalConfig.openHoursDefaultText}`)
-          .setValue(String(prefill.allBasesOpenHoursLeft));
-        modalRows.push(
-          new ActionRowBuilder<TextInputBuilder>().addComponents(minStarsInput),
-          new ActionRowBuilder<TextInputBuilder>().addComponents(openHoursInput),
-        );
-      }
-      modal.addComponents(...modalRows);
+      const modal = buildWarPlanEditModal({
+        modalId,
+        target,
+        prefill,
+        modalConfig,
+      });
       await interaction.showModal(modal);
 
       try {
@@ -732,6 +836,10 @@ export const WarPlan: Command = {
           return;
         }
 
+        const traditionalRequireMirrorAfterOpen = isTraditionalPlanTarget(target)
+          ? getTraditionalMirrorCheckboxValue(submitted)
+          : null;
+
         const planText = await resolveWarPlanEmojiShortcodes({
           text: normalizedPlanText,
           client: interaction.client,
@@ -755,6 +863,9 @@ export const WarPlan: Command = {
           ? {
               nonMirrorTripleMinClanStars: parsedMinStars.value,
               allBasesOpenHoursLeft: parsedOpenHours.value,
+              ...(isTraditionalPlanTarget(target)
+                ? { traditionalRequireMirrorAfterOpen }
+                : {}),
             }
           : {};
 
@@ -990,6 +1101,7 @@ export const WarPlan: Command = {
           planText: true,
           nonMirrorTripleMinClanStars: true,
           allBasesOpenHoursLeft: true,
+          traditionalRequireMirrorAfterOpen: true,
         },
       });
       const rowByKey = new Map<
@@ -998,6 +1110,7 @@ export const WarPlan: Command = {
           planText: string;
           nonMirrorTripleMinClanStars: number | null;
           allBasesOpenHoursLeft: number | null;
+          traditionalRequireMirrorAfterOpen: boolean | null;
         }
       >();
       for (const row of rows) {
@@ -1005,6 +1118,8 @@ export const WarPlan: Command = {
           planText: row.planText,
           nonMirrorTripleMinClanStars: row.nonMirrorTripleMinClanStars,
           allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
+          traditionalRequireMirrorAfterOpen:
+            row.traditionalRequireMirrorAfterOpen,
         });
       }
 
@@ -1013,6 +1128,7 @@ export const WarPlan: Command = {
         {
           nonMirrorTripleMinClanStars: number | null;
           allBasesOpenHoursLeft: number | null;
+          traditionalRequireMirrorAfterOpen: boolean | null;
         }
       >();
       if (mode === "CUSTOM") {
@@ -1033,12 +1149,15 @@ export const WarPlan: Command = {
             loseStyle: true,
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
+            traditionalRequireMirrorAfterOpen: true,
           },
         });
         for (const row of defaultRows) {
           defaultRowByKey.set(planTargetKey(row as PlanTarget), {
             nonMirrorTripleMinClanStars: row.nonMirrorTripleMinClanStars,
             allBasesOpenHoursLeft: row.allBasesOpenHoursLeft,
+            traditionalRequireMirrorAfterOpen:
+              row.traditionalRequireMirrorAfterOpen,
           });
         }
       }
@@ -1058,11 +1177,22 @@ export const WarPlan: Command = {
             target.outcome,
             target.loseStyle,
           ));
-        const resolvedConfig = resolveWarPlanComplianceConfig({
-          primary: scopedRow ?? null,
-          fallback:
-            mode === "CUSTOM" ? (defaultRowByKey.get(key) ?? null) : null,
-        });
+        const scopedConfig = scopedRow ?? null;
+        const fallbackConfig =
+          mode === "CUSTOM" ? (defaultRowByKey.get(key) ?? null) : null;
+        const resolvedConfig =
+          resolveWarPlanComplianceConfigForPlan({
+            primary: scopedConfig,
+            fallback: fallbackConfig,
+            matchType: target.matchType,
+            expectedOutcome:
+              target.outcome === "ANY" ? null : target.outcome,
+            loseStyle: target.loseStyle === "ANY" ? null : target.loseStyle,
+          }) ??
+          resolveWarPlanComplianceConfig({
+            primary: scopedConfig,
+            fallback: fallbackConfig,
+          });
         const fieldValue = clampEmbedFieldValue(
           `${text}\n\n${buildComplianceConfigLineForTarget({
             target,

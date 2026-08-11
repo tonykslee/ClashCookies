@@ -119,7 +119,17 @@ describe("warPlanComplianceConfig", () => {
         loseStyle: "TRADITIONAL",
         config: traditional,
       }),
-    ).toContain("non-mirror 2★ opens at 150 clan stars or 12h left | clan cap: 100★");
+    ).toBe(
+      "Compliance gate: open at 150 clan stars or 12h left | open attacks: 0-2★ any | uncleared mirror after open: not required | clan cap: 100★",
+    );
+    expect(
+      formatWarPlanComplianceLine({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        config: { ...traditional, traditionalRequireMirrorAfterOpen: true },
+      }),
+    ).toContain("uncleared mirror after open: required");
     expect(
       formatWarPlanComplianceLine({
         matchType: "FWA",

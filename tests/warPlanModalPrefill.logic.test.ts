@@ -137,8 +137,81 @@ describe("warplan set modal compliance prefill", () => {
     });
 
     expect(line).toBe(
-      "Compliance gate: non-mirror 2★ opens at 150 clan stars or 12h left | clan cap: 100★",
+      "Compliance gate: open at 150 clan stars or 12h left | open attacks: 0-2★ any | uncleared mirror after open: not required | clan cap: 100★",
     );
     expect(line).not.toContain("applies to FWA_WIN only");
+  });
+
+  it("prefills the built-in Traditional mirror requirement as false", async () => {
+    vi.spyOn(prisma.clanWarPlan, "findUnique")
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce(null as any);
+
+    const prefill = await getCurrentOrDefaultPlanDataForTest({
+      guildId: "guild-1",
+      scope: "CUSTOM",
+      clanTag: "AAA111",
+      target: { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" },
+      history: {
+        buildWarPlanText: vi.fn().mockResolvedValue("Generated fallback plan"),
+      } as any,
+    });
+
+    expect(prefill.traditionalRequireMirrorAfterOpen).toBe(false);
+  });
+
+  it("uses DEFAULT true when CUSTOM is unset, and preserves explicit CUSTOM false", async () => {
+    const findUniqueSpy = vi.spyOn(prisma.clanWarPlan, "findUnique");
+    findUniqueSpy
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce({
+        traditionalRequireMirrorAfterOpen: true,
+      } as any);
+
+    const inherited = await getCurrentOrDefaultPlanDataForTest({
+      guildId: "guild-1",
+      scope: "CUSTOM",
+      clanTag: "AAA111",
+      target: { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" },
+      history: { buildWarPlanText: vi.fn().mockResolvedValue("Fallback") } as any,
+    });
+    expect(inherited.traditionalRequireMirrorAfterOpen).toBe(true);
+
+    findUniqueSpy
+      .mockResolvedValueOnce({
+        planText: "Custom",
+        traditionalRequireMirrorAfterOpen: false,
+      } as any)
+      .mockResolvedValueOnce({
+        traditionalRequireMirrorAfterOpen: true,
+      } as any);
+    const explicitFalse = await getCurrentOrDefaultPlanDataForTest({
+      guildId: "guild-1",
+      scope: "CUSTOM",
+      clanTag: "AAA111",
+      target: { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" },
+      history: { buildWarPlanText: vi.fn().mockResolvedValue("Fallback") } as any,
+    });
+    expect(explicitFalse.traditionalRequireMirrorAfterOpen).toBe(false);
+  });
+
+  it("uses an explicit CUSTOM true value even when DEFAULT is false", async () => {
+    vi.spyOn(prisma.clanWarPlan, "findUnique")
+      .mockResolvedValueOnce({
+        planText: "Custom",
+        traditionalRequireMirrorAfterOpen: true,
+      } as any)
+      .mockResolvedValueOnce({
+        traditionalRequireMirrorAfterOpen: false,
+      } as any);
+
+    const prefill = await getCurrentOrDefaultPlanDataForTest({
+      guildId: "guild-1",
+      scope: "CUSTOM",
+      clanTag: "AAA111",
+      target: { matchType: "FWA", outcome: "LOSE", loseStyle: "TRADITIONAL" },
+      history: { buildWarPlanText: vi.fn().mockResolvedValue("Fallback") } as any,
+    });
+    expect(prefill.traditionalRequireMirrorAfterOpen).toBe(true);
   });
 });
