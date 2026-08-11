@@ -96,6 +96,7 @@ describe("warPlanComplianceConfig", () => {
       nonMirrorMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
       nonMirrorTripleMinClanStars: DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
       allBasesOpenHoursLeft: DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+      winRequireMirrorAfterOpen: false,
     });
     expect(traditional).toEqual({
       nonMirrorMinClanStars: DEFAULT_FWA_LOSS_TRADITIONAL_NON_MIRROR_MIN_CLAN_STARS,
@@ -174,5 +175,56 @@ describe("warPlanComplianceConfig", () => {
     expect(inherited?.traditionalRequireMirrorAfterOpen).toBe(true);
     expect(customFalse?.traditionalRequireMirrorAfterOpen).toBe(false);
     expect(builtIn?.traditionalRequireMirrorAfterOpen).toBe(false);
+  });
+
+  it("resolves the FWA-WIN mirror-after-open flag with custom -> default -> false precedence", () => {
+    const builtIn = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "ANY",
+      primary: null,
+      fallback: null,
+    });
+    const customTrue = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "ANY",
+      primary: { winRequireMirrorAfterOpen: true },
+      fallback: { winRequireMirrorAfterOpen: false },
+    });
+    const customFalse = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "ANY",
+      primary: { winRequireMirrorAfterOpen: false },
+      fallback: { winRequireMirrorAfterOpen: true },
+    });
+    const inherited = resolveWarPlanComplianceConfigForPlan({
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+      loseStyle: "ANY",
+      primary: { winRequireMirrorAfterOpen: null },
+      fallback: { winRequireMirrorAfterOpen: true },
+    });
+
+    expect(builtIn?.winRequireMirrorAfterOpen).toBe(false);
+    expect(customTrue?.winRequireMirrorAfterOpen).toBe(true);
+    expect(customFalse?.winRequireMirrorAfterOpen).toBe(false);
+    expect(inherited?.winRequireMirrorAfterOpen).toBe(true);
+    expect(customTrue?.nonMirrorMinClanStars).toBe(
+      DEFAULT_NON_MIRROR_TRIPLE_MIN_CLAN_STARS,
+    );
+    expect(customTrue?.allBasesOpenHoursLeft).toBe(
+      DEFAULT_ALL_BASES_OPEN_HOURS_LEFT,
+    );
+    expect(
+      resolveWarPlanComplianceConfigForPlan({
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+        primary: { traditionalRequireMirrorAfterOpen: true },
+        fallback: { traditionalRequireMirrorAfterOpen: false },
+      })?.traditionalRequireMirrorAfterOpen,
+    ).toBe(true);
   });
 });

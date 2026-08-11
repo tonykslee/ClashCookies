@@ -1822,6 +1822,7 @@ model ClanWarPlan {
   nonMirrorTripleMinClanStars Int?
   allBasesOpenHoursLeft       Int?
   traditionalRequireMirrorAfterOpen Boolean?
+  winRequireMirrorAfterOpen    Boolean?
   createdAt                   DateTime     @default(now())
   updatedAt                   DateTime     @updatedAt
 

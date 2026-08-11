@@ -273,6 +273,7 @@ type PlayerBehaviorDetails = {
   reasonLabel: string;
   strictWindowContext: NotFollowingReason["strictWindowContext"];
   attackDetails: WarComplianceIssueAttackDetail[];
+  hasViolation: boolean;
   hasProvenStrictWindowViolation: boolean;
 };
 
@@ -376,6 +377,7 @@ function describeNotFollowingReason(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winRequireMirrorAfterOpen?: boolean;
 }): NotFollowingReason {
   return classifyComplianceReasonForPlayer({
     playerAttacks: input.playerAttacks,
@@ -387,6 +389,7 @@ function describeNotFollowingReason(input: {
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
+    winRequireMirrorAfterOpen: input.winRequireMirrorAfterOpen,
   });
 }
 
@@ -395,12 +398,15 @@ function describeExpectedPlanBehavior(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winRequireMirrorAfterOpen?: boolean;
 }): string {
   if (input.matchType === "BL" || input.matchType === "MM") {
     return "War-plan compliance enforcement is disabled for BL/MM wars.";
   }
   if (input.matchType === "FWA" && input.expectedOutcome === "WIN") {
-    return "Mirror triple in strict window; avoid off-mirror triples/zeros.";
+    return input.winRequireMirrorAfterOpen
+      ? "Triple the required mirror; if it remains uncleared, it is still required after open. Avoid off-mirror triples/zeros during the strict window."
+      : "Triple the required mirror while the strict window applies; after open, an uncleared mirror is no longer required. Avoid off-mirror triples/zeros during the strict window.";
   }
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     return input.loseStyle === "TRIPLE_TOP_30"
@@ -422,6 +428,7 @@ function describeActualBehaviorForPlayer(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winRequireMirrorAfterOpen?: boolean;
 }): PlayerBehaviorDetails {
   const normalizedTag = normalizeTag(input.playerTag);
   const playerAttacks = input.attacksByPlayerTag.get(normalizedTag) ?? [];
@@ -431,6 +438,7 @@ function describeActualBehaviorForPlayer(input: {
       reasonLabel: "No details available.",
       strictWindowContext: null,
       attackDetails: [],
+      hasViolation: false,
       hasProvenStrictWindowViolation: false,
     };
   }
@@ -449,6 +457,7 @@ function describeActualBehaviorForPlayer(input: {
     matchType: input.matchType,
     expectedOutcome: input.expectedOutcome,
     loseStyle: input.loseStyle,
+    winRequireMirrorAfterOpen: input.winRequireMirrorAfterOpen,
   });
   const breachOrders = new Set(reason.breachAttackOrders);
   const attackDetails = orderedAttacks.map((row) => ({
@@ -469,6 +478,7 @@ function describeActualBehaviorForPlayer(input: {
     actualBehavior: `${attackSummaries.join(", ")} : ${reason.label}${strictSuffix}`,
     reasonLabel: reason.label,
     strictWindowContext: reason.strictWindowContext,
+    hasViolation: reason.hasViolation,
     attackDetails,
     hasProvenStrictWindowViolation: reason.strictWindowContext !== null,
   };
@@ -532,6 +542,7 @@ function mapNamesToIssues(input: {
   matchType: MatchType;
   expectedOutcome: "WIN" | "LOSE" | null;
   loseStyle: FwaLoseStyle;
+  winRequireMirrorAfterOpen?: boolean;
 }): WarComplianceIssue[] {
   return input.names.flatMap((name) => {
     const participant = input.participantByLabel.get(name) ?? null;
@@ -550,12 +561,13 @@ function mapNamesToIssues(input: {
           matchType: input.matchType,
           expectedOutcome: input.expectedOutcome,
           loseStyle: input.loseStyle,
+          winRequireMirrorAfterOpen: input.winRequireMirrorAfterOpen,
         });
     if (
       input.ruleType === "not_following_plan" &&
       input.matchType === "FWA" &&
       input.expectedOutcome === "WIN" &&
-      !behavior?.hasProvenStrictWindowViolation
+      !behavior?.hasViolation
     ) {
       return [];
     }
@@ -1757,7 +1769,9 @@ export class WarComplianceService {
     orderedAttacks: WarComplianceAttack[];
     attackContextByAttack: Map<WarComplianceAttack, AttackContext>;
     participantByTag: Map<string, WarComplianceParticipant>;
+    winRequireMirrorAfterOpen?: boolean;
   }): Set<string> {
+    const winRequireMirrorAfterOpen = Boolean(input.winRequireMirrorAfterOpen);
     const allStrictAttackIndexes: number[] = [];
     const strictAttackIndexes: number[] = [];
     const strictSeenByTag = new Set<string>();
@@ -1766,14 +1780,18 @@ export class WarComplianceService {
     for (let idx = 0; idx < input.orderedAttacks.length; idx += 1) {
       const attack = input.orderedAttacks[idx];
       const context = input.attackContextByAttack.get(attack);
-      if (!context?.isStrictWindow) continue;
+      if (!context || (!context.isStrictWindow && !winRequireMirrorAfterOpen)) {
+        continue;
+      }
       allStrictAttackIndexes.push(idx);
       const playerTag = normalizeTag(attack.playerTag);
       if (!input.group.memberTagSet.has(playerTag)) continue;
-      strictAttackIndexes.push(idx);
-      strictSeenByTag.add(playerTag);
-      if (context.isMirror && Number(attack.stars ?? 0) >= 3) {
-        mirrorTripleInStrictByTag.add(playerTag);
+      if (context.isStrictWindow) {
+        strictAttackIndexes.push(idx);
+        strictSeenByTag.add(playerTag);
+        if (context.isMirror && Number(attack.stars ?? 0) >= 3) {
+          mirrorTripleInStrictByTag.add(playerTag);
+        }
       }
     }
 
@@ -1796,6 +1814,17 @@ export class WarComplianceService {
 
     const usedAttackIndexes = new Set<number>();
     const satisfiedOwnerTags = new Set<string>();
+    const ownerHasApplicableMirrorObligation = (ownerTag: string): boolean => {
+      if (winRequireMirrorAfterOpen) return true;
+      const ownerAttacks = input.orderedAttacks.filter(
+        (attack) => normalizeTag(attack.playerTag) === ownerTag,
+      );
+      const finalOwnerAttack = ownerAttacks.at(-1) ?? null;
+      return Boolean(
+        finalOwnerAttack &&
+          input.attackContextByAttack.get(finalOwnerAttack)?.isStrictWindow,
+      );
+    };
     for (const obligation of obligations) {
       for (const idx of allStrictAttackIndexes) {
         if (usedAttackIndexes.has(idx)) continue;
@@ -1816,6 +1845,7 @@ export class WarComplianceService {
         input.participantByTag.get(obligation.ownerTag)?.attacksUsed ?? 0,
       );
       if (ownerAttacksUsed < 2) continue;
+      if (!ownerHasApplicableMirrorObligation(obligation.ownerTag)) continue;
       if (!satisfiedOwnerTags.has(obligation.ownerTag)) {
         violatingTags.add(obligation.ownerTag);
       }
@@ -1865,6 +1895,7 @@ export class WarComplianceService {
     matchType: MatchType;
     expectedOutcome: "WIN" | "LOSE" | null;
     loseStyle: FwaLoseStyle;
+    winRequireMirrorAfterOpen?: boolean;
     linkedGroups?: LinkedComplianceGroup[];
   }): Promise<string[]> {
     const baselineNamesUniqueSorted = [...new Set(input.baselineNames)].sort((a, b) =>
@@ -1917,6 +1948,7 @@ export class WarComplianceService {
           orderedAttacks,
           attackContextByAttack: input.attackContextByAttack,
           participantByTag,
+          winRequireMirrorAfterOpen: input.winRequireMirrorAfterOpen,
         });
         for (const violationTag of groupViolations) {
           winViolationTags.add(violationTag);
@@ -1961,6 +1993,7 @@ export class WarComplianceService {
         return {
           nonMirrorTripleMinClanStars: LEGACY_UNCONFIGURED_FWA_WIN_MIN_CLAN_STARS,
           allBasesOpenHoursLeft: LEGACY_UNCONFIGURED_FWA_WIN_OPEN_HOURS_LEFT,
+          winRequireMirrorAfterOpen: false,
         };
       }
       if (isTraditionalLoss) {
@@ -2001,6 +2034,7 @@ export class WarComplianceService {
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
             traditionalRequireMirrorAfterOpen: true,
+            winRequireMirrorAfterOpen: true,
           },
         }),
         prisma.clanWarPlan.findFirst({
@@ -2016,6 +2050,7 @@ export class WarComplianceService {
             nonMirrorTripleMinClanStars: true,
             allBasesOpenHoursLeft: true,
             traditionalRequireMirrorAfterOpen: true,
+            winRequireMirrorAfterOpen: true,
           },
         }),
       ]);
@@ -2051,7 +2086,12 @@ export class WarComplianceService {
               traditionalRequireMirrorAfterOpen:
                 resolved.traditionalRequireMirrorAfterOpen ?? false,
             }
-          : {}),
+          : isWinPlan
+            ? {
+                winRequireMirrorAfterOpen:
+                  resolved.winRequireMirrorAfterOpen ?? false,
+              }
+            : {}),
       };
     } catch {
       return {
@@ -2065,7 +2105,9 @@ export class WarComplianceService {
             : DEFAULT_FWA_LOSS_TRADITIONAL_ALL_BASES_OPEN_HOURS_LEFT,
         ...(isTraditionalLoss
           ? { traditionalRequireMirrorAfterOpen: false }
-          : {}),
+          : isWinPlan
+            ? { winRequireMirrorAfterOpen: false }
+            : {}),
       };
     }
   }
@@ -2137,6 +2179,8 @@ export class WarComplianceService {
       matchType: context.matchType,
       expectedOutcome: context.expectedOutcome,
       loseStyle,
+      winRequireMirrorAfterOpen:
+        fwaWinGateConfig?.winRequireMirrorAfterOpen ?? false,
     });
     const notFollowingPlanIssues = traditionalEvaluation
       ? buildTraditionalLossIssuesFromEvaluation({
@@ -2155,6 +2199,8 @@ export class WarComplianceService {
             expectedOutcome: context.expectedOutcome,
             loseStyle,
             linkedGroups,
+            winRequireMirrorAfterOpen:
+              fwaWinGateConfig?.winRequireMirrorAfterOpen ?? false,
           }),
           ruleType: "not_following_plan",
           expectedBehavior: expectedPlanBehavior,
@@ -2167,6 +2213,8 @@ export class WarComplianceService {
           matchType: context.matchType,
           expectedOutcome: context.expectedOutcome,
           loseStyle,
+          winRequireMirrorAfterOpen:
+            fwaWinGateConfig?.winRequireMirrorAfterOpen ?? false,
         });
 
     return {
