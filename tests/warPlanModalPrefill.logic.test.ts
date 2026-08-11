@@ -37,6 +37,7 @@ describe("warplan set modal compliance prefill", () => {
     expect(prefill.planText).toBe("Custom FWA WIN plan");
     expect(prefill.nonMirrorTripleMinClanStars).toBe(133);
     expect(prefill.allBasesOpenHoursLeft).toBe(5);
+    expect(prefill.winRequireMirrorAfterOpen).toBe(false);
     expect(history.buildWarPlanText).not.toHaveBeenCalled();
   });
 
@@ -213,5 +214,64 @@ describe("warplan set modal compliance prefill", () => {
       history: { buildWarPlanText: vi.fn().mockResolvedValue("Fallback") } as any,
     });
     expect(prefill.traditionalRequireMirrorAfterOpen).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "CUSTOM inherits DEFAULT true",
+      scope: "CUSTOM" as const,
+      primary: null,
+      fallback: { winRequireMirrorAfterOpen: true },
+      expected: true,
+    },
+    {
+      name: "CUSTOM false overrides DEFAULT true",
+      scope: "CUSTOM" as const,
+      primary: { winRequireMirrorAfterOpen: false },
+      fallback: { winRequireMirrorAfterOpen: true },
+      expected: false,
+    },
+    {
+      name: "CUSTOM true overrides DEFAULT false",
+      scope: "CUSTOM" as const,
+      primary: { winRequireMirrorAfterOpen: true },
+      fallback: { winRequireMirrorAfterOpen: false },
+      expected: true,
+    },
+    {
+      name: "DEFAULT uses its explicit value",
+      scope: "DEFAULT" as const,
+      primary: { winRequireMirrorAfterOpen: true },
+      fallback: null,
+      expected: true,
+    },
+    {
+      name: "unset DEFAULT uses built-in false",
+      scope: "DEFAULT" as const,
+      primary: null,
+      fallback: null,
+      expected: false,
+    },
+  ])("prefills WIN mirror-after-open as $expected when $name", async ({
+    scope,
+    primary,
+    fallback,
+    expected,
+  }) => {
+    const findUniqueSpy = vi.spyOn(prisma.clanWarPlan, "findUnique");
+    findUniqueSpy.mockResolvedValueOnce(primary as any);
+    if (scope === "CUSTOM") {
+      findUniqueSpy.mockResolvedValueOnce(fallback as any);
+    }
+
+    const prefill = await getCurrentOrDefaultPlanDataForTest({
+      guildId: "guild-1",
+      scope,
+      clanTag: scope === "CUSTOM" ? "AAA111" : "",
+      target: { matchType: "FWA", outcome: "WIN", loseStyle: "ANY" },
+      history: { buildWarPlanText: vi.fn().mockResolvedValue("Fallback") } as any,
+    });
+
+    expect(prefill.winRequireMirrorAfterOpen).toBe(expected);
   });
 });
