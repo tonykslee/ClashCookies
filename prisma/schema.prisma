@@ -728,6 +728,8 @@ enum WarPlanViolationType {
   STRICT_WINDOW_MIRROR_MISS_LOSS
   EARLY_NON_MIRROR_2STAR
   TRADITIONAL_INVALID_STAR_COUNT
+  TRADITIONAL_INVALID_CLEANUP_TARGET
+  TRADITIONAL_UNCLEARED_MIRROR
   ANY_3STAR
   LOWER20_ANY_STARS
   CLAN_STAR_CAP_EXCEEDED
@@ -1636,6 +1638,7 @@ model WarPlanComplianceEvaluation {
   loseStyle                   LoseStyle?
   nonMirrorTripleMinClanStars Int?
   allBasesOpenHoursLeft       Int?
+  traditionalRequireMirrorAfterOpen Boolean?
   rulesFingerprint            String?
   attemptCount                Int                               @default(0)
   lastAttemptAt               DateTime?

@@ -50,7 +50,7 @@ vi.mock("../src/services/BotLogChannelService", () => ({
 }));
 
 import { FwaPoliceService } from "../src/services/FwaPoliceService";
-import { classifyFwaPoliceViolationForEnforcement } from "../src/services/FwaPoliceTemplateCatalog";
+import { classifyFwaPoliceViolation } from "../src/services/FwaPoliceTemplateCatalog";
 import {
   TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,
   TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
@@ -79,7 +79,7 @@ function buildIssue(overrides?: Record<string, unknown>) {
 
 it("classifies strict own-mirror cleanup as its canonical police violation", () => {
   expect(
-    classifyFwaPoliceViolationForEnforcement({
+    classifyFwaPoliceViolation({
       issue: buildIssue({
         reasonLabel:
           TRADITIONAL_STRICT_MIRROR_CLEANUP_REASON,

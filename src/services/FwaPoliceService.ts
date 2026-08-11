@@ -22,18 +22,16 @@ import {
 } from "./WarComplianceService";
 import { type FwaLoseStyle, type MatchType, normalizeOutcome } from "./war-events/core";
 import {
-  classifyFwaPoliceViolationForEnforcement,
+  classifyFwaPoliceViolation,
   FWA_POLICE_VIOLATIONS,
   FWA_POLICE_VIOLATION_METADATA,
   normalizeFwaPoliceText,
   renderFwaPoliceTemplate,
   type FwaPoliceApplicabilityContext,
-  type FwaPoliceEnforcementViolation,
+  type FwaPoliceViolation,
 } from "./FwaPoliceTemplateCatalog";
 import { emojiResolverService } from "./emoji/EmojiResolverService";
 import { BotLogChannelService } from "./BotLogChannelService";
-
-type FwaPoliceViolation = FwaPoliceEnforcementViolation;
 
 type TrackedClanPoliceRow = {
   tag: string;
@@ -1300,7 +1298,7 @@ export class FwaPoliceService {
     const classifiedIssues = issues
       .map((issue) => ({
         issue,
-        violation: classifyFwaPoliceViolationForEnforcement({ issue, context }),
+        violation: classifyFwaPoliceViolation({ issue, context }),
       }))
       .filter(
         (

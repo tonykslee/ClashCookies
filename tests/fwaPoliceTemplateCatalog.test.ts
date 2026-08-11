@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyFwaPoliceViolation,
-  classifyFwaPoliceViolationForEnforcement,
   FWA_POLICE_VIOLATION_CHOICES,
   FWA_POLICE_VIOLATIONS,
   FWA_POLICE_VIOLATION_METADATA,
@@ -265,7 +264,7 @@ describe("FwaPoliceTemplateCatalog", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const violation = classifyFwaPoliceViolationForEnforcement({
+      const violation = classifyFwaPoliceViolation({
         issue: buildCanonicalIssue({
           reasonLabel: testCase.reasonLabel,
           attackDetails: testCase.attackDetails as any,
@@ -315,7 +314,7 @@ describe("FwaPoliceTemplateCatalog", () => {
   });
 
   it("prioritizes the exact uncleared-after-open reason over open 2-star detail fallback", () => {
-    const violation = classifyFwaPoliceViolationForEnforcement({
+    const violation = classifyFwaPoliceViolation({
       issue: buildCanonicalIssue({
         reasonLabel: TRADITIONAL_UNCLEARED_MIRROR_AFTER_OPEN_REASON,
         attackDetails: [
