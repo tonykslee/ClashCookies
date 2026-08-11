@@ -1109,7 +1109,7 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
     expect(result.notFollowingPlan).toEqual(["Alice"]);
   });
 
-  it("FWA LOSE Traditional plan (open final 12 hours): flags 1-star attacks and allows 2-star attacks", () => {
+  it("FWA LOSE Traditional plan (open final 12 hours): allows 0-2 star attacks", () => {
     const result = computeWarComplianceForTest({
       clanTag: "#CLAN",
       participants,
@@ -1141,8 +1141,410 @@ describe("WarEventLogService.computeWarComplianceForTest", () => {
       expectedOutcome: "LOSE",
       loseStyle: "TRADITIONAL",
     });
-    expect(result.notFollowingPlan).toEqual(["Alice"]);
+    expect(result.notFollowingPlan).toEqual([]);
   });
+
+  it("FWA LOSE Traditional plan: allows strict-window 1-star cleanup after the mirror", () => {
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(1),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars: 1,
+          trueStars: 1,
+          attackSeenAt: dateAt(2),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: allows strict-window 0-star cleanup after the mirror", () => {
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+      ],
+      attacks: [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 5,
+          stars: 2,
+          trueStars: 2,
+          attackSeenAt: dateAt(1),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars: 0,
+          trueStars: 0,
+          attackSeenAt: dateAt(2),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+      ],
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it.each([0, 1])(
+    "FWA LOSE Traditional plan: a strict-window %s-star cleanup before the mirror does not erase the obligation",
+    (cleanupStars) => {
+      const result = computeWarComplianceForTest({
+        clanTag: "#CLAN",
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 2, playerPosition: 5 },
+        ],
+        attacks: [
+          {
+            playerTag: "#OWNER",
+            playerName: "owner",
+            playerPosition: 5,
+            defenderPosition: 1,
+            stars: cleanupStars,
+            trueStars: cleanupStars,
+            attackSeenAt: dateAt(1),
+            warEndTime: dateAt(24),
+            attackOrder: 1,
+          },
+          {
+            playerTag: "#OWNER",
+            playerName: "owner",
+            playerPosition: 5,
+            defenderPosition: 5,
+            stars: 2,
+            trueStars: 2,
+            attackSeenAt: dateAt(2),
+            warEndTime: dateAt(24),
+            attackOrder: 2,
+          },
+        ],
+        matchType: "FWA",
+        expectedOutcome: "LOSE",
+        loseStyle: "TRADITIONAL",
+      });
+
+      expect(result.notFollowingPlan).toEqual([]);
+    },
+  );
+
+  it.each([
+    [2, "early non-mirror 2-star in traditional loss"],
+    [3, "any 3-star in traditional loss"],
+  ] as const)(
+    "FWA LOSE Traditional plan: strict-window %s-star non-mirror remains a violation",
+    (stars, expectedReason) => {
+      const attacks = [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars,
+          trueStars: stars,
+          attackSeenAt: dateAt(1),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+      ];
+      const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 1, playerPosition: 5 },
+        ],
+        attacks: attacks as any,
+        attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+          nonMirrorTripleMinClanStars: 150,
+          allBasesOpenHoursLeft: 12,
+        }),
+      });
+      const result = evaluation.resultsByPlayerTag.get("#0WNER");
+
+      expect(result?.hasViolation).toBe(true);
+      expect(result?.reason.label).toBe(expectedReason);
+    },
+  );
+
+  it("FWA LOSE Traditional plan: reproduces the 66-star, 9h32m Ronuso mirror cleanup scenario", () => {
+    const warEndTime = new Date("2026-08-11T18:00:00.000Z");
+    const attackSeenAt = new Date("2026-08-11T08:28:00.000Z");
+    const attacks = [
+      {
+        playerTag: "#SEED",
+        playerName: "seed",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 2,
+        trueStars: 66,
+        attackSeenAt: new Date("2026-08-11T08:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 8,
+        defenderPosition: 8,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt,
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 8,
+        defenderPosition: 14,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-08-11T08:29:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "Ronuso", playerTag: "#RONUSO", attacksUsed: 2, playerPosition: 8 },
+      ],
+      attacks: attacks as any,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: reproduces the 66-star, 9h32m arbitrary 1-star scenario", () => {
+    const warEndTime = new Date("2026-08-11T18:00:00.000Z");
+    const attacks = [
+      {
+        playerTag: "#SEED",
+        playerName: "seed",
+        playerPosition: 1,
+        defenderPosition: 1,
+        stars: 2,
+        trueStars: 66,
+        attackSeenAt: new Date("2026-08-11T08:00:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 10,
+        defenderPosition: 14,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-08-11T08:28:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 10,
+        defenderPosition: 15,
+        stars: 1,
+        trueStars: 1,
+        attackSeenAt: new Date("2026-08-11T08:29:00.000Z"),
+        warEndTime,
+        attackOrder: 3,
+      },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "Ronuso", playerTag: "#RONUSO", attacksUsed: 2, playerPosition: 10 },
+      ],
+      attacks: attacks as any,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: open-window 0-star plus 2-star attacks are compliant", () => {
+    const warEndTime = new Date("2026-08-11T18:00:00.000Z");
+    const attacks = [
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 10,
+        defenderPosition: 14,
+        stars: 0,
+        trueStars: 0,
+        attackSeenAt: new Date("2026-08-11T08:28:00.000Z"),
+        warEndTime,
+        attackOrder: 1,
+      },
+      {
+        playerTag: "#RONUSO",
+        playerName: "Ronuso",
+        playerPosition: 10,
+        defenderPosition: 15,
+        stars: 2,
+        trueStars: 2,
+        attackSeenAt: new Date("2026-08-11T08:29:00.000Z"),
+        warEndTime,
+        attackOrder: 2,
+      },
+    ];
+    const result = computeWarComplianceForTest({
+      clanTag: "#CLAN",
+      participants: [
+        { playerName: "Ronuso", playerTag: "#RONUSO", attacksUsed: 2, playerPosition: 10 },
+      ],
+      attacks: attacks as any,
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+      loseStyle: "TRADITIONAL",
+    });
+
+    expect(result.notFollowingPlan).toEqual([]);
+  });
+
+  it("FWA LOSE Traditional plan: open-window 3-star remains an ANY_3STAR violation", () => {
+    const attacks = [
+      {
+        playerTag: "#OWNER",
+        playerName: "owner",
+        playerPosition: 5,
+        defenderPosition: 1,
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-08-11T08:28:00.000Z"),
+        warEndTime: new Date("2026-08-11T18:00:00.000Z"),
+        attackOrder: 1,
+      },
+    ];
+    const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+      participants: [
+        { playerName: "owner", playerTag: "#OWNER", attacksUsed: 1, playerPosition: 5 },
+      ],
+      attacks: attacks as any,
+      attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+        nonMirrorTripleMinClanStars: 150,
+        allBasesOpenHoursLeft: 12,
+      }),
+    });
+    const result = evaluation.resultsByPlayerTag.get("#0WNER");
+
+    expect(result?.hasViolation).toBe(true);
+    expect(result?.reason.label).toBe("any 3-star in traditional loss");
+  });
+
+  it.each([0, 1, 2])(
+    "FWA LOSE Traditional plan: open-window raw %s-star with trueStars=0 is not invalid",
+    (stars) => {
+      const attacks = [
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars,
+          trueStars: 0,
+          attackSeenAt: new Date("2026-08-11T08:28:00.000Z"),
+          warEndTime: new Date("2026-08-11T18:00:00.000Z"),
+          attackOrder: 1,
+        },
+      ];
+      const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 1, playerPosition: 5 },
+        ],
+        attacks: attacks as any,
+        attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+          nonMirrorTripleMinClanStars: 150,
+          allBasesOpenHoursLeft: 12,
+        }),
+      });
+      const result = evaluation.resultsByPlayerTag.get("#0WNER");
+
+      expect(result?.hasViolation).toBe(false);
+    },
+  );
+
+  it.each([0, 1, 2])(
+    "FWA LOSE Traditional plan: legal raw %s-star still violates the 100 true-star cap when it crosses it",
+    (stars) => {
+      const attacks = [
+        {
+          playerTag: "#SEED",
+          playerName: "seed",
+          playerPosition: 1,
+          defenderPosition: 1,
+          stars: 2,
+          trueStars: 100,
+          attackSeenAt: dateAt(1),
+          warEndTime: dateAt(24),
+          attackOrder: 1,
+        },
+        {
+          playerTag: "#OWNER",
+          playerName: "owner",
+          playerPosition: 5,
+          defenderPosition: 1,
+          stars,
+          trueStars: 1,
+          attackSeenAt: dateAt(2),
+          warEndTime: dateAt(24),
+          attackOrder: 2,
+        },
+      ];
+      const evaluation = evaluateFwaTraditionalLossComplianceForTest({
+        participants: [
+          { playerName: "owner", playerTag: "#OWNER", attacksUsed: 1, playerPosition: 5 },
+        ],
+        attacks: attacks as any,
+        attackContextByAttack: buildAttackContextByAttack(attacks as any, {
+          nonMirrorTripleMinClanStars: 150,
+          allBasesOpenHoursLeft: 12,
+        }),
+      });
+      const result = evaluation.resultsByPlayerTag.get("#0WNER");
+
+      expect(result?.hasViolation).toBe(true);
+      expect(result?.reason.label).toBe("clan star cap exceeded");
+    },
+  );
 
   it("FWA LOSE Traditional plan: uses the legacy 150/12 fallback when winGateConfig is omitted", () => {
     const winParticipants = [

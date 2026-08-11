@@ -405,7 +405,7 @@ function describeExpectedPlanBehavior(input: {
   if (input.matchType === "FWA" && input.expectedOutcome === "LOSE") {
     return input.loseStyle === "TRIPLE_TOP_30"
       ? "Lose style TRIPLE_TOP_30: attack only top-30 bases and stay under the 90-star cap."
-      : "Lose style TRADITIONAL: mirror 2-star in the strict window, follow with 1-star cleanup, and stay under the 100-star cap.";
+      : "Lose style TRADITIONAL: mirror 2-star in the strict window, then use 0-1-star non-mirror cleanup; use 0-2 stars on any base in the last 12 hours, and stay under the 100-star cap.";
   }
   return "Mirror-based fallback plan applies when expected outcome is unknown.";
 }

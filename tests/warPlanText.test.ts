@@ -68,6 +68,9 @@ describe("WarEventHistoryService.buildWarPlanText", () => {
     expect(lines[0]).toContain("__**LOSE**__ vs OPPONENT_NAME");
     expect(out).toContain("1st Attack");
     expect(out).toContain("2nd Attack");
+    expect(out).toContain("2★ -> Mirror");
+    expect(out).toContain("0-1★ -> non-mirror");
+    expect(out).toContain("0-2★ -> any");
     expect(out).toContain("Last 12hrs");
     expect(out).toContain("Do NOT surpass 100");
   });

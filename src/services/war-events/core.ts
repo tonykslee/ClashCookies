@@ -704,18 +704,6 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                 }
               : null;
           }
-        } else if (stars === 0) {
-          isBreach = true;
-          hasAttackLevelViolation = true;
-          if (reasonLabel === null) {
-            reasonLabel = "invalid star count in traditional loss";
-            firstBreachContext = ctx
-              ? {
-                  starsBeforeAttack: ctx.starsBeforeAttack,
-                  timeRemaining: formatTimeRemaining(ctx.hoursRemaining),
-                }
-              : null;
-          }
         } else if (stars === 2) {
           if (!isOwnMirror && !isConsumedSubstitution) {
             isBreach = true;
@@ -744,7 +732,7 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
                 : null;
             }
           }
-        } else {
+        } else if (stars !== 0) {
           isBreach = true;
           hasAttackLevelViolation = true;
           if (reasonLabel === null) {
@@ -757,11 +745,13 @@ export function evaluateFwaTraditionalLossComplianceForTest(input: {
               : null;
           }
         }
-      } else if (stars !== 2) {
+      } else if (stars > 2) {
         isBreach = true;
         hasAttackLevelViolation = true;
         if (reasonLabel === null) {
-          reasonLabel = "invalid star count in traditional loss";
+          reasonLabel = stars === 3
+            ? "any 3-star in traditional loss"
+            : "invalid star count in traditional loss";
           firstBreachContext = ctx
             ? {
                 starsBeforeAttack: ctx.starsBeforeAttack,
