@@ -14,7 +14,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { playerCurrentService } from "../src/services/PlayerCurrentService";
+import {
+  isAuthoritativeLivePlayerCurrentSource,
+  playerCurrentService,
+} from "../src/services/PlayerCurrentService";
 import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 
 function makeCurrentRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -42,6 +45,22 @@ function makeCurrentRow(overrides: Record<string, unknown> = {}): Record<string,
     ...overrides,
   };
 }
+
+describe("isAuthoritativeLivePlayerCurrentSource", () => {
+  it.each(["live_refresh", "accounts-refresh", "activity_observe"])(
+    "accepts %s as a live observation",
+    (source) => {
+      expect(isAuthoritativeLivePlayerCurrentSource(source)).toBe(true);
+    },
+  );
+
+  it.each(["fwa_player_catalog", "todo_snapshot", "missing", null, undefined])(
+    "does not accept %s as a live observation",
+    (source) => {
+      expect(isAuthoritativeLivePlayerCurrentSource(source)).toBe(false);
+    },
+  );
+});
 
 function makeLivePlayer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -190,6 +209,64 @@ describe("PlayerCurrentService", () => {
           currentClanName: null,
           trophies: 0,
           leagueName: "Legend III",
+        }),
+      }),
+    );
+  });
+
+  it("persists external-clan and clanless results through the bounded live-tag refresh path", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({
+        playerTag: "#PYLQ0289",
+        currentClanTag: "#CLANA",
+        currentClanName: "Tracked A",
+      }),
+      makeCurrentRow({
+        playerTag: "#QGRJ2222",
+        currentClanTag: "#CLANA",
+        currentClanName: "Tracked A",
+      }),
+    ]);
+    const cocService = {
+      getPlayerRaw: vi.fn(async (tag: string) =>
+        tag === "#PYLQ0289"
+          ? makeLivePlayer({
+              tag,
+              clan: { tag: "#2QG2C08UP", name: "External X" },
+            })
+          : makeLivePlayer({ tag, clan: null }),
+      ),
+    } as any;
+
+    const result = await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags: ["#PYLQ0289", "#QGRJ2222"],
+      cocService,
+      source: "live_refresh",
+      now: new Date("2026-08-11T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      playerCount: 2,
+      successCount: 2,
+      failedPlayerTags: [],
+    });
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#PYLQ0289" },
+        create: expect.objectContaining({
+          currentClanTag: "#2QG2C08UP",
+          currentClanName: "External X",
+          lastSource: "live_refresh",
+        }),
+      }),
+    );
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#QGRJ2222" },
+        create: expect.objectContaining({
+          currentClanTag: null,
+          currentClanName: null,
+          lastSource: "live_refresh",
         }),
       }),
     );

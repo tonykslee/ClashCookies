@@ -286,4 +286,157 @@ describe("AccountRowsService", () => {
       }),
     ]);
   });
+
+  it("uses the persisted current FWA membership clan when PlayerCurrent is stale", async () => {
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [
+          "#PYLQ0289",
+          {
+            playerTag: "#PYLQ0289",
+            playerName: "Moved Alpha",
+            townHall: 16,
+            currentClanTag: "#CLANA",
+            currentClanName: "Clan A",
+            role: "member",
+            currentWeight: null,
+            lastSource: "fwa_feed",
+          },
+        ],
+      ]),
+    );
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Moved Alpha", clanTag: "#CLANA", clanName: "Clan A" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#CLANB",
+        townHall: 17,
+        weight: 210000,
+        sourceSyncedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLANA", name: "Clan A" },
+      { tag: "#CLANB", name: "Clan B" },
+    ]);
+
+    const rows = await buildAccountsRows({
+      guildId: "guild-1",
+      linkedNameByTag: new Map([["#PYLQ0289", "Moved Alpha"]]),
+      tags: ["#PYLQ0289"],
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        tag: "#PYLQ0289",
+        clanTag: "#CLANB",
+        clanName: "Clan B",
+        clanState: "known",
+        isTrackedFwaClan: true,
+        trackedClanSortOrder: 1,
+      }),
+    );
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith({
+      orderBy: { createdAt: "asc" },
+      where: { tag: { in: ["#CLANA", "#CLANB"] } },
+      select: { tag: true, name: true },
+    });
+  });
+
+  it("keeps a live-confirmed clanless PlayerCurrent row from inheriting stale PlayerActivity clan data", async () => {
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [
+          "#PYLQ0289",
+          {
+            playerTag: "#PYLQ0289",
+            playerName: "Clanless Alpha",
+            townHall: 16,
+            currentClanTag: null,
+            currentClanName: null,
+            currentWeight: null,
+            lastSource: "activity_observe",
+          },
+        ],
+      ]),
+    );
+    prismaMock.playerActivity.findMany.mockResolvedValue([
+      { tag: "#PYLQ0289", name: "Clanless Alpha", clanTag: "#CLANA", clanName: "Clan A" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLANA", name: "Clan A" },
+    ]);
+
+    const rows = await buildAccountsRows({
+      guildId: "guild-1",
+      linkedNameByTag: new Map([["#PYLQ0289", "Clanless Alpha"]]),
+      tags: ["#PYLQ0289"],
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        clanTag: null,
+        clanName: null,
+        clanState: "no_clan",
+        isTrackedFwaClan: false,
+      }),
+    );
+  });
+
+  it("uses the freshest current FWA membership row during a transient cross-clan overlap", async () => {
+    playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValue(
+      new Map([
+        [
+          "#PYLQ0289",
+          {
+            playerTag: "#PYLQ0289",
+            playerName: "Overlap Alpha",
+            townHall: 16,
+            currentClanTag: "#CLANA",
+            currentClanName: "Clan A",
+            role: "member",
+            currentWeight: null,
+            lastSource: "fwa_feed",
+          },
+        ],
+      ]),
+    );
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#CLANA",
+        townHall: 16,
+        weight: 200000,
+        sourceSyncedAt: new Date("2026-04-20T00:00:00.000Z"),
+      },
+      {
+        playerTag: "#PYLQ0289",
+        clanTag: "#CLANB",
+        townHall: 17,
+        weight: 210000,
+        sourceSyncedAt: new Date("2026-04-20T01:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLANA", name: "Clan A" },
+      { tag: "#CLANB", name: "Clan B" },
+    ]);
+
+    const rows = await buildAccountsRows({
+      guildId: "guild-1",
+      linkedNameByTag: new Map([["#PYLQ0289", "Overlap Alpha"]]),
+      tags: ["#PYLQ0289"],
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        clanTag: "#CLANB",
+        clanName: "Clan B",
+        weight: 210000,
+        weightSource: "FwaClanMemberCurrent",
+      }),
+    );
+  });
 });

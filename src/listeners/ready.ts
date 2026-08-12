@@ -81,6 +81,10 @@ import {
 } from "../services/CoCRequestQueueService";
 import { PollCycleGuardService } from "../services/PollCycleGuardService";
 import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
+import {
+  linkedPlayerCurrentReconcileService,
+  type LinkedPlayerCurrentReconcileResult,
+} from "../services/LinkedPlayerCurrentReconcileService";
 import { runWithCoCQueueContext } from "../services/CoCQueueContext";
 import { dozzleLog } from "../helper/dozzleLogger";
 import {
@@ -630,6 +634,10 @@ export default (client: Client, cocService: CoCService): void => {
 
     const observeTrackedClans = async (activityObserveCycleId: string, scheduledAtMs: number): Promise<{
       trackedClanCount: number;
+      configuredTrackedClanTags: string[];
+      successfullyObservedTrackedClanTags: string[];
+      observedTrackedClans: Array<{ clanTag: string; memberTags: string[] }>;
+      failedTrackedClanTags: string[];
       observedTags: string[];
       observedPlayerCurrent: Array<{
         playerTag: string;
@@ -660,6 +668,10 @@ export default (client: Client, cocService: CoCService): void => {
         );
         return {
           trackedClanCount: 0,
+          configuredTrackedClanTags: [],
+          successfullyObservedTrackedClanTags: [],
+          observedTrackedClans: [],
+          failedTrackedClanTags: [],
           observedTags: [],
           observedPlayerCurrent: [],
           observedFwaClans: [],
@@ -667,6 +679,9 @@ export default (client: Client, cocService: CoCService): void => {
       }
 
       const observedMemberTags = new Set<string>();
+      const successfullyObservedTrackedClanTags: string[] = [];
+      const observedTrackedClans: Array<{ clanTag: string; memberTags: string[] }> = [];
+      const failedTrackedClanTags: string[] = [];
       const observedPlayerCurrentByTag = new Map<
         string,
         { clanTag: string | null; townHall: number | null }
@@ -690,6 +705,11 @@ export default (client: Client, cocService: CoCService): void => {
           for (const memberTag of observedClan.memberTags) {
             observedMemberTags.add(memberTag);
           }
+          successfullyObservedTrackedClanTags.push(trackedClan.tag);
+          observedTrackedClans.push({
+            clanTag: trackedClan.tag,
+            memberTags: observedClan.memberTags,
+          });
           for (const entry of observedClan.observedPlayerCurrent ?? []) {
             const playerTag = String(entry?.playerTag ?? "").trim();
             if (!playerTag || observedPlayerCurrentByTag.has(playerTag)) {
@@ -709,6 +729,7 @@ export default (client: Client, cocService: CoCService): void => {
             members: observedClan.members,
           });
         } catch (err) {
+          failedTrackedClanTags.push(trackedClan.tag);
           console.error(
             `observeClan failed for ${trackedClan.tag}: ${formatError(err)}`
           );
@@ -717,6 +738,10 @@ export default (client: Client, cocService: CoCService): void => {
 
       return {
         trackedClanCount: dbTracked.length,
+        configuredTrackedClanTags: trackedTags,
+        successfullyObservedTrackedClanTags,
+        observedTrackedClans,
+        failedTrackedClanTags,
         observedTags: [...observedMemberTags],
         observedPlayerCurrent: [...observedPlayerCurrentByTag.entries()].map(
           ([playerTag, value]) => ({
@@ -753,6 +778,18 @@ export default (client: Client, cocService: CoCService): void => {
       const observedCycleStartedAtMs = Date.now();
       let observedClanCount = 0;
       let liveClanFetchCount = 0;
+      let linkedPlayerCurrentReconcile: LinkedPlayerCurrentReconcileResult = {
+        linkedPlayersConsidered: 0,
+        alreadyObservedTrackedPlayersSkipped: 0,
+        departureCandidates: 0,
+        staleOutsideOrClanlessCandidates: 0,
+        refreshAttempted: 0,
+        refreshSucceeded: 0,
+        refreshFailed: 0,
+        deferredByBatchBound: 0,
+        unknownMembershipCandidates: 0,
+        failedTrackedClanTags: [],
+      };
       await runWithCoCQueueContext(
         {
           priority: "background",
@@ -772,6 +809,20 @@ export default (client: Client, cocService: CoCService): void => {
               const observed = await observeTrackedClans(activityObserveCycleId, scheduledAtMs);
               observedClanCount = observed.trackedClanCount;
               liveClanFetchCount = observed.observedFwaClans.length;
+              try {
+                linkedPlayerCurrentReconcile = await linkedPlayerCurrentReconcileService.reconcile({
+                  configuredTrackedClanTags: observed.configuredTrackedClanTags,
+                  successfullyObservedTrackedClanTags: observed.successfullyObservedTrackedClanTags,
+                  observedTrackedClans: observed.observedTrackedClans,
+                  failedTrackedClanTags: observed.failedTrackedClanTags,
+                  cocService,
+                  now: new Date(scheduledAtMs),
+                });
+              } catch (err) {
+                console.error(
+                  `[activity-observe] event=linked_player_current_reconcile_failed error=${formatError(err)}`,
+                );
+              }
               try {
                 const backfill = await backfillMissingDiscordUsernamesForClanMembers({
                   memberTagsInOrder: observed.observedTags,
@@ -838,7 +889,7 @@ export default (client: Client, cocService: CoCService): void => {
         },
       );
       dozzleLog.info(
-        `[activity-observe] event=activity_observe_cycle_summary source=activity_observe_cycle activity_observe_cycle_id=${activityObserveCycleId} scheduled_at_ms=${scheduledAtMs} observed_clan_count=${observedClanCount} live_clan_fetch_count=${liveClanFetchCount} duration_ms=${Date.now() - observedCycleStartedAtMs}`,
+        `[activity-observe] event=activity_observe_cycle_summary source=activity_observe_cycle activity_observe_cycle_id=${activityObserveCycleId} scheduled_at_ms=${scheduledAtMs} observed_clan_count=${observedClanCount} live_clan_fetch_count=${liveClanFetchCount} linked_players_considered=${linkedPlayerCurrentReconcile.linkedPlayersConsidered} linked_players_already_observed_skipped=${linkedPlayerCurrentReconcile.alreadyObservedTrackedPlayersSkipped} linked_player_departure_candidates=${linkedPlayerCurrentReconcile.departureCandidates} linked_player_unknown_membership_candidates=${linkedPlayerCurrentReconcile.unknownMembershipCandidates} linked_player_stale_outside_or_clanless_candidates=${linkedPlayerCurrentReconcile.staleOutsideOrClanlessCandidates} linked_player_refresh_attempted=${linkedPlayerCurrentReconcile.refreshAttempted} linked_player_refresh_succeeded=${linkedPlayerCurrentReconcile.refreshSucceeded} linked_player_refresh_failed=${linkedPlayerCurrentReconcile.refreshFailed} linked_player_refresh_deferred=${linkedPlayerCurrentReconcile.deferredByBatchBound} linked_player_failed_clan_count=${linkedPlayerCurrentReconcile.failedTrackedClanTags.length} duration_ms=${Date.now() - observedCycleStartedAtMs}`,
       );
     };
 
