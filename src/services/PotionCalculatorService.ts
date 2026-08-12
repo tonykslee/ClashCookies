@@ -24,7 +24,11 @@ export type PotionCalculationResult =
       numPots: number;
       originalTimeLeftSeconds: number;
       originalTimeLeftDisplay: string;
+      /** Newly added potion duration; active boost time is exposed separately when supplied. */
       boostWindowSeconds: number;
+      boostRemainingSeconds?: number;
+      boostRemainingDisplay?: string;
+      effectiveBoostWindowSeconds?: number;
       completionDurationSeconds: number;
       completionDurationDisplay: string;
       completionAt: Date;
@@ -41,6 +45,10 @@ export const POTION_TIME_LEFT_INVALID_MESSAGE =
 /** Purpose: surface the validation hint for malformed potion counts. */
 export const POTION_NUM_POTS_INVALID_MESSAGE =
   "Invalid num-pots. Use an integer between 1 and 100.";
+
+/** Purpose: surface the validation hint for malformed active boost time. */
+export const POTION_BOOST_REMAINING_INVALID_MESSAGE =
+  "Invalid boost-remaining. Use a positive duration like 3d12h45m, 12h30m, or 45m.";
 
 const MAX_SAFE_SECONDS = BigInt(Number.MAX_SAFE_INTEGER);
 const MAX_DATE_MS = 8_640_000_000_000_000;
@@ -75,10 +83,13 @@ export function getPotionConfig(type: PotionType): PotionConfig {
 }
 
 /** Purpose: parse a compact or spaced duration string into whole seconds. */
-export function parsePotionDuration(input: string): PotionDurationParseResult {
+export function parsePotionDuration(
+  input: string,
+  invalidMessage = POTION_TIME_LEFT_INVALID_MESSAGE,
+): PotionDurationParseResult {
   const normalized = String(input ?? "").trim().toLowerCase();
   if (!normalized) {
-    return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+    return { kind: "invalid", message: invalidMessage };
   }
 
   let totalSeconds = 0n;
@@ -90,14 +101,14 @@ export function parsePotionDuration(input: string): PotionDurationParseResult {
     DURATION_TOKEN_RE.lastIndex = cursor;
     const match = DURATION_TOKEN_RE.exec(normalized);
     if (!match || match.index !== cursor) {
-      return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+      return { kind: "invalid", message: invalidMessage };
     }
 
     const amountText = match[1] ?? "";
     const unit = (match[2] ?? "") as "d" | "h" | "m";
     const unitRank = unit === "d" ? 0 : unit === "h" ? 1 : 2;
     if (unitRank <= lastUnitRank) {
-      return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+      return { kind: "invalid", message: invalidMessage };
     }
     lastUnitRank = unitRank;
 
@@ -105,13 +116,13 @@ export function parsePotionDuration(input: string): PotionDurationParseResult {
     try {
       amount = BigInt(amountText);
     } catch {
-      return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+      return { kind: "invalid", message: invalidMessage };
     }
 
     const unitSeconds = unit === "d" ? 86_400n : unit === "h" ? 3_600n : 60n;
     totalSeconds += amount * unitSeconds;
     if (totalSeconds > MAX_SAFE_SECONDS) {
-      return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+      return { kind: "invalid", message: invalidMessage };
     }
 
     tokenCount += 1;
@@ -119,7 +130,7 @@ export function parsePotionDuration(input: string): PotionDurationParseResult {
   }
 
   if (tokenCount <= 0 || totalSeconds <= 0n) {
-    return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
+    return { kind: "invalid", message: invalidMessage };
   }
 
   return { kind: "valid", totalSeconds: Number(totalSeconds) };
@@ -151,6 +162,7 @@ export function calculatePotionCompletion(input: {
   type: PotionType;
   timeLeft: string;
   numPots: number;
+  boostRemaining?: string | null;
   now: Date;
 }): PotionCalculationResult {
   const config = getPotionConfig(input.type);
@@ -168,13 +180,35 @@ export function calculatePotionCompletion(input: {
     return parsed;
   }
 
+  const boostRemainingInput = input.boostRemaining;
+  let boostRemainingSeconds: number | undefined;
+  if (boostRemainingInput !== undefined && boostRemainingInput !== null) {
+    const boostRemaining = parsePotionDuration(
+      boostRemainingInput,
+      POTION_BOOST_REMAINING_INVALID_MESSAGE,
+    );
+    if (boostRemaining.kind === "invalid") {
+      return boostRemaining;
+    }
+    boostRemainingSeconds = boostRemaining.totalSeconds;
+  }
+
   const originalTimeLeftSeconds = parsed.totalSeconds;
   const boostWindowSeconds = input.numPots * config.boostSecondsPerPotion;
-  const boostedWorkCapacity = boostWindowSeconds * config.speedMultiplier;
+  const effectiveBoostWindowSeconds =
+    boostWindowSeconds + (boostRemainingSeconds ?? 0);
+  if (!Number.isSafeInteger(effectiveBoostWindowSeconds)) {
+    return {
+      kind: "invalid",
+      message: POTION_BOOST_REMAINING_INVALID_MESSAGE,
+    };
+  }
+  const boostedWorkCapacity = effectiveBoostWindowSeconds * config.speedMultiplier;
   const completionDurationSeconds =
     originalTimeLeftSeconds <= boostedWorkCapacity
       ? Math.ceil(originalTimeLeftSeconds / config.speedMultiplier)
-      : boostWindowSeconds + (originalTimeLeftSeconds - boostedWorkCapacity);
+      : effectiveBoostWindowSeconds +
+        (originalTimeLeftSeconds - boostedWorkCapacity);
   const completionAtMs = nowMs + completionDurationSeconds * 1000;
   if (!Number.isFinite(completionAtMs) || Math.abs(completionAtMs) > MAX_DATE_MS) {
     return { kind: "invalid", message: POTION_TIME_LEFT_INVALID_MESSAGE };
@@ -195,6 +229,13 @@ export function calculatePotionCompletion(input: {
     originalTimeLeftSeconds,
     originalTimeLeftDisplay: formatPotionDuration(originalTimeLeftSeconds),
     boostWindowSeconds,
+    ...(boostRemainingSeconds === undefined
+      ? {}
+      : {
+          boostRemainingSeconds,
+          boostRemainingDisplay: formatPotionDuration(boostRemainingSeconds),
+          effectiveBoostWindowSeconds,
+        }),
     completionDurationSeconds,
     completionDurationDisplay: formatPotionDuration(completionDurationSeconds),
     completionAt,

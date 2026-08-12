@@ -18,7 +18,7 @@ import {
 function buildPotionResultContent(result: Extract<PotionCalculationResult, { kind: "valid" }>): string {
   const potionLabel = result.numPots === 1 ? "potion" : "potions";
   const boostWindowDisplay = formatPotionDuration(result.boostWindowSeconds);
-  return [
+  const content = [
     "**Potion Calculator**",
     `Type: **${result.typeLabel}**`,
     `Original time left: **${result.originalTimeLeftDisplay}**`,
@@ -27,7 +27,21 @@ function buildPotionResultContent(result: Extract<PotionCalculationResult, { kin
     `Completion time: <t:${result.completionUnixSeconds}:F> (<t:${result.completionUnixSeconds}:R>)`,
     `Time saved: **${result.timeSavedDisplay}**`,
     "Assumes all selected potions are activated immediately.",
-  ].join("\n");
+  ];
+
+  if (result.boostRemainingSeconds !== undefined && result.effectiveBoostWindowSeconds !== undefined) {
+    content.splice(
+      4,
+      0,
+      `Current boost remaining: **${result.boostRemainingDisplay ?? formatPotionDuration(result.boostRemainingSeconds)}**`,
+      `Total boosted window: **${formatPotionDuration(result.effectiveBoostWindowSeconds)}**`,
+    );
+    content.push(
+      "Approximation: in-game time-left decreases rapidly while boosted, so the estimate may differ slightly depending on when these values were read/submitted.",
+    );
+  }
+
+  return content.join("\n");
 }
 
 /** Purpose: normalize the potion type option into one of the fixed calculator keys. */
@@ -74,6 +88,12 @@ export const Potion: Command = {
           minValue: 1,
           maxValue: 100,
         },
+        {
+          name: "boost-remaining",
+          description: "Real-world time remaining on an active boost",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
       ],
     },
   ],
@@ -103,11 +123,13 @@ export const Potion: Command = {
 
       const timeLeft = interaction.options.getString("time-left", true);
       const numPots = interaction.options.getInteger("num-pots", true);
+      const boostRemaining = interaction.options.getString("boost-remaining");
       const now = new Date();
       const result = calculatePotionCompletion({
         type: potionType,
         timeLeft,
         numPots,
+        boostRemaining,
         now,
       });
 

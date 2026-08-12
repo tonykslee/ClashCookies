@@ -4,6 +4,7 @@ import {
   formatPotionDuration,
   getPotionConfig,
   parsePotionDuration,
+  POTION_BOOST_REMAINING_INVALID_MESSAGE,
   POTION_NUM_POTS_INVALID_MESSAGE,
   POTION_TIME_LEFT_INVALID_MESSAGE,
 } from "../src/services/PotionCalculatorService";
@@ -104,6 +105,110 @@ describe("PotionCalculatorService", () => {
     }
   });
 
+  it("preserves the existing result shape and calculation when boost-remaining is omitted", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "54h",
+      numPots: 2,
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      boostWindowSeconds: 7_200,
+      completionDurationSeconds: 129_600,
+      completionDurationDisplay: "1d 12h",
+    });
+    if (result.kind === "valid") {
+      expect(result).not.toHaveProperty("boostRemainingSeconds");
+      expect(result).not.toHaveProperty("effectiveBoostWindowSeconds");
+    }
+  });
+
+  it("combines an active boost with newly added potions into one effective window", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "30h",
+      numPots: 2,
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      boostWindowSeconds: 7_200,
+      boostRemainingSeconds: 2_220,
+      boostRemainingDisplay: "37m",
+      effectiveBoostWindowSeconds: 9_420,
+      completionDurationSeconds: 23_220,
+    });
+  });
+
+  it("finishes during the already-active portion of the boost", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "5h",
+      numPots: 2,
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 1_800,
+      effectiveBoostWindowSeconds: 9_420,
+    });
+  });
+
+  it("finishes during the newly-added potion portion of the boost", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "20h",
+      numPots: 2,
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 7_200,
+      effectiveBoostWindowSeconds: 9_420,
+    });
+  });
+
+  it("survives the combined boost and completes unboosted afterward", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "30h",
+      numPots: 2,
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 23_220,
+      completionDurationDisplay: "6h 27m",
+    });
+  });
+
+  it("rejects malformed and zero boost-remaining with its dedicated validation message", () => {
+    for (const boostRemaining of ["not-a-duration", "0m"]) {
+      const result = calculatePotionCompletion({
+        type: "builder",
+        timeLeft: "1h",
+        numPots: 1,
+        boostRemaining,
+        now: new Date("2026-07-01T12:00:00.000Z"),
+      });
+
+      expect(result).toEqual({
+        kind: "invalid",
+        message: POTION_BOOST_REMAINING_INVALID_MESSAGE,
+      });
+    }
+  });
+
   it("uses the research and pet 24x/1h configuration consistently", () => {
     expect(getPotionConfig("pet")).toMatchObject({
       label: "Pet Potion",
@@ -170,6 +275,25 @@ describe("PotionCalculatorService", () => {
       expect(result.completionDurationDisplay).toBe("2h 30m");
       expect(result.timeSavedDisplay).toBe("4h 30m");
     }
+  });
+
+  it("keeps clock tower at 10x with 30 minutes per new potion and accepts arbitrary active time", () => {
+    const result = calculatePotionCompletion({
+      type: "clocktower",
+      timeLeft: "20h",
+      numPots: 1,
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      speedMultiplier: 10,
+      boostSecondsPerPotion: 1_800,
+      boostRemainingSeconds: 2_220,
+      effectiveBoostWindowSeconds: 4_020,
+      completionDurationSeconds: 35_820,
+    });
   });
 
   it("finishes exactly at the boost boundary for builder 10h with one potion", () => {
