@@ -24,8 +24,9 @@ npm start
 - `CLASHKING_API_TOKEN` - bearer token for private ClashKing API (if required).
 
 Behavior:
-- `/accounts` resolves linked accounts from persisted `PlayerLink` and local player activity only.
+- `/accounts` renders from persisted `PlayerLink`, `PlayerCurrent`, FWA current-membership, and activity state; opening it remains DB-only.
 - Activity observe loop checks unresolved tracked-member links via ClashKing at most once every 6 hours and caches matches in `PlayerLink`.
+- Each active 30-minute activity-observe cycle performs bounded linked-player `PlayerCurrent` reconciliation: detected tracked-clan departures are refreshed immediately, while stale external, confirmed-clanless, and unknown-membership rows use the default 60-minute freshness threshold. It allows at most 100 extra linked-player refreshes per cycle and does not fetch current tracked members twice.
 
 ## Optional War Event Poll Setting
 - `WAR_EVENT_LOG_POLL_INTERVAL_MINUTES` - interval for war-state event listener polling (default: `15` minutes).

@@ -14,7 +14,10 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { playerCurrentService } from "../src/services/PlayerCurrentService";
+import {
+  isAuthoritativeLivePlayerCurrentSource,
+  playerCurrentService,
+} from "../src/services/PlayerCurrentService";
 import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 
 function makeCurrentRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -42,6 +45,22 @@ function makeCurrentRow(overrides: Record<string, unknown> = {}): Record<string,
     ...overrides,
   };
 }
+
+describe("isAuthoritativeLivePlayerCurrentSource", () => {
+  it.each(["live_refresh", "accounts-refresh", "activity_observe"])(
+    "accepts %s as a live observation",
+    (source) => {
+      expect(isAuthoritativeLivePlayerCurrentSource(source)).toBe(true);
+    },
+  );
+
+  it.each(["fwa_player_catalog", "todo_snapshot", "missing", null, undefined])(
+    "does not accept %s as a live observation",
+    (source) => {
+      expect(isAuthoritativeLivePlayerCurrentSource(source)).toBe(false);
+    },
+  );
+});
 
 function makeLivePlayer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

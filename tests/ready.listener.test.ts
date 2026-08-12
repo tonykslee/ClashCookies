@@ -76,6 +76,7 @@ const linkedPlayerCurrentReconcileMock = vi.hoisted(() => ({
     refreshSucceeded: 0,
     refreshFailed: 0,
     deferredByBatchBound: 0,
+    unknownMembershipCandidates: 0,
     failedTrackedClanTags: [],
   }),
 }));

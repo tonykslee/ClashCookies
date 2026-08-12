@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import {
+  isAuthoritativeLivePlayerCurrentSource,
   playerCurrentService,
   type PlayerCurrentLike,
 } from "./PlayerCurrentService";
@@ -35,6 +36,7 @@ export type LinkedPlayerCurrentReconcileResult = {
   refreshSucceeded: number;
   refreshFailed: number;
   deferredByBatchBound: number;
+  unknownMembershipCandidates: number;
   failedTrackedClanTags: string[];
 };
 
@@ -47,11 +49,6 @@ type Candidate = {
 function normalizePositiveDuration(input: unknown, fallback: number): number {
   const parsed = Math.trunc(Number(input));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function isConfirmedClanless(record: PlayerCurrentLike): boolean {
-  const source = String(record.lastSource ?? "").trim().toLowerCase();
-  return source === "live_refresh" || source === "accounts-refresh";
 }
 
 function isStale(record: PlayerCurrentLike | null, now: Date, freshnessMs: number): boolean {
@@ -77,13 +74,14 @@ function emptyResult(failedTrackedClanTags: string[] = []): LinkedPlayerCurrentR
     refreshSucceeded: 0,
     refreshFailed: 0,
     deferredByBatchBound: 0,
+    unknownMembershipCandidates: 0,
     failedTrackedClanTags,
   };
 }
 
 function logResult(result: LinkedPlayerCurrentReconcileResult): void {
   dozzleLog.info(
-    `[activity-observe] event=linked_player_current_reconcile linked_players_considered=${result.linkedPlayersConsidered} already_observed_tracked_players_skipped=${result.alreadyObservedTrackedPlayersSkipped} departure_candidates=${result.departureCandidates} stale_outside_or_clanless_candidates=${result.staleOutsideOrClanlessCandidates} refresh_attempted=${result.refreshAttempted} refresh_succeeded=${result.refreshSucceeded} refresh_failed=${result.refreshFailed} deferred_by_batch_bound=${result.deferredByBatchBound} failed_tracked_clan_tags=${result.failedTrackedClanTags.join(",") || "none"}`,
+    `[activity-observe] event=linked_player_current_reconcile linked_players_considered=${result.linkedPlayersConsidered} already_observed_tracked_players_skipped=${result.alreadyObservedTrackedPlayersSkipped} departure_candidates=${result.departureCandidates} unknown_membership_candidates=${result.unknownMembershipCandidates} stale_outside_or_clanless_candidates=${result.staleOutsideOrClanlessCandidates} refresh_attempted=${result.refreshAttempted} refresh_succeeded=${result.refreshSucceeded} refresh_failed=${result.refreshFailed} deferred_by_batch_bound=${result.deferredByBatchBound} failed_tracked_clan_tags=${result.failedTrackedClanTags.join(",") || "none"}`,
   );
 }
 
@@ -151,6 +149,7 @@ export class LinkedPlayerCurrentReconcileService {
     let alreadyObservedTrackedPlayersSkipped = 0;
     let departureCandidates = 0;
     let staleOutsideOrClanlessCandidates = 0;
+    let unknownMembershipCandidates = 0;
 
     for (const playerTag of linkedTags) {
       if (observedMemberTags.has(playerTag)) {
@@ -174,20 +173,33 @@ export class LinkedPlayerCurrentReconcileService {
       }
 
       const isMissingPlayerCurrent = !current;
+      const isUnknownMembership = Boolean(
+        current &&
+        !currentClanTag &&
+        !isAuthoritativeLivePlayerCurrentSource(current.lastSource),
+      );
       const isOutsideTrackedClans = Boolean(
         current && currentClanTag && !configuredTrackedClanTags.has(currentClanTag),
       );
-      const isConfirmedClanlessCandidate = Boolean(current && !currentClanTag && isConfirmedClanless(current));
+      const isConfirmedClanlessCandidate = Boolean(
+        current &&
+        !currentClanTag &&
+        isAuthoritativeLivePlayerCurrentSource(current.lastSource),
+      );
       if (
-        (isMissingPlayerCurrent || isOutsideTrackedClans || isConfirmedClanlessCandidate) &&
+        (isMissingPlayerCurrent || isUnknownMembership || isOutsideTrackedClans || isConfirmedClanlessCandidate) &&
         isStale(current, now, freshnessMs)
       ) {
         candidates.push({
           playerTag,
-          priority: current ? 2 : 1,
+          priority: isMissingPlayerCurrent || isUnknownMembership ? 1 : 2,
           lastFetchedAtMs: current?.lastFetchedAt?.getTime() ?? Number.NEGATIVE_INFINITY,
         });
-        if (current) staleOutsideOrClanlessCandidates += 1;
+        if (isUnknownMembership) {
+          unknownMembershipCandidates += 1;
+        } else if (current) {
+          staleOutsideOrClanlessCandidates += 1;
+        }
       }
     }
 
@@ -217,6 +229,7 @@ export class LinkedPlayerCurrentReconcileService {
       refreshSucceeded,
       refreshFailed,
       deferredByBatchBound,
+      unknownMembershipCandidates,
       failedTrackedClanTags,
     };
     logResult(result);

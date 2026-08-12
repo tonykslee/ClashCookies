@@ -22,6 +22,10 @@ vi.mock("../src/helper/dozzleLogger", () => ({
 }));
 
 vi.mock("../src/services/PlayerCurrentService", () => ({
+  isAuthoritativeLivePlayerCurrentSource: (source: unknown) =>
+    ["live_refresh", "accounts-refresh", "activity_observe"].includes(
+      String(source ?? "").trim().toLowerCase(),
+    ),
   playerCurrentService: playerCurrentServiceMock,
 }));
 
@@ -207,6 +211,50 @@ describe("LinkedPlayerCurrentReconcileService", () => {
     expect(playerCurrentServiceMock.refreshCurrentPlayersFromLiveTags).toHaveBeenCalledWith(
       expect.objectContaining({ playerTags: [missingTag] }),
     );
+  });
+
+  it("refreshes stale existing unknown-membership rows", async () => {
+    const unknownTag = "#PLAYERUNKNOWN";
+    configureLinkedRows([
+      {
+        playerTag: unknownTag,
+        current: makeCurrent({
+          playerTag: unknownTag,
+          currentClanTag: null,
+          lastSource: "fwa_player_catalog",
+          lastFetchedAt: new Date("2026-08-11T10:00:00.000Z"),
+        }),
+      },
+    ]);
+
+    const result = await new LinkedPlayerCurrentReconcileService().reconcile(baseInput());
+
+    expect(result.unknownMembershipCandidates).toBe(1);
+    expect(result.staleOutsideOrClanlessCandidates).toBe(0);
+    expect(playerCurrentServiceMock.refreshCurrentPlayersFromLiveTags).toHaveBeenCalledWith(
+      expect.objectContaining({ playerTags: [unknownTag] }),
+    );
+  });
+
+  it("does not refresh a recently fetched unknown-membership row", async () => {
+    const unknownTag = "#PLAYERUNKNOWNFRESH";
+    configureLinkedRows([
+      {
+        playerTag: unknownTag,
+        current: makeCurrent({
+          playerTag: unknownTag,
+          currentClanTag: null,
+          lastSource: "todo_snapshot",
+          lastFetchedAt: new Date("2026-08-11T11:30:00.000Z"),
+        }),
+      },
+    ]);
+
+    const result = await new LinkedPlayerCurrentReconcileService().reconcile(baseInput());
+
+    expect(result.unknownMembershipCandidates).toBe(0);
+    expect(result.refreshAttempted).toBe(0);
+    expect(playerCurrentServiceMock.refreshCurrentPlayersFromLiveTags).not.toHaveBeenCalled();
   });
 
   it("does not re-fetch linked players already observed in a tracked roster", async () => {

@@ -357,7 +357,7 @@ describe("AccountRowsService", () => {
             currentClanTag: null,
             currentClanName: null,
             currentWeight: null,
-            lastSource: "live_refresh",
+            lastSource: "activity_observe",
           },
         ],
       ]),

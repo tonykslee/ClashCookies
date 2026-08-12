@@ -787,6 +787,7 @@ export default (client: Client, cocService: CoCService): void => {
         refreshSucceeded: 0,
         refreshFailed: 0,
         deferredByBatchBound: 0,
+        unknownMembershipCandidates: 0,
         failedTrackedClanTags: [],
       };
       await runWithCoCQueueContext(
@@ -888,7 +889,7 @@ export default (client: Client, cocService: CoCService): void => {
         },
       );
       dozzleLog.info(
-        `[activity-observe] event=activity_observe_cycle_summary source=activity_observe_cycle activity_observe_cycle_id=${activityObserveCycleId} scheduled_at_ms=${scheduledAtMs} observed_clan_count=${observedClanCount} live_clan_fetch_count=${liveClanFetchCount} linked_players_considered=${linkedPlayerCurrentReconcile.linkedPlayersConsidered} linked_players_already_observed_skipped=${linkedPlayerCurrentReconcile.alreadyObservedTrackedPlayersSkipped} linked_player_departure_candidates=${linkedPlayerCurrentReconcile.departureCandidates} linked_player_stale_outside_or_clanless_candidates=${linkedPlayerCurrentReconcile.staleOutsideOrClanlessCandidates} linked_player_refresh_attempted=${linkedPlayerCurrentReconcile.refreshAttempted} linked_player_refresh_succeeded=${linkedPlayerCurrentReconcile.refreshSucceeded} linked_player_refresh_failed=${linkedPlayerCurrentReconcile.refreshFailed} linked_player_refresh_deferred=${linkedPlayerCurrentReconcile.deferredByBatchBound} linked_player_failed_clan_count=${linkedPlayerCurrentReconcile.failedTrackedClanTags.length} duration_ms=${Date.now() - observedCycleStartedAtMs}`,
+        `[activity-observe] event=activity_observe_cycle_summary source=activity_observe_cycle activity_observe_cycle_id=${activityObserveCycleId} scheduled_at_ms=${scheduledAtMs} observed_clan_count=${observedClanCount} live_clan_fetch_count=${liveClanFetchCount} linked_players_considered=${linkedPlayerCurrentReconcile.linkedPlayersConsidered} linked_players_already_observed_skipped=${linkedPlayerCurrentReconcile.alreadyObservedTrackedPlayersSkipped} linked_player_departure_candidates=${linkedPlayerCurrentReconcile.departureCandidates} linked_player_unknown_membership_candidates=${linkedPlayerCurrentReconcile.unknownMembershipCandidates} linked_player_stale_outside_or_clanless_candidates=${linkedPlayerCurrentReconcile.staleOutsideOrClanlessCandidates} linked_player_refresh_attempted=${linkedPlayerCurrentReconcile.refreshAttempted} linked_player_refresh_succeeded=${linkedPlayerCurrentReconcile.refreshSucceeded} linked_player_refresh_failed=${linkedPlayerCurrentReconcile.refreshFailed} linked_player_refresh_deferred=${linkedPlayerCurrentReconcile.deferredByBatchBound} linked_player_failed_clan_count=${linkedPlayerCurrentReconcile.failedTrackedClanTags.length} duration_ms=${Date.now() - observedCycleStartedAtMs}`,
       );
     };
 
