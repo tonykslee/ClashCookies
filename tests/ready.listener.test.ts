@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const autoRoleStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
-const observeLoopStart = vi.hoisted(() => vi.fn(() => new Promise<void>(() => undefined)));
+const observeLoopArgs = vi.hoisted(() => ({ current: null as any }));
+const observeLoopStart = vi.hoisted(() =>
+  vi.fn((args: any) => {
+    observeLoopArgs.current = args;
+    return { started: true };
+  }),
+);
 const reminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const userActivityReminderStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaFeedStart = vi.hoisted(() => vi.fn());
@@ -52,6 +58,28 @@ const prismaMock = vi.hoisted(() => ({
 const isActivePollingModeMock = vi.hoisted(() => vi.fn(() => true));
 const isMirrorPollingModeMock = vi.hoisted(() => vi.fn(() => false));
 const resolvePollingModeMock = vi.hoisted(() => vi.fn(() => "active"));
+const activityObserveClanDetailedMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    clanTag: "#CLAN",
+    clanName: "Clan",
+    memberTags: [],
+    members: [],
+  }),
+);
+const linkedPlayerCurrentReconcileMock = vi.hoisted(() => ({
+  reconcile: vi.fn().mockResolvedValue({
+    linkedPlayersConsidered: 0,
+    alreadyObservedTrackedPlayersSkipped: 0,
+    departureCandidates: 0,
+    staleOutsideOrClanlessCandidates: 0,
+    refreshAttempted: 0,
+    refreshSucceeded: 0,
+    refreshFailed: 0,
+    deferredByBatchBound: 0,
+    unknownMembershipCandidates: 0,
+    failedTrackedClanTags: [],
+  }),
+}));
 
 vi.mock("../src/Commands", () => ({
   Commands: [],
@@ -153,13 +181,12 @@ vi.mock("../src/services/SettingsService", () => ({
 
 vi.mock("../src/services/ActivityService", () => ({
   ActivityService: vi.fn().mockImplementation(() => ({
-    observeClanDetailed: vi.fn().mockResolvedValue({
-      clanTag: "#CLAN",
-      clanName: "Clan",
-      memberTags: [],
-      members: [],
-    }),
+    observeClanDetailed: activityObserveClanDetailedMock,
   })),
+}));
+
+vi.mock("../src/services/LinkedPlayerCurrentReconcileService", () => ({
+  linkedPlayerCurrentReconcileService: linkedPlayerCurrentReconcileMock,
 }));
 
 vi.mock("../src/services/WarEventLogService", () => ({
@@ -364,6 +391,14 @@ import ready from "../src/listeners/ready";
 describe("ready listener startup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    observeLoopArgs.current = null;
+    activityObserveClanDetailedMock.mockReset();
+    activityObserveClanDetailedMock.mockResolvedValue({
+      clanTag: "#CLAN",
+      clanName: "Clan",
+      memberTags: [],
+      members: [],
+    });
     isActivePollingModeMock.mockReturnValue(true);
     resolvePollingModeMock.mockReturnValue("active");
     statusServiceMock.markStarted.mockResolvedValue({});
@@ -374,6 +409,7 @@ describe("ready listener startup", () => {
     botStartupStatusService.markPhase("ready_start", { test: true });
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -553,6 +589,35 @@ describe("ready listener startup", () => {
         metadata: expect.objectContaining({
           started: true,
         }),
+      }),
+    );
+  });
+
+  it("passes successful and failed tracked-clan coverage to linked-player reconciliation", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLANA", name: "Clan A", logChannelId: null },
+      { tag: "#CLANB", name: "Clan B", logChannelId: null },
+    ]);
+    activityObserveClanDetailedMock
+      .mockResolvedValueOnce({
+        clanTag: "#CLANA",
+        clanName: "Clan A",
+        memberTags: ["#PYLQ0289"],
+        members: [{ playerTag: "#PYLQ0289", playerName: "Alpha" }],
+        observedPlayerCurrent: [],
+      })
+      .mockRejectedValueOnce(new Error("Clan B unavailable"));
+
+    await runStartup();
+    await observeLoopArgs.current.runObservedCycle(123);
+
+    expect(linkedPlayerCurrentReconcileMock.reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuredTrackedClanTags: ["#CLANA", "#CLANB"],
+        successfullyObservedTrackedClanTags: ["#CLANA"],
+        observedTrackedClans: [{ clanTag: "#CLANA", memberTags: ["#PYLQ0289"] }],
+        failedTrackedClanTags: ["#CLANB"],
+        now: new Date(123),
       }),
     );
   });

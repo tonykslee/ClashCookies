@@ -159,6 +159,7 @@ Cadence defaults and cost controls:
 - `Clans.json`: every 6 hours
 - tracked-clan `Members.json`: every 15 minutes (minimum source freshness respected)
 - `WarMembers.json`: distributed sweep ticks every 15 minutes with bounded chunk size/concurrency
+- The active 30-minute activity-observe cycle reconciles linked-player `PlayerCurrent` state: tracked-clan departures are immediate, stale external/clanless/unknown rows use a 60-minute freshness gate, and no more than 100 extra linked-player refreshes run per cycle; current tracked members are not fetched twice.
 - tracked-clan `Wars.json` watch: 5-minute cadence only inside active per-clan windows, starts 5 minutes before sync time, stops once update is acquired
 - optional global `Wars.json` sweep: disabled by default, configurable and chunked
 - command paths remain DB-first; `/compo state mode:war`, `/compo state mode:actual`, and `/compo place` now read persisted feed-backed state instead of relying on hot-path sheet reads

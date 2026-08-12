@@ -1,6 +1,9 @@
 import { prisma } from "../prisma";
 import { resolveEffectivePlayerWeight } from "../helper/effectiveWeightResolution";
-import { playerCurrentService } from "./PlayerCurrentService";
+import {
+  isAuthoritativeLivePlayerCurrentSource,
+  playerCurrentService,
+} from "./PlayerCurrentService";
 import { listOpenDeferredWeightsByClanAndPlayerTags } from "./WeightInputDefermentService";
 import { normalizeClashTagInput } from "../helper/clashTag";
 
@@ -105,19 +108,15 @@ function pickPreferredFwaMemberRow(
   })[0] ?? null;
 }
 
-function isConfirmedClanlessSource(source: string | null | undefined): boolean {
-  const normalized = sanitizeDisplayText(source)?.toLowerCase() ?? null;
-  return normalized === "accounts-refresh" || normalized === "live_refresh";
-}
-
 function resolveAccountClanState(input: {
   playerCurrent: PlayerCurrentSnapshot | null;
   playerActivity: { clanTag: string | null; clanName: string | null } | null;
 }): "known" | "no_clan" | "unknown" {
   const currentClanTag = sanitizeDisplayText(input.playerCurrent?.currentClanTag);
   const activityClanTag = sanitizeDisplayText(input.playerActivity?.clanTag);
-  if (currentClanTag || activityClanTag) return "known";
-  if (isConfirmedClanlessSource(input.playerCurrent?.lastSource)) return "no_clan";
+  if (currentClanTag) return "known";
+  if (isAuthoritativeLivePlayerCurrentSource(input.playerCurrent?.lastSource)) return "no_clan";
+  if (activityClanTag) return "known";
   return "unknown";
 }
 
@@ -260,8 +259,11 @@ export async function buildAccountsRows(input: {
             : null,
         });
     const fwaCatalogRow = fwaCatalogByTag.get(tag) ?? null;
-    const isTrackedFwaClan = Boolean(clanTag && trackedClanNameByTag.has(clanTag));
-    const trackedClanSortOrder = clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
+    const isTrackedFwaClan = Boolean(
+      clanState === "known" && clanTag && trackedClanNameByTag.has(clanTag),
+    );
+    const trackedClanSortOrder =
+      clanState === "known" && clanTag ? trackedClanSortOrderByTag.get(clanTag) ?? null : null;
 
     return {
       tag,

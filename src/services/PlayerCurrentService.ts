@@ -38,6 +38,12 @@ export type PlayerCurrentResolutionSource =
   | "accounts-refresh"
   | "missing";
 
+/** Purpose: identify PlayerCurrent sources that represent a full live player API observation. */
+export function isAuthoritativeLivePlayerCurrentSource(source: unknown): boolean {
+  const normalized = String(source ?? "").trim().toLowerCase();
+  return normalized === "live_refresh" || normalized === "accounts-refresh" || normalized === "activity_observe";
+}
+
 export type PlayerCurrentRefreshPolicy = "missing_only" | "missing_or_stale";
 
 export type PlayerCurrentLike = {
