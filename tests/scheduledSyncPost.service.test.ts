@@ -35,6 +35,64 @@ import {
   scheduledSyncPostService,
 } from "../src/services/ScheduledSyncPostService";
 
+function useInMemoryScheduleStore() {
+  const rows = new Map<string, any>();
+  const keyFor = (guildId: string, syncTime: Date) => `${guildId}:${syncTime.toISOString()}`;
+
+  txMock.scheduledSyncPost.findUnique.mockImplementation(async (args: any) => {
+    const lookup = args.where.guildId_syncTime;
+    return rows.get(keyFor(lookup.guildId, lookup.syncTime)) ?? null;
+  });
+  txMock.scheduledSyncPost.create.mockImplementation(async (args: any) => {
+    const row = {
+      id: `schedule-${rows.size + 1}`,
+      ...args.data,
+      claimToken: null,
+      claimedAt: null,
+      publishedMessageId: null,
+      publishedAt: null,
+      attemptCount: 0,
+      lastAttemptAt: null,
+      nextAttemptAt: null,
+      failureReason: null,
+      failureCode: null,
+    };
+    rows.set(keyFor(row.guildId, row.syncTime), row);
+    return row;
+  });
+  txMock.scheduledSyncPost.update.mockImplementation(async (args: any) => {
+    const row = [...rows.values()].find((candidate) => candidate.id === args.where.id);
+    Object.assign(row, args.data);
+    return row;
+  });
+  txMock.scheduledSyncPost.updateMany.mockImplementation(async (args: any) => {
+    let count = 0;
+    for (const row of rows.values()) {
+      if (row.guildId !== args.where.guildId) continue;
+      if (!args.where.status.in.includes(row.status)) continue;
+      if (args.where.id?.not === row.id) continue;
+      Object.assign(row, args.data);
+      count += 1;
+    }
+    return { count };
+  });
+
+  return rows;
+}
+
+function scheduleRequest(syncTime: string) {
+  const syncDate = new Date(syncTime);
+  return scheduledSyncPostService.scheduleSyncTimePost({
+    guildId: "guild-1",
+    channelId: "channel-1",
+    createdByUserId: "user-1",
+    roleId: "role-1",
+    syncTime: syncDate,
+    publishAt: new Date(syncDate.getTime() - 60 * 60 * 1000),
+    timezone: "UTC",
+  });
+}
+
 describe("ScheduledSyncPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -44,6 +102,7 @@ describe("ScheduledSyncPostService", () => {
     );
 
     txMock.$executeRaw.mockResolvedValue(undefined);
+    txMock.scheduledSyncPost.updateMany.mockResolvedValue({ count: 0 });
     txMock.scheduledSyncPost.findMany.mockResolvedValue([]);
     txMock.scheduledSyncPost.findUnique.mockResolvedValue(null);
     txMock.scheduledSyncPost.create.mockImplementation(async (args: any) => ({
@@ -168,7 +227,17 @@ describe("ScheduledSyncPostService", () => {
     });
 
     expect(txMock.scheduledSyncPost.create).not.toHaveBeenCalled();
-    expect(txMock.scheduledSyncPost.updateMany).not.toHaveBeenCalled();
+    expect(txMock.scheduledSyncPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          guildId: "guild-1",
+          id: { not: existing.id },
+          status: {
+            in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED],
+          },
+        }),
+      }),
+    );
     expect(result.action).toBe("reused");
     expect(result.schedule.id).toBe(existing.id);
   });
@@ -338,6 +407,70 @@ describe("ScheduledSyncPostService", () => {
     expect(txMock.scheduledSyncPost.create).not.toHaveBeenCalled();
     expect(result.action).toBe("already_published");
     expect(result.schedule.publishedMessageId).toBe("message-1");
+  });
+
+  it("supersedes a future schedule when an earlier sync time is scheduled again", async () => {
+    const rows = useInMemoryScheduleStore();
+
+    const firstA = await scheduleRequest("2026-06-16T01:30:00.000Z");
+    const scheduleB = await scheduleRequest("2026-06-17T01:30:00.000Z");
+    const secondA = await scheduleRequest("2026-06-16T01:30:00.000Z");
+
+    const rowA = rows.get("guild-1:2026-06-16T01:30:00.000Z");
+    const rowB = rows.get("guild-1:2026-06-17T01:30:00.000Z");
+    expect(firstA.action).toBe("created");
+    expect(scheduleB.action).toBe("replaced");
+    expect(secondA.action).toBe("reactivated");
+    expect(rowA.status).toBe(SCHEDULED_SYNC_POST_STATUS.PENDING);
+    expect(rowB.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
+    expect([...rows.values()].filter((row) =>
+      [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED].includes(row.status),
+    )).toHaveLength(1);
+  });
+
+  it("supersedes active schedules when the requested same-sync row is already published", async () => {
+    const rows = useInMemoryScheduleStore();
+
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+    const rowA = rows.get("guild-1:2026-06-16T01:30:00.000Z");
+    Object.assign(rowA, {
+      status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED,
+      publishedMessageId: "message-a",
+      publishedAt: new Date("2026-06-15T23:31:00.000Z"),
+    });
+    await scheduleRequest("2026-06-17T01:30:00.000Z");
+
+    const result = await scheduleRequest("2026-06-16T01:30:00.000Z");
+    const rowB = rows.get("guild-1:2026-06-17T01:30:00.000Z");
+    expect(result.action).toBe("already_published");
+    expect(result.schedule.status).toBe(SCHEDULED_SYNC_POST_STATUS.PUBLISHED);
+    expect(rowB.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
+    expect([...rows.values()].filter((row) =>
+      [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED].includes(row.status),
+    )).toHaveLength(0);
+  });
+
+  it("clears claim ownership when superseding another claimed schedule", async () => {
+    const rows = useInMemoryScheduleStore();
+
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+    await scheduleRequest("2026-06-17T01:30:00.000Z");
+    const rowB = rows.get("guild-1:2026-06-17T01:30:00.000Z");
+    Object.assign(rowB, {
+      status: SCHEDULED_SYNC_POST_STATUS.CLAIMED,
+      claimToken: "claim-b",
+      claimedAt: new Date("2026-06-16T00:30:00.000Z"),
+      nextAttemptAt: new Date("2026-06-16T00:45:00.000Z"),
+    });
+
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+
+    expect(rowB.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
+    expect(rowB.failureReason).toBe("replaced_by_new_schedule");
+    expect(rowB.failureCode).toBe("replaced");
+    expect(rowB.claimToken).toBeNull();
+    expect(rowB.claimedAt).toBeNull();
+    expect(rowB.nextAttemptAt).toBeNull();
   });
 
   it("claims pending rows with a deterministic token", async () => {
