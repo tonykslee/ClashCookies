@@ -98,6 +98,30 @@ function buildRetainedScheduleFields(input: {
   };
 }
 
+async function supersedeOtherActiveSchedules(
+  tx: Prisma.TransactionClient,
+  input: { guildId: string; keepScheduleId?: string },
+): Promise<number> {
+  const result = await tx.scheduledSyncPost.updateMany({
+    where: {
+      guildId: input.guildId,
+      ...(input.keepScheduleId ? { id: { not: input.keepScheduleId } } : {}),
+      status: {
+        in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] as any,
+      },
+    },
+    data: {
+      status: SCHEDULED_SYNC_POST_STATUS.REPLACED as any,
+      failureReason: "replaced_by_new_schedule",
+      failureCode: "replaced",
+      claimToken: null,
+      claimedAt: null,
+      nextAttemptAt: null,
+    },
+  });
+  return result.count;
+}
+
 /** Purpose: own durable scheduled sync-time post rows and the atomic guild-scoped replacement lifecycle. */
 export class ScheduledSyncPostService {
   /** Purpose: persist or reuse one scheduled readiness companion row per guild+syncTime under a guild-scoped DB lock. */
@@ -135,6 +159,11 @@ export class ScheduledSyncPostService {
         },
       });
       if (existing) {
+        await supersedeOtherActiveSchedules(tx, {
+          guildId,
+          keepScheduleId: existing.id,
+        });
+
         if (existing.status === SCHEDULED_SYNC_POST_STATUS.PUBLISHED) {
           console.info(
             `[sync-readiness-schedule] schedule_already_published schedule_id=${existing.id} guild_id=${guildId} channel_id=${existing.channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} message_id=${existing.publishedMessageId ?? "null"}`,
@@ -197,21 +226,8 @@ export class ScheduledSyncPostService {
         return { schedule: reactivated, action: "reactivated" };
       }
 
-      const replacedCount = await tx.scheduledSyncPost.updateMany({
-        where: {
-          guildId,
-          status: {
-            in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] as any,
-          },
-        },
-        data: {
-          status: SCHEDULED_SYNC_POST_STATUS.REPLACED as any,
-          failureReason: "replaced_by_new_schedule",
-          failureCode: "replaced",
-          claimToken: null,
-          claimedAt: null,
-          nextAttemptAt: null,
-        },
+      const replacedCount = await supersedeOtherActiveSchedules(tx, {
+        guildId,
       });
 
       const schedule = await tx.scheduledSyncPost.create({
@@ -228,12 +244,12 @@ export class ScheduledSyncPostService {
       });
 
       console.info(
-        `[sync-readiness-schedule] schedule_created schedule_id=${schedule.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} role_id=${roleId} replaced_count=${replacedCount.count}`,
+        `[sync-readiness-schedule] schedule_created schedule_id=${schedule.id} guild_id=${guildId} channel_id=${channelId} sync_epoch=${Math.floor(syncTime.getTime() / 1000)} publish_epoch=${Math.floor(publishAt.getTime() / 1000)} role_id=${roleId} replaced_count=${replacedCount}`,
       );
 
       return {
         schedule,
-        action: replacedCount.count > 0 ? "replaced" : "created",
+        action: replacedCount > 0 ? "replaced" : "created",
       };
     });
   }
