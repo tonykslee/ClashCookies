@@ -9,7 +9,6 @@ import { randomUUID } from "node:crypto";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { formatError } from "../helper/formatError";
 import {
-  isCompoActualStateDeviationHealthy,
   isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
 } from "../helper/compoActualStateView";
@@ -36,6 +35,8 @@ export const SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID =
   `${SYNC_READINESS_REFRESH_BUTTON_PREFIX}:refresh`;
 const SYNC_READINESS_REFRESH_COOLDOWN_MS = 60 * 1000;
 const SYNC_READINESS_REFRESH_LOCK_STALE_MS = 5 * 60 * 1000;
+const FWA_READINESS_WARNING_DEVIATION_THRESHOLD = 20;
+const FWA_READINESS_SOS_DEVIATION_THRESHOLD = 30;
 
 export type SyncReadinessMode = "sync_time" | "standalone";
 
@@ -115,6 +116,31 @@ function buildReadinessLabel(clan: Pick<CompoActualStateClanContext, "shortName"
   });
 }
 
+function classifyFwaReadinessIndicator(input: {
+  memberCount: number;
+  projection: {
+    unresolvedWeightCount: number;
+    deviationScore: number | null;
+  };
+}): "✅" | "⚠️" | "🆘" {
+  const deviationScore = input.projection.deviationScore;
+  if (
+    input.memberCount !== 50 ||
+    !isCompoActualStateProjectionComplete(input.projection) ||
+    typeof deviationScore !== "number" ||
+    !Number.isFinite(deviationScore)
+  ) {
+    return "⚠️";
+  }
+  if (deviationScore <= FWA_READINESS_WARNING_DEVIATION_THRESHOLD) {
+    return "✅";
+  }
+  if (deviationScore <= FWA_READINESS_SOS_DEVIATION_THRESHOLD) {
+    return "⚠️";
+  }
+  return "🆘";
+}
+
 function buildRefreshRow(input: {
   state: "default" | "refreshing" | "closed";
 }): ActionRowBuilder<ButtonBuilder> {
@@ -141,11 +167,10 @@ function buildReadinessRow(clan: CompoActualStateClanContext, heatMapRefs: reado
     heatMapRefs,
   });
   const deviationScore = projection.deviationScore ?? null;
-  const healthy =
-    clan.base.memberCount === 50 &&
-    isCompoActualStateProjectionComplete(projection) &&
-    isCompoActualStateDeviationHealthy(deviationScore);
-  const indicator = healthy ? "✅" : "⚠️";
+  const indicator = classifyFwaReadinessIndicator({
+    memberCount: clan.base.memberCount,
+    projection,
+  });
   const label = buildReadinessLabel(clan);
   const link = buildClanProfileMarkdownLink(clan.clanName, clan.clanTag);
   return `${indicator} | ${label} | ${link} | ${clan.base.memberCount}/50 | Dev ${formatDeviationScore(
@@ -163,8 +188,9 @@ function buildReadinessDescription(context: CompoActualStateContext): string {
   return [
     ...context.clans.map((clan) => buildReadinessRow(clan, context.heatMapRefs)),
     "",
-    "✅ = 50/50 and within the shared healthy deviation threshold.",
-    "⚠️ = under/over 50, incomplete data, unhealthy deviation, or unavailable data.",
+    "✅ = 50/50, complete data, Dev ≤ 20",
+    "⚠️ = Dev > 20 and ≤ 30, or roster/data is not ready",
+    "🆘 = Dev > 30",
   ].join("\n");
 }
 

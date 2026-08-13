@@ -139,17 +139,21 @@ function makeCompleteReadinessRows(weight: number): Array<Record<string, unknown
   }));
 }
 
-function makeReadinessHeatMapRef(th15Count: number, th14Count: number) {
+function makeReadinessHeatMapRef(
+  th15Count: number,
+  th14Count: number,
+  th13Count = 0,
+) {
   return [
     {
-      weightMinInclusive: 7_400_000,
-      weightMaxInclusive: 7_600_000,
+      weightMinInclusive: 0,
+      weightMaxInclusive: 10_000_000,
       th18Count: 0,
       th17Count: 0,
       th16Count: 0,
       th15Count,
       th14Count,
-      th13Count: 0,
+      th13Count,
       th12Count: 0,
       th11Count: 0,
       th10OrLowerCount: 0,
@@ -196,6 +200,13 @@ describe("SyncTimeFwaClanListViewService", () => {
     expect(payload.embeds[0].toJSON().title).toBe("FWA Readiness (1)");
     expect(String(payload.embeds[0].toJSON().description ?? "")).not.toContain("**FWA Readiness**");
     expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("[Alpha Clan]");
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain(
+      "✅ = 50/50, complete data, Dev ≤ 20",
+    );
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain(
+      "⚠️ = Dev > 20 and ≤ 30, or roster/data is not ready",
+    );
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("🆘 = Dev > 30");
     expect(payload.components).toHaveLength(1);
     expect(payload.components[0].toJSON().components[0].custom_id).toBe(
       SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID,
@@ -212,27 +223,11 @@ describe("SyncTimeFwaClanListViewService", () => {
       clanTag: "#2QG2C08UP",
       playerTag: "#PYLQ0289",
       playerName: `Player ${index + 1}`,
-      townHall: 16,
+      townHall: 15,
       weight: index === 0 ? null : 150000,
       sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
     }));
-    mockReadinessState(rows, [
-      {
-        weightMinInclusive: 0,
-        weightMaxInclusive: 10_000_000,
-        th18Count: 49,
-        th17Count: 0,
-        th16Count: 0,
-        th15Count: 0,
-        th14Count: 0,
-        th13Count: 0,
-        th12Count: 0,
-        th11Count: 0,
-        th10OrLowerCount: 0,
-        sourceVersion: "test",
-        refreshedAt: new Date("2026-06-10T00:00:00.000Z"),
-      },
-    ]);
+    mockReadinessState(rows, makeReadinessHeatMapRef(50, 0));
 
     const payload = await buildSyncTimeFwaClanListMessagePayload({
       guildId: "guild-1",
@@ -242,6 +237,7 @@ describe("SyncTimeFwaClanListViewService", () => {
 
     expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("⚠️ | AC |");
     expect(String(payload.embeds[0].toJSON().description ?? "")).not.toContain("✅ | AC |");
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("Dev 2");
   });
 
   it("renders a healthy complete roster with a numeric deviation and a ready indicator", async () => {
@@ -262,7 +258,7 @@ describe("SyncTimeFwaClanListViewService", () => {
     expect(description).not.toContain("Dev n/a");
   });
 
-  it("renders an unhealthy complete roster with a numeric deviation and a warning indicator", async () => {
+  it("renders a complete roster with Dev 18 as ready", async () => {
     mockReadinessState(
       makeCompleteReadinessRows(150000),
       makeReadinessHeatMapRef(44, 6),
@@ -275,9 +271,48 @@ describe("SyncTimeFwaClanListViewService", () => {
     });
 
     const description = String(payload.embeds[0].toJSON().description ?? "");
-    expect(description).toContain("⚠️ | AC |");
+    expect(description).toContain("✅ | AC |");
     expect(description).toContain("Dev 18");
     expect(description).not.toContain("Dev n/a");
+  });
+
+  it.each([
+    { deviation: "20", heatMap: makeReadinessHeatMapRef(43, 5, 2), indicator: "✅" },
+    { deviation: "21", heatMap: makeReadinessHeatMapRef(43, 7), indicator: "⚠️" },
+    { deviation: "30", heatMap: makeReadinessHeatMapRef(40, 10), indicator: "⚠️" },
+    { deviation: "31", heatMap: makeReadinessHeatMapRef(39, 7, 4), indicator: "🆘" },
+  ])(
+    "classifies a complete roster at Dev $deviation correctly",
+    async ({ heatMap, deviation, indicator }) => {
+      mockReadinessState(makeCompleteReadinessRows(150000), heatMap);
+
+      const payload = await buildSyncTimeFwaClanListMessagePayload({
+        guildId: "guild-1",
+        baseMetadata: makeBaseMetadata(),
+        now: new Date("2026-06-10T12:00:00.000Z"),
+      });
+
+      const description = String(payload.embeds[0].toJSON().description ?? "");
+      expect(description).toContain(`${indicator} | AC |`);
+      expect(description).toContain(`Dev ${deviation}`);
+    },
+  );
+
+  it("keeps a 49/50 roster at warning even when Dev is within 20", async () => {
+    mockReadinessState(
+      makeCompleteReadinessRows(150000).slice(0, 49),
+      makeReadinessHeatMapRef(50, 0),
+    );
+
+    const payload = await buildSyncTimeFwaClanListMessagePayload({
+      guildId: "guild-1",
+      baseMetadata: makeBaseMetadata(),
+      now: new Date("2026-06-10T12:00:00.000Z"),
+    });
+
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("⚠️ | AC |");
+    expect(description).toContain("Dev 2");
   });
 
   it("renders Dev n/a when no HeatMapRef is available", async () => {
