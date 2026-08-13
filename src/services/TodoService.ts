@@ -63,6 +63,8 @@ type TodoRenderRow = {
   }>;
   warHeaderBadge: string | null;
   warMatchIndicator: string;
+  warClanStars: number | null;
+  warFwaWinStarWarning: boolean;
   inValidatedWarMemberSet: boolean;
   activeTrackedWarClan: boolean;
   warTrackedClanActive: boolean;
@@ -77,6 +79,8 @@ type TodoEventGroup = {
   clanName: string | null;
   clanBadge: string | null;
   matchIndicator: string;
+  clanStars: number | null;
+  fwaWinStarWarning: boolean;
   phase: string;
   phaseEndsAt: Date | null;
   rows: TodoRenderRow[];
@@ -95,6 +99,7 @@ type CurrentWarMatchContextRow = {
   matchType: string | null;
   outcome: string | null;
   state: string | null;
+  clanStars: number | null;
   inferredMatchType: boolean | null;
   updatedAt: Date;
 };
@@ -316,6 +321,7 @@ export async function buildTodoPagesForUser(input: {
             matchType: true,
             outcome: true,
             state: true,
+            clanStars: true,
             inferredMatchType: true,
             updatedAt: true,
           },
@@ -867,6 +873,10 @@ export async function buildTodoPagesForUser(input: {
       : resolvedClanTag
         ? warMatchContextByClanTag.get(resolvedClanTag) ?? null
       : null;
+    const currentWarIdentity = resolvedWarClanTag
+      ? currentWarIdentityByClanTag.get(resolvedWarClanTag) ?? null
+      : null;
+    const warWarningContext = matchContext ?? currentWarIdentity;
     const resolvedPlayerName = resolveTodoPlayerDisplayName({
       playerTag: normalizedTag,
       snapshotPlayerName: snapshot?.playerName,
@@ -954,6 +964,11 @@ export async function buildTodoPagesForUser(input: {
       warAttackDetails: resolvedWarAttackDetails,
       warHeaderBadge: resolvedWarClanTag ? clanBadgeByTag.get(resolvedWarClanTag) ?? null : null,
       warMatchIndicator: resolveWarMatchStatusIndicator(matchContext),
+      warClanStars: warWarningContext?.clanStars ?? null,
+      warFwaWinStarWarning: shouldWarnForFwaWinStarThreshold({
+        currentWar: warWarningContext,
+        warPhase: snapshot?.warPhase,
+      }),
       raidClanTracked: Boolean(
         resolvedRaidClanTag &&
           (trackedClanTagSet.has(resolvedRaidClanTag) ||
@@ -1147,6 +1162,9 @@ function buildWarPageDescription(
     const unfinishedGroups = grouped.filter((group) => !isWarEventGroupComplete(group));
     const completedGroups = grouped.filter((group) => isWarEventGroupComplete(group));
     const groupedByCompletion = [...unfinishedGroups, ...completedGroups];
+    if (groupedByCompletion.some((group) => group.fwaWinStarWarning)) {
+      lines.push("⚠️ = FWA win clan below 100★ — prioritize remaining attacks", "");
+    }
     for (const group of groupedByCompletion) {
       lines.push(`**${buildEventGroupHeader(group)}**`);
       for (const row of group.rows) {
@@ -1454,6 +1472,8 @@ function buildEventGroups(
       clanName: groupedClanName ?? null,
       clanBadge: mode === "war" ? row.warHeaderBadge : null,
       matchIndicator: mode === "war" ? row.warMatchIndicator : "",
+      clanStars: mode === "war" ? row.warClanStars : null,
+      fwaWinStarWarning: mode === "war" ? row.warFwaWinStarWarning : false,
       phase,
       phaseEndsAt: phaseEndsAt ?? null,
       rows: [row],
@@ -1484,10 +1504,14 @@ function buildEventGroupHeader(group: TodoEventGroup): string {
   const badgePrefix = sanitizeStatusText(group.clanBadge);
   const clan = buildGroupClanIdentity(group);
   const matchIndicator = sanitizeStatusText(group.matchIndicator);
+  const warningPrefix =
+    group.fwaWinStarWarning && group.clanStars !== null
+      ? `⚠️ (${group.clanStars}★) `
+      : "";
   const endsAt = group.phaseEndsAt
     ? ` ends ${formatRelativeTimestamp(group.phaseEndsAt)}`
     : "";
-  const prefixedClan = badgePrefix ? `${badgePrefix} ${clan}` : clan;
+  const prefixedClan = `${warningPrefix}${badgePrefix ? `${badgePrefix} ` : ""}${clan}`;
   const clanWithIndicator = matchIndicator
     ? `${prefixedClan} ${matchIndicator}`
     : prefixedClan;
@@ -1934,6 +1958,30 @@ function resolveWarMatchStatusIndicator(
   return ":grey_question:";
 }
 
+/** Purpose: warn linked WAR players when a persisted FWA win has not reached the 100-star threshold. */
+function shouldWarnForFwaWinStarThreshold(input: {
+  currentWar: CurrentWarRenderRow | null;
+  warPhase: string | null | undefined;
+}): boolean {
+  const currentWar = input.currentWar;
+  const resolution = resolveCurrentWarMatchTypeSignal({
+    matchType: currentWar?.matchType,
+    inferredMatchType: currentWar?.inferredMatchType ?? null,
+  });
+  const effectiveMatchType =
+    resolution.confirmed?.matchType ?? resolution.unconfirmed?.matchType ?? null;
+  const clanStars = toFiniteIntOrNull(currentWar?.clanStars);
+  return Boolean(
+    effectiveMatchType === "FWA" &&
+      sanitizeStatusText(currentWar?.outcome).toUpperCase() === "WIN" &&
+      sanitizeStatusText(currentWar?.state).toLowerCase().includes("inwar") &&
+      sanitizeStatusText(input.warPhase).toLowerCase() === "battle day" &&
+      clanStars !== null &&
+      clanStars >= 0 &&
+      clanStars < 100,
+  );
+}
+
 /** Purpose: keep one preferred current-war row per clan for header indicator rendering. */
 function pickPreferredCurrentWarByClanTag(
   rows: CurrentWarRenderRow[],
@@ -1952,6 +2000,7 @@ function pickPreferredCurrentWarByClanTag(
         matchType: row.matchType,
         outcome: row.outcome,
         state: row.state,
+        clanStars: toFiniteIntOrNull(row.clanStars),
         inferredMatchType:
           row.inferredMatchType === null || row.inferredMatchType === undefined
             ? null
@@ -1981,6 +2030,7 @@ function pickLatestCurrentWarIdentityByClanTag(
         matchType: row.matchType,
         outcome: row.outcome,
         state: row.state ?? null,
+        clanStars: toFiniteIntOrNull(row.clanStars),
         inferredMatchType:
           row.inferredMatchType === null || row.inferredMatchType === undefined
             ? null
