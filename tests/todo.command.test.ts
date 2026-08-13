@@ -1268,6 +1268,7 @@ describe("/todo command", () => {
         matchType: "FWA",
         outcome: "WIN",
         state: "inWar",
+        clanStars: 78,
         updatedAt: new Date("2026-03-26T00:00:00.000Z"),
       },
       {
@@ -1414,7 +1415,9 @@ describe("/todo command", () => {
     expect(getReplyColor(interaction)).toBe(TODO_INCOMPLETE_EMBED_COLOR);
     expect(description).toContain("war status: 1 / 6 attacks completed");
     expect(description).not.toContain("Linked players:");
-    expect(description).toContain("**:rd: Clan One (#PQL0289) :green_circle: - battle day ends <t:");
+    expect(description).toContain("⚠️ = FWA win clan below 100★ — prioritize remaining attacks");
+    expect(countOccurrences(description, "⚠️ = FWA win clan below 100★ — prioritize remaining attacks")).toBe(1);
+    expect(description).toContain("**⚠️ (78★) :rd: Clan One (#PQL0289) :green_circle: - battle day ends <t:");
     expect(description).toContain("**:ak: Clan Two (#2QG2C08UP) :black_circle: - preparation ends <t:");
     expect(description).toContain("- #8 Alpha - `0 / 2`");
     expect(description).toContain("- #1 Bravo - `1 / 2` | :dagger: #8 ★ ★ ★");
@@ -1422,6 +1425,143 @@ describe("/todo command", () => {
     expect(description).not.toContain("- #9 Charlie - `2 / 2`");
     expect(description).not.toContain("**Not in active war**");
     expect(description).not.toContain("Delta #LQ9P8R2");
+  });
+
+  it.each([
+    { label: "99 stars", matchType: "FWA", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 99, warns: true },
+    { label: "100 stars", matchType: "FWA", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 100, warns: false },
+    { label: "101 stars", matchType: "FWA", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 101, warns: false },
+    { label: "FWA loss", matchType: "FWA", outcome: "LOSE", state: "inWar", phase: "battle day", clanStars: 78, warns: false },
+    { label: "BL", matchType: "BL", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 78, warns: false },
+    { label: "MM", matchType: "MM", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 78, warns: false },
+    { label: "SKIP", matchType: "SKIP", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 78, warns: false },
+    { label: "unresolved", matchType: null, outcome: "WIN", state: "inWar", phase: "battle day", clanStars: 78, warns: false },
+    { label: "preparation", matchType: "FWA", outcome: "WIN", state: "preparation", phase: "preparation", clanStars: 78, warns: false },
+    { label: "unknown stars", matchType: "FWA", outcome: "WIN", state: "inWar", phase: "battle day", clanStars: null, warns: false },
+  ])("warns only for qualifying FWA WIN battle-day stars ($label)", async (scenario) => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#QGRJ2222", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: scenario.phase,
+      }),
+      makeSnapshotRow({
+        playerTag: "#QGRJ2222",
+        playerName: "Bravo",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: scenario.phase,
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: scenario.matchType,
+        outcome: scenario.outcome,
+        state: scenario.state,
+        clanStars: scenario.clanStars,
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const pages = await buildTodoPagesForUser({
+      discordUserId: "111111111111111111",
+      nowMs: new Date("2026-03-26T00:00:00.000Z").getTime(),
+    });
+    const description = pages.pages.WAR;
+
+    if (scenario.warns) {
+      expect(description).toContain(`⚠️ (${scenario.clanStars}★) :rd: Clan One (#PQL0289)`);
+      expect(countOccurrences(description, "⚠️ = FWA win clan below 100★ — prioritize remaining attacks")).toBe(1);
+    } else {
+      expect(description).not.toContain("⚠️ (");
+      expect(description).not.toContain("⚠️ = FWA win clan below 100★");
+    }
+  });
+
+  it("renders one warning legend for multiple qualifying WAR clans", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", createdAt: new Date("2026-03-01T00:00:00.000Z") },
+      { playerTag: "#CUV9082", createdAt: new Date("2026-03-02T00:00:00.000Z") },
+    ]);
+    prismaMock.todoPlayerSnapshot.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _max: { updatedAt: new Date("2026-03-26T00:00:00.000Z") },
+    });
+    prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([
+      makeSnapshotRow({
+        playerTag: "#PYLQ0289",
+        playerName: "Alpha",
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warActive: true,
+        warPhase: "battle day",
+      }),
+      makeSnapshotRow({
+        playerTag: "#CUV9082",
+        playerName: "Charlie",
+        clanTag: "#2QG2C08UP",
+        clanName: "Clan Two",
+        warActive: true,
+        warPhase: "battle day",
+      }),
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", clanBadge: ":rd:", name: "Clan One" },
+      { tag: "#2QG2C08UP", clanBadge: ":ak:", name: "Clan Two" },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        clanName: "Clan One",
+        warId: 1001,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "FWA",
+        outcome: "WIN",
+        state: "inWar",
+        clanStars: 78,
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        clanName: "Clan Two",
+        warId: 1002,
+        startTime: new Date("2026-03-25T12:00:00.000Z"),
+        matchType: "FWA",
+        outcome: "WIN",
+        state: "inWar",
+        clanStars: 99,
+        updatedAt: new Date("2026-03-26T00:00:00.000Z"),
+      },
+    ]);
+
+    const pages = await buildTodoPagesForUser({
+      discordUserId: "111111111111111111",
+      nowMs: new Date("2026-03-26T00:00:00.000Z").getTime(),
+    });
+    const description = pages.pages.WAR;
+
+    expect(countOccurrences(description, "⚠️ = FWA win clan below 100★ — prioritize remaining attacks")).toBe(1);
+    expect(description).toContain("⚠️ (78★) :rd: Clan One (#PQL0289)");
+    expect(description).toContain("⚠️ (99★) :ak: Clan Two (#2QG2C08UP)");
   });
 
   it("renders exact WAR attack details for retained-ended tracked-war contexts", async () => {
