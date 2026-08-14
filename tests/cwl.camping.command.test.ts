@@ -25,6 +25,14 @@ function makeResult(overrides: Record<string, unknown> = {}): any {
       missingTimingDetails: [],
     },
     timing: { available: true, reason: null },
+    sourceCoverage: {
+      preFwaClansCovered: 2,
+      preFwaClansExpected: 2,
+      cwlEventsResolved: 2,
+      cwlClanCount: 2,
+      homeAttributionComplete: true,
+      cwlEventCoverageComplete: true,
+    },
     trackingCoverage: {
       status: "OBSERVED",
       trackingStartedAt: new Date("2026-07-01T00:00:00.000Z"),
@@ -53,6 +61,7 @@ function makeResult(overrides: Record<string, unknown> = {}): any {
       currentlyCamping: true,
       currentCwlClanTag: "#QGRJ2222",
       currentCampingSince: new Date("2026-08-02T00:00:00.000Z"),
+      currentCampingDurationMs: 8 * day,
     }],
     clans: [{
       clanTag: "#QGRJ2222",
@@ -116,7 +125,7 @@ describe("/cwl camping", () => {
     expect(description).toContain("Tracking: **OBSERVED**");
     expect(description).toContain("Observed campers: **1**");
     expect(description).toContain("No camping observed: **1**");
-    expect(description).toContain("Unattributed CWL-clan observations: **1 accounts / 2d**");
+    expect(description).toContain("Unattributed CWL-clan observations (including accounts whose home clan could not be reconstructed): **1 accounts / 2d**");
   });
 
   it("warns prominently for partial coverage without claiming zero camping", async () => {
@@ -133,6 +142,28 @@ describe("/cwl camping", () => {
 
     const description = getEmbed(interaction).description;
     expect(description).toContain("Partial — membership tracking began after CWL started");
+    expect(description).not.toContain("No camping observed:");
+  });
+
+  it("surfaces incomplete source coverage without presenting full-alliance totals", async () => {
+    vi.mocked(cwlAllianceCampingService.getCamping).mockResolvedValueOnce(makeResult({
+      sourceCoverage: {
+        ...makeResult().sourceCoverage,
+        preFwaClansCovered: 1,
+        preFwaClansExpected: 2,
+        homeAttributionComplete: false,
+        cwlEventsResolved: 1,
+        cwlEventCoverageComplete: false,
+      },
+    }));
+    const interaction = makeInteraction({ view: "summary" });
+
+    await Cwl.run({} as any, interaction);
+
+    const description = getEmbed(interaction).description;
+    expect(description).toContain("Historical home-FWA attribution is partial (1/2 clans)");
+    expect(description).toContain("CWL event coverage is partial");
+    expect(description).toContain("Attributed pre-CWL accounts");
     expect(description).not.toContain("No camping observed:");
   });
 
@@ -153,6 +184,26 @@ describe("/cwl camping", () => {
     const description = getEmbed(interaction).description;
     expect(description).toContain("Observed membership history unavailable");
     expect(description).not.toContain("Observed campers:");
+  });
+
+  it("hard-gates every analytical detail view when tracking or timing is unavailable", async () => {
+    for (const view of ["players", "clans", "current"]) {
+      vi.mocked(cwlAllianceCampingService.getCamping).mockResolvedValueOnce(makeResult({
+        trackingCoverage: { status: "UNAVAILABLE", trackingStartedAt: null, reason: "history unavailable" },
+      }));
+      const interaction = makeInteraction({ view });
+      await Cwl.run({} as any, interaction);
+      expect(getEmbed(interaction).description).toContain("Analytical detail unavailable");
+      expect(getEmbed(interaction).description).not.toContain("Page ");
+
+      vi.mocked(cwlAllianceCampingService.getCamping).mockResolvedValueOnce(makeResult({
+        timing: { available: false, reason: "CWL timing unavailable" },
+      }));
+      const timingInteraction = makeInteraction({ view });
+      await Cwl.run({} as any, timingInteraction);
+      expect(getEmbed(timingInteraction).description).toContain("no season-duration rows are shown");
+      expect(getEmbed(timingInteraction).description).not.toContain("Page ");
+    }
   });
 
   it("paginates players deterministically", async () => {
@@ -180,7 +231,7 @@ describe("/cwl camping", () => {
     vi.mocked(cwlAllianceCampingService.getCamping).mockResolvedValueOnce(makeResult({
       cwlWindow: { ...makeResult().cwlWindow, endsAt: null },
       summary: { ...makeResult().summary, postCwlCamperCount: null, totalPostCwlCampingDurationMs: null },
-      players: [{ ...makeResult().players[0], postCwlDurationMs: null }],
+      players: [{ ...makeResult().players[0], postCwlDurationMs: null, currentCampingDurationMs: 2 * day }],
     }));
     const ongoingInteraction = makeInteraction({ view: "current" });
     await Cwl.run({} as any, ongoingInteraction);
@@ -190,6 +241,22 @@ describe("/cwl camping", () => {
     const completedInteraction = makeInteraction({ view: "current" });
     await Cwl.run({} as any, completedInteraction);
     expect(getEmbed(completedInteraction).title).toContain("Still camping after CWL");
+  });
+
+  it("sorts current view by current streak duration", async () => {
+    const basePlayer = makeResult().players[0];
+    vi.mocked(cwlAllianceCampingService.getCamping).mockResolvedValueOnce(makeResult({
+      players: [
+        { ...basePlayer, playerTag: "#PYLQ0001", playerName: "Short", currentCampingDurationMs: day },
+        { ...basePlayer, playerTag: "#PYLQ0002", playerName: "Long", currentCampingDurationMs: 3 * day },
+      ],
+    }));
+    const interaction = makeInteraction({ view: "current" });
+
+    await Cwl.run({} as any, interaction);
+
+    const description = getEmbed(interaction).description;
+    expect(description.indexOf("Long")).toBeLessThan(description.indexOf("Short"));
   });
 
   it("returns a bounded failure when camping history cannot be read", async () => {

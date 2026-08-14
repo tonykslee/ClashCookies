@@ -3321,9 +3321,23 @@ function getCwlCampingCoverageLines(result: CwlAllianceCampingResult): string[] 
   return lines;
 }
 
+/** Purpose: explain upstream FWA/CWL source coverage without presenting partial evidence as authoritative. */
+function getCwlCampingSourceCoverageLines(result: CwlAllianceCampingResult): string[] {
+  const lines: string[] = [];
+  if (!result.sourceCoverage.homeAttributionComplete) {
+    lines.push(
+      `⚠️ Historical home-FWA attribution is partial (${result.sourceCoverage.preFwaClansCovered}/${result.sourceCoverage.preFwaClansExpected} clans); camping totals include only accounts with reliable home attribution.`,
+    );
+  }
+  if (!result.sourceCoverage.cwlEventCoverageComplete) {
+    lines.push("⚠️ CWL event coverage is partial; CWL-window and season evidence may be incomplete.");
+  }
+  return lines;
+}
+
 /** Purpose: build the leadership summary for observed non-home CWL-clan residence. */
 export function buildCwlCampingSummaryEmbed(result: CwlAllianceCampingResult): EmbedBuilder {
-  const lines = ["**Observed Coverage**", ...getCwlCampingCoverageLines(result)];
+  const lines = ["**Observed Coverage**", ...getCwlCampingCoverageLines(result), ...getCwlCampingSourceCoverageLines(result)];
   if (result.trackingCoverage.status === "UNAVAILABLE") {
     if (!result.timing.available && !result.trackingCoverage.trackingStartedAt) {
       lines.push(`⚠️ ${result.timing.reason}`);
@@ -3339,13 +3353,15 @@ export function buildCwlCampingSummaryEmbed(result: CwlAllianceCampingResult): E
     lines.push(
       "",
       "**During CWL**",
-      `Pre-CWL accounts: **${result.summary.attributedPreFwaAccounts}**`,
+      `Attributed pre-CWL accounts: **${result.summary.attributedPreFwaAccounts}**`,
       `Observed campers: **${result.summary.camperCount ?? 0}**`,
       `Observed camping time: **${formatCwlCampingDuration(result.summary.totalCampingDurationMs)}**`,
       `Average per observed camper: **${formatCwlCampingDuration(result.summary.averageCampingDurationMs)}**`,
       `Median per observed camper: **${formatCwlCampingDuration(result.summary.medianCampingDurationMs)}**`,
     );
-    if (result.trackingCoverage.status === "OBSERVED") {
+    if (result.trackingCoverage.status === "OBSERVED"
+      && result.sourceCoverage.homeAttributionComplete
+      && result.sourceCoverage.cwlEventCoverageComplete) {
       lines.push(`No camping observed: **${result.summary.zeroObservedCampingCount ?? 0}**`);
     } else {
       lines.push("No observed camping since tracking began is not a complete non-camping count.");
@@ -3363,7 +3379,7 @@ export function buildCwlCampingSummaryEmbed(result: CwlAllianceCampingResult): E
   if (result.unattributed.observedAccountCount > 0) {
     lines.push(
       "",
-      `Unattributed CWL-clan observations: **${result.unattributed.observedAccountCount} accounts / ${formatCwlCampingDuration(result.unattributed.observedDurationMs)}**`,
+      `Unattributed CWL-clan observations (including accounts whose home clan could not be reconstructed): **${result.unattributed.observedAccountCount} accounts / ${formatCwlCampingDuration(result.unattributed.observedDurationMs)}**`,
     );
   }
   return new EmbedBuilder()
@@ -3413,15 +3429,17 @@ function buildCwlCampingClansEmbed(result: CwlAllianceCampingResult, requestedPa
 
 /** Purpose: render the current non-home CWL-clan occupants with completed/ongoing wording. */
 function buildCwlCampingCurrentEmbed(result: CwlAllianceCampingResult, requestedPage: number): EmbedBuilder {
-  const currentPlayers = result.players.filter((player) => player.currentlyCamping);
+  const currentPlayers = result.players
+    .filter((player) => player.currentlyCamping)
+    .sort((a, b) => (b.currentCampingDurationMs ?? -1) - (a.currentCampingDurationMs ?? -1) || a.playerTag.localeCompare(b.playerTag));
   const paged = paginateCwlCampingRows(currentPlayers, requestedPage);
   const title = result.cwlWindow.endsAt ? "Still camping after CWL" : "Currently in CWL clans";
   const lines = paged.rows.map((player) => {
     const name = sanitizeDisplayText(player.playerName) || "Unknown";
     const current = player.currentCwlClanTag ?? "unknown";
     const duration = result.cwlWindow.endsAt
-      ? ` | ${formatCwlCampingDuration(player.postCwlDurationMs)} post-CWL`
-      : ` | since ${formatRelativeTimestamp(player.currentCampingSince)}`;
+      ? ` | ${formatCwlCampingDuration(player.currentCampingDurationMs)} current streak post-CWL`
+      : ` | ${formatCwlCampingDuration(player.currentCampingDurationMs)} current | since ${formatRelativeTimestamp(player.currentCampingSince)}`;
     return `• ${name} \`${player.playerTag}\` | home ${player.homeFwaClanTag} | now ${current}${duration}`;
   });
   return buildCwlCampingDetailEmbed(result, title, lines, paged);
@@ -3434,8 +3452,26 @@ function buildCwlCampingDetailEmbed(
   rows: string[],
   page: { page: number; pageCount: number; requestedPage: number },
 ): EmbedBuilder {
-  const lines = [...getCwlCampingCoverageLines(result)];
-  if (!result.timing.available) lines.push(`⚠️ ${result.timing.reason}`);
+  if (result.trackingCoverage.status === "UNAVAILABLE") {
+    return new EmbedBuilder()
+      .setColor(CWL_EMBED_COLOR)
+      .setTitle(`CWL Camping — ${result.season} — ${viewTitle}`)
+      .setDescription([
+        "⚠️ Analytical detail unavailable because observed membership tracking is unavailable.",
+        ...getCwlCampingCoverageLines(result),
+      ].join("\n"));
+  }
+  if (!result.timing.available) {
+    return new EmbedBuilder()
+      .setColor(CWL_EMBED_COLOR)
+      .setTitle(`CWL Camping — ${result.season} — ${viewTitle}`)
+      .setDescription([
+        "⚠️ Analytical detail unavailable because CWL timing is unavailable; no season-duration rows are shown.",
+        ...getCwlCampingCoverageLines(result),
+        ...getCwlCampingSourceCoverageLines(result),
+      ].join("\n"));
+  }
+  const lines = [...getCwlCampingCoverageLines(result), ...getCwlCampingSourceCoverageLines(result)];
   lines.push("", ...(rows.length > 0 ? rows : ["No observed rows in this view."]), "", `Page ${page.page}/${page.pageCount}`);
   if (page.requestedPage !== page.page) lines.push(`Requested page ${page.requestedPage} is unavailable; showing page ${page.page}.`);
   if (page.pageCount > 1) lines.push("Use `page:<n>` to view another page.");

@@ -24,6 +24,7 @@ export type CwlAllianceCampingPlayer = {
   currentlyCamping: boolean;
   currentCwlClanTag: string | null;
   currentCampingSince: Date | null;
+  currentCampingDurationMs: number | null;
 };
 
 export type CwlAllianceCampingClan = {
@@ -47,6 +48,14 @@ export type CwlAllianceCampingResult = {
     status: CwlAllianceCampingTrackingCoverageStatus;
     trackingStartedAt: Date | null;
     reason: string | null;
+  };
+  sourceCoverage: {
+    preFwaClansCovered: number;
+    preFwaClansExpected: number;
+    cwlEventsResolved: number;
+    cwlClanCount: number;
+    homeAttributionComplete: boolean;
+    cwlEventCoverageComplete: boolean;
   };
   summary: {
     attributedPreFwaAccounts: number;
@@ -117,6 +126,7 @@ export class CwlAllianceCampingService {
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
+  /** Purpose: build a read-only observed camping report from persisted CWL attribution and membership history. */
   async getCamping(input: CwlAllianceCampingInput): Promise<CwlAllianceCampingResult> {
     const startedAtMs = Date.now();
     const activity = await this.activityReader.getActivity({
@@ -139,29 +149,27 @@ export class CwlAllianceCampingService {
       take: 1,
       select: { firstObservedAt: true },
     });
-    const historyRows = await this.db.allianceClanMembershipInterval.findMany({
-      where: {
-        guildId: normalizedGuildId,
-        clanTag: { in: trackedClans.map((clan) => clan.clanTag) },
-        ...(timing.available && activity.cwlWindow.startsAt
-          ? {
-              firstObservedAt: { lt: reportNow },
-              OR: [
-                { endedAt: null },
-                { endedAt: { gt: activity.cwlWindow.startsAt } },
-              ],
-            }
-          : {}),
-      },
-      orderBy: [{ firstObservedAt: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
-      select: {
-        playerTag: true,
-        clanTag: true,
-        firstObservedAt: true,
-        lastObservedAt: true,
-        endedAt: true,
-      },
-    });
+    const historyRows = timing.available && activity.cwlWindow.startsAt
+      ? await this.db.allianceClanMembershipInterval.findMany({
+          where: {
+            guildId: normalizedGuildId,
+            clanTag: { in: trackedClans.map((clan) => clan.clanTag) },
+            firstObservedAt: { lt: reportNow },
+            OR: [
+              { endedAt: null },
+              { endedAt: { gt: activity.cwlWindow.startsAt } },
+            ],
+          },
+          orderBy: [{ firstObservedAt: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
+          select: {
+            playerTag: true,
+            clanTag: true,
+            firstObservedAt: true,
+            lastObservedAt: true,
+            endedAt: true,
+          },
+        })
+      : [];
     const intervals = normalizeIntervals(historyRows);
     const trackingStartedAt = toDate(trackingStartRows[0]?.firstObservedAt);
     const trackingCoverage = resolveTrackingCoverage(trackingStartedAt, activity.cwlWindow.startsAt);
@@ -231,26 +239,31 @@ export class CwlAllianceCampingService {
         player.current.push({ clanTag: interval.clanTag, firstObservedAt: interval.firstObservedAt });
       }
       attributed.set(interval.playerTag, player);
-      const clanAccumulator = clanAccumulators.get(interval.clanTag);
-      if (clanAccumulator) {
-        addClanRange(clanAccumulator.duringByPlayer, interval.playerTag, during);
-        addClanRange(clanAccumulator.postByPlayer, interval.playerTag, post);
-        if (interval.endedAt === null && interval.firstObservedAt.getTime() <= reportNow.getTime()) {
-          clanAccumulator.currentPlayers.add(interval.playerTag);
-        }
-      }
     }
 
     const players = [...attributed.values()]
       .map((player) => {
-        const during = mergeRanges(player.during);
-        const post = activity.cwlWindow.endsAt ? mergeRanges(player.post) : null;
+        const during = reconcileRanges(player.during);
+        const post = activity.cwlWindow.endsAt ? reconcileRanges(player.post) : null;
         overlapReconciliationCount += during.overlapCount + (post?.overlapCount ?? 0);
+        for (const [clanTag, ranges] of during.allocatedByClan) {
+          const clan = clanAccumulators.get(clanTag);
+          if (clan) addClanRange(clan.duringByPlayer, player.playerTag, ranges);
+        }
+        for (const [clanTag, ranges] of post?.allocatedByClan ?? []) {
+          const clan = clanAccumulators.get(clanTag);
+          if (clan) addClanRange(clan.postByPlayer, player.playerTag, ranges);
+        }
         const current = [...player.current].sort((a, b) =>
           b.firstObservedAt.getTime() - a.firstObservedAt.getTime() || a.clanTag.localeCompare(b.clanTag),
         )[0] ?? null;
+        if (current) clanAccumulators.get(current.clanTag)?.currentPlayers.add(player.playerTag);
         const duringDurationMs = timing.available ? during.durationMs : null;
         const postDurationMs = post ? post.durationMs : null;
+        const currentBoundary = activity.cwlWindow.endsAt ?? activity.cwlWindow.startsAt;
+        const currentCampingDurationMs = current && timing.available && currentBoundary
+          ? Math.max(0, reportNow.getTime() - Math.max(current.firstObservedAt.getTime(), currentBoundary.getTime()))
+          : null;
         return {
           playerTag: player.playerTag,
           playerName: player.playerName,
@@ -264,6 +277,7 @@ export class CwlAllianceCampingService {
           currentlyCamping: current !== null,
           currentCwlClanTag: current?.clanTag ?? null,
           currentCampingSince: current?.firstObservedAt ?? null,
+          currentCampingDurationMs,
         } satisfies CwlAllianceCampingPlayer;
       })
       .sort(compareCampingPlayers);
@@ -290,6 +304,14 @@ export class CwlAllianceCampingService {
       .map((clan) => toClanResult(clan, activity.cwlWindow.endsAt !== null, timing.available))
       .sort(compareCampingClans);
     const trackingUnavailable = trackingCoverage.status === "UNAVAILABLE";
+    const sourceCoverage = {
+      preFwaClansCovered: activity.coverage.preFwaClansCovered,
+      preFwaClansExpected: activity.coverage.preFwaClansExpected,
+      cwlEventsResolved: activity.coverage.resolvedEventCount,
+      cwlClanCount: activity.coverage.cwlClanCount,
+      homeAttributionComplete: activity.coverage.preFwaClansCovered >= activity.coverage.preFwaClansExpected,
+      cwlEventCoverageComplete: activity.coverage.resolvedEventCount >= activity.coverage.cwlClanCount,
+    };
 
     const result: CwlAllianceCampingResult = {
       season: activity.season,
@@ -297,6 +319,7 @@ export class CwlAllianceCampingService {
       cwlWindow: activity.cwlWindow,
       timing,
       trackingCoverage,
+      sourceCoverage,
       summary: {
         attributedPreFwaAccounts: activity.players.preFwa.length,
         camperCount: timing.available && !trackingUnavailable ? camperDurations.length : null,
@@ -409,6 +432,44 @@ function mergeRanges(ranges: Range[]): { durationMs: number; overlapCount: numbe
     overlapCount,
     ranges: merged,
   };
+}
+
+/** Purpose: allocate each wall-clock segment to one deterministic clan owner while preserving player uniqueness. */
+function reconcileRanges(ranges: Range[]): {
+  durationMs: number;
+  overlapCount: number;
+  allocatedByClan: Map<string, Range[]>;
+} {
+  const boundaries = [...new Set(ranges.flatMap((range) => [range.startMs, range.endMs]))].sort((a, b) => a - b);
+  const allocatedByClan = new Map<string, Range[]>();
+  let durationMs = 0;
+  let overlapCount = 0;
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const startMs = boundaries[index];
+    const endMs = boundaries[index + 1];
+    if (endMs <= startMs) continue;
+    const active = ranges.filter((range) => range.startMs <= startMs && range.endMs >= endMs);
+    if (active.length === 0) continue;
+    if (active.length > 1) overlapCount += active.length - 1;
+    const owner = [...active].sort((a, b) =>
+      b.startMs - a.startMs || a.clanTag.localeCompare(b.clanTag),
+    )[0];
+    const allocated = allocatedByClan.get(owner.clanTag) ?? [];
+    appendRange(allocated, { startMs, endMs, clanTag: owner.clanTag });
+    allocatedByClan.set(owner.clanTag, allocated);
+    durationMs += endMs - startMs;
+  }
+  return { durationMs, overlapCount, allocatedByClan };
+}
+
+/** Purpose: coalesce adjacent segments already assigned to the same clan. */
+function appendRange(target: Range[], range: Range): void {
+  const previous = target.at(-1);
+  if (previous && previous.clanTag === range.clanTag && previous.endMs >= range.startMs) {
+    previous.endMs = Math.max(previous.endMs, range.endMs);
+    return;
+  }
+  target.push({ ...range });
 }
 
 /** Purpose: add clipped interval portions to a deterministic per-clan player bucket. */
