@@ -277,6 +277,8 @@ export class CwlAllianceActivityService {
   }
 }
 
+export const cwlAllianceActivityService = new CwlAllianceActivityService();
+
 type NormalizedClan = { clanTag: string; clanName: string | null };
 type HistoricalEventResolution = {
   eventInstanceIds: string[];

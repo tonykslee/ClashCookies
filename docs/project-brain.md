@@ -53,6 +53,7 @@ Core subsystems:
 - Persisted CWL state: `CwlEventInstance / CwlEventClan / CwlEventWarTag -> CwlTrackedClan -> CwlStateService -> CurrentCwlRound / CwlRoundMemberCurrent / CurrentCwlPrepSnapshot / CwlRoundHistory / CwlRoundMemberHistory / CwlPlayerClanSeason`, with event identity authoritative and `season` treated as display metadata.
 - CWL planner state: `CwlEventClan.isCurrent -> CurrentCwlRound + CwlRoundMemberCurrent + CurrentCwlPrepSnapshot + CwlPlayerClanSeason -> CwlRotationService -> CwlRotationPlan / CwlRotationPlanDay / CwlRotationPlanMember`, with each plan owned by one CWL event instance and clan. `season` is display metadata; historical same-month event plans are retained but ignored by current commands.
 - CWL measurement baseline: `TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink -> CwlAllianceBaselineService -> CwlAllianceSeasonBaseline / CwlAllianceSeasonBaselineClan / CwlAllianceSeasonBaselineMember`
+- The active CWL alliance activity report is `CwlAllianceActivityService`, a read-only consumer of persisted CWL/event and `AllianceClanMembershipInterval` history. Production activity observation writes the interval history; `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. The manual baseline command surface is retired, while the legacy baseline service/schema/rows remain dormant until staged cleanup.
 - Reminder delivery: `Reminder/UserActivityReminder config + snapshots/current war -> reminder schedulers -> delivery logs`
 - Operational state: `TrackedMessage`, unlinked-alert persistence, telemetry aggregates, report schedules
 
@@ -81,7 +82,7 @@ Important owners:
 | Derived observed CWL season roster | CwlPlayerClanSeason |
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner artifacts | CwlRotationPlan* tables |
-| Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
+| Season-frozen CWL alliance baseline (legacy dormant persistence) | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
 | Current player state | PlayerCurrent |
 | Current FWA clan roster state | FwaClanMemberCurrent |
@@ -103,7 +104,7 @@ Important owners:
 | Delayed-signup role IDs | AutoRoleGuildConfig.delayedSignupRoleIds |
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
-| CWL measurement baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
+| CWL measurement baseline (legacy dormant persistence) | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | FWA compo reference bands | HeatMapRef |
 | Telemetry rollups and report schedules | Telemetry* tables |
 
