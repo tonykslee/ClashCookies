@@ -53,7 +53,15 @@ function baseSeed(overrides: Seed = {}): Required<Seed> {
       endTime: at("2026-04-08T00:00:00.000Z"),
     }],
     currentCwlPrepSnapshot: [],
-    cwlRoundHistory: [],
+    cwlRoundHistory: [{
+      eventInstanceId: event.id,
+      clanTag: cwlClan,
+      roundDay: 7,
+      roundState: "warEnded",
+      preparationStartTime: at("2026-04-07T00:00:00.000Z"),
+      startTime: at("2026-04-07T01:00:00.000Z"),
+      endTime: at("2026-04-08T00:00:00.000Z"),
+    }],
     trackedClan: [{ id: 1, tag: fwaClan, name: "FWA One" }],
     clanWarHistory: [{
       warId: 1,
@@ -178,16 +186,16 @@ describe("CwlAllianceActivityService", () => {
   it("prefers preparation start and falls back to round start", async () => {
     const { run } = activity({
       currentCwlRound: [{ ...baseSeed().currentCwlRound[0], preparationStartTime: null, startTime: at("2026-04-02T00:00:00.000Z") }],
-      currentCwlPrepSnapshot: [{ eventInstanceId: "event-1", preparationStartTime: at("2026-04-01T00:00:00.000Z"), startTime: null, endTime: null }],
+      currentCwlPrepSnapshot: [{ eventInstanceId: "event-1", roundDay: 1, preparationStartTime: at("2026-04-01T00:00:00.000Z"), startTime: null, endTime: null }],
     });
     expect((await run()).cwlWindow.startsAt).toEqual(at("2026-04-01T00:00:00.000Z"));
   });
 
-  it("uses the earliest persisted start and latest persisted end across rounds", async () => {
+  it("uses Round 1 timing and ended Round 7 history for the CWL window", async () => {
     const { run } = activity({
       cwlRoundHistory: [
-        { eventInstanceId: "event-1", preparationStartTime: at("2026-03-31T00:00:00.000Z"), startTime: null, endTime: at("2026-04-07T00:00:00.000Z") },
-        { eventInstanceId: "event-1", preparationStartTime: null, startTime: at("2026-04-02T00:00:00.000Z"), endTime: at("2026-04-09T00:00:00.000Z") },
+        { eventInstanceId: "event-1", roundDay: 1, roundState: "warEnded", preparationStartTime: at("2026-03-31T00:00:00.000Z"), startTime: at("2026-04-02T00:00:00.000Z"), endTime: at("2026-04-02T00:00:00.000Z") },
+        { eventInstanceId: "event-1", roundDay: 7, roundState: "warEnded", preparationStartTime: null, startTime: at("2026-04-08T00:00:00.000Z"), endTime: at("2026-04-09T00:00:00.000Z") },
       ],
     });
     const result = await run();
@@ -196,11 +204,65 @@ describe("CwlAllianceActivityService", () => {
   });
 
   it("does not invent an end for an incomplete or ongoing round set", async () => {
-    const { run } = activity({ currentCwlRound: [{ ...baseSeed().currentCwlRound[0], endTime: null }] });
+    const { run } = activity({ currentCwlRound: [{ ...baseSeed().currentCwlRound[0], endTime: null }], cwlRoundHistory: [] });
     const result = await run();
     expect(result.cwlWindow.endsAt).toBeNull();
     expect(result.cwlWindow.timingCoverageComplete).toBe(false);
     expect(result.postCwlRetention.available).toBe(false);
+  });
+
+  it("ignores a scheduled Day 4 current-round end while CWL is in progress", async () => {
+    const { run } = activity({
+      currentCwlRound: [{ ...baseSeed().currentCwlRound[0], roundDay: 4, roundState: "inWar", endTime: at("2026-04-08T00:00:00.000Z") }],
+      cwlRoundHistory: [],
+    });
+    const result = await run();
+    expect(result.cwlWindow.endsAt).toBeNull();
+  });
+
+  it("ignores a scheduled Day 7 current-round end until ended history exists", async () => {
+    const { run } = activity({
+      currentCwlRound: [{ ...baseSeed().currentCwlRound[0], roundDay: 7, roundState: "inWar", endTime: at("2026-04-08T00:00:00.000Z") }],
+      cwlRoundHistory: [],
+    });
+    expect((await run()).cwlWindow.endsAt).toBeNull();
+  });
+
+  it("makes endsAt available from a valid ended Round 7 history row", async () => {
+    const { run } = activity({
+      currentCwlRound: [{ ...baseSeed().currentCwlRound[0], roundDay: 1 }],
+      cwlRoundHistory: [{ eventInstanceId: "event-1", roundDay: 7, roundState: "warEnded", endTime: at("2026-04-09T00:00:00.000Z") }],
+    });
+    expect((await run()).cwlWindow.endsAt).toEqual(at("2026-04-09T00:00:00.000Z"));
+  });
+
+  it("requires final-ended evidence for every selected event", async () => {
+    const seed = baseSeed();
+    const eventTwo = { id: "event-2", season, firstObservedAt: at("2026-04-01T00:00:00.000Z"), lastObservedAt: at("2026-04-08T00:00:00.000Z") };
+    seed.cwlTrackedClan = [{ id: 1, season, tag: cwlClan }, { id: 2, season, tag: cwlClanTwo }];
+    seed.cwlEventClan = [seed.cwlEventClan[0], { ...seed.cwlEventClan[0], id: "event-clan-2", eventInstanceId: eventTwo.id, clanTag: cwlClanTwo, eventInstance: eventTwo }];
+    seed.currentCwlRound = [seed.currentCwlRound[0], { ...seed.currentCwlRound[0], eventInstanceId: eventTwo.id, clanTag: cwlClanTwo }];
+    const { run } = activity(seed);
+    const result = await run();
+    expect(result.cwlWindow.endsAt).toBeNull();
+    expect(result.cwlWindow.missingTimingDetails).toContain("event-2:FINAL_END_ROUND_7");
+  });
+
+  it("does not use Day 3 as the authoritative CWL start", async () => {
+    const { run } = activity({
+      currentCwlRound: [{ ...baseSeed().currentCwlRound[0], roundDay: 3, preparationStartTime: at("2026-04-03T00:00:00.000Z") }],
+      cwlRoundHistory: [{ eventInstanceId: "event-1", roundDay: 7, roundState: "warEnded", endTime: at("2026-04-09T00:00:00.000Z") }],
+    });
+    const result = await run();
+    expect(result.cwlWindow.startsAt).toBeNull();
+    expect(result.cwlWindow.missingTimingDetails).toContain("event-1:START_ROUND_1");
+  });
+
+  it("uses Round 1 startTime only when preparationStartTime is unavailable", async () => {
+    const { run } = activity({
+      currentCwlRound: [{ ...baseSeed().currentCwlRound[0], preparationStartTime: null, startTime: at("2026-04-02T00:00:00.000Z") }],
+    });
+    expect((await run()).cwlWindow.startsAt).toEqual(at("2026-04-02T00:00:00.000Z"));
   });
 
   it("selects the latest completed pre-CWL FWA war", async () => {
@@ -259,6 +321,8 @@ describe("CwlAllianceActivityService", () => {
     const result = await run();
     expect(result.coverage.duplicateReconciliations).toBeGreaterThanOrEqual(1);
     expect(result.players.preFwa[0].homeFwaClanTag).toBe(fwaClanTwo);
+    expect(result.preCwlClans.find((clan) => clan.clanTag === fwaClan)).toMatchObject({ preCwlRosterCount: 0, sourcePreCwlRosterCount: 1 });
+    expect(result.preCwlClans.find((clan) => clan.clanTag === fwaClanTwo)).toMatchObject({ preCwlRosterCount: 1, sourcePreCwlRosterCount: 1 });
   });
 
   it("excludes CWL rows with zero participation days", async () => {
@@ -345,6 +409,43 @@ describe("CwlAllianceActivityService", () => {
     expect(result.postCwlRetention.retentionRate).toBe(100);
   });
 
+  it("does not let post evidence from a pre-uncovered clan satisfy retention coverage", async () => {
+    const baseWar = baseSeed().clanWarHistory[0];
+    const { run } = activity({
+      trackedClan: [{ id: 1, tag: fwaClan }, { id: 2, tag: fwaClanTwo }],
+      clanWarHistory: [
+        baseWar,
+        { ...baseWar, warId: 5, clanTag: fwaClanTwo, warStartTime: at("2026-04-10T00:00:00.000Z"), warEndTime: at("2026-04-11T00:00:00.000Z") },
+      ],
+      clanWarParticipation: [
+        baseSeed().clanWarParticipation[0],
+        { ...baseSeed().clanWarParticipation[0], warId: "5", clanTag: fwaClanTwo, playerTag: playerTwo },
+      ],
+    });
+    const result = await run();
+    expect(result.coverage).toMatchObject({ expectedPostClanCount: 1, coveredPostClanCount: 0, postCoverageComplete: false });
+    expect(result.postCwlRetention.retentionRate).toBeNull();
+  });
+
+  it("counts a post-covered clan only when it is also pre-covered", async () => {
+    const baseWar = baseSeed().clanWarHistory[0];
+    const { run } = activity({
+      trackedClan: [{ id: 1, tag: fwaClan }, { id: 2, tag: fwaClanTwo }],
+      clanWarHistory: [
+        baseWar,
+        { ...baseWar, warId: 4, warStartTime: at("2026-04-10T00:00:00.000Z"), warEndTime: at("2026-04-11T00:00:00.000Z") },
+        { ...baseWar, warId: 5, clanTag: fwaClanTwo, warStartTime: at("2026-04-10T00:00:00.000Z"), warEndTime: at("2026-04-11T00:00:00.000Z") },
+      ],
+      clanWarParticipation: [
+        baseSeed().clanWarParticipation[0],
+        { ...baseSeed().clanWarParticipation[0], warId: "4", playerTag: playerOne },
+        { ...baseSeed().clanWarParticipation[0], warId: "5", clanTag: fwaClanTwo, playerTag: playerTwo },
+      ],
+    });
+    const result = await run();
+    expect(result.coverage).toMatchObject({ expectedPostClanCount: 1, coveredPostClanCount: 1, postCoverageComplete: true });
+  });
+
   it("keeps global retention null when one expected post-CWL clan is uncovered", async () => {
     const { run } = activity({
       trackedClan: [{ id: 1, tag: fwaClan, name: "FWA One" }, { id: 2, tag: fwaClanTwo, name: "FWA Two" }],
@@ -373,7 +474,7 @@ describe("CwlAllianceActivityService", () => {
       ],
     });
     const result = await run();
-    expect(result.preCwlClans[0]).toMatchObject({ returnedAfterCwlCount: 1, retentionRate: 100 });
+    expect(result.preCwlClans[0]).toMatchObject({ preCwlRosterCount: 1, sourcePreCwlRosterCount: 1, returnedAfterCwlCount: 1, retentionRate: 100 });
   });
 
   it("does not query baseline or CurrentWar owners", async () => {
@@ -407,7 +508,7 @@ describe("CwlAllianceActivityService", () => {
   });
 
   it("does not issue a post-CWL war read when the persisted CWL end is unavailable", async () => {
-    const { db, run } = activity({ currentCwlRound: [{ ...baseSeed().currentCwlRound[0], endTime: null }] });
+    const { db, run } = activity({ currentCwlRound: [{ ...baseSeed().currentCwlRound[0], endTime: null }], cwlRoundHistory: [] });
     await run();
     expect(db.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
   });

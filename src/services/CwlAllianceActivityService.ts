@@ -87,6 +87,7 @@ export type CwlAllianceActivityResult = {
     unavailableReason: string | null;
     sourcePreCwlWar: CwlAllianceActivitySourceWar | null;
     preCwlRosterCount: number;
+    sourcePreCwlRosterCount: number;
     cwlParticipantCount: number;
     fwaOnlyCount: number;
     bothCount: number;
@@ -387,7 +388,7 @@ function compareHistoricalEventRows(a: any, b: any): number {
 
 type CwlWindow = CwlAllianceActivityResult["cwlWindow"];
 
-/** Purpose: derive the CWL window from persisted round owners without inventing ongoing end times. */
+/** Purpose: derive the CWL window from Round 1 and ended Round 7 owners without inventing ongoing end times. */
 async function resolveCwlWindow(input: {
   db: ActivityDb;
   eventInstanceIds: string[];
@@ -420,30 +421,40 @@ async function resolveCwlWindow(input: {
   const missingTimingDetails: string[] = [];
   for (const eventInstanceId of input.eventInstanceIds) {
     const rows = rowsByEvent.get(eventInstanceId) ?? [];
-    const startCandidates = rows
+    const roundOneRows = rows.filter((row) => Number(row?.roundDay) === 1);
+    const startCandidates = roundOneRows
       .map((row) => asDate(row?.preparationStartTime) ?? asDate(row?.startTime))
       .filter((value): value is Date => Boolean(value));
-    const endCandidates = rows
+    const finalEndedRows = rows.filter(
+      (row) => Number(row?.roundDay) === 7 && isEndedCwlRoundState(row?.roundState),
+    );
+    const endCandidates = finalEndedRows
       .map((row) => asDate(row?.endTime))
       .filter((value): value is Date => Boolean(value));
     if (startCandidates.length <= 0) {
-      missingTimingDetails.push(`${eventInstanceId}:START_TIME`);
+      missingTimingDetails.push(`${eventInstanceId}:START_ROUND_1`);
     } else {
       starts.push(minDate(startCandidates));
     }
     if (endCandidates.length <= 0) {
-      missingTimingDetails.push(`${eventInstanceId}:END_TIME`);
+      missingTimingDetails.push(`${eventInstanceId}:FINAL_END_ROUND_7`);
     } else {
       ends.push(maxDate(endCandidates));
     }
   }
+  const startCoverageComplete = !missingTimingDetails.some((detail) => detail.endsWith(":START_ROUND_1"));
   const complete = missingTimingDetails.length === 0;
   return {
-    startsAt: starts.length > 0 ? minDate(starts) : null,
+    startsAt: startCoverageComplete && starts.length > 0 ? minDate(starts) : null,
     endsAt: complete && ends.length > 0 ? maxDate(ends) : null,
     timingCoverageComplete: complete,
     missingTimingDetails,
   };
+}
+
+/** Purpose: recognize the persisted ended-round state used by CWL history ownership. */
+function isEndedCwlRoundState(value: unknown): boolean {
+  return String(value ?? "").toLowerCase().includes("warended");
 }
 
 type HistoryWar = CwlAllianceActivitySourceWar & { warId: number };
@@ -498,6 +509,7 @@ async function loadParticipationRows(input: {
 type PreCwlBuild = {
   players: CwlAllianceActivityPrePlayer[];
   coveredClanCount: number;
+  coveredClanTags: Set<string>;
   duplicateReconciliations: number;
   byClan: Map<string, CwlAllianceActivityPrePlayer[]>;
   clanData: Map<string, PreCwlClanData>;
@@ -528,6 +540,7 @@ function buildPreCwlCohort(input: {
   const candidatesByPlayer = new Map<string, Array<CwlAllianceActivityPrePlayer & { sourceWar: HistoryWar }>>();
   const byClan = new Map<string, CwlAllianceActivityPrePlayer[]>();
   const clanData = new Map<string, PreCwlClanData>();
+  const coveredClanTags = new Set<string>();
   let coveredClanCount = 0;
   for (const selection of input.selections) {
     const sourceWar = selection.war;
@@ -535,7 +548,10 @@ function buildPreCwlCohort(input: {
       ? dedupeParticipationRows(participationByWar.get(String(sourceWar.warId)) ?? [], selection.clan.clanTag)
       : [];
     const available = Boolean(input.startsAt && sourceWar && participationRows.length > 0);
-    if (available) coveredClanCount += 1;
+    if (available) {
+      coveredClanCount += 1;
+      coveredClanTags.add(selection.clan.clanTag);
+    }
     clanData.set(selection.clan.clanTag, {
       sourceWar,
       coverageAvailable: available,
@@ -575,7 +591,7 @@ function buildPreCwlCohort(input: {
   }
   players.sort(comparePlayers);
   for (const clanPlayers of byClan.values()) clanPlayers.sort(comparePlayers);
-  return { players, coveredClanCount, duplicateReconciliations, byClan, clanData };
+  return { players, coveredClanCount, coveredClanTags, duplicateReconciliations, byClan, clanData };
 }
 
 /** Purpose: deduplicate exact-war participation by normalized player tag. */
@@ -780,13 +796,16 @@ async function buildPostCwlRetention(input: {
   }
   const candidatesByPlayer = new Map<string, Array<CwlAllianceActivityPostPlayer & { sourceWar: HistoryWar }>>();
   const byClan = new Map<string, PostCwlClanData>();
+  const preCoveredClanTags = input.preCwl.coveredClanTags;
   let coveredPostClanCount = 0;
   for (const selection of selections) {
     const rows = selection.war
       ? dedupeParticipationRows(participationByWar.get(String(selection.war.warId)) ?? [], selection.clan.clanTag)
       : [];
     const coverageAvailable = Boolean(selection.war && rows.length > 0);
-    if (coverageAvailable) coveredPostClanCount += 1;
+    if (coverageAvailable && preCoveredClanTags.has(selection.clan.clanTag)) {
+      coveredPostClanCount += 1;
+    }
     for (const row of rows) {
       const playerTag = normalizeClashTagWithHash(row?.playerTag);
       if (!playerTag || !selection.war) continue;
@@ -830,7 +849,9 @@ async function buildPostCwlRetention(input: {
     data.retentionRate = data.coverageAvailable ? percentage(returned, clanPlayers.length) : null;
   }
   const expectedPostClanCount = input.preCwl.coveredClanCount;
-  const postCoverageComplete = expectedPostClanCount === coveredPostClanCount;
+  const postCoverageComplete =
+    expectedPostClanCount > 0 &&
+    [...preCoveredClanTags].every((clanTag) => byClan.get(clanTag)?.coverageAvailable === true);
   return {
     available: true,
     postCoverageComplete,
@@ -917,18 +938,20 @@ function buildPreCwlClanSummaries(input: {
     };
     const clanPlayers = input.preCwl.byClan.get(clan.clanTag) ?? [];
     const post = input.postByClan.get(clan.clanTag);
+    const postCoverageForPreCohort = Boolean(data.coverageAvailable && post?.coverageAvailable);
     return {
       clanTag: clan.clanTag,
       clanName: clan.clanName,
       coverageAvailable: data.coverageAvailable,
       unavailableReason: data.unavailableReason,
       sourcePreCwlWar: data.sourceWar,
-      preCwlRosterCount: data.sourceRosterCount,
+      preCwlRosterCount: clanPlayers.length,
+      sourcePreCwlRosterCount: data.sourceRosterCount,
       cwlParticipantCount: clanPlayers.filter((player) => cwlByTag.has(player.playerTag)).length,
       fwaOnlyCount: clanPlayers.filter((player) => fwaOnlyByTag.has(player.playerTag)).length,
       bothCount: clanPlayers.filter((player) => bothByTag.has(player.playerTag)).length,
-      returnedAfterCwlCount: post?.coverageAvailable ? post.returnedAfterCwlCount : null,
-      retentionRate: post?.coverageAvailable ? post.retentionRate : null,
+      returnedAfterCwlCount: postCoverageForPreCohort ? post!.returnedAfterCwlCount : null,
+      retentionRate: postCoverageForPreCohort ? post!.retentionRate : null,
       sourcePostCwlWar: post?.sourceWar ?? null,
     };
   });
