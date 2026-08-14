@@ -1175,6 +1175,197 @@ describe("FWA base-swap layout links", () => {
     ]);
   });
 
+  it("renders live war-base progress from unique FWA-base positions", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      entries: [
+        ...Array.from({ length: 26 }, (_, index) =>
+          buildEntry({
+            position: index + 1,
+            playerTag: `#FWA${index + 1}`,
+            playerName: `Fwa_${index + 1}`,
+            section: "fwa_bases",
+            discordUserId: `${100 + index}`,
+          }),
+        ),
+        buildEntry({
+          position: 27,
+          playerTag: "#FWA27",
+          playerName: "Fwa_27",
+          section: "fwa_bases",
+          discordUserId: "127",
+        }),
+        buildEntry({
+          position: 27,
+          playerTag: "#FWA27-DUPLICATE",
+          playerName: "Fwa_27 duplicate",
+          section: "fwa_bases",
+          discordUserId: "127",
+        }),
+      ],
+      layoutLinks: [],
+      phaseTimingLine: "## Preparation Day ends <t:1740000000:F> (<t:1740000000:R>)",
+    });
+
+    expect(content).toContain("## 23 / 50 war bases");
+    expect(content.indexOf("## 23 / 50 war bases")).toBeGreaterThan(
+      content.indexOf(
+        "These players currently have an active FWA base. Please swap to an active war base to increase our chances of beating the blacklisted clan!",
+      ),
+    );
+    expect(content.indexOf("## 23 / 50 war bases")).toBeLessThan(
+      content.indexOf("## Preparation Day ends"),
+    );
+
+    const acknowledgedContent = renderFwaBaseSwapAnnouncementForTest({
+      entries: Array.from({ length: 27 }, (_, index) =>
+        buildEntry({
+          position: index + 1,
+          playerTag: `#ACK${index + 1}`,
+          playerName: `Ack_${index + 1}`,
+          section: "fwa_bases",
+          discordUserId: `ack-${index + 1}`,
+          acknowledged: index < 6,
+        }),
+      ),
+    });
+    expect(acknowledgedContent).toContain("## 29 / 50 war bases");
+  });
+
+  it("isolates progress to FWA fwa-bases and excludes CWL posts", () => {
+    const nonFwaContent = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "FWA",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#WAR1",
+          playerName: "War base",
+          section: "war_bases",
+          discordUserId: "war-user",
+          acknowledged: true,
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#ERR2",
+          playerName: "Error base",
+          section: "base_errors",
+          discordUserId: "error-user",
+          acknowledged: true,
+        }),
+      ],
+    });
+    const mixedContent = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "FWA",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#FWA1",
+          playerName: "FWA base",
+          section: "fwa_bases",
+          discordUserId: "fwa-user",
+        }),
+        buildEntry({
+          position: 2,
+          playerTag: "#WAR2",
+          playerName: "Acknowledged war base",
+          section: "war_bases",
+          discordUserId: "war-user",
+          acknowledged: true,
+        }),
+        buildEntry({
+          position: 3,
+          playerTag: "#ERR3",
+          playerName: "Acknowledged error base",
+          section: "base_errors",
+          discordUserId: "error-user",
+          acknowledged: true,
+        }),
+      ],
+    });
+    const cwlContent = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "CWL",
+      entries: [
+        buildEntry({
+          position: 1,
+          playerTag: "#FWA1",
+          playerName: "CWL FWA base",
+          section: "fwa_bases",
+          discordUserId: "cwl-user",
+        }),
+      ],
+    });
+
+    expect(nonFwaContent).not.toMatch(/^## \d+ \/ 50 war bases$/m);
+    expect(mixedContent).toContain("## 49 / 50 war bases");
+    expect(cwlContent).not.toMatch(/^## \d+ \/ 50 war bases$/m);
+  });
+
+  it("renders 50 / 50 when every unique FWA-base position is acknowledged", () => {
+    const content = renderFwaBaseSwapAnnouncementForTest({
+      clanKind: "FWA",
+      entries: Array.from({ length: 27 }, (_, index) =>
+        buildEntry({
+          position: index + 1,
+          playerTag: `#DONE${index + 1}`,
+          playerName: `Done_${index + 1}`,
+          section: "fwa_bases",
+          discordUserId: `done-${index + 1}`,
+          acknowledged: true,
+        }),
+      ),
+    });
+
+    expect(content).toContain("## 50 / 50 war bases");
+  });
+
+  it("updates progress for every FWA base owned by the reacting Discord user", async () => {
+    const metadata: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
+      entries: [
+        ...Array.from({ length: 5 }, (_, index) =>
+          buildEntry({
+            position: index + 1,
+            playerTag: `#OWN${index + 1}`,
+            playerName: `Owner_${index + 1}`,
+            section: "fwa_bases",
+            discordUserId: index < 3 ? "reactor-3" : `other-${index}`,
+          }),
+        ),
+      ],
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: 42,
+      messageId: "message-owner-3",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata,
+    });
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const message = {
+      id: "message-owner-3",
+      channelId: "channel-1",
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const changed = await new TrackedMessageService().handleFwaBaseSwapReaction({
+      messageId: "message-owner-3",
+      reactorUserId: "reactor-3",
+      message,
+      render: renderFwaBaseSwapAnnouncementForTest,
+    });
+
+    expect(changed).toBe(true);
+    const editPayload = message.edit.mock.calls[0]?.[0];
+    expect(String(editPayload.content)).toContain("## 48 / 50 war bases");
+    expect(
+      String(editPayload.content)
+        .split("\n")
+        .filter((line) => line.includes(` - ${FWA_BASE_SWAP_ACK_EMOJI}`)),
+    ).toHaveLength(3);
+  });
+
   it("keeps the main announcement free of swap-back reminder content when swap-reminder is enabled", () => {
     const mainContent = renderFwaBaseSwapAnnouncementForTest({
       entries: [
@@ -1598,6 +1789,98 @@ describe("FWA base-swap layout links", () => {
 describe("FWA base-swap split-post reaction tracking", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("rerenders the live progress line in both split posts after acknowledgement", async () => {
+    const entries = Array.from({ length: 35 }, (_, index) =>
+      buildEntry({
+        position: index + 1,
+        playerTag: `#SPLIT${index + 1}`,
+        playerName: `Split_Player_With_A_Long_Name_${index + 1}`,
+        section: "fwa_bases",
+        discordUserId: index < 3 ? "split-reactor" : `split-${index}`,
+      }),
+    );
+    const initialPlan = buildFwaBaseSwapRenderPlanForTest({
+      entries,
+      layoutLinks: [],
+    });
+    expect(initialPlan.fitsSingleMessage).toBe(false);
+    expect(initialPlan.splitContents).not.toBeNull();
+    expect(initialPlan.singleContent).toContain("## 15 / 50 war bases");
+
+    const metadataPartOne: FwaBaseSwapTrackedMetadata = {
+      clanName: "Test Clan",
+      createdByUserId: "admin-1",
+      createdAtIso: "2026-03-19T00:00:00.000Z",
+      swapReminder: false,
+      renderVariant: "split_part_1",
+      entries,
+      layoutLinks: [],
+    };
+    const metadataPartTwo: FwaBaseSwapTrackedMetadata = {
+      ...metadataPartOne,
+      renderVariant: "split_part_2",
+    };
+
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "split-row-1",
+      messageId: "split-message-1",
+      channelId: "channel-1",
+      referenceId: "fwa-base-swap:progress-split",
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+      metadata: metadataPartOne,
+    });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "split-row-1",
+        messageId: "split-message-1",
+        channelId: "channel-1",
+        referenceId: "fwa-base-swap:progress-split",
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+        metadata: metadataPartOne,
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+      {
+        id: "split-row-2",
+        messageId: "split-message-2",
+        channelId: "channel-1",
+        referenceId: "fwa-base-swap:progress-split",
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_BASE_SWAP,
+        metadata: metadataPartTwo,
+        createdAt: new Date("2026-03-19T00:00:01.000Z"),
+      },
+    ]);
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+
+    const currentMessage = {
+      id: "split-message-1",
+      channelId: "channel-1",
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const siblingMessage = {
+      edit: vi.fn().mockResolvedValue(undefined),
+    };
+    const changed = await new TrackedMessageService().handleFwaBaseSwapReaction({
+      messageId: "split-message-1",
+      reactorUserId: "split-reactor",
+      message: currentMessage,
+      render: renderFwaBaseSwapAnnouncementForTest,
+      resolveMessageForEdit: async ({ messageId }) =>
+        messageId === "split-message-2" ? siblingMessage : null,
+    });
+
+    expect(changed).toBe(true);
+    expect(currentMessage.edit).toHaveBeenCalledTimes(1);
+    expect(siblingMessage.edit).toHaveBeenCalledTimes(1);
+    const rerenderedSplitContent = [
+      String(currentMessage.edit.mock.calls[0]?.[0].content),
+      String(siblingMessage.edit.mock.calls[0]?.[0].content),
+    ].join("\n");
+    expect(rerenderedSplitContent).toContain("## 18 / 50 war bases");
   });
 
   it("updates shared acknowledgement state when reacting on either split message", async () => {

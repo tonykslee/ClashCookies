@@ -1252,6 +1252,33 @@ function getFwaBaseSwapEntriesBySection(
   return entries.filter((entry) => entry.section === section);
 }
 
+/** Purpose: derive the live FWA war-base progress line from unique FWA-base positions. */
+function buildFwaBaseSwapWarBaseProgressLine(input: {
+  clanKind: FwaBaseSwapClanKind;
+  entries: readonly FwaBaseSwapAnnouncementEntry[];
+}): string | null {
+  if (input.clanKind === "CWL") return null;
+
+  const acknowledgedByPosition = new Map<number, boolean>();
+  for (const entry of input.entries) {
+    if (entry.section !== "fwa_bases") continue;
+    const position = Number(entry.position);
+    if (!Number.isInteger(position) || position < 1 || position > 50) continue;
+    acknowledgedByPosition.set(
+      position,
+      Boolean(acknowledgedByPosition.get(position)) || entry.acknowledged,
+    );
+  }
+  if (acknowledgedByPosition.size === 0) return null;
+
+  const totalFwaBaseEntries = acknowledgedByPosition.size;
+  const acknowledgedFwaBaseEntries = [...acknowledgedByPosition.values()].filter(
+    Boolean,
+  ).length;
+  const warBaseCount = 50 - totalFwaBaseEntries + acknowledgedFwaBaseEntries;
+  return `## ${warBaseCount} / 50 war bases`;
+}
+
 function buildFwaBaseSwapAnnouncementSectionLines(input: {
   lines: string[];
   entries: readonly FwaBaseSwapAnnouncementEntry[];
@@ -2364,6 +2391,11 @@ function buildFwaBaseSwapAnnouncementLines(state: {
       noteLine: resolveFwaBaseSwapAnnouncementNote(clanKind),
       separatorBefore: true,
     });
+    const warBaseProgressLine = buildFwaBaseSwapWarBaseProgressLine({
+      clanKind,
+      entries: state.entries,
+    });
+    if (warBaseProgressLine) lines.push("", warBaseProgressLine);
   }
 
   if (baseErrorLines.length > 0) {
