@@ -896,6 +896,29 @@ model CwlAllianceSeasonBaselineMember {
   @@index([linkedDiscordUserId])
 }
 
+enum AllianceClanMembershipIntervalEndReason {
+  TRANSFERRED
+  DEPARTED
+  TRACKING_STOPPED
+}
+
+model AllianceClanMembershipInterval {
+  id              String                               @id @default(cuid())
+  guildId         String
+  playerTag       String                               @db.VarChar(16)
+  clanTag         String                               @db.VarChar(16)
+  firstObservedAt DateTime
+  lastObservedAt  DateTime
+  endedAt         DateTime?
+  endReason       AllianceClanMembershipIntervalEndReason?
+  createdAt       DateTime                             @default(now())
+  updatedAt       DateTime                             @updatedAt
+
+  @@index([guildId, playerTag, firstObservedAt, endedAt])
+  @@index([guildId, clanTag, firstObservedAt, endedAt])
+  @@index([guildId, firstObservedAt, endedAt])
+}
+
 model CwlSeasonRosterState {
   eventInstanceId          String
   season                   String

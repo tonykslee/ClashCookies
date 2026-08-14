@@ -50,6 +50,16 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn().mockResolvedValue([]),
   },
+  cwlTrackedClan: {
+    findMany: vi.fn().mockResolvedValue([]),
+  },
+  allianceClanMembershipInterval: {
+    findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn().mockResolvedValue(null),
+    create: vi.fn().mockResolvedValue({}),
+    update: vi.fn().mockResolvedValue({}),
+  },
+  $transaction: vi.fn(async (callback: any) => callback(prismaMock)),
   trackedMessage: {
     findMany: vi.fn().mockResolvedValue([]),
     findFirst: vi.fn().mockResolvedValue(null),
@@ -410,6 +420,9 @@ describe("ready listener startup", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.allianceClanMembershipInterval.findMany.mockResolvedValue([]);
+    prismaMock.allianceClanMembershipInterval.findFirst.mockResolvedValue(null);
   });
 
   afterEach(() => {

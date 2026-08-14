@@ -25,7 +25,10 @@ import { CwlFetchCycleCache } from "../services/CwlFetchCycleCache";
 import { TelemetryIngestService } from "../services/telemetry/ingest";
 import { startTelemetryScheduleLoop } from "../services/telemetry/schedule";
 import { refreshAllTrackedWarMailPosts } from "../commands/Fwa";
-import { backfillMissingDiscordUsernamesForClanMembers } from "../services/PlayerLinkService";
+import {
+  backfillMissingDiscordUsernamesForClanMembers,
+} from "../services/PlayerLinkService";
+import { normalizeClashTagWithHash } from "../helper/clashTag";
 import { HeatMapRefRebuildService } from "../services/HeatMapRefRebuildService";
 import { AutoRoleSchedulerService } from "../services/AutoRoleSchedulerService";
 import { startActivityObserveLoop } from "../services/ActivityObserveStartupService";
@@ -97,6 +100,11 @@ import {
   resolveWarEventPollIntervalMsFromEnv,
 } from "../services/WarEventPollScheduleService";
 import { MirrorSyncService } from "../services/MirrorSyncService";
+import {
+  AllianceClanMembershipIntervalService,
+  type AllianceClanRosterObservation,
+} from "../services/AllianceClanMembershipIntervalService";
+import { observeCwlOnlyClanRosters } from "../services/AllianceClanMembershipObservationService";
 const DEFAULT_OBSERVE_INTERVAL_MINUTES = 30;
 const RECRUITMENT_REMINDER_INTERVAL_MS = 60 * 60 * 1000;
 const RECRUITMENT_RULE_REMINDER_INTERVAL_MS = 60 * 1000;
@@ -622,6 +630,7 @@ export default (client: Client, cocService: CoCService): void => {
     dozzleLog.info("Telemetry ingest + schedule loops enabled.");
 
     const activityService = new ActivityService(cocService);
+    const allianceClanMembershipIntervalService = new AllianceClanMembershipIntervalService();
     const warEventLogService = new WarEventLogService(client, cocService);
     const settings = new SettingsService();
     const pollCycleGuard = new PollCycleGuardService();
@@ -650,6 +659,11 @@ export default (client: Client, cocService: CoCService): void => {
         logChannelId: string | null;
         members: Array<{ playerTag: string; playerName: string }>;
       }>;
+      monitoredMembershipClanTags: string[];
+      successfullyObservedMembershipRosters: AllianceClanRosterObservation[];
+      cwlOnlyFetches: number;
+      failedCwlOnlyClanTags: string[];
+      fwaRostersReused: number;
     }> => {
       const dbTracked = await prisma.trackedClan.findMany({
         orderBy: { createdAt: "asc" },
@@ -661,8 +675,28 @@ export default (client: Client, cocService: CoCService): void => {
       });
 
       const trackedTags = dbTracked.map((c) => c.tag);
+      const currentCwlSeason = resolveCurrentCwlSeasonKey(scheduledAtMs);
+      let dbCwlTracked = [] as Array<{ tag: string }>;
+      try {
+        dbCwlTracked = await prisma.cwlTrackedClan.findMany({
+          where: { season: currentCwlSeason },
+          orderBy: [{ createdAt: "asc" }, { tag: "asc" }],
+          select: { tag: true },
+        });
+      } catch (err) {
+        console.error(
+          `[alliance-membership-history] current_cwl_registry_read_failed season=${currentCwlSeason} error=${formatError(err)}`,
+        );
+      }
+      const monitoredMembershipClanTags = [
+        ...new Set(
+          [...trackedTags, ...dbCwlTracked.map((clan) => clan.tag)]
+            .map((tag) => normalizeClashTagWithHash(tag))
+            .filter(Boolean),
+        ),
+      ];
 
-      if (trackedTags.length === 0) {
+      if (trackedTags.length === 0 && dbCwlTracked.length === 0) {
         console.warn(
           "No tracked clans configured. Use /clan configure."
         );
@@ -675,6 +709,11 @@ export default (client: Client, cocService: CoCService): void => {
           observedTags: [],
           observedPlayerCurrent: [],
           observedFwaClans: [],
+          monitoredMembershipClanTags,
+          successfullyObservedMembershipRosters: [],
+          cwlOnlyFetches: 0,
+          failedCwlOnlyClanTags: [],
+          fwaRostersReused: 0,
         };
       }
 
@@ -692,6 +731,7 @@ export default (client: Client, cocService: CoCService): void => {
         logChannelId: string | null;
         members: Array<{ playerTag: string; playerName: string }>;
       }> = [];
+      const successfullyObservedMembershipRosters: AllianceClanRosterObservation[] = [];
       for (const trackedClan of dbTracked) {
         try {
           const observedClan = await activityService.observeClanDetailed(
@@ -709,6 +749,10 @@ export default (client: Client, cocService: CoCService): void => {
           observedTrackedClans.push({
             clanTag: trackedClan.tag,
             memberTags: observedClan.memberTags,
+          });
+          successfullyObservedMembershipRosters.push({
+            clanTag: observedClan.clanTag,
+            playerTags: observedClan.memberTags,
           });
           for (const entry of observedClan.observedPlayerCurrent ?? []) {
             const playerTag = String(entry?.playerTag ?? "").trim();
@@ -736,6 +780,13 @@ export default (client: Client, cocService: CoCService): void => {
         }
       }
 
+      const cwlOnlyObservation = await observeCwlOnlyClanRosters({
+        cwlClanTags: dbCwlTracked.map((clan) => clan.tag),
+        alreadyObservedClanTags: trackedTags,
+        cocService,
+      });
+      successfullyObservedMembershipRosters.push(...cwlOnlyObservation.rosters);
+
       return {
         trackedClanCount: dbTracked.length,
         configuredTrackedClanTags: trackedTags,
@@ -751,6 +802,11 @@ export default (client: Client, cocService: CoCService): void => {
           }),
         ),
         observedFwaClans,
+        monitoredMembershipClanTags,
+        successfullyObservedMembershipRosters,
+        cwlOnlyFetches: cwlOnlyObservation.attemptedFetches,
+        failedCwlOnlyClanTags: cwlOnlyObservation.failedClanTags,
+        fwaRostersReused: successfullyObservedTrackedClanTags.length,
       };
     };
 
@@ -809,6 +865,18 @@ export default (client: Client, cocService: CoCService): void => {
               const observed = await observeTrackedClans(activityObserveCycleId, scheduledAtMs);
               observedClanCount = observed.trackedClanCount;
               liveClanFetchCount = observed.observedFwaClans.length;
+              await allianceClanMembershipIntervalService.reconcileCycle({
+                guildId,
+                observedAt: new Date(scheduledAtMs),
+                monitoredClanTags: observed.monitoredMembershipClanTags,
+                successfullyObservedClanRosters: observed.successfullyObservedMembershipRosters,
+                collectionSummary: {
+                  fwaRostersReused: observed.fwaRostersReused,
+                  cwlOnlyFetches: observed.cwlOnlyFetches,
+                  failedClans:
+                    observed.failedTrackedClanTags.length + observed.failedCwlOnlyClanTags.length,
+                },
+              });
               try {
                 linkedPlayerCurrentReconcile = await linkedPlayerCurrentReconcileService.reconcile({
                   configuredTrackedClanTags: observed.configuredTrackedClanTags,
