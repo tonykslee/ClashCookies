@@ -44,6 +44,7 @@ describe("legacy CWL baseline cleanup migration", () => {
 
   it("keeps the already-applied creation migration immutable", () => {
     const original = readFileSync(originalMigrationPath);
+    // Pin the exact bytes of this already-applied immutable migration.
     expect(createHash("sha256").update(original).digest("hex")).toBe(
       "2e51f72c1984b3265e318bf5ebc12f451f45085b5e277d549c575190b979c931",
     );
