@@ -45,6 +45,7 @@ Core subsystems:
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarPlanComplianceEvaluation / WarPlanViolation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
+- Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. Future reporting commands read this history only.
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
 - Roster signup foundation: `RosterService -> Roster / RosterGroup / RosterSignup / RosterGuildConfig`, with `visitorSignupOpensAt` now persisted as nullable roster metadata for later signup-window enforcement and roster-post display work and now configurable through `/roster create` and `/roster edit`. Public roster posts display the configured visitor signup status line from the shared roster payload builder: before opening they show the full and relative Discord timestamp, at or after opening they show `Open`, and null opening time omits the line entirely. The public `Signup` panel enforces the delayed visitor window before it opens account selection, and the final public confirmation now revalidates the same delayed-signup policy immediately before signup mutations commit. `RosterService` owns the pure delayed-signup eligibility policy that consumes already-resolved `visitorSignupOpensAt`, configured delayed roles, alliance-member precedence, manager bypass, and the exact `now < visitorSignupOpensAt` / `now >= visitorSignupOpensAt` boundary. Guild-scoped default roster board columns now live in `RosterGuildConfig`, while explicit per-roster `displayColumns` stays authoritative for customized boards. Discord/config resolution failures for the public gate fail open with bounded logging, valid confirmation-time policy blocks consume the stale selection session and stop the mutation, existing signups and opt-out remain unaffected, roster-post rendering is shared by initial post and refresh flows, no scheduler automatically edits the message at the opening instant, and panel opening/final confirmation enforcement remain authoritative.
 - Roster delayed-signup config: `AutoRoleGuildConfig -> delayedSignupRoleIds`, with multiple Discord roles persisted for later delayed-signup policy use. It is configurable through `/roster delayed-signup-role add|remove|list|clear`, while `nonMemberRoleId` remains the separate existing autorole control.
@@ -80,6 +81,9 @@ Important owners:
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner artifacts | CwlRotationPlan* tables |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
+| Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
+| Current player state | PlayerCurrent |
+| Current FWA clan roster state | FwaClanMemberCurrent |
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
@@ -109,6 +113,7 @@ Do not duplicate ownership across tables.
 
 - Active mode owns external pollers and schedulers.
 - Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
+- `AllianceClanMembershipInterval` is excluded from the full-overwrite mirror allowlist. Production activity observation is its writer; mirror mode performs no membership-history polling or writes, and future reporting commands are read-only consumers.
 - Expensive upstream fetches should happen in background services, not in user-facing commands.
 - Derived tables and snapshots must be recreatable by their owning service.
 - Mirror runtime should include runtime-owned CWL round/history tables, event identity tables, and planner tables when staging needs consistent `/cwl` rendering against mirrored prod data.

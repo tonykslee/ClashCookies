@@ -50,6 +50,7 @@ export async function observeCwlOnlyClanRosters(input: {
   };
 }
 
+/** Purpose: render lightweight CWL roster-fetch failures compactly for bounded logs. */
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

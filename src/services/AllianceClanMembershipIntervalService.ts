@@ -204,6 +204,7 @@ export class AllianceClanMembershipIntervalService {
   }
 }
 
+/** Purpose: normalize and merge successful clan roster facts without duplicating a clan observation. */
 function normalizeSuccessfulRosters(
   rosters: AllianceClanRosterObservation[],
 ): AllianceClanRosterObservation[] {
@@ -224,6 +225,7 @@ function normalizeSuccessfulRosters(
   }));
 }
 
+/** Purpose: index positive roster facts by player so transfers and ambiguities are deterministic. */
 function buildPlayerToObservedClans(
   rosters: AllianceClanRosterObservation[],
 ): Map<string, Set<string>> {
@@ -238,6 +240,7 @@ function buildPlayerToObservedClans(
   return result;
 }
 
+/** Purpose: create one open history interval from a positive roster observation. */
 async function openIntervalForPlayer(
   tx: MembershipIntervalDb,
   guildId: string,
@@ -258,6 +261,7 @@ async function openIntervalForPlayer(
   });
 }
 
+/** Purpose: close one open interval with the deterministic observation-based end reason. */
 async function closeInterval(
   tx: MembershipIntervalDb,
   interval: IntervalRow,
@@ -270,6 +274,7 @@ async function closeInterval(
   });
 }
 
+/** Purpose: render persistence failures compactly for cycle-level logs. */
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

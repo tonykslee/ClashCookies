@@ -660,6 +660,7 @@ export default (client: Client, cocService: CoCService): void => {
         members: Array<{ playerTag: string; playerName: string }>;
       }>;
       monitoredMembershipClanTags: string[];
+      membershipRegistryAvailable: boolean;
       successfullyObservedMembershipRosters: AllianceClanRosterObservation[];
       cwlOnlyFetches: number;
       failedCwlOnlyClanTags: string[];
@@ -677,6 +678,7 @@ export default (client: Client, cocService: CoCService): void => {
       const trackedTags = dbTracked.map((c) => c.tag);
       const currentCwlSeason = resolveCurrentCwlSeasonKey(scheduledAtMs);
       let dbCwlTracked = [] as Array<{ tag: string }>;
+      let membershipRegistryAvailable = true;
       try {
         dbCwlTracked = await prisma.cwlTrackedClan.findMany({
           where: { season: currentCwlSeason },
@@ -684,6 +686,7 @@ export default (client: Client, cocService: CoCService): void => {
           select: { tag: true },
         });
       } catch (err) {
+        membershipRegistryAvailable = false;
         console.error(
           `[alliance-membership-history] current_cwl_registry_read_failed season=${currentCwlSeason} error=${formatError(err)}`,
         );
@@ -710,6 +713,7 @@ export default (client: Client, cocService: CoCService): void => {
           observedPlayerCurrent: [],
           observedFwaClans: [],
           monitoredMembershipClanTags,
+          membershipRegistryAvailable,
           successfullyObservedMembershipRosters: [],
           cwlOnlyFetches: 0,
           failedCwlOnlyClanTags: [],
@@ -803,6 +807,7 @@ export default (client: Client, cocService: CoCService): void => {
         ),
         observedFwaClans,
         monitoredMembershipClanTags,
+        membershipRegistryAvailable,
         successfullyObservedMembershipRosters,
         cwlOnlyFetches: cwlOnlyObservation.attemptedFetches,
         failedCwlOnlyClanTags: cwlOnlyObservation.failedClanTags,
@@ -865,18 +870,24 @@ export default (client: Client, cocService: CoCService): void => {
               const observed = await observeTrackedClans(activityObserveCycleId, scheduledAtMs);
               observedClanCount = observed.trackedClanCount;
               liveClanFetchCount = observed.observedFwaClans.length;
-              await allianceClanMembershipIntervalService.reconcileCycle({
-                guildId,
-                observedAt: new Date(scheduledAtMs),
-                monitoredClanTags: observed.monitoredMembershipClanTags,
-                successfullyObservedClanRosters: observed.successfullyObservedMembershipRosters,
-                collectionSummary: {
-                  fwaRostersReused: observed.fwaRostersReused,
-                  cwlOnlyFetches: observed.cwlOnlyFetches,
-                  failedClans:
-                    observed.failedTrackedClanTags.length + observed.failedCwlOnlyClanTags.length,
-                },
-              });
+              if (observed.membershipRegistryAvailable) {
+                await allianceClanMembershipIntervalService.reconcileCycle({
+                  guildId,
+                  observedAt: new Date(scheduledAtMs),
+                  monitoredClanTags: observed.monitoredMembershipClanTags,
+                  successfullyObservedClanRosters: observed.successfullyObservedMembershipRosters,
+                  collectionSummary: {
+                    fwaRostersReused: observed.fwaRostersReused,
+                    cwlOnlyFetches: observed.cwlOnlyFetches,
+                    failedClans:
+                      observed.failedTrackedClanTags.length + observed.failedCwlOnlyClanTags.length,
+                  },
+                });
+              } else {
+                dozzleLog.info(
+                  `[alliance-membership-history] event=reconcile_cycle_skipped reason=membership_registry_unavailable`,
+                );
+              }
               try {
                 linkedPlayerCurrentReconcile = await linkedPlayerCurrentReconcileService.reconcile({
                   configuredTrackedClanTags: observed.configuredTrackedClanTags,
