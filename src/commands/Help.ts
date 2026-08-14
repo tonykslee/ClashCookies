@@ -92,6 +92,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "compo:fill",
   "repwork",
   "cwl:activity",
+  "cwl:camping",
 ]);
 
 type CommandDoc = {
@@ -453,6 +454,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/cwl members clan:<tag> inwar:true` narrows to the persisted current/prep lineup and includes current round status when available.",
       "`/cwl activity [season:YYYY-MM] [view:summary|both|fwa-only|cwl-only|not-returned|new-post-cwl|clans] [page:n]` renders DB-first alliance activity from persisted historical CWL and FWA data. It includes the pre-CWL cohort, actual CWL participants, movement, and post-CWL return coverage without live API calls.",
       "Post-CWL return describes presence in the pre-CWL cohort and the first post-CWL FWA cycle; it does not claim uninterrupted membership throughout CWL. Incomplete coverage is shown as partial or unavailable rather than as an authoritative percentage.",
+      "`/cwl camping [season:YYYY-MM] [view:summary|players|clans|current] [page:n]` measures observed time that attributed alliance accounts spent in season CWL clans away from their historical pre-CWL FWA home. It is DB-first, read-only, uses observed membership intervals plus persisted CWL timing/home attribution, and never treats unattributed CWL-clan observations as proven camping.",
+      "Camping durations are observed membership time with observation-cadence precision, not exact join/leave duration. Partial tracking history is labeled partial, missing history is unavailable, ongoing CWL has no post-CWL metric, and malformed overlapping intervals are reconciled without mutating stored history.",
       "The manual baseline status/capture command surface is retired. Legacy baseline persistence remains dormant until its staged cleanup task.",
       "Roster signup, lifecycle, and manager controls now live under `/roster` so `/cwl` can stay focused on persisted CWL observations and rotation tooling.",
       "`/cwl rotations show` renders an interactive overview of active CWL plans with status, next battle-day timing, current-clan leadership summary, and a dropdown to open the detailed clan view; the clan page supports paging and manual refresh of that clan's actual CWL state. The clan autocomplete only lists tracked clans with an active current-season rotation.",
@@ -470,6 +473,11 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/cwl activity view:both",
       "/cwl activity view:fwa-only page:2",
       "/cwl activity view:clans",
+      "/cwl camping",
+      "/cwl camping season:2026-08",
+      "/cwl camping view:players page:2",
+      "/cwl camping view:clans",
+      "/cwl camping view:current",
       "/cwl rotations show",
       "/cwl rotations show clan:#2QG2C08UP day:3",
       "/cwl rotations create clan:#2QG2C08UP size:30 exclude:#PYLQ0289 #QGRJ2222 overwrite:true",

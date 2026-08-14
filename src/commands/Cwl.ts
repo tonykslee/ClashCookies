@@ -43,6 +43,10 @@ import {
   cwlAllianceActivityService,
   type CwlAllianceActivityResult,
 } from "../services/CwlAllianceActivityService";
+import {
+  cwlAllianceCampingService,
+  type CwlAllianceCampingResult,
+} from "../services/CwlAllianceCampingService";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   cwlRotationSheetService,
@@ -60,6 +64,7 @@ const CWL_EMBED_COLOR = 0xfee75c;
 const DISCORD_DESCRIPTION_LIMIT = 4096;
 const CWL_MEMBERS_SAFE_MESSAGE_CHAR_BUDGET = 5500;
 const CWL_ACTIVITY_PAGE_SIZE = 20;
+const CWL_CAMPING_PAGE_SIZE = 20;
 const CWL_ACTIVITY_VIEW_CHOICES = [
   ["summary", "Summary"],
   ["both", "BOTH players"],
@@ -68,6 +73,12 @@ const CWL_ACTIVITY_VIEW_CHOICES = [
   ["not-returned", "Not returned"],
   ["new-post-cwl", "New post-CWL FWA"],
   ["clans", "Clan summary"],
+] as const;
+const CWL_CAMPING_VIEW_CHOICES = [
+  ["summary", "Summary"],
+  ["players", "Players"],
+  ["clans", "Clans"],
+  ["current", "Currently camping"],
 ] as const;
 const CWL_ROTATION_IMPORT_SESSION_TTL_MS = 15 * 60 * 1000;
 const CWL_ROTATION_IMPORT_SESSION_PREFIX = "cwl-rot-import";
@@ -3271,6 +3282,195 @@ async function handleCwlActivitySubcommand(interaction: ChatInputCommandInteract
   }
 }
 
+type CwlCampingView = "summary" | "players" | "clans" | "current";
+
+/** Purpose: format observed camping milliseconds as a compact human-readable duration. */
+function formatCwlCampingDuration(durationMs: number | null): string {
+  if (durationMs === null || !Number.isFinite(durationMs)) return "n/a";
+  const totalMinutes = Math.max(0, Math.floor(durationMs / 60_000));
+  if (totalMinutes < 1) return durationMs <= 0 ? "0m" : "<1m";
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  return [
+    days > 0 ? `${days}d` : "",
+    hours > 0 ? `${hours}h` : "",
+    minutes > 0 ? `${minutes}m` : "",
+  ].filter(Boolean).join(" ");
+}
+
+/** Purpose: render the observed-history coverage state shared by camping embeds. */
+function getCwlCampingCoverageLines(result: CwlAllianceCampingResult): string[] {
+  if (result.trackingCoverage.status === "UNAVAILABLE") {
+    if (result.trackingCoverage.trackingStartedAt && !result.timing.available) {
+      return [
+        "Tracking completeness: **unavailable**",
+        `Observed since: ${formatRelativeTimestamp(result.trackingCoverage.trackingStartedAt)}`,
+        `⚠️ ${result.timing.reason}`,
+      ];
+    }
+    return [`⚠️ Observed membership history unavailable — ${result.trackingCoverage.reason ?? "no interval history exists for this guild."}`];
+  }
+  const lines = [
+    `Tracking: **${result.trackingCoverage.status}**`,
+    `Observed since: ${formatRelativeTimestamp(result.trackingCoverage.trackingStartedAt)}`,
+  ];
+  if (result.trackingCoverage.status === "PARTIAL") {
+    lines.push("⚠️ Partial — membership tracking began after CWL started; totals below only cover observed history.");
+  }
+  return lines;
+}
+
+/** Purpose: build the leadership summary for observed non-home CWL-clan residence. */
+export function buildCwlCampingSummaryEmbed(result: CwlAllianceCampingResult): EmbedBuilder {
+  const lines = ["**Observed Coverage**", ...getCwlCampingCoverageLines(result)];
+  if (result.trackingCoverage.status === "UNAVAILABLE") {
+    if (!result.timing.available && !result.trackingCoverage.trackingStartedAt) {
+      lines.push(`⚠️ ${result.timing.reason}`);
+    }
+    return new EmbedBuilder()
+      .setColor(CWL_EMBED_COLOR)
+      .setTitle(`CWL Camping — ${result.season}`)
+      .setDescription(lines.join("\n"));
+  }
+  if (!result.timing.available) {
+    lines.push(`⚠️ ${result.timing.reason}`);
+  } else {
+    lines.push(
+      "",
+      "**During CWL**",
+      `Pre-CWL accounts: **${result.summary.attributedPreFwaAccounts}**`,
+      `Observed campers: **${result.summary.camperCount ?? 0}**`,
+      `Observed camping time: **${formatCwlCampingDuration(result.summary.totalCampingDurationMs)}**`,
+      `Average per observed camper: **${formatCwlCampingDuration(result.summary.averageCampingDurationMs)}**`,
+      `Median per observed camper: **${formatCwlCampingDuration(result.summary.medianCampingDurationMs)}**`,
+    );
+    if (result.trackingCoverage.status === "OBSERVED") {
+      lines.push(`No camping observed: **${result.summary.zeroObservedCampingCount ?? 0}**`);
+    } else {
+      lines.push("No observed camping since tracking began is not a complete non-camping count.");
+    }
+    lines.push("", "**After CWL**");
+    if (result.cwlWindow.endsAt) {
+      lines.push(
+        `Currently camping: **${result.summary.currentlyCampingCount}**`,
+        `Observed post-CWL camping: **${formatCwlCampingDuration(result.summary.totalPostCwlCampingDurationMs)}**`,
+      );
+    } else {
+      lines.push("Post-CWL camping unavailable — CWL is ongoing or incomplete.");
+    }
+  }
+  if (result.unattributed.observedAccountCount > 0) {
+    lines.push(
+      "",
+      `Unattributed CWL-clan observations: **${result.unattributed.observedAccountCount} accounts / ${formatCwlCampingDuration(result.unattributed.observedDurationMs)}**`,
+    );
+  }
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle(`CWL Camping — ${result.season}`)
+    .setDescription(lines.join("\n"));
+}
+
+/** Purpose: paginate stateless camping detail rows with deterministic page clamping. */
+function paginateCwlCampingRows<T>(rows: T[], requestedPage: number): { rows: T[]; page: number; pageCount: number; requestedPage: number } {
+  const pageCount = Math.max(1, Math.ceil(rows.length / CWL_CAMPING_PAGE_SIZE));
+  const page = Math.min(Math.max(1, requestedPage), pageCount);
+  return {
+    rows: rows.slice((page - 1) * CWL_CAMPING_PAGE_SIZE, page * CWL_CAMPING_PAGE_SIZE),
+    page,
+    pageCount,
+    requestedPage,
+  };
+}
+
+/** Purpose: build a paged player detail embed for attributed observed campers. */
+function buildCwlCampingPlayersEmbed(result: CwlAllianceCampingResult, requestedPage: number): EmbedBuilder {
+  const paged = paginateCwlCampingRows(result.players, requestedPage);
+  const lines = paged.rows.map((player) => {
+    const name = sanitizeDisplayText(player.playerName) || "Unknown";
+    const visited = player.cwlClanTagsVisited.join(", ") || "—";
+    const post = player.postCwlDurationMs !== null && player.postCwlDurationMs > 0
+      ? ` | post ${formatCwlCampingDuration(player.postCwlDurationMs)}`
+      : "";
+    return `• ${name} \`${player.playerTag}\` | ${player.homeFwaClanTag} → ${visited} | ${formatCwlCampingDuration(player.duringCwlDurationMs)}${post}`;
+  });
+  return buildCwlCampingDetailEmbed(result, "Players", lines, paged);
+}
+
+/** Purpose: build a paged clan detail embed for observed camping aggregates. */
+function buildCwlCampingClansEmbed(result: CwlAllianceCampingResult, requestedPage: number): EmbedBuilder {
+  const paged = paginateCwlCampingRows(result.clans, requestedPage);
+  const lines = paged.rows.map((clan) => {
+    const name = sanitizeDisplayText(clan.clanName) || clan.clanTag;
+    const post = clan.totalPostCwlCampingDurationMs !== null
+      ? ` | post ${formatCwlCampingDuration(clan.totalPostCwlCampingDurationMs)}`
+      : "";
+    return `• ${name} \`${clan.clanTag}\` | ${clan.uniqueAttributedCamperCount} campers | ${formatCwlCampingDuration(clan.totalDuringCwlCampingDurationMs)}${post}`;
+  });
+  return buildCwlCampingDetailEmbed(result, "Clans", lines, paged);
+}
+
+/** Purpose: render the current non-home CWL-clan occupants with completed/ongoing wording. */
+function buildCwlCampingCurrentEmbed(result: CwlAllianceCampingResult, requestedPage: number): EmbedBuilder {
+  const currentPlayers = result.players.filter((player) => player.currentlyCamping);
+  const paged = paginateCwlCampingRows(currentPlayers, requestedPage);
+  const title = result.cwlWindow.endsAt ? "Still camping after CWL" : "Currently in CWL clans";
+  const lines = paged.rows.map((player) => {
+    const name = sanitizeDisplayText(player.playerName) || "Unknown";
+    const current = player.currentCwlClanTag ?? "unknown";
+    const duration = result.cwlWindow.endsAt
+      ? ` | ${formatCwlCampingDuration(player.postCwlDurationMs)} post-CWL`
+      : ` | since ${formatRelativeTimestamp(player.currentCampingSince)}`;
+    return `• ${name} \`${player.playerTag}\` | home ${player.homeFwaClanTag} | now ${current}${duration}`;
+  });
+  return buildCwlCampingDetailEmbed(result, title, lines, paged);
+}
+
+/** Purpose: add coverage warnings and pagination metadata to camping detail views. */
+function buildCwlCampingDetailEmbed(
+  result: CwlAllianceCampingResult,
+  viewTitle: string,
+  rows: string[],
+  page: { page: number; pageCount: number; requestedPage: number },
+): EmbedBuilder {
+  const lines = [...getCwlCampingCoverageLines(result)];
+  if (!result.timing.available) lines.push(`⚠️ ${result.timing.reason}`);
+  lines.push("", ...(rows.length > 0 ? rows : ["No observed rows in this view."]), "", `Page ${page.page}/${page.pageCount}`);
+  if (page.requestedPage !== page.page) lines.push(`Requested page ${page.requestedPage} is unavailable; showing page ${page.page}.`);
+  if (page.pageCount > 1) lines.push("Use `page:<n>` to view another page.");
+  return new EmbedBuilder()
+    .setColor(CWL_EMBED_COLOR)
+    .setTitle(`CWL Camping — ${result.season} — ${viewTitle}`)
+    .setDescription(lines.join("\n"));
+}
+
+/** Purpose: execute the read-only DB-first CWL camping report without live API calls. */
+async function handleCwlCampingSubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.inGuild() || !interaction.guildId) {
+    await interaction.editReply("This command can only be used in a server.");
+    return;
+  }
+  const requestedSeason = interaction.options.getString("season", false);
+  const view = (interaction.options.getString("view", false) ?? "summary") as CwlCampingView;
+  const requestedPage = Math.max(1, interaction.options.getInteger("page", false) ?? 1);
+  const season = String(requestedSeason ?? "").trim() || resolveCurrentCwlSeasonKey();
+  try {
+    const result = await cwlAllianceCampingService.getCamping({ season, guildId: interaction.guildId });
+    const embed = view === "summary"
+      ? buildCwlCampingSummaryEmbed(result)
+      : view === "players"
+        ? buildCwlCampingPlayersEmbed(result, requestedPage)
+        : view === "clans"
+          ? buildCwlCampingClansEmbed(result, requestedPage)
+          : buildCwlCampingCurrentEmbed(result, requestedPage);
+    await interaction.editReply({ embeds: [embed] });
+  } catch (err) {
+    console.error(`[cwl] command_failed path=/cwl camping guildId=${interaction.guildId} season=${season} view=${view} error=${formatError(err)}`);
+    await interaction.editReply("Failed to load CWL camping from persisted membership history.");
+  }
+}
+
 async function handleMembersSubcommand(interaction: ChatInputCommandInteraction) {
   const season = resolveCurrentCwlSeasonKey();
   const clanTag = normalizeClanTag(interaction.options.getString("clan", true));
@@ -4765,6 +4965,33 @@ export const Cwl: Command = {
   description: "Inspect persisted CWL rosters, day-paged rotation plans, and planner sheet imports/exports",
   options: [
     {
+      name: "camping",
+      description: "Measure observed time spent in non-home CWL clans",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "season",
+          description: "CWL season in YYYY-MM format",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "view",
+          description: "Camping report view",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: CWL_CAMPING_VIEW_CHOICES.map(([value, name]) => ({ name, value })),
+        },
+        {
+          name: "page",
+          description: "Detail page number",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+          minValue: 1,
+        },
+      ],
+    },
+    {
       name: "activity",
       description: "Show persisted CWL alliance activity and post-CWL return reporting",
       type: ApplicationCommandOptionType.Subcommand,
@@ -4950,6 +5177,10 @@ export const Cwl: Command = {
       }
       if (!group && subcommand === "activity") {
         await handleCwlActivitySubcommand(interaction);
+        return;
+      }
+      if (!group && subcommand === "camping") {
+        await handleCwlCampingSubcommand(interaction);
         return;
       }
       if (group === "roster") {

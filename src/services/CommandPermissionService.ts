@@ -159,6 +159,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "unlinked:list",
   "cwl",
   "cwl:activity",
+  "cwl:camping",
   "cwl:members",
   "cwl:rotations",
   "cwl:rotations:show",
@@ -302,6 +303,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "unlinked:set-alert",
   "unlinked:list",
   "cwl:activity",
+  "cwl:camping",
 ]);
 
 /** Purpose: command roles key. */
