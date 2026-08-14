@@ -129,6 +129,8 @@ Each domain concept must have exactly one authoritative owner.
 | Tracked FWA clans | TrackedClan |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Tracked FWA clan rep user profile metadata | TrackedClanRepUserProfile |
+| Current player state | PlayerCurrent |
+| Current FWA clan roster state | FwaClanMemberCurrent |
 | Seasonal CWL tracked clans | CwlTrackedClan |
 | Live battle-day CWL round identity and timing | CurrentCwlRound |
 | Live battle-day CWL round member summaries | CwlRoundMemberCurrent |
@@ -139,6 +141,7 @@ Each domain concept must have exactly one authoritative owner.
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
+| Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
 | Player-to-Discord links | PlayerLink |
 | Guild-scoped roster default columns | RosterGuildConfig |
 | Live war state | CurrentWar |
@@ -158,6 +161,7 @@ Each domain concept must have exactly one authoritative owner.
 | Current membership snapshot context | TodoPlayerSnapshot.clanTag, TodoPlayerSnapshot.clanName, TodoPlayerSnapshot.clanMembershipObservedAt |
 | WAR snapshot context | TodoPlayerSnapshot.warClanTag, TodoPlayerSnapshot.warClanName, TodoPlayerSnapshot.warPosition, TodoPlayerSnapshot.warSourceUpdatedAt, TodoPlayerSnapshot.warOwnerSource, TodoPlayerSnapshot.warOwnerWarId, TodoPlayerSnapshot.warOwnerVerifiedAt, TodoPlayerSnapshot.warActive, TodoPlayerSnapshot.warPhase, TodoPlayerSnapshot.warAttacksUsed, TodoPlayerSnapshot.warAttacksMax, TodoPlayerSnapshot.warEndsAt |
 | RAID snapshot context | TodoPlayerSnapshot.raidClanTag, TodoPlayerSnapshot.raidClanName, TodoPlayerSnapshot.raidSourceUpdatedAt, TodoPlayerSnapshot.raidActive, TodoPlayerSnapshot.raidAttacksUsed, TodoPlayerSnapshot.raidAttacksMax, TodoPlayerSnapshot.raidEndsAt |
+
 | CWL snapshot context | TodoPlayerSnapshot.cwlClanTag, TodoPlayerSnapshot.cwlClanName, TodoPlayerSnapshot.cwlActive, TodoPlayerSnapshot.cwlPhase, TodoPlayerSnapshot.cwlAttacksUsed, TodoPlayerSnapshot.cwlAttacksMax, TodoPlayerSnapshot.cwlEndsAt |
 | Clan Games snapshot context | TodoPlayerSnapshot.gamesActive, TodoPlayerSnapshot.gamesCycleKey, TodoPlayerSnapshot.gamesPoints, TodoPlayerSnapshot.gamesTarget, TodoPlayerSnapshot.gamesChampionTotal, TodoPlayerSnapshot.gamesSeasonBaseline, TodoPlayerSnapshot.gamesEndsAt |
 | Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render state) |
@@ -172,6 +176,10 @@ Each domain concept must have exactly one authoritative owner.
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
+
+`AllianceClanMembershipInterval` is the authoritative owner of historical observed alliance clan-membership intervals. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals, while future reporting commands consume them read-only. The existing `CwlAllianceSeasonBaseline` system remains unchanged until a replacement analytics path exists.
+
+The interval table is intentionally excluded from `MirrorSyncService`'s full-overwrite runtime allowlist. It is append-oriented production history, so mirroring it through a delete-and-reinsert sync would erase or rewrite staging history and make the mirror an additional state owner. Mirror mode therefore performs no new membership-history polling or writes.
 
 Rules:
 

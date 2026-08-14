@@ -50,6 +50,16 @@ const prismaMock = vi.hoisted(() => ({
   trackedClan: {
     findMany: vi.fn().mockResolvedValue([]),
   },
+  cwlTrackedClan: {
+    findMany: vi.fn().mockResolvedValue([]),
+  },
+  allianceClanMembershipInterval: {
+    findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn().mockResolvedValue(null),
+    create: vi.fn().mockResolvedValue({}),
+    update: vi.fn().mockResolvedValue({}),
+  },
+  $transaction: vi.fn(async (callback: any) => callback(prismaMock)),
   trackedMessage: {
     findMany: vi.fn().mockResolvedValue([]),
     findFirst: vi.fn().mockResolvedValue(null),
@@ -385,6 +395,7 @@ vi.mock("../src/helper/formatError", () => ({
 
 import { botStartupStatusService } from "../src/services/BotStartupStatusService";
 import { cwlStateService } from "../src/services/CwlStateService";
+import { unlinkedMemberAlertService } from "../src/services/UnlinkedMemberAlertService";
 import { todoSnapshotService } from "../src/services/TodoSnapshotService";
 import ready from "../src/listeners/ready";
 
@@ -410,6 +421,9 @@ describe("ready listener startup", () => {
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.allianceClanMembershipInterval.findMany.mockResolvedValue([]);
+    prismaMock.allianceClanMembershipInterval.findFirst.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -620,6 +634,58 @@ describe("ready listener startup", () => {
         now: new Date(123),
       }),
     );
+  });
+
+  it("skips membership reconciliation when the CWL registry read fails but continues downstream activity work", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    prismaMock.cwlTrackedClan.findMany.mockRejectedValueOnce(new Error("registry unavailable"));
+
+    await runStartup();
+    const todoRefreshesBeforeCycle = todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots.mock.calls.length;
+    const unlinkedAlertsBeforeCycle = unlinkedMemberAlertService.reconcileGuildAlerts.mock.calls.length;
+    await observeLoopArgs.current.runObservedCycle(123);
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(linkedPlayerCurrentReconcileMock.reconcile).toHaveBeenCalledTimes(1);
+    expect(todoSnapshotService.refreshActivatedTodoLinkedPlayerSnapshots).toHaveBeenCalledTimes(
+      todoRefreshesBeforeCycle + 1,
+    );
+    expect(unlinkedMemberAlertService.reconcileGuildAlerts).toHaveBeenCalledTimes(
+      unlinkedAlertsBeforeCycle + 1,
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("current_cwl_registry_read_failed season=2026-04"),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("allows a successful empty CWL registry to close previously monitored intervals", async () => {
+    prismaMock.allianceClanMembershipInterval.findMany.mockResolvedValueOnce([
+      {
+        id: "interval-1",
+        guildId: "111111111111111111",
+        playerTag: "#PYLQ2222",
+        clanTag: "#QGRJ2222",
+        firstObservedAt: new Date(100),
+        lastObservedAt: new Date(100),
+        endedAt: null,
+        endReason: null,
+      },
+    ]);
+
+    await runStartup();
+    await observeLoopArgs.current.runObservedCycle(123);
+
+    expect(prismaMock.cwlTrackedClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { season: "2026-04" } }),
+    );
+    expect(prismaMock.allianceClanMembershipInterval.update).toHaveBeenCalledWith({
+      where: { id: "interval-1" },
+      data: {
+        endedAt: new Date(123),
+        endReason: "TRACKING_STOPPED",
+      },
+    });
   });
 
   it("records tracked message sweep and war event poll failures without throwing", async () => {

@@ -500,6 +500,12 @@ function buildTargetClient(
 }
 
 describe("MirrorSyncService", () => {
+  it("does not full-overwrite append-oriented alliance membership history", () => {
+    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain(
+      "AllianceClanMembershipInterval",
+    );
+  });
+
   it("runs full-overwrite sync for only the allowlisted runtime tables", async () => {
     const sourceStore = makeDefaultTableStore();
     const targetStore = makeDefaultTableStore();
