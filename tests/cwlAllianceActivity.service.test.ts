@@ -477,10 +477,9 @@ describe("CwlAllianceActivityService", () => {
     expect(result.preCwlClans[0]).toMatchObject({ preCwlRosterCount: 1, sourcePreCwlRosterCount: 1, returnedAfterCwlCount: 1, retentionRate: 100 });
   });
 
-  it("does not query baseline or CurrentWar owners", async () => {
+  it("does not query CurrentWar owners", async () => {
     const { db, run } = activity();
     const forbidden = { findMany: vi.fn(() => { throw new Error("forbidden owner queried"); }) };
-    (db as any).cwlAllianceSeasonBaseline = forbidden;
     (db as any).currentWar = forbidden;
     await expect(run()).resolves.toBeDefined();
     expect(forbidden.findMany).not.toHaveBeenCalled();

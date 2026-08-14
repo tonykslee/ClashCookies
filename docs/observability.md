@@ -83,21 +83,6 @@ CWL alliance activity logs should stay structured and compact. The active read-o
 
 CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] event=report_summary` with `guild_id`, `season`, `tracking_coverage`, `interval_rows`, `attributed_accounts`, `campers`, `unattributed_accounts`, `currently_camping`, `overlap_reconciliations`, and `duration_ms`. The service is read-only and emits no per-player success logs.
 
-Legacy baseline logging is retained only for dormant persistence/maintenance behavior because the manual command surface is retired. These baseline-only fields belong to that legacy section:
-
-- `guildId`
-- `season`
-- `replaceExisting`
-- `trackedClanCount`
-- `capturedClanCount`
-- `unavailableClanCount`
-- `memberCount`
-- `linkedCount`
-- `currentSourceCount`
-- `fallbackCount`
-- `durationMs`
-- per-clan failure reasons for unavailable coverage rows
-
 ## External Droplet Observability
 
 The current droplet stack uses:
