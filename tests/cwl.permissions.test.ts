@@ -3,8 +3,12 @@ import {
   COMMAND_PERMISSION_TARGETS,
   CommandPermissionService,
 } from "../src/services/CommandPermissionService";
+import {
+  getAdminDefaultTargetsForCommand,
+  getFwaLeaderDefaultTargetsForCommand,
+} from "../src/commands/Help";
 
-function buildInteraction(input?: { isAdmin?: boolean }) {
+function buildInteraction(input?: { isAdmin?: boolean; isLeader?: boolean }) {
   return {
     guildId: "guild-1",
     user: { id: "user-1" },
@@ -14,42 +18,39 @@ function buildInteraction(input?: { isAdmin?: boolean }) {
     },
     member: {
       roles: {
-        cache: new Map(),
+        cache: new Map(input?.isLeader ? [["123", {}]] : []),
       },
     },
   } as any;
 }
 
 describe("cwl permission defaults", () => {
-  it("registers cwl baseline status permission targets", () => {
-    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline");
-    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:status");
-    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:baseline:capture");
+  it("registers cwl activity and removes retired baseline permission targets", () => {
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:activity");
+    expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline");
+    expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:status");
+    expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:capture");
   });
 
-  it("keeps cwl baseline targets admin-only by default", async () => {
+  it("keeps Help permission metadata aligned with runtime activity defaults", () => {
+    expect(getAdminDefaultTargetsForCommand("cwl")).not.toContain("/cwl activity");
+    expect(getFwaLeaderDefaultTargetsForCommand("cwl")).toContain("/cwl activity");
+  });
+
+  it("allows activity to FWA leaders and admins by default", async () => {
     const settings = {
-      get: vi.fn(async () => null),
+      get: vi.fn(async (key: string) => key === "fwa_leader_role:guild-1" ? "123" : null),
     };
     const service = new CommandPermissionService(settings as any);
 
     await expect(
-      service.canUseAnyTarget(["cwl:baseline"], buildInteraction({ isAdmin: false })),
+      service.canUseAnyTarget(["cwl:activity"], buildInteraction({ isAdmin: false, isLeader: false })),
     ).resolves.toBe(false);
     await expect(
-      service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: false })),
-    ).resolves.toBe(false);
-    await expect(
-      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: false })),
-    ).resolves.toBe(false);
-    await expect(
-      service.canUseAnyTarget(["cwl:baseline"], buildInteraction({ isAdmin: true })),
+      service.canUseAnyTarget(["cwl:activity"], buildInteraction({ isAdmin: false, isLeader: true })),
     ).resolves.toBe(true);
     await expect(
-      service.canUseAnyTarget(["cwl:baseline:status"], buildInteraction({ isAdmin: true })),
-    ).resolves.toBe(true);
-    await expect(
-      service.canUseAnyTarget(["cwl:baseline:capture"], buildInteraction({ isAdmin: true })),
+      service.canUseAnyTarget(["cwl:activity"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
   });
 

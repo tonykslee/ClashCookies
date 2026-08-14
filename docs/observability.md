@@ -79,7 +79,9 @@ Queue observability now includes:
 - todo snapshot WAR owner resolution logs such as `event=todo_war_owner_resolution_summary` and `event=todo_war_owner_resolution_ambiguous`, which summarize live-verification outcomes and surface ambiguous multi-clan matches when stale roster state needs correction
 - alliance membership interval collection logs such as `[alliance-membership-history] event=reconcile_cycle`, which provide one bounded per-cycle summary with `monitored_clans`, `fwa_rosters_reused`, `cwl_only_fetches`, `failed_clans`, `observed_players`, `opened`, `refreshed`, `transferred`, `departed`, `tracking_stopped`, `ambiguous`, and `duration_ms`; failed interval transactions are logged as `event=reconcile_cycle_failed` and do not abort the rest of activity observation
 
-CWL measurement baseline logs should stay structured and compact. The baseline capture service should emit:
+CWL alliance activity logs should stay structured and compact. The active read-only report emits one bounded summary such as `[cwl-alliance-activity] event=activity_summary` with `season`, `cwl_clans`, `resolved_events`, `pre_fwa_clans_covered`, `pre_fwa_accounts`, `cwl_participants`, `both`, `fwa_only`, `cwl_only`, `post_fwa_clans_covered`, `duplicate_reconciliations`, and `duration_ms`. It must not log or imply external API work, and it does not emit view/page/guild counters.
+
+Legacy baseline logging is retained only for dormant persistence/maintenance behavior because the manual command surface is retired. These baseline-only fields belong to that legacy section:
 
 - `guildId`
 - `season`

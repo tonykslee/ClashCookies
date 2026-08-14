@@ -158,10 +158,8 @@ export const COMMAND_PERMISSION_TARGETS = [
   "unlinked:set-alert",
   "unlinked:list",
   "cwl",
+  "cwl:activity",
   "cwl:members",
-  "cwl:baseline",
-  "cwl:baseline:status",
-  "cwl:baseline:capture",
   "cwl:rotations",
   "cwl:rotations:show",
   "cwl:rotations:create",
@@ -225,9 +223,6 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "force:mail:update",
   "force:refresh:heatmapref",
   "cwl:rotations:create",
-  "cwl:baseline",
-  "cwl:baseline:status",
-  "cwl:baseline:capture",
   "cwl:rotations:import",
   "cwl:rotations:export",
   "roster:create",
@@ -306,6 +301,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "unlinked",
   "unlinked:set-alert",
   "unlinked:list",
+  "cwl:activity",
 ]);
 
 /** Purpose: command roles key. */
