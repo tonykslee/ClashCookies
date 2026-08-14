@@ -102,6 +102,20 @@ read-only `/cwl activity` report
 
 `CwlAllianceActivityService` is the active DB-first reporting consumer. It reads persisted CWL event/round/history owners, `CwlPlayerClanSeason`, `ClanWarHistory`, and `ClanWarParticipation`; it does not consume `AllianceClanMembershipInterval`. It performs no writes, external API calls, interval/current-state ownership changes, or manual baseline reads. The former manual baseline command surface is retired; the legacy baseline service/schema/rows remain dormant until staged cleanup.
 
+CWL camping reporting:
+
+AllianceClanMembershipInterval
+    +
+CwlAllianceActivityService historical home attribution/CWL window
+    +
+CwlTrackedClan
+    ->
+CwlAllianceCampingService
+    ->
+read-only `/cwl camping` report
+
+`CwlAllianceCampingService` is a read-only analytics consumer, not a state owner. It measures observed non-home CWL-clan residence, keeps accounts without historical home attribution in a separate diagnostic bucket, and reconciles overlapping interval evidence without mutating stored history. `/cwl activity` remains independent of membership intervals.
+
 Reminder / UserActivityReminder config
     + TodoPlayerSnapshot / CurrentWar
     ->

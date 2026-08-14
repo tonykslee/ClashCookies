@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers activity, members, and rotations without the retired baseline surface", () => {
+  it("registers camping, activity, members, and rotations without the retired baseline surface", () => {
+    const camping = Cwl.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "camping",
+    );
     const activity = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -26,6 +31,13 @@ describe("/cwl command shape", () => {
     const exportOption = rotations?.options?.find((option: any) => option.name === "export");
 
     expect(members).toBeTruthy();
+    expect(camping?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(camping?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
+    expect(camping?.options?.find((option: any) => option.name === "view")?.choices?.map((choice: any) => choice.value)).toEqual([
+      "summary", "players", "clans", "current",
+    ]);
+    expect(camping?.options?.find((option: any) => option.name === "page")?.type).toBe(ApplicationCommandOptionType.Integer);
+    expect(camping?.options?.find((option: any) => option.name === "page")?.minValue).toBe(1);
     expect(activity?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(Cwl.options?.find((option) => option.name === "baseline")).toBeUndefined();
     expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.Subcommand && option.name === "signup")).toBeUndefined();

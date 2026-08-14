@@ -25,8 +25,9 @@ function buildInteraction(input?: { isAdmin?: boolean; isLeader?: boolean }) {
 }
 
 describe("cwl permission defaults", () => {
-  it("registers cwl activity and removes retired baseline permission targets", () => {
+  it("registers cwl activity and camping and removes retired baseline permission targets", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:activity");
+    expect(COMMAND_PERMISSION_TARGETS).toContain("cwl:camping");
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline");
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:status");
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:capture");
@@ -35,6 +36,8 @@ describe("cwl permission defaults", () => {
   it("keeps Help permission metadata aligned with runtime activity defaults", () => {
     expect(getAdminDefaultTargetsForCommand("cwl")).not.toContain("/cwl activity");
     expect(getFwaLeaderDefaultTargetsForCommand("cwl")).toContain("/cwl activity");
+    expect(getAdminDefaultTargetsForCommand("cwl")).not.toContain("/cwl camping");
+    expect(getFwaLeaderDefaultTargetsForCommand("cwl")).toContain("/cwl camping");
   });
 
   it("allows activity to FWA leaders and admins by default", async () => {
@@ -51,6 +54,12 @@ describe("cwl permission defaults", () => {
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["cwl:activity"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:camping"], buildInteraction({ isAdmin: false, isLeader: true })),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["cwl:camping"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
   });
 

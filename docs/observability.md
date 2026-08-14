@@ -81,6 +81,8 @@ Queue observability now includes:
 
 CWL alliance activity logs should stay structured and compact. The active read-only report emits one bounded summary such as `[cwl-alliance-activity] event=activity_summary` with `season`, `cwl_clans`, `resolved_events`, `pre_fwa_clans_covered`, `pre_fwa_accounts`, `cwl_participants`, `both`, `fwa_only`, `cwl_only`, `post_fwa_clans_covered`, `duplicate_reconciliations`, and `duration_ms`. It must not log or imply external API work, and it does not emit view/page/guild counters.
 
+CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] event=report_summary` with `guild_id`, `season`, `tracking_coverage`, `interval_rows`, `attributed_accounts`, `campers`, `unattributed_accounts`, `currently_camping`, `overlap_reconciliations`, and `duration_ms`. The service is read-only and emits no per-player success logs.
+
 Legacy baseline logging is retained only for dormant persistence/maintenance behavior because the manual command surface is retired. These baseline-only fields belong to that legacy section:
 
 - `guildId`
