@@ -269,16 +269,21 @@ describe("command coverage", () => {
     expect(clanHelpText).not.toContain("/tracked-clan configure");
   });
 
-  it("documents the /cwl baseline status command in cwl help detail text", () => {
+  it("documents the /cwl activity contract in cwl help detail text", () => {
     const cwlHelpText = helpEmbedText("cwl");
     const normalized = cwlHelpText.toLowerCase();
-    expect(cwlHelpText).toContain("/cwl baseline status");
-    expect(cwlHelpText).toContain("/cwl baseline status season:2026-06");
-    expect(cwlHelpText).toContain("/cwl baseline capture");
-    expect(cwlHelpText).toContain("/cwl baseline capture season:2026-06 replace:true");
-    expect(normalized).toContain("manually captures the frozen baseline");
-    expect(normalized).toContain("replace:true");
-    expect(normalized).toContain("rebuilds it atomically");
+    expect(cwlHelpText).toContain("/cwl activity");
+    expect(cwlHelpText).toContain("/cwl activity season:2026-08");
+    expect(cwlHelpText).toContain("/cwl activity view:both");
+    expect(cwlHelpText).toContain("/cwl activity view:fwa-only page:2");
+    expect(cwlHelpText).toContain("/cwl activity view:clans");
+    expect(normalized).toContain("db-first alliance activity");
+    expect(normalized).toContain("persisted historical cwl and fwa data");
+    expect(normalized).toContain("post-cwl return");
+    expect(normalized).toContain("incomplete coverage is shown as partial or unavailable");
+    expect(normalized).toContain("without live api calls");
+    expect(cwlHelpText).not.toContain("/cwl baseline status");
+    expect(cwlHelpText).not.toContain("/cwl baseline capture");
   });
 
   it("documents the /sync readiness dashboard in sync help detail text", () => {
