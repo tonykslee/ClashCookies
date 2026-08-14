@@ -93,13 +93,14 @@ CwlAllianceSeasonBaselineMember
 
 CWL alliance activity reporting:
 
-CwlEventInstance + CwlEventClan + persisted CWL round/history tables + AllianceClanMembershipInterval
+CwlEventInstance + CwlEventClan + persisted CWL round/history owners + CwlPlayerClanSeason
+    + ClanWarHistory + ClanWarParticipation
     ->
 CwlAllianceActivityService
     ->
 read-only `/cwl activity` report
 
-`CwlAllianceActivityService` is the active DB-first reporting consumer. It performs no writes, external API calls, interval/current-state ownership changes, or manual baseline reads. The former manual baseline command surface is retired; the legacy baseline service/schema/rows remain dormant until staged cleanup.
+`CwlAllianceActivityService` is the active DB-first reporting consumer. It reads persisted CWL event/round/history owners, `CwlPlayerClanSeason`, `ClanWarHistory`, and `ClanWarParticipation`; it does not consume `AllianceClanMembershipInterval`. It performs no writes, external API calls, interval/current-state ownership changes, or manual baseline reads. The former manual baseline command surface is retired; the legacy baseline service/schema/rows remain dormant until staged cleanup.
 
 Reminder / UserActivityReminder config
     + TodoPlayerSnapshot / CurrentWar
@@ -187,7 +188,7 @@ Each domain concept must have exactly one authoritative owner.
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
 
-`AllianceClanMembershipInterval` is the authoritative owner of historical observed alliance clan-membership intervals. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals, while `CwlAllianceActivityService` consumes them read-only for `/cwl activity`. The manual baseline command surface is retired; `CwlAllianceSeasonBaseline` persistence remains a dormant legacy owner pending staged cleanup and does not participate in the active report.
+`AllianceClanMembershipInterval` is the authoritative owner of historical observed alliance clan-membership intervals intended for later camping analytics. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals, while `/cwl activity` does not read them. The manual baseline command surface is retired; `CwlAllianceSeasonBaseline` persistence remains a dormant legacy owner pending staged cleanup and does not participate in the active report.
 
 The interval table is intentionally excluded from `MirrorSyncService`'s full-overwrite runtime allowlist. It is append-oriented production history, so mirroring it through a delete-and-reinsert sync would erase or rewrite staging history and make the mirror an additional state owner. Mirror mode therefore performs no new membership-history polling or writes.
 

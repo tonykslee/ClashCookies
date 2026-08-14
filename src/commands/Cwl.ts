@@ -3085,8 +3085,46 @@ function getCwlActivityRetentionWarning(result: CwlAllianceActivityResult): stri
   return `Post-CWL retention unavailable — post-CWL FWA coverage ${result.coverage.coveredPostClanCount}/${result.coverage.expectedPostClanCount} clans.`;
 }
 
+/** Purpose: explain partial evidence before rendering a classification detail view. */
+function getCwlActivityClassificationWarnings(
+  result: CwlAllianceActivityResult,
+  view: Exclude<CwlActivityView, "summary" | "not-returned" | "new-post-cwl" | "clans">,
+): string[] {
+  const warnings: string[] = [];
+  if (result.coverage.preFwaClansCovered < result.coverage.preFwaClansExpected) {
+    warnings.push(
+      view === "cwl-only"
+        ? "⚠️ Pre-CWL FWA coverage is partial; accounts from uncovered pre-FWA clans may appear provisional CWL-only."
+        : "⚠️ Pre-CWL FWA coverage is partial; this classification may be incomplete.",
+    );
+  }
+  if (result.coverage.resolvedEventCount < result.coverage.cwlClanCount) {
+    warnings.push(
+      "⚠️ CWL event coverage is incomplete; CWL participation evidence and classifications may be partial.",
+    );
+  }
+  return warnings;
+}
+
+/** Purpose: explain partial evidence before rendering the per-clan detail view. */
+function getCwlActivityClanWarnings(result: CwlAllianceActivityResult): string[] {
+  const warnings: string[] = [];
+  if (result.coverage.preFwaClansCovered < result.coverage.preFwaClansExpected) {
+    warnings.push("⚠️ Pre-CWL FWA coverage is partial; unavailable clan rows remain n/a.");
+  }
+  if (result.coverage.resolvedEventCount < result.coverage.cwlClanCount) {
+    warnings.push("⚠️ CWL event coverage is incomplete; participation evidence is partial.");
+  }
+  if (!result.coverage.postCoverageComplete && result.coverage.expectedPostClanCount > 0) {
+    warnings.push("⚠️ Post-CWL FWA coverage is partial; return values remain n/a where unavailable.");
+  }
+  return warnings;
+}
+
 /** Purpose: build the concise persisted-data summary embed for alliance leaders. */
 export function buildCwlActivitySummaryEmbed(result: CwlAllianceActivityResult): EmbedBuilder {
+  const retentionAuthoritative = result.postCwlRetention.retentionRate !== null;
+  const retentionWarning = getCwlActivityRetentionWarning(result);
   const lines = [
     "**Participation**",
     `Pre-CWL FWA: **${result.totals.preFwaCount}**`,
@@ -3099,10 +3137,16 @@ export function buildCwlActivitySummaryEmbed(result: CwlAllianceActivityResult):
     Array.from({ length: 7 }, (_, index) => `${index + 1}d: ${result.participationDayHistogram[String(index + 1)] ?? 0}`).join(" | "),
     "",
     "**Post-CWL return**",
-    `Returned: **${result.postCwlRetention.returnedAfterCwl.length} / ${result.totals.preFwaCount}**${result.postCwlRetention.retentionRate === null ? "" : ` (${formatCwlActivityPercentage(result.postCwlRetention.retentionRate)})`}`,
-    `Not returned: **${result.postCwlRetention.notReturnedAfterCwl.length}**`,
-    `New post-CWL FWA: **${result.postCwlRetention.newPostCwlFwa.length}**`,
-    `Coverage: **${result.coverage.coveredPostClanCount}/${result.coverage.expectedPostClanCount}** clans`,
+    ...(retentionAuthoritative
+      ? [
+          `Returned: **${result.postCwlRetention.returnedAfterCwl.length} / ${result.totals.preFwaCount}** (${formatCwlActivityPercentage(result.postCwlRetention.retentionRate)})`,
+          `Not returned: **${result.postCwlRetention.notReturnedAfterCwl.length}**`,
+          `New post-CWL FWA: **${result.postCwlRetention.newPostCwlFwa.length}**`,
+        ]
+      : [
+          `⚠️ ${retentionWarning ?? "Post-CWL retention unavailable."}`,
+          `Post-CWL coverage: **${result.coverage.coveredPostClanCount}/${result.coverage.expectedPostClanCount}** clans`,
+        ]),
     "",
     "**Coverage**",
     `Pre-CWL FWA: **${result.coverage.preFwaClansCovered}/${result.coverage.preFwaClansExpected}** clans`,
@@ -3119,8 +3163,6 @@ export function buildCwlActivitySummaryEmbed(result: CwlAllianceActivityResult):
     const details = result.cwlWindow.missingTimingDetails.slice(0, 3).join(", ");
     lines.unshift(`⚠️ CWL timing coverage is incomplete${details ? ` (${details})` : ""}.`, "");
   }
-  const retentionWarning = getCwlActivityRetentionWarning(result);
-  if (retentionWarning) lines.splice(lines.indexOf("**Post-CWL return**") + 1, 0, `⚠️ ${retentionWarning}`);
   const unexpected = Object.entries(result.unexpectedParticipationDays)
     .map(([days, count]) => `${days}d: ${count}`)
     .join(", ");
@@ -3159,6 +3201,11 @@ export function buildCwlActivityDetailEmbed(
 
   let page: { page: number; pageCount: number; requestedPage: number };
   let lines: string[];
+  const classificationWarnings = view === "both" || view === "fwa-only" || view === "cwl-only"
+    ? getCwlActivityClassificationWarnings(result, view)
+    : view === "clans"
+      ? getCwlActivityClanWarnings(result)
+      : [];
   if (view === "both") {
     const paged = paginateCwlActivityRows(result.players.both, requestedPage);
     page = paged;
@@ -3192,6 +3239,7 @@ export function buildCwlActivityDetailEmbed(
       return `• ${formatCwlActivityClanLabel(row.clanName, row.clanTag)} | ${pre} | ${returned}`;
     });
   }
+  lines = [...classificationWarnings, ...(classificationWarnings.length > 0 ? [""] : []), ...lines];
   if (lines.length === 0) lines.push("No rows in this activity view.");
   lines.push("", `Page ${page.page}/${page.pageCount}`);
   if (page.requestedPage !== page.page) lines.push(`Requested page ${page.requestedPage} is unavailable; showing page ${page.page}.`);

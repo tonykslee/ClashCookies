@@ -160,8 +160,82 @@ describe("/cwl activity", () => {
 
     const description = getDescription(interaction);
     expect(description).toContain("Post-CWL retention unavailable");
-    expect(description).toContain("Coverage: **1/2** clans");
+    expect(description).toContain("Post-CWL coverage: **1/2** clans");
     expect(description).not.toMatch(/Returned:.*\(/);
+  });
+
+  it("hides all retention cohort counts while CWL is ongoing", async () => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult({
+      cwlWindow: { ...makeResult().cwlWindow, endsAt: null },
+      postCwlRetention: { ...makeResult().postCwlRetention, retentionRate: null },
+    }));
+    const interaction = makeInteraction({ view: "summary" });
+
+    await Cwl.run({} as any, interaction);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("CWL has not fully completed");
+    expect(description).not.toContain("Returned:");
+    expect(description).not.toContain("Not returned:");
+    expect(description).not.toContain("New post-CWL FWA:");
+  });
+
+  it("shows retention cohort counts and percentage only with complete post coverage", async () => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult());
+    const interaction = makeInteraction({ view: "summary" });
+
+    await Cwl.run({} as any, interaction);
+
+    const description = getDescription(interaction);
+    expect(description).toContain("Returned: **1 / 2** (50.0%)");
+    expect(description).toContain("Not returned: **0**");
+    expect(description).toContain("New post-CWL FWA: **0**");
+  });
+
+  it("marks CWL-only detail as provisional when pre-CWL coverage is partial", async () => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult({
+      coverage: { ...makeResult().coverage, preFwaClansExpected: 2, preFwaClansCovered: 1 },
+    }));
+    const interaction = makeInteraction({ view: "cwl-only" });
+
+    await Cwl.run({} as any, interaction);
+
+    expect(getDescription(interaction)).toContain("may appear provisional CWL-only");
+  });
+
+  it.each(["both", "fwa-only"] as const)("warns %s detail when CWL event coverage is incomplete", async (view) => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult({
+      coverage: { ...makeResult().coverage, cwlClanCount: 2, resolvedEventCount: 1 },
+    }));
+    const interaction = makeInteraction({ view });
+
+    await Cwl.run({} as any, interaction);
+
+    expect(getDescription(interaction)).toContain("CWL event coverage is incomplete");
+  });
+
+  it("marks clans detail when coverage is partial", async () => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult({
+      coverage: { ...makeResult().coverage, preFwaClansExpected: 2, preFwaClansCovered: 1 },
+    }));
+    const interaction = makeInteraction({ view: "clans" });
+
+    await Cwl.run({} as any, interaction);
+
+    expect(getDescription(interaction)).toContain("Pre-CWL FWA coverage is partial");
+  });
+
+  it.each(["not-returned", "new-post-cwl"] as const)("keeps %s hard-gated when retention is unavailable", async (view) => {
+    vi.mocked(cwlAllianceActivityService.getActivity).mockResolvedValueOnce(makeResult({
+      coverage: { ...makeResult().coverage, coveredPostClanCount: 0, expectedPostClanCount: 1, postCoverageComplete: false },
+      postCwlRetention: { ...makeResult().postCwlRetention, retentionRate: null },
+    }));
+    const interaction = makeInteraction({ view });
+
+    await Cwl.run({} as any, interaction);
+
+    expect(getDescription(interaction)).toContain("not authoritative");
+    expect(getDescription(interaction)).not.toContain("Page ");
   });
 
   it("uses reconciled pre-CWL roster counts in the clans view", async () => {

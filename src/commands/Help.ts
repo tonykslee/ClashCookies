@@ -63,7 +63,6 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "permission:add",
   "permission:remove",
   "telemetry",
-  "cwl:activity",
   "cwl:rotations:create",
   "cwl:rotations:delete",
   "cwl:rotations:import",
@@ -92,6 +91,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "fillers:set",
   "compo:fill",
   "repwork",
+  "cwl:activity",
 ]);
 
 type CommandDoc = {
@@ -1391,7 +1391,7 @@ function getAllCommands(): Command[] {
   return [...Commands].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function getAdminDefaultTargetsForCommand(commandName: string): string[] {
+export function getAdminDefaultTargetsForCommand(commandName: string): string[] {
   return [...ADMIN_DEFAULT_TARGETS]
     .filter(
       (target) =>
@@ -1400,7 +1400,7 @@ function getAdminDefaultTargetsForCommand(commandName: string): string[] {
     .map((target) => `/${target.replaceAll(":", " ")}`);
 }
 
-function getFwaLeaderDefaultTargetsForCommand(commandName: string): string[] {
+export function getFwaLeaderDefaultTargetsForCommand(commandName: string): string[] {
   return [...FWA_LEADER_DEFAULT_TARGETS]
     .filter(
       (target) =>

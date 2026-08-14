@@ -3,6 +3,10 @@ import {
   COMMAND_PERMISSION_TARGETS,
   CommandPermissionService,
 } from "../src/services/CommandPermissionService";
+import {
+  getAdminDefaultTargetsForCommand,
+  getFwaLeaderDefaultTargetsForCommand,
+} from "../src/commands/Help";
 
 function buildInteraction(input?: { isAdmin?: boolean; isLeader?: boolean }) {
   return {
@@ -26,6 +30,11 @@ describe("cwl permission defaults", () => {
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline");
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:status");
     expect(COMMAND_PERMISSION_TARGETS).not.toContain("cwl:baseline:capture");
+  });
+
+  it("keeps Help permission metadata aligned with runtime activity defaults", () => {
+    expect(getAdminDefaultTargetsForCommand("cwl")).not.toContain("/cwl activity");
+    expect(getFwaLeaderDefaultTargetsForCommand("cwl")).toContain("/cwl activity");
   });
 
   it("allows activity to FWA leaders and admins by default", async () => {
