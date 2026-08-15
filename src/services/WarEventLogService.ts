@@ -1652,12 +1652,12 @@ function hasSameWarConfirmedMailBaseline(input: {
   return true;
 }
 
-/** Purpose: expose only exact same-war persisted FWA evidence to live clan goals. */
-function resolveSameWarPersistedFwaEvidence(input: {
+/** Purpose: expose only exact same-war persisted classification evidence to live clan goals. */
+function resolveSameWarPersistedMatchEvidence(input: {
   sub: SubscriptionRow;
   currentWarId?: number | null;
   effectiveWarIdentityChanged: boolean;
-}): "FWA" | null {
+}): "FWA" | "BL" | null {
   if (input.effectiveWarIdentityChanged) return null;
   if (!input.sub.startTime || !input.sub.pointsWarStartTime) return null;
   if (
@@ -1682,16 +1682,21 @@ function resolveSameWarPersistedFwaEvidence(input: {
     return null;
   }
 
-  if (input.sub.pointsIsFwa !== true) return null;
   const storedMatchType = String(
     input.sub.pointsLastKnownMatchType ?? "",
   ).trim().toUpperCase();
-  if (storedMatchType && storedMatchType !== "FWA") return null;
-  return "FWA";
+  if (input.sub.pointsIsFwa === true) {
+    if (storedMatchType && storedMatchType !== "FWA") return null;
+    return "FWA";
+  }
+  if (input.sub.pointsIsFwa === false && storedMatchType === "BL") {
+    return "BL";
+  }
+  return null;
 }
 
-export const resolveSameWarPersistedFwaEvidenceForTest =
-  resolveSameWarPersistedFwaEvidence;
+export const resolveSameWarPersistedMatchEvidenceForTest =
+  resolveSameWarPersistedMatchEvidence;
 
 type ExactSameWarPointsSyncRejectionReason =
   | "identity_incomplete"
@@ -4763,7 +4768,7 @@ export class WarEventLogService {
       resolvedWarId !== null && resolvedWarId !== undefined
         ? String(Math.trunc(Number(resolvedWarId)))
         : null;
-    const authoritativeMatchType = resolveSameWarPersistedFwaEvidence({
+    const authoritativeMatchType = resolveSameWarPersistedMatchEvidence({
       sub,
       currentWarId: resolvedWarId,
       effectiveWarIdentityChanged,
@@ -5700,7 +5705,7 @@ export class WarEventLogService {
     currentState: WarState;
     matchType: MatchType;
     inferredMatchType: boolean | null;
-    authoritativeMatchType?: "FWA" | null;
+    authoritativeMatchType?: "FWA" | "BL" | null;
     outcome: string | null;
     clanStars: number | null;
     resolvedWarId: number | null;

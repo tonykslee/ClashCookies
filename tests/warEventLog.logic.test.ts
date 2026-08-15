@@ -20,7 +20,7 @@ import {
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
   shouldPreserveWarIdentityDuringOutageRecoveryForTest,
-  resolveSameWarPersistedFwaEvidenceForTest,
+  resolveSameWarPersistedMatchEvidenceForTest,
   WarEventLogService,
 } from "../src/services/WarEventLogService";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
@@ -4441,11 +4441,11 @@ describe("WarEventLogService war-event poll targets", () => {
     };
 
     // 1. Exact start/opponent + matching IDs + positive FWA evidence.
-    expect(resolveSameWarPersistedFwaEvidenceForTest(base as any)).toBe("FWA");
+    expect(resolveSameWarPersistedMatchEvidenceForTest(base as any)).toBe("FWA");
 
     // 2. Current war ID can be present while the nullable points ID is absent.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsWarId: null },
       } as any),
@@ -4453,7 +4453,7 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 3. Points war ID can be present while the current ID is absent.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, warId: null },
       } as any),
@@ -4461,7 +4461,7 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 4. Two populated but conflicting IDs still fail closed.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsWarId: "1000737" },
       } as any),
@@ -4469,7 +4469,7 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 5. Physical-war start mismatch.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: {
           ...base.sub,
@@ -4480,7 +4480,7 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 6. Physical-war opponent mismatch.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsOpponentTag: "#DIFFERENT" },
       } as any),
@@ -4488,7 +4488,7 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 7. A poll-detected identity change invalidates the evidence.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         effectiveWarIdentityChanged: true,
       } as any),
@@ -4496,13 +4496,13 @@ describe("WarEventLogService war-event poll targets", () => {
 
     // 8. FWA evidence must be explicitly positive.
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsIsFwa: false },
       } as any),
     ).toBeNull();
     expect(
-      resolveSameWarPersistedFwaEvidenceForTest({
+      resolveSameWarPersistedMatchEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsIsFwa: null },
       } as any),
@@ -4511,12 +4511,58 @@ describe("WarEventLogService war-event poll targets", () => {
     // 9. A conflicting stored classification cannot authorize live FWA goals.
     for (const lastKnownMatchType of ["BL", "MM"]) {
       expect(
-        resolveSameWarPersistedFwaEvidenceForTest({
+        resolveSameWarPersistedMatchEvidenceForTest({
           ...base,
           sub: { ...base.sub, pointsLastKnownMatchType: lastKnownMatchType },
         } as any),
       ).toBeNull();
     }
+  });
+
+  it("requires explicit same-war BL evidence when points identify a non-FWA war", () => {
+    const startTime = new Date("2026-08-06T11:34:09.000Z");
+    const base = {
+      effectiveWarIdentityChanged: false,
+      sub: {
+        startTime,
+        pointsWarStartTime: startTime,
+        warId: 1000736,
+        pointsWarId: "1000736",
+        opponentTag: "#YUL2L098",
+        pointsOpponentTag: "#yul2l098",
+        pointsIsFwa: false,
+        pointsLastKnownMatchType: "BL",
+      },
+    };
+
+    expect(resolveSameWarPersistedMatchEvidenceForTest(base as any)).toBe("BL");
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsLastKnownMatchType: "MM" },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsLastKnownMatchType: "" },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: {
+          ...base.sub,
+          pointsWarStartTime: new Date(startTime.getTime() - 60_000),
+        },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsOpponentTag: "#DIFFERENT" },
+      } as any),
+    ).toBeNull();
   });
 
   it("deduplicates threshold diagnostics for unresolved live classifications", async () => {

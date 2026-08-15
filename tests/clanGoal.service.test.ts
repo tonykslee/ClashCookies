@@ -174,6 +174,53 @@ describe("ClanGoalService foundation", () => {
     ).toBe(false);
   });
 
+  it("settles inferred BL only with matching authoritative BL evidence", () => {
+    const inferredBlFacts = {
+      warState: "inWar" as const,
+      matchType: "BL" as const,
+      inferredMatchType: true,
+      outcome: null,
+      loseStyle: "TRADITIONAL" as const,
+      clanStars: 150,
+    };
+
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "BL_150_STARS",
+        facts: inferredBlFacts,
+      }),
+    ).toMatchObject({ qualified: false, reason: "classification_unsettled" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "BL_150_STARS",
+        facts: { ...inferredBlFacts, authoritativeMatchType: "BL" },
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "BL_150_STARS",
+        facts: { ...inferredBlFacts, authoritativeMatchType: "FWA" },
+      }),
+    ).toMatchObject({ qualified: false, reason: "classification_unsettled" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_WIN_150_STARS",
+        facts: {
+          ...inferredBlFacts,
+          matchType: "FWA",
+          outcome: "WIN",
+          authoritativeMatchType: "BL",
+        },
+      }),
+    ).toMatchObject({ qualified: false, reason: "classification_unsettled" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "BL_150_STARS",
+        facts: { ...inferredBlFacts, inferredMatchType: false },
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+  });
+
   it("keeps the four live predicates independent", () => {
     expect(
       evaluateLiveWarClanGoal({

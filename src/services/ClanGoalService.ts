@@ -143,8 +143,8 @@ export type LiveWarClanGoalFacts = {
   warState: "notInWar" | "preparation" | "inWar";
   matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
   inferredMatchType: boolean | null | undefined;
-  /** Same-war persisted FWA evidence may settle an otherwise inferred live classification. */
-  authoritativeMatchType?: "FWA";
+  /** Same-war persisted classification evidence may settle an otherwise inferred live classification. */
+  authoritativeMatchType?: "FWA" | "BL";
   outcome: "WIN" | "LOSE" | "TIE" | "UNKNOWN" | string | null | undefined;
   loseStyle: "TRADITIONAL" | "TRIPLE_TOP_30" | string | null | undefined;
   clanStars: number | null | undefined;
@@ -456,7 +456,7 @@ function evaluateCommonLiveWarFacts(
   if (facts.warState !== "inWar") return "not_battle_day";
   if (
     facts.inferredMatchType !== false &&
-    !(facts.authoritativeMatchType === "FWA" && facts.matchType === "FWA")
+    facts.authoritativeMatchType !== facts.matchType
   ) {
     return "classification_unsettled";
   }
