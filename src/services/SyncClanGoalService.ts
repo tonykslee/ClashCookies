@@ -286,7 +286,8 @@ export class SyncClanGoalService {
           skipDuplicates: true,
         });
         summary.captured = Number(result?.count ?? 0);
-        dozzleLog.info(
+        const captureLog = summary.captured > 0 ? dozzleLog.info : dozzleLog.debug;
+        captureLog(
           `[sync-clan-goals] event=readiness_capture outcome=success tracked=${summary.tracked} captured=${summary.captured} complete=${summary.complete} zero=${summary.zero} incomplete=${summary.incomplete} stale=${summary.stale}`,
         );
       } catch (error) {
@@ -356,7 +357,7 @@ export class SyncClanGoalService {
     });
     summary.skipped += qualified.length - undispatched.length;
     if (undispatched.length === 0) {
-      dozzleLog.info(
+      dozzleLog.debug(
         `[sync-clan-goals] event=reconciliation outcome=summary candidates=${summary.candidates} qualified=${summary.qualified} delivered=0 skipped=${summary.skipped} failed=0`,
       );
       return summary;
@@ -507,7 +508,8 @@ export class SyncClanGoalService {
       }
     }
 
-    dozzleLog.info(
+    const reconciliationLog = summary.delivered > 0 ? dozzleLog.info : dozzleLog.debug;
+    reconciliationLog(
       `[sync-clan-goals] event=reconciliation outcome=summary candidates=${summary.candidates} qualified=${summary.qualified} delivered=${summary.delivered} skipped=${summary.skipped} failed=${summary.failed}`,
     );
     return summary;

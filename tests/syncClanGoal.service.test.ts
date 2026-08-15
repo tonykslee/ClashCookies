@@ -5,6 +5,14 @@ import {
 
 const loadContextMock = vi.hoisted(() => vi.fn());
 const projectionMock = vi.hoisted(() => vi.fn());
+const dozzleLogMock = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
 const prismaMock = vi.hoisted(() => ({
   scheduledSyncPost: { findMany: vi.fn() },
   syncClanReadinessSnapshot: { findMany: vi.fn(), createMany: vi.fn() },
@@ -25,6 +33,9 @@ vi.mock("../src/services/CompoActualStateService", () => ({
 vi.mock("../src/helper/compoActualStateView", () => ({
   isCompoActualStateProjectionComplete: vi.fn().mockReturnValue(true),
   projectCompoActualStateView: projectionMock,
+}));
+vi.mock("../src/helper/dozzleLogger", () => ({
+  dozzleLog: dozzleLogMock,
 }));
 
 import {
@@ -152,6 +163,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
 
   it("captures a boundary once and posts through the routed non-pinging destination", async () => {
     const channel = makeChannel();
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const service = makeService(
       { channels: { fetch: vi.fn().mockResolvedValue(channel) } } as any,
       {
@@ -170,12 +182,22 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(first.captured).toBe(1);
     expect(first.qualified).toBe(1);
     expect(first.delivered).toBe(1);
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(expect.stringContaining(
+      "event=readiness_capture outcome=success tracked=1 captured=1",
+    ));
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(expect.stringContaining(
+      "event=reconciliation outcome=summary candidates=1 qualified=1 delivered=1",
+    ));
+    expect(consoleInfo).toHaveBeenCalledWith(expect.stringContaining(
+      "[clan-goals] event=sync_goal_delivery outcome=success",
+    ));
     expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
       expect.objectContaining({ skipDuplicates: true }),
     );
     expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({
       allowedMentions: { parse: [] },
     }));
+    consoleInfo.mockRestore();
   });
 
   it("captures a FAILED readiness publication while it remains inside the boundary grace window", async () => {
@@ -218,6 +240,9 @@ describe("SYNC_ZERO_DEVIATION", () => {
     );
 
     await service.runCycle(NOW);
+    dozzleLogMock.info.mockClear();
+    dozzleLogMock.debug.mockClear();
+    prismaMock.syncClanReadinessSnapshot.createMany.mockResolvedValue({ count: 0 });
     prismaMock.syncEvent.findMany.mockResolvedValue([{
       guildId: "guild-1",
       syncTime: SYNC_TIME,
@@ -229,8 +254,31 @@ describe("SYNC_ZERO_DEVIATION", () => {
     const second = await service.runCycle(NOW);
 
     expect(second.delivered).toBe(0);
+    expect(dozzleLogMock.info).not.toHaveBeenCalled();
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(expect.stringContaining(
+      "event=reconciliation outcome=summary candidates=1 qualified=1 delivered=0",
+    ));
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(channel.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an idempotent capture pass out of info logs", async () => {
+    prismaMock.syncClanReadinessSnapshot.createMany.mockResolvedValue({ count: 0 });
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.captured).toBe(0);
+    expect(dozzleLogMock.info).not.toHaveBeenCalledWith(expect.stringContaining(
+      "event=readiness_capture outcome=success",
+    ));
+    expect(dozzleLogMock.debug).toHaveBeenCalledWith(expect.stringContaining(
+      "event=readiness_capture outcome=success tracked=1 captured=0",
+    ));
   });
 
   it("leaves disabled goals unclaimed and delivers the persisted snapshot after enabling routing", async () => {
