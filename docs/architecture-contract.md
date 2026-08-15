@@ -167,7 +167,7 @@ Each domain concept must have exactly one authoritative owner.
 | Archived war payloads | WarLookup |
 | Points sync metadata | ClanPointsSync |
 | War event idempotency | WarEvent |
-| Scheduled-sync clan readiness snapshot | SyncClanReadinessSnapshot |
+| Scheduled-sync clan readiness snapshot and exact filler-at-sync facts | SyncClanReadinessSnapshot |
 | Scheduled-sync clan-goal idempotency | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
@@ -273,7 +273,8 @@ Rules:
 ## 7) Messaging and idempotency
 
 - `WarEvent` is the war-event dedupe guard.
-- `SyncClanReadinessSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan ACTUAL readiness snapshot used by `SYNC_ZERO_DEVIATION`. It stores audit facts only; it does not own delivery state.
+- `SyncClanReadinessSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan ACTUAL readiness snapshot used by `SYNC_ZERO_DEVIATION`. It owns exact boundary roster/readiness facts, including explicitly designated filler membership captured from the ACTUAL roster. `fillerCaptureComplete=false` means filler history is unavailable or unknown (including legacy rows); `true` with an empty tag array means exact zero designated fillers. Retrospective/history consumers must use captured `fillerPlayerTags`, not today's mutable `FillerAccount` registry. It stores audit facts only; it does not own delivery state.
+- `FillerAccount` remains the mutable guild-scoped filler-designation registry. `AllianceClanMembershipInterval` remains observation-history ownership and is not the owner of exact filler-at-sync facts; membership intervals must not be used to infer them.
 - `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals. It is distinct from `WarEvent` and never fabricates a war identity.
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
