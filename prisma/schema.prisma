@@ -1224,6 +1224,8 @@ model SyncClanReadinessSnapshot {
   sourceSyncedAt        DateTime?
   algorithmVersion      String
   scheduledSyncPostId   String?
+  fillerCaptureComplete Boolean  @default(false)
+  fillerPlayerTags      String[] @default([])
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 

@@ -22,6 +22,8 @@ import {
   loadCompoActualStateContext,
   type CompoActualStateContext,
 } from "./CompoActualStateService";
+import { listFillerAccountTagsForGuild } from "./FillerAccountService";
+import { normalizePlayerTag } from "./PlayerLinkService";
 import { normalizeTag } from "./war-events/core";
 
 export const SYNC_ZERO_DEVIATION_EVENT_TYPE =
@@ -140,6 +142,8 @@ export function buildSyncClanReadinessSnapshotRows(input: {
   syncTime: Date;
   scheduledSyncPostId?: string | null;
   context: CompoActualStateContext;
+  fillerTags?: readonly string[];
+  fillerCaptureComplete?: boolean;
 }): Array<{
   guildId: string;
   syncTime: Date;
@@ -152,7 +156,16 @@ export function buildSyncClanReadinessSnapshotRows(input: {
   sourceSyncedAt: Date | null;
   algorithmVersion: string;
   scheduledSyncPostId: string | null;
+  fillerCaptureComplete: boolean;
+  fillerPlayerTags: string[];
 }> {
+  const fillerCaptureComplete = input.fillerCaptureComplete === true;
+  const normalizedFillerTags = [...new Set(
+    (input.fillerTags ?? [])
+      .map((tag) => normalizePlayerTag(tag))
+      .filter(Boolean),
+  )].sort((left, right) => left.localeCompare(right));
+
   return input.context.clans.map((clan) => {
     const projection = projectCompoActualStateView({
       view: "auto",
@@ -165,6 +178,11 @@ export function buildSyncClanReadinessSnapshotRows(input: {
     const deviationScore = Number.isFinite(Number(projection.deviationScore))
       ? Number(projection.deviationScore)
       : null;
+    const memberTags = new Set(
+      clan.members
+        .map((member) => normalizePlayerTag(member.playerTag))
+        .filter(Boolean),
+    );
     return {
       guildId: input.guildId,
       syncTime: input.syncTime,
@@ -181,6 +199,10 @@ export function buildSyncClanReadinessSnapshotRows(input: {
           : null,
       algorithmVersion: SYNC_CLAN_READINESS_ALGORITHM_VERSION,
       scheduledSyncPostId: input.scheduledSyncPostId ?? null,
+      fillerCaptureComplete,
+      fillerPlayerTags: fillerCaptureComplete
+        ? normalizedFillerTags.filter((tag) => memberTags.has(tag))
+        : [],
     };
   });
 }
@@ -222,6 +244,7 @@ export class SyncClanGoalService {
     })) as SyncScheduleCandidate[];
 
     const contexts = new Map<string, Promise<CompoActualStateContext>>();
+    const fillerTagsByBoundary = new Map<string, Promise<string[]>>();
     const rowsByBoundary = new Map<string, {
       syncTime: Date;
       rows: ReturnType<typeof buildSyncClanReadinessSnapshotRows>;
@@ -248,11 +271,33 @@ export class SyncClanGoalService {
           summary.stale += 1;
           continue;
         }
+        let fillerTagsPromise = fillerTagsByBoundary.get(contextKey);
+        if (!fillerTagsPromise) {
+          fillerTagsPromise = listFillerAccountTagsForGuild({ guildId: schedule.guildId });
+          fillerTagsByBoundary.set(contextKey, fillerTagsPromise);
+        }
+        let fillerTags: string[] = [];
+        let fillerCaptureComplete = false;
+        try {
+          fillerTags = await fillerTagsPromise;
+          fillerCaptureComplete = true;
+        } catch (error) {
+          dozzleLog.error(
+            `[sync-clan-goals] event=filler_registry_capture outcome=failure guild_id=${schedule.guildId} sync_identity=${schedule.syncTime.toISOString()} error=${formatError(error)}`,
+          );
+        }
+        const postFillerFreshnessNow = this.clock();
+        if (postFillerFreshnessNow.getTime() - schedule.syncTime.getTime() > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
+          summary.stale += 1;
+          continue;
+        }
         const rows = buildSyncClanReadinessSnapshotRows({
           guildId: schedule.guildId,
           syncTime: schedule.syncTime,
           scheduledSyncPostId: schedule.id,
           context,
+          fillerTags,
+          fillerCaptureComplete,
         });
         summary.tracked += rows.length;
         for (const row of rows) {

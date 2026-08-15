@@ -43,7 +43,7 @@ High-level runtime model:
 Core subsystems:
 
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarPlanComplianceEvaluation / WarPlanViolation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
-- Scheduled sync clan goal: `ScheduledSyncPostSchedulerService -> loadCompoActualStateContext + shared ACTUAL projection -> SyncClanReadinessSnapshot -> SyncEvent -> ClanGoalService -> /bot-logs type:clan-goals`; the scheduler owns cadence, the snapshot owns canonical sync facts, and `SyncEvent` owns only sync-goal delivery idempotency.
+- Scheduled sync clan goal: `ScheduledSyncPostSchedulerService -> loadCompoActualStateContext + shared ACTUAL projection -> SyncClanReadinessSnapshot -> SyncEvent -> ClanGoalService -> /bot-logs type:clan-goals`; the scheduler owns cadence, the snapshot owns canonical immutable sync facts including exact designated filler tags present in the ACTUAL roster, and `SyncEvent` owns only sync-goal delivery idempotency. Retrospective/history consumers use captured `fillerPlayerTags`, not the mutable current `FillerAccount` registry.
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals for later camping analytics and future read-only reporting, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. `/cwl activity` does not read this table.
@@ -94,7 +94,8 @@ Important owners:
 | Finalized war-plan evaluation | WarPlanComplianceEvaluation |
 | Finalized war-plan player violation | WarPlanViolation |
 | Points sync metadata | ClanPointsSync |
-| Scheduled-sync clan readiness facts | SyncClanReadinessSnapshot |
+| Scheduled-sync clan readiness and exact filler-at-sync facts | SyncClanReadinessSnapshot |
+| Mutable guild-scoped filler designations | FillerAccount |
 | Scheduled-sync clan-goal delivery claims | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
@@ -110,6 +111,8 @@ Important owners:
 | Telemetry rollups and report schedules | Telemetry* tables |
 
 Do not duplicate ownership across tables.
+
+`AllianceClanMembershipInterval` remains the owner of observation-based membership history and is not used to infer exact filler-at-sync facts. The sync snapshot captures filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's ACTUAL roster.
 
 ---
 
