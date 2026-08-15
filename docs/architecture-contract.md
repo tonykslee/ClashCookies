@@ -81,15 +81,30 @@ CwlRotationPlan
 CwlRotationPlanDay
 CwlRotationPlanMember
 
-CWL measurement baseline:
+CWL alliance activity reporting:
 
-TrackedClan + CurrentWar + FwaTrackedClanWarRosterCurrent + ClanWarHistory + ClanWarParticipation + PlayerLink
+CwlEventInstance + CwlEventClan + persisted CWL round/history owners + CwlPlayerClanSeason
+    + ClanWarHistory + ClanWarParticipation
     ->
-CwlAllianceBaselineService
+CwlAllianceActivityService
     ->
-CwlAllianceSeasonBaseline
-CwlAllianceSeasonBaselineClan
-CwlAllianceSeasonBaselineMember
+read-only `/cwl activity` report
+
+`CwlAllianceActivityService` is the active DB-first reporting consumer. It reads persisted CWL event/round/history owners, `CwlPlayerClanSeason`, `ClanWarHistory`, and `ClanWarParticipation`; it does not consume `AllianceClanMembershipInterval`. It performs no writes, external API calls, interval/current-state ownership changes, or manual/frozen baseline reads. Historical pre-CWL cohorts are derived DB-first from canonical war history.
+
+CWL camping reporting:
+
+AllianceClanMembershipInterval
+    +
+CwlAllianceActivityService historical home attribution/CWL window
+    +
+CwlTrackedClan
+    ->
+CwlAllianceCampingService
+    ->
+read-only `/cwl camping` report
+
+`CwlAllianceCampingService` is a read-only analytics consumer, not a state owner. It measures observed non-home CWL-clan residence, keeps accounts without historical home attribution in a separate diagnostic bucket, and reconciles overlapping interval evidence without mutating stored history. `/cwl activity` remains independent of membership intervals.
 
 Reminder / UserActivityReminder config
     + TodoPlayerSnapshot / CurrentWar
@@ -129,6 +144,8 @@ Each domain concept must have exactly one authoritative owner.
 | Tracked FWA clans | TrackedClan |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Tracked FWA clan rep user profile metadata | TrackedClanRepUserProfile |
+| Current player state | PlayerCurrent |
+| Current FWA clan roster state | FwaClanMemberCurrent |
 | Seasonal CWL tracked clans | CwlTrackedClan |
 | Live battle-day CWL round identity and timing | CurrentCwlRound |
 | Live battle-day CWL round member summaries | CwlRoundMemberCurrent |
@@ -138,7 +155,7 @@ Each domain concept must have exactly one authoritative owner.
 | Derived current-season CWL roster summary | CwlPlayerClanSeason |
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
-| Season-frozen CWL alliance baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
+| Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
 | Player-to-Discord links | PlayerLink |
 | Guild-scoped roster default columns | RosterGuildConfig |
 | Live war state | CurrentWar |
@@ -158,6 +175,7 @@ Each domain concept must have exactly one authoritative owner.
 | Current membership snapshot context | TodoPlayerSnapshot.clanTag, TodoPlayerSnapshot.clanName, TodoPlayerSnapshot.clanMembershipObservedAt |
 | WAR snapshot context | TodoPlayerSnapshot.warClanTag, TodoPlayerSnapshot.warClanName, TodoPlayerSnapshot.warPosition, TodoPlayerSnapshot.warSourceUpdatedAt, TodoPlayerSnapshot.warOwnerSource, TodoPlayerSnapshot.warOwnerWarId, TodoPlayerSnapshot.warOwnerVerifiedAt, TodoPlayerSnapshot.warActive, TodoPlayerSnapshot.warPhase, TodoPlayerSnapshot.warAttacksUsed, TodoPlayerSnapshot.warAttacksMax, TodoPlayerSnapshot.warEndsAt |
 | RAID snapshot context | TodoPlayerSnapshot.raidClanTag, TodoPlayerSnapshot.raidClanName, TodoPlayerSnapshot.raidSourceUpdatedAt, TodoPlayerSnapshot.raidActive, TodoPlayerSnapshot.raidAttacksUsed, TodoPlayerSnapshot.raidAttacksMax, TodoPlayerSnapshot.raidEndsAt |
+
 | CWL snapshot context | TodoPlayerSnapshot.cwlClanTag, TodoPlayerSnapshot.cwlClanName, TodoPlayerSnapshot.cwlActive, TodoPlayerSnapshot.cwlPhase, TodoPlayerSnapshot.cwlAttacksUsed, TodoPlayerSnapshot.cwlAttacksMax, TodoPlayerSnapshot.cwlEndsAt |
 | Clan Games snapshot context | TodoPlayerSnapshot.gamesActive, TodoPlayerSnapshot.gamesCycleKey, TodoPlayerSnapshot.gamesPoints, TodoPlayerSnapshot.gamesTarget, TodoPlayerSnapshot.gamesChampionTotal, TodoPlayerSnapshot.gamesSeasonBaseline, TodoPlayerSnapshot.gamesEndsAt |
 | Todo render snapshots | TodoPlayerSnapshot (current membership, WAR, RAID, CWL, and Clan Games render state) |
@@ -165,13 +183,16 @@ Each domain concept must have exactly one authoritative owner.
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
 | Rep-work attribution snapshots | RepWorkActivityEvent |
-| CWL measurement baseline | CwlAllianceSeasonBaseline, CwlAllianceSeasonBaselineClan, CwlAllianceSeasonBaselineMember |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
+
+`AllianceClanMembershipInterval` is the sole owner of historical observed alliance clan-membership intervals intended for camping analytics and future read-only reporting. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals. No manual/frozen CWL alliance baseline owner remains.
+
+The interval table is intentionally excluded from `MirrorSyncService`'s full-overwrite runtime allowlist. It is append-oriented production history, so mirroring it through a delete-and-reinsert sync would erase or rewrite staging history and make the mirror an additional state owner. Mirror mode therefore performs no new membership-history polling or writes.
 
 Rules:
 

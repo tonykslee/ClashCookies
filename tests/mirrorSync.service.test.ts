@@ -82,49 +82,6 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-30T01:00:00.000Z"),
       },
     ],
-    CwlAllianceSeasonBaseline: [
-      {
-        id: "baseline1",
-        guildId: "g1",
-        season: "2026-06",
-        capturedAt: new Date("2026-06-01T00:00:00.000Z"),
-        capturedByUserId: "u1",
-        createdAt: new Date("2026-06-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
-      },
-    ],
-    CwlAllianceSeasonBaselineClan: [
-      {
-        id: "baseline-clan-1",
-        baselineId: "baseline1",
-        clanTag: "#AAA111",
-        clanName: "Alpha",
-        captureStatus: "CAPTURED",
-        sourceType: "CURRENT_FWA_WAR",
-        sourceWarId: 1,
-        sourceWarStartTime: new Date("2026-03-30T00:00:00.000Z"),
-        sourceWarEndTime: new Date("2026-03-30T01:00:00.000Z"),
-        sourceOpponentTag: "#BBB222",
-        sourceObservedAt: new Date("2026-03-30T01:05:00.000Z"),
-        rosterSize: 1,
-        failureReason: null,
-        createdAt: new Date("2026-06-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-06-01T00:00:00.000Z"),
-      },
-    ],
-    CwlAllianceSeasonBaselineMember: [
-      {
-        id: "baseline-member-1",
-        baselineId: "baseline1",
-        baselineClanId: "baseline-clan-1",
-        playerTag: "#P1",
-        playerName: "Player 1",
-        townHall: 16,
-        position: 1,
-        linkedDiscordUserId: "u1",
-        createdAt: new Date("2026-06-01T00:00:00.000Z"),
-      },
-    ],
     WarLookup: [{ warId: "1", clanTag: "#AAA111", startTime: new Date("2026-03-30T00:00:00.000Z"), payload: {} }],
     CwlEventInstance: [
       {
@@ -325,15 +282,6 @@ function buildSourceClient(
     warPlanViolation: {
       findMany: vi.fn(async () => cloneRows(store.WarPlanViolation)),
     },
-    cwlAllianceSeasonBaseline: {
-      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaseline)),
-    },
-    cwlAllianceSeasonBaselineClan: {
-      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaselineClan)),
-    },
-    cwlAllianceSeasonBaselineMember: {
-      findMany: vi.fn(async () => cloneRows(store.CwlAllianceSeasonBaselineMember)),
-    },
     warLookup: {
       findMany: vi.fn(async () => cloneRows(store.WarLookup)),
     },
@@ -447,18 +395,6 @@ function buildTargetClient(
       deleteMany: deleteMany("WarPlanViolation"),
       createMany: createMany("WarPlanViolation"),
     },
-    cwlAllianceSeasonBaseline: {
-      deleteMany: deleteMany("CwlAllianceSeasonBaseline"),
-      createMany: createMany("CwlAllianceSeasonBaseline"),
-    },
-    cwlAllianceSeasonBaselineClan: {
-      deleteMany: deleteMany("CwlAllianceSeasonBaselineClan"),
-      createMany: createMany("CwlAllianceSeasonBaselineClan"),
-    },
-    cwlAllianceSeasonBaselineMember: {
-      deleteMany: deleteMany("CwlAllianceSeasonBaselineMember"),
-      createMany: createMany("CwlAllianceSeasonBaselineMember"),
-    },
     warLookup: { deleteMany: deleteMany("WarLookup"), createMany: createMany("WarLookup") },
     cwlEventInstance: {
       deleteMany: deleteMany("CwlEventInstance"),
@@ -500,6 +436,16 @@ function buildTargetClient(
 }
 
 describe("MirrorSyncService", () => {
+  it("does not full-overwrite append-oriented alliance membership history", () => {
+    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain(
+      "AllianceClanMembershipInterval",
+    );
+  });
+
+  it("does not mirror retired baseline tables", () => {
+    expect(MIRRORED_RUNTIME_TABLES.some((table) => table.toLowerCase().includes("baseline"))).toBe(false);
+  });
+
   it("runs full-overwrite sync for only the allowlisted runtime tables", async () => {
     const sourceStore = makeDefaultTableStore();
     const targetStore = makeDefaultTableStore();
@@ -602,9 +548,6 @@ describe("MirrorSyncService", () => {
       sourceStore.WarPlanComplianceEvaluation,
     );
     expect(targetStore.WarPlanViolation).toEqual(sourceStore.WarPlanViolation);
-    expect(targetStore.CwlAllianceSeasonBaseline).toEqual(sourceStore.CwlAllianceSeasonBaseline);
-    expect(targetStore.CwlAllianceSeasonBaselineClan).toEqual(sourceStore.CwlAllianceSeasonBaselineClan);
-    expect(targetStore.CwlAllianceSeasonBaselineMember).toEqual(sourceStore.CwlAllianceSeasonBaselineMember);
     expect(targetStore.WarLookup).toEqual(sourceStore.WarLookup);
     const mirroredTables = result.tableSummaries.map((summary) => summary.table);
     const eventTableStart = mirroredTables.indexOf("CwlEventInstance");

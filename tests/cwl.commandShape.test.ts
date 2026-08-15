@@ -3,24 +3,27 @@ import { describe, expect, it } from "vitest";
 import { Cwl } from "../src/commands/Cwl";
 
 describe("/cwl command shape", () => {
-  it("registers members, baseline status/capture, signup, roster manager controls, and rotations show/create/delete/import/export without drift", () => {
+  it("registers camping, activity, members, and rotations without the retired baseline surface", () => {
+    const camping = Cwl.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "camping",
+    );
+    const activity = Cwl.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "activity",
+    );
     const members = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
         option.name === "members",
-    );
-    const baseline = Cwl.options?.find(
-      (option) =>
-        option.type === ApplicationCommandOptionType.SubcommandGroup &&
-        option.name === "baseline",
     );
     const rotations = Cwl.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.SubcommandGroup &&
         option.name === "rotations",
     );
-    const status = baseline?.options?.find((option: any) => option.name === "status");
-    const capture = baseline?.options?.find((option: any) => option.name === "capture");
     const show = rotations?.options?.find((option: any) => option.name === "show");
     const create = rotations?.options?.find((option: any) => option.name === "create");
     const deleteOption = rotations?.options?.find((option: any) => option.name === "delete");
@@ -28,13 +31,27 @@ describe("/cwl command shape", () => {
     const exportOption = rotations?.options?.find((option: any) => option.name === "export");
 
     expect(members).toBeTruthy();
-    expect(baseline).toBeTruthy();
+    expect(camping?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(camping?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
+    expect(camping?.options?.find((option: any) => option.name === "view")?.choices?.map((choice: any) => choice.value)).toEqual([
+      "summary", "players", "clans", "current",
+    ]);
+    expect(camping?.options?.find((option: any) => option.name === "page")?.type).toBe(ApplicationCommandOptionType.Integer);
+    expect(camping?.options?.find((option: any) => option.name === "page")?.minValue).toBe(1);
+    expect(activity?.type).toBe(ApplicationCommandOptionType.Subcommand);
+    expect(Cwl.options?.find((option) => option.name === "baseline")).toBeUndefined();
     expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.Subcommand && option.name === "signup")).toBeUndefined();
     expect(Cwl.options?.find((option) => option.type === ApplicationCommandOptionType.SubcommandGroup && option.name === "roster")).toBeUndefined();
     expect(rotations).toBeTruthy();
-    expect(status?.type).toBe(ApplicationCommandOptionType.Subcommand);
-    expect(capture?.type).toBe(ApplicationCommandOptionType.Subcommand);
-    expect(baseline?.options?.length).toBe(2);
+    const activityView = activity?.options?.find((option: any) => option.name === "view");
+    expect(activity?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
+    expect(activityView?.choices?.map((choice: any) => choice.value)).toEqual([
+      "summary", "both", "fwa-only", "cwl-only", "not-returned", "new-post-cwl", "clans",
+    ]);
+    expect(activity?.options?.find((option: any) => option.name === "page")?.type).toBe(
+      ApplicationCommandOptionType.Integer,
+    );
+    expect(activity?.options?.find((option: any) => option.name === "page")?.minValue).toBe(1);
     expect(show?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(create?.type).toBe(ApplicationCommandOptionType.Subcommand);
     expect(deleteOption?.type).toBe(ApplicationCommandOptionType.Subcommand);
@@ -49,18 +66,6 @@ describe("/cwl command shape", () => {
     expect(show?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
     expect(importOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
     expect(exportOption?.options?.find((option: any) => option.name === "roster")).toBeUndefined();
-    expect(status?.options?.find((option: any) => option.name === "season")?.type).toBe(
-      ApplicationCommandOptionType.String,
-    );
-    expect(status?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
-    expect(capture?.options?.find((option: any) => option.name === "season")?.type).toBe(
-      ApplicationCommandOptionType.String,
-    );
-    expect(capture?.options?.find((option: any) => option.name === "season")?.required).toBe(false);
-    expect(capture?.options?.find((option: any) => option.name === "replace")?.type).toBe(
-      ApplicationCommandOptionType.Boolean,
-    );
-    expect(capture?.options?.find((option: any) => option.name === "replace")?.required).toBe(false);
     const size = create?.options?.find((option: any) => option.name === "size");
     expect(size?.type).toBe(ApplicationCommandOptionType.Integer);
     expect(size?.required).toBe(false);
