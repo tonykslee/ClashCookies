@@ -169,6 +169,7 @@ export type CanonicalWarEndGoalHistory = {
   warId: number | string;
   clanTag: string;
   matchType: string | null | undefined;
+  expectedOutcome?: string | null | undefined;
   warEndTime: Date | string | null | undefined;
 };
 
@@ -182,6 +183,8 @@ export type FwaNoViolationsGoalFacts = {
         guildId: string;
         warId: number | string;
         status: string | null | undefined;
+        matchType: string | null | undefined;
+        expectedOutcome: string | null | undefined;
         violationCount: number | null | undefined;
       }
     | null
@@ -194,6 +197,7 @@ export type WarNoMissedAttacksGoalFacts = {
   clanTag: string;
   history: CanonicalWarEndGoalHistory | null | undefined;
   expectedParticipantCount: number | null | undefined;
+  expectedParticipantCountAuthoritative: boolean;
   participation:
     | Array<{
         guildId: string;
@@ -215,6 +219,7 @@ export type CanonicalWarEndGoalEvaluation = {
     | "history_war_mismatch"
     | "history_clan_mismatch"
     | "history_match_type_mismatch"
+    | "evaluation_canonical_mismatch"
     | "evaluation_missing"
     | "evaluation_identity_mismatch"
     | "evaluation_not_completed"
@@ -234,6 +239,10 @@ function sameWarId(left: number | string, right: number | string): boolean {
   return Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
     ? Math.trunc(leftNumber) === Math.trunc(rightNumber)
     : String(left).trim() === String(right).trim();
+}
+
+function normalizeCanonicalText(value: string | null | undefined): string {
+  return String(value ?? "").trim().toUpperCase();
 }
 
 function isEndedHistoryForGoal(input: {
@@ -292,6 +301,18 @@ export function evaluateFwaNoViolationsGoal(
     };
   }
   if (
+    normalizeCanonicalText(input.evaluation.matchType) !==
+      normalizeCanonicalText(input.history?.matchType) ||
+    normalizeCanonicalText(input.evaluation.expectedOutcome) !==
+      normalizeCanonicalText(input.history?.expectedOutcome)
+  ) {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "evaluation_canonical_mismatch",
+    };
+  }
+  if (
     input.evaluation.violationCount === null ||
     input.evaluation.violationCount === undefined ||
     !Number.isInteger(Number(input.evaluation.violationCount)) ||
@@ -315,6 +336,13 @@ export function evaluateWarNoMissedAttacksGoal(
     return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: false, reason: historyReason };
   }
   const expectedCount = Number(input.expectedParticipantCount);
+  if (input.expectedParticipantCountAuthoritative !== true) {
+    return {
+      goalId: "WAR_NO_MISSED_ATTACKS",
+      qualified: false,
+      reason: "participant_count_missing",
+    };
+  }
   if (!Number.isInteger(expectedCount) || expectedCount <= 0) {
     return {
       goalId: "WAR_NO_MISSED_ATTACKS",

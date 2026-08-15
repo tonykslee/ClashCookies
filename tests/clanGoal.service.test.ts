@@ -192,6 +192,7 @@ describe("ClanGoalService foundation", () => {
         warId: 42,
         clanTag: "#ABC123",
         matchType: "FWA",
+        expectedOutcome: "LOSE",
         warEndTime: new Date("2026-01-02T00:00:00.000Z"),
       },
     };
@@ -202,6 +203,8 @@ describe("ClanGoalService foundation", () => {
           guildId: "guild-1",
           warId: 42,
           status: "COMPLETED",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
           violationCount: 0,
         },
       }),
@@ -213,6 +216,8 @@ describe("ClanGoalService foundation", () => {
           guildId: "guild-1",
           warId: 42,
           status: "PENDING",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
           violationCount: 0,
         },
       }),
@@ -224,11 +229,38 @@ describe("ClanGoalService foundation", () => {
           guildId: "guild-1",
           warId: 42,
           status: "COMPLETED",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
           violationCount: 0,
         },
         history: { ...base.history, matchType: "MM" },
       }),
     ).toMatchObject({ qualified: false, reason: "history_match_type_mismatch" });
+  });
+
+  it("rejects a completed zero-violation evaluation with a stale canonical snapshot", () => {
+    expect(
+      evaluateFwaNoViolationsGoal({
+        guildId: "guild-1",
+        warId: 42,
+        clanTag: "#ABC123",
+        history: {
+          warId: 42,
+          clanTag: "#ABC123",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+          warEndTime: new Date("2026-01-02T00:00:00.000Z"),
+        },
+        evaluation: {
+          guildId: "guild-1",
+          warId: 42,
+          status: "COMPLETED",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          violationCount: 0,
+        },
+      }),
+    ).toMatchObject({ qualified: false, reason: "evaluation_canonical_mismatch" });
   });
 
   it("requires an explicit complete canonical roster for no-missed-attacks", () => {
@@ -243,6 +275,7 @@ describe("ClanGoalService foundation", () => {
         warEndTime: new Date("2026-01-02T00:00:00.000Z"),
       },
       expectedParticipantCount: 2,
+      expectedParticipantCountAuthoritative: true,
     };
     expect(
       evaluateWarNoMissedAttacksGoal({
@@ -270,6 +303,59 @@ describe("ClanGoalService foundation", () => {
         ],
       }),
     ).toMatchObject({ qualified: false, reason: "missed_attacks_present" });
+  });
+
+  it("requires authoritative roster coverage rather than participant-derived size", () => {
+    const rows = Array.from({ length: 49 }, (_, index) => ({
+      guildId: "guild-1",
+      warId: "50",
+      clanTag: "#ABC123",
+      playerTag: `#P${index}`,
+      attacksMissed: 0,
+    }));
+    const base = {
+      guildId: "guild-1",
+      warId: 50,
+      clanTag: "#ABC123",
+      history: {
+        warId: 50,
+        clanTag: "#ABC123",
+        matchType: "MM",
+        warEndTime: new Date("2026-01-02T00:00:00.000Z"),
+      },
+      participation: rows,
+    };
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        expectedParticipantCount: 50,
+        expectedParticipantCountAuthoritative: true,
+      }),
+    ).toMatchObject({ qualified: false, reason: "participant_count_mismatch" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        expectedParticipantCount: 49,
+        expectedParticipantCountAuthoritative: false,
+      }),
+    ).toMatchObject({ qualified: false, reason: "participant_count_missing" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        expectedParticipantCount: 50,
+        expectedParticipantCountAuthoritative: true,
+        participation: [
+          ...rows,
+          {
+            guildId: "guild-1",
+            warId: "50",
+            clanTag: "#ABC123",
+            playerTag: "#P49",
+            attacksMissed: 0,
+          },
+        ],
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
   });
 
   it("resolves all routed destination modes and reports missing destinations as skips", () => {
