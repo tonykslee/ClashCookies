@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CLAN_GOAL_IDS,
   getClanGoalCatalog,
+  evaluateLiveWarClanGoal,
+  evaluateLiveWarClanGoals,
   logClanGoalOutcome,
   renderClanGoalMessage,
   resolveClanGoalDestination,
@@ -43,6 +45,140 @@ describe("ClanGoalService foundation", () => {
 
     expect(rendered.content).toContain("The Testers (#ABC123)");
     expect(rendered.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it("normalizes bare and hash clan tags identically for rendering and snippets", () => {
+    const bare = {
+      goalId: "FWA_WIN_150_STARS" as const,
+      guildId: "guild-1",
+      clanTag: "abc123",
+      warId: 42,
+    };
+    const hashed = { ...bare, clanTag: "#ABC123" };
+
+    expect(selectClanGoalSnippet(bare)).toBe(selectClanGoalSnippet(hashed));
+    expect(renderClanGoalMessage(bare).content).toContain("#ABC123");
+    expect(renderClanGoalMessage(hashed).content).toBe(
+      renderClanGoalMessage(bare).content,
+    );
+  });
+
+  it("evaluates current live-war facts without requiring threshold transitions", () => {
+    const base = {
+      warState: "inWar" as const,
+      matchType: "FWA" as const,
+      inferredMatchType: false,
+      outcome: "LOSE" as const,
+      loseStyle: "TRADITIONAL" as const,
+      clanStars: 103,
+    };
+
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_LOSE_TRADITIONAL_100_STARS",
+        facts: base,
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(evaluateLiveWarClanGoals(base)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          goalId: "FWA_LOSE_TRADITIONAL_100_STARS",
+          qualified: true,
+        }),
+      ]),
+    );
+  });
+
+  it("waits for settled classification and gates top-30 cleanliness after stars", () => {
+    const unresolved = evaluateLiveWarClanGoal({
+      goalId: "FWA_WIN_150_STARS",
+      facts: {
+        warState: "inWar",
+        matchType: "FWA",
+        inferredMatchType: true,
+        outcome: "WIN",
+        loseStyle: null,
+        clanStars: 150,
+      },
+    });
+    expect(unresolved).toMatchObject({
+      qualified: false,
+      reason: "classification_unsettled",
+    });
+
+    const needsCleanliness = evaluateLiveWarClanGoal({
+      goalId: "FWA_LOSE_TOP30_90_CLEAN",
+      facts: {
+        warState: "inWar",
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: "LOSE",
+        loseStyle: "TRIPLE_TOP_30",
+        clanStars: 90,
+      },
+    });
+    expect(needsCleanliness).toMatchObject({
+      qualified: false,
+      reason: "attack_cleanliness_not_checked",
+      requiresAttackCleanliness: true,
+    });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_LOSE_TOP30_90_CLEAN",
+        facts: {
+          warState: "inWar",
+          matchType: "FWA",
+          inferredMatchType: false,
+          outcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+          clanStars: 90,
+          top30Clean: false,
+        },
+      }),
+    ).toMatchObject({ qualified: false, reason: "top30_attack_on_bottom_20" });
+  });
+
+  it("keeps the four live predicates independent", () => {
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_LOSE_TOP30_90_CLEAN",
+        facts: {
+          warState: "inWar",
+          matchType: "FWA",
+          inferredMatchType: false,
+          outcome: "LOSE",
+          loseStyle: "TRIPLE_TOP_30",
+          clanStars: 91,
+          top30Clean: true,
+        },
+      }).qualified,
+    ).toBe(true);
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_WIN_150_STARS",
+        facts: {
+          warState: "inWar",
+          matchType: "FWA",
+          inferredMatchType: false,
+          outcome: "WIN",
+          loseStyle: "TRADITIONAL",
+          clanStars: 150,
+        },
+      }).qualified,
+    ).toBe(true);
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "BL_150_STARS",
+        facts: {
+          warState: "inWar",
+          matchType: "BL",
+          inferredMatchType: false,
+          outcome: null,
+          loseStyle: "TRADITIONAL",
+          clanStars: 150,
+        },
+      }).qualified,
+    ).toBe(true);
   });
 
   it("resolves all routed destination modes and reports missing destinations as skips", () => {

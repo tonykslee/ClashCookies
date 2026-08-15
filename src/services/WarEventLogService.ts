@@ -28,6 +28,14 @@ import type { PointsApiFetchReason } from "./PointsFetchTypes";
 import { SettingsService } from "./SettingsService";
 import { CommandPermissionService } from "./CommandPermissionService";
 import { BotLogChannelService } from "./BotLogChannelService";
+import {
+  clanGoalService,
+  evaluateLiveWarClanGoals,
+  getClanGoalRoutingConfig,
+  logClanGoalOutcome,
+  resolveClanGoalDestination,
+  type ClanGoalId,
+} from "./ClanGoalService";
 import { cwlStateService } from "./CwlStateService";
 import { MaintenanceWindowService } from "./MaintenanceWindowService";
 import {
@@ -610,6 +618,9 @@ type SubscriptionRow = {
   opponentTag: string | null;
   opponentName: string | null;
   clanName: string | null;
+  loseStyle: string | null;
+  trackedLogChannelId: string | null;
+  trackedLeaderChannelId: string | null;
   clanRoleId: string | null;
   pointsConfirmedByClanMail: boolean | null;
   pointsNeedsValidation: boolean | null;
@@ -2475,6 +2486,8 @@ export class WarEventLogService {
         notifyEnabled: true,
         mailChannelId: true,
         logChannelId: true,
+        leaderChannelId: true,
+        loseStyle: true,
       },
     });
     const config = await prisma.clanNotifyConfig.findUnique({
@@ -2537,6 +2550,9 @@ export class WarEventLogService {
       opponentName: null,
       clanName:
         String(tracked?.name ?? params.clanTag).trim() || params.clanTag,
+      loseStyle: tracked?.loseStyle ?? null,
+      trackedLogChannelId: tracked?.logChannelId ?? null,
+      trackedLeaderChannelId: tracked?.leaderChannelId ?? null,
       clanRoleId: null,
       pointsConfirmedByClanMail: null,
       pointsNeedsValidation: null,
@@ -3548,6 +3564,9 @@ export class WarEventLogService {
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."pendingEventType",cw."pendingEventTargetState",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
+          tc."loseStyle" AS "loseStyle",
+          tc."logChannelId" AS "trackedLogChannelId",
+          tc."leaderChannelId" AS "trackedLeaderChannelId",
           tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
@@ -5268,6 +5287,19 @@ export class WarEventLogService {
       resolvedWarId,
       fallbackWarStartTime: nextWarStartTime,
     });
+    await this.evaluateAndDeliverLiveWarClanGoals({
+      sub,
+      currentState,
+      matchType: nextMatchType,
+      inferredMatchType: nextInferredMatchType,
+      outcome: normalizeOutcome(nextOutcome),
+      clanStars: nextClanStars,
+      resolvedWarId,
+    }).catch((error) => {
+      console.error(
+        `[clan-goals] event=live_war_poll outcome=failure guild_id=${sub.guildId} clan_tag=${sub.clanTag} war_id=${resolvedWarId ?? "unknown"} reason=evaluation_failed error=${formatError(error)}`,
+      );
+    });
     if (maintenanceObservation.maintenanceTransition === "over") {
       options?.maintenanceOverGuildIds?.add(sub.guildId);
     }
@@ -5582,6 +5614,245 @@ export class WarEventLogService {
       );
     }
     return newAttackRowsObserved;
+  }
+
+  /** Purpose: evaluate and deliver qualified live-war clan goals after current-war attack refresh. */
+  private async evaluateAndDeliverLiveWarClanGoals(input: {
+    sub: SubscriptionRow;
+    currentState: WarState;
+    matchType: MatchType;
+    inferredMatchType: boolean | null;
+    outcome: string | null;
+    clanStars: number | null;
+    resolvedWarId: number | null;
+  }): Promise<void> {
+    if (input.currentState !== "inWar") return;
+
+    const facts = {
+      warState: input.currentState,
+      matchType: input.matchType,
+      inferredMatchType: input.inferredMatchType,
+      outcome: input.outcome,
+      loseStyle: input.sub.loseStyle,
+      clanStars: input.clanStars,
+    } as const;
+    const initialEvaluations = evaluateLiveWarClanGoals(facts);
+    const top30Evaluation = initialEvaluations.find(
+      (evaluation) =>
+        evaluation.goalId === "FWA_LOSE_TOP30_90_CLEAN" &&
+        evaluation.requiresAttackCleanliness,
+    );
+    let top30Clean: boolean | undefined;
+    if (top30Evaluation) {
+      if (
+        input.resolvedWarId === null ||
+        !Number.isFinite(Number(input.resolvedWarId)) ||
+        Math.trunc(Number(input.resolvedWarId)) <= 0
+      ) {
+        logClanGoalOutcome({
+          outcome: "skip",
+          event: "live_war_poll",
+          goalId: top30Evaluation.goalId,
+          identity: {
+            guildId: input.sub.guildId,
+            clanTag: input.sub.clanTag,
+            warId: input.resolvedWarId,
+          },
+          reason: "missing_war_id_for_attack_cleanliness",
+        });
+      } else {
+        const bottomTwentyAttack = await prisma.warAttacks.findFirst({
+          where: {
+            clanTag: normalizeTag(input.sub.clanTag),
+            warId: Math.trunc(Number(input.resolvedWarId)),
+            defenderPosition: { gt: 30 },
+          },
+          select: { warId: true },
+        });
+        top30Clean = !bottomTwentyAttack;
+      }
+    }
+
+    const evaluations = evaluateLiveWarClanGoals({
+      ...facts,
+      top30Clean,
+    });
+    for (const evaluation of evaluations) {
+      if (!evaluation.qualified) continue;
+      if (
+        input.resolvedWarId === null ||
+        !Number.isFinite(Number(input.resolvedWarId)) ||
+        Math.trunc(Number(input.resolvedWarId)) <= 0
+      ) {
+        logClanGoalOutcome({
+          outcome: "skip",
+          event: "live_war_poll",
+          goalId: evaluation.goalId,
+          identity: {
+            guildId: input.sub.guildId,
+            clanTag: input.sub.clanTag,
+            warId: input.resolvedWarId,
+          },
+          reason: "missing_war_id_for_idempotency",
+        });
+        continue;
+      }
+      await this.deliverLiveWarClanGoal({
+        sub: input.sub,
+        goalId: evaluation.goalId,
+        warId: Math.trunc(Number(input.resolvedWarId)),
+      });
+    }
+  }
+
+  /** Purpose: route, reserve, render, and send one qualified live-war goal. */
+  private async deliverLiveWarClanGoal(input: {
+    sub: SubscriptionRow;
+    goalId: ClanGoalId;
+    warId: number;
+  }): Promise<void> {
+    const routingConfig = await getClanGoalRoutingConfig(
+      input.sub.guildId,
+      this.botLogChannels,
+    );
+    const botLogChannelId =
+      routingConfig.routingMode === "BOT_LOG"
+        ? await this.botLogChannels.getChannelId(input.sub.guildId)
+        : null;
+    const destination = resolveClanGoalDestination({
+      routingConfig,
+      clanLogChannelId: input.sub.trackedLogChannelId,
+      clanLeaderChannelId: input.sub.trackedLeaderChannelId,
+      botLogChannelId,
+    });
+    const identity = {
+      guildId: input.sub.guildId,
+      clanTag: input.sub.clanTag,
+      warId: input.warId,
+    };
+    if (destination.channelId === null) {
+      logClanGoalOutcome({
+        outcome: "skip",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: destination.skipReason,
+      });
+      return;
+    }
+
+    const channel = await this.client.channels
+      .fetch(destination.channelId)
+      .catch(() => null);
+    if (
+      !channel ||
+      !channel.isTextBased() ||
+      (channel.type !== undefined &&
+        channel.type !== ChannelType.GuildText &&
+        channel.type !== ChannelType.GuildAnnouncement &&
+        channel.type !== ChannelType.PublicThread &&
+        channel.type !== ChannelType.PrivateThread) ||
+      (String((channel as { guildId?: string }).guildId ?? "").trim() &&
+        String((channel as { guildId?: string }).guildId).trim() !==
+          input.sub.guildId)
+    ) {
+      logClanGoalOutcome({
+        outcome: "skip",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: "destination_unavailable",
+      });
+      return;
+    }
+
+    const eventType = `clan_goal:${input.goalId}`;
+    const reservation = await this.reserveClanGoalEvent({
+      warId: input.warId,
+      clanTag: input.sub.clanTag,
+      eventType,
+      guildId: input.sub.guildId,
+      goalId: input.goalId,
+    });
+    if (reservation.state !== "claimed") {
+      logClanGoalOutcome({
+        outcome: "skip",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: reservation.reason,
+      });
+      return;
+    }
+    const guardCreatedAt = reservation.guardCreatedAt;
+    if (!guardCreatedAt) {
+      logClanGoalOutcome({
+        outcome: "failure",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: "missing_delivery_claim_timestamp",
+      });
+      return;
+    }
+
+    const rendered = clanGoalService.renderMessage({
+      ...identity,
+      goalId: input.goalId,
+      clanName: input.sub.clanName,
+    });
+    try {
+      const sent = await (channel as any).send({
+        content: rendered.content,
+        allowedMentions: rendered.allowedMentions,
+      });
+      const markedDelivered = await this.markClanGoalEventDelivered({
+        warId: input.warId,
+        clanTag: input.sub.clanTag,
+        eventType,
+        guardCreatedAt,
+        channelId: destination.channelId,
+        messageId: String(sent?.id ?? "").trim() || null,
+      });
+      if (!markedDelivered) {
+        await this.releaseClanGoalEvent({
+          warId: input.warId,
+          clanTag: input.sub.clanTag,
+          eventType,
+          guardCreatedAt,
+        });
+        logClanGoalOutcome({
+          outcome: "failure",
+          event: "live_war_delivery",
+          goalId: input.goalId,
+          identity,
+          reason: "delivery_claim_update_failed",
+        });
+        return;
+      }
+      logClanGoalOutcome({
+        outcome: "success",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: "posted",
+      });
+    } catch (error) {
+      await this.releaseClanGoalEvent({
+        warId: input.warId,
+        clanTag: input.sub.clanTag,
+        eventType,
+        guardCreatedAt,
+      });
+      logClanGoalOutcome({
+        outcome: "failure",
+        event: "live_war_delivery",
+        goalId: input.goalId,
+        identity,
+        reason: "send_failed_retryable",
+        error,
+      });
+    }
   }
 
   private async dispatchDetectedEvent(params: {
@@ -6249,6 +6520,144 @@ export class WarEventLogService {
             trackedMessage.configHash,
             fingerprint,
           ),
+        },
+      })
+      .catch(() => null);
+  }
+
+  private async reserveClanGoalEvent(input: {
+    warId: number;
+    clanTag: string;
+    eventType: string;
+    guildId: string;
+    goalId: ClanGoalId;
+  }): Promise<{
+    state: "claimed" | "delivered" | "in_flight" | "unavailable";
+    guardCreatedAt?: Date;
+    reason: string;
+  }> {
+    const where = {
+      warId: Math.trunc(Number(input.warId)),
+      clanTag: normalizeTag(input.clanTag),
+      eventType: input.eventType,
+    };
+    try {
+      const existing = await prisma.warEvent.findUnique({
+        where: {
+          warId_clanTag_eventType: where,
+        },
+        select: { createdAt: true, payload: true },
+      });
+      if (existing) {
+        const payload =
+          existing.payload && typeof existing.payload === "object"
+            ? (existing.payload as { status?: string })
+            : {};
+        if (payload.status === "delivered") {
+          return {
+            state: "delivered",
+            reason: "already_delivered",
+          };
+        }
+        if (!isWarEventReservationExpired(existing.createdAt)) {
+          return {
+            state: "in_flight",
+            reason: "reservation_in_flight",
+          };
+        }
+        const reclaimed = await prisma.warEvent.deleteMany({
+          where: {
+            ...where,
+            createdAt: existing.createdAt,
+          },
+        });
+        if (reclaimed.count !== 1) {
+          return {
+            state: "in_flight",
+            reason: "reservation_ownership_lost",
+          };
+        }
+      }
+
+      const created = await prisma.warEvent.create({
+        data: {
+          ...where,
+          payload: {
+            kind: "clan_goal_delivery",
+            status: "claimed",
+            guildId: input.guildId,
+            goalId: input.goalId,
+          },
+        },
+        select: { createdAt: true },
+      });
+      return {
+        state: "claimed",
+        guardCreatedAt: created.createdAt,
+        reason: "claimed",
+      };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        return {
+          state: "in_flight",
+          reason: "reservation_already_claimed",
+        };
+      }
+      console.warn(
+        `[clan-goals] event=live_war_delivery outcome=skip guild_id=${input.guildId} clan_tag=${input.clanTag} war_id=${input.warId} goal_id=${input.goalId} reason=reservation_unavailable error=${formatError(error)}`,
+      );
+      return {
+        state: "unavailable",
+        reason: "reservation_unavailable",
+      };
+    }
+  }
+
+  private async markClanGoalEventDelivered(input: {
+    warId: number;
+    clanTag: string;
+    eventType: string;
+    guardCreatedAt: Date;
+    channelId: string;
+    messageId: string | null;
+  }): Promise<boolean> {
+    const result = await prisma.warEvent
+      .updateMany({
+        where: {
+          warId: Math.trunc(Number(input.warId)),
+          clanTag: normalizeTag(input.clanTag),
+          eventType: input.eventType,
+          createdAt: input.guardCreatedAt,
+        },
+        data: {
+          payload: {
+            kind: "clan_goal_delivery",
+            status: "delivered",
+            channelId: input.channelId,
+            messageId: input.messageId,
+          },
+        },
+      })
+      .catch(() => ({ count: 0 }));
+    return result.count === 1;
+  }
+
+  private async releaseClanGoalEvent(input: {
+    warId: number;
+    clanTag: string;
+    eventType: string;
+    guardCreatedAt: Date;
+  }): Promise<void> {
+    await prisma.warEvent
+      .deleteMany({
+        where: {
+          warId: Math.trunc(Number(input.warId)),
+          clanTag: normalizeTag(input.clanTag),
+          eventType: input.eventType,
+          createdAt: input.guardCreatedAt,
         },
       })
       .catch(() => null);
