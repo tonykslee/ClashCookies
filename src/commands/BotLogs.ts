@@ -26,6 +26,7 @@ const BOT_LOGS_SYNC_TYPE: SimpleBotLogChannelType = "sync";
 const BOT_LOGS_CHECKLIST_TYPE: SimpleBotLogChannelType = "checklist";
 const BOT_LOGS_BAN_LOG_TYPE: RoutedBotLogChannelType = "ban-log";
 const BOT_LOGS_BAN_JOIN_ALERT_TYPE: RoutedBotLogChannelType = "ban-join-alert";
+const BOT_LOGS_CLAN_GOALS_TYPE: RoutedBotLogChannelType = "clan-goals";
 const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
@@ -69,11 +70,17 @@ function formatBaseSwapRoutingMode(mode: BaseSwapBotLogRoutingMode): string {
 function isRoutedBotLogType(
   type: BotLogChannelType | null,
 ): type is RoutedBotLogChannelType {
-  return type === BOT_LOGS_BAN_LOG_TYPE || type === BOT_LOGS_BAN_JOIN_ALERT_TYPE;
+  return (
+    type === BOT_LOGS_BAN_LOG_TYPE ||
+    type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
+    type === BOT_LOGS_CLAN_GOALS_TYPE
+  );
 }
 
 function formatRoutedBotLogLabel(type: RoutedBotLogChannelType): string {
-  return type === BOT_LOGS_BAN_LOG_TYPE ? "Ban log" : "Ban join alert";
+  if (type === BOT_LOGS_BAN_LOG_TYPE) return "Ban log";
+  if (type === BOT_LOGS_BAN_JOIN_ALERT_TYPE) return "Ban join alert";
+  return "Clan goals";
 }
 
 function formatRoutedBotLogCommandHint(type: RoutedBotLogChannelType): string {
@@ -95,7 +102,10 @@ function parseRoutedBotLogRoutingMode(
   if (value === "bot-log channel") return "BOT_LOG";
   if (value === "custom") return "CUSTOM";
   if (value === "false") return "DISABLED";
-  if (type === BOT_LOGS_BAN_JOIN_ALERT_TYPE) {
+  if (
+    type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
+    type === BOT_LOGS_CLAN_GOALS_TYPE
+  ) {
     if (value === "clan-log channel") return "CLAN_LOG";
     if (value === "clan-lead channel") return "CLAN_LEAD";
   }
@@ -479,6 +489,12 @@ async function renderBotLogConfigurationSummary(
       guildId,
       BOT_LOGS_BAN_JOIN_ALERT_TYPE,
     ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_CLAN_GOALS_TYPE,
+    ),
   ];
   return ["Bot-log configurations", ...rows].join("\n");
 }
@@ -520,7 +536,7 @@ export const BotLogs: Command = {
     },
     {
       name: BOT_LOGS_ENABLE_OPTION,
-      description: "Base-swap audit-log routing mode",
+      description: "Routed bot-log destination mode",
       type: ApplicationCommandOptionType.String,
       required: false,
       choices: BOT_LOGS_BASE_SWAP_ENABLE_CHOICES.map((choice) => ({
@@ -575,7 +591,7 @@ export const BotLogs: Command = {
     if (enableRaw && !isRoutingConfigType) {
       await interaction.reply({
         ephemeral: true,
-        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, or `type:ban-join-alert`.",
+        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, or `type:clan-goals`.",
       });
       return;
     }
@@ -588,12 +604,13 @@ export const BotLogs: Command = {
       requestedType !== BOT_LOGS_CHECKLIST_TYPE &&
       requestedType !== BOT_LOGS_BAN_LOG_TYPE &&
       requestedType !== BOT_LOGS_BAN_JOIN_ALERT_TYPE &&
+      requestedType !== BOT_LOGS_CLAN_GOALS_TYPE &&
       requestedType !== null
     ) {
       await interaction.reply({
         ephemeral: true,
         content:
-          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert custom routing.",
+          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert/clan-goals custom routing.",
       });
       return;
     }
@@ -610,6 +627,8 @@ export const BotLogs: Command = {
               ? "Invalid ban-log routing mode. Use bot-log channel, custom, or false."
               : requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
                 ? "Invalid ban-join alert routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
+                : requestedType === BOT_LOGS_CLAN_GOALS_TYPE
+                  ? "Invalid clan-goals routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
                 : "Invalid base-swap routing mode.",
         });
         return;
@@ -618,7 +637,7 @@ export const BotLogs: Command = {
       if (requestedChannel && routingMode !== "CUSTOM") {
         await interaction.reply({
           ephemeral: true,
-          content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+          content: isRoutedBotLogType(requestedType)
             ? `\`channel\` is only valid with \`type:${requestedType} enable:custom\`.`
             : "`channel` is only valid with `type:base-swap enable:custom`.",
         });
@@ -628,9 +647,7 @@ export const BotLogs: Command = {
       if (routingMode === "CUSTOM" && !requestedChannel) {
         await interaction.reply({
           ephemeral: true,
-          content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
-            ? "`enable:custom` requires `channel`."
-            : "`enable:custom` requires `channel`.",
+          content: "`enable:custom` requires `channel`.",
         });
         return;
       }
@@ -654,7 +671,7 @@ export const BotLogs: Command = {
         }
       }
 
-      if (requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE) {
+      if (isRoutedBotLogType(requestedType)) {
         await botLogChannelService.setRoutingConfigForType({
           guildId: interaction.guildId,
           type: requestedType,
@@ -670,7 +687,7 @@ export const BotLogs: Command = {
       }
       await interaction.reply({
         ephemeral: true,
-        content: requestedType === BOT_LOGS_BAN_LOG_TYPE || requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+        content: isRoutedBotLogType(requestedType)
           ? `${formatRoutedBotLogLabel(requestedType)} routing saved: ${
               routingMode === "CUSTOM"
                 ? `custom <#${requestedChannel?.id}>`

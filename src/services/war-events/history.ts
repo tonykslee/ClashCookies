@@ -39,6 +39,35 @@ class RetryableArchiveInputError extends Error {
   }
 }
 
+function normalizeAuthoritativeTeamSize(value: unknown): number | null {
+  const teamSize = Number(value);
+  return Number.isInteger(teamSize) && teamSize > 0 ? teamSize : null;
+}
+
+function addAuthoritativeTeamSizeToLookupPayload(
+  payload: Prisma.JsonValue,
+  teamSize: number | null,
+): Prisma.JsonValue {
+  if (teamSize === null || payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const payloadRecord = payload as Record<string, Prisma.JsonValue | undefined>;
+  const warMeta =
+    payloadRecord.warMeta &&
+    typeof payloadRecord.warMeta === "object" &&
+    !Array.isArray(payloadRecord.warMeta)
+      ? (payloadRecord.warMeta as Record<string, Prisma.JsonValue | undefined>)
+      : {};
+  return {
+    ...payloadRecord,
+    warMeta: {
+      ...warMeta,
+      teamSize,
+      teamSizeSource: "war_event_snapshot",
+    },
+  };
+}
+
 /** Purpose: encapsulate war-end history, compliance, and war-plan related logic. */
 export class WarEventHistoryService {
   private readonly coc: CoCService;
@@ -443,10 +472,11 @@ export class WarEventHistoryService {
     warEndFwaPoints: number | null;
     clanStars: number | null;
     opponentStars: number | null;
+    teamSize?: number | null;
     prepStartTime: Date | null;
     warStartTime: Date | null;
-  }): Promise<void> {
-    if (payload.eventType !== "war_ended") return;
+  }): Promise<number | null> {
+    if (payload.eventType !== "war_ended") return null;
 
     const clanTag = normalizeTag(payload.clanTag);
     const warStartTime =
@@ -459,7 +489,7 @@ export class WarEventHistoryService {
         })
       )?.warStartTime ??
       null;
-    if (!warStartTime) return;
+    if (!warStartTime) return null;
 
     const finalResult = await this.getWarEndResultSnapshot({
       clanTag: payload.clanTag,
@@ -597,10 +627,10 @@ export class WarEventHistoryService {
           });
       }
       const hasLiveAttacks = attacks.length > 0;
+      const authoritativeTeamSize = normalizeAuthoritativeTeamSize(payload.teamSize);
       const lookupPayload = hasLiveAttacks
         ? (() => {
             const participants = attacks.filter((a) => Number(a.attackOrder) === 0);
-            const teamSize = participants.length > 0 ? participants.length : null;
             const pointsAwarded =
               payload.warStartFwaPoints !== null &&
               Number.isFinite(payload.warStartFwaPoints) &&
@@ -647,7 +677,10 @@ export class WarEventHistoryService {
                 clanTag,
                 opponentTag: normalizeTag(payload.opponentTag) || null,
                 state: "warEnded",
-                teamSize,
+                teamSize: authoritativeTeamSize,
+                teamSizeSource:
+                  authoritativeTeamSize === null ? "unknown" : "war_event_snapshot",
+                participantCount: participants.length,
                 startTime: warStartTime.toISOString(),
                 endTime: warEndTime ? warEndTime.toISOString() : null,
                 result: resolvedActualOutcome.toLowerCase(),
@@ -740,7 +773,10 @@ export class WarEventHistoryService {
                 `[war-events] archive input missing live attacks and existing lookup guild=${participationGuildId ?? scopedGuildId ?? "unknown"} clan=${clanTag} war_id=${persistedWarId}`,
               );
             }
-            return existingPayload;
+            return addAuthoritativeTeamSizeToLookupPayload(
+              existingPayload,
+              authoritativeTeamSize,
+            );
           });
       await tx.$executeRaw(
         Prisma.sql`
@@ -785,7 +821,7 @@ export class WarEventHistoryService {
       warIdResult === undefined ||
       !Number.isFinite(Number(warIdResult.persistedWarId))
     ) {
-      return;
+      return null;
     }
     const persistedWarId = Math.trunc(Number(warIdResult.persistedWarId));
 
@@ -852,6 +888,7 @@ export class WarEventHistoryService {
     await prisma.currentWar.deleteMany({
       where: { warId: persistedWarId },
     });
+    return persistedWarId;
   }
 
   /** Purpose: resolve final result snapshot from war log with fallbacks. */

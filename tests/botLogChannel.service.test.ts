@@ -132,6 +132,38 @@ describe("BotLogChannelService typed routing", () => {
       legacy: false,
       configured: false,
     });
+    await expect(service.getRoutingConfigForType("guild-1", "clan-goals")).resolves.toEqual({
+      routingMode: "DISABLED",
+      channelId: null,
+      legacy: false,
+      configured: false,
+    });
+  });
+
+  it("persists all clan-goals routed modes in the shared routed setting", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+    const modes = [
+      ["CLAN_LOG", null],
+      ["CLAN_LEAD", null],
+      ["BOT_LOG", null],
+      ["CUSTOM", "666666666666666666"],
+      ["DISABLED", null],
+    ] as const;
+
+    for (const [routingMode, channelId] of modes) {
+      await service.setRoutingConfigForType({
+        guildId: "guild-1",
+        type: "clan-goals",
+        routingMode,
+        channelId,
+      });
+      await expect(service.getRoutingConfigForType("guild-1", "clan-goals")).resolves.toMatchObject({
+        routingMode,
+        channelId,
+        configured: true,
+      });
+    }
   });
 
   it("persists base-swap routing config separately from legacy typed channels", async () => {

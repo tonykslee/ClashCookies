@@ -73,11 +73,18 @@ describe("ScheduledSyncPostSchedulerService", () => {
     vi.restoreAllMocks();
   });
 
-  it("does not start in mirror mode", () => {
+  it("does not start or invoke sync capture in mirror mode", async () => {
     mirrorModeMock.mockReturnValue(true);
-    const scheduler = new ScheduledSyncPostSchedulerService({} as Client, 15_000, statusService as any);
+    const syncService = { runCycle: vi.fn().mockResolvedValue(undefined) };
+    const scheduler = new ScheduledSyncPostSchedulerService(
+      {} as Client,
+      15_000,
+      statusService as any,
+      syncService as any,
+    );
 
     const result = scheduler.start();
+    await scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime());
 
     expect(result).toEqual({ started: false, reason: "mirror" });
     expect(statusService.markDisabled).toHaveBeenCalledWith(
@@ -86,6 +93,32 @@ describe("ScheduledSyncPostSchedulerService", () => {
         displayName: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
       }),
     );
+    expect(syncService.runCycle).not.toHaveBeenCalled();
+  });
+
+  it("captures sync boundaries before readiness publication work", async () => {
+    const order: string[] = [];
+    const syncService = {
+      runCycle: vi.fn().mockImplementation(async () => {
+        order.push("sync");
+      }),
+    };
+    const scheduler = new ScheduledSyncPostSchedulerService(
+      {} as Client,
+      15_000,
+      statusService as any,
+      syncService as any,
+    );
+    vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
+      order.push("expired");
+      return [];
+    });
+    vi.spyOn(scheduledSyncPostService, "findDueScheduledSyncPosts").mockResolvedValue([]);
+
+    await scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime());
+
+    expect(syncService.runCycle).toHaveBeenCalledWith();
+    expect(order).toEqual(["sync", "expired"]);
   });
 
   it("claims and publishes one due schedule", async () => {
