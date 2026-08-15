@@ -69,6 +69,7 @@ describe("SyncCycleService", () => {
     expect(db.scheduledSyncPost.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         guildId: "guild-1",
+        status: { notIn: ["CANCELLED", "REPLACED"] },
         syncTime: {
           lte: preparationStartTime,
           gte: new Date("2026-08-14T12:00:00.000Z"),
@@ -125,5 +126,15 @@ describe("SyncCycleService", () => {
       guildId: "guild-1", syncNumber: null, matchType: "FWA", preparationStartTime,
     })).resolves.toEqual({ status: "skipped", reason: "incomplete_canonical_identity" });
     expect(db.scheduledSyncPost.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("rejects a sync-time conflict without overwriting the existing mapping", async () => {
+    const existing = makeCycle({ syncNumber: 43 });
+    const db = makeDb({ cycles: [existing] });
+    const result = await new SyncCycleService(db).bindFromEndedWar({
+      guildId: "guild-1", syncNumber: 42, matchType: "FWA", preparationStartTime,
+    });
+    expect(result.status).toBe("conflict");
+    expect(db.syncCycle.create).not.toHaveBeenCalled();
   });
 });

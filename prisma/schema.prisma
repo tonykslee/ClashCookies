@@ -1788,6 +1788,7 @@ model ClanPointsSync {
 
   @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag])
+  @@index([guildId, syncNum])
   @@index([clanTag, warStartTime])
   @@index([guildId, clanTag, warId])
   @@index([guildId, clanTag, warStartTime(sort: Desc)])
