@@ -69,6 +69,16 @@ const prismaMock = vi.hoisted(() => ({
     updateMany: vi.fn(),
     deleteMany: vi.fn(),
   },
+  clanWarHistory: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+  },
+  clanWarParticipation: {
+    findMany: vi.fn(),
+  },
+  warLookup: {
+    findUnique: vi.fn(),
+  },
   warPlanViolation: {
     findMany: vi.fn(),
     createMany: vi.fn(),
@@ -132,6 +142,10 @@ beforeEach(() => {
   prismaMock.warPlanComplianceEvaluation.update.mockResolvedValue({});
   prismaMock.warPlanComplianceEvaluation.updateMany.mockResolvedValue({ count: 0 });
   prismaMock.warPlanComplianceEvaluation.deleteMany.mockResolvedValue({ count: 0 });
+  prismaMock.clanWarHistory.findUnique.mockResolvedValue(null);
+  prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+  prismaMock.clanWarParticipation.findMany.mockResolvedValue([]);
+  prismaMock.warLookup.findUnique.mockResolvedValue(null);
   prismaMock.warPlanViolation.findMany.mockResolvedValue([]);
   prismaMock.warPlanViolation.createMany.mockResolvedValue({ count: 0 });
   prismaMock.warPlanViolation.deleteMany.mockResolvedValue({ count: 0 });
@@ -4509,6 +4523,95 @@ describe("WarEventLogService war-event poll targets", () => {
     });
     expect(send).toHaveBeenCalledTimes(2);
     expect(prismaMock.warEvent.deleteMany).toHaveBeenCalled();
+  });
+
+  it("checks durable delivery before routing or fetching an already-delivered goal", async () => {
+    const fetch = vi.fn();
+    const service = new WarEventLogService({ channels: { fetch } } as any, {} as any);
+    const routeSpy = vi.spyOn(
+      (service as any).botLogChannels,
+      "getRoutingConfigForType",
+    );
+    prismaMock.warEvent.findUnique.mockResolvedValue({
+      createdAt: new Date(),
+      payload: { kind: "clan_goal_delivery", status: "delivered" },
+    });
+    await (service as any).deliverLiveWarClanGoal({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+      },
+      goalId: "FWA_NO_VIOLATIONS",
+      warId: 123,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(routeSpy).not.toHaveBeenCalled();
+  });
+
+  it("evaluates canonical war-end facts and delivers both qualified goals", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "canonical-goal-message" });
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn().mockResolvedValue(makeTextChannel(send)) } } as any,
+      {} as any,
+    );
+    vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "999999999999999991",
+      legacy: false,
+      configured: true,
+    });
+    prismaMock.clanWarHistory.findUnique.mockResolvedValue({
+      warId: 123,
+      clanTag: "#2QG2C08UP",
+      clanName: "Canonical Clan",
+      matchType: "FWA",
+      warEndTime: new Date("2026-01-02T00:00:00.000Z"),
+    });
+    prismaMock.warLookup.findUnique.mockResolvedValue({
+      payload: { warMeta: { teamSize: 2 } },
+    });
+    prismaMock.warPlanComplianceEvaluation.findUnique.mockResolvedValue({
+      guildId: testGuildId,
+      warId: 123,
+      status: "COMPLETED",
+      violations: [],
+    });
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([
+      { guildId: testGuildId, warId: "123", clanTag: "#2QG2C08UP", playerTag: "#P1", attacksMissed: 0 },
+      { guildId: testGuildId, warId: "123", clanTag: "#2QG2C08UP", playerTag: "#P2", attacksMissed: 0 },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      name: "Canonical Clan",
+      loseStyle: "TRADITIONAL",
+      logChannelId: null,
+      leaderChannelId: null,
+    });
+    prismaMock.warEvent.findUnique.mockResolvedValue(null);
+    prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
+    prismaMock.warEvent.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).evaluateAndDeliverCanonicalWarEndGoals({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      warId: 123,
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: "clan_goal:FWA_NO_VIOLATIONS" }),
+      }),
+    );
+    expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: "clan_goal:WAR_NO_MISSED_ATTACKS" }),
+      }),
+    );
   });
 
   it("selects the tracked clan role in the poll subscription query", async () => {

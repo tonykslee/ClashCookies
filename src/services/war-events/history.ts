@@ -445,8 +445,8 @@ export class WarEventHistoryService {
     opponentStars: number | null;
     prepStartTime: Date | null;
     warStartTime: Date | null;
-  }): Promise<void> {
-    if (payload.eventType !== "war_ended") return;
+  }): Promise<number | null> {
+    if (payload.eventType !== "war_ended") return null;
 
     const clanTag = normalizeTag(payload.clanTag);
     const warStartTime =
@@ -459,7 +459,7 @@ export class WarEventHistoryService {
         })
       )?.warStartTime ??
       null;
-    if (!warStartTime) return;
+    if (!warStartTime) return null;
 
     const finalResult = await this.getWarEndResultSnapshot({
       clanTag: payload.clanTag,
@@ -785,7 +785,7 @@ export class WarEventHistoryService {
       warIdResult === undefined ||
       !Number.isFinite(Number(warIdResult.persistedWarId))
     ) {
-      return;
+      return null;
     }
     const persistedWarId = Math.trunc(Number(warIdResult.persistedWarId));
 
@@ -852,6 +852,7 @@ export class WarEventHistoryService {
     await prisma.currentWar.deleteMany({
       where: { warId: persistedWarId },
     });
+    return persistedWarId;
   }
 
   /** Purpose: resolve final result snapshot from war log with fallbacks. */

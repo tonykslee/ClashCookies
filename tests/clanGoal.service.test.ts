@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CLAN_GOAL_IDS,
   getClanGoalCatalog,
+  evaluateFwaNoViolationsGoal,
   evaluateLiveWarClanGoal,
   evaluateLiveWarClanGoals,
+  evaluateWarNoMissedAttacksGoal,
   logClanGoalOutcome,
   renderClanGoalMessage,
   resolveClanGoalDestination,
@@ -181,6 +183,95 @@ describe("ClanGoalService foundation", () => {
     ).toBe(true);
   });
 
+  it("requires completed canonical FWA compliance with zero violations", () => {
+    const base = {
+      guildId: "guild-1",
+      warId: 42,
+      clanTag: "#ABC123",
+      history: {
+        warId: 42,
+        clanTag: "#ABC123",
+        matchType: "FWA",
+        warEndTime: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    };
+    expect(
+      evaluateFwaNoViolationsGoal({
+        ...base,
+        evaluation: {
+          guildId: "guild-1",
+          warId: 42,
+          status: "COMPLETED",
+          violationCount: 0,
+        },
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(
+      evaluateFwaNoViolationsGoal({
+        ...base,
+        evaluation: {
+          guildId: "guild-1",
+          warId: 42,
+          status: "PENDING",
+          violationCount: 0,
+        },
+      }),
+    ).toMatchObject({ qualified: false, reason: "evaluation_not_completed" });
+    expect(
+      evaluateFwaNoViolationsGoal({
+        ...base,
+        evaluation: {
+          guildId: "guild-1",
+          warId: 42,
+          status: "COMPLETED",
+          violationCount: 0,
+        },
+        history: { ...base.history, matchType: "MM" },
+      }),
+    ).toMatchObject({ qualified: false, reason: "history_match_type_mismatch" });
+  });
+
+  it("requires an explicit complete canonical roster for no-missed-attacks", () => {
+    const base = {
+      guildId: "guild-1",
+      warId: "42",
+      clanTag: "#ABC123",
+      history: {
+        warId: 42,
+        clanTag: "ABC123",
+        matchType: "MM",
+        warEndTime: new Date("2026-01-02T00:00:00.000Z"),
+      },
+      expectedParticipantCount: 2,
+    };
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        participation: [
+          { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P1", attacksMissed: 0 },
+          { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P2", attacksMissed: 0 },
+        ],
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        participation: [
+          { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P1", attacksMissed: 0 },
+        ],
+      }),
+    ).toMatchObject({ qualified: false, reason: "participant_count_mismatch" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        participation: [
+          { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P1", attacksMissed: 1 },
+          { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P2", attacksMissed: 0 },
+        ],
+      }),
+    ).toMatchObject({ qualified: false, reason: "missed_attacks_present" });
+  });
+
   it("resolves all routed destination modes and reports missing destinations as skips", () => {
     const base = {
       clanLogChannelId: "111111111111111111",
@@ -222,6 +313,7 @@ describe("ClanGoalService foundation", () => {
   it("emits structured outcome logs for future trigger callers", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const identity = { guildId: "guild-1", clanTag: "#ABC123", warId: 42 };
 
@@ -247,7 +339,8 @@ describe("ClanGoalService foundation", () => {
     });
 
     expect(info).toHaveBeenCalledWith(expect.stringContaining("outcome=success"));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("outcome=skip"));
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("outcome=skip"));
+    expect(warn).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(expect.stringContaining("outcome=failure"));
   });
 });
