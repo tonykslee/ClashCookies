@@ -165,6 +165,249 @@ export type LiveWarClanGoalEvaluation = {
   requiresAttackCleanliness?: boolean;
 };
 
+export type CanonicalWarEndGoalHistory = {
+  warId: number | string;
+  clanTag: string;
+  matchType: string | null | undefined;
+  expectedOutcome?: string | null | undefined;
+  warEndTime: Date | string | null | undefined;
+};
+
+export type FwaNoViolationsGoalFacts = {
+  guildId: string;
+  warId: number | string;
+  clanTag: string;
+  history: CanonicalWarEndGoalHistory | null | undefined;
+  evaluation:
+    | {
+        guildId: string;
+        warId: number | string;
+        status: string | null | undefined;
+        matchType: string | null | undefined;
+        expectedOutcome: string | null | undefined;
+        violationCount: number | null | undefined;
+      }
+    | null
+    | undefined;
+};
+
+export type WarNoMissedAttacksGoalFacts = {
+  guildId: string;
+  warId: number | string;
+  clanTag: string;
+  history: CanonicalWarEndGoalHistory | null | undefined;
+  expectedParticipantCount: number | null | undefined;
+  expectedParticipantCountAuthoritative: boolean;
+  participation:
+    | Array<{
+        guildId: string;
+        warId: number | string;
+        clanTag: string;
+        playerTag: string;
+        attacksMissed: number | null | undefined;
+      }>
+    | null
+    | undefined;
+};
+
+export type CanonicalWarEndGoalEvaluation = {
+  goalId: "FWA_NO_VIOLATIONS" | "WAR_NO_MISSED_ATTACKS";
+  qualified: boolean;
+  reason:
+    | "missing_history"
+    | "history_not_ended"
+    | "history_war_mismatch"
+    | "history_clan_mismatch"
+    | "history_match_type_mismatch"
+    | "evaluation_canonical_mismatch"
+    | "evaluation_missing"
+    | "evaluation_identity_mismatch"
+    | "evaluation_not_completed"
+    | "violations_present"
+    | "participation_missing"
+    | "participant_count_missing"
+    | "participant_count_mismatch"
+    | "participant_identity_mismatch"
+    | "participant_roster_incomplete"
+    | "missed_attacks_present"
+    | "qualified";
+};
+
+function sameWarId(left: number | string, right: number | string): boolean {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
+    ? Math.trunc(leftNumber) === Math.trunc(rightNumber)
+    : String(left).trim() === String(right).trim();
+}
+
+function normalizeCanonicalText(value: string | null | undefined): string {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function isEndedHistoryForGoal(input: {
+  history: CanonicalWarEndGoalHistory | null | undefined;
+  warId: number | string;
+  clanTag: string;
+}): CanonicalWarEndGoalEvaluation["reason"] | null {
+  if (!input.history) return "missing_history";
+  if (!input.history.warEndTime) return "history_not_ended";
+  if (!sameWarId(input.history.warId, input.warId)) {
+    return "history_war_mismatch";
+  }
+  if (normalizeClanTag(input.history.clanTag) !== normalizeClanTag(input.clanTag)) {
+    return "history_clan_mismatch";
+  }
+  return null;
+}
+
+/** Purpose: evaluate FWA_NO_VIOLATIONS from canonical archived history and completed compliance. */
+export function evaluateFwaNoViolationsGoal(
+  input: FwaNoViolationsGoalFacts,
+): CanonicalWarEndGoalEvaluation {
+  const historyReason = isEndedHistoryForGoal(input);
+  if (historyReason) {
+    return { goalId: "FWA_NO_VIOLATIONS", qualified: false, reason: historyReason };
+  }
+  if (String(input.history?.matchType ?? "").toUpperCase() !== "FWA") {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "history_match_type_mismatch",
+    };
+  }
+  if (!input.evaluation) {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "evaluation_missing",
+    };
+  }
+  if (
+    input.evaluation.guildId !== input.guildId ||
+    !sameWarId(input.evaluation.warId, input.warId)
+  ) {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "evaluation_identity_mismatch",
+    };
+  }
+  if (String(input.evaluation.status ?? "").toUpperCase() !== "COMPLETED") {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "evaluation_not_completed",
+    };
+  }
+  if (
+    normalizeCanonicalText(input.evaluation.matchType) !==
+      normalizeCanonicalText(input.history?.matchType) ||
+    normalizeCanonicalText(input.evaluation.expectedOutcome) !==
+      normalizeCanonicalText(input.history?.expectedOutcome)
+  ) {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "evaluation_canonical_mismatch",
+    };
+  }
+  if (
+    input.evaluation.violationCount === null ||
+    input.evaluation.violationCount === undefined ||
+    !Number.isInteger(Number(input.evaluation.violationCount)) ||
+    Number(input.evaluation.violationCount) !== 0
+  ) {
+    return {
+      goalId: "FWA_NO_VIOLATIONS",
+      qualified: false,
+      reason: "violations_present",
+    };
+  }
+  return { goalId: "FWA_NO_VIOLATIONS", qualified: true, reason: "qualified" };
+}
+
+/** Purpose: evaluate WAR_NO_MISSED_ATTACKS from a complete canonical roster snapshot. */
+export function evaluateWarNoMissedAttacksGoal(
+  input: WarNoMissedAttacksGoalFacts,
+): CanonicalWarEndGoalEvaluation {
+  const historyReason = isEndedHistoryForGoal(input);
+  if (historyReason) {
+    return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: false, reason: historyReason };
+  }
+  const expectedCount = Number(input.expectedParticipantCount);
+  if (input.expectedParticipantCountAuthoritative !== true) {
+    return {
+      goalId: "WAR_NO_MISSED_ATTACKS",
+      qualified: false,
+      reason: "participant_count_missing",
+    };
+  }
+  if (!Number.isInteger(expectedCount) || expectedCount <= 0) {
+    return {
+      goalId: "WAR_NO_MISSED_ATTACKS",
+      qualified: false,
+      reason: "participant_count_missing",
+    };
+  }
+  if (!input.participation || input.participation.length === 0) {
+    return {
+      goalId: "WAR_NO_MISSED_ATTACKS",
+      qualified: false,
+      reason: "participation_missing",
+    };
+  }
+  const participantTags = new Set<string>();
+  for (const participant of input.participation) {
+    if (
+      participant.guildId !== input.guildId ||
+      !sameWarId(participant.warId, input.warId) ||
+      normalizeClanTag(participant.clanTag) !== normalizeClanTag(input.clanTag)
+    ) {
+      return {
+        goalId: "WAR_NO_MISSED_ATTACKS",
+        qualified: false,
+        reason: "participant_identity_mismatch",
+      };
+    }
+    const playerTag = normalizeClanTag(participant.playerTag);
+    if (!playerTag || participantTags.has(playerTag)) {
+      return {
+        goalId: "WAR_NO_MISSED_ATTACKS",
+        qualified: false,
+        reason: "participant_roster_incomplete",
+      };
+    }
+    participantTags.add(playerTag);
+    if (
+      participant.attacksMissed === null ||
+      participant.attacksMissed === undefined ||
+      !Number.isInteger(Number(participant.attacksMissed))
+    ) {
+      return {
+        goalId: "WAR_NO_MISSED_ATTACKS",
+        qualified: false,
+        reason: "participant_roster_incomplete",
+      };
+    }
+    if (Number(participant.attacksMissed) !== 0) {
+      return {
+        goalId: "WAR_NO_MISSED_ATTACKS",
+        qualified: false,
+        reason: "missed_attacks_present",
+      };
+    }
+  }
+  if (participantTags.size !== expectedCount || input.participation.length !== expectedCount) {
+    return {
+      goalId: "WAR_NO_MISSED_ATTACKS",
+      qualified: false,
+      reason: "participant_count_mismatch",
+    };
+  }
+  return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: true, reason: "qualified" };
+}
+
 function evaluateCommonLiveWarFacts(
   facts: LiveWarClanGoalFacts,
 ): LiveWarClanGoalEvaluation["reason"] | null {
@@ -404,10 +647,32 @@ export function logClanGoalOutcome(input: {
     ...(errorText ? [`error=${String(errorText).replace(/\s+/g, " ").slice(0, 200)}`] : []),
   ].join(" ");
   const line = `[clan-goals] ${suffix}`;
+  const quietSkipReasons = new Set([
+    "disabled",
+    "already_delivered",
+    "reservation_in_flight",
+    "reservation_already_claimed",
+    "missing_history",
+    "history_not_ended",
+    "history_war_mismatch",
+    "history_clan_mismatch",
+    "history_match_type_mismatch",
+    "evaluation_missing",
+    "evaluation_identity_mismatch",
+    "evaluation_not_completed",
+    "violations_present",
+    "participation_missing",
+    "participant_count_missing",
+    "participant_count_mismatch",
+    "participant_identity_mismatch",
+    "participant_roster_incomplete",
+    "missed_attacks_present",
+  ]);
   if (input.outcome === "failure") {
     console.error(line);
   } else if (input.outcome === "skip") {
-    console.warn(line);
+    if (quietSkipReasons.has(input.reason ?? "")) console.debug(line);
+    else console.warn(line);
   } else {
     console.info(line);
   }

@@ -77,6 +77,7 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
   it("keeps history persistence and enrollment inside one transaction before downstream writes", async () => {
     const order: string[] = [];
     const { service } = buildService(order);
+    let lookupSqlArg: unknown;
 
     prismaMock.warAttacks.findFirst.mockResolvedValue({
       warStartTime: new Date("2026-03-30T00:00:00.000Z"),
@@ -117,7 +118,8 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
         order.push("history_upsert");
         return [{ warId: 99 }];
       }),
-      $executeRaw: vi.fn(async () => {
+      $executeRaw: vi.fn(async (arg: unknown) => {
+        lookupSqlArg = arg;
         order.push("war_lookup_write");
         return 1;
       }),
@@ -165,6 +167,7 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
       warEndFwaPoints: 99,
       clanStars: 100,
       opponentStars: 99,
+      teamSize: 50,
       prepStartTime: new Date("2026-03-29T12:00:00.000Z"),
       warStartTime: null,
     });
@@ -184,6 +187,8 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
       "war_attacks_delete",
       "current_war_delete",
     ]);
+    expect(JSON.stringify(lookupSqlArg)).toContain("teamSize");
+    expect(JSON.stringify(lookupSqlArg)).toContain("war_event_snapshot");
   });
 
   it("preserves existing WarLookup payload and participation when re-entered without live attacks", async () => {
