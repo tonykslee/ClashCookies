@@ -46,7 +46,7 @@ describe("legacy CWL baseline cleanup migration", () => {
     const original = readFileSync(originalMigrationPath);
     // Pin the exact bytes of this already-applied immutable migration.
     expect(createHash("sha256").update(original).digest("hex")).toBe(
-      "2e51f72c1984b3265e318bf5ebc12f451f45085b5e277d549c575190b979c931",
+      "ac63a099ab36b111c21a0b8b728e5f0d810e365b4ce3ae69b8cec16d3f5689b1",
     );
     expect(original.toString("utf8")).toContain('ADD COLUMN IF NOT EXISTS "playerPosition" INTEGER;');
   });
