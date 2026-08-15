@@ -100,15 +100,23 @@ function buildRetainedScheduleFields(input: {
 
 async function supersedeOtherActiveSchedules(
   tx: Prisma.TransactionClient,
-  input: { guildId: string; keepScheduleId?: string },
+  input: { guildId: string; keepScheduleId?: string; now: Date },
 ): Promise<number> {
   const result = await tx.scheduledSyncPost.updateMany({
     where: {
       guildId: input.guildId,
       ...(input.keepScheduleId ? { id: { not: input.keepScheduleId } } : {}),
-      status: {
-        in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] as any,
-      },
+      OR: [
+        {
+          status: {
+            in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] as any,
+          },
+        },
+        {
+          status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED as any,
+          syncTime: { gt: input.now },
+        },
+      ],
     },
     data: {
       status: SCHEDULED_SYNC_POST_STATUS.REPLACED as any,
@@ -144,6 +152,7 @@ export class ScheduledSyncPostService {
     if (!guildId || !channelId || !createdByUserId || !roleId) {
       throw new Error("Missing required sync schedule fields.");
     }
+    const now = new Date();
 
     return prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`
@@ -162,6 +171,7 @@ export class ScheduledSyncPostService {
         await supersedeOtherActiveSchedules(tx, {
           guildId,
           keepScheduleId: existing.id,
+          now,
         });
 
         if (existing.status === SCHEDULED_SYNC_POST_STATUS.PUBLISHED) {
@@ -228,6 +238,7 @@ export class ScheduledSyncPostService {
 
       const replacedCount = await supersedeOtherActiveSchedules(tx, {
         guildId,
+        now,
       });
 
       const schedule = await tx.scheduledSyncPost.create({

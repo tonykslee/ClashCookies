@@ -4,6 +4,7 @@ import {
 } from "../src/services/ClanGoalService";
 
 const loadContextMock = vi.hoisted(() => vi.fn());
+const projectionMock = vi.hoisted(() => vi.fn());
 const prismaMock = vi.hoisted(() => ({
   scheduledSyncPost: { findMany: vi.fn() },
   syncClanReadinessSnapshot: { findMany: vi.fn(), createMany: vi.fn() },
@@ -23,12 +24,7 @@ vi.mock("../src/services/CompoActualStateService", () => ({
 }));
 vi.mock("../src/helper/compoActualStateView", () => ({
   isCompoActualStateProjectionComplete: vi.fn().mockReturnValue(true),
-  projectCompoActualStateView: vi.fn().mockReturnValue({
-    memberCount: 50,
-    unresolvedWeightCount: 0,
-    deviationScore: 0,
-    selectedHeatMapRef: { id: 1 },
-  }),
+  projectCompoActualStateView: projectionMock,
 }));
 
 import {
@@ -96,6 +92,12 @@ function makeChannel() {
 describe("SYNC_ZERO_DEVIATION", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    projectionMock.mockReturnValue({
+      memberCount: 50,
+      unresolvedWeightCount: 0,
+      deviationScore: 0,
+      selectedHeatMapRef: { id: 1 },
+    });
     loadContextMock.mockResolvedValue(makeContext());
     prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
       { id: "schedule-1", guildId: "guild-1", syncTime: SYNC_TIME, status: "PUBLISHED" },
@@ -168,6 +170,30 @@ describe("SYNC_ZERO_DEVIATION", () => {
     }));
   });
 
+  it("captures a FAILED readiness publication while it remains inside the boundary grace window", async () => {
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+      { id: "failed-schedule", guildId: "guild-1", syncTime: SYNC_TIME, status: "FAILED" },
+    ]);
+    const service = new SyncClanGoalService(
+      { channels: { fetch: vi.fn().mockResolvedValue(makeChannel()) } } as any,
+      {
+        getRoutingConfigForType: vi.fn().mockResolvedValue({
+          routingMode: "CUSTOM",
+          channelId: "123",
+          legacy: false,
+          configured: true,
+        }),
+        getChannelId: vi.fn(),
+      } as any,
+      () => new Date(NOW),
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.captured).toBe(1);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledTimes(1);
+  });
+
   it("does not fetch Discord again after a delivered SyncEvent", async () => {
     const channel = makeChannel();
     const fetch = vi.fn().mockResolvedValue(channel);
@@ -200,6 +226,136 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(channel.send).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves disabled goals unclaimed and delivers the persisted snapshot after enabling routing", async () => {
+    const channel = makeChannel();
+    const disabled = new SyncClanGoalService({ channels: { fetch: vi.fn() } } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "DISABLED",
+        channelId: null,
+        legacy: false,
+        configured: false,
+      }),
+      getChannelId: vi.fn(),
+    } as any, () => new Date(NOW));
+
+    const first = await disabled.runCycle(NOW);
+
+    const enabled = new SyncClanGoalService({
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CUSTOM",
+        channelId: "123",
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any, () => new Date(NOW));
+    const second = await enabled.runCycle(NOW);
+
+    expect(first.delivered).toBe(0);
+    expect(prismaMock.syncEvent.create).toHaveBeenCalledTimes(1);
+    expect(second.delivered).toBe(1);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a delivery claim after Discord failure so a later cycle can retry", async () => {
+    const channel = makeChannel();
+    channel.send
+      .mockRejectedValueOnce(new Error("discord unavailable"))
+      .mockResolvedValueOnce({ id: "message-2" });
+    const service = new SyncClanGoalService({
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CUSTOM",
+        channelId: "123",
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any, () => new Date(NOW));
+
+    const first = await service.runCycle(NOW);
+    const second = await service.runCycle(NOW);
+
+    expect(first.failed).toBe(1);
+    expect(prismaMock.syncEvent.deleteMany).toHaveBeenCalledTimes(1);
+    expect(second.delivered).toBe(1);
+    expect(channel.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the persisted zero-deviation snapshot for retry eligibility after ACTUAL changes", async () => {
+    const channel = makeChannel();
+    channel.send.mockRejectedValueOnce(new Error("temporary discord failure"))
+      .mockResolvedValueOnce({ id: "message-2" });
+    const service = new SyncClanGoalService({
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CUSTOM",
+        channelId: "123",
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any, () => new Date(NOW));
+
+    await service.runCycle(NOW);
+    projectionMock.mockReturnValue({
+      memberCount: 50,
+      unresolvedWeightCount: 0,
+      deviationScore: 0.5,
+      selectedHeatMapRef: { id: 1 },
+    });
+    const retry = await service.runCycle(NOW);
+
+    expect(retry.delivered).toBe(1);
+    expect(channel.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps two tracked clans independent at one sync boundary", async () => {
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [
+        ...makeContext().clans,
+        { ...makeContext().clans[0], clanTag: "#SECOND", clanName: "Second" },
+      ],
+    });
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([
+      makeSnapshot(),
+      { ...makeSnapshot(), id: "snapshot-2", clanTag: "#SECOND", clanName: "Second" },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#CLAN", logChannelId: "123", leaderChannelId: null },
+      { tag: "#SECOND", logChannelId: "456", leaderChannelId: null },
+    ]);
+    const channelFetch = vi.fn().mockImplementation(async (id: string) => ({
+      ...makeChannel(),
+      id,
+    }));
+    const service = new SyncClanGoalService({ channels: { fetch: channelFetch } } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CLAN_LOG",
+        channelId: null,
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any, () => new Date(NOW));
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.delivered).toBe(2);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.arrayContaining([
+        expect.objectContaining({ clanTag: "#CLAN" }),
+        expect.objectContaining({ clanTag: "#SEC0ND" }),
+      ]) }),
+    );
+    expect(channelFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps disabled routing unclaimed and skips stale boundaries", async () => {
     const service = new SyncClanGoalService({ channels: { fetch: vi.fn() } } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -224,5 +380,45 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(result.stale).toBe(1);
     expect(result.captured).toBe(0);
     expect(prismaMock.syncEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("rechecks boundary freshness after ACTUAL context loading and persists nothing when delayed", async () => {
+    let clockNow = new Date(NOW);
+    loadContextMock.mockImplementationOnce(async () => {
+      clockNow = new Date(SYNC_TIME.getTime() + SYNC_BOUNDARY_CAPTURE_GRACE_MS + 1);
+      return makeContext();
+    });
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
+    const service = new SyncClanGoalService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+      () => new Date(clockNow),
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.stale).toBe(1);
+    expect(result.captured).toBe(0);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).not.toHaveBeenCalled();
+  });
+
+  it("does not capture cancelled or replaced schedules even if a stale query result includes them", async () => {
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+      { id: "cancelled", guildId: "guild-1", syncTime: SYNC_TIME, status: "CANCELLED" },
+      { id: "replaced", guildId: "guild-1", syncTime: SYNC_TIME, status: "REPLACED" },
+    ]);
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
+    const service = new SyncClanGoalService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+      () => new Date(NOW),
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.tracked).toBe(0);
+    expect(result.captured).toBe(0);
+    expect(loadContextMock).not.toHaveBeenCalled();
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).not.toHaveBeenCalled();
   });
 });

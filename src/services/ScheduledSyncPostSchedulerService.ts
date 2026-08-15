@@ -159,6 +159,14 @@ export class ScheduledSyncPostSchedulerService {
         );
       });
 
+      try {
+        await this.syncClanGoalService.runCycle();
+      } catch (err) {
+        dozzleLog.error(
+          `[scheduled-readiness-post] sync_clan_goal_cycle_failed error=${formatError(err)}`,
+        );
+      }
+
       const expiredRows = await scheduledSyncPostService.findExpiredScheduledSyncPosts(now);
       let scanned = expiredRows.length;
       let due = 0;
@@ -297,14 +305,6 @@ export class ScheduledSyncPostSchedulerService {
             retryAfterMs,
           });
         }
-      }
-
-      try {
-        await this.syncClanGoalService.runCycle(now);
-      } catch (err) {
-        dozzleLog.error(
-          `[scheduled-readiness-post] sync_clan_goal_cycle_failed error=${formatError(err)}`,
-        );
       }
 
       dozzleLog.debug(

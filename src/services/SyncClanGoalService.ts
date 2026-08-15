@@ -34,6 +34,8 @@ export const SYNC_GOAL_RECONCILIATION_LIMIT = 100;
 export const SYNC_GOAL_CAPTURE_LIMIT = 100;
 const SYNC_EVENT_RESERVATION_LEASE_MS = 5 * 60 * 1000;
 
+export type SyncClanGoalClock = () => Date;
+
 type SyncScheduleCandidate = {
   id: string;
   guildId: string;
@@ -187,11 +189,13 @@ export class SyncClanGoalService {
   constructor(
     private readonly client: Client,
     private readonly botLogChannels: BotLogChannelService = botLogChannelService,
+    private readonly clock: SyncClanGoalClock = () => new Date(),
   ) {}
 
   /** Purpose: capture due sync boundaries and reconcile recent immutable snapshots in one bounded poll phase. */
-  async runCycle(now: Date = new Date()): Promise<SyncClanGoalCycleSummary> {
+  async runCycle(now?: Date): Promise<SyncClanGoalCycleSummary> {
     const summary = zeroSummary();
+    const captureNow = now ? new Date(now) : this.clock();
     const scheduleModel = (prisma as any).scheduledSyncPost;
     const snapshotModel = (prisma as any).syncClanReadinessSnapshot;
     const eventModel = (prisma as any).syncEvent;
@@ -204,15 +208,11 @@ export class SyncClanGoalService {
       return summary;
     }
 
-    dozzleLog.info(
-      `[sync-clan-goals] event=readiness_capture outcome=started now=${now.toISOString()}`,
-    );
-
     const captureCandidates = (await scheduleModel.findMany({
       where: {
         syncTime: {
-          lte: now,
-          gte: new Date(now.getTime() - SYNC_CAPTURE_CANDIDATE_WINDOW_MS),
+          lte: captureNow,
+          gte: new Date(captureNow.getTime() - SYNC_CAPTURE_CANDIDATE_WINDOW_MS),
         },
         status: { notIn: ["CANCELLED", "REPLACED"] },
       },
@@ -222,9 +222,15 @@ export class SyncClanGoalService {
     })) as SyncScheduleCandidate[];
 
     const contexts = new Map<string, Promise<CompoActualStateContext>>();
-    const rowsToCreate: ReturnType<typeof buildSyncClanReadinessSnapshotRows> = [];
-    for (const schedule of captureCandidates) {
-      const ageMs = now.getTime() - schedule.syncTime.getTime();
+    const rowsByBoundary = new Map<string, {
+      syncTime: Date;
+      rows: ReturnType<typeof buildSyncClanReadinessSnapshotRows>;
+    }>();
+    const activeCaptureCandidates = captureCandidates.filter((schedule) =>
+      schedule.status !== "CANCELLED" && schedule.status !== "REPLACED",
+    );
+    for (const schedule of activeCaptureCandidates) {
+      const ageMs = captureNow.getTime() - schedule.syncTime.getTime();
       if (ageMs > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
         summary.stale += 1;
         continue;
@@ -237,6 +243,11 @@ export class SyncClanGoalService {
       }
       try {
         const context = await contextPromise;
+        const freshnessNow = this.clock();
+        if (freshnessNow.getTime() - schedule.syncTime.getTime() > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
+          summary.stale += 1;
+          continue;
+        }
         const rows = buildSyncClanReadinessSnapshotRows({
           guildId: schedule.guildId,
           syncTime: schedule.syncTime,
@@ -249,13 +260,23 @@ export class SyncClanGoalService {
           if (evaluation.qualified) summary.zero += 1;
           else summary.incomplete += 1;
           if (row.projectionComplete) summary.complete += 1;
-          rowsToCreate.push(row);
         }
+        rowsByBoundary.set(contextKey, { syncTime: schedule.syncTime, rows });
       } catch (error) {
         dozzleLog.error(
           `[sync-clan-goals] event=readiness_capture outcome=failure guild_id=${schedule.guildId} sync_identity=${schedule.syncTime.toISOString()} error=${formatError(error)}`,
         );
       }
+    }
+
+    const rowsToCreate: ReturnType<typeof buildSyncClanReadinessSnapshotRows> = [];
+    for (const boundary of rowsByBoundary.values()) {
+      const freshnessNow = this.clock();
+      if (freshnessNow.getTime() - boundary.syncTime.getTime() > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
+        summary.stale += 1;
+        continue;
+      }
+      rowsToCreate.push(...boundary.rows);
     }
 
     if (rowsToCreate.length > 0) {
@@ -282,8 +303,8 @@ export class SyncClanGoalService {
     const snapshots = (await snapshotModel.findMany({
       where: {
         syncTime: {
-          gte: new Date(now.getTime() - SYNC_GOAL_RECONCILIATION_WINDOW_MS),
-          lte: now,
+          gte: new Date(captureNow.getTime() - SYNC_GOAL_RECONCILIATION_WINDOW_MS),
+          lte: captureNow,
         },
       },
       orderBy: { syncTime: "desc" },
@@ -331,7 +352,7 @@ export class SyncClanGoalService {
     const undispatched = qualified.filter((snapshot) => {
       const event = eventByKey.get(eventKey(snapshot));
       const status = eventPayloadStatus(event?.payload);
-      return status !== "delivered" && !(event && !isReservationExpired(event.createdAt, now));
+      return status !== "delivered" && !(event && !isReservationExpired(event.createdAt, captureNow));
     });
     summary.skipped += qualified.length - undispatched.length;
     if (undispatched.length === 0) {
@@ -405,7 +426,7 @@ export class SyncClanGoalService {
         const claim = await this.claimEvent({
           eventModel,
           snapshot,
-          now,
+          now: captureNow,
         });
         if (claim.state !== "claimed" || !claim.createdAt) {
           summary.skipped += 1;
