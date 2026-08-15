@@ -3,6 +3,7 @@ import {
   type BotLogChannelService,
   type RoutedBotLogRoutingConfig,
 } from "./BotLogChannelService";
+import { normalizeClashTagInput } from "../helper/clashTag";
 
 /** Canonical, trigger-independent clan-goal identifiers. */
 export const CLAN_GOAL_IDS = [
@@ -22,10 +23,6 @@ export type ClanGoalEventIdentity = {
   clanTag: string;
   warId?: string | number | null;
   syncIdentity?: string | number | null;
-  /** Optional neutral alias for callers whose event is not specifically a war or sync. */
-  eventIdentity?: string | number | null;
-  /** Optional shared alias for a war or sync event identity. */
-  warOrSyncIdentity?: string | number | null;
 };
 
 export type ClanGoalDefinition = {
@@ -78,7 +75,7 @@ const CLAN_GOAL_CATALOG: readonly ClanGoalDefinition[] = [
     label: "FWA lose: top 30, 90 clean",
     snippets: [
       "Top 30 stayed clean. The result did not.",
-      "Ninety clean attacks and one dirty little scoreboard.",
+      "90 stars. Bottom 20 untouched. The sacred scroll has been followed.",
       "The bases were tidy; the loss was aggressively untidy.",
     ],
   },
@@ -133,12 +130,146 @@ const CLAN_GOAL_BY_ID = new Map(
   CLAN_GOAL_CATALOG.map((goal) => [goal.id, goal] as const),
 );
 
+export const LIVE_WAR_CLAN_GOAL_IDS = [
+  "FWA_LOSE_TRADITIONAL_100_STARS",
+  "FWA_LOSE_TOP30_90_CLEAN",
+  "FWA_WIN_150_STARS",
+  "BL_150_STARS",
+] as const;
+
+export type LiveWarClanGoalId = (typeof LIVE_WAR_CLAN_GOAL_IDS)[number];
+
+export type LiveWarClanGoalFacts = {
+  warState: "notInWar" | "preparation" | "inWar";
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+  inferredMatchType: boolean | null | undefined;
+  outcome: "WIN" | "LOSE" | "TIE" | "UNKNOWN" | string | null | undefined;
+  loseStyle: "TRADITIONAL" | "TRIPLE_TOP_30" | string | null | undefined;
+  clanStars: number | null | undefined;
+  top30Clean?: boolean;
+};
+
+export type LiveWarClanGoalEvaluation = {
+  goalId: LiveWarClanGoalId;
+  qualified: boolean;
+  reason:
+    | "not_battle_day"
+    | "classification_unsettled"
+    | "match_type_mismatch"
+    | "outcome_mismatch"
+    | "lose_style_mismatch"
+    | "stars_below_threshold"
+    | "attack_cleanliness_not_checked"
+    | "top30_attack_on_bottom_20"
+    | "qualified";
+  requiresAttackCleanliness?: boolean;
+};
+
+function evaluateCommonLiveWarFacts(
+  facts: LiveWarClanGoalFacts,
+): LiveWarClanGoalEvaluation["reason"] | null {
+  if (facts.warState !== "inWar") return "not_battle_day";
+  if (facts.inferredMatchType !== false) return "classification_unsettled";
+  return null;
+}
+
+/** Purpose: evaluate one live-war goal from already-authoritative current-war facts. */
+export function evaluateLiveWarClanGoal(input: {
+  goalId: LiveWarClanGoalId;
+  facts: LiveWarClanGoalFacts;
+}): LiveWarClanGoalEvaluation {
+  const commonReason = evaluateCommonLiveWarFacts(input.facts);
+  if (commonReason) {
+    return { goalId: input.goalId, qualified: false, reason: commonReason };
+  }
+
+  const expectedMatchType = input.goalId === "BL_150_STARS" ? "BL" : "FWA";
+  if (input.facts.matchType !== expectedMatchType) {
+    return {
+      goalId: input.goalId,
+      qualified: false,
+      reason: "match_type_mismatch",
+    };
+  }
+
+  const expectedOutcome = input.goalId === "FWA_WIN_150_STARS" ? "WIN" :
+    input.goalId === "BL_150_STARS" ? null : "LOSE";
+  if (expectedOutcome && input.facts.outcome !== expectedOutcome) {
+    return {
+      goalId: input.goalId,
+      qualified: false,
+      reason: "outcome_mismatch",
+    };
+  }
+
+  if (
+    input.goalId === "FWA_LOSE_TRADITIONAL_100_STARS" &&
+    input.facts.loseStyle !== "TRADITIONAL"
+  ) {
+    return {
+      goalId: input.goalId,
+      qualified: false,
+      reason: "lose_style_mismatch",
+    };
+  }
+  if (
+    input.goalId === "FWA_LOSE_TOP30_90_CLEAN" &&
+    input.facts.loseStyle !== "TRIPLE_TOP_30"
+  ) {
+    return {
+      goalId: input.goalId,
+      qualified: false,
+      reason: "lose_style_mismatch",
+    };
+  }
+
+  const threshold =
+    input.goalId === "FWA_LOSE_TOP30_90_CLEAN" ? 90 :
+    input.goalId === "FWA_WIN_150_STARS" || input.goalId === "BL_150_STARS" ? 150 : 100;
+  if (!Number.isFinite(Number(input.facts.clanStars)) || Number(input.facts.clanStars) < threshold) {
+    return {
+      goalId: input.goalId,
+      qualified: false,
+      reason: "stars_below_threshold",
+    };
+  }
+
+  if (input.goalId === "FWA_LOSE_TOP30_90_CLEAN") {
+    if (input.facts.top30Clean === false) {
+      return {
+        goalId: input.goalId,
+        qualified: false,
+        reason: "top30_attack_on_bottom_20",
+      };
+    }
+    if (input.facts.top30Clean !== true) {
+      return {
+        goalId: input.goalId,
+        qualified: false,
+        reason: "attack_cleanliness_not_checked",
+        requiresAttackCleanliness: true,
+      };
+    }
+  }
+
+  return { goalId: input.goalId, qualified: true, reason: "qualified" };
+}
+
+/** Purpose: evaluate all live-war goals without deriving match classification or outcome. */
+export function evaluateLiveWarClanGoals(
+  facts: LiveWarClanGoalFacts,
+): readonly LiveWarClanGoalEvaluation[] {
+  return LIVE_WAR_CLAN_GOAL_IDS.map((goalId) =>
+    evaluateLiveWarClanGoal({ goalId, facts }),
+  );
+}
+
 function normalizeIdentityPart(input: string | number | null | undefined): string {
   return String(input ?? "").trim() || "unknown";
 }
 
 function normalizeClanTag(input: string): string {
-  return input.trim().toUpperCase();
+  return normalizeClashTagInput(input);
 }
 
 /** Purpose: choose a stable catalog snippet without relying on process randomness. */
@@ -154,8 +285,6 @@ export function selectClanGoalSnippet(input: ClanGoalEventIdentity & { goalId: C
     normalizeClanTag(input.clanTag),
     normalizeIdentityPart(input.warId),
     normalizeIdentityPart(input.syncIdentity),
-    normalizeIdentityPart(input.eventIdentity),
-    normalizeIdentityPart(input.warOrSyncIdentity),
   ].join("|");
 
   let hash = 2166136261;
@@ -271,7 +400,6 @@ export function logClanGoalOutcome(input: {
     `clan_tag=${normalizeClanTag(input.identity.clanTag)}`,
     `war_id=${normalizeIdentityPart(input.identity.warId)}`,
     `sync_identity=${normalizeIdentityPart(input.identity.syncIdentity)}`,
-    `event_identity=${normalizeIdentityPart(input.identity.eventIdentity)}`,
     `reason=${input.reason ?? "none"}`,
     ...(errorText ? [`error=${String(errorText).replace(/\s+/g, " ").slice(0, 200)}`] : []),
   ].join(" ");
