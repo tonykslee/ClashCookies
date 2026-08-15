@@ -62,6 +62,7 @@ export type CompoActualStateClanContext = {
   clanTag: string;
   clanName: string;
   shortName: string | null;
+  sourceSyncedAt?: Date | null;
   base: CompoActualStateBaseMetrics;
   members: CompoActualStateMemberContext[];
 };
@@ -540,6 +541,12 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     if (!clanTag) continue;
 
     const clanMembers = membersByClanTag.get(clanTag) ?? [];
+    const clanSourceSyncedAt = clanMembers.reduce<Date | null>((latest, member) => {
+      if (!latest || member.sourceSyncedAt.getTime() > latest.getTime()) {
+        return member.sourceSyncedAt;
+      }
+      return latest;
+    }, null);
     const deferredByPlayerTag = deferredByClanTag.get(clanTag) ?? new Map();
     const bucketCounts: CompoWarBucketCounts = {
       ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
@@ -605,6 +612,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       clanTag,
       clanName: clan.name?.trim() || clan.tag,
       shortName: clan.shortName?.trim() || null,
+      sourceSyncedAt: clanSourceSyncedAt,
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
