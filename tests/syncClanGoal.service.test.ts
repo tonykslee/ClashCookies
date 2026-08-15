@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateSyncZeroDeviationGoal,
 } from "../src/services/ClanGoalService";
@@ -133,6 +133,10 @@ describe("SYNC_ZERO_DEVIATION", () => {
     ]);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("fails closed unless the immutable snapshot is a complete 50-player zero", () => {
     expect(evaluateSyncZeroDeviationGoal({
       memberCount: 49,
@@ -197,7 +201,6 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({
       allowedMentions: { parse: [] },
     }));
-    consoleInfo.mockRestore();
   });
 
   it("captures a FAILED readiness publication while it remains inside the boundary grace window", async () => {
@@ -280,6 +283,80 @@ describe("SYNC_ZERO_DEVIATION", () => {
       "event=readiness_capture outcome=success tracked=1 captured=0",
     ));
   });
+
+  it.each([
+    ["CLAN_LOG", "missing_clan_log_channel"],
+    ["CLAN_LEAD", "missing_clan_lead_channel"],
+    ["BOT_LOG", "missing_bot_log_channel"],
+    ["CUSTOM", "missing_custom_channel"],
+  ] as const)(
+    "keeps %s destination skips quiet and retryable",
+    async (routingMode, skipReason) => {
+      let destinationRepaired = false;
+      let delivered = false;
+      const channel = makeChannel();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+      const service = makeService(
+        { channels: { fetch: vi.fn().mockResolvedValue(channel) } } as any,
+        {
+          getRoutingConfigForType: vi.fn().mockImplementation(async () => ({
+            routingMode,
+            channelId: routingMode === "CUSTOM" && destinationRepaired ? "123" : null,
+            legacy: false,
+            configured: true,
+          })),
+          getChannelId: vi.fn().mockImplementation(async () => (
+            destinationRepaired ? "123" : null
+          )),
+        } as any,
+      );
+      prismaMock.trackedClan.findMany.mockImplementation(async () => ([
+        {
+          tag: "#CLAN",
+          logChannelId: destinationRepaired ? "123" : null,
+          leaderChannelId: destinationRepaired ? "123" : null,
+        },
+      ]));
+      prismaMock.syncEvent.findMany.mockImplementation(async () => (
+        delivered
+          ? [{
+              guildId: "guild-1",
+              syncTime: SYNC_TIME,
+              clanTag: "#CLAN",
+              eventType: "clan_goal:SYNC_ZERO_DEVIATION",
+              createdAt: NOW,
+              payload: { status: "delivered" },
+            }]
+          : []
+      ));
+      prismaMock.syncEvent.create.mockImplementation(async () => {
+        delivered = true;
+        return { createdAt: NOW };
+      });
+
+      const first = await service.runCycle(NOW);
+
+      expect(first.delivered).toBe(0);
+      expect(prismaMock.syncEvent.create).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(debug).toHaveBeenCalledWith(expect.stringContaining(
+        `reason=${skipReason}`,
+      ));
+      expect(channel.send).not.toHaveBeenCalled();
+
+      destinationRepaired = true;
+      const second = await service.runCycle(NOW);
+      const third = await service.runCycle(NOW);
+
+      expect(second.delivered).toBe(1);
+      expect(third.delivered).toBe(0);
+      expect(prismaMock.syncEvent.create).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("leaves disabled goals unclaimed and delivers the persisted snapshot after enabling routing", async () => {
     const channel = makeChannel();

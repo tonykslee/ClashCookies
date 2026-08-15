@@ -689,6 +689,10 @@ export function logClanGoalOutcome(input: {
   const line = `[clan-goals] ${suffix}`;
   const quietSkipReasons = new Set([
     "disabled",
+    "missing_clan_log_channel",
+    "missing_clan_lead_channel",
+    "missing_bot_log_channel",
+    "missing_custom_channel",
     "already_delivered",
     "reservation_in_flight",
     "reservation_already_claimed",
