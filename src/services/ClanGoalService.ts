@@ -210,6 +210,23 @@ export type WarNoMissedAttacksGoalFacts = {
     | undefined;
 };
 
+export type SyncZeroDeviationGoalFacts = {
+  memberCount: number | null | undefined;
+  projectionComplete: boolean;
+  deviationScore: number | null | undefined;
+};
+
+export type SyncZeroDeviationGoalEvaluation = {
+  goalId: "SYNC_ZERO_DEVIATION";
+  qualified: boolean;
+  reason:
+    | "member_count_mismatch"
+    | "projection_incomplete"
+    | "deviation_unavailable"
+    | "deviation_nonzero"
+    | "qualified";
+};
+
 export type CanonicalWarEndGoalEvaluation = {
   goalId: "FWA_NO_VIOLATIONS" | "WAR_NO_MISSED_ATTACKS";
   qualified: boolean;
@@ -406,6 +423,29 @@ export function evaluateWarNoMissedAttacksGoal(
     };
   }
   return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: true, reason: "qualified" };
+}
+
+/** Purpose: evaluate the sync goal only from an immutable ACTUAL readiness snapshot. */
+export function evaluateSyncZeroDeviationGoal(
+  input: SyncZeroDeviationGoalFacts,
+): SyncZeroDeviationGoalEvaluation {
+  if (Number(input.memberCount) !== 50) {
+    return { goalId: "SYNC_ZERO_DEVIATION", qualified: false, reason: "member_count_mismatch" };
+  }
+  if (input.projectionComplete !== true) {
+    return { goalId: "SYNC_ZERO_DEVIATION", qualified: false, reason: "projection_incomplete" };
+  }
+  if (
+    input.deviationScore === null ||
+    input.deviationScore === undefined ||
+    !Number.isFinite(Number(input.deviationScore))
+  ) {
+    return { goalId: "SYNC_ZERO_DEVIATION", qualified: false, reason: "deviation_unavailable" };
+  }
+  if (Number(input.deviationScore) !== 0) {
+    return { goalId: "SYNC_ZERO_DEVIATION", qualified: false, reason: "deviation_nonzero" };
+  }
+  return { goalId: "SYNC_ZERO_DEVIATION", qualified: true, reason: "qualified" };
 }
 
 function evaluateCommonLiveWarFacts(
@@ -649,6 +689,10 @@ export function logClanGoalOutcome(input: {
   const line = `[clan-goals] ${suffix}`;
   const quietSkipReasons = new Set([
     "disabled",
+    "missing_clan_log_channel",
+    "missing_clan_lead_channel",
+    "missing_bot_log_channel",
+    "missing_custom_channel",
     "already_delivered",
     "reservation_in_flight",
     "reservation_already_claimed",

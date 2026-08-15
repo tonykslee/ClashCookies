@@ -167,6 +167,8 @@ Each domain concept must have exactly one authoritative owner.
 | Archived war payloads | WarLookup |
 | Points sync metadata | ClanPointsSync |
 | War event idempotency | WarEvent |
+| Scheduled-sync clan readiness snapshot | SyncClanReadinessSnapshot |
+| Scheduled-sync clan-goal idempotency | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
@@ -205,6 +207,7 @@ Rules:
 - `POLLING_MODE=active` owns upstream pollers and schedulers.
 - `POLLING_MODE=mirror` must not duplicate upstream polling or reminder ownership.
 - Mirror mode may only run guarded prod-to-staging snapshot sync for the allowlisted runtime tables.
+- Mirror mode does not capture `SyncClanReadinessSnapshot`, claim `SyncEvent`, or deliver scheduled-sync clan goals; those writes and Discord sends remain active-runtime responsibilities.
 - Derived runtime tables must be recreatable from active pollers or guarded mirror sync.
 
 ## 2) CurrentWar role
@@ -270,6 +273,8 @@ Rules:
 ## 7) Messaging and idempotency
 
 - `WarEvent` is the war-event dedupe guard.
+- `SyncClanReadinessSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan ACTUAL readiness snapshot used by `SYNC_ZERO_DEVIATION`. It stores audit facts only; it does not own delivery state.
+- `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals. It is distinct from `WarEvent` and never fabricates a war identity.
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.

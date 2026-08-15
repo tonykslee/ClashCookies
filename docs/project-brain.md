@@ -43,6 +43,7 @@ High-level runtime model:
 Core subsystems:
 
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarPlanComplianceEvaluation / WarPlanViolation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
+- Scheduled sync clan goal: `ScheduledSyncPostSchedulerService -> loadCompoActualStateContext + shared ACTUAL projection -> SyncClanReadinessSnapshot -> SyncEvent -> ClanGoalService -> /bot-logs type:clan-goals`; the scheduler owns cadence, the snapshot owns canonical sync facts, and `SyncEvent` owns only sync-goal delivery idempotency.
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals for later camping analytics and future read-only reporting, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. `/cwl activity` does not read this table.
@@ -93,6 +94,8 @@ Important owners:
 | Finalized war-plan evaluation | WarPlanComplianceEvaluation |
 | Finalized war-plan player violation | WarPlanViolation |
 | Points sync metadata | ClanPointsSync |
+| Scheduled-sync clan readiness facts | SyncClanReadinessSnapshot |
+| Scheduled-sync clan-goal delivery claims | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
@@ -114,6 +117,7 @@ Do not duplicate ownership across tables.
 
 - Active mode owns external pollers and schedulers.
 - Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
+- Mirror mode does not capture sync-boundary readiness snapshots, claim sync-goal events, or deliver scheduled-sync clan goals.
 - `AllianceClanMembershipInterval` is excluded from the full-overwrite mirror allowlist. Production activity observation is its writer; mirror mode performs no membership-history polling or writes, and future read-only reporting consumers such as `CwlAllianceActivityService` do not become mirror owners.
 - Expensive upstream fetches should happen in background services, not in user-facing commands.
 - Derived tables and snapshots must be recreatable by their owning service.

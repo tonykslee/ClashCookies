@@ -1210,6 +1210,43 @@ model ScheduledSyncPost {
   @@index([nextAttemptAt])
 }
 
+model SyncClanReadinessSnapshot {
+  id                    String   @id @default(cuid())
+  guildId               String
+  syncTime              DateTime
+  clanTag               String
+  clanName              String?
+  capturedAt            DateTime @default(now())
+  memberCount           Int
+  unresolvedWeightCount Int
+  deviationScore        Float?
+  projectionComplete    Boolean
+  sourceSyncedAt        DateTime?
+  algorithmVersion      String
+  scheduledSyncPostId   String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([guildId, syncTime, clanTag])
+  @@index([guildId, syncTime])
+  @@index([syncTime, projectionComplete, deviationScore])
+}
+
+model SyncEvent {
+  id        String   @id @default(cuid())
+  guildId   String
+  syncTime  DateTime
+  clanTag   String
+  eventType String
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, syncTime, clanTag, eventType])
+  @@index([guildId, syncTime])
+  @@index([syncTime, eventType])
+}
+
 model TrackedMessageClaim {
   id               String         @id @default(cuid())
   trackedMessageId String

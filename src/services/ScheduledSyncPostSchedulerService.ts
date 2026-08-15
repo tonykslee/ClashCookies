@@ -14,6 +14,7 @@ import {
   type SyncTimePostChannelLike,
   SyncTimePostPublishError,
 } from "./SyncTimePostPublisherService";
+import { SyncClanGoalService } from "./SyncClanGoalService";
 
 export const DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS = 15 * 1000;
 export const SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY = "scheduled_sync_post_scheduler";
@@ -73,6 +74,8 @@ export class ScheduledSyncPostSchedulerService {
     private readonly client: Client,
     private readonly intervalMs: number = DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS,
     private readonly statusService: BotPollJobStatusService = botPollJobStatusService,
+    private readonly syncClanGoalService: Pick<SyncClanGoalService, "runCycle"> =
+      new SyncClanGoalService(client),
   ) {}
 
   start(): ScheduledSyncPostSchedulerStartResult {
@@ -155,6 +158,14 @@ export class ScheduledSyncPostSchedulerService {
           `[scheduled-readiness-post] status_update_failed job_key=${SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY} stage=started error=${formatError(err)}`,
         );
       });
+
+      try {
+        await this.syncClanGoalService.runCycle();
+      } catch (err) {
+        dozzleLog.error(
+          `[scheduled-readiness-post] sync_clan_goal_cycle_failed error=${formatError(err)}`,
+        );
+      }
 
       const expiredRows = await scheduledSyncPostService.findExpiredScheduledSyncPosts(now);
       let scanned = expiredRows.length;

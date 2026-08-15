@@ -69,8 +69,13 @@ function useInMemoryScheduleStore() {
     let count = 0;
     for (const row of rows.values()) {
       if (row.guildId !== args.where.guildId) continue;
-      if (!args.where.status.in.includes(row.status)) continue;
       if (args.where.id?.not === row.id) continue;
+      const matchesStatus = args.where.OR?.some((candidate: any) => {
+        if (candidate.status?.in) return candidate.status.in.includes(row.status);
+        return row.status === candidate.status &&
+          (!candidate.syncTime?.gt || row.syncTime.getTime() > candidate.syncTime.gt.getTime());
+      }) ?? args.where.status?.in?.includes(row.status);
+      if (!matchesStatus) continue;
       Object.assign(row, args.data);
       count += 1;
     }
@@ -96,6 +101,8 @@ function scheduleRequest(syncTime: string) {
 describe("ScheduledSyncPostService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T23:00:00.000Z"));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     prismaMock.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) =>
       callback(txMock),
@@ -150,6 +157,7 @@ describe("ScheduledSyncPostService", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -172,9 +180,10 @@ describe("ScheduledSyncPostService", () => {
       expect.objectContaining({
         where: {
           guildId: "guild-1",
-          status: {
-            in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED],
-          },
+          OR: [
+            { status: { in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] } },
+            { status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED, syncTime: { gt: expect.any(Date) } },
+          ],
         },
         data: expect.objectContaining({
           status: SCHEDULED_SYNC_POST_STATUS.REPLACED,
@@ -232,9 +241,10 @@ describe("ScheduledSyncPostService", () => {
         where: expect.objectContaining({
           guildId: "guild-1",
           id: { not: existing.id },
-          status: {
-            in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED],
-          },
+          OR: [
+            { status: { in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] } },
+            { status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED, syncTime: { gt: expect.any(Date) } },
+          ],
         }),
       }),
     );
@@ -428,26 +438,57 @@ describe("ScheduledSyncPostService", () => {
     )).toHaveLength(1);
   });
 
-  it("supersedes active schedules when the requested same-sync row is already published", async () => {
+  it("keeps an exact same-sync published row already published", async () => {
     const rows = useInMemoryScheduleStore();
 
     await scheduleRequest("2026-06-16T01:30:00.000Z");
-    const rowA = rows.get("guild-1:2026-06-16T01:30:00.000Z");
-    Object.assign(rowA, {
+    await scheduleRequest("2026-06-17T01:30:00.000Z");
+    const rowB = rows.get("guild-1:2026-06-17T01:30:00.000Z");
+    Object.assign(rowB, {
       status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED,
       publishedMessageId: "message-a",
       publishedAt: new Date("2026-06-15T23:31:00.000Z"),
     });
-    await scheduleRequest("2026-06-17T01:30:00.000Z");
-
-    const result = await scheduleRequest("2026-06-16T01:30:00.000Z");
-    const rowB = rows.get("guild-1:2026-06-17T01:30:00.000Z");
+    const result = await scheduleRequest("2026-06-17T01:30:00.000Z");
     expect(result.action).toBe("already_published");
-    expect(result.schedule.status).toBe(SCHEDULED_SYNC_POST_STATUS.PUBLISHED);
-    expect(rowB.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
-    expect([...rows.values()].filter((row) =>
-      [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED].includes(row.status),
-    )).toHaveLength(0);
+    expect(result.schedule.publishedMessageId).toBe("message-a");
+    expect(rowB.status).toBe(SCHEDULED_SYNC_POST_STATUS.PUBLISHED);
+  });
+
+  it("replaces a different future published schedule while preserving publication audit fields", async () => {
+    const rows = useInMemoryScheduleStore();
+
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+    const oldRow = rows.get("guild-1:2026-06-16T01:30:00.000Z");
+    Object.assign(oldRow, {
+      status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED,
+      publishedMessageId: "message-old",
+      publishedAt: new Date("2026-06-15T23:31:00.000Z"),
+    });
+
+    const result = await scheduleRequest("2026-06-17T01:30:00.000Z");
+
+    expect(result.action).toBe("replaced");
+    expect(oldRow.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
+    expect(oldRow.publishedMessageId).toBe("message-old");
+    expect(oldRow.publishedAt).toEqual(new Date("2026-06-15T23:31:00.000Z"));
+  });
+
+  it("does not replace a historical published schedule", async () => {
+    const rows = useInMemoryScheduleStore();
+
+    await scheduleRequest("2026-06-15T22:30:00.000Z");
+    const historical = rows.get("guild-1:2026-06-15T22:30:00.000Z");
+    Object.assign(historical, {
+      status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED,
+      publishedMessageId: "message-history",
+      publishedAt: new Date("2026-06-15T22:31:00.000Z"),
+    });
+
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+
+    expect(historical.status).toBe(SCHEDULED_SYNC_POST_STATUS.PUBLISHED);
+    expect(historical.publishedMessageId).toBe("message-history");
   });
 
   it("clears claim ownership when superseding another claimed schedule", async () => {
