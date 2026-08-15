@@ -4424,7 +4424,7 @@ describe("WarEventLogService war-event poll targets", () => {
     );
   });
 
-  it("rejects persisted FWA evidence when its war identity is stale or non-FWA", () => {
+  it("matches exact physical-war identity while treating war IDs as supplemental", () => {
     const startTime = new Date("2026-08-06T11:34:09.000Z");
     const base = {
       effectiveWarIdentityChanged: false,
@@ -4440,7 +4440,34 @@ describe("WarEventLogService war-event poll targets", () => {
       },
     };
 
+    // 1. Exact start/opponent + matching IDs + positive FWA evidence.
     expect(resolveSameWarPersistedFwaEvidenceForTest(base as any)).toBe("FWA");
+
+    // 2. Current war ID can be present while the nullable points ID is absent.
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsWarId: null },
+      } as any),
+    ).toBe("FWA");
+
+    // 3. Points war ID can be present while the current ID is absent.
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, warId: null },
+      } as any),
+    ).toBe("FWA");
+
+    // 4. Two populated but conflicting IDs still fail closed.
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsWarId: "1000737" },
+      } as any),
+    ).toBeNull();
+
+    // 5. Physical-war start mismatch.
     expect(
       resolveSameWarPersistedFwaEvidenceForTest({
         ...base,
@@ -4450,12 +4477,46 @@ describe("WarEventLogService war-event poll targets", () => {
         },
       } as any),
     ).toBeNull();
+
+    // 6. Physical-war opponent mismatch.
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsOpponentTag: "#DIFFERENT" },
+      } as any),
+    ).toBeNull();
+
+    // 7. A poll-detected identity change invalidates the evidence.
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        effectiveWarIdentityChanged: true,
+      } as any),
+    ).toBeNull();
+
+    // 8. FWA evidence must be explicitly positive.
     expect(
       resolveSameWarPersistedFwaEvidenceForTest({
         ...base,
         sub: { ...base.sub, pointsIsFwa: false },
       } as any),
     ).toBeNull();
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsIsFwa: null },
+      } as any),
+    ).toBeNull();
+
+    // 9. A conflicting stored classification cannot authorize live FWA goals.
+    for (const lastKnownMatchType of ["BL", "MM"]) {
+      expect(
+        resolveSameWarPersistedFwaEvidenceForTest({
+          ...base,
+          sub: { ...base.sub, pointsLastKnownMatchType: lastKnownMatchType },
+        } as any),
+      ).toBeNull();
+    }
   });
 
   it("deduplicates threshold diagnostics for unresolved live classifications", async () => {

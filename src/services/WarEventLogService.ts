@@ -1668,7 +1668,7 @@ function resolveSameWarPersistedFwaEvidence(input: {
 
   const currentWarId = toValidWarIdText(input.currentWarId ?? input.sub.warId);
   const pointsWarId = toValidWarIdText(input.sub.pointsWarId);
-  if (!currentWarId || !pointsWarId || currentWarId !== pointsWarId) {
+  if (currentWarId && pointsWarId && currentWarId !== pointsWarId) {
     return null;
   }
 
