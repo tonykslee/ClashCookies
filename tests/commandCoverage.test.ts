@@ -222,6 +222,9 @@ describe("command coverage", () => {
     expect(normalized).toContain("enable:false");
     expect(botLogsHelpText).toContain("type:ban-log");
     expect(botLogsHelpText).toContain("type:ban-join-alert");
+    expect(botLogsHelpText).toContain("type:clan-goals");
+    expect(normalized).toContain("defaults to disabled");
+    expect(normalized).toContain("`channel` is only used with `enable:custom`");
     expect(normalized).toContain("defaults to clan-lead channel when unset");
   });
 
