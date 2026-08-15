@@ -89,6 +89,14 @@ function makeChannel() {
   };
 }
 
+function makeService(
+  client: any,
+  botLogChannels: any,
+  clock: () => Date = () => new Date(NOW),
+) {
+  return new SyncClanGoalService(client, botLogChannels, clock);
+}
+
 describe("SYNC_ZERO_DEVIATION", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -144,7 +152,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
 
   it("captures a boundary once and posts through the routed non-pinging destination", async () => {
     const channel = makeChannel();
-    const service = new SyncClanGoalService(
+    const service = makeService(
       { channels: { fetch: vi.fn().mockResolvedValue(channel) } } as any,
       {
         getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -174,7 +182,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
     prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
       { id: "failed-schedule", guildId: "guild-1", syncTime: SYNC_TIME, status: "FAILED" },
     ]);
-    const service = new SyncClanGoalService(
+    const service = makeService(
       { channels: { fetch: vi.fn().mockResolvedValue(makeChannel()) } } as any,
       {
         getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -185,7 +193,6 @@ describe("SYNC_ZERO_DEVIATION", () => {
         }),
         getChannelId: vi.fn(),
       } as any,
-      () => new Date(NOW),
     );
 
     const result = await service.runCycle(NOW);
@@ -197,7 +204,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
   it("does not fetch Discord again after a delivered SyncEvent", async () => {
     const channel = makeChannel();
     const fetch = vi.fn().mockResolvedValue(channel);
-    const service = new SyncClanGoalService(
+    const service = makeService(
       { channels: { fetch } } as any,
       {
         getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -228,7 +235,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
 
   it("leaves disabled goals unclaimed and delivers the persisted snapshot after enabling routing", async () => {
     const channel = makeChannel();
-    const disabled = new SyncClanGoalService({ channels: { fetch: vi.fn() } } as any, {
+    const disabled = makeService({ channels: { fetch: vi.fn() } } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
         routingMode: "DISABLED",
         channelId: null,
@@ -236,11 +243,11 @@ describe("SYNC_ZERO_DEVIATION", () => {
         configured: false,
       }),
       getChannelId: vi.fn(),
-    } as any, () => new Date(NOW));
+    } as any);
 
     const first = await disabled.runCycle(NOW);
 
-    const enabled = new SyncClanGoalService({
+    const enabled = makeService({
       channels: { fetch: vi.fn().mockResolvedValue(channel) },
     } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -250,7 +257,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
         configured: true,
       }),
       getChannelId: vi.fn(),
-    } as any, () => new Date(NOW));
+    } as any);
     const second = await enabled.runCycle(NOW);
 
     expect(first.delivered).toBe(0);
@@ -264,7 +271,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
     channel.send
       .mockRejectedValueOnce(new Error("discord unavailable"))
       .mockResolvedValueOnce({ id: "message-2" });
-    const service = new SyncClanGoalService({
+    const service = makeService({
       channels: { fetch: vi.fn().mockResolvedValue(channel) },
     } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -274,7 +281,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
         configured: true,
       }),
       getChannelId: vi.fn(),
-    } as any, () => new Date(NOW));
+    } as any);
 
     const first = await service.runCycle(NOW);
     const second = await service.runCycle(NOW);
@@ -289,7 +296,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
     const channel = makeChannel();
     channel.send.mockRejectedValueOnce(new Error("temporary discord failure"))
       .mockResolvedValueOnce({ id: "message-2" });
-    const service = new SyncClanGoalService({
+    const service = makeService({
       channels: { fetch: vi.fn().mockResolvedValue(channel) },
     } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
@@ -299,7 +306,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
         configured: true,
       }),
       getChannelId: vi.fn(),
-    } as any, () => new Date(NOW));
+    } as any);
 
     await service.runCycle(NOW);
     projectionMock.mockReturnValue({
@@ -334,7 +341,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
       ...makeChannel(),
       id,
     }));
-    const service = new SyncClanGoalService({ channels: { fetch: channelFetch } } as any, {
+    const service = makeService({ channels: { fetch: channelFetch } } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
         routingMode: "CLAN_LOG",
         channelId: null,
@@ -342,7 +349,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
         configured: true,
       }),
       getChannelId: vi.fn(),
-    } as any, () => new Date(NOW));
+    } as any);
 
     const result = await service.runCycle(NOW);
 
@@ -357,7 +364,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
   });
 
   it("keeps disabled routing unclaimed and skips stale boundaries", async () => {
-    const service = new SyncClanGoalService({ channels: { fetch: vi.fn() } } as any, {
+    const service = makeService({ channels: { fetch: vi.fn() } } as any, {
       getRoutingConfigForType: vi.fn().mockResolvedValue({
         routingMode: "DISABLED",
         channelId: null,
@@ -389,7 +396,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
       return makeContext();
     });
     prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
-    const service = new SyncClanGoalService(
+    const service = makeService(
       { channels: { fetch: vi.fn() } } as any,
       { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
       () => new Date(clockNow),
@@ -408,7 +415,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
       { id: "replaced", guildId: "guild-1", syncTime: SYNC_TIME, status: "REPLACED" },
     ]);
     prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
-    const service = new SyncClanGoalService(
+    const service = makeService(
       { channels: { fetch: vi.fn() } } as any,
       { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
       () => new Date(NOW),
