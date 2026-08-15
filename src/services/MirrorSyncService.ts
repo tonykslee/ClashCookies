@@ -3,6 +3,8 @@ import {
   type ClanPointsSync,
   type ClanWarHistory,
   type ClanWarParticipation,
+  type SyncCycle,
+  type SyncClanReadinessSnapshot,
   type CwlEventClan,
   type CwlEventInstance,
   type CwlEventWarTag,
@@ -46,6 +48,8 @@ export const MIRRORED_RUNTIME_TABLES = [
   "WarAttacks",
   "ClanPointsSync",
   "ClanWarHistory",
+  "SyncCycle",
+  "SyncClanReadinessSnapshot",
   "ClanWarParticipation",
   "WarPlanComplianceEvaluation",
   "WarPlanViolation",
@@ -140,6 +144,10 @@ type MirrorSyncSourceClient = {
   warAttacks: { findMany: (args?: unknown) => Promise<WarAttacks[]> };
   clanPointsSync: { findMany: (args?: unknown) => Promise<ClanPointsSync[]> };
   clanWarHistory: { findMany: (args?: unknown) => Promise<ClanWarHistory[]> };
+  syncCycle: { findMany: (args?: unknown) => Promise<SyncCycle[]> };
+  syncClanReadinessSnapshot: {
+    findMany: (args?: unknown) => Promise<SyncClanReadinessSnapshot[]>;
+  };
   clanWarParticipation: {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
@@ -207,6 +215,14 @@ type MirrorSyncTargetClient = {
   clanWarHistory: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: ClanWarHistory[] }) => Promise<CreateManyResult>;
+  };
+  syncCycle: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: SyncCycle[] }) => Promise<CreateManyResult>;
+  };
+  syncClanReadinessSnapshot: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: SyncClanReadinessSnapshot[] }) => Promise<CreateManyResult>;
   };
   clanWarParticipation: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -318,6 +334,8 @@ type MirrorSyncSourceRows = {
   WarAttacks: WarAttacks[];
   ClanPointsSync: ClanPointsSync[];
   ClanWarHistory: ClanWarHistory[];
+  SyncCycle: SyncCycle[];
+  SyncClanReadinessSnapshot: SyncClanReadinessSnapshot[];
   ClanWarParticipation: ClanWarParticipation[];
   WarPlanComplianceEvaluation: WarPlanComplianceEvaluation[];
   WarPlanViolation: WarPlanViolation[];
@@ -626,6 +644,12 @@ export class MirrorSyncService {
       ClanWarHistory: await sourceClient.clanWarHistory.findMany({
         orderBy: [{ warId: "asc" }],
       }),
+      SyncCycle: await sourceClient.syncCycle.findMany({
+        orderBy: [{ guildId: "asc" }, { syncNumber: "asc" }],
+      }),
+      SyncClanReadinessSnapshot: await sourceClient.syncClanReadinessSnapshot.findMany({
+        orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }],
+      }),
       ClanWarParticipation: await sourceClient.clanWarParticipation.findMany({
         orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
       }),
@@ -765,6 +789,23 @@ export class MirrorSyncService {
         deletedRows: deletedRows + deletedViolations + deletedEvaluations,
         insertedRows,
       };
+    }
+
+    if (table === "SyncCycle") {
+      const deletedRows = (await tx.syncCycle.deleteMany()).count;
+      const insertedRows = await this.insertBatches(rows as SyncCycle[], (batch) =>
+        tx.syncCycle.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "SyncClanReadinessSnapshot") {
+      const deletedRows = (await tx.syncClanReadinessSnapshot.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as SyncClanReadinessSnapshot[],
+        (batch) => tx.syncClanReadinessSnapshot.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
 
     if (table === "ClanWarParticipation") {

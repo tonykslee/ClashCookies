@@ -39,6 +39,40 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     WarAttacks: [{ warId: 1, playerTag: "#P1", attackNumber: 1 }],
     ClanPointsSync: [{ id: "ps1", guildId: "g1", clanTag: "#AAA111", syncNum: 42 }],
     ClanWarHistory: [{ warId: 1, clanTag: "#AAA111", warStartTime: new Date("2026-03-30T00:00:00.000Z") }],
+    SyncCycle: [
+      {
+        id: "cycle-1",
+        guildId: "g1",
+        syncNumber: 42,
+        syncTime: new Date("2026-03-29T00:00:00.000Z"),
+        scheduledSyncPostId: "post-1",
+        resolvedAt: new Date("2026-03-30T01:00:00.000Z"),
+        resolutionSource: "ENDED_WAR_CANONICAL",
+        createdAt: new Date("2026-03-30T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T01:00:00.000Z"),
+      },
+    ],
+    SyncClanReadinessSnapshot: [
+      {
+        id: "snapshot-1",
+        guildId: "g1",
+        syncTime: new Date("2026-03-29T00:00:00.000Z"),
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        capturedAt: new Date("2026-03-29T00:05:00.000Z"),
+        memberCount: 50,
+        unresolvedWeightCount: 0,
+        deviationScore: 0,
+        projectionComplete: true,
+        sourceSyncedAt: new Date("2026-03-29T00:01:00.000Z"),
+        algorithmVersion: "sync-clan-goal-v1",
+        scheduledSyncPostId: "post-1",
+        fillerCaptureComplete: true,
+        fillerPlayerTags: ["#P1"],
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
     WarPlanComplianceEvaluation: [
       {
@@ -273,6 +307,12 @@ function buildSourceClient(
     clanWarHistory: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarHistory)),
     },
+    syncCycle: {
+      findMany: vi.fn(async () => cloneRows(store.SyncCycle)),
+    },
+    syncClanReadinessSnapshot: {
+      findMany: vi.fn(async () => cloneRows(store.SyncClanReadinessSnapshot)),
+    },
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
@@ -383,6 +423,14 @@ function buildTargetClient(
       deleteMany: deleteMany("ClanWarHistory"),
       createMany: createMany("ClanWarHistory"),
     },
+    syncCycle: {
+      deleteMany: deleteMany("SyncCycle"),
+      createMany: createMany("SyncCycle"),
+    },
+    syncClanReadinessSnapshot: {
+      deleteMany: deleteMany("SyncClanReadinessSnapshot"),
+      createMany: createMany("SyncClanReadinessSnapshot"),
+    },
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
       createMany: createMany("ClanWarParticipation"),
@@ -440,6 +488,12 @@ describe("MirrorSyncService", () => {
     expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain(
       "AllianceClanMembershipInterval",
     );
+  });
+
+  it("mirrors retrospective owners but not scheduled-post lifecycle state", () => {
+    expect(MIRRORED_RUNTIME_TABLES).toContain("SyncCycle");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("SyncClanReadinessSnapshot");
+    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain("ScheduledSyncPost");
   });
 
   it("does not mirror retired baseline tables", () => {

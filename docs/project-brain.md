@@ -43,7 +43,7 @@ High-level runtime model:
 Core subsystems:
 
 - War state: `TrackedClan -> WarEventLogService/poll loops -> CurrentWar -> ClanWarHistory / ClanWarParticipation / WarPlanComplianceEvaluation / WarPlanViolation / WarAttacks / WarLookup / WarEvent / WarMailLifecycle / ClanPostedMessage`
-- Scheduled sync clan goal: `ScheduledSyncPostSchedulerService -> loadCompoActualStateContext + shared ACTUAL projection -> SyncClanReadinessSnapshot -> SyncEvent -> ClanGoalService -> /bot-logs type:clan-goals`; the scheduler owns cadence, the snapshot owns canonical immutable sync facts including exact designated filler tags present in the ACTUAL roster, and `SyncEvent` owns only sync-goal delivery idempotency. Retrospective/history consumers use captured `fillerPlayerTags`, not the mutable current `FillerAccount` registry.
+- Scheduled sync clan goal: `ScheduledSyncPostSchedulerService -> loadCompoActualStateContext + shared ACTUAL projection -> SyncClanReadinessSnapshot -> SyncEvent -> ClanGoalService -> /bot-logs type:clan-goals`; the scheduler owns cadence, the snapshot owns canonical immutable sync facts including exact designated filler tags present in the ACTUAL roster, and `SyncEvent` owns only sync-goal delivery idempotency. A canonical ended FWA war resolves `ClanWarHistory.syncNumber + prepStartTime -> SyncCycle -> scheduled syncTime`; `SyncRetrospectiveService` reads that mapping and the persisted evidence DB-first without Discord, writes, or mutable filler-registry inference.
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals for later camping analytics and future read-only reporting, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. `/cwl activity` does not read this table.
@@ -90,11 +90,13 @@ Important owners:
 | Player-to-Discord links | PlayerLink |
 | Live war state | CurrentWar |
 | Ended-war canonical record | ClanWarHistory |
+| Canonical sync-number to scheduled-sync-time identity | SyncCycle |
 | Ended-war participation | ClanWarParticipation |
 | Finalized war-plan evaluation | WarPlanComplianceEvaluation |
 | Finalized war-plan player violation | WarPlanViolation |
 | Points sync metadata | ClanPointsSync |
 | Scheduled-sync clan readiness and exact filler-at-sync facts | SyncClanReadinessSnapshot |
+| DB-first Sync Retrospective read model | SyncRetrospectiveService (consumer only; no writes) |
 | Mutable guild-scoped filler designations | FillerAccount |
 | Scheduled-sync clan-goal delivery claims | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
