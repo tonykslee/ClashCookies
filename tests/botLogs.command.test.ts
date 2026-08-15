@@ -72,6 +72,7 @@ describe("/bot-logs command shape", () => {
       { name: "checklist", value: "checklist" },
       { name: "ban-log", value: "ban-log" },
       { name: "ban-join-alert", value: "ban-join-alert" },
+      { name: "clan-goals", value: "clan-goals" },
     ]);
     expect(setChannelOption).toBeUndefined();
     expect(enableOption?.type).toBe(ApplicationCommandOptionType.String);
@@ -353,6 +354,93 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it.each([
+    ["clan-log channel", "CLAN_LOG", "clan-log channel"],
+    ["clan-lead channel", "CLAN_LEAD", "clan-lead channel"],
+    ["bot-log channel", "BOT_LOG", "bot-log channel"],
+    ["false", "DISABLED", "disabled"],
+  ] as const)("saves clan-goals %s routing", async (enable, routingMode, label) => {
+    const setRoutingConfigForType = vi
+      .spyOn(BotLogChannelService.prototype, "setRoutingConfigForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      guildId: "111",
+      type: "clan-goals",
+      enable,
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111",
+      type: "clan-goals",
+      routingMode,
+      channelId: null,
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: `Clan goals routing saved: ${label}.`,
+    });
+  });
+
+  it("saves clan-goals custom routing when a channel is provided", async () => {
+    const setRoutingConfigForType = vi
+      .spyOn(BotLogChannelService.prototype, "setRoutingConfigForType")
+      .mockResolvedValue(undefined);
+    const interaction = createInteraction({
+      guildId: "111",
+      type: "clan-goals",
+      enable: "custom",
+      channel: {
+        id: "999999999999999999",
+        guildId: "111",
+        type: ChannelType.GuildText,
+      },
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111",
+      type: "clan-goals",
+      routingMode: "CUSTOM",
+      channelId: "999999999999999999",
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Clan goals routing saved: custom <#999999999999999999>.",
+    });
+  });
+
+  it("rejects clan-goals custom routing without a channel", async () => {
+    const setRoutingConfigForType = vi.mocked(
+      BotLogChannelService.prototype.setRoutingConfigForType,
+    );
+    const interaction = createInteraction({
+      type: "clan-goals",
+      enable: "custom",
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setRoutingConfigForType).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "`enable:custom` requires `channel`.",
+    });
+  });
+
+  it("shows clan-goals disabled by default when inspected", async () => {
+    const interaction = createInteraction({ type: "clan-goals" });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Clan goals routing is disabled.",
+    });
+  });
+
   it("shows the default ban-join-alert routing when inspected with no args", async () => {
     vi.mocked(BotLogChannelService.prototype.getRoutingConfigForType).mockResolvedValue({
       routingMode: "CLAN_LEAD",
@@ -475,7 +563,7 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
       content:
-        "`enable` is only supported with `type:base-swap`, `type:ban-log`, or `type:ban-join-alert`.",
+        "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, or `type:clan-goals`.",
     });
   });
 
@@ -599,6 +687,7 @@ describe("/bot-logs behavior", () => {
         "Checklist: <#666666666666666666>",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
+        "Clan goals: Disabled",
       ].join("\n"),
     });
   });
@@ -707,6 +796,7 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
+        "Clan goals: Disabled",
       ].join("\n"),
     });
   });
@@ -732,6 +822,7 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
+        "Clan goals: Disabled",
       ].join("\n"),
     });
   });
@@ -778,6 +869,7 @@ describe("/bot-logs behavior", () => {
         "Checklist: Inaccessible <#666666666666666666>",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
+        "Clan goals: Disabled",
       ].join("\n"),
     });
   });
@@ -815,6 +907,7 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
+        "Clan goals: Disabled",
       ].join("\n"),
     });
   });
@@ -900,7 +993,8 @@ describe("/bot-logs behavior", () => {
         "Sync: Not configured\n" +
         "Checklist: Not configured\n" +
         "Ban log: Disabled\n" +
-        "Ban join alert: Default clan-lead channel",
+        "Ban join alert: Default clan-lead channel\n" +
+        "Clan goals: Disabled",
     });
   });
 
@@ -1032,7 +1126,8 @@ describe("/bot-logs behavior", () => {
         "Sync: Not configured\n" +
         "Checklist: Not configured\n" +
         "Ban log: Disabled\n" +
-        "Ban join alert: Default clan-lead channel",
+        "Ban join alert: Default clan-lead channel\n" +
+        "Clan goals: Disabled",
     });
   });
 
