@@ -93,6 +93,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "repwork",
   "cwl:activity",
   "cwl:camping",
+  "sync:retrospective",
 ]);
 
 type CommandDoc = {
@@ -887,6 +888,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`/sync readiness [refresh:true|false] [visibility:private|public]` renders the same FWA readiness dashboard from persisted data, with `refresh:true` forcing a fresh ACTUAL member reload before rendering.",
       "Public readiness responses include a shared refresh button that any guild member can use; private responses stay ephemeral.",
       "`/sync readiness` is FWA Leader role + Administrator by default.",
+      "`/sync retrospective [sync-number:<number>] [visibility:private|public]` renders the latest available persisted alliance retrospective by default; private is the default visibility.",
+      "Retrospective metrics are persisted historical facts. Coverage is shown for partial data; `—` means historical data is unavailable or incomplete rather than zero.",
+      "The retrospective is DB-first, mirror-safe, and does not claim coverage for periods before the historical snapshot/war evidence was introduced.",
       "`/sync spin status` shows the compact tracked Sync Spin Status for the stored active sync post, or a provided message ID.",
       "`/sync post status` scans the live sync message reactions directly and shows claimed vs unclaimed clans, unavailable users, and leader eligibility details.",
       "`sync time` is admin-only by default.",
@@ -895,6 +899,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "/sync time post role:@War timezone:America/New_York",
       "/sync readiness",
       "/sync readiness refresh:true visibility:public",
+      "/sync retrospective",
+      "/sync retrospective sync-number:545 visibility:public",
       "/sync spin status",
       "/sync post status",
       "/sync post status message-id:123456789012345678",

@@ -5,6 +5,7 @@ const syncTime = new Date("2026-08-15T11:00:00.000Z");
 
 function makeDb(overrides: Record<string, unknown[]> = {}) {
   const data = {
+    cycles: [{ syncNumber: 42, syncTime }],
     histories: [],
     pointsSync: [],
     snapshots: [],
@@ -15,7 +16,10 @@ function makeDb(overrides: Record<string, unknown[]> = {}) {
     ...overrides,
   };
   const db = {
-    syncCycle: { findUnique: vi.fn(async () => ({ syncTime })) },
+    syncCycle: {
+      findUnique: vi.fn(async () => ({ syncTime })),
+      findMany: vi.fn(async () => data.cycles),
+    },
     clanPointsSync: { findMany: vi.fn(async () => data.pointsSync) },
     clanWarHistory: {
       findMany: vi.fn(async ({ where }: any) => {
@@ -67,6 +71,42 @@ function pointsBridge(row: Record<string, any>, warId: number | null = row.warId
 }
 
 describe("SyncRetrospectiveService", () => {
+  it("selects the newest cycle with guild-owned evidence or a mapped snapshot", async () => {
+    const db = makeDb({
+      cycles: [
+        { syncNumber: 43, syncTime: new Date("2026-08-16T11:00:00.000Z") },
+        { syncNumber: 42, syncTime },
+      ],
+      pointsSync: [{ syncNum: 42 }],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(42);
+    expect(db.syncCycle.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { guildId: "guild-1" },
+      orderBy: { syncNumber: "desc" },
+      take: 100,
+    }));
+  });
+
+  it("does not select an empty cycle as the latest retrospective", async () => {
+    const db = makeDb({
+      cycles: [{ syncNumber: 43, syncTime: new Date("2026-08-16T11:00:00.000Z") }],
+    });
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBeNull();
+  });
+
+  it("selects a snapshot-only cycle when no guild-owned war evidence exists", async () => {
+    const snapshotOnlyTime = new Date("2026-08-17T11:00:00.000Z");
+    const db = makeDb({
+      cycles: [{ syncNumber: 44, syncTime: snapshotOnlyTime }],
+      snapshots: [{ guildId: "guild-1", syncTime: snapshotOnlyTime }],
+    });
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(44);
+  });
+
   it("builds typed summaries from mapped persisted evidence and preserves exact zero", async () => {
     const db = makeDb({
       histories: [
