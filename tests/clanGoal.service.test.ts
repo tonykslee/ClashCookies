@@ -140,6 +140,40 @@ describe("ClanGoalService foundation", () => {
     ).toMatchObject({ qualified: false, reason: "top30_attack_on_bottom_20" });
   });
 
+  it("accepts only matching persisted FWA evidence for an inferred live classification", () => {
+    const inferredFwaFacts = {
+      warState: "inWar" as const,
+      matchType: "FWA" as const,
+      inferredMatchType: true,
+      outcome: "WIN" as const,
+      loseStyle: null,
+      clanStars: 150,
+    };
+
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_WIN_150_STARS",
+        facts: inferredFwaFacts,
+      }),
+    ).toMatchObject({ qualified: false, reason: "classification_unsettled" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_WIN_150_STARS",
+        facts: { ...inferredFwaFacts, authoritativeMatchType: "FWA" },
+      }),
+    ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(
+      evaluateLiveWarClanGoal({
+        goalId: "FWA_WIN_150_STARS",
+        facts: {
+          ...inferredFwaFacts,
+          matchType: "BL",
+          authoritativeMatchType: "FWA",
+        },
+      }).qualified,
+    ).toBe(false);
+  });
+
   it("keeps the four live predicates independent", () => {
     expect(
       evaluateLiveWarClanGoal({

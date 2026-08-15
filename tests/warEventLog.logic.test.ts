@@ -20,6 +20,7 @@ import {
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
   shouldPreserveWarIdentityDuringOutageRecoveryForTest,
+  resolveSameWarPersistedFwaEvidenceForTest,
   WarEventLogService,
 } from "../src/services/WarEventLogService";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
@@ -4373,6 +4374,119 @@ describe("WarEventLogService FWA battle-day reminder", () => {
 });
 
 describe("WarEventLogService war-event poll targets", () => {
+  it("uses exact same-war persisted FWA evidence for an inferred live goal", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "inferred-goal-message" });
+    const service = new WarEventLogService(
+      {
+        channels: { fetch: vi.fn().mockResolvedValue(makeTextChannel(send)) },
+      } as any,
+      {} as any,
+    );
+    vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "999999999999999991",
+      legacy: false,
+      configured: true,
+    });
+    prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
+    prismaMock.warEvent.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).evaluateAndDeliverLiveWarClanGoals({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+      },
+      currentState: "inWar",
+      matchType: "FWA",
+      inferredMatchType: true,
+      authoritativeMatchType: "FWA",
+      outcome: "WIN",
+      clanStars: 150,
+      resolvedWarId: 777,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      content: expect.stringContaining("#2QG2C08UP"),
+      allowedMentions: { parse: [] },
+    });
+    expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warId: 777,
+          eventType: "clan_goal:FWA_WIN_150_STARS",
+        }),
+      }),
+    );
+  });
+
+  it("rejects persisted FWA evidence when its war identity is stale or non-FWA", () => {
+    const startTime = new Date("2026-08-06T11:34:09.000Z");
+    const base = {
+      effectiveWarIdentityChanged: false,
+      sub: {
+        startTime,
+        pointsWarStartTime: startTime,
+        warId: 1000736,
+        pointsWarId: "1000736",
+        opponentTag: "#YUL2L098",
+        pointsOpponentTag: "#yul2l098",
+        pointsIsFwa: true,
+        pointsLastKnownMatchType: "FWA",
+      },
+    };
+
+    expect(resolveSameWarPersistedFwaEvidenceForTest(base as any)).toBe("FWA");
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: {
+          ...base.sub,
+          startTime: new Date(startTime.getTime() - 24 * 60 * 60 * 1000),
+        },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedFwaEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsIsFwa: false },
+      } as any),
+    ).toBeNull();
+  });
+
+  it("deduplicates threshold diagnostics for unresolved live classifications", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {} as any);
+    const input = {
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+      },
+      currentState: "inWar",
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      clanStars: 150,
+      resolvedWarId: 777,
+    };
+
+    await (service as any).evaluateAndDeliverLiveWarClanGoals(input);
+    await (service as any).evaluateAndDeliverLiveWarClanGoals(input);
+
+    expect(debugSpy).toHaveBeenCalledTimes(4);
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("event=live_war_evaluation outcome=skip"),
+    );
+  });
+
   it("posts qualified live-war clan goals through custom routing and never pings", async () => {
     const send = vi.fn().mockResolvedValue({ id: "goal-message-1" });
     const service = new WarEventLogService(
