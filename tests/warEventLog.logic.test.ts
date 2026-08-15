@@ -20,6 +20,7 @@ import {
   resolveActiveWarTimingForTest,
   sanitizeWarPlanForEmbedForTest,
   shouldPreserveWarIdentityDuringOutageRecoveryForTest,
+  resolveSameWarPersistedMatchEvidenceForTest,
   WarEventLogService,
 } from "../src/services/WarEventLogService";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
@@ -4373,6 +4374,226 @@ describe("WarEventLogService FWA battle-day reminder", () => {
 });
 
 describe("WarEventLogService war-event poll targets", () => {
+  it("uses exact same-war persisted FWA evidence for an inferred live goal", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "inferred-goal-message" });
+    const service = new WarEventLogService(
+      {
+        channels: { fetch: vi.fn().mockResolvedValue(makeTextChannel(send)) },
+      } as any,
+      {} as any,
+    );
+    vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "999999999999999991",
+      legacy: false,
+      configured: true,
+    });
+    prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
+    prismaMock.warEvent.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).evaluateAndDeliverLiveWarClanGoals({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+      },
+      currentState: "inWar",
+      matchType: "FWA",
+      inferredMatchType: true,
+      authoritativeMatchType: "FWA",
+      outcome: "WIN",
+      clanStars: 150,
+      resolvedWarId: 777,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      content: expect.stringContaining("#2QG2C08UP"),
+      allowedMentions: { parse: [] },
+    });
+    expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warId: 777,
+          eventType: "clan_goal:FWA_WIN_150_STARS",
+        }),
+      }),
+    );
+  });
+
+  it("matches exact physical-war identity while treating war IDs as supplemental", () => {
+    const startTime = new Date("2026-08-06T11:34:09.000Z");
+    const base = {
+      effectiveWarIdentityChanged: false,
+      sub: {
+        startTime,
+        pointsWarStartTime: startTime,
+        warId: 1000736,
+        pointsWarId: "1000736",
+        opponentTag: "#YUL2L098",
+        pointsOpponentTag: "#yul2l098",
+        pointsIsFwa: true,
+        pointsLastKnownMatchType: "FWA",
+      },
+    };
+
+    // 1. Exact start/opponent + matching IDs + positive FWA evidence.
+    expect(resolveSameWarPersistedMatchEvidenceForTest(base as any)).toBe("FWA");
+
+    // 2. Current war ID can be present while the nullable points ID is absent.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsWarId: null },
+      } as any),
+    ).toBe("FWA");
+
+    // 3. Points war ID can be present while the current ID is absent.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, warId: null },
+      } as any),
+    ).toBe("FWA");
+
+    // 4. Two populated but conflicting IDs still fail closed.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsWarId: "1000737" },
+      } as any),
+    ).toBeNull();
+
+    // 5. Physical-war start mismatch.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: {
+          ...base.sub,
+          startTime: new Date(startTime.getTime() - 24 * 60 * 60 * 1000),
+        },
+      } as any),
+    ).toBeNull();
+
+    // 6. Physical-war opponent mismatch.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsOpponentTag: "#DIFFERENT" },
+      } as any),
+    ).toBeNull();
+
+    // 7. A poll-detected identity change invalidates the evidence.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        effectiveWarIdentityChanged: true,
+      } as any),
+    ).toBeNull();
+
+    // 8. FWA evidence must be explicitly positive.
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsIsFwa: false },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsIsFwa: null },
+      } as any),
+    ).toBeNull();
+
+    // 9. A conflicting stored classification cannot authorize live FWA goals.
+    for (const lastKnownMatchType of ["BL", "MM"]) {
+      expect(
+        resolveSameWarPersistedMatchEvidenceForTest({
+          ...base,
+          sub: { ...base.sub, pointsLastKnownMatchType: lastKnownMatchType },
+        } as any),
+      ).toBeNull();
+    }
+  });
+
+  it("requires explicit same-war BL evidence when points identify a non-FWA war", () => {
+    const startTime = new Date("2026-08-06T11:34:09.000Z");
+    const base = {
+      effectiveWarIdentityChanged: false,
+      sub: {
+        startTime,
+        pointsWarStartTime: startTime,
+        warId: 1000736,
+        pointsWarId: "1000736",
+        opponentTag: "#YUL2L098",
+        pointsOpponentTag: "#yul2l098",
+        pointsIsFwa: false,
+        pointsLastKnownMatchType: "BL",
+      },
+    };
+
+    expect(resolveSameWarPersistedMatchEvidenceForTest(base as any)).toBe("BL");
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsLastKnownMatchType: "MM" },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsLastKnownMatchType: "" },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: {
+          ...base.sub,
+          pointsWarStartTime: new Date(startTime.getTime() - 60_000),
+        },
+      } as any),
+    ).toBeNull();
+    expect(
+      resolveSameWarPersistedMatchEvidenceForTest({
+        ...base,
+        sub: { ...base.sub, pointsOpponentTag: "#DIFFERENT" },
+      } as any),
+    ).toBeNull();
+  });
+
+  it("deduplicates threshold diagnostics for unresolved live classifications", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {} as any);
+    const input = {
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+      },
+      currentState: "inWar",
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: "WIN",
+      clanStars: 150,
+      resolvedWarId: 777,
+    };
+
+    await (service as any).evaluateAndDeliverLiveWarClanGoals(input);
+    await (service as any).evaluateAndDeliverLiveWarClanGoals(input);
+
+    expect(debugSpy).toHaveBeenCalledTimes(4);
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("event=live_war_evaluation outcome=skip"),
+    );
+  });
+
   it("posts qualified live-war clan goals through custom routing and never pings", async () => {
     const send = vi.fn().mockResolvedValue({ id: "goal-message-1" });
     const service = new WarEventLogService(
