@@ -1079,12 +1079,18 @@ export class UnlinkedMemberAlertService {
 
     const currentBannedMembers = input.currentMembers.flatMap((member) => {
       const directBan = activePlayerBanByTag.get(member.playerTag) ?? null;
+      const directBanClanTag = normalizeClanTag(directBan?.clanTag ?? "");
+      const currentClanTag = normalizeClanTag(member.clanTag);
+      const applicableDirectBan =
+        directBan && directBanClanTag && directBanClanTag === currentClanTag
+          ? directBan
+          : null;
       const linkedDiscordUserId = linkedDiscordUserByPlayerTag.get(member.playerTag) ?? null;
       const userBan =
         linkedDiscordUserId !== null
           ? activeUserBanByDiscordUserId.get(linkedDiscordUserId) ?? null
           : null;
-      const activeBan = directBan ?? userBan;
+      const activeBan = applicableDirectBan ?? userBan;
       if (!activeBan) return [];
       return [
         {

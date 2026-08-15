@@ -304,7 +304,7 @@ describe("banned join alerts", () => {
     vi.useRealTimers();
   });
 
-  it("includes ban clan context in direct player-ban alerts", async () => {
+  it("does not alert for a direct player ban in a different clan", async () => {
     const service = new UnlinkedMemberAlertService();
     createBanStore([
       makeBanRow({
@@ -336,11 +336,47 @@ describe("banned join alerts", () => {
     });
 
     const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).not.toHaveBeenCalled();
+    expect(alertStore.rows).toHaveLength(0);
+  });
+
+  it("alerts when a direct player ban matches the joined clan", async () => {
+    const service = new UnlinkedMemberAlertService();
+    createBanStore([
+      makeBanRow({
+        id: "ban-player",
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
+        reason: "direct abuse",
+        expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+      }),
+    ]);
+    const alertStore = createAlertStore();
+    configureCommonMocks({ routingMode: "CLAN_LOG" });
+    const client = createClient();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "111111111111111111",
+          members: [{ playerTag: "#PYLQ0289", playerName: "Player One" }],
+        },
+      ],
+    });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
     expect(send).toHaveBeenCalledWith({
       content: [
         "A banned player, Player One (`#PYLQ0289`), has joined **Alpha Clan**.",
         "Ban target: direct player ban",
-        "Ban clan: Gamma Clan (`#QGRJ0289`)",
+        "Ban clan: Alpha Clan (`#2QG2C08UP`)",
         "Reason: direct abuse",
         "Expires: <t:1783512000:R>",
       ].join("\n"),
@@ -353,6 +389,14 @@ describe("banned join alerts", () => {
   it("includes ban clan context in user-ban alerts and keeps the joined clan distinct", async () => {
     const service = new UnlinkedMemberAlertService();
     createBanStore([
+      makeBanRow({
+        id: "ban-player-other-clan",
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        clanTag: "#QGRJ0289",
+        clanName: "Gamma Clan",
+        reason: "direct abuse",
+      }),
       makeBanRow({
         id: "ban-user",
         targetKind: "USER",
@@ -399,6 +443,42 @@ describe("banned join alerts", () => {
     });
   });
 
+  it.each([
+    ["expired", { expiresAt: new Date("2026-06-30T12:00:00.000Z") }],
+    ["removed", { removedAt: new Date("2026-06-30T12:00:00.000Z") }],
+  ])("does not alert for a %s direct player ban", async (_label, overrides) => {
+    const service = new UnlinkedMemberAlertService();
+    createBanStore([
+      makeBanRow({
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        ...overrides,
+      }),
+    ]);
+    const alertStore = createAlertStore();
+    configureCommonMocks({ routingMode: "CLAN_LOG" });
+    const client = createClient();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "111111111111111111",
+          members: [{ playerTag: "#PYLQ0289", playerName: "Player One" }],
+        },
+      ],
+    });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).not.toHaveBeenCalled();
+    expect(alertStore.rows).toHaveLength(0);
+  });
+
   it("does not duplicate the banned-player alert on the next reconcile while the player remains in-clan", async () => {
     const service = new UnlinkedMemberAlertService();
     createBanStore([
@@ -406,8 +486,8 @@ describe("banned join alerts", () => {
         id: "ban-player",
         targetKind: "PLAYER",
         playerTag: "#PYLQ0289",
-        clanTag: "#3QG2C08UP",
-        clanName: "Gamma Clan",
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha Clan",
         reason: "direct abuse",
         expiresAt: new Date("2026-07-08T12:00:00.000Z"),
       }),
@@ -435,5 +515,51 @@ describe("banned join alerts", () => {
 
     const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up an existing alert for a now-inapplicable cross-clan player ban", async () => {
+    const service = new UnlinkedMemberAlertService();
+    createBanStore([
+      makeBanRow({
+        id: "ban-player",
+        targetKind: "PLAYER",
+        playerTag: "#PYLQ0289",
+        clanTag: "#QGRJ0289",
+        clanName: "Gamma Clan",
+      }),
+    ]);
+    const alertStore = createAlertStore([
+      {
+        id: "alert-1",
+        guildId: "guild-1",
+        playerTag: "#PYLQ0289",
+        clanTag: "#2QG2C08UP",
+        playerName: "Player One",
+        clanName: "Alpha Clan",
+        banRecordId: "ban-player",
+        alertedAt: new Date("2026-06-30T12:00:00.000Z"),
+        createdAt: new Date("2026-06-30T12:00:00.000Z"),
+        updatedAt: new Date("2026-06-30T12:00:00.000Z"),
+      },
+    ]);
+    configureCommonMocks({ routingMode: "CLAN_LOG" });
+    const client = createClient();
+
+    await service.reconcileGuildAlerts({
+      client,
+      guildId: "guild-1",
+      cocService: {} as any,
+      observedFwaClans: [
+        {
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+          logChannelId: "111111111111111111",
+          members: [{ playerTag: "#PYLQ0289", playerName: "Player One" }],
+        },
+      ],
+    });
+
+    expect(alertStore.rows).toHaveLength(0);
+    expect(prismaMock.bannedPlayerJoinAlert.deleteMany).toHaveBeenCalled();
   });
 });
