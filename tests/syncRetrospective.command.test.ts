@@ -91,14 +91,16 @@ describe("/sync retrospective command", () => {
     expect(visibility?.choices?.map((choice: { value: string }) => choice.value)).toEqual(["private", "public"]);
   });
 
-  it("uses the latest available retrospective when sync-number is omitted", async () => {
+  it("renders the older valid retrospective returned by latest-sync resolution", async () => {
     const interaction = makeInteraction({});
     await Post.run({} as any, interaction, {} as any);
 
     expect(retrospectiveMock.getLatestAvailableSyncNumber).toHaveBeenCalledWith({ guildId: "guild-1" });
     expect(retrospectiveMock.getBySyncNumber).toHaveBeenCalledWith({ guildId: "guild-1", syncNumber: 545 });
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
-    expect(interaction.editReply.mock.calls[0][0]).toMatchObject({ embeds: expect.any(Array) });
+    expect(interaction.editReply.mock.calls[0][0]).toMatchObject({
+      embeds: [expect.objectContaining({ data: expect.objectContaining({ title: "Sync #545 Retrospective" }) })],
+    });
   });
 
   it("uses the exact explicit sync and does not fall back when it has no data", async () => {

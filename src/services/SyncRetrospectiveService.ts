@@ -249,11 +249,36 @@ function normalizePointsSyncIdentity(row: any): PointsSyncIdentityRow | null {
   };
 }
 
+type GuildOwnedHistoryClause = {
+  syncNumber: number;
+  warId?: number;
+  clanTag?: string;
+  warStartTime?: Date;
+  opponentTag?: string;
+};
+
+function buildGuildOwnedHistoryClauses(
+  pointsSyncRows: PointsSyncIdentityRow[],
+  syncNumbers: Set<number>,
+): GuildOwnedHistoryClause[] {
+  return pointsSyncRows
+    .filter((row) => syncNumbers.has(row.syncNum))
+    .map((row) => row.warId !== null
+      ? { syncNumber: row.syncNum, warId: row.warId }
+      : {
+          syncNumber: row.syncNum,
+          clanTag: row.clanTag,
+          warStartTime: row.warStartTime,
+          opponentTag: row.opponentTag,
+        });
+}
+
 function buildGuildOwnedHistoryWhere(
   pointsSyncRows: PointsSyncIdentityRow[],
   evaluationRows: any[],
   syncNumber: number,
 ): any | null {
+  const pointClauses = buildGuildOwnedHistoryClauses(pointsSyncRows, new Set([syncNumber]));
   const directWarIds = new Set<number>();
   const fallbackIdentities: Array<{
     clanTag: string;
@@ -261,13 +286,12 @@ function buildGuildOwnedHistoryWhere(
     opponentTag: string;
   }> = [];
 
-  for (const row of pointsSyncRows) {
-    if (row.syncNum !== syncNumber) continue;
-    if (row.warId !== null) directWarIds.add(row.warId);
+  for (const row of pointClauses) {
+    if (row.warId !== undefined) directWarIds.add(row.warId);
     else fallbackIdentities.push({
-      clanTag: row.clanTag,
-      warStartTime: row.warStartTime,
-      opponentTag: row.opponentTag,
+      clanTag: row.clanTag!,
+      warStartTime: row.warStartTime!,
+      opponentTag: row.opponentTag!,
     });
   }
   for (const row of evaluationRows) {
@@ -316,10 +340,16 @@ export class SyncRetrospectiveService {
 
     const syncNumbers = normalizedCycles.map((row) => row.syncNumber);
     const syncTimes = normalizedCycles.map((row) => row.syncTime);
-    const [pointsRows, evaluationRows, snapshotRows] = await Promise.all([
+    const [rawPointsRows, evaluationRows, snapshotRows] = await Promise.all([
       this.db.clanPointsSync.findMany({
         where: { guildId, syncNum: { in: syncNumbers } },
-        select: { syncNum: true },
+        select: {
+          clanTag: true,
+          warId: true,
+          warStartTime: true,
+          opponentTag: true,
+          syncNum: true,
+        },
       }),
       this.db.warPlanComplianceEvaluation.findMany({
         where: { guildId, warHistory: { syncNumber: { in: syncNumbers } } },
@@ -331,14 +361,25 @@ export class SyncRetrospectiveService {
       }),
     ]);
 
-    const ownedSyncNumbers = new Set(
-      pointsRows
-        .map((row: any) => normalizeSyncNumber(row?.syncNum))
-        .filter((syncNumber: number) => syncNumber > 0),
+    const pointsSyncRows = rawPointsRows
+      .map(normalizePointsSyncIdentity)
+      .filter((row): row is PointsSyncIdentityRow => row !== null);
+    const candidateSyncNumbers = new Set(syncNumbers);
+    const pointHistoryClauses = buildGuildOwnedHistoryClauses(pointsSyncRows, candidateSyncNumbers);
+    const rawPointHistories = pointHistoryClauses.length > 0
+      ? await this.db.clanWarHistory.findMany({
+          where: { OR: pointHistoryClauses },
+          select: { syncNumber: true },
+        })
+      : [];
+    const actualSyncNumbers = new Set(
+      rawPointHistories
+        .map((row: any) => normalizeSyncNumber(row?.syncNumber))
+        .filter((syncNumber: number) => candidateSyncNumbers.has(syncNumber)),
     );
     for (const row of evaluationRows) {
       const syncNumber = normalizeSyncNumber(row?.warHistory?.syncNumber);
-      if (syncNumber > 0) ownedSyncNumbers.add(syncNumber);
+      if (candidateSyncNumbers.has(syncNumber)) actualSyncNumbers.add(syncNumber);
     }
     const snapshotTimes = new Set(
       snapshotRows
@@ -348,7 +389,7 @@ export class SyncRetrospectiveService {
 
     for (const cycle of normalizedCycles) {
       if (
-        ownedSyncNumbers.has(cycle.syncNumber) ||
+        actualSyncNumbers.has(cycle.syncNumber) ||
         snapshotTimes.has(cycle.syncTime.getTime())
       ) {
         return cycle.syncNumber;
