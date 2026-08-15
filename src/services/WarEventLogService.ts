@@ -658,6 +658,7 @@ type PendingCurrentWarEventType = Extract<EventType, "war_started" | "battle_day
 const WAR_EVENT_RESERVATION_LEASE_MS = 5 * 60 * 1000;
 const CANONICAL_WAR_GOAL_RECONCILIATION_LIMIT = 20;
 const CANONICAL_WAR_GOAL_RECONCILIATION_WINDOW_MS = 24 * 60 * 60 * 1000;
+const CANONICAL_WAR_GOAL_COMPLETION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type EventDeliveryReservation =
   | {
@@ -6126,10 +6127,42 @@ export class WarEventLogService {
     const windowStart = new Date(
       Date.now() - CANONICAL_WAR_GOAL_RECONCILIATION_WINDOW_MS,
     );
+    const completionWindowStart = new Date(
+      Date.now() - CANONICAL_WAR_GOAL_COMPLETION_WINDOW_MS,
+    );
+    const [recentHistories, recentlyCompletedEvaluations] = await Promise.all([
+      prisma.clanWarHistory.findMany({
+        where: { warEndTime: { not: null, gte: windowStart } },
+        orderBy: { warEndTime: "desc" },
+        take: CANONICAL_WAR_GOAL_RECONCILIATION_LIMIT,
+        select: { warId: true },
+      }),
+      prisma.warPlanComplianceEvaluation.findMany({
+        where: {
+          status: "COMPLETED",
+          completedAt: { not: null, gte: completionWindowStart },
+        },
+        orderBy: { completedAt: "desc" },
+        take: CANONICAL_WAR_GOAL_RECONCILIATION_LIMIT,
+        select: { warId: true },
+      }),
+    ]);
+    const candidateWarIds = Array.from(
+      new Set(
+        [...recentHistories, ...recentlyCompletedEvaluations].map(
+          (row) => row.warId,
+        ),
+      ),
+    );
+    if (candidateWarIds.length === 0) {
+      console.info(
+        `[clan-goals] event=canonical_reconciliation outcome=complete candidates=0 evaluated=0 qualified=0 delivered=0 skipped=0 failed=0`,
+      );
+      return;
+    }
+
     const histories = await prisma.clanWarHistory.findMany({
-      where: { warEndTime: { not: null, gte: windowStart } },
-      orderBy: { warEndTime: "desc" },
-      take: CANONICAL_WAR_GOAL_RECONCILIATION_LIMIT,
+      where: { warId: { in: candidateWarIds } },
       select: {
         warId: true,
         clanTag: true,

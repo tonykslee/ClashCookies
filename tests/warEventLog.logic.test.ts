@@ -4646,6 +4646,7 @@ describe("WarEventLogService war-event poll targets", () => {
       {
         guildId: testGuildId,
         warId: 321,
+        completedAt: warEndTime,
         status: "COMPLETED",
         matchType: "FWA",
         expectedOutcome: "LOSE",
@@ -4682,7 +4683,15 @@ describe("WarEventLogService war-event poll targets", () => {
 
     await (service as any).reconcileCanonicalWarEndGoals();
 
-    expect(prismaMock.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.warPlanComplianceEvaluation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: "COMPLETED",
+          completedAt: expect.objectContaining({ gte: expect.any(Date) }),
+        }),
+      }),
+    );
     expect(prismaMock.clanWarParticipation.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.warLookup.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.warEvent.findMany).toHaveBeenCalledTimes(1);
@@ -4691,6 +4700,88 @@ describe("WarEventLogService war-event poll targets", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
     expect(prismaMock.warEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("discovers an old war from a recently completed compliance evaluation", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "late-compliance-message" });
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn().mockResolvedValue(makeTextChannel(send)) } } as any,
+      {} as any,
+    );
+    vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
+      routingMode: "CUSTOM",
+      channelId: "999999999999999991",
+      legacy: false,
+      configured: true,
+    });
+    const completedAt = new Date();
+    prismaMock.clanWarHistory.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          warId: 654,
+          clanTag: "#2QG2C08UP",
+          clanName: "Late Compliance Clan",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          warEndTime: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+        },
+      ]);
+    prismaMock.warPlanComplianceEvaluation.findMany
+      .mockResolvedValueOnce([{ warId: 654, completedAt }])
+      .mockResolvedValueOnce([
+        {
+          guildId: testGuildId,
+          warId: 654,
+          status: "COMPLETED",
+          matchType: "FWA",
+          expectedOutcome: "LOSE",
+          violations: [],
+        },
+      ]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([]);
+    prismaMock.warLookup.findMany.mockResolvedValue([]);
+    prismaMock.warEvent.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#2QG2C08UP",
+        name: "Late Compliance Clan",
+        loseStyle: "TRADITIONAL",
+        logChannelId: null,
+        leaderChannelId: null,
+      },
+    ]);
+    prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
+    prismaMock.warEvent.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).reconcileCanonicalWarEndGoals();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: "clan_goal:FWA_NO_VIOLATIONS" }),
+      }),
+    );
+    expect(prismaMock.warEvent.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanWarHistory.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: { warEndTime: expect.objectContaining({ gte: expect.any(Date) }) },
+      }),
+    );
+  });
+
+  it("does not sweep an old war without a recent compliance completion", async () => {
+    const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as any, {} as any);
+    prismaMock.clanWarHistory.findMany.mockResolvedValueOnce([]);
+    prismaMock.warPlanComplianceEvaluation.findMany.mockResolvedValueOnce([]);
+
+    await (service as any).reconcileCanonicalWarEndGoals();
+
+    expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanWarParticipation.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.warEvent.create).not.toHaveBeenCalled();
   });
 
   it("selects the tracked clan role in the poll subscription query", async () => {
