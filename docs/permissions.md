@@ -6,6 +6,7 @@
 - `/fwa compliance` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa police` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa weight-age`, `/fwa weight-link`, and `/fwa weight-health` default to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/sync retrospective` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/repwork` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/unlinked` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
@@ -43,8 +44,10 @@ Examples:
 - Fine-grained `/sync ...` targets:
   - `sync:time:post`
   - `sync:post:status`
+  - `sync:retrospective`
   - Example: `/permission add command:sync:time:post role:@RoleX`
   - Example: `/permission add command:sync:post:status role:@RoleX`
+  - Example: `/permission add command:sync:retrospective role:@RoleX`
 - Lock `/fwa` to role `@RoleX`:
   - `/permission add command:fwa role:@RoleX`
 - Lock only `/fwa compliance` to role `@RoleX`:

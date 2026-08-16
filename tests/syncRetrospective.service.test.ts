@@ -5,6 +5,7 @@ const syncTime = new Date("2026-08-15T11:00:00.000Z");
 
 function makeDb(overrides: Record<string, unknown[]> = {}) {
   const data = {
+    cycles: [{ syncNumber: 42, syncTime }],
     histories: [],
     pointsSync: [],
     snapshots: [],
@@ -15,19 +16,33 @@ function makeDb(overrides: Record<string, unknown[]> = {}) {
     ...overrides,
   };
   const db = {
-    syncCycle: { findUnique: vi.fn(async () => ({ syncTime })) },
+    syncCycle: {
+      findUnique: vi.fn(async () => ({ syncTime })),
+      findMany: vi.fn(async () => data.cycles),
+    },
     clanPointsSync: { findMany: vi.fn(async () => data.pointsSync) },
     clanWarHistory: {
       findMany: vi.fn(async ({ where }: any) => {
         const candidates = (where?.OR ?? []).flatMap((candidate: any) => {
-          if (candidate.warId?.in) return data.histories.filter((row: any) => candidate.warId.in.includes(row.warId));
+          if (candidate.warId?.in) {
+            return data.histories.filter((row: any) => candidate.warId.in.includes(row.warId));
+          }
+          if (candidate.warId !== undefined) {
+            return data.histories.filter((row: any) =>
+              Number(row.warId) === Number(candidate.warId) &&
+              Number(row.syncNumber) === Number(candidate.syncNumber),
+            );
+          }
           return data.histories.filter((row: any) =>
+            (candidate.syncNumber === undefined || Number(row.syncNumber) === Number(candidate.syncNumber)) &&
             row.clanTag === candidate.clanTag &&
             row.opponentTag === candidate.opponentTag &&
             row.warStartTime?.getTime() === candidate.warStartTime?.getTime(),
           );
         });
-        return candidates.filter((row: any) => row.syncNumber === where?.syncNumber);
+        return candidates.filter((row: any) =>
+          where?.syncNumber === undefined || Number(row.syncNumber) === Number(where.syncNumber),
+        );
       }),
     },
     syncClanReadinessSnapshot: { findMany: vi.fn(async () => data.snapshots) },
@@ -56,17 +71,134 @@ function history(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function pointsBridge(row: Record<string, any>, warId: number | null = row.warId) {
+function pointsBridge(row: Record<string, any>, warId: number | null = row.warId, syncNum = 42) {
   return {
     clanTag: row.clanTag,
     warId: warId === null ? null : String(warId),
     warStartTime: row.warStartTime,
     opponentTag: row.opponentTag,
-    syncNum: 42,
+    syncNum,
   };
 }
 
 describe("SyncRetrospectiveService", () => {
+  it("skips an orphan points bridge and selects the older cycle with actual history", async () => {
+    const olderHistory = history({ syncNumber: 545, warId: 5451 });
+    const orphanPoint = history({ syncNumber: 546, warId: 5461 });
+    const db = makeDb({
+      cycles: [
+        { syncNumber: 546, syncTime: new Date("2026-08-16T11:00:00.000Z") },
+        { syncNumber: 545, syncTime },
+      ],
+      pointsSync: [pointsBridge(orphanPoint, orphanPoint.warId, 546), pointsBridge(olderHistory, olderHistory.warId, 545)],
+      histories: [olderHistory],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(545);
+    expect(db.syncCycle.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { guildId: "guild-1" },
+      orderBy: { syncNumber: "desc" },
+      take: 100,
+    }));
+  });
+
+  it("requires a matching history row for direct points evidence", async () => {
+    const validHistory = history({ syncNumber: 545, warId: 5452 });
+    const db = makeDb({
+      cycles: [{ syncNumber: 545, syncTime }],
+      pointsSync: [pointsBridge(validHistory, validHistory.warId, 546)],
+      histories: [validHistory],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBeNull();
+  });
+
+  it("uses an exact identity when points has no war ID", async () => {
+    const bridgedHistory = history({ syncNumber: 545, warId: 5453, matchType: "BL" });
+    const db = makeDb({
+      cycles: [{ syncNumber: 545, syncTime }],
+      pointsSync: [pointsBridge(bridgedHistory, null, 545)],
+      histories: [bridgedHistory],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(545);
+  });
+
+  it("accepts a guild evaluation relation even when its status is pending", async () => {
+    const evaluatedHistory = history({ syncNumber: 545, warId: 5454 });
+    const db = makeDb({
+      cycles: [{ syncNumber: 545, syncTime }],
+      histories: [evaluatedHistory],
+      evaluations: [{ warId: evaluatedHistory.warId, status: "PENDING", warHistory: { syncNumber: 545 } }],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(545);
+  });
+
+  it("falls back past newer empty and orphan cycles", async () => {
+    const validHistory = history({ syncNumber: 545, warId: 5455 });
+    const db = makeDb({
+      cycles: [
+        { syncNumber: 547, syncTime: new Date("2026-08-18T11:00:00.000Z") },
+        { syncNumber: 546, syncTime: new Date("2026-08-17T11:00:00.000Z") },
+        { syncNumber: 545, syncTime },
+      ],
+      pointsSync: [pointsBridge(validHistory, validHistory.warId, 545)],
+      histories: [validHistory],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(545);
+  });
+
+  it("does not select an empty cycle as the latest retrospective", async () => {
+    const db = makeDb({
+      cycles: [{ syncNumber: 43, syncTime: new Date("2026-08-16T11:00:00.000Z") }],
+    });
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBeNull();
+  });
+
+  it("selects a snapshot-only cycle when no guild-owned war evidence exists", async () => {
+    const snapshotOnlyTime = new Date("2026-08-17T11:00:00.000Z");
+    const db = makeDb({
+      cycles: [{ syncNumber: 44, syncTime: snapshotOnlyTime }],
+      snapshots: [{ guildId: "guild-1", syncTime: snapshotOnlyTime }],
+    });
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(44);
+  });
+
+  it("returns null when no cycle has retrospective evidence", async () => {
+    const db = makeDb({ cycles: [] });
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBeNull();
+  });
+
+  it("uses bounded bulk reads without querying once per cycle", async () => {
+    const validHistory = history({ syncNumber: 545, warId: 5456 });
+    const db = makeDb({
+      cycles: [
+        { syncNumber: 546, syncTime: new Date("2026-08-16T11:00:00.000Z") },
+        { syncNumber: 545, syncTime },
+      ],
+      pointsSync: [pointsBridge(validHistory, validHistory.warId, 545)],
+      histories: [validHistory],
+    });
+
+    await expect(new SyncRetrospectiveService(db).getLatestAvailableSyncNumber({ guildId: "guild-1" }))
+      .resolves.toBe(545);
+    expect(db.syncCycle.findMany).toHaveBeenCalledTimes(1);
+    expect(db.clanPointsSync.findMany).toHaveBeenCalledTimes(1);
+    expect(db.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(db.syncClanReadinessSnapshot.findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("builds typed summaries from mapped persisted evidence and preserves exact zero", async () => {
     const db = makeDb({
       histories: [

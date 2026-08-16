@@ -2,7 +2,10 @@ import { prisma } from "../prisma";
 import { normalizeTag } from "./war-events/core";
 
 type RetrospectiveDb = {
-  syncCycle: { findUnique: (args: any) => Promise<any | null> };
+  syncCycle: {
+    findUnique: (args: any) => Promise<any | null>;
+    findMany: (args: any) => Promise<any[]>;
+  };
   clanPointsSync: { findMany: (args: any) => Promise<any[]> };
   clanWarHistory: { findMany: (args: any) => Promise<any[]> };
   syncClanReadinessSnapshot: { findMany: (args: any) => Promise<any[]> };
@@ -15,6 +18,10 @@ type RetrospectiveDb = {
 export type SyncRetrospectiveInput = {
   guildId: string;
   syncNumber: number;
+};
+
+export type SyncRetrospectiveLatestInput = {
+  guildId: string;
 };
 
 export type SyncRetrospectivePlayerRow = {
@@ -242,11 +249,36 @@ function normalizePointsSyncIdentity(row: any): PointsSyncIdentityRow | null {
   };
 }
 
+type GuildOwnedHistoryClause = {
+  syncNumber: number;
+  warId?: number;
+  clanTag?: string;
+  warStartTime?: Date;
+  opponentTag?: string;
+};
+
+function buildGuildOwnedHistoryClauses(
+  pointsSyncRows: PointsSyncIdentityRow[],
+  syncNumbers: Set<number>,
+): GuildOwnedHistoryClause[] {
+  return pointsSyncRows
+    .filter((row) => syncNumbers.has(row.syncNum))
+    .map((row) => row.warId !== null
+      ? { syncNumber: row.syncNum, warId: row.warId }
+      : {
+          syncNumber: row.syncNum,
+          clanTag: row.clanTag,
+          warStartTime: row.warStartTime,
+          opponentTag: row.opponentTag,
+        });
+}
+
 function buildGuildOwnedHistoryWhere(
   pointsSyncRows: PointsSyncIdentityRow[],
   evaluationRows: any[],
   syncNumber: number,
 ): any | null {
+  const pointClauses = buildGuildOwnedHistoryClauses(pointsSyncRows, new Set([syncNumber]));
   const directWarIds = new Set<number>();
   const fallbackIdentities: Array<{
     clanTag: string;
@@ -254,13 +286,12 @@ function buildGuildOwnedHistoryWhere(
     opponentTag: string;
   }> = [];
 
-  for (const row of pointsSyncRows) {
-    if (row.syncNum !== syncNumber) continue;
-    if (row.warId !== null) directWarIds.add(row.warId);
+  for (const row of pointClauses) {
+    if (row.warId !== undefined) directWarIds.add(row.warId);
     else fallbackIdentities.push({
-      clanTag: row.clanTag,
-      warStartTime: row.warStartTime,
-      opponentTag: row.opponentTag,
+      clanTag: row.clanTag!,
+      warStartTime: row.warStartTime!,
+      opponentTag: row.opponentTag!,
     });
   }
   for (const row of evaluationRows) {
@@ -283,6 +314,89 @@ function buildGuildOwnedHistoryWhere(
 /** Purpose: build a DB-first read model for one historically mapped sync cycle without writes or external calls. */
 export class SyncRetrospectiveService {
   constructor(private readonly db: RetrospectiveDb = prisma as unknown as RetrospectiveDb) {}
+
+  /** Purpose: find the newest bounded sync cycle with persisted retrospective evidence. */
+  async getLatestAvailableSyncNumber(
+    input: SyncRetrospectiveLatestInput,
+  ): Promise<number | null> {
+    const guildId = normalizeGuildId(input.guildId);
+    if (!guildId) return null;
+
+    const cycles = await this.db.syncCycle.findMany({
+      where: { guildId },
+      orderBy: { syncNumber: "desc" },
+      take: 100,
+      select: { syncNumber: true, syncTime: true },
+    });
+    const normalizedCycles = cycles
+      .map((row: any) => ({
+        syncNumber: normalizeSyncNumber(row?.syncNumber),
+        syncTime: row?.syncTime,
+      }))
+      .filter((row: { syncNumber: number; syncTime: unknown }) =>
+        row.syncNumber > 0 && isValidDate(row.syncTime),
+      );
+    if (normalizedCycles.length === 0) return null;
+
+    const syncNumbers = normalizedCycles.map((row) => row.syncNumber);
+    const syncTimes = normalizedCycles.map((row) => row.syncTime);
+    const [rawPointsRows, evaluationRows, snapshotRows] = await Promise.all([
+      this.db.clanPointsSync.findMany({
+        where: { guildId, syncNum: { in: syncNumbers } },
+        select: {
+          clanTag: true,
+          warId: true,
+          warStartTime: true,
+          opponentTag: true,
+          syncNum: true,
+        },
+      }),
+      this.db.warPlanComplianceEvaluation.findMany({
+        where: { guildId, warHistory: { syncNumber: { in: syncNumbers } } },
+        select: { warId: true, warHistory: { select: { syncNumber: true } } },
+      }),
+      this.db.syncClanReadinessSnapshot.findMany({
+        where: { guildId, syncTime: { in: syncTimes } },
+        select: { syncTime: true },
+      }),
+    ]);
+
+    const pointsSyncRows = rawPointsRows
+      .map(normalizePointsSyncIdentity)
+      .filter((row): row is PointsSyncIdentityRow => row !== null);
+    const candidateSyncNumbers = new Set(syncNumbers);
+    const pointHistoryClauses = buildGuildOwnedHistoryClauses(pointsSyncRows, candidateSyncNumbers);
+    const rawPointHistories = pointHistoryClauses.length > 0
+      ? await this.db.clanWarHistory.findMany({
+          where: { OR: pointHistoryClauses },
+          select: { syncNumber: true },
+        })
+      : [];
+    const actualSyncNumbers = new Set(
+      rawPointHistories
+        .map((row: any) => normalizeSyncNumber(row?.syncNumber))
+        .filter((syncNumber: number) => candidateSyncNumbers.has(syncNumber)),
+    );
+    for (const row of evaluationRows) {
+      const syncNumber = normalizeSyncNumber(row?.warHistory?.syncNumber);
+      if (candidateSyncNumbers.has(syncNumber)) actualSyncNumbers.add(syncNumber);
+    }
+    const snapshotTimes = new Set(
+      snapshotRows
+        .filter((row: any) => isValidDate(row?.syncTime))
+        .map((row: any) => row.syncTime.getTime()),
+    );
+
+    for (const cycle of normalizedCycles) {
+      if (
+        actualSyncNumbers.has(cycle.syncNumber) ||
+        snapshotTimes.has(cycle.syncTime.getTime())
+      ) {
+        return cycle.syncNumber;
+      }
+    }
+    return null;
+  }
 
   async getBySyncNumber(input: SyncRetrospectiveInput): Promise<SyncRetrospectiveResult> {
     const guildId = normalizeGuildId(input.guildId);

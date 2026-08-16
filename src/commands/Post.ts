@@ -47,6 +47,11 @@ import {
   autocompleteSyncTimeZones,
   normalizeSyncTimeZone,
 } from "../services/syncTimeZone";
+import {
+  SyncRetrospectiveService,
+  type SyncRetrospectiveResult,
+} from "../services/SyncRetrospectiveService";
+import { buildSyncRetrospectiveEmbeds } from "../services/SyncRetrospectiveViewService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -1239,6 +1244,58 @@ export async function handlePostModalSubmit(
     `${announcementLabel}${announcementLinkLine ? `\n${announcementLinkLine}` : ""}${readinessDestinationLine ? `\n${readinessDestinationLine}` : ""}\n${readinessScheduleLine}${readinessFlow.readinessLink ? `\nReadiness dashboard message: ${readinessFlow.readinessLink}` : ""}${destinationLine}${noticeBlock}`,
   );
 }
+
+function hasSyncRetrospectiveData(result: SyncRetrospectiveResult): boolean {
+  return result.warSummary.clanWarCount > 0 ||
+    result.readiness.deviationCoverage.totalSnapshots > 0;
+}
+
+async function handleSyncRetrospectiveSubcommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ ephemeral: true, content: "This command can only be used in a server." });
+    return;
+  }
+  const requestedSyncNumber = interaction.options.getInteger("sync-number", false);
+  const visibility = interaction.options.getString("visibility", false) ?? "private";
+  const isPublic = visibility === "public";
+  await interaction.deferReply({ ephemeral: !isPublic });
+
+  if (
+    requestedSyncNumber !== null &&
+    (!Number.isInteger(requestedSyncNumber) || requestedSyncNumber <= 0)
+  ) {
+    await interaction.editReply("`sync-number` must be a positive integer.");
+    return;
+  }
+
+  const service = new SyncRetrospectiveService();
+  const syncNumber = requestedSyncNumber ?? await service.getLatestAvailableSyncNumber({
+    guildId,
+  });
+  if (syncNumber === null) {
+    await interaction.editReply("No sync retrospective data is available yet.");
+    return;
+  }
+
+  const result = await service.getBySyncNumber({
+    guildId,
+    syncNumber,
+  });
+  if (!hasSyncRetrospectiveData(result)) {
+    await interaction.editReply(
+      requestedSyncNumber !== null
+        ? `No retrospective data was found for Sync #${requestedSyncNumber}.`
+        : "No sync retrospective data is available yet.",
+    );
+    return;
+  }
+
+  await interaction.editReply({ embeds: buildSyncRetrospectiveEmbeds(result) });
+}
+
 export const Post: Command = {
   name: "sync",
   description: "Sync posting and status commands",
@@ -1257,6 +1314,30 @@ export const Post: Command = {
         {
           name: "visibility",
           description: "Choose whether the readiness post is private or public",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
+        },
+      ],
+    },
+    {
+      name: "retrospective",
+      description: "Show the persisted alliance retrospective for a sync",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "sync-number",
+          description: "Positive sync number (defaults to the latest available)",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+          minValue: 1,
+        },
+        {
+          name: "visibility",
+          description: "Choose whether the retrospective is private or public",
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: [
@@ -1353,6 +1434,11 @@ export const Post: Command = {
     const subcommand = interaction.options.getSubcommand(true);
     if (!subcommandGroup && subcommand === "readiness") {
       await handleSyncReadinessSubcommand(interaction);
+      return;
+    }
+
+    if (!subcommandGroup && subcommand === "retrospective") {
+      await handleSyncRetrospectiveSubcommand(interaction);
       return;
     }
 
