@@ -270,6 +270,9 @@ function buildPossibleReplacementsValue(input: {
     if (summary.unlinkedCount > 0) {
       reasonCounts.push(`📵${summary.unlinkedCount}`);
     }
+    if (summary.surplusCount > 0) {
+      reasonCounts.push(`📈${summary.surplusCount}`);
+    }
 
     const candidateLabel =
       summary.uniqueCandidateCount === 1 ? "candidate" : "candidates";
@@ -280,7 +283,7 @@ function buildPossibleReplacementsValue(input: {
   });
 
   return [
-    "Legend: 🧍 fillers · 😴 inactive · 📵 unlinked",
+    "Legend: 🧍 fillers · 😴 inactive · 📵 unlinked · 📈 surplus bucket",
     "",
     ...rows,
   ].join("\n");
