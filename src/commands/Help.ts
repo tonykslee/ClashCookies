@@ -889,6 +889,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Public readiness responses include a shared refresh button that any guild member can use; private responses stay ephemeral.",
       "`/sync readiness` is FWA Leader role + Administrator by default.",
       "`/sync retrospective [sync-number:<number>] [visibility:private|public]` renders the latest available persisted alliance retrospective by default; private is the default visibility.",
+      "Select a clan below the retrospective to open an ephemeral drilldown with persisted war, missed-attack, FWA compliance, readiness, and filler facts; the controls use the same canonical clan order as the summary.",
       "Retrospective metrics are persisted historical facts. Coverage is shown for partial data; `—` means historical data is unavailable or incomplete rather than zero.",
       "The retrospective is DB-first, mirror-safe, and does not claim coverage for periods before the historical snapshot/war evidence was introduced.",
       "`/sync spin status` shows the compact tracked Sync Spin Status for the stored active sync post, or a provided message ID.",

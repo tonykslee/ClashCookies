@@ -1,6 +1,25 @@
+import { EmbedBuilder } from "discord.js";
 import { describe, expect, it } from "vitest";
 import type { SyncRetrospectiveResult } from "../src/services/SyncRetrospectiveService";
-import { buildSyncRetrospectiveEmbeds } from "../src/services/SyncRetrospectiveViewService";
+import {
+  aggregateEmbedChars,
+  buildSyncRetrospectiveClanDetailEmbeds,
+  buildSyncRetrospectiveComponents,
+  buildSyncRetrospectiveEmbeds,
+  sortSyncRetrospectiveClans,
+} from "../src/services/SyncRetrospectiveViewService";
+
+function expectDiscordSafeEmbeds(embeds: ReturnType<typeof buildSyncRetrospectiveEmbeds>) {
+  const serialized = embeds.map((embed) => embed.toJSON());
+  expect(aggregateEmbedChars(embeds)).toBeLessThanOrEqual(6000);
+  expect(serialized.length).toBeLessThanOrEqual(10);
+  expect(serialized.every((embed) =>
+    (embed.title?.length ?? 0) <= 256 &&
+    (embed.description?.length ?? 0) <= 4096 &&
+    (embed.fields ?? []).length <= 25 &&
+    (embed.fields ?? []).every((field) => field.name.length <= 256 && field.value.length <= 1024),
+  )).toBe(true);
+}
 
 function result(overrides: Partial<SyncRetrospectiveResult> = {}): SyncRetrospectiveResult {
   return {
@@ -78,6 +97,17 @@ function clan(overrides: Record<string, unknown> = {}) {
 }
 
 describe("SyncRetrospectiveViewService", () => {
+  it("counts titles, descriptions, fields, footer text, and author names", () => {
+    const embed = new EmbedBuilder()
+      .setTitle("title")
+      .setDescription("description")
+      .setAuthor({ name: "author" })
+      .setFooter({ text: "footer" })
+      .addFields({ name: "field", value: "value", inline: false });
+
+    expect(aggregateEmbedChars([embed])).toBe("titledescriptionauthorfooterfieldvalue".length);
+  });
+
   it("renders known zeros, unknowns, and coverage without collapsing them", () => {
     const embeds = buildSyncRetrospectiveEmbeds(result({
       missedAttacks: { missedAttacksKnownTotal: 0, coverage: { completeClans: 9, warClans: 9 } },
@@ -136,9 +166,182 @@ describe("SyncRetrospectiveViewService", () => {
     const clanFields = embeds.flatMap((embed) => (embed.toJSON().fields ?? []))
       .filter((field) => field.name.startsWith("Clans"));
 
-    expect(embeds.length).toBeGreaterThan(1);
+    expectDiscordSafeEmbeds(embeds);
+    expect(embeds).toHaveLength(1);
     expect(clanFields.length).toBeGreaterThan(1);
     expect(clanFields.every((field) => field.value.length <= 1024)).toBe(true);
-    expect(clanFields.map((field) => field.value).join("\n")).toContain("Clan 099");
+    expect(clanFields.map((field) => field.value).join("\n")).toContain("Clan 000");
+    expect(clanFields.map((field) => field.value).join("\n")).toContain("additional clans are available from the dropdowns below");
+    const menus = buildSyncRetrospectiveComponents(result({ clans }));
+    expect(menus).toHaveLength(4);
+    expect(menus.flatMap((row) => row.toJSON().components[0].options ?? [])).toHaveLength(100);
+  });
+
+  it("builds one single-select menu for ten clans and keeps canonical ordering", () => {
+    const clans = [
+      clan({ identity: { clanTag: "#SNAP", clanName: "A Snapshot", warId: null } }),
+      clan({ identity: { clanTag: "#WAR2", clanName: "Z War" } }),
+      clan({ identity: { clanTag: "#WAR1", clanName: "A War" } }),
+    ];
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menu = rows[0].toJSON().components[0];
+
+    expect(rows).toHaveLength(1);
+    expect(menu.custom_id).toBe("sync-retro:clan:545:0");
+    expect(menu.min_values).toBe(1);
+    expect(menu.max_values).toBe(1);
+    expect(menu.options?.map((option) => option.value)).toEqual(["#WAR1", "#WAR2", "#SNAP"]);
+    expect(menu.options?.[0]?.description).toBe("#WAR1");
+  });
+
+  it("splits one hundred clans into four non-empty menus", () => {
+    const clans = Array.from({ length: 100 }, (_, index) => clan({
+      identity: {
+        clanTag: `#TAG${String(index).padStart(3, "0")}`,
+        clanName: `Clan ${String(index).padStart(3, "0")}`,
+      },
+    }));
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menus = rows.map((row) => row.toJSON().components[0]);
+
+    expect(rows).toHaveLength(4);
+    expect(menus.every((menu) => (menu.options ?? []).length > 0 && (menu.options ?? []).length <= 25)).toBe(true);
+    expect(menus.map((menu) => menu.custom_id)).toEqual([
+      "sync-retro:clan:545:0",
+      "sync-retro:clan:545:1",
+      "sync-retro:clan:545:2",
+      "sync-retro:clan:545:3",
+    ]);
+    expect(menus.flatMap((menu) => menu.options ?? [])).toHaveLength(100);
+  });
+
+  it("supports five menus and caps malformed input at Discord's 125-clan limit", () => {
+    const clans = Array.from({ length: 126 }, (_, index) => clan({
+      identity: {
+        clanTag: `#TAG${String(index).padStart(3, "0")}`,
+        clanName: `Clan ${String(index).padStart(3, "0")}`,
+      },
+    }));
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menus = rows.map((row) => row.toJSON().components[0]);
+    const summaryEmbeds = buildSyncRetrospectiveEmbeds(result({ clans }));
+
+    expect(rows).toHaveLength(5);
+    expectDiscordSafeEmbeds(summaryEmbeds);
+    expect(menus.map((menu) => menu.custom_id)).toEqual([
+      "sync-retro:clan:545:0",
+      "sync-retro:clan:545:1",
+      "sync-retro:clan:545:2",
+      "sync-retro:clan:545:3",
+      "sync-retro:clan:545:4",
+    ]);
+    expect(menus.every((menu) => (menu.options ?? []).length > 0 && (menu.options ?? []).length <= 25)).toBe(true);
+    expect(menus.flatMap((menu) => menu.options ?? [])).toHaveLength(125);
+    expect(menus.flatMap((menu) => menu.options ?? []).map((option) => option.value)).not.toContain("#TAG125");
+  });
+
+  it("renders persisted detail sections with explicit incomplete and not-applicable states", () => {
+    const detailClan = clan({
+      identity: { clanTag: "#DETAIL", clanName: "Detail Clan", matchType: "FWA" },
+      war: { stars: null },
+      missedAttacks: {
+        total: 2,
+        coverageComplete: true,
+        players: [
+          { playerTag: "#P2", playerName: "Zulu", attacksUsed: 0, attacksMissed: 2, starsEarned: 0 },
+          { playerTag: "#P1", playerName: "Alpha", attacksUsed: 1, attacksMissed: 0, starsEarned: 3 },
+        ],
+      },
+      violations: {
+        total: 1,
+        evaluationComplete: true,
+        applicable: true,
+        details: [{
+          violationType: "missed_attack",
+          playerTag: "#P2",
+          playerName: "Zulu",
+          reasonLabel: "Missed attack",
+          expectedBehavior: "Use both attacks",
+          actualBehavior: "Used none",
+        }],
+      },
+      readiness: { memberCount: 49, deviationScore: null, projectionComplete: false, dataAvailable: true },
+      fillers: { fillerCount: 1, fillerPlayerTags: ["#P2"], fillerCaptureComplete: true },
+    });
+    const fields = buildSyncRetrospectiveClanDetailEmbeds(result({ clans: [detailClan] }), detailClan)
+      .flatMap((embed) => embed.toJSON().fields ?? []);
+    const values = fields.map((field) => field.value).join("\n");
+
+    expect(fields[0]?.name).toBe("War");
+    expect(values).toContain("Stars: —");
+    expect(values).toContain("Missed attacks: 2");
+    expect(values).toContain("**Zulu** `#P2`");
+    expect(values).toContain("Violations: 1");
+    expect(values).toContain("Members: 49");
+    expect(values).toContain("Deviation: —");
+    expect(values).toContain("Fillers: 1");
+    expect(values).not.toContain("#P1");
+    expect(values).not.toContain("Additional historical detail omitted due to Discord message limits.");
+  });
+
+  it("keeps pathological persisted detail text within Discord limits", () => {
+    const longText = "X".repeat(5000);
+    const detailClan = clan({
+      identity: { clanTag: "#LONG", clanName: longText },
+      missedAttacks: {
+        total: 40,
+        coverageComplete: true,
+        players: Array.from({ length: 40 }, () => ({
+          playerTag: longText,
+          playerName: longText,
+          attacksUsed: 0,
+          attacksMissed: 1,
+          starsEarned: 0,
+        })),
+      },
+      violations: {
+        total: 40,
+        evaluationComplete: true,
+        applicable: true,
+        details: Array.from({ length: 40 }, () => ({
+          violationType: longText,
+          playerTag: longText,
+          playerName: longText,
+          reasonLabel: longText,
+          expectedBehavior: longText,
+          actualBehavior: longText,
+        })),
+      },
+      fillers: { fillerCount: 40, fillerPlayerTags: Array.from({ length: 40 }, () => longText), fillerCaptureComplete: true },
+    });
+
+    const embeds = buildSyncRetrospectiveClanDetailEmbeds(result({ clans: [detailClan] }), detailClan);
+    const serialized = embeds.map((embed) => embed.toJSON());
+    const fields = serialized.flatMap((embed) => embed.fields ?? []);
+    const fieldValues = fields.map((field) => field.value);
+
+    expect(serialized.length).toBeLessThanOrEqual(10);
+    expect(aggregateEmbedChars(embeds)).toBeLessThanOrEqual(6000);
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((field) => field.value.length <= 1024)).toBe(true);
+    expect(fields.every((field) => field.name.length <= 256)).toBe(true);
+    expect(serialized.every((embed) => (embed.title?.length ?? 0) <= 256 && (embed.description?.length ?? 0) <= 4096 &&
+      (embed.fields ?? []).length <= 25)).toBe(true);
+    expect(fieldValues.join("\n")).toContain("Violations: 40");
+    expect(fieldValues.join("\n")).toContain("Expected:");
+    expect(fieldValues.join("\n")).toContain("Actual:");
+    expect(fieldValues.join("\n")).toContain("\u2026");
+    expect(fieldValues.join("\n")).toContain("Additional historical detail omitted due to Discord message limits.");
+    expect(fieldValues.every((value) => value.length <= 1024)).toBe(true);
+  });
+
+  it("returns the sorter result without mutating the source array", () => {
+    const clans = [
+      clan({ identity: { clanTag: "#SNAP", clanName: "Snapshot", warId: null } }),
+      clan({ identity: { clanTag: "#WAR", clanName: "War" } }),
+    ];
+    const sorted = sortSyncRetrospectiveClans(clans);
+    expect(sorted.map((row) => row.identity.clanTag)).toEqual(["#WAR", "#SNAP"]);
+    expect(clans.map((row) => row.identity.clanTag)).toEqual(["#SNAP", "#WAR"]);
   });
 });

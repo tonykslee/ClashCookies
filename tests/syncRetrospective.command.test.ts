@@ -42,7 +42,21 @@ function retrospectiveResult(syncNumber = 545): SyncRetrospectiveResult {
       fillerKnownTotal: 0,
       fillerCoverage: { complete: 1, totalSnapshots: 1 },
     },
-    clans: [],
+    clans: [{
+      identity: {
+        clanTag: "#CLAN",
+        clanName: "Command Clan",
+        warId: 1,
+        matchType: "FWA",
+        expectedOutcome: "WIN",
+        actualOutcome: "WIN",
+      },
+      war: { stars: 100 },
+      missedAttacks: { total: 0, coverageComplete: true, players: [] },
+      violations: { total: 0, evaluationComplete: true, applicable: true, details: [] },
+      readiness: { memberCount: 50, deviationScore: 0, projectionComplete: true, dataAvailable: true },
+      fillers: { fillerCount: 0, fillerPlayerTags: [], fillerCaptureComplete: true },
+    }],
   };
 }
 
@@ -101,6 +115,7 @@ describe("/sync retrospective command", () => {
     expect(interaction.editReply.mock.calls[0][0]).toMatchObject({
       embeds: [expect.objectContaining({ data: expect.objectContaining({ title: "Sync #545 Retrospective" }) })],
     });
+    expect(interaction.editReply.mock.calls[0][0].components).toHaveLength(1);
   });
 
   it("uses the exact explicit sync and does not fall back when it has no data", async () => {
@@ -126,6 +141,9 @@ describe("/sync retrospective command", () => {
     expect(publicInteraction.deferReply).toHaveBeenCalledWith({ ephemeral: false });
     expect(publicPayload.embeds.map((embed: any) => embed.toJSON())).toEqual(
       privatePayload.embeds.map((embed: any) => embed.toJSON()),
+    );
+    expect(publicPayload.components.map((row: any) => row.toJSON())).toEqual(
+      privatePayload.components.map((row: any) => row.toJSON()),
     );
   });
 
