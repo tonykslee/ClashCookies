@@ -419,7 +419,7 @@ describe("CompoPlaceService", () => {
     ]);
     const possibleReplacements =
       embed?.fields?.find((field) => field.name === "Possible replacements")?.value ?? "";
-    expect(possibleReplacements).toContain("Legend: 🧍 fillers · 😴 inactive · 📵 unlinked");
+    expect(possibleReplacements).toContain("Legend: 🧍 fillers · 😴 inactive · 📵 unlinked · 📈 surplus bucket");
     expect(possibleReplacements).toContain("RR: 3 candidates · 🧍2 😴3 📵2");
     expect(possibleReplacements).toContain("RD: none");
     expect(possibleReplacements).not.toContain("stale");

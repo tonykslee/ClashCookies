@@ -2149,6 +2149,9 @@ function buildCompoReplacementReasonLabel(candidate: CompoReplacementCandidate):
   if (candidate.reasons.unlinked) {
     labels.push("📵 unlinked");
   }
+  if (candidate.reasons.surplus && candidate.surplusDelta !== null) {
+    labels.push(`📈 surplus ${candidate.resolvedBucket} (+${candidate.surplusDelta})`);
+  }
   return labels;
 }
 
@@ -2179,7 +2182,7 @@ function buildCompoReplacementDetailPages(input: {
   resolution: CompoReplacementResolution;
 }): string[] {
   const pages: string[] = [];
-  const legend = "Legend: 🧍 filler · 😴 inactive · 📵 unlinked";
+  const legend = "Legend: 🧍 filler · 😴 inactive · 📵 unlinked · 📈 surplus bucket";
   const groupedCandidates = input.resolution.summaryByClan
     .map((summary) => ({
       clanTag: summary.clanTag,

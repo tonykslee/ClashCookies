@@ -235,6 +235,7 @@ describe("/compo place command", () => {
             fillerCount: 2,
             inactiveCount: 2,
             unlinkedCount: 1,
+            surplusCount: 1,
           },
           {
             clanTag: "#RD",
@@ -256,7 +257,8 @@ describe("/compo place command", () => {
             discordUserId: "123",
             discordMention: "<@123>",
             inactiveLabel: null,
-            reasons: { filler: true, inactive: false, unlinked: false },
+            surplusDelta: 3,
+            reasons: { filler: true, inactive: false, unlinked: false, surplus: true },
           },
           {
             clanTag: "#RR",
@@ -326,9 +328,9 @@ describe("/compo place command", () => {
     expect(detailPayload?.content ?? "").toBe("");
     expect(Array.isArray(detailPayload?.embeds)).toBe(true);
     const embed = getEmbedJSON(detailPayload);
-    expect(String(embed?.description ?? "")).toContain("Legend: 🧍 filler · 😴 inactive · 📵 unlinked");
+    expect(String(embed?.description ?? "")).toContain("Legend: 🧍 filler · 😴 inactive · 📵 unlinked · 📈 surplus bucket");
     expect(String(embed?.description ?? "")).toContain("**RR**");
-    expect(String(embed?.description ?? "")).toContain("<@123> Alice — 145k — 🧍 filler");
+    expect(String(embed?.description ?? "")).toContain("<@123> Alice — 145k — 🧍 filler · 📈 surplus TH15 (+3)");
     expect(String(embed?.description ?? "")).toContain("<@456> Bob — 145k — 😴 inactive 6d");
     expect(String(embed?.description ?? "")).not.toContain("<@123> Alice — 145k — 📵 unlinked");
     expect(String(embed?.description ?? "")).not.toContain("<@456> Bob — 145k — 📵 unlinked");
