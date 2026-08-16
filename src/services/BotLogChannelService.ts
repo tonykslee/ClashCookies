@@ -3,6 +3,7 @@ import { SettingsService } from "./SettingsService";
 const BOT_LOG_CHANNEL_SETTING_PREFIX = "bot_logs_channel";
 const BASE_SWAP_ROUTING_SETTING_PREFIX = "bot_logs_base_swap_routing";
 const ROUTED_BOT_LOG_ROUTING_SETTING_PREFIX = "bot_logs_routing";
+const SYNC_RETROSPECTIVE_ENABLED_AT_SETTING_PREFIX = "bot_logs_sync_retrospective_enabled_at";
 export const BOT_LOG_CHANNEL_TYPES = [
   "base-swap",
   "maintenance",
@@ -11,6 +12,7 @@ export const BOT_LOG_CHANNEL_TYPES = [
   "ban-log",
   "ban-join-alert",
   "clan-goals",
+  "sync-retrospective",
 ] as const;
 export type BotLogChannelType = (typeof BOT_LOG_CHANNEL_TYPES)[number];
 export const SIMPLE_BOT_LOG_CHANNEL_TYPES = [
@@ -25,6 +27,7 @@ export const ROUTED_BOT_LOG_CHANNEL_TYPES = [
   "ban-log",
   "ban-join-alert",
   "clan-goals",
+  "sync-retrospective",
 ] as const;
 export type RoutedBotLogChannelType =
   (typeof ROUTED_BOT_LOG_CHANNEL_TYPES)[number];
@@ -67,6 +70,10 @@ function routedBotLogRoutingKey(
   return `${ROUTED_BOT_LOG_ROUTING_SETTING_PREFIX}:${guildId}:${type}`;
 }
 
+function syncRetrospectiveEnabledAtKey(guildId: string): string {
+  return `${SYNC_RETROSPECTIVE_ENABLED_AT_SETTING_PREFIX}:${guildId}`;
+}
+
 function normalizeChannelId(input: string | null | undefined): string | null {
   const value = String(input ?? "").trim();
   return /^\d+$/.test(value) ? value : null;
@@ -91,7 +98,7 @@ function normalizeBaseSwapRoutingMode(
 function getAllowedRoutingModes(
   type: RoutedBotLogChannelType,
 ): ReadonlySet<BaseSwapBotLogRoutingMode> {
-  if (type === "ban-log") {
+  if (type === "ban-log" || type === "sync-retrospective") {
     return new Set<BaseSwapBotLogRoutingMode>([
       "BOT_LOG",
       "CUSTOM",
@@ -264,6 +271,9 @@ export class BotLogChannelService {
     routingMode: BaseSwapBotLogRoutingMode;
     channelId?: string | null;
   }): Promise<void> {
+    const previous = input.type === "sync-retrospective"
+      ? await this.getRoutingConfigForType(input.guildId, input.type)
+      : null;
     const allowedModes = getAllowedRoutingModes(input.type);
     const routingMode = normalizeBaseSwapRoutingMode(input.routingMode);
     if (!routingMode || !allowedModes.has(routingMode)) {
@@ -285,6 +295,21 @@ export class BotLogChannelService {
         channelId: routingMode === "CUSTOM" ? channelId : null,
       }),
     );
+
+    if (input.type === "sync-retrospective") {
+      const wasEnabled = Boolean(
+        previous?.configured && previous.routingMode !== "DISABLED",
+      );
+      const isEnabled = routingMode !== "DISABLED";
+      if (!isEnabled) {
+        await this.settings.delete(syncRetrospectiveEnabledAtKey(input.guildId));
+      } else if (!wasEnabled) {
+        await this.settings.set(
+          syncRetrospectiveEnabledAtKey(input.guildId),
+          new Date().toISOString(),
+        );
+      }
+    }
   }
 
   /** Purpose: clear routed bot-log config for ban-log or banned-join alerts. */
@@ -293,6 +318,17 @@ export class BotLogChannelService {
     type: RoutedBotLogChannelType,
   ): Promise<void> {
     await this.settings.delete(routedBotLogRoutingKey(guildId, type));
+    if (type === "sync-retrospective") {
+      await this.settings.delete(syncRetrospectiveEnabledAtKey(guildId));
+    }
+  }
+
+  /** Purpose: read the durable no-backfill enable boundary for automatic retrospectives. */
+  async getSyncRetrospectiveEnabledAt(guildId: string): Promise<Date | null> {
+    const raw = await this.settings.get(syncRetrospectiveEnabledAtKey(guildId));
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
   }
 
   /** Purpose: persist configured bot-log channel id for a guild. */

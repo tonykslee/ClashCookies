@@ -27,6 +27,7 @@ const BOT_LOGS_CHECKLIST_TYPE: SimpleBotLogChannelType = "checklist";
 const BOT_LOGS_BAN_LOG_TYPE: RoutedBotLogChannelType = "ban-log";
 const BOT_LOGS_BAN_JOIN_ALERT_TYPE: RoutedBotLogChannelType = "ban-join-alert";
 const BOT_LOGS_CLAN_GOALS_TYPE: RoutedBotLogChannelType = "clan-goals";
+const BOT_LOGS_SYNC_RETROSPECTIVE_TYPE: RoutedBotLogChannelType = "sync-retrospective";
 const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
@@ -73,13 +74,15 @@ function isRoutedBotLogType(
   return (
     type === BOT_LOGS_BAN_LOG_TYPE ||
     type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
-    type === BOT_LOGS_CLAN_GOALS_TYPE
+    type === BOT_LOGS_CLAN_GOALS_TYPE ||
+    type === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE
   );
 }
 
 function formatRoutedBotLogLabel(type: RoutedBotLogChannelType): string {
   if (type === BOT_LOGS_BAN_LOG_TYPE) return "Ban log";
   if (type === BOT_LOGS_BAN_JOIN_ALERT_TYPE) return "Ban join alert";
+  if (type === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE) return "Sync retrospective";
   return "Clan goals";
 }
 
@@ -495,6 +498,12 @@ async function renderBotLogConfigurationSummary(
       guildId,
       BOT_LOGS_CLAN_GOALS_TYPE,
     ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_SYNC_RETROSPECTIVE_TYPE,
+    ),
   ];
   return ["Bot-log configurations", ...rows].join("\n");
 }
@@ -591,7 +600,7 @@ export const BotLogs: Command = {
     if (enableRaw && !isRoutingConfigType) {
       await interaction.reply({
         ephemeral: true,
-        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, or `type:clan-goals`.",
+        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, or `type:sync-retrospective`.",
       });
       return;
     }
@@ -605,12 +614,13 @@ export const BotLogs: Command = {
       requestedType !== BOT_LOGS_BAN_LOG_TYPE &&
       requestedType !== BOT_LOGS_BAN_JOIN_ALERT_TYPE &&
       requestedType !== BOT_LOGS_CLAN_GOALS_TYPE &&
+      requestedType !== BOT_LOGS_SYNC_RETROSPECTIVE_TYPE &&
       requestedType !== null
     ) {
       await interaction.reply({
         ephemeral: true,
         content:
-          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert/clan-goals custom routing.",
+          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert/clan-goals/sync-retrospective custom routing.",
       });
       return;
     }
@@ -629,6 +639,8 @@ export const BotLogs: Command = {
                 ? "Invalid ban-join alert routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
                 : requestedType === BOT_LOGS_CLAN_GOALS_TYPE
                   ? "Invalid clan-goals routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
+                  : requestedType === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE
+                    ? "Invalid sync-retrospective routing mode. Use bot-log channel, custom, or false."
                 : "Invalid base-swap routing mode.",
         });
         return;
