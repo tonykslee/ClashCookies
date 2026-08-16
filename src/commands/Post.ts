@@ -49,9 +49,12 @@ import {
 } from "../services/syncTimeZone";
 import {
   SyncRetrospectiveService,
-  type SyncRetrospectiveResult,
 } from "../services/SyncRetrospectiveService";
-import { buildSyncRetrospectiveEmbeds } from "../services/SyncRetrospectiveViewService";
+import {
+  buildSyncRetrospectiveComponents,
+  buildSyncRetrospectiveEmbeds,
+  hasSyncRetrospectiveData,
+} from "../services/SyncRetrospectiveViewService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -1245,11 +1248,6 @@ export async function handlePostModalSubmit(
   );
 }
 
-function hasSyncRetrospectiveData(result: SyncRetrospectiveResult): boolean {
-  return result.warSummary.clanWarCount > 0 ||
-    result.readiness.deviationCoverage.totalSnapshots > 0;
-}
-
 async function handleSyncRetrospectiveSubcommand(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -1293,7 +1291,10 @@ async function handleSyncRetrospectiveSubcommand(
     return;
   }
 
-  await interaction.editReply({ embeds: buildSyncRetrospectiveEmbeds(result) });
+  await interaction.editReply({
+    embeds: buildSyncRetrospectiveEmbeds(result),
+    components: buildSyncRetrospectiveComponents(result),
+  });
 }
 
 export const Post: Command = {

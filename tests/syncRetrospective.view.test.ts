@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SyncRetrospectiveResult } from "../src/services/SyncRetrospectiveService";
-import { buildSyncRetrospectiveEmbeds } from "../src/services/SyncRetrospectiveViewService";
+import {
+  buildSyncRetrospectiveClanDetailEmbeds,
+  buildSyncRetrospectiveComponents,
+  buildSyncRetrospectiveEmbeds,
+  sortSyncRetrospectiveClans,
+} from "../src/services/SyncRetrospectiveViewService";
 
 function result(overrides: Partial<SyncRetrospectiveResult> = {}): SyncRetrospectiveResult {
   return {
@@ -140,5 +145,96 @@ describe("SyncRetrospectiveViewService", () => {
     expect(clanFields.length).toBeGreaterThan(1);
     expect(clanFields.every((field) => field.value.length <= 1024)).toBe(true);
     expect(clanFields.map((field) => field.value).join("\n")).toContain("Clan 099");
+  });
+
+  it("builds one single-select menu for ten clans and keeps canonical ordering", () => {
+    const clans = [
+      clan({ identity: { clanTag: "#SNAP", clanName: "A Snapshot", warId: null } }),
+      clan({ identity: { clanTag: "#WAR2", clanName: "Z War" } }),
+      clan({ identity: { clanTag: "#WAR1", clanName: "A War" } }),
+    ];
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menu = rows[0].toJSON().components[0];
+
+    expect(rows).toHaveLength(1);
+    expect(menu.custom_id).toBe("sync-retro:clan:545:0");
+    expect(menu.min_values).toBe(1);
+    expect(menu.max_values).toBe(1);
+    expect(menu.options?.map((option) => option.value)).toEqual(["#WAR1", "#WAR2", "#SNAP"]);
+    expect(menu.options?.[0]?.description).toBe("#WAR1");
+  });
+
+  it("splits one hundred clans into four non-empty menus", () => {
+    const clans = Array.from({ length: 100 }, (_, index) => clan({
+      identity: {
+        clanTag: `#TAG${String(index).padStart(3, "0")}`,
+        clanName: `Clan ${String(index).padStart(3, "0")}`,
+      },
+    }));
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menus = rows.map((row) => row.toJSON().components[0]);
+
+    expect(rows).toHaveLength(4);
+    expect(menus.every((menu) => (menu.options ?? []).length > 0 && (menu.options ?? []).length <= 25)).toBe(true);
+    expect(menus.map((menu) => menu.custom_id)).toEqual([
+      "sync-retro:clan:545:0",
+      "sync-retro:clan:545:1",
+      "sync-retro:clan:545:2",
+      "sync-retro:clan:545:3",
+    ]);
+    expect(menus.flatMap((menu) => menu.options ?? [])).toHaveLength(100);
+  });
+
+  it("renders persisted detail sections with explicit incomplete and not-applicable states", () => {
+    const detailClan = clan({
+      identity: { clanTag: "#DETAIL", clanName: "Detail Clan", matchType: "FWA" },
+      war: { stars: null },
+      missedAttacks: {
+        total: 2,
+        coverageComplete: true,
+        players: [
+          { playerTag: "#P2", playerName: "Zulu", attacksUsed: 0, attacksMissed: 2, starsEarned: 0 },
+          { playerTag: "#P1", playerName: "Alpha", attacksUsed: 1, attacksMissed: 0, starsEarned: 3 },
+        ],
+      },
+      violations: {
+        total: 1,
+        evaluationComplete: true,
+        applicable: true,
+        details: [{
+          violationType: "missed_attack",
+          playerTag: "#P2",
+          playerName: "Zulu",
+          reasonLabel: "Missed attack",
+          expectedBehavior: "Use both attacks",
+          actualBehavior: "Used none",
+        }],
+      },
+      readiness: { memberCount: 49, deviationScore: null, projectionComplete: false, dataAvailable: true },
+      fillers: { fillerCount: 1, fillerPlayerTags: ["#P2"], fillerCaptureComplete: true },
+    });
+    const fields = buildSyncRetrospectiveClanDetailEmbeds(result({ clans: [detailClan] }), detailClan)
+      .flatMap((embed) => embed.toJSON().fields ?? []);
+    const values = fields.map((field) => field.value).join("\n");
+
+    expect(fields[0]?.name).toBe("War");
+    expect(values).toContain("Stars: —");
+    expect(values).toContain("Missed attacks: 2");
+    expect(values).toContain("**Zulu** `#P2`");
+    expect(values).toContain("Violations: 1");
+    expect(values).toContain("Members: 49");
+    expect(values).toContain("Deviation: —");
+    expect(values).toContain("Fillers: 1");
+    expect(values).not.toContain("#P1");
+  });
+
+  it("returns the sorter result without mutating the source array", () => {
+    const clans = [
+      clan({ identity: { clanTag: "#SNAP", clanName: "Snapshot", warId: null } }),
+      clan({ identity: { clanTag: "#WAR", clanName: "War" } }),
+    ];
+    const sorted = sortSyncRetrospectiveClans(clans);
+    expect(sorted.map((row) => row.identity.clanTag)).toEqual(["#WAR", "#SNAP"]);
+    expect(clans.map((row) => row.identity.clanTag)).toEqual(["#SNAP", "#WAR"]);
   });
 });

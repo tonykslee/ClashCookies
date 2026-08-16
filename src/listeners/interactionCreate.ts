@@ -126,6 +126,12 @@ import {
   isSyncTimeFwaClanListRefreshButtonCustomId,
 } from "../services/SyncTimeFwaClanListViewService";
 import {
+  handleSyncRetrospectiveClanSelect,
+} from "../services/SyncRetrospectiveInteractionService";
+import {
+  isSyncRetrospectiveClanSelectCustomId,
+} from "../services/SyncRetrospectiveInteractionIds";
+import {
   handleCwlRotationImportButtonInteraction,
   isCwlRotationImportButtonCustomId,
   handleCwlRotationImportSelectMenuInteraction,
@@ -674,6 +680,20 @@ const handleSelectMenuInteraction = async (
   interaction: StringSelectMenuInteraction,
   cocService: CoCService
 ): Promise<void> => {
+  if (isSyncRetrospectiveClanSelectCustomId(interaction.customId)) {
+    try {
+      await handleSyncRetrospectiveClanSelect(interaction);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Sync retrospective clan select menu",
+        "Failed to open retrospective clan details.",
+        err,
+      );
+    }
+    return;
+  }
+
   if (isRosterSelectionMenuCustomId(interaction.customId)) {
     try {
       await handleRosterSelectionMenuInteraction(interaction);
