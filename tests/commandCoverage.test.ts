@@ -223,6 +223,9 @@ describe("command coverage", () => {
     expect(botLogsHelpText).toContain("type:ban-log");
     expect(botLogsHelpText).toContain("type:ban-join-alert");
     expect(botLogsHelpText).toContain("type:clan-goals");
+    expect(botLogsHelpText).toContain("type:sync-retrospective");
+    expect(normalized).toContain("does not backfill syncs completed before enablement");
+    expect(normalized).toContain("same summary/dropdowns as manual `/sync retrospective`");
     expect(normalized).toContain("defaults to disabled");
     expect(normalized).toContain("`channel` is only used with `enable:custom`");
     expect(normalized).toContain("defaults to clan-lead channel when unset");
@@ -293,6 +296,9 @@ describe("command coverage", () => {
     const syncHelpText = helpEmbedText("sync");
     const normalized = syncHelpText.toLowerCase();
     expect(syncHelpText).toContain("/sync readiness");
+    expect(syncHelpText).toContain("/sync retrospective");
+    expect(normalized).toContain("latest available persisted alliance retrospective");
+    expect(normalized).toContain("historical data is unavailable or incomplete rather than zero");
     expect(normalized).toContain("posts the sync announcement immediately");
     expect(normalized).toContain("refresh:true|false");
     expect(normalized).toContain("visibility:private|public");

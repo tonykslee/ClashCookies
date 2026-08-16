@@ -73,6 +73,7 @@ describe("/bot-logs command shape", () => {
       { name: "ban-log", value: "ban-log" },
       { name: "ban-join-alert", value: "ban-join-alert" },
       { name: "clan-goals", value: "clan-goals" },
+      { name: "sync-retrospective", value: "sync-retrospective" },
     ]);
     expect(setChannelOption).toBeUndefined();
     expect(enableOption?.type).toBe(ApplicationCommandOptionType.String);
@@ -121,6 +122,51 @@ describe("/bot-logs behavior", () => {
     vi.spyOn(BotLogChannelService.prototype, "setRoutingConfigForType").mockResolvedValue(undefined);
     vi.spyOn(BotLogChannelService.prototype, "clearRoutingConfigForType").mockResolvedValue(undefined);
     vi.spyOn(SettingsService.prototype, "delete").mockResolvedValue(undefined);
+  });
+
+  it("configures sync-retrospective custom, bot-log, and disabled routes", async () => {
+    const setRoutingConfigForType = vi.mocked(
+      BotLogChannelService.prototype.setRoutingConfigForType,
+    );
+    const custom = createInteraction({
+      guildId: "111",
+      type: "sync-retrospective",
+      channel: { id: "222222222222222222", guildId: "111", type: ChannelType.GuildText },
+    });
+    await BotLogs.run({} as any, custom as any, {} as any);
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111", type: "sync-retrospective", routingMode: "CUSTOM", channelId: "222222222222222222",
+    });
+
+    const botLog = createInteraction({ guildId: "111", type: "sync-retrospective", enable: "bot-log channel" });
+    await BotLogs.run({} as any, botLog as any, {} as any);
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111", type: "sync-retrospective", routingMode: "BOT_LOG", channelId: null,
+    });
+
+    const disabled = createInteraction({ guildId: "111", type: "sync-retrospective", enable: "false" });
+    await BotLogs.run({} as any, disabled as any, {} as any);
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111", type: "sync-retrospective", routingMode: "DISABLED", channelId: null,
+    });
+  });
+
+  it("rejects clan-scoped sync-retrospective routing and custom without a channel", async () => {
+    const setRoutingConfigForType = vi.mocked(
+      BotLogChannelService.prototype.setRoutingConfigForType,
+    );
+    const clanLog = createInteraction({ type: "sync-retrospective", enable: "clan-log channel" });
+    await BotLogs.run({} as any, clanLog as any, {} as any);
+    expect(setRoutingConfigForType).not.toHaveBeenCalled();
+    expect(clanLog.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Invalid sync-retrospective routing mode. Use bot-log channel, custom, or false.",
+    }));
+
+    const missingChannel = createInteraction({ type: "sync-retrospective", enable: "custom" });
+    await BotLogs.run({} as any, missingChannel as any, {} as any);
+    expect(missingChannel.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "`enable:custom` requires `channel`.",
+    }));
   });
 
   it("saves provided channel for the current guild and confirms ephemerally", async () => {
@@ -562,8 +608,8 @@ describe("/bot-logs behavior", () => {
     expect(setBaseSwapRoutingConfig).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
-      content:
-        "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, or `type:clan-goals`.",
+        content:
+          "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, or `type:sync-retrospective`.",
     });
   });
 
@@ -688,6 +734,7 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
+        "Sync retrospective: Disabled",
       ].join("\n"),
     });
   });
@@ -797,6 +844,7 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
+        "Sync retrospective: Disabled",
       ].join("\n"),
     });
   });
@@ -823,6 +871,7 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
+        "Sync retrospective: Disabled",
       ].join("\n"),
     });
   });
@@ -870,6 +919,7 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
+        "Sync retrospective: Disabled",
       ].join("\n"),
     });
   });
@@ -907,7 +957,8 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
-        "Clan goals: Disabled",
+        "Clan goals: Disabled\n" +
+        "Sync retrospective: Disabled",
       ].join("\n"),
     });
   });
@@ -994,7 +1045,8 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured\n" +
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
-        "Clan goals: Disabled",
+        "Clan goals: Disabled\n" +
+        "Sync retrospective: Disabled",
     });
   });
 
@@ -1127,7 +1179,8 @@ describe("/bot-logs behavior", () => {
         "Checklist: Not configured\n" +
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
-        "Clan goals: Disabled",
+        "Clan goals: Disabled\n" +
+        "Sync retrospective: Disabled",
     });
   });
 

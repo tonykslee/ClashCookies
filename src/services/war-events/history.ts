@@ -5,6 +5,7 @@ import { CoCService } from "../CoCService";
 import { PointsSyncService } from "../PointsSyncService";
 import { WarComplianceService } from "../WarComplianceService";
 import { WarPlanViolationService } from "../WarPlanViolationService";
+import { SyncCycleService } from "../SyncCycleService";
 import {
   type EventType,
   type FwaLoseStyle,
@@ -74,6 +75,7 @@ export class WarEventHistoryService {
   private readonly pointsSync: PointsSyncService;
   private readonly compliance: WarComplianceService;
   private readonly warPlanViolations: WarPlanViolationService;
+  private readonly syncCycles: SyncCycleService;
 
   /** Purpose: initialize war history service dependencies. */
   constructor(
@@ -81,11 +83,13 @@ export class WarEventHistoryService {
     pointsSync = new PointsSyncService(),
     compliance = new WarComplianceService(),
     warPlanViolations?: WarPlanViolationService,
+    syncCycles = new SyncCycleService(),
   ) {
     this.coc = coc;
     this.pointsSync = pointsSync;
     this.compliance = compliance;
     this.warPlanViolations = warPlanViolations ?? new WarPlanViolationService(compliance);
+    this.syncCycles = syncCycles;
   }
 
   /** Purpose: build the war-end points line text shown in event embeds. */
@@ -824,6 +828,36 @@ export class WarEventHistoryService {
       return null;
     }
     const persistedWarId = Math.trunc(Number(warIdResult.persistedWarId));
+
+    try {
+      const historyReader = (prisma as unknown as {
+        clanWarHistory?: { findUnique?: (args: unknown) => Promise<{
+          syncNumber: number | null;
+          matchType: string | null;
+          prepStartTime: Date | null;
+        } | null> };
+      }).clanWarHistory?.findUnique;
+      if (historyReader) {
+        const canonicalHistory = await historyReader({
+          where: { warId: persistedWarId },
+          select: {
+            syncNumber: true,
+            matchType: true,
+            prepStartTime: true,
+          },
+        });
+        await this.syncCycles.bindFromEndedWar({
+          guildId: participationGuildId,
+          syncNumber: canonicalHistory?.syncNumber ?? null,
+          matchType: canonicalHistory?.matchType ?? null,
+          preparationStartTime: canonicalHistory?.prepStartTime ?? null,
+        });
+      }
+    } catch (error) {
+      console.warn(
+        `[sync-cycle] event=bind outcome=failure guild_id=${participationGuildId ?? "unknown"} war_id=${persistedWarId} error=${formatError(error)}`,
+      );
+    }
 
     // Normalize ended-war rows to carry resolved warId before archive/delete lifecycle.
     await prisma.warAttacks.updateMany({

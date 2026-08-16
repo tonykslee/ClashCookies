@@ -631,6 +631,7 @@ type SubscriptionRow = {
   pointsLastKnownSyncNumber: number | null;
   pointsLastKnownPoints: number | null;
   pointsLastKnownMatchType: string | null;
+  pointsIsFwa: boolean | null;
   pointsLastKnownOutcome: string | null;
   pointsWarId: string | null;
   pointsOpponentTag: string | null;
@@ -1651,6 +1652,52 @@ function hasSameWarConfirmedMailBaseline(input: {
   return true;
 }
 
+/** Purpose: expose only exact same-war persisted classification evidence to live clan goals. */
+function resolveSameWarPersistedMatchEvidence(input: {
+  sub: SubscriptionRow;
+  currentWarId?: number | null;
+  effectiveWarIdentityChanged: boolean;
+}): "FWA" | "BL" | null {
+  if (input.effectiveWarIdentityChanged) return null;
+  if (!input.sub.startTime || !input.sub.pointsWarStartTime) return null;
+  if (
+    input.sub.startTime.getTime() !== input.sub.pointsWarStartTime.getTime()
+  ) {
+    return null;
+  }
+
+  const currentWarId = toValidWarIdText(input.currentWarId ?? input.sub.warId);
+  const pointsWarId = toValidWarIdText(input.sub.pointsWarId);
+  if (currentWarId && pointsWarId && currentWarId !== pointsWarId) {
+    return null;
+  }
+
+  const currentOpponentTag = normalizeTag(input.sub.opponentTag ?? "");
+  const pointsOpponentTag = normalizeTag(input.sub.pointsOpponentTag ?? "");
+  if (
+    !currentOpponentTag ||
+    !pointsOpponentTag ||
+    currentOpponentTag !== pointsOpponentTag
+  ) {
+    return null;
+  }
+
+  const storedMatchType = String(
+    input.sub.pointsLastKnownMatchType ?? "",
+  ).trim().toUpperCase();
+  if (input.sub.pointsIsFwa === true) {
+    if (storedMatchType && storedMatchType !== "FWA") return null;
+    return "FWA";
+  }
+  if (input.sub.pointsIsFwa === false && storedMatchType === "BL") {
+    return "BL";
+  }
+  return null;
+}
+
+export const resolveSameWarPersistedMatchEvidenceForTest =
+  resolveSameWarPersistedMatchEvidence;
+
 type ExactSameWarPointsSyncRejectionReason =
   | "identity_incomplete"
   | "start_mismatch"
@@ -2134,6 +2181,7 @@ export class WarEventLogService {
   private readonly botLogChannels = new BotLogChannelService();
   private readonly maintenanceWindowService: MaintenanceWindowService;
   private readonly cocWarOutageByClanTag = new Map<string, CocWarOutageState>();
+  private readonly liveClanGoalDiagnosticByIdentity = new Map<string, string>();
 
   /** Purpose: initialize service dependencies. */
   constructor(
@@ -2588,6 +2636,7 @@ export class WarEventLogService {
       pointsLastKnownSyncNumber: null,
       pointsLastKnownPoints: null,
       pointsLastKnownMatchType: null,
+      pointsIsFwa: null,
       pointsLastKnownOutcome: null,
       pointsWarId: null,
       pointsOpponentTag: null,
@@ -3602,6 +3651,7 @@ export class WarEventLogService {
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
+          cps."isFwa" AS "pointsIsFwa",
           cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
           cps."warId" AS "pointsWarId",
           cps."opponentTag" AS "pointsOpponentTag",
@@ -4178,6 +4228,7 @@ export class WarEventLogService {
           cps."lastKnownSyncNumber" AS "pointsLastKnownSyncNumber",
           cps."lastKnownPoints" AS "pointsLastKnownPoints",
           cps."lastKnownMatchType" AS "pointsLastKnownMatchType",
+          cps."isFwa" AS "pointsIsFwa",
           cps."lastKnownOutcome" AS "pointsLastKnownOutcome",
           cps."warId" AS "pointsWarId",
           cps."opponentTag" AS "pointsOpponentTag",
@@ -4669,7 +4720,6 @@ export class WarEventLogService {
       resolvedMatchType?.matchType ?? currentMatchTypeForResolution;
     let nextInferredMatchType =
       resolvedMatchType?.inferred ?? currentInferredMatchTypeForResolution;
-
     const currentSubscriptionWarId =
       sub.warId !== null &&
       sub.warId !== undefined &&
@@ -4718,6 +4768,11 @@ export class WarEventLogService {
       resolvedWarId !== null && resolvedWarId !== undefined
         ? String(Math.trunc(Number(resolvedWarId)))
         : null;
+    const authoritativeMatchType = resolveSameWarPersistedMatchEvidence({
+      sub,
+      currentWarId: resolvedWarId,
+      effectiveWarIdentityChanged,
+    });
     const intendedActiveWarOpponentTag =
       nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
     const sameWarPointsSyncNumber = resolveExactSameWarPointsSyncNumber({
@@ -5319,6 +5374,7 @@ export class WarEventLogService {
       currentState,
       matchType: nextMatchType,
       inferredMatchType: nextInferredMatchType,
+      authoritativeMatchType,
       outcome: normalizeOutcome(nextOutcome),
       clanStars: nextClanStars,
       resolvedWarId,
@@ -5649,6 +5705,7 @@ export class WarEventLogService {
     currentState: WarState;
     matchType: MatchType;
     inferredMatchType: boolean | null;
+    authoritativeMatchType?: "FWA" | "BL" | null;
     outcome: string | null;
     clanStars: number | null;
     resolvedWarId: number | null;
@@ -5659,6 +5716,7 @@ export class WarEventLogService {
       warState: input.currentState,
       matchType: input.matchType,
       inferredMatchType: input.inferredMatchType,
+      authoritativeMatchType: input.authoritativeMatchType ?? undefined,
       outcome: input.outcome,
       loseStyle: input.sub.loseStyle,
       clanStars: input.clanStars,
@@ -5705,6 +5763,40 @@ export class WarEventLogService {
       top30Clean,
     });
     for (const evaluation of evaluations) {
+      const diagnosticKey = `${input.sub.guildId}:${normalizeTag(input.sub.clanTag)}:${evaluation.goalId}`;
+      if (evaluation.qualified) {
+        this.liveClanGoalDiagnosticByIdentity.delete(diagnosticKey);
+      } else {
+        const threshold =
+          evaluation.goalId === "FWA_LOSE_TOP30_90_CLEAN" ? 90 :
+            evaluation.goalId === "FWA_LOSE_TRADITIONAL_100_STARS" ? 100 : 150;
+        if (
+          Number.isFinite(Number(facts.clanStars)) &&
+          Number(facts.clanStars) >= threshold
+        ) {
+          const diagnosticSignature = [
+            input.resolvedWarId ?? "unknown",
+            evaluation.reason,
+            facts.matchType ?? "unknown",
+            facts.inferredMatchType ?? "unknown",
+            facts.authoritativeMatchType ?? "none",
+            facts.outcome ?? "unknown",
+            facts.clanStars ?? "unknown",
+          ].join("|");
+          if (
+            this.liveClanGoalDiagnosticByIdentity.get(diagnosticKey) !==
+            diagnosticSignature
+          ) {
+            this.liveClanGoalDiagnosticByIdentity.set(
+              diagnosticKey,
+              diagnosticSignature,
+            );
+            console.debug(
+              `[clan-goals] event=live_war_evaluation outcome=skip goal_id=${evaluation.goalId} reason=${evaluation.reason} guild_id=${input.sub.guildId} clan_tag=${normalizeTag(input.sub.clanTag)} war_id=${input.resolvedWarId ?? "unknown"} match_type=${facts.matchType ?? "unknown"} inferred_match_type=${facts.inferredMatchType ?? "unknown"} authoritative_match_type=${facts.authoritativeMatchType ?? "none"} outcome_value=${facts.outcome ?? "unknown"} clan_stars=${facts.clanStars ?? "unknown"}`,
+            );
+          }
+        }
+      }
       if (!evaluation.qualified) continue;
       if (
         input.resolvedWarId === null ||

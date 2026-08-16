@@ -2,6 +2,7 @@ import {
   ChatInputCommandInteraction,
   ModalSubmitInteraction,
   PermissionFlagsBits,
+  StringSelectMenuInteraction,
 } from "discord.js";
 import { SettingsService } from "./SettingsService";
 
@@ -143,6 +144,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fillers:set",
   "sync",
   "sync:readiness",
+  "sync:retrospective",
   "sync:time:post",
   "sync:post:status",
   "say",
@@ -185,7 +187,10 @@ export const COMMAND_PERMISSION_TARGETS = [
 export type CommandPermissionTarget =
   (typeof COMMAND_PERMISSION_TARGETS)[number];
 
-type GuildInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
+type GuildInteraction =
+  | ChatInputCommandInteraction
+  | ModalSubmitInteraction
+  | StringSelectMenuInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "clan:configure",
@@ -294,6 +299,7 @@ const FWA_LEADER_DEFAULT_TARGETS = new Set<string>([
   "fillers:list",
   "fillers:set",
   "sync:readiness",
+  "sync:retrospective",
   "sync:time:post",
   "sync:post:status",
   "inactive",

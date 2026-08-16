@@ -1,5 +1,4 @@
 import { ChannelType, type Client } from "discord.js";
-import { Prisma } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import {
   isCompoActualStateProjectionComplete,
@@ -22,7 +21,17 @@ import {
   loadCompoActualStateContext,
   type CompoActualStateContext,
 } from "./CompoActualStateService";
+import { listFillerAccountTagsForGuild } from "./FillerAccountService";
+import { normalizePlayerTag } from "./PlayerLinkService";
 import { normalizeTag } from "./war-events/core";
+import {
+  claimSyncEvent,
+  isSyncEventReservationExpired,
+  markSyncEventDelivered,
+  releaseSyncEvent,
+  syncEventKey,
+  syncEventPayloadStatus,
+} from "./SyncEventDeliveryService";
 
 export const SYNC_ZERO_DEVIATION_EVENT_TYPE =
   "clan_goal:SYNC_ZERO_DEVIATION" as const;
@@ -32,7 +41,6 @@ export const SYNC_CAPTURE_CANDIDATE_WINDOW_MS = 2 * SYNC_BOUNDARY_CAPTURE_GRACE_
 export const SYNC_GOAL_RECONCILIATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const SYNC_GOAL_RECONCILIATION_LIMIT = 100;
 export const SYNC_GOAL_CAPTURE_LIMIT = 100;
-const SYNC_EVENT_RESERVATION_LEASE_MS = 5 * 60 * 1000;
 
 export type SyncClanGoalClock = () => Date;
 
@@ -99,24 +107,6 @@ function isFiniteDate(value: Date | null | undefined): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
-function eventKey(input: {
-  guildId: string;
-  syncTime: Date;
-  clanTag: string;
-}): string {
-  return `${input.guildId}|${input.syncTime.toISOString()}|${normalizeTag(input.clanTag)}`;
-}
-
-function eventPayloadStatus(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const status = (payload as { status?: unknown }).status;
-  return typeof status === "string" ? status : null;
-}
-
-function isReservationExpired(createdAt: Date, now: Date): boolean {
-  return now.getTime() - createdAt.getTime() >= SYNC_EVENT_RESERVATION_LEASE_MS;
-}
-
 function isSupportedDestination(channel: any, guildId: string): boolean {
   if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
     return false;
@@ -140,6 +130,8 @@ export function buildSyncClanReadinessSnapshotRows(input: {
   syncTime: Date;
   scheduledSyncPostId?: string | null;
   context: CompoActualStateContext;
+  fillerTags?: readonly string[];
+  fillerCaptureComplete?: boolean;
 }): Array<{
   guildId: string;
   syncTime: Date;
@@ -152,7 +144,16 @@ export function buildSyncClanReadinessSnapshotRows(input: {
   sourceSyncedAt: Date | null;
   algorithmVersion: string;
   scheduledSyncPostId: string | null;
+  fillerCaptureComplete: boolean;
+  fillerPlayerTags: string[];
 }> {
+  const fillerCaptureComplete = input.fillerCaptureComplete === true;
+  const normalizedFillerTags = [...new Set(
+    (input.fillerTags ?? [])
+      .map((tag) => normalizePlayerTag(tag))
+      .filter(Boolean),
+  )].sort((left, right) => left.localeCompare(right));
+
   return input.context.clans.map((clan) => {
     const projection = projectCompoActualStateView({
       view: "auto",
@@ -165,6 +166,11 @@ export function buildSyncClanReadinessSnapshotRows(input: {
     const deviationScore = Number.isFinite(Number(projection.deviationScore))
       ? Number(projection.deviationScore)
       : null;
+    const memberTags = new Set(
+      clan.members
+        .map((member) => normalizePlayerTag(member.playerTag))
+        .filter(Boolean),
+    );
     return {
       guildId: input.guildId,
       syncTime: input.syncTime,
@@ -181,6 +187,10 @@ export function buildSyncClanReadinessSnapshotRows(input: {
           : null,
       algorithmVersion: SYNC_CLAN_READINESS_ALGORITHM_VERSION,
       scheduledSyncPostId: input.scheduledSyncPostId ?? null,
+      fillerCaptureComplete,
+      fillerPlayerTags: fillerCaptureComplete
+        ? normalizedFillerTags.filter((tag) => memberTags.has(tag))
+        : [],
     };
   });
 }
@@ -222,6 +232,7 @@ export class SyncClanGoalService {
     })) as SyncScheduleCandidate[];
 
     const contexts = new Map<string, Promise<CompoActualStateContext>>();
+    const fillerTagsByBoundary = new Map<string, Promise<string[]>>();
     const rowsByBoundary = new Map<string, {
       syncTime: Date;
       rows: ReturnType<typeof buildSyncClanReadinessSnapshotRows>;
@@ -248,11 +259,33 @@ export class SyncClanGoalService {
           summary.stale += 1;
           continue;
         }
+        let fillerTagsPromise = fillerTagsByBoundary.get(contextKey);
+        if (!fillerTagsPromise) {
+          fillerTagsPromise = listFillerAccountTagsForGuild({ guildId: schedule.guildId });
+          fillerTagsByBoundary.set(contextKey, fillerTagsPromise);
+        }
+        let fillerTags: string[] = [];
+        let fillerCaptureComplete = false;
+        try {
+          fillerTags = await fillerTagsPromise;
+          fillerCaptureComplete = true;
+        } catch (error) {
+          dozzleLog.error(
+            `[sync-clan-goals] event=filler_registry_capture outcome=failure guild_id=${schedule.guildId} sync_identity=${schedule.syncTime.toISOString()} error=${formatError(error)}`,
+          );
+        }
+        const postFillerFreshnessNow = this.clock();
+        if (postFillerFreshnessNow.getTime() - schedule.syncTime.getTime() > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
+          summary.stale += 1;
+          continue;
+        }
         const rows = buildSyncClanReadinessSnapshotRows({
           guildId: schedule.guildId,
           syncTime: schedule.syncTime,
           scheduledSyncPostId: schedule.id,
           context,
+          fillerTags,
+          fillerCaptureComplete,
         });
         summary.tracked += rows.length;
         for (const row of rows) {
@@ -345,15 +378,18 @@ export class SyncClanGoalService {
         payload: true,
       },
     })) as SyncEventCandidate[];
-    const eventByKey = new Map(events.map((event) => [eventKey(event), event]));
+    const eventByKey = new Map(events.map((event) => [syncEventKey({ ...event, eventType: SYNC_ZERO_DEVIATION_EVENT_TYPE }), event]));
     const qualified = snapshots.filter((snapshot) =>
       evaluateSyncZeroDeviationGoal(snapshot).qualified,
     );
     summary.qualified = qualified.length;
     const undispatched = qualified.filter((snapshot) => {
-      const event = eventByKey.get(eventKey(snapshot));
-      const status = eventPayloadStatus(event?.payload);
-      return status !== "delivered" && !(event && !isReservationExpired(event.createdAt, captureNow));
+      const event = eventByKey.get(syncEventKey({
+        ...snapshot,
+        eventType: SYNC_ZERO_DEVIATION_EVENT_TYPE,
+      }));
+      const status = syncEventPayloadStatus(event?.payload);
+      return status !== "delivered" && status !== "suppressed" && !(event && !isSyncEventReservationExpired(event.createdAt, captureNow));
     });
     summary.skipped += qualified.length - undispatched.length;
     if (undispatched.length === 0) {
@@ -520,50 +556,23 @@ export class SyncClanGoalService {
     snapshot: SyncSnapshotCandidate;
     now: Date;
   }): Promise<{ state: "claimed" | "unavailable" | "in_flight"; createdAt?: Date; reason: string }> {
-    const where = {
+    const identity = {
       guildId: input.snapshot.guildId,
       syncTime: input.snapshot.syncTime,
       clanTag: normalizeTag(input.snapshot.clanTag),
       eventType: SYNC_ZERO_DEVIATION_EVENT_TYPE,
     };
-    try {
-      const existing = await input.eventModel.findFirst({
-        where,
-        select: { createdAt: true, payload: true },
-      });
-      if (existing) {
-        if (eventPayloadStatus(existing.payload) === "delivered") {
-          return { state: "in_flight", reason: "already_delivered" };
-        }
-        if (!isReservationExpired(existing.createdAt, input.now)) {
-          return { state: "in_flight", reason: "reservation_in_flight" };
-        }
-        const reclaimed = await input.eventModel.deleteMany({
-          where: { ...where, createdAt: existing.createdAt },
-        });
-        if (reclaimed.count !== 1) {
-          return { state: "in_flight", reason: "reservation_ownership_lost" };
-        }
-      }
-      const created = await input.eventModel.create({
-        data: {
-          ...where,
-          payload: {
-            kind: "clan_goal_delivery",
-            status: "claimed",
-            goalId: "SYNC_ZERO_DEVIATION",
-            syncIdentity: input.snapshot.syncTime.toISOString(),
-          },
-        },
-        select: { createdAt: true },
-      });
-      return { state: "claimed", createdAt: created.createdAt, reason: "claimed" };
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        return { state: "in_flight", reason: "reservation_already_claimed" };
-      }
-      return { state: "unavailable", reason: `reservation_unavailable:${formatError(error)}` };
-    }
+    return claimSyncEvent({
+      eventModel: input.eventModel,
+      identity,
+      now: input.now,
+      claimedPayload: {
+        kind: "clan_goal_delivery",
+        status: "claimed",
+        goalId: "SYNC_ZERO_DEVIATION",
+        syncIdentity: input.snapshot.syncTime.toISOString(),
+      },
+    });
   }
 
   private async markEventDelivered(input: {
@@ -573,26 +582,24 @@ export class SyncClanGoalService {
     channelId: string;
     messageId: string | null;
   }): Promise<boolean> {
-    const result = await input.eventModel.updateMany({
-      where: {
+    return markSyncEventDelivered({
+      eventModel: input.eventModel,
+      identity: {
         guildId: input.snapshot.guildId,
         syncTime: input.snapshot.syncTime,
-        clanTag: normalizeTag(input.snapshot.clanTag),
+        clanTag: input.snapshot.clanTag,
         eventType: SYNC_ZERO_DEVIATION_EVENT_TYPE,
-        createdAt: input.createdAt,
       },
-      data: {
-        payload: {
-          kind: "clan_goal_delivery",
-          status: "delivered",
-          goalId: "SYNC_ZERO_DEVIATION",
-          channelId: input.channelId,
-          messageId: input.messageId,
-          syncIdentity: input.snapshot.syncTime.toISOString(),
-        },
+      createdAt: input.createdAt,
+      deliveredPayload: {
+        kind: "clan_goal_delivery",
+        status: "delivered",
+        goalId: "SYNC_ZERO_DEVIATION",
+        channelId: input.channelId,
+        messageId: input.messageId,
+        syncIdentity: input.snapshot.syncTime.toISOString(),
       },
-    }).catch(() => ({ count: 0 }));
-    return result.count === 1;
+    });
   }
 
   private async releaseEvent(input: {
@@ -600,14 +607,15 @@ export class SyncClanGoalService {
     snapshot: SyncSnapshotCandidate;
     createdAt: Date;
   }): Promise<void> {
-    await input.eventModel.deleteMany({
-      where: {
+    await releaseSyncEvent({
+      eventModel: input.eventModel,
+      identity: {
         guildId: input.snapshot.guildId,
         syncTime: input.snapshot.syncTime,
-        clanTag: normalizeTag(input.snapshot.clanTag),
+        clanTag: input.snapshot.clanTag,
         eventType: SYNC_ZERO_DEVIATION_EVENT_TYPE,
-        createdAt: input.createdAt,
       },
-    }).catch(() => undefined);
+      createdAt: input.createdAt,
+    });
   }
 }

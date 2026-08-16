@@ -61,6 +61,8 @@ Mirror mode behavior:
   - `WarAttacks`
   - `ClanPointsSync`
   - `ClanWarHistory`
+  - `SyncCycle`
+  - `SyncClanReadinessSnapshot`
   - `ClanWarParticipation`
   - `WarPlanComplianceEvaluation`
   - `WarPlanViolation`

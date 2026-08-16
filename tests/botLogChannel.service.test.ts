@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BotLogChannelService,
 } from "../src/services/BotLogChannelService";
@@ -20,6 +20,92 @@ function createSettingsStub() {
 }
 
 describe("BotLogChannelService typed routing", () => {
+  it("supports only alliance-level sync-retrospective routing and preserves enabledAt", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T12:00:00.000Z"));
+    try {
+      await expect(service.getRoutingConfigForType("guild-1", "sync-retrospective")).resolves.toMatchObject({
+        routingMode: "DISABLED",
+        configured: false,
+      });
+      await expect(service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CLAN_LOG",
+      })).rejects.toThrow("INVALID_ROUTED_BOT_LOG_ROUTING");
+      await expect(service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CLAN_LEAD",
+      })).rejects.toThrow("INVALID_ROUTED_BOT_LOG_ROUTING");
+
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CUSTOM", channelId: "111111111111111111",
+      });
+      const firstEnabledAt = await service.getSyncRetrospectiveEnabledAt("guild-1");
+      expect(firstEnabledAt).toEqual(new Date("2026-08-15T12:00:00.000Z"));
+
+      vi.setSystemTime(new Date("2026-08-15T13:00:00.000Z"));
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "BOT_LOG",
+      });
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CUSTOM", channelId: "222222222222222222",
+      });
+      expect(await service.getSyncRetrospectiveEnabledAt("guild-1")).toEqual(firstEnabledAt);
+
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "DISABLED",
+      });
+      expect(await service.getSyncRetrospectiveEnabledAt("guild-1")).toBeNull();
+
+      vi.setSystemTime(new Date("2026-08-15T14:00:00.000Z"));
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "BOT_LOG",
+      });
+      expect(await service.getSyncRetrospectiveEnabledAt("guild-1")).toEqual(new Date("2026-08-15T14:00:00.000Z"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("repairs enabledAt after a partial enabled-route write", async () => {
+    const stub = createSettingsStub();
+    const originalSet = stub.settings.set;
+    let failEnabledAtWrite = true;
+    vi.spyOn(stub.settings, "set").mockImplementation(async (key, value) => {
+      if (failEnabledAtWrite && key.includes("sync_retrospective_enabled_at")) {
+        throw new Error("enabledAt write failed");
+      }
+      await originalSet(key, value);
+    });
+    const service = new BotLogChannelService(stub.settings as any);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T12:00:00.000Z"));
+      await expect(service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CUSTOM", channelId: "111111111111111111",
+      })).rejects.toThrow("enabledAt write failed");
+      expect(await service.getRoutingConfigForType("guild-1", "sync-retrospective"))
+        .toMatchObject({ configured: true, routingMode: "CUSTOM" });
+      expect(await service.getSyncRetrospectiveEnabledAt("guild-1")).toBeNull();
+
+      failEnabledAtWrite = false;
+      vi.setSystemTime(new Date("2026-08-15T13:00:00.000Z"));
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "CUSTOM", channelId: "111111111111111111",
+      });
+      const repairedAt = await service.getSyncRetrospectiveEnabledAt("guild-1");
+      expect(repairedAt).toEqual(new Date("2026-08-15T13:00:00.000Z"));
+
+      vi.setSystemTime(new Date("2026-08-15T14:00:00.000Z"));
+      await service.setRoutingConfigForType({
+        guildId: "guild-1", type: "sync-retrospective", routingMode: "BOT_LOG",
+      });
+      expect(await service.getSyncRetrospectiveEnabledAt("guild-1")).toEqual(repairedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the generic and base-swap channel settings separate", async () => {
     const stub = createSettingsStub();
     const service = new BotLogChannelService(stub.settings as any);

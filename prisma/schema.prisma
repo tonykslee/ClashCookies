@@ -1151,6 +1151,10 @@ enum ScheduledSyncPostStatus {
   REPLACED
 }
 
+enum SyncCycleResolutionSource {
+  ENDED_WAR_CANONICAL
+}
+
 enum RepWorkActivityType {
   BASES_CHECKED
   MAIL_CHECKED
@@ -1210,6 +1214,22 @@ model ScheduledSyncPost {
   @@index([nextAttemptAt])
 }
 
+model SyncCycle {
+  id                  String                    @id @default(cuid())
+  guildId             String
+  syncNumber          Int
+  syncTime            DateTime
+  scheduledSyncPostId String?
+  resolvedAt          DateTime
+  resolutionSource    SyncCycleResolutionSource
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  @@unique([guildId, syncNumber])
+  @@unique([guildId, syncTime])
+  @@index([guildId, syncTime])
+}
+
 model SyncClanReadinessSnapshot {
   id                    String   @id @default(cuid())
   guildId               String
@@ -1224,6 +1244,8 @@ model SyncClanReadinessSnapshot {
   sourceSyncedAt        DateTime?
   algorithmVersion      String
   scheduledSyncPostId   String?
+  fillerCaptureComplete Boolean  @default(false)
+  fillerPlayerTags      String[] @default([])
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -1766,6 +1788,7 @@ model ClanPointsSync {
 
   @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag])
+  @@index([guildId, syncNum])
   @@index([clanTag, warStartTime])
   @@index([guildId, clanTag, warId])
   @@index([guildId, clanTag, warStartTime(sort: Desc)])

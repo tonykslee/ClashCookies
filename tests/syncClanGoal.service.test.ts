@@ -4,6 +4,7 @@ import {
 } from "../src/services/ClanGoalService";
 
 const loadContextMock = vi.hoisted(() => vi.fn());
+const fillerTagsMock = vi.hoisted(() => vi.fn());
 const projectionMock = vi.hoisted(() => vi.fn());
 const dozzleLogMock = vi.hoisted(() => ({
   trace: vi.fn(),
@@ -29,6 +30,9 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
 vi.mock("../src/services/CompoActualStateService", () => ({
   loadCompoActualStateContext: loadContextMock,
+}));
+vi.mock("../src/services/FillerAccountService", () => ({
+  listFillerAccountTagsForGuild: fillerTagsMock,
 }));
 vi.mock("../src/helper/compoActualStateView", () => ({
   isCompoActualStateProjectionComplete: vi.fn().mockReturnValue(true),
@@ -118,6 +122,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
       selectedHeatMapRef: { id: 1 },
     });
     loadContextMock.mockResolvedValue(makeContext());
+    fillerTagsMock.mockResolvedValue([]);
     prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
       { id: "schedule-1", guildId: "guild-1", syncTime: SYNC_TIME, status: "PUBLISHED" },
     ]);
@@ -201,6 +206,196 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({
       allowedMentions: { parse: [] },
     }));
+  });
+
+  it("captures the exact sorted filler intersection from the ACTUAL roster", async () => {
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [{
+        ...makeContext().clans[0],
+        members: [
+          { playerTag: "#PJJJ", clanTag: "#CLAN", playerName: "C", townHall: 18, resolvedWeight: 1, resolvedBucket: null, resolvedWeightSource: null },
+          { playerTag: "#PYYY", clanTag: "#CLAN", playerName: "A", townHall: 18, resolvedWeight: 1, resolvedBucket: null, resolvedWeightSource: null },
+          { playerTag: "#PQQQ", clanTag: "#CLAN", playerName: "B", townHall: 18, resolvedWeight: 1, resolvedBucket: null, resolvedWeightSource: null },
+        ],
+      }],
+    });
+    fillerTagsMock.mockResolvedValueOnce(["#PJJJ", "#PQQQ", "#P888"]);
+
+    const service = makeService(
+      { channels: { fetch: vi.fn().mockResolvedValue(makeChannel()) } } as any,
+      {
+        getRoutingConfigForType: vi.fn().mockResolvedValue({
+          routingMode: "CUSTOM",
+          channelId: "123",
+          legacy: false,
+          configured: true,
+        }),
+        getChannelId: vi.fn(),
+      } as any,
+    );
+
+    await service.runCycle(NOW);
+
+    expect(fillerTagsMock).toHaveBeenCalledTimes(1);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({
+          fillerCaptureComplete: true,
+          fillerPlayerTags: ["#PJJJ", "#PQQQ"],
+        })],
+      }),
+    );
+  });
+
+  it("distinguishes exact zero fillers from an unavailable filler registry", async () => {
+    fillerTagsMock.mockResolvedValueOnce(["#P888"]);
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+
+    await service.runCycle(NOW);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({
+          fillerCaptureComplete: true,
+          fillerPlayerTags: [],
+        })],
+      }),
+    );
+
+    prismaMock.syncClanReadinessSnapshot.createMany.mockClear();
+    fillerTagsMock.mockRejectedValueOnce(new Error("registry unavailable"));
+    await service.runCycle(NOW);
+
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({
+          fillerCaptureComplete: false,
+          fillerPlayerTags: [],
+          memberCount: 50,
+        })],
+      }),
+    );
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining(
+      "event=filler_registry_capture outcome=failure guild_id=guild-1",
+    ));
+  });
+
+  it("partitions filler tags by the actual roster of each clan", async () => {
+    const baseContext = makeContext();
+    loadContextMock.mockResolvedValueOnce({
+      ...baseContext,
+      clans: [
+        {
+          ...baseContext.clans[0],
+          members: [{
+            playerTag: "#PJJJ",
+            clanTag: "#CLAN",
+            playerName: "J",
+            townHall: 18,
+            resolvedWeight: 1,
+            resolvedBucket: null,
+            resolvedWeightSource: null,
+          }],
+        },
+        {
+          ...baseContext.clans[0],
+          clanTag: "#SEC0ND",
+          clanName: "Second",
+          members: [{
+            playerTag: "#PQQQ",
+            clanTag: "#SEC0ND",
+            playerName: "Q",
+            townHall: 18,
+            resolvedWeight: 1,
+            resolvedBucket: null,
+            resolvedWeightSource: null,
+          }],
+        },
+      ],
+    });
+    fillerTagsMock.mockResolvedValueOnce(["#PQQQ", "#PJJJ"]);
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([
+      makeSnapshot(),
+      { ...makeSnapshot(), id: "snapshot-2", clanTag: "#SEC0ND", clanName: "Second" },
+    ]);
+
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+
+    await service.runCycle(NOW);
+
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.arrayContaining([
+          expect.objectContaining({ clanTag: "#CLAN", fillerPlayerTags: ["#PJJJ"] }),
+          expect.objectContaining({ clanTag: "#SEC0ND", fillerPlayerTags: ["#PQQQ"] }),
+        ]),
+      }),
+    );
+  });
+
+  it("does not overwrite immutable filler facts when the registry later changes", async () => {
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [{
+        ...makeContext().clans[0],
+        members: [{
+          playerTag: "#PJJJ",
+          clanTag: "#CLAN",
+          playerName: "J",
+          townHall: 18,
+          resolvedWeight: 1,
+          resolvedBucket: null,
+          resolvedWeightSource: null,
+        }],
+      }],
+    });
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [{
+        ...makeContext().clans[0],
+        members: [{
+          playerTag: "#PJJJ",
+          clanTag: "#CLAN",
+          playerName: "J",
+          townHall: 18,
+          resolvedWeight: 1,
+          resolvedBucket: null,
+          resolvedWeightSource: null,
+        }],
+      }],
+    });
+    const createdRows: any[] = [];
+    prismaMock.syncClanReadinessSnapshot.createMany.mockImplementation(async ({ data }: any) => {
+      for (const row of data) {
+        if (!createdRows.some((existing) =>
+          existing.guildId === row.guildId &&
+          existing.syncTime.getTime() === row.syncTime.getTime() &&
+          existing.clanTag === row.clanTag,
+        )) {
+          createdRows.push({ ...row, fillerPlayerTags: [...row.fillerPlayerTags] });
+        }
+      }
+      return { count: data.length === 0 ? 0 : 1 };
+    });
+    fillerTagsMock.mockResolvedValueOnce(["#PJJJ"]);
+
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+    await service.runCycle(NOW);
+
+    fillerTagsMock.mockResolvedValueOnce(["#PQQQ"]);
+    await service.runCycle(NOW);
+
+    expect(createdRows[0]?.fillerPlayerTags).toEqual(["#PJJJ"]);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledTimes(2);
   });
 
   it("captures a FAILED readiness publication while it remains inside the boundary grace window", async () => {
@@ -415,6 +610,30 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(prismaMock.syncEvent.deleteMany).toHaveBeenCalledTimes(1);
     expect(second.delivered).toBe(1);
     expect(channel.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps actionable claim database failure context after shared extraction", async () => {
+    const channel = makeChannel();
+    prismaMock.syncEvent.findFirst.mockRejectedValueOnce(new Error("claim database unavailable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const service = makeService({
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CUSTOM",
+        channelId: "123",
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any);
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.failed).toBe(1);
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(
+      "reason=reservation_unavailable:claim database unavailable",
+    ));
   });
 
   it("uses the persisted zero-deviation snapshot for retry eligibility after ACTUAL changes", async () => {
