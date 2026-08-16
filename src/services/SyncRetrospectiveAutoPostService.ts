@@ -103,10 +103,13 @@ function isSupportedAutoPostChannel(
   }
   if (typeof channel.send !== "function" || typeof channel.permissionsFor !== "function") return false;
   const permissions = channel.permissionsFor(guild?.members?.me ?? client.user);
+  const requiredPermission = channel.type === ChannelType.PublicThread || channel.type === ChannelType.PrivateThread
+    ? PermissionFlagsBits.SendMessagesInThreads
+    : PermissionFlagsBits.SendMessages;
   return Boolean(
     permissions &&
     typeof permissions.has === "function" &&
-    permissions.has(PermissionFlagsBits.SendMessages),
+    permissions.has(requiredPermission),
   );
 }
 

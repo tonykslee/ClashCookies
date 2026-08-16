@@ -1,4 +1,4 @@
-import { ChannelType } from "discord.js";
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SyncRetrospectiveAutoPostService,
@@ -87,15 +87,22 @@ function makeDependencies(overrides: {
   send?: ReturnType<typeof vi.fn>;
   candidates?: Array<{ guildId: string; syncNumber: number; syncTime: Date }>;
   initialEvents?: Array<{ guildId: string; syncTime: Date; payload: any; createdAt?: Date }>;
+  channelType?: ChannelType;
+  sendMessages?: boolean;
+  sendMessagesInThreads?: boolean;
 } = {}) {
   const db = makeEventDb(overrides.candidates, overrides.initialEvents);
   const send = overrides.send ?? vi.fn().mockResolvedValue({ id: "message-1" });
   const channel = {
     id: "channel-1",
     guildId: "guild-1",
-    type: ChannelType.GuildText,
+    type: overrides.channelType ?? ChannelType.GuildText,
     isTextBased: () => true,
-    permissionsFor: vi.fn().mockReturnValue({ has: vi.fn().mockReturnValue(true) }),
+    permissionsFor: vi.fn().mockReturnValue({
+      has: vi.fn((permission) => permission === PermissionFlagsBits.SendMessages
+        ? overrides.sendMessages ?? true
+        : overrides.sendMessagesInThreads ?? true),
+    }),
     send,
   };
   const guild = {
@@ -218,6 +225,59 @@ describe("SyncRetrospectiveAutoPostService", () => {
 
     expect(deps.routing.getRoutingConfigForType).toHaveBeenCalledTimes(2);
     expect(deps.routing.getSyncRetrospectiveEnabledAt).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { label: "GuildText", channelType: ChannelType.GuildText, sendMessages: true, sendMessagesInThreads: false },
+    { label: "GuildAnnouncement", channelType: ChannelType.GuildAnnouncement, sendMessages: true, sendMessagesInThreads: false },
+    { label: "PublicThread", channelType: ChannelType.PublicThread, sendMessages: false, sendMessagesInThreads: true },
+    { label: "PrivateThread", channelType: ChannelType.PrivateThread, sendMessages: false, sendMessagesInThreads: true },
+  ])("accepts $label when its channel-specific send permission is granted", async (permissions) => {
+    const deps = makeDependencies(permissions);
+    const summary = await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(summary.delivered).toBe(1);
+    expect(deps.send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: "thread with SendMessages only", channelType: ChannelType.PublicThread, sendMessages: true, sendMessagesInThreads: false },
+    { label: "normal channel with SendMessagesInThreads only", channelType: ChannelType.GuildText, sendMessages: false, sendMessagesInThreads: true },
+  ])("rejects a destination when its required permission is absent ($label)", async (permissions) => {
+    const deps = makeDependencies(permissions);
+    const summary = await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(summary.delivered).toBe(0);
+    expect(summary.failed).toBe(1);
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(deps.db.syncEvent.events.size).toBe(0);
+  });
+
+  it("retries after a thread destination permission is repaired", async () => {
+    const deps = makeDependencies({
+      channelType: ChannelType.PrivateThread,
+      sendMessages: false,
+      sendMessagesInThreads: false,
+    });
+    const service = new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    );
+
+    const first = await service.runCycle(completedAt);
+    expect(first.failed).toBe(1);
+    expect(deps.send).not.toHaveBeenCalled();
+
+    deps.channel.permissionsFor.mockReturnValue({
+      has: vi.fn((permission) => permission === PermissionFlagsBits.SendMessagesInThreads),
+    });
+    const second = await service.runCycle(completedAt);
+
+    expect(second.delivered).toBe(1);
+    expect(deps.send).toHaveBeenCalledTimes(1);
   });
 
   it("counts one routing failure per affected guild after deduplication", async () => {
