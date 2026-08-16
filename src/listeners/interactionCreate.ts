@@ -87,11 +87,13 @@ import {
   handleCompoHeatMapRefCopyButton,
   handleCompoFillPageButton,
   handleCompoReplacementButton,
+  handleCompoReplacementSelectMenuInteraction,
   handleCompoRefreshButton,
   handleCompoAdviceClanSelectMenuInteraction,
   isCompoHeatMapRefCopyButtonCustomId,
   isCompoFillPageButtonCustomId,
   isCompoReplacementButtonCustomId,
+  isCompoReplacementSelectMenuCustomId,
   isCompoRefreshButtonCustomId,
   isCompoAdviceClanSelectMenuCustomId,
 } from "../commands/Compo";
@@ -959,6 +961,20 @@ const handleSelectMenuInteraction = async (
         interaction,
         "Compo advice clan select menu",
         "Failed to update compo advice clan selection.",
+        err,
+      );
+    }
+    return;
+  }
+
+  if (isCompoReplacementSelectMenuCustomId(interaction.customId)) {
+    try {
+      await handleCompoReplacementSelectMenuInteraction(interaction);
+    } catch (err) {
+      await handleBestEffortSelectMenuFailure(
+        interaction,
+        "Compo replacement filter select menu",
+        "Failed to update replacement filters.",
         err,
       );
     }

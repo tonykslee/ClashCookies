@@ -57,7 +57,10 @@ import {
 } from "../services/CompoPlaceService";
 import {
   CompoReplacementService,
+  filterAndSortCompoReplacementCandidates,
   type CompoReplacementCandidate,
+  type CompoReplacementFilter,
+  type CompoReplacementTypeFilter,
   type CompoReplacementResolution,
 } from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
@@ -688,75 +691,220 @@ export function isCompoFillPageButtonCustomId(customId: string): boolean {
   return isCompoFillPageButtonCustomIdFromService(customId);
 }
 
-type CompoReplacementButtonCustomId =
-  | {
-      kind: "open";
-      userId: string;
-      weight: number;
-    }
-  | {
-      kind: "page";
-      userId: string;
-      weight: number;
-      page: number;
-      direction: "prev" | "next";
-    };
+type CompoReplacementExplorerState = {
+  userId: string;
+  weight: number;
+  page: number;
+  clanTag: string | null;
+  view: "priority" | "all";
+  types: CompoReplacementTypeFilter[];
+  minimumViolations: number;
+};
 
-function buildCompoReplacementCustomId(
-  payload: CompoReplacementButtonCustomId,
-): string {
+const COMPO_REPLACEMENT_TYPE_ORDER: readonly CompoReplacementTypeFilter[] = [
+  "filler",
+  "inactive",
+  "unlinked",
+  "surplus",
+  "violations",
+];
+const COMPO_REPLACEMENT_THRESHOLD_OPTIONS = [0, 1, 2, 3, 5] as const;
+const COMPO_REPLACEMENT_TYPE_MASK: Record<CompoReplacementTypeFilter, number> = {
+  filler: 1,
+  inactive: 2,
+  unlinked: 4,
+  surplus: 8,
+  violations: 16,
+};
+
+type CompoReplacementButtonCustomId =
+  | { kind: "open"; userId: string; weight: number }
+  | { kind: "page"; state: CompoReplacementExplorerState; direction: "prev" | "next" }
+  | { kind: "view"; state: CompoReplacementExplorerState; view: "priority" | "all" }
+  | { kind: "reset"; userId: string; weight: number };
+
+type CompoReplacementSelectCustomId = {
+  kind: "select";
+  field: "clan" | "type" | "threshold";
+  state: CompoReplacementExplorerState;
+};
+
+function replacementTypesToMask(types: readonly CompoReplacementTypeFilter[]): number {
+  return types.reduce((mask, type) => mask | COMPO_REPLACEMENT_TYPE_MASK[type], 0);
+}
+
+function replacementMaskToTypes(mask: number): CompoReplacementTypeFilter[] {
+  return COMPO_REPLACEMENT_TYPE_ORDER.filter(
+    (type) => (mask & COMPO_REPLACEMENT_TYPE_MASK[type]) !== 0,
+  );
+}
+
+function normalizeReplacementExplorerState(
+  state: CompoReplacementExplorerState,
+): CompoReplacementExplorerState {
+  return {
+    ...state,
+    page: Math.max(0, Math.trunc(state.page)),
+    clanTag: state.clanTag ? normalizeTag(state.clanTag) || null : null,
+    view: state.view === "all" ? "all" : "priority",
+    types: [...new Set(state.types)].filter((type) =>
+      COMPO_REPLACEMENT_TYPE_ORDER.includes(type),
+    ),
+    minimumViolations: COMPO_REPLACEMENT_THRESHOLD_OPTIONS.includes(
+      state.minimumViolations as (typeof COMPO_REPLACEMENT_THRESHOLD_OPTIONS)[number],
+    )
+      ? state.minimumViolations
+      : 0,
+  };
+}
+
+function encodeReplacementExplorerState(state: CompoReplacementExplorerState): string[] {
+  const normalized = normalizeReplacementExplorerState(state);
+  return [
+    normalized.userId,
+    String(Math.trunc(normalized.weight)),
+    String(Math.trunc(normalized.page)),
+    normalized.clanTag ?? "-",
+    normalized.view === "all" ? "a" : "p",
+    replacementTypesToMask(normalized.types).toString(36),
+    String(normalized.minimumViolations),
+  ];
+}
+
+function parseReplacementExplorerState(parts: string[]): CompoReplacementExplorerState | null {
+  if (parts.length !== 7) return null;
+  const [userId, weightValue, pageValue, clanValue, viewValue, maskValue, thresholdValue] = parts;
+  const weight = Number(weightValue);
+  const page = Number(pageValue);
+  const mask = Number.parseInt(maskValue ?? "", 36);
+  const minimumViolations = Number(thresholdValue);
+  if (
+    !userId ||
+    !Number.isFinite(weight) ||
+    weight <= 0 ||
+    !Number.isFinite(page) ||
+    page < 0 ||
+    !Number.isFinite(mask) ||
+    mask < 0 ||
+    (viewValue !== "p" && viewValue !== "a") ||
+    !COMPO_REPLACEMENT_THRESHOLD_OPTIONS.includes(
+      minimumViolations as (typeof COMPO_REPLACEMENT_THRESHOLD_OPTIONS)[number],
+    )
+  ) {
+    return null;
+  }
+  const clanTag = clanValue === "-" ? null : normalizeTag(clanValue ?? "");
+  if (clanValue !== "-" && !clanTag) return null;
+  return {
+    userId,
+    weight: Math.trunc(weight),
+    page: Math.trunc(page),
+    clanTag,
+    view: viewValue === "a" ? "all" : "priority",
+    types: replacementMaskToTypes(mask),
+    minimumViolations,
+  };
+}
+
+function buildCompoReplacementCustomId(payload: CompoReplacementButtonCustomId): string {
   if (payload.kind === "open") {
     return `${COMPO_REPLACEMENTS_PREFIX}:open:${payload.userId}:${Math.trunc(payload.weight)}`;
   }
-  return `${COMPO_REPLACEMENTS_PREFIX}:page:${payload.userId}:${Math.trunc(payload.weight)}:${Math.trunc(payload.page)}:${payload.direction}`;
+  if (payload.kind === "reset") {
+    return `${COMPO_REPLACEMENTS_PREFIX}:rs:${payload.userId}:${Math.trunc(payload.weight)}`;
+  }
+  if (payload.kind === "view") {
+    const state = normalizeReplacementExplorerState({
+      ...payload.state,
+      page: 0,
+      types: [],
+      view: payload.view,
+    });
+    return `${COMPO_REPLACEMENTS_PREFIX}:vw:${encodeReplacementExplorerState(state).join(":")}`;
+  }
+  return `${COMPO_REPLACEMENTS_PREFIX}:pg:${encodeReplacementExplorerState(payload.state).join(":")}:${payload.direction === "prev" ? "b" : "n"}`;
 }
 
-function parseCompoReplacementCustomId(
-  customId: string,
-): CompoReplacementButtonCustomId | null {
+function buildCompoReplacementSelectCustomId(
+  payload: Pick<CompoReplacementSelectCustomId, "field" | "state">,
+): string {
+  const fieldCode = payload.field === "clan" ? "c" : payload.field === "type" ? "t" : "h";
+  return `${COMPO_REPLACEMENTS_PREFIX}:s:${fieldCode}:${encodeReplacementExplorerState(payload.state).join(":")}`;
+}
+
+function parseCompoReplacementCustomId(customId: string): CompoReplacementButtonCustomId | null {
   const parts = String(customId ?? "").split(":");
   if (parts[0] !== COMPO_REPLACEMENTS_PREFIX) return null;
   const action = parts[1];
-  const userId = parts[2];
-  if (!action || !userId) return null;
-
   if (action === "open" && parts.length === 4) {
     const weight = Number(parts[3]);
-    if (!Number.isFinite(weight) || weight <= 0) return null;
-    return {
-      kind: "open",
-      userId,
-      weight: Math.trunc(weight),
-    };
+    if (!parts[2] || !Number.isFinite(weight) || weight <= 0) return null;
+    return { kind: "open", userId: parts[2], weight: Math.trunc(weight) };
   }
-
   if (action === "page" && parts.length === 6) {
     const weight = Number(parts[3]);
     const page = Number(parts[4]);
-    const direction = parts[5];
     if (
+      !parts[2] ||
       !Number.isFinite(weight) ||
       weight <= 0 ||
       !Number.isFinite(page) ||
       page < 0 ||
-      (direction !== "prev" && direction !== "next")
-    ) {
-      return null;
-    }
+      (parts[5] !== "prev" && parts[5] !== "next")
+    ) return null;
     return {
       kind: "page",
-      userId,
-      weight: Math.trunc(weight),
-      page: Math.trunc(page),
-      direction,
+      state: {
+        userId: parts[2],
+        weight: Math.trunc(weight),
+        page: Math.trunc(page),
+        clanTag: null,
+        view: "priority",
+        types: [],
+        minimumViolations: 0,
+      },
+      direction: parts[5],
     };
   }
-
+  if (action === "pg" && parts.length === 10) {
+    const state = parseReplacementExplorerState(parts.slice(2, 9));
+    const direction = parts[9];
+    if (!state || (direction !== "b" && direction !== "n")) return null;
+    return { kind: "page", state, direction: direction === "b" ? "prev" : "next" };
+  }
+  if (action === "vw" && parts.length === 9) {
+    const state = parseReplacementExplorerState(parts.slice(2, 9));
+    if (!state) return null;
+    return { kind: "view", state, view: state.view };
+  }
+  if (action === "rs" && parts.length === 4) {
+    const weight = Number(parts[3]);
+    if (!parts[2] || !Number.isFinite(weight) || weight <= 0) return null;
+    return { kind: "reset", userId: parts[2], weight: Math.trunc(weight) };
+  }
   return null;
 }
 
+function parseCompoReplacementSelectCustomId(
+  customId: string,
+): CompoReplacementSelectCustomId | null {
+  const parts = String(customId ?? "").split(":");
+  if (parts[0] !== COMPO_REPLACEMENTS_PREFIX || parts[1] !== "s" || parts.length !== 10) {
+    return null;
+  }
+  const fieldMap = { c: "clan", t: "type", h: "threshold" } as const;
+  const field = fieldMap[parts[2] as keyof typeof fieldMap];
+  const state = parseReplacementExplorerState(parts.slice(3));
+  return field && state ? { kind: "select", field, state } : null;
+}
+
+export const buildCompoReplacementCustomIdForTest = buildCompoReplacementCustomId;
+export const parseCompoReplacementCustomIdForTest = parseCompoReplacementCustomId;
+export const buildCompoReplacementSelectCustomIdForTest = buildCompoReplacementSelectCustomId;
+export const parseCompoReplacementSelectCustomIdForTest = parseCompoReplacementSelectCustomId;
+
 export function isCompoReplacementButtonCustomId(customId: string): boolean {
-  return String(customId ?? "").startsWith(`${COMPO_REPLACEMENTS_PREFIX}:`);
+  return parseCompoReplacementCustomId(customId) !== null;
 }
 
 export function isCompoAdviceClanSelectMenuCustomId(customId: string): boolean {
@@ -801,23 +949,20 @@ function buildCompoReplacementOpenButton(input: {
 }
 
 function buildCompoReplacementPagerRow(input: {
-  userId: string;
-  weight: number;
-  page: number;
+  state: CompoReplacementExplorerState;
   totalPages: number;
   loading?: boolean;
 }): ActionRowBuilder<ButtonBuilder> {
   const loading = input.loading ?? false;
-  const prevDisabled = loading || input.page <= 0;
-  const nextDisabled = loading || input.page >= input.totalPages - 1;
+  const state = normalizeReplacementExplorerState(input.state);
+  const prevDisabled = loading || state.page <= 0;
+  const nextDisabled = loading || state.page >= input.totalPages - 1;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(
         buildCompoReplacementCustomId({
           kind: "page",
-          userId: input.userId,
-          weight: input.weight,
-          page: input.page,
+          state,
           direction: "prev",
         }),
       )
@@ -828,9 +973,7 @@ function buildCompoReplacementPagerRow(input: {
       .setCustomId(
         buildCompoReplacementCustomId({
           kind: "page",
-          userId: input.userId,
-          weight: input.weight,
-          page: input.page,
+          state,
           direction: "next",
         }),
       )
@@ -838,6 +981,130 @@ function buildCompoReplacementPagerRow(input: {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(nextDisabled),
   );
+}
+
+const COMPO_REPLACEMENT_TYPE_LABELS: Record<CompoReplacementTypeFilter, string> = {
+  filler: "🧍 Filler",
+  inactive: "😴 Inactive",
+  unlinked: "📵 Unlinked",
+  surplus: "📈 Surplus bucket",
+  violations: "⚠ Violations",
+};
+
+function buildCompoReplacementFilterSummary(input: {
+  state: CompoReplacementExplorerState;
+  context: CompoActualStateContext;
+}): string {
+  const state = normalizeReplacementExplorerState(input.state);
+  const clan = state.clanTag
+    ? input.context.clans.find((candidate) => normalizeTag(candidate.clanTag) === state.clanTag)
+    : null;
+  const clanLabel = clan
+    ? clan.shortName?.trim() || abbreviateClan(normalizeCompoClanDisplayName(clan.clanName))
+    : "All clans";
+  const filterLabel =
+    state.types.length > 0
+      ? state.types.map((type) => COMPO_REPLACEMENT_TYPE_LABELS[type].replace(/^\S+\s/, "")).join(", ")
+      : state.view === "all"
+        ? "All"
+        : "Priority";
+  const violationLabel = state.minimumViolations > 0 ? `${state.minimumViolations}+` : "Any";
+  return `Filters: ${clanLabel} · ${filterLabel} · Violations: ${violationLabel}`;
+}
+
+function buildCompoReplacementExplorerComponents(input: {
+  state: CompoReplacementExplorerState;
+  context: CompoActualStateContext;
+  resolution: CompoReplacementResolution;
+  totalPages: number;
+  loading?: boolean;
+}): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
+  const state = normalizeReplacementExplorerState(input.state);
+  const loading = input.loading ?? false;
+  const candidateClanTags = new Set(
+    input.resolution.candidates.map((candidate) => normalizeTag(candidate.clanTag)),
+  );
+  const clanChoices = input.context.clans
+    .filter((clan) => candidateClanTags.has(normalizeTag(clan.clanTag)))
+    .map((clan) => ({
+      tag: normalizeTag(clan.clanTag),
+      label: clan.shortName?.trim() || abbreviateClan(normalizeCompoClanDisplayName(clan.clanName)),
+    }))
+    .filter((choice, index, list) => choice.tag && list.findIndex((item) => item.tag === choice.tag) === index);
+  const selectedClan = clanChoices.find((choice) => choice.tag === state.clanTag);
+  const limitedClanChoices = clanChoices.slice(0, 24);
+  if (selectedClan && !limitedClanChoices.some((choice) => choice.tag === selectedClan.tag)) {
+    limitedClanChoices[limitedClanChoices.length - 1] = selectedClan;
+  }
+
+  const clanMenu = new StringSelectMenuBuilder()
+    .setCustomId(buildCompoReplacementSelectCustomId({ field: "clan", state }))
+    .setPlaceholder(selectedClan ? `Clan: ${selectedClan.label}` : "All clans")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(loading)
+    .addOptions(
+      { label: "All clans", value: "all", default: state.clanTag === null },
+      ...limitedClanChoices.map((choice) => ({
+        label: choice.label.slice(0, 100),
+        value: choice.tag,
+        default: choice.tag === state.clanTag,
+      })),
+    );
+
+  const typeMenu = new StringSelectMenuBuilder()
+    .setCustomId(buildCompoReplacementSelectCustomId({ field: "type", state }))
+    .setPlaceholder(state.types.length > 0 ? "Replacement types selected" : "Replacement types (optional)")
+    .setMinValues(0)
+    .setMaxValues(COMPO_REPLACEMENT_TYPE_ORDER.length)
+    .setDisabled(loading)
+    .addOptions(
+      COMPO_REPLACEMENT_TYPE_ORDER.map((type) => ({
+        label: COMPO_REPLACEMENT_TYPE_LABELS[type],
+        value: type,
+        default: state.types.includes(type),
+      })),
+    );
+
+  const thresholdMenu = new StringSelectMenuBuilder()
+    .setCustomId(buildCompoReplacementSelectCustomId({ field: "threshold", state }))
+    .setPlaceholder(state.minimumViolations > 0 ? `${state.minimumViolations}+ violations` : "Any violations")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .setDisabled(loading)
+    .addOptions(
+      COMPO_REPLACEMENT_THRESHOLD_OPTIONS.map((threshold) => ({
+        label: threshold === 0 ? "Any" : `${threshold}+`,
+        value: String(threshold),
+        default: threshold === state.minimumViolations,
+      })),
+    );
+
+  const viewButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildCompoReplacementCustomId({ kind: "view", state, view: "priority" }))
+      .setLabel("Priority")
+      .setStyle(state.types.length === 0 && state.view === "priority" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(loading),
+    new ButtonBuilder()
+      .setCustomId(buildCompoReplacementCustomId({ kind: "view", state, view: "all" }))
+      .setLabel("All")
+      .setStyle(state.types.length === 0 && state.view === "all" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(loading),
+    new ButtonBuilder()
+      .setCustomId(buildCompoReplacementCustomId({ kind: "reset", userId: state.userId, weight: state.weight }))
+      .setLabel("Reset Filters")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(loading),
+  );
+
+  return [
+    viewButtons,
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(clanMenu),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(typeMenu),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(thresholdMenu),
+    buildCompoReplacementPagerRow({ state, totalPages: input.totalPages, loading }),
+  ];
 }
 
 function buildCompoActualViewActionRow(input: {
@@ -2149,6 +2416,11 @@ function buildCompoReplacementReasonLabel(candidate: CompoReplacementCandidate):
   if (candidate.reasons.unlinked) {
     labels.push("📵 unlinked");
   }
+  if (candidate.violationCount30d > 0) {
+    labels.push(
+      `⚠ ${candidate.violationCount30d} violation${candidate.violationCount30d === 1 ? "" : "s"}`,
+    );
+  }
   if (candidate.reasons.surplus && candidate.surplusDelta !== null) {
     labels.push(`📈 surplus ${candidate.resolvedBucket} (+${candidate.surplusDelta})`);
   }
@@ -2180,16 +2452,26 @@ function buildCompoReplacementClanLabel(
 function buildCompoReplacementDetailPages(input: {
   context: CompoActualStateContext;
   resolution: CompoReplacementResolution;
+  filteredCandidates: CompoReplacementCandidate[];
+  filterSummary: string;
+  showingSummary: string;
 }): string[] {
   const pages: string[] = [];
-  const legend = "Legend: 🧍 filler · 😴 inactive · 📵 unlinked · 📈 surplus bucket";
+  const legend = "Legend: 🧍 filler · 😴 inactive · 📵 unlinked · ⚠ 30d violations · 📈 surplus bucket";
+  const headerLines = [legend, input.filterSummary, input.showingSummary, ""];
+  const filteredByClan = new Map<string, CompoReplacementCandidate[]>();
+  for (const candidate of input.filteredCandidates) {
+    const clanCandidates = filteredByClan.get(candidate.clanTag) ?? [];
+    clanCandidates.push(candidate);
+    filteredByClan.set(candidate.clanTag, clanCandidates);
+  }
   const groupedCandidates = input.resolution.summaryByClan
     .map((summary) => ({
       clanTag: summary.clanTag,
       label: buildCompoReplacementClanLabel(summary.clanTag, input.context, input.resolution),
-      rows: input.resolution.candidates
-        .filter((candidate) => candidate.clanTag === summary.clanTag)
-        .map((candidate) => formatCompoReplacementDetailRow(candidate)),
+      rows: filteredByClan
+        .get(summary.clanTag)
+        ?.map((candidate) => formatCompoReplacementDetailRow(candidate)) ?? [],
     }))
     .filter((group) => group.rows.length > 0);
 
@@ -2199,13 +2481,14 @@ function buildCompoReplacementDetailPages(input: {
 
   const buildPageText = (lines: string[]): string => lines.join("\n").trim();
   const pagesLines: string[][] = [];
-  let currentLines: string[] = [legend, ""];
+  let currentLines: string[] = [...headerLines];
+  const hasPageContent = (): boolean => currentLines.length > headerLines.length;
 
   const flushCurrent = () => {
-    if (currentLines.length > 2) {
+    if (hasPageContent()) {
       pagesLines.push(currentLines);
     }
-    currentLines = [legend, ""];
+    currentLines = [...headerLines];
   };
 
   const currentTextLength = (lines: string[]): number => buildPageText(lines).length;
@@ -2214,24 +2497,20 @@ function buildCompoReplacementDetailPages(input: {
 
   for (const group of groupedCandidates) {
     const heading = `**${group.label}**`;
-    if (!canAppendLine(heading) && currentLines.length > 2) {
+    if (!canAppendLine(heading) && hasPageContent()) {
       flushCurrent();
     }
-    if (!canAppendLine(heading) && currentLines.length <= 2) {
-      currentLines.push(heading);
-    } else {
-      currentLines.push(heading);
-    }
+    currentLines.push(heading);
 
     for (const row of group.rows) {
-      if (!canAppendLine(row) && currentLines.length > 2) {
+      if (!canAppendLine(row) && hasPageContent()) {
         flushCurrent();
         currentLines.push(heading);
       }
       currentLines.push(row);
     }
 
-    if (!canAppendLine("") && currentLines.length > 2) {
+    if (!canAppendLine("") && hasPageContent()) {
       flushCurrent();
     } else {
       currentLines.push("");
@@ -2259,24 +2538,33 @@ function buildCompoReplacementDetailEmbed(input: {
   return embed;
 }
 
-function buildCompoReplacementDetailComponents(input: {
-  userId: string;
-  weight: number;
-  pageIndex: number;
-  totalPages: number;
-}): Array<ActionRowBuilder<ButtonBuilder>> {
-  if (input.totalPages <= 1) {
-    return [];
-  }
+function buildCompoReplacementEmptyFilterPage(input: {
+  filterSummary: string;
+  showingSummary: string;
+}): string {
   return [
-    buildCompoReplacementPagerRow({
-      userId: input.userId,
-      weight: input.weight,
-      page: input.pageIndex,
-      totalPages: input.totalPages,
-      loading: false,
-    }),
-  ];
+    "Legend: 🧍 filler · 😴 inactive · 📵 unlinked · ⚠ 30d violations · 📈 surplus bucket",
+    input.filterSummary,
+    input.showingSummary,
+    "",
+    "No candidates match the current filters.",
+  ].join("\n");
+}
+
+function buildCompoReplacementDetailComponents(input: {
+  state: CompoReplacementExplorerState;
+  context: CompoActualStateContext;
+  resolution: CompoReplacementResolution;
+  totalPages: number;
+  loading?: boolean;
+}): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
+  return buildCompoReplacementExplorerComponents({
+    state: input.state,
+    context: input.context,
+    resolution: input.resolution,
+    totalPages: input.totalPages,
+    loading: input.loading,
+  });
 }
 
 function mapCompoActualStateErrorToMessage(action: "load" | "refresh"): string {
@@ -2762,7 +3050,10 @@ export async function handleCompoReplacementButton(
     return;
   }
 
-  if (interaction.user.id !== parsed.userId) {
+  const requesterId = parsed.kind === "open" || parsed.kind === "reset"
+    ? parsed.userId
+    : parsed.state.userId;
+  if (interaction.user.id !== requesterId) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this replacements button.",
@@ -2772,22 +3063,63 @@ export async function handleCompoReplacementButton(
 
   try {
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (parsed.kind === "open") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.deferUpdate();
+      }
     }
 
+    const state = parsed.kind === "open"
+      ? {
+          userId: parsed.userId,
+          weight: parsed.weight,
+          page: 0,
+          clanTag: null,
+          view: "priority" as const,
+          types: [] as CompoReplacementTypeFilter[],
+          minimumViolations: 0,
+        }
+      : parsed.kind === "reset"
+        ? {
+            userId: parsed.userId,
+            weight: parsed.weight,
+            page: 0,
+            clanTag: null,
+            view: "priority" as const,
+            types: [] as CompoReplacementTypeFilter[],
+            minimumViolations: 0,
+          }
+        : parsed.kind === "view"
+          ? { ...parsed.state, page: 0, types: [], view: parsed.view }
+          : parsed.state;
     const context = await loadCompoActualStateContext(interaction.guildId ?? null);
-    const resolver = new CompoReplacementService();
-    const resolution = await resolver.resolveReplacementCandidates({
+    const resolution = await new CompoReplacementService().resolveReplacementCandidates({
       guildId: interaction.guildId ?? null,
-      weight: parsed.weight,
+      weight: state.weight,
       context,
+      includeViolationCounts: true,
     });
+    const filtered = filterAndSortCompoReplacementCandidates({
+      candidates: resolution.candidates,
+      filter: {
+        view: state.view,
+        types: state.types,
+        clanTag: state.clanTag,
+        minimumViolations: state.minimumViolations,
+      } satisfies CompoReplacementFilter,
+    });
+    const filterSummary = buildCompoReplacementFilterSummary({ state, context });
+    const showingSummary = `Showing ${filtered.filteredCount} of ${filtered.totalCandidateCount} candidates`;
     const pages = buildCompoReplacementDetailPages({
       context,
       resolution,
+      filteredCandidates: filtered.candidates,
+      filterSummary,
+      showingSummary,
     });
 
-    if (pages.length === 0) {
+    if (resolution.candidates.length === 0) {
       await interaction.editReply({
         content: "No replacement candidates found from current stored data.",
         embeds: [],
@@ -2796,22 +3128,24 @@ export async function handleCompoReplacementButton(
       return;
     }
 
-    const pageIndex =
-      parsed.kind === "page"
-        ? Math.min(pages.length - 1, Math.max(0, parsed.direction === "next" ? parsed.page + 1 : parsed.page - 1))
-        : 0;
+    const totalPages = Math.max(1, pages.length);
+    const pageIndex = pages.length === 0
+      ? 0
+      : parsed.kind === "page"
+        ? Math.min(pages.length - 1, Math.max(0, parsed.direction === "next" ? state.page + 1 : state.page - 1))
+        : Math.min(pages.length - 1, Math.max(0, state.page));
     await interaction.editReply({
       content: "",
       embeds: [buildCompoReplacementDetailEmbed({
-        pageText: pages[pageIndex] ?? pages[0] ?? "",
+        pageText: pages[pageIndex] ?? buildCompoReplacementEmptyFilterPage({ filterSummary, showingSummary }),
         pageIndex,
-        totalPages: pages.length,
+        totalPages,
       })],
       components: buildCompoReplacementDetailComponents({
-        userId: parsed.userId,
-        weight: parsed.weight,
-        pageIndex,
-        totalPages: pages.length,
+        state: { ...state, page: pageIndex },
+        context,
+        resolution,
+        totalPages,
       }),
     });
   } catch (err) {
@@ -2828,6 +3162,111 @@ export async function handleCompoReplacementButton(
       ephemeral: true,
       content: "Failed to open replacement candidates. Try again in a moment.",
     });
+  }
+}
+
+export function isCompoReplacementSelectMenuCustomId(customId: string): boolean {
+  return parseCompoReplacementSelectCustomId(customId) !== null;
+}
+
+export async function handleCompoReplacementSelectMenuInteraction(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const parsed = parseCompoReplacementSelectCustomId(interaction.customId);
+  if (!parsed) {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ ephemeral: true, content: "Invalid replacement filter action." });
+    }
+    return;
+  }
+  if (interaction.user.id !== parsed.state.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this replacements button.",
+    });
+    return;
+  }
+
+  const state: CompoReplacementExplorerState = { ...parsed.state, page: 0 };
+  if (parsed.field === "clan") {
+    const selected = interaction.values[0] ?? "all";
+    state.clanTag = selected === "all" ? null : normalizeTag(selected) || null;
+    if (selected !== "all" && !state.clanTag) {
+      await interaction.reply({ ephemeral: true, content: "Invalid clan selection." });
+      return;
+    }
+  } else if (parsed.field === "type") {
+    state.types = interaction.values.filter((value): value is CompoReplacementTypeFilter =>
+      COMPO_REPLACEMENT_TYPE_ORDER.includes(value as CompoReplacementTypeFilter),
+    );
+  } else {
+    const threshold = Number(interaction.values[0]);
+    if (!COMPO_REPLACEMENT_THRESHOLD_OPTIONS.includes(
+      threshold as (typeof COMPO_REPLACEMENT_THRESHOLD_OPTIONS)[number],
+    )) {
+      await interaction.reply({ ephemeral: true, content: "Invalid violation threshold." });
+      return;
+    }
+    state.minimumViolations = threshold;
+  }
+
+  try {
+    await interaction.deferUpdate();
+    const context = await loadCompoActualStateContext(interaction.guildId ?? null);
+    const resolution = await new CompoReplacementService().resolveReplacementCandidates({
+      guildId: interaction.guildId ?? null,
+      weight: state.weight,
+      context,
+      includeViolationCounts: true,
+    });
+    const filtered = filterAndSortCompoReplacementCandidates({
+      candidates: resolution.candidates,
+      filter: {
+        view: state.view,
+        types: state.types,
+        clanTag: state.clanTag,
+        minimumViolations: state.minimumViolations,
+      },
+    });
+    const filterSummary = buildCompoReplacementFilterSummary({ state, context });
+    const showingSummary = `Showing ${filtered.filteredCount} of ${filtered.totalCandidateCount} candidates`;
+    const pages = buildCompoReplacementDetailPages({
+      context,
+      resolution,
+      filteredCandidates: filtered.candidates,
+      filterSummary,
+      showingSummary,
+    });
+    if (resolution.candidates.length === 0) {
+      await interaction.editReply({
+        content: "No replacement candidates found from current stored data.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    const totalPages = Math.max(1, pages.length);
+    await interaction.editReply({
+      content: "",
+      embeds: [buildCompoReplacementDetailEmbed({
+        pageText: pages[0] ?? buildCompoReplacementEmptyFilterPage({ filterSummary, showingSummary }),
+        pageIndex: 0,
+        totalPages,
+      })],
+      components: buildCompoReplacementDetailComponents({
+        state: { ...state, page: 0 },
+        context,
+        resolution,
+        totalPages,
+      }),
+    });
+  } catch (err) {
+    console.error(`compo replacement filter failed: ${formatError(err)}`);
+    await interaction.editReply({
+      content: "Failed to update replacement filters. Try again in a moment.",
+      embeds: [],
+      components: [],
+    }).catch(() => undefined);
   }
 }
 
