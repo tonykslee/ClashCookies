@@ -292,20 +292,22 @@ export class CompoReplacementService {
         const isSameBucket = resolvedBucket === bucket;
         const surplusDelta = surplusDeltaByBucket.get(resolvedBucket) ?? null;
         const hasSurplusReason = surplusDelta !== null;
-        if (!isSameBucket && !hasSurplusReason) continue;
-
         const discordUserId = linkedUserIdByPlayerTag.get(playerTag) ?? null;
+        const isFiller = fillerTagSet.has(playerTag);
+        const isInactive =
+          inactiveByDaysTagSet.has(playerTag) || inactiveByWarsTagSet.has(playerTag);
+        const isUnlinked = discordUserId === null;
+        const qualifiesByExistingRule =
+          isSameBucket && (isFiller || isInactive || isUnlinked);
+        const qualifiesBySurplus = hasSurplusReason;
+        if (!qualifiesByExistingRule && !qualifiesBySurplus) continue;
+
         const reasons = buildReasonFlags({
-          filler: isSameBucket && fillerTagSet.has(playerTag),
-          inactive:
-            isSameBucket &&
-            (inactiveByDaysTagSet.has(playerTag) || inactiveByWarsTagSet.has(playerTag)),
-          unlinked: isSameBucket && discordUserId === null,
+          filler: isFiller,
+          inactive: isInactive,
+          unlinked: isUnlinked,
           surplus: hasSurplusReason,
         });
-        if (!reasons.filler && !reasons.inactive && !reasons.unlinked && !reasons.surplus) {
-          continue;
-        }
 
         memberSeeds.push({
           key: `${clan.clanTag}|${playerTag}`,

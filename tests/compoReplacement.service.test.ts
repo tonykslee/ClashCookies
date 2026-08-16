@@ -437,14 +437,17 @@ describe("CompoReplacementService", () => {
     });
   });
 
-  it("stacks surplus and existing reasons, and allows multiple surplus buckets in one clan", async () => {
+  it("stacks surplus and existing reasons across buckets, and allows multiple surplus buckets in one clan", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#P000098", discordUserId: "333333333333333333" },
       { playerTag: "#P000099", discordUserId: "444444444444444444" },
       { playerTag: "#P000090", discordUserId: "555555555555555555" },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
-    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000099" }]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([
+      { playerTag: "#P000099" },
+      { playerTag: "#P000090" },
+    ]);
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [],
     } as any);
@@ -459,12 +462,13 @@ describe("CompoReplacementService", () => {
           { playerTag: "#P000090", playerName: "Balanced TH17", resolvedWeight: 165000 },
         ],
         bucketCounts: { TH16: 1, TH15: 1, TH17: 1 },
-        heatMapRef: makeHeatMapRef({ th16Count: 0, th15Count: 0, th17Count: 1 }),
+        heatMapRef: makeHeatMapRef({ th16Count: 0, th15Count: 0, th17Count: 0 }),
       }),
     });
 
     expect(result.candidates.map((candidate) => candidate.playerTag)).toEqual([
       "#P000098",
+      "#P000090",
       "#P000099",
     ]);
     const byTag = new Map(result.candidates.map((candidate) => [candidate.playerTag, candidate] as const));
@@ -472,15 +476,15 @@ describe("CompoReplacementService", () => {
       surplusDelta: 1,
       reasons: { filler: true, inactive: false, unlinked: false, surplus: true },
     });
-    expect(byTag.get("#P000098")).toMatchObject({
-      resolvedBucket: "TH16",
+    expect(byTag.get("#P000090")).toMatchObject({
+      resolvedBucket: "TH17",
       surplusDelta: 1,
-      reasons: { filler: false, inactive: false, unlinked: false, surplus: true },
+      reasons: { filler: true, inactive: false, unlinked: false, surplus: true },
     });
     expect(result.summaryByClan[0]).toMatchObject({
-      uniqueCandidateCount: 2,
-      fillerCount: 1,
-      surplusCount: 2,
+      uniqueCandidateCount: 3,
+      fillerCount: 2,
+      surplusCount: 3,
     });
   });
 });
