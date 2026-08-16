@@ -17,8 +17,8 @@ const MAX_SELECT_OPTIONS = 25;
 const MAX_SELECT_ROWS = 5;
 const MAX_SELECTABLE_CLANS = MAX_SELECT_OPTIONS * MAX_SELECT_ROWS;
 const MAX_DETAIL_FIELDS = 25;
-const MAX_DETAIL_EMBEDS = 10;
-const DETAIL_CHAR_LIMIT = 6000;
+const MAX_EMBEDS = 10;
+export const MAX_MESSAGE_EMBED_CHARS = 6000;
 const UNKNOWN = "\u2014";
 
 function formatMetricNumber(value: number | null): string {
@@ -40,7 +40,7 @@ function formatCoverageMetric(
 }
 
 function formatClanLine(clan: SyncRetrospectiveClanRow): string {
-  const displayName = escapeClanName(clan.identity.clanName ?? clan.identity.clanTag);
+  const displayName = escapeClanName(detailText(clan.identity.clanName ?? clan.identity.clanTag, 180));
   const stars = clan.war.stars === null ? "—★" : `${formatMetricNumber(clan.war.stars)}★`;
   const missed = clan.missedAttacks.coverageComplete && clan.missedAttacks.total !== null
     ? `${formatMetricNumber(clan.missedAttacks.total)} missed`
@@ -78,6 +78,37 @@ function chunkLines(lines: string[], limit: number): string[][] {
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+type EmbedJson = ReturnType<EmbedBuilder["toJSON"]>;
+
+function toEmbedJson(embed: EmbedBuilder | EmbedJson): EmbedJson {
+  return embed instanceof EmbedBuilder ? embed.toJSON() : embed;
+}
+
+/** Purpose: count the exact textual characters Discord charges across one message's embeds. */
+export function aggregateEmbedChars(embeds: readonly (EmbedBuilder | EmbedJson)[]): number {
+  return embeds.reduce((total, embed) => {
+    const data = toEmbedJson(embed);
+    return total +
+      (data.title?.length ?? 0) +
+      (data.description?.length ?? 0) +
+      (data.footer?.text.length ?? 0) +
+      (data.author?.name.length ?? 0) +
+      (data.fields ?? []).reduce((fieldTotal, field) => fieldTotal + field.name.length + field.value.length, 0);
+  }, 0);
+}
+
+function embedsRespectDiscordLimits(embeds: readonly EmbedBuilder[]): boolean {
+  return embeds.length <= MAX_EMBEDS &&
+    aggregateEmbedChars(embeds) <= MAX_MESSAGE_EMBED_CHARS &&
+    embeds.every((embed) => {
+      const data = embed.toJSON();
+      return (data.title?.length ?? 0) <= 256 &&
+        (data.description?.length ?? 0) <= 4096 &&
+        (data.fields ?? []).length <= MAX_DETAIL_FIELDS &&
+        (data.fields ?? []).every((field) => field.name.length <= 256 && field.value.length <= FIELD_VALUE_LIMIT);
+    });
 }
 
 function buildMetricFields(result: SyncRetrospectiveResult) {
@@ -123,7 +154,7 @@ function buildSyncDescription(result: SyncRetrospectiveResult): string {
 function buildClanFields(chunks: string[][], startIndex: number) {
   return chunks.map((chunk, index) => ({
     name: `Clans ${startIndex + index + 1}`,
-    value: chunk.join("\n").slice(0, FIELD_VALUE_LIMIT),
+    value: chunk.join("\n"),
     inline: false,
   }));
 }
@@ -151,7 +182,7 @@ export function hasSyncRetrospectiveData(result: SyncRetrospectiveResult): boole
 }
 
 /** Purpose: render the DB-first alliance retrospective without owning any state. */
-export function buildSyncRetrospectiveEmbeds(result: SyncRetrospectiveResult): EmbedBuilder[] {
+function buildLegacySyncRetrospectiveEmbeds(result: SyncRetrospectiveResult): EmbedBuilder[] {
   const clans = sortSyncRetrospectiveClans(result.clans);
   const clanChunks = chunkLines(clans.map(formatClanLine), FIELD_VALUE_LIMIT);
   const embeds: EmbedBuilder[] = [];
@@ -181,6 +212,44 @@ export function buildSyncRetrospectiveEmbeds(result: SyncRetrospectiveResult): E
   }
 
   return embeds;
+}
+
+/** Purpose: render the alliance retrospective within Discord's shared message budget. */
+export function buildSyncRetrospectiveEmbeds(result: SyncRetrospectiveResult): EmbedBuilder[] {
+  const clans = sortSyncRetrospectiveClans(result.clans);
+  if (clans.length === 0) return buildLegacySyncRetrospectiveEmbeds(result);
+
+  const clanLines = clans.map(formatClanLine);
+  const metricFields = buildMetricFields(result);
+  const title = `Sync #${result.identity.syncNumber} Retrospective`;
+  const description = buildSyncDescription(result);
+
+  for (let visibleCount = clanLines.length; visibleCount >= 0; visibleCount -= 1) {
+    const visibleChunks = chunkLines(clanLines.slice(0, visibleCount), FIELD_VALUE_LIMIT);
+    const fields = [
+      ...metricFields,
+      ...(visibleChunks.length > 0
+        ? buildClanFields(visibleChunks, 0)
+        : [{ name: "Clans", value: "No clan rows available.", inline: false }]),
+    ];
+    const omittedCount = clanLines.length - visibleCount;
+    if (omittedCount > 0) {
+      fields.push({
+        name: "Clans (continued)",
+        value: `\u2026 ${omittedCount} additional clans are available from the dropdowns below.`,
+        inline: false,
+      });
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(EMBED_COLOR)
+      .setTitle(title)
+      .setDescription(description)
+      .addFields(fields);
+    if (embedsRespectDiscordLimits([embed])) return [embed];
+  }
+
+  return [new EmbedBuilder().setColor(EMBED_COLOR).setTitle(title).setDescription(description).addFields(metricFields)];
 }
 
 /** Purpose: build bounded, single-selection clan drilldown menus. */
@@ -257,27 +326,64 @@ function buildDetailFields(name: string, rows: string[]): DetailField[] {
   }));
 }
 
-function packDetailFields(
+function buildDetailEmbedsForFields(
   fields: DetailField[],
   title: string,
   description: string,
-): DetailField[][] {
+): EmbedBuilder[] {
   const pages: DetailField[][] = [];
-  let current: DetailField[] = [];
-  let currentChars = title.length + description.length;
-  for (const field of fields) {
-    const fieldChars = field.name.length + field.value.length;
-    if (current.length > 0 &&
-      (current.length >= MAX_DETAIL_FIELDS || currentChars + fieldChars > DETAIL_CHAR_LIMIT)) {
-      pages.push(current);
-      current = [];
-      currentChars = title.length;
-    }
-    current.push(field);
-    currentChars += fieldChars;
+  for (let offset = 0; offset < fields.length; offset += MAX_DETAIL_FIELDS) {
+    pages.push(fields.slice(offset, offset + MAX_DETAIL_FIELDS));
   }
-  if (current.length > 0) pages.push(current);
-  return pages.slice(0, MAX_DETAIL_EMBEDS);
+  if (pages.length === 0) pages.push([]);
+
+  return pages.map((page, index) => {
+    const embed = new EmbedBuilder()
+      .setColor(EMBED_COLOR)
+      .setTitle(index === 0 ? title : `${title} \u2014 continued`)
+      .addFields(page);
+    if (index === 0) embed.setDescription(description);
+    return embed;
+  });
+}
+
+function buildBoundedDetailEmbeds(
+  fields: DetailField[],
+  title: string,
+  description: string,
+  omittedNotice: string,
+): EmbedBuilder[] {
+  const complete = buildDetailEmbedsForFields(fields, title, description);
+  if (embedsRespectDiscordLimits(complete)) return complete;
+
+  for (let retainedCount = fields.length - 1; retainedCount >= 0; retainedCount -= 1) {
+    const candidateFields = [
+      ...fields.slice(0, retainedCount),
+      { name: "Additional detail", value: omittedNotice, inline: false as const },
+    ];
+    const candidate = buildDetailEmbedsForFields(candidateFields, title, description);
+    if (embedsRespectDiscordLimits(candidate)) return candidate;
+  }
+
+  return buildDetailEmbedsForFields([
+    { name: "Additional detail", value: omittedNotice, inline: false },
+  ], title, description);
+}
+
+function buildDetailSectionFieldGroups(
+  name: string,
+  rows: string[],
+  detailStartIndex: number,
+): { core: DetailField[]; detail: DetailField[] } {
+  const coreRows = rows.slice(0, detailStartIndex);
+  const detailRows = rows.slice(detailStartIndex);
+  const coreFields = buildDetailFields(name, coreRows);
+  const detailFields = detailRows.map((row) => ({
+    name: `${name} (detail)`,
+    value: row,
+    inline: false as const,
+  }));
+  return { core: coreFields, detail: detailFields };
 }
 
 function buildWarDetailRows(clan: SyncRetrospectiveClanRow): string[] {
@@ -392,20 +498,45 @@ export function buildSyncRetrospectiveClanDetailEmbeds(
   const displayName = detailText(clan.identity.clanName || clan.identity.clanTag, 180);
   const title = `Sync #${result.identity.syncNumber} \u2022 ${displayName}`;
   const description = `\`${detailText(clan.identity.clanTag, 100)}\``;
+  const warRows = buildWarDetailRows(clan);
+  const missedAttackRows = buildMissedAttackRows(clan);
+  const violationRows = buildBoundedViolationRows(clan);
+  const readinessRows = buildReadinessRows(clan);
+  const fillerRows = buildFillerRows(clan);
+  const missedAttackDetailsStart = clan.identity.warId !== null &&
+    clan.missedAttacks.coverageComplete &&
+    clan.missedAttacks.total !== null &&
+    clan.missedAttacks.total > 0 ? 1 : missedAttackRows.length;
+  const violationDetailsStart = clan.identity.warId !== null &&
+    (clan.identity.matchType ?? "").toUpperCase() === "FWA" &&
+    clan.violations.applicable &&
+    clan.violations.evaluationComplete &&
+    clan.violations.total !== null &&
+    clan.violations.total > 0 ? 1 : violationRows.length;
+  const fillerDetailsStart = clan.fillers.fillerCaptureComplete &&
+    clan.fillers.fillerCount !== 0 &&
+    clan.fillers.fillerPlayerTags.length > 0 ? 1 : fillerRows.length;
+  const warFields = buildDetailSectionFieldGroups("War", warRows, warRows.length);
+  const missedAttackFields = buildDetailSectionFieldGroups("Missed attacks", missedAttackRows, missedAttackDetailsStart);
+  const violationFields = buildDetailSectionFieldGroups("FWA violations", violationRows, violationDetailsStart);
+  const readinessFields = buildDetailSectionFieldGroups("Readiness", readinessRows, readinessRows.length);
+  const fillerFields = buildDetailSectionFieldGroups("Fillers", fillerRows, fillerDetailsStart);
   const fields = [
-    ...buildDetailFields("War", buildWarDetailRows(clan)),
-    ...buildDetailFields("Missed attacks", buildMissedAttackRows(clan)),
-    ...buildDetailFields("FWA violations", buildBoundedViolationRows(clan)),
-    ...buildDetailFields("Readiness", buildReadinessRows(clan)),
-    ...buildDetailFields("Fillers", buildFillerRows(clan)),
+    ...warFields.core,
+    ...missedAttackFields.core,
+    ...violationFields.core,
+    ...readinessFields.core,
+    ...fillerFields.core,
+    ...warFields.detail,
+    ...missedAttackFields.detail,
+    ...violationFields.detail,
+    ...readinessFields.detail,
+    ...fillerFields.detail,
   ];
-  const pages = packDetailFields(fields, title, description);
-  return pages.map((page, index) => {
-    const embed = new EmbedBuilder()
-      .setColor(EMBED_COLOR)
-      .setTitle(index === 0 ? title : `${title} \u2014 continued`)
-      .addFields(page);
-    if (index === 0) embed.setDescription(description);
-    return embed;
-  });
+  return buildBoundedDetailEmbeds(
+    fields,
+    title,
+    description,
+    "Additional historical detail omitted due to Discord message limits.",
+  );
 }

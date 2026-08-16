@@ -1,11 +1,25 @@
+import { EmbedBuilder } from "discord.js";
 import { describe, expect, it } from "vitest";
 import type { SyncRetrospectiveResult } from "../src/services/SyncRetrospectiveService";
 import {
+  aggregateEmbedChars,
   buildSyncRetrospectiveClanDetailEmbeds,
   buildSyncRetrospectiveComponents,
   buildSyncRetrospectiveEmbeds,
   sortSyncRetrospectiveClans,
 } from "../src/services/SyncRetrospectiveViewService";
+
+function expectDiscordSafeEmbeds(embeds: ReturnType<typeof buildSyncRetrospectiveEmbeds>) {
+  const serialized = embeds.map((embed) => embed.toJSON());
+  expect(aggregateEmbedChars(embeds)).toBeLessThanOrEqual(6000);
+  expect(serialized.length).toBeLessThanOrEqual(10);
+  expect(serialized.every((embed) =>
+    (embed.title?.length ?? 0) <= 256 &&
+    (embed.description?.length ?? 0) <= 4096 &&
+    (embed.fields ?? []).length <= 25 &&
+    (embed.fields ?? []).every((field) => field.name.length <= 256 && field.value.length <= 1024),
+  )).toBe(true);
+}
 
 function result(overrides: Partial<SyncRetrospectiveResult> = {}): SyncRetrospectiveResult {
   return {
@@ -83,6 +97,17 @@ function clan(overrides: Record<string, unknown> = {}) {
 }
 
 describe("SyncRetrospectiveViewService", () => {
+  it("counts titles, descriptions, fields, footer text, and author names", () => {
+    const embed = new EmbedBuilder()
+      .setTitle("title")
+      .setDescription("description")
+      .setAuthor({ name: "author" })
+      .setFooter({ text: "footer" })
+      .addFields({ name: "field", value: "value", inline: false });
+
+    expect(aggregateEmbedChars([embed])).toBe("titledescriptionauthorfooterfieldvalue".length);
+  });
+
   it("renders known zeros, unknowns, and coverage without collapsing them", () => {
     const embeds = buildSyncRetrospectiveEmbeds(result({
       missedAttacks: { missedAttacksKnownTotal: 0, coverage: { completeClans: 9, warClans: 9 } },
@@ -141,10 +166,15 @@ describe("SyncRetrospectiveViewService", () => {
     const clanFields = embeds.flatMap((embed) => (embed.toJSON().fields ?? []))
       .filter((field) => field.name.startsWith("Clans"));
 
-    expect(embeds.length).toBeGreaterThan(1);
+    expectDiscordSafeEmbeds(embeds);
+    expect(embeds).toHaveLength(1);
     expect(clanFields.length).toBeGreaterThan(1);
     expect(clanFields.every((field) => field.value.length <= 1024)).toBe(true);
-    expect(clanFields.map((field) => field.value).join("\n")).toContain("Clan 099");
+    expect(clanFields.map((field) => field.value).join("\n")).toContain("Clan 000");
+    expect(clanFields.map((field) => field.value).join("\n")).toContain("additional clans are available from the dropdowns below");
+    const menus = buildSyncRetrospectiveComponents(result({ clans }));
+    expect(menus).toHaveLength(4);
+    expect(menus.flatMap((row) => row.toJSON().components[0].options ?? [])).toHaveLength(100);
   });
 
   it("builds one single-select menu for ten clans and keeps canonical ordering", () => {
@@ -194,8 +224,10 @@ describe("SyncRetrospectiveViewService", () => {
     }));
     const rows = buildSyncRetrospectiveComponents(result({ clans }));
     const menus = rows.map((row) => row.toJSON().components[0]);
+    const summaryEmbeds = buildSyncRetrospectiveEmbeds(result({ clans }));
 
     expect(rows).toHaveLength(5);
+    expectDiscordSafeEmbeds(summaryEmbeds);
     expect(menus.map((menu) => menu.custom_id)).toEqual([
       "sync-retro:clan:545:0",
       "sync-retro:clan:545:1",
@@ -249,6 +281,7 @@ describe("SyncRetrospectiveViewService", () => {
     expect(values).toContain("Deviation: —");
     expect(values).toContain("Fillers: 1");
     expect(values).not.toContain("#P1");
+    expect(values).not.toContain("Additional historical detail omitted due to Discord message limits.");
   });
 
   it("keeps pathological persisted detail text within Discord limits", () => {
@@ -256,24 +289,30 @@ describe("SyncRetrospectiveViewService", () => {
     const detailClan = clan({
       identity: { clanTag: "#LONG", clanName: longText },
       missedAttacks: {
-        total: 1,
+        total: 40,
         coverageComplete: true,
-        players: [{ playerTag: longText, playerName: longText, attacksUsed: 0, attacksMissed: 1, starsEarned: 0 }],
+        players: Array.from({ length: 40 }, () => ({
+          playerTag: longText,
+          playerName: longText,
+          attacksUsed: 0,
+          attacksMissed: 1,
+          starsEarned: 0,
+        })),
       },
       violations: {
-        total: 1,
+        total: 40,
         evaluationComplete: true,
         applicable: true,
-        details: [{
+        details: Array.from({ length: 40 }, () => ({
           violationType: longText,
           playerTag: longText,
           playerName: longText,
           reasonLabel: longText,
           expectedBehavior: longText,
           actualBehavior: longText,
-        }],
+        })),
       },
-      fillers: { fillerCount: 1, fillerPlayerTags: [longText], fillerCaptureComplete: true },
+      fillers: { fillerCount: 40, fillerPlayerTags: Array.from({ length: 40 }, () => longText), fillerCaptureComplete: true },
     });
 
     const embeds = buildSyncRetrospectiveClanDetailEmbeds(result({ clans: [detailClan] }), detailClan);
@@ -282,14 +321,17 @@ describe("SyncRetrospectiveViewService", () => {
     const fieldValues = fields.map((field) => field.value);
 
     expect(serialized.length).toBeLessThanOrEqual(10);
+    expect(aggregateEmbedChars(embeds)).toBeLessThanOrEqual(6000);
     expect(fields.length).toBeGreaterThan(0);
     expect(fields.every((field) => field.value.length <= 1024)).toBe(true);
-    expect(serialized.every((embed) => (embed.title?.length ?? 0) + (embed.description?.length ?? 0) +
-      (embed.fields ?? []).reduce((total, field) => total + field.name.length + field.value.length, 0) <= 6000)).toBe(true);
-    expect(fieldValues.join("\n")).toContain("Violations: 1");
+    expect(fields.every((field) => field.name.length <= 256)).toBe(true);
+    expect(serialized.every((embed) => (embed.title?.length ?? 0) <= 256 && (embed.description?.length ?? 0) <= 4096 &&
+      (embed.fields ?? []).length <= 25)).toBe(true);
+    expect(fieldValues.join("\n")).toContain("Violations: 40");
     expect(fieldValues.join("\n")).toContain("Expected:");
     expect(fieldValues.join("\n")).toContain("Actual:");
     expect(fieldValues.join("\n")).toContain("\u2026");
+    expect(fieldValues.join("\n")).toContain("Additional historical detail omitted due to Discord message limits.");
     expect(fieldValues.every((value) => value.length <= 1024)).toBe(true);
   });
 
