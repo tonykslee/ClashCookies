@@ -55,10 +55,13 @@ describe("Sync retrospective clan interactions", () => {
 
   it("accepts only the exact four-part custom-id shape", () => {
     expect(parseSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:0")).toEqual({ syncNumber: 545, menuIndex: 0 });
+    expect(parseSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:4")).toEqual({ syncNumber: 545, menuIndex: 4 });
     expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:0")).toBe(true);
+    expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:4")).toBe(true);
     expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:0:extra")).toBe(false);
     expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:0:0")).toBe(false);
     expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:-1")).toBe(false);
+    expect(isSyncRetrospectiveClanSelectCustomId("sync-retro:clan:545:5")).toBe(false);
   });
 
   it("does not enter the handler for malformed ids", async () => {

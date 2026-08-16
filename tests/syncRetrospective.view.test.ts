@@ -185,6 +185,29 @@ describe("SyncRetrospectiveViewService", () => {
     expect(menus.flatMap((menu) => menu.options ?? [])).toHaveLength(100);
   });
 
+  it("supports five menus and caps malformed input at Discord's 125-clan limit", () => {
+    const clans = Array.from({ length: 126 }, (_, index) => clan({
+      identity: {
+        clanTag: `#TAG${String(index).padStart(3, "0")}`,
+        clanName: `Clan ${String(index).padStart(3, "0")}`,
+      },
+    }));
+    const rows = buildSyncRetrospectiveComponents(result({ clans }));
+    const menus = rows.map((row) => row.toJSON().components[0]);
+
+    expect(rows).toHaveLength(5);
+    expect(menus.map((menu) => menu.custom_id)).toEqual([
+      "sync-retro:clan:545:0",
+      "sync-retro:clan:545:1",
+      "sync-retro:clan:545:2",
+      "sync-retro:clan:545:3",
+      "sync-retro:clan:545:4",
+    ]);
+    expect(menus.every((menu) => (menu.options ?? []).length > 0 && (menu.options ?? []).length <= 25)).toBe(true);
+    expect(menus.flatMap((menu) => menu.options ?? [])).toHaveLength(125);
+    expect(menus.flatMap((menu) => menu.options ?? []).map((option) => option.value)).not.toContain("#TAG125");
+  });
+
   it("renders persisted detail sections with explicit incomplete and not-applicable states", () => {
     const detailClan = clan({
       identity: { clanTag: "#DETAIL", clanName: "Detail Clan", matchType: "FWA" },
@@ -226,6 +249,48 @@ describe("SyncRetrospectiveViewService", () => {
     expect(values).toContain("Deviation: —");
     expect(values).toContain("Fillers: 1");
     expect(values).not.toContain("#P1");
+  });
+
+  it("keeps pathological persisted detail text within Discord limits", () => {
+    const longText = "X".repeat(5000);
+    const detailClan = clan({
+      identity: { clanTag: "#LONG", clanName: longText },
+      missedAttacks: {
+        total: 1,
+        coverageComplete: true,
+        players: [{ playerTag: longText, playerName: longText, attacksUsed: 0, attacksMissed: 1, starsEarned: 0 }],
+      },
+      violations: {
+        total: 1,
+        evaluationComplete: true,
+        applicable: true,
+        details: [{
+          violationType: longText,
+          playerTag: longText,
+          playerName: longText,
+          reasonLabel: longText,
+          expectedBehavior: longText,
+          actualBehavior: longText,
+        }],
+      },
+      fillers: { fillerCount: 1, fillerPlayerTags: [longText], fillerCaptureComplete: true },
+    });
+
+    const embeds = buildSyncRetrospectiveClanDetailEmbeds(result({ clans: [detailClan] }), detailClan);
+    const serialized = embeds.map((embed) => embed.toJSON());
+    const fields = serialized.flatMap((embed) => embed.fields ?? []);
+    const fieldValues = fields.map((field) => field.value);
+
+    expect(serialized.length).toBeLessThanOrEqual(10);
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((field) => field.value.length <= 1024)).toBe(true);
+    expect(serialized.every((embed) => (embed.title?.length ?? 0) + (embed.description?.length ?? 0) +
+      (embed.fields ?? []).reduce((total, field) => total + field.name.length + field.value.length, 0) <= 6000)).toBe(true);
+    expect(fieldValues.join("\n")).toContain("Violations: 1");
+    expect(fieldValues.join("\n")).toContain("Expected:");
+    expect(fieldValues.join("\n")).toContain("Actual:");
+    expect(fieldValues.join("\n")).toContain("\u2026");
+    expect(fieldValues.every((value) => value.length <= 1024)).toBe(true);
   });
 
   it("returns the sorter result without mutating the source array", () => {

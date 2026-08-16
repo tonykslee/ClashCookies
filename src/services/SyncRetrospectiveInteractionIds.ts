@@ -23,7 +23,7 @@ export function parseSyncRetrospectiveClanSelectCustomId(
   const syncNumber = Number(parts[2]);
   const menuIndex = Number(parts[3]);
   if (!Number.isSafeInteger(syncNumber) || syncNumber <= 0) return null;
-  if (!Number.isSafeInteger(menuIndex) || menuIndex < 0 || menuIndex > 3) return null;
+  if (!Number.isSafeInteger(menuIndex) || menuIndex < 0 || menuIndex > 4) return null;
   return { syncNumber, menuIndex };
 }
 

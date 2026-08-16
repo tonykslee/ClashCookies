@@ -48,6 +48,38 @@ function makeCompoSlashInteraction() {
   return interaction;
 }
 
+function makeSyncRetrospectiveClanSelectInteraction() {
+  const interaction: any = {
+    id: "retrospective-interaction-1",
+    customId: "sync-retro:clan:545:0",
+    values: ["#CLAN"],
+    guildId: "guild-1",
+    guild: { id: "guild-1", name: "Guild One" },
+    user: { id: "user-1", tag: "tester#0001" },
+    deferred: false,
+    replied: false,
+    inGuild: () => true,
+    memberPermissions: { has: () => false },
+    member: { roles: ["123"] },
+    isAutocomplete: () => false,
+    isButton: () => false,
+    isUserSelectMenu: () => false,
+    isStringSelectMenu: () => true,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    reply: vi.fn(async () => {
+      interaction.replied = true;
+    }),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+    update: vi.fn().mockResolvedValue(undefined),
+  };
+  return interaction;
+}
+
 async function loadInteractionHandler(runMock: ReturnType<typeof vi.fn>): Promise<{
   handler: ListenerHandler;
   restoreCommand: () => void;
@@ -298,6 +330,47 @@ describe("interactionCreate /compo dispatcher diagnostics", () => {
     } finally {
       vi.useRealTimers();
     }
+  }, 30000);
+});
+
+describe("interactionCreate retrospective clan select routing", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("routes a valid retrospective select to its handler and stops dispatch", async () => {
+    const { CommandPermissionService } = await import("../src/services/CommandPermissionService");
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
+    const { SyncRetrospectiveService } = await import("../src/services/SyncRetrospectiveService");
+    const getBySyncNumber = vi.spyOn(SyncRetrospectiveService.prototype, "getBySyncNumber").mockResolvedValue({
+      identity: { guildId: "guild-1", syncNumber: 545, syncTime: null, cycleMapped: false },
+      warSummary: { clanWarCount: 1, totalStarsKnown: 1, starsCoverage: { known: 1, total: 1 } },
+      missedAttacks: { missedAttacksKnownTotal: 0, coverage: { completeClans: 1, warClans: 1 } },
+      fwaViolations: { violationKnownTotal: 0, coverage: { completedFwaEvaluations: 1, fwaWars: 1 } },
+      readiness: { averageDeviation: null, deviationCoverage: { valid: 0, totalSnapshots: 0 } },
+      fillers: { fillerKnownTotal: null, fillerCoverage: { complete: 0, totalSnapshots: 0 } },
+      clans: [{
+        identity: { clanTag: "#CLAN", clanName: "Detail Clan", warId: 1, matchType: "FWA", expectedOutcome: "WIN", actualOutcome: "WIN" },
+        war: { stars: 1 },
+        missedAttacks: { total: 0, coverageComplete: true, players: [] },
+        violations: { total: 0, evaluationComplete: true, applicable: true, details: [] },
+        readiness: { memberCount: null, deviationScore: null, projectionComplete: false, dataAvailable: false },
+        fillers: { fillerCount: null, fillerPlayerTags: [], fillerCaptureComplete: false },
+      }],
+    } as any);
+    const { handler } = await loadInteractionHandler(vi.fn().mockResolvedValue(undefined));
+    const interaction = makeSyncRetrospectiveClanSelectInteraction();
+
+    await handler(interaction);
+
+    expect(getBySyncNumber).toHaveBeenCalledWith({ guildId: "guild-1", syncNumber: 545 });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.update).not.toHaveBeenCalled();
   }, 30000);
 });
 

@@ -14,6 +14,8 @@ const FIELD_VALUE_LIMIT = 1024;
 const FIRST_EMBED_CLAN_FIELD_LIMIT = 3;
 const FOLLOWING_EMBED_CLAN_FIELD_LIMIT = 4;
 const MAX_SELECT_OPTIONS = 25;
+const MAX_SELECT_ROWS = 5;
+const MAX_SELECTABLE_CLANS = MAX_SELECT_OPTIONS * MAX_SELECT_ROWS;
 const MAX_DETAIL_FIELDS = 25;
 const MAX_DETAIL_EMBEDS = 10;
 const DETAIL_CHAR_LIMIT = 6000;
@@ -185,7 +187,8 @@ export function buildSyncRetrospectiveEmbeds(result: SyncRetrospectiveResult): E
 export function buildSyncRetrospectiveComponents(
   result: SyncRetrospectiveResult,
 ): ActionRowBuilder<StringSelectMenuBuilder>[] {
-  const clans = sortSyncRetrospectiveClans(result.clans);
+  // Discord permits at most five action rows; keep malformed oversized input deterministic.
+  const clans = sortSyncRetrospectiveClans(result.clans).slice(0, MAX_SELECTABLE_CLANS);
   if (clans.length === 0) return [];
 
   const menuCount = Math.ceil(clans.length / MAX_SELECT_OPTIONS);
@@ -243,6 +246,9 @@ type DetailField = { name: string; value: string; inline: false };
 
 function buildDetailFields(name: string, rows: string[]): DetailField[] {
   const safeRows = rows.length > 0 ? rows : [UNKNOWN];
+  if (safeRows.some((row) => row.length > FIELD_VALUE_LIMIT)) {
+    throw new Error(`Sync retrospective detail row exceeded ${FIELD_VALUE_LIMIT} characters: ${name}`);
+  }
   const chunks = chunkLines(safeRows, FIELD_VALUE_LIMIT);
   return chunks.map((chunk, index) => ({
     name: index === 0 ? name : `${name} (continued)`,
@@ -327,6 +333,37 @@ function buildViolationRows(clan: SyncRetrospectiveClanRow): string[] {
   ];
 }
 
+function buildBoundedViolationRows(clan: SyncRetrospectiveClanRow): string[] {
+  const isDetailedFwaViolation =
+    clan.identity.warId !== null &&
+    (clan.identity.matchType ?? "").toUpperCase() === "FWA" &&
+    clan.violations.applicable &&
+    clan.violations.evaluationComplete &&
+    clan.violations.total !== null &&
+    clan.violations.total > 0;
+
+  if (!isDetailedFwaViolation) {
+    return buildViolationRows(clan);
+  }
+
+  const rows = [`Violations: ${detailNumber(clan.violations.total)}`];
+  for (const violation of clan.violations.details) {
+    rows.push(detailName(violation.playerName, violation.playerTag));
+    rows.push(
+      `${detailText(violation.violationType, 180)} \u2014 ${detailText(violation.reasonLabel, 240)}`,
+    );
+
+    if (violation.expectedBehavior) {
+      rows.push(`Expected: ${detailText(violation.expectedBehavior, 240)}`);
+    }
+    if (violation.actualBehavior) {
+      rows.push(`Actual: ${detailText(violation.actualBehavior, 240)}`);
+    }
+  }
+
+  return rows;
+}
+
 function buildReadinessRows(clan: SyncRetrospectiveClanRow): string[] {
   if (!clan.readiness.dataAvailable) return ["Sync-boundary readiness snapshot unavailable."];
   return [
@@ -358,7 +395,7 @@ export function buildSyncRetrospectiveClanDetailEmbeds(
   const fields = [
     ...buildDetailFields("War", buildWarDetailRows(clan)),
     ...buildDetailFields("Missed attacks", buildMissedAttackRows(clan)),
-    ...buildDetailFields("FWA violations", buildViolationRows(clan)),
+    ...buildDetailFields("FWA violations", buildBoundedViolationRows(clan)),
     ...buildDetailFields("Readiness", buildReadinessRows(clan)),
     ...buildDetailFields("Fillers", buildFillerRows(clan)),
   ];
