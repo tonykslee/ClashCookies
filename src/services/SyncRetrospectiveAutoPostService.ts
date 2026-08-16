@@ -165,42 +165,10 @@ export class SyncRetrospectiveAutoPostService {
     summary.candidates = candidates.length;
     if (candidates.length === 0) return summary;
 
-    const enabledCandidates: Array<{
-      candidate: SyncCycleCandidate;
-      enabledAt: Date;
-      channelId: string;
-    }> = [];
-    for (const candidate of candidates) {
-      try {
-        const routing = await this.botLogChannels.getRoutingConfigForType(
-          candidate.guildId,
-          "sync-retrospective",
-        );
-        if (!routing.configured || routing.routingMode === "DISABLED") continue;
-        const enabledAt = await this.botLogChannels.getSyncRetrospectiveEnabledAt(candidate.guildId);
-        if (!enabledAt) {
-          dozzleLog.debug(
-            `[retrospective-auto-post] event=skip guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} reason=enabled_at_unavailable`,
-          );
-          continue;
-        }
-        const channelId = routing.routingMode === "CUSTOM"
-          ? routing.channelId
-          : await this.botLogChannels.getChannelId(candidate.guildId);
-        if (!channelId) continue;
-        enabledCandidates.push({ candidate, enabledAt, channelId });
-      } catch (error) {
-        dozzleLog.error(
-          `[retrospective-auto-post] event=routing_lookup_failed guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} error=${formatError(error)}`,
-        );
-      }
-    }
-    if (enabledCandidates.length === 0) return summary;
-
     const events = (await this.db.syncEvent.findMany({
       where: {
         eventType: SYNC_RETROSPECTIVE_AUTO_POST_EVENT_TYPE,
-        OR: enabledCandidates.map(({ candidate }) => ({
+        OR: candidates.map((candidate) => ({
           guildId: candidate.guildId,
           syncTime: candidate.syncTime,
           clanTag: "",
@@ -209,6 +177,55 @@ export class SyncRetrospectiveAutoPostService {
       select: { guildId: true, syncTime: true, clanTag: true, eventType: true, createdAt: true, payload: true },
     })) as SyncEventCandidate[];
     const eventsByKey = new Map(events.map((event) => [syncEventKey(event), event]));
+    const pendingCandidates = candidates.filter((candidate) => {
+      const existing = eventsByKey.get(syncEventKey(identityFor(candidate)));
+      if (!existing || !isTerminalDelivery(existing.payload)) return true;
+      summary.skipped += 1;
+      return false;
+    });
+    if (pendingCandidates.length === 0) return summary;
+
+    const candidatesByGuild = new Map<string, SyncCycleCandidate[]>();
+    for (const candidate of pendingCandidates) {
+      const guildCandidates = candidatesByGuild.get(candidate.guildId) ?? [];
+      guildCandidates.push(candidate);
+      candidatesByGuild.set(candidate.guildId, guildCandidates);
+    }
+
+    const enabledCandidates: Array<{
+      candidate: SyncCycleCandidate;
+      enabledAt: Date;
+      channelId: string;
+    }> = [];
+    for (const [guildId, guildCandidates] of candidatesByGuild) {
+      try {
+        const routing = await this.botLogChannels.getRoutingConfigForType(
+          guildId,
+          "sync-retrospective",
+        );
+        if (!routing.configured || routing.routingMode === "DISABLED") continue;
+        const enabledAt = await this.botLogChannels.getSyncRetrospectiveEnabledAt(guildId);
+        if (!enabledAt) {
+          dozzleLog.debug(
+            `[retrospective-auto-post] event=skip guild_id=${guildId} reason=enabled_at_unavailable`,
+          );
+          continue;
+        }
+        const channelId = routing.routingMode === "CUSTOM"
+          ? routing.channelId
+          : await this.botLogChannels.getChannelId(guildId);
+        if (!channelId) continue;
+        for (const candidate of guildCandidates) {
+          enabledCandidates.push({ candidate, enabledAt, channelId });
+        }
+      } catch (error) {
+        dozzleLog.error(
+          `[retrospective-auto-post] event=routing_lookup_failed guild_id=${guildId} candidate_count=${guildCandidates.length} error=${formatError(error)}`,
+        );
+        summary.failed += 1;
+      }
+    }
+    if (enabledCandidates.length === 0) return summary;
 
     for (const item of enabledCandidates) {
       const { candidate, enabledAt, channelId } = item;
@@ -237,14 +254,22 @@ export class SyncRetrospectiveAutoPostService {
           const suppression = await markSyncEventSuppressed({
             eventModel: this.db.syncEvent,
             identity,
+            now,
             suppressedPayload: suppressedPayload(candidate),
           });
-          if (suppression === "created") summary.suppressed += 1;
-          else if (suppression === "unavailable") summary.failed += 1;
-          else summary.skipped += 1;
-          dozzleLog.debug(
-            `[retrospective-auto-post] event=suppressed guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} reason=completed_before_enabled`,
-          );
+          if (suppression.state === "suppressed") {
+            summary.suppressed += 1;
+            dozzleLog.debug(
+              `[retrospective-auto-post] event=suppressed guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} reason=completed_before_enabled reclaim=${suppression.reason === "reclaimed" ? 1 : 0}`,
+            );
+          } else if (suppression.state === "unavailable") {
+            summary.failed += 1;
+            dozzleLog.error(
+              `[retrospective-auto-post] event=suppression_failed guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} error=${suppression.reason}`,
+            );
+          } else {
+            summary.skipped += 1;
+          }
           continue;
         }
 
@@ -254,6 +279,13 @@ export class SyncRetrospectiveAutoPostService {
           now,
           claimedPayload: claimedPayload(candidate),
         });
+        if (claim.state === "unavailable") {
+          summary.failed += 1;
+          dozzleLog.error(
+            `[retrospective-auto-post] event=claim_failed guild_id=${candidate.guildId} sync_number=${candidate.syncNumber} error=${claim.reason}`,
+          );
+          continue;
+        }
         if (claim.state !== "claimed") {
           summary.skipped += 1;
           continue;
@@ -330,7 +362,7 @@ export class SyncRetrospectiveAutoPostService {
       }
     }
 
-    const log = summary.delivered > 0 || summary.suppressed > 0 ? dozzleLog.info : dozzleLog.debug;
+    const log = summary.delivered > 0 ? dozzleLog.info : dozzleLog.debug;
     log(
       `[retrospective-auto-post] event=reconciliation_summary candidates=${summary.candidates} complete=${summary.complete} suppressed=${summary.suppressed} delivered=${summary.delivered} skipped=${summary.skipped} failed=${summary.failed}`,
     );

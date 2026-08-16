@@ -612,6 +612,30 @@ describe("SYNC_ZERO_DEVIATION", () => {
     expect(channel.send).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps actionable claim database failure context after shared extraction", async () => {
+    const channel = makeChannel();
+    prismaMock.syncEvent.findFirst.mockRejectedValueOnce(new Error("claim database unavailable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const service = makeService({
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    } as any, {
+      getRoutingConfigForType: vi.fn().mockResolvedValue({
+        routingMode: "CUSTOM",
+        channelId: "123",
+        legacy: false,
+        configured: true,
+      }),
+      getChannelId: vi.fn(),
+    } as any);
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.failed).toBe(1);
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(
+      "reason=reservation_unavailable:claim database unavailable",
+    ));
+  });
+
   it("uses the persisted zero-deviation snapshot for retry eligibility after ACTUAL changes", async () => {
     const channel = makeChannel();
     channel.send.mockRejectedValueOnce(new Error("temporary discord failure"))

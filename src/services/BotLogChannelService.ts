@@ -271,8 +271,8 @@ export class BotLogChannelService {
     routingMode: BaseSwapBotLogRoutingMode;
     channelId?: string | null;
   }): Promise<void> {
-    const previous = input.type === "sync-retrospective"
-      ? await this.getRoutingConfigForType(input.guildId, input.type)
+    const existingEnabledAt = input.type === "sync-retrospective"
+      ? await this.getSyncRetrospectiveEnabledAt(input.guildId)
       : null;
     const allowedModes = getAllowedRoutingModes(input.type);
     const routingMode = normalizeBaseSwapRoutingMode(input.routingMode);
@@ -297,13 +297,10 @@ export class BotLogChannelService {
     );
 
     if (input.type === "sync-retrospective") {
-      const wasEnabled = Boolean(
-        previous?.configured && previous.routingMode !== "DISABLED",
-      );
       const isEnabled = routingMode !== "DISABLED";
       if (!isEnabled) {
         await this.settings.delete(syncRetrospectiveEnabledAtKey(input.guildId));
-      } else if (!wasEnabled) {
+      } else if (!existingEnabledAt) {
         await this.settings.set(
           syncRetrospectiveEnabledAtKey(input.guildId),
           new Date().toISOString(),

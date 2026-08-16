@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { formatError } from "../helper/formatError";
 import { normalizeTag } from "./war-events/core";
 
 export const SYNC_EVENT_RESERVATION_LEASE_MS = 5 * 60 * 1000;
@@ -12,6 +13,12 @@ export type SyncEventDeliveryIdentity = {
 
 export type SyncEventClaimResult =
   | { state: "claimed"; createdAt: Date; reason: "claimed" | "reclaimed" }
+  | { state: "in_flight"; reason: string }
+  | { state: "unavailable"; reason: string };
+
+export type SyncEventSuppressionResult =
+  | { state: "suppressed"; reason: "created" | "reclaimed" }
+  | { state: "terminal"; reason: "already_delivered" | "already_suppressed" }
   | { state: "in_flight"; reason: string }
   | { state: "unavailable"; reason: string };
 
@@ -61,7 +68,11 @@ export async function claimSyncEvent(input: {
         return { state: "in_flight", reason: "reservation_in_flight" };
       }
       const reclaimed = await input.eventModel.deleteMany({
-        where: { ...identity, createdAt: existing.createdAt },
+        where: {
+          ...identity,
+          createdAt: existing.createdAt,
+          payload: { path: ["status"], equals: "claimed" },
+        },
       });
       if (reclaimed.count !== 1) {
         return { state: "in_flight", reason: "reservation_ownership_lost" };
@@ -81,7 +92,10 @@ export async function claimSyncEvent(input: {
     if (isUniqueConflict(error)) {
       return { state: "in_flight", reason: "reservation_already_claimed" };
     }
-    return { state: "unavailable", reason: "reservation_unavailable" };
+    return {
+      state: "unavailable",
+      reason: `reservation_unavailable:${formatError(error)}`,
+    };
   }
 }
 
@@ -99,6 +113,7 @@ export async function markSyncEventDelivered(input: {
       clanTag: normalizeTag(input.identity.clanTag),
       eventType: input.identity.eventType,
       createdAt: input.createdAt,
+      payload: { path: ["status"], equals: "claimed" },
     },
     data: { payload: input.deliveredPayload },
   }).catch(() => ({ count: 0 }));
@@ -118,32 +133,88 @@ export async function releaseSyncEvent(input: {
       clanTag: normalizeTag(input.identity.clanTag),
       eventType: input.identity.eventType,
       createdAt: input.createdAt,
+      payload: { path: ["status"], equals: "claimed" },
     },
   }).catch(() => undefined);
 }
 
-/** Purpose: write a terminal suppression marker without overwriting a concurrent delivery owner. */
+function suppressionIdentity(input: SyncEventDeliveryIdentity) {
+  return {
+    guildId: input.guildId,
+    syncTime: input.syncTime,
+    clanTag: normalizeTag(input.clanTag),
+    eventType: input.eventType,
+  };
+}
+
+function classifySuppressionReservation(
+  existing: { createdAt: Date; payload: unknown },
+  now: Date,
+): SyncEventSuppressionResult | null {
+  const status = syncEventPayloadStatus(existing.payload);
+  if (status === "delivered") return { state: "terminal", reason: "already_delivered" };
+  if (status === "suppressed") return { state: "terminal", reason: "already_suppressed" };
+  if (!isSyncEventReservationExpired(existing.createdAt, now)) {
+    return { state: "in_flight", reason: "reservation_in_flight" };
+  }
+  return null;
+}
+
+/** Purpose: write or lease-reclaim a terminal suppression marker without stealing a live delivery owner. */
 export async function markSyncEventSuppressed(input: {
   eventModel: any;
   identity: SyncEventDeliveryIdentity;
+  now?: Date;
   suppressedPayload: Record<string, unknown>;
-}): Promise<"created" | "already_exists" | "unavailable"> {
-  const identity = {
-    guildId: input.identity.guildId,
-    syncTime: input.identity.syncTime,
-    clanTag: normalizeTag(input.identity.clanTag),
-    eventType: input.identity.eventType,
-  };
+}): Promise<SyncEventSuppressionResult> {
+  const identity = suppressionIdentity(input.identity);
+  const now = input.now ?? new Date();
   try {
+    const existing = await input.eventModel.findFirst({
+      where: identity,
+      select: { createdAt: true, payload: true },
+    });
+    if (existing) {
+      const classified = classifySuppressionReservation(existing, now);
+      if (classified) return classified;
+
+      const reclaimed = await input.eventModel.updateMany({
+        where: {
+          ...identity,
+          createdAt: existing.createdAt,
+          payload: { equals: existing.payload },
+        },
+        data: { payload: input.suppressedPayload },
+      });
+      if (reclaimed.count === 1) {
+        return { state: "suppressed", reason: "reclaimed" };
+      }
+
+      const current = await input.eventModel.findFirst({
+        where: identity,
+        select: { createdAt: true, payload: true },
+      });
+      if (!current) return { state: "in_flight", reason: "reservation_ownership_lost" };
+      const currentState = classifySuppressionReservation(current, now);
+      return currentState ?? { state: "in_flight", reason: "reservation_ownership_lost" };
+    }
+
     await input.eventModel.create({
       data: { ...identity, payload: input.suppressedPayload },
       select: { id: true },
     });
-    return "created";
+    return { state: "suppressed", reason: "created" };
   } catch (error) {
     if (isUniqueConflict(error)) {
-      return "already_exists";
+      const current = await input.eventModel.findFirst({
+        where: identity,
+        select: { createdAt: true, payload: true },
+      }).catch(() => null);
+      if (!current) return { state: "in_flight", reason: "reservation_race" };
+      const currentState = classifySuppressionReservation(current, now);
+      if (currentState) return currentState;
+      return { state: "in_flight", reason: "reservation_race" };
     }
-    return "unavailable";
+    return { state: "unavailable", reason: `suppression_unavailable:${formatError(error)}` };
   }
 }

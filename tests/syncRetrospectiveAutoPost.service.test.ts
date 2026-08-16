@@ -31,7 +31,10 @@ function makeResult() {
   };
 }
 
-function makeEventDb() {
+function makeEventDb(
+  candidates = [{ guildId: "guild-1", syncNumber: 545, syncTime }],
+  initialEvents: Array<{ guildId: string; syncTime: Date; payload: any; createdAt?: Date }> = [],
+) {
   const events = new Map<string, any>();
   const key = (input: { guildId: string; syncTime: Date; clanTag: string; eventType: string }) =>
     `${input.guildId}|${input.syncTime.toISOString()}|${input.clanTag}|${input.eventType}`;
@@ -60,8 +63,19 @@ function makeEventDb() {
       return { count: 1 };
     }),
   };
+  for (const initial of initialEvents) {
+    const row = {
+      guildId: initial.guildId,
+      syncTime: initial.syncTime,
+      clanTag: "",
+      eventType: SYNC_RETROSPECTIVE_AUTO_POST_EVENT_TYPE,
+      payload: initial.payload,
+      createdAt: initial.createdAt ?? new Date("2026-08-16T12:05:00.000Z"),
+    };
+    events.set(key(row), row);
+  }
   return {
-    syncCycle: { findMany: vi.fn(async () => [{ guildId: "guild-1", syncNumber: 545, syncTime }]) },
+    syncCycle: { findMany: vi.fn(async () => candidates) },
     syncEvent: eventModel,
   };
 }
@@ -71,8 +85,10 @@ function makeDependencies(overrides: {
   enabledAtValue?: Date | null;
   completion?: { complete: boolean; completedAt: Date | null; reason: string; participantClanCount: number; endedParticipantClanCount: number };
   send?: ReturnType<typeof vi.fn>;
+  candidates?: Array<{ guildId: string; syncNumber: number; syncTime: Date }>;
+  initialEvents?: Array<{ guildId: string; syncTime: Date; payload: any; createdAt?: Date }>;
 } = {}) {
-  const db = makeEventDb();
+  const db = makeEventDb(overrides.candidates, overrides.initialEvents);
   const send = overrides.send ?? vi.fn().mockResolvedValue({ id: "message-1" });
   const channel = {
     id: "channel-1",
@@ -119,6 +135,107 @@ afterEach(() => {
 });
 
 describe("SyncRetrospectiveAutoPostService", () => {
+  it.each(["delivered", "suppressed"] as const)(
+    "filters 100 %s candidates before any routing or completion lookup",
+    async (status) => {
+      const candidates = Array.from({ length: 100 }, (_, index) => ({
+        guildId: "guild-1",
+        syncNumber: 545 + index,
+        syncTime: new Date(syncTime.getTime() + index * 1_000),
+      }));
+      const deps = makeDependencies({
+        candidates,
+        initialEvents: candidates.map((candidate) => ({
+          guildId: candidate.guildId,
+          syncTime: candidate.syncTime,
+          payload: { status },
+        })),
+      });
+      const service = new SyncRetrospectiveAutoPostService(
+        deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+      );
+
+      await service.runCycle(completedAt);
+
+      expect(deps.db.syncEvent.findMany).toHaveBeenCalledTimes(1);
+      expect(deps.routing.getRoutingConfigForType).not.toHaveBeenCalled();
+      expect(deps.routing.getSyncRetrospectiveEnabledAt).not.toHaveBeenCalled();
+      expect(deps.retrospectiveService.getCompletionState).not.toHaveBeenCalled();
+      expect(deps.client.guilds.fetch).not.toHaveBeenCalled();
+      expect(deps.send).not.toHaveBeenCalled();
+    },
+  );
+
+  it("resolves a disabled guild once before skipping all pending candidates", async () => {
+    const candidates = Array.from({ length: 100 }, (_, index) => ({
+      guildId: "guild-1",
+      syncNumber: 545 + index,
+      syncTime: new Date(syncTime.getTime() + index * 1_000),
+    }));
+    const deps = makeDependencies({ candidates, routingMode: "DISABLED" });
+
+    await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(deps.routing.getRoutingConfigForType).toHaveBeenCalledTimes(1);
+    expect(deps.routing.getSyncRetrospectiveEnabledAt).not.toHaveBeenCalled();
+    expect(deps.retrospectiveService.getCompletionState).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates enabledAt and channel lookups per enabled guild", async () => {
+    const candidates = [545, 546, 547].map((syncNumber, index) => ({
+      guildId: "guild-1", syncNumber, syncTime: new Date(syncTime.getTime() + index * 1_000),
+    }));
+    const custom = makeDependencies({ candidates, routingMode: "CUSTOM" });
+    await new SyncRetrospectiveAutoPostService(
+      custom.client, custom.routing as any, custom.retrospectiveService as any, custom.db as any,
+    ).runCycle(completedAt);
+    expect(custom.routing.getRoutingConfigForType).toHaveBeenCalledTimes(1);
+    expect(custom.routing.getSyncRetrospectiveEnabledAt).toHaveBeenCalledTimes(1);
+    expect(custom.routing.getChannelId).not.toHaveBeenCalled();
+    expect(custom.retrospectiveService.getCompletionState).toHaveBeenCalledTimes(3);
+
+    const botLog = makeDependencies({ candidates, routingMode: "BOT_LOG" });
+    await new SyncRetrospectiveAutoPostService(
+      botLog.client, botLog.routing as any, botLog.retrospectiveService as any, botLog.db as any,
+    ).runCycle(completedAt);
+    expect(botLog.routing.getRoutingConfigForType).toHaveBeenCalledTimes(1);
+    expect(botLog.routing.getSyncRetrospectiveEnabledAt).toHaveBeenCalledTimes(1);
+    expect(botLog.routing.getChannelId).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves routing once per guild", async () => {
+    const candidates = [
+      { guildId: "guild-1", syncNumber: 545, syncTime },
+      { guildId: "guild-2", syncNumber: 546, syncTime: new Date(syncTime.getTime() + 1_000) },
+    ];
+    const deps = makeDependencies({ candidates, routingMode: "CUSTOM" });
+
+    await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(deps.routing.getRoutingConfigForType).toHaveBeenCalledTimes(2);
+    expect(deps.routing.getSyncRetrospectiveEnabledAt).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts one routing failure per affected guild after deduplication", async () => {
+    const candidates = [545, 546, 547].map((syncNumber, index) => ({
+      guildId: "guild-1", syncNumber, syncTime: new Date(syncTime.getTime() + index * 1_000),
+    }));
+    const deps = makeDependencies({ candidates });
+    deps.routing.getRoutingConfigForType.mockRejectedValue(new Error("routing database unavailable"));
+
+    const summary = await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(summary.failed).toBe(1);
+    expect(deps.routing.getRoutingConfigForType).toHaveBeenCalledTimes(1);
+    expect(deps.retrospectiveService.getCompletionState).not.toHaveBeenCalled();
+  });
+
   it("does not read completion, claim, or send when disabled", async () => {
     const deps = makeDependencies({ routingMode: "DISABLED" });
     const summary = await new SyncRetrospectiveAutoPostService(
@@ -189,6 +306,61 @@ describe("SyncRetrospectiveAutoPostService", () => {
     expect(deps.db.syncEvent.events.values().next().value.payload).toMatchObject({ status: "suppressed", reason: "completed_before_enabled" });
     await service.runCycle(completedAt);
     expect(deps.retrospectiveService.getCompletionState).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not steal a fresh claimed reservation while suppressing", async () => {
+    const deps = makeDependencies({
+      enabledAtValue: new Date("2026-08-17T00:00:00.000Z"),
+      initialEvents: [{
+        guildId: "guild-1", syncTime, payload: { status: "claimed" }, createdAt: completedAt,
+      }],
+    });
+    await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+
+    expect(deps.db.syncEvent.events.get(`guild-1|${syncTime.toISOString()}||${SYNC_RETROSPECTIVE_AUTO_POST_EVENT_TYPE}`).payload)
+      .toMatchObject({ status: "claimed" });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an expired claimed reservation and suppresses it", async () => {
+    const deps = makeDependencies({
+      enabledAtValue: new Date("2026-08-17T00:00:00.000Z"),
+      initialEvents: [{
+        guildId: "guild-1", syncTime, payload: { status: "claimed" }, createdAt: new Date("2026-08-15T00:00:00.000Z"),
+      }],
+    });
+    await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+    expect(deps.db.syncEvent.events.get(`guild-1|${syncTime.toISOString()}||${SYNC_RETROSPECTIVE_AUTO_POST_EVENT_TYPE}`).payload)
+      .toMatchObject({ status: "suppressed" });
+
+    await new SyncRetrospectiveAutoPostService(
+      deps.client, deps.routing as any, deps.retrospectiveService as any, deps.db as any,
+    ).runCycle(completedAt);
+    expect(deps.retrospectiveService.getCompletionState).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts claim and suppression database failures as failures", async () => {
+    const claimFailure = makeDependencies();
+    claimFailure.db.syncEvent.findFirst.mockRejectedValueOnce(new Error("claim database unavailable"));
+    const claimSummary = await new SyncRetrospectiveAutoPostService(
+      claimFailure.client, claimFailure.routing as any, claimFailure.retrospectiveService as any, claimFailure.db as any,
+    ).runCycle(completedAt);
+    expect(claimSummary.failed).toBe(1);
+    expect(claimFailure.send).not.toHaveBeenCalled();
+
+    const suppressionFailure = makeDependencies({
+      enabledAtValue: new Date("2026-08-17T00:00:00.000Z"),
+    });
+    suppressionFailure.db.syncEvent.create.mockRejectedValueOnce(new Error("suppression database unavailable"));
+    const suppressionSummary = await new SyncRetrospectiveAutoPostService(
+      suppressionFailure.client, suppressionFailure.routing as any, suppressionFailure.retrospectiveService as any, suppressionFailure.db as any,
+    ).runCycle(completedAt);
+    expect(suppressionSummary.failed).toBe(1);
+    expect(suppressionSummary.suppressed).toBe(0);
   });
 
   it("releases a failed send so a later reconciliation can retry", async () => {
