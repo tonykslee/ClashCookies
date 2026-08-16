@@ -2482,9 +2482,10 @@ function buildCompoReplacementDetailPages(input: {
   const buildPageText = (lines: string[]): string => lines.join("\n").trim();
   const pagesLines: string[][] = [];
   let currentLines: string[] = [...headerLines];
+  const hasPageContent = (): boolean => currentLines.length > headerLines.length;
 
   const flushCurrent = () => {
-    if (currentLines.length > 2) {
+    if (hasPageContent()) {
       pagesLines.push(currentLines);
     }
     currentLines = [...headerLines];
@@ -2496,24 +2497,20 @@ function buildCompoReplacementDetailPages(input: {
 
   for (const group of groupedCandidates) {
     const heading = `**${group.label}**`;
-    if (!canAppendLine(heading) && currentLines.length > 2) {
+    if (!canAppendLine(heading) && hasPageContent()) {
       flushCurrent();
     }
-    if (!canAppendLine(heading) && currentLines.length <= 2) {
-      currentLines.push(heading);
-    } else {
-      currentLines.push(heading);
-    }
+    currentLines.push(heading);
 
     for (const row of group.rows) {
-      if (!canAppendLine(row) && currentLines.length > 2) {
+      if (!canAppendLine(row) && hasPageContent()) {
         flushCurrent();
         currentLines.push(heading);
       }
       currentLines.push(row);
     }
 
-    if (!canAppendLine("") && currentLines.length > 2) {
+    if (!canAppendLine("") && hasPageContent()) {
       flushCurrent();
     } else {
       currentLines.push("");
@@ -3066,7 +3063,11 @@ export async function handleCompoReplacementButton(
 
   try {
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (parsed.kind === "open") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.deferUpdate();
+      }
     }
 
     const state = parsed.kind === "open"

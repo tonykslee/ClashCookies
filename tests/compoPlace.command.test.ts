@@ -189,8 +189,8 @@ describe("/compo place command", () => {
       .mockResolvedValue({
         content: "",
         embeds: [new EmbedBuilder().setTitle("Compo Placement Suggestions")],
-        trackedClanTags: ["#RR"],
-        eligibleClanTags: ["#RR"],
+        trackedClanTags: ["#RR22"],
+        eligibleClanTags: ["#RR22"],
         candidateCount: 1,
         recommendedCount: 0,
         vacancyCount: 0,
@@ -200,12 +200,12 @@ describe("/compo place command", () => {
       guildId: "guild-1",
       sourceSyncedAt: null,
       latestSourceSyncedAt: null,
-      trackedClanTags: ["#RR", "#RD"],
-      eligibleClanTags: ["#RR", "#RD"],
+      trackedClanTags: ["#RR22", "#RD22"],
+      eligibleClanTags: ["#RR22", "#RD22"],
       heatMapRefs: [],
       clans: [
         {
-          clanTag: "#RR",
+          clanTag: "#RR22",
           clanName: "Rocky Road",
           shortName: "RR",
           base: {
@@ -217,7 +217,7 @@ describe("/compo place command", () => {
           members: [],
         },
         {
-          clanTag: "#RD",
+          clanTag: "#RD22",
           clanName: "Rising Dawn",
           shortName: "RD",
           base: {
@@ -237,7 +237,7 @@ describe("/compo place command", () => {
         bucket: "TH15",
         summaryByClan: [
           {
-            clanTag: "#RR",
+            clanTag: "#RR22",
             clanName: "Rocky Road",
             uniqueCandidateCount: 4,
             fillerCount: 2,
@@ -246,7 +246,7 @@ describe("/compo place command", () => {
             surplusCount: 2,
           },
           {
-            clanTag: "#RD",
+            clanTag: "#RD22",
             clanName: "Rising Dawn",
             uniqueCandidateCount: 0,
             fillerCount: 0,
@@ -256,7 +256,7 @@ describe("/compo place command", () => {
         ],
         candidates: [
           {
-            clanTag: "#RR",
+            clanTag: "#RR22",
             clanName: "Rocky Road",
             playerTag: "#A1",
             playerName: "Alice",
@@ -270,7 +270,7 @@ describe("/compo place command", () => {
             reasons: { filler: true, inactive: false, unlinked: false, surplus: true },
           },
           {
-            clanTag: "#RR",
+            clanTag: "#RR22",
             clanName: "Rocky Road",
             playerTag: "#B2",
             playerName: "Bob",
@@ -279,10 +279,11 @@ describe("/compo place command", () => {
             discordUserId: "456",
             discordMention: "<@456>",
             inactiveLabel: "6d",
+            violationCount30d: 0,
             reasons: { filler: false, inactive: true, unlinked: false },
           },
           {
-            clanTag: "#RR",
+            clanTag: "#RR22",
             clanName: "Rocky Road",
             playerTag: "#C3",
             playerName: "Cara",
@@ -291,10 +292,11 @@ describe("/compo place command", () => {
             discordUserId: null,
             discordMention: null,
             inactiveLabel: "6d",
+            violationCount30d: 0,
             reasons: { filler: true, inactive: true, unlinked: true },
           },
           {
-            clanTag: "#RR",
+            clanTag: "#RR22",
             clanName: "Rocky Road",
             playerTag: "#D4",
             playerName: "Drew",
@@ -329,6 +331,7 @@ describe("/compo place command", () => {
       deferReply: vi.fn(async () => {
         replacementInteraction.deferred = true;
       }),
+      deferUpdate: vi.fn(),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -347,6 +350,7 @@ describe("/compo place command", () => {
     expect(replacementInteraction.deferReply).toHaveBeenCalledWith(
       expect.objectContaining({ flags: expect.any(Number) }),
     );
+    expect(replacementInteraction.deferUpdate).not.toHaveBeenCalled();
 
     const detailPayload = replacementInteraction.editReply.mock.calls.at(-1)?.[0];
     expect(detailPayload?.content ?? "").toBe("");
@@ -390,6 +394,93 @@ describe("/compo place command", () => {
     expect(getComponentCustomIds(filteredPayload)).toContain(
       "compo-replacements:s:t:user-1:145000:0:-:p:8:0",
     );
+
+    const priorityInteraction: any = {
+      customId: buildCompoReplacementCustomIdForTest({
+        kind: "view",
+        state: {
+          userId: "user-1",
+          weight: 145000,
+          page: 4,
+          clanTag: "RR22",
+          view: "all",
+          types: ["surplus"],
+          minimumViolations: 3,
+        },
+        view: "priority",
+      } as any),
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(),
+      deferUpdate: vi.fn(async () => {
+        priorityInteraction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCompoReplacementButton(priorityInteraction as any);
+
+    expect(priorityInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(priorityInteraction.deferReply).not.toHaveBeenCalled();
+    const priorityEmbed = getEmbedJSON(priorityInteraction.editReply.mock.calls.at(-1)?.[0]);
+    expect(String(priorityEmbed?.description ?? "")).toContain("Filters: RR · Priority · Violations: 3+");
+    expect(String(priorityEmbed?.description ?? "")).toContain("Showing 1 of 4 candidates");
+
+    const allInteraction: any = {
+      customId: buildCompoReplacementCustomIdForTest({
+        kind: "view",
+        state: {
+          userId: "user-1",
+          weight: 145000,
+          page: 0,
+          clanTag: "RR22",
+          view: "priority",
+          types: ["filler", "inactive"],
+          minimumViolations: 3,
+        },
+        view: "all",
+      } as any),
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(),
+      deferUpdate: vi.fn(async () => {
+        allInteraction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCompoReplacementButton(allInteraction as any);
+
+    expect(allInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(allInteraction.deferReply).not.toHaveBeenCalled();
+    const allEmbed = getEmbedJSON(allInteraction.editReply.mock.calls.at(-1)?.[0]);
+    expect(String(allEmbed?.description ?? "")).toContain("Filters: RR · All · Violations: 3+");
+    expect(String(allEmbed?.description ?? "")).toContain("Showing 1 of 4 candidates");
+
+    const resetInteraction: any = {
+      customId: "compo-replacements:rs:user-1:145000",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(),
+      deferUpdate: vi.fn(async () => {
+        resetInteraction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCompoReplacementButton(resetInteraction as any);
+
+    expect(resetInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(resetInteraction.deferReply).not.toHaveBeenCalled();
+    const resetEmbed = getEmbedJSON(resetInteraction.editReply.mock.calls.at(-1)?.[0]);
+    expect(String(resetEmbed?.description ?? "")).toContain("Filters: All clans · Priority · Violations: Any");
+    expect(String(resetEmbed?.description ?? "")).toContain("Showing 3 of 4 candidates");
   });
 
   it("shows an empty state when no replacement candidates are found", async () => {
@@ -579,6 +670,9 @@ describe("/compo place command", () => {
       deferReply: vi.fn(async () => {
         interaction.deferred = true;
       }),
+      deferUpdate: vi.fn(async () => {
+        interaction.deferred = true;
+      }),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -590,6 +684,8 @@ describe("/compo place command", () => {
     const embed = getEmbedJSON(payload);
     expect(String(embed?.description ?? "")).toContain("Una — 146k — 📵 unlinked");
     expect(String(embed?.description ?? "")).not.toContain("<@");
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.deferReply).not.toHaveBeenCalled();
   });
 
   it("paginates replacement drill-down rows and advances pages", async () => {
@@ -661,6 +757,7 @@ describe("/compo place command", () => {
       deferReply: vi.fn(async () => {
         openInteraction.deferred = true;
       }),
+      deferUpdate: vi.fn(),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -669,7 +766,11 @@ describe("/compo place command", () => {
 
     const firstPayload = openInteraction.editReply.mock.calls.at(-1)?.[0];
     const firstEmbed = getEmbedJSON(firstPayload);
-    expect(String(firstEmbed?.footer?.text ?? "")).toMatch(/Page 1\/[2-9]\d*/);
+    expect(String(firstEmbed?.footer?.text ?? "")).toBe("Page 1/2");
+    expect(String(firstEmbed?.description ?? "").length).toBeGreaterThan(3500);
+    expect(String(firstEmbed?.description ?? "").length).toBeLessThanOrEqual(3600);
+    expect(String(firstEmbed?.description ?? "")).toContain("**RR**");
+    expect(String(firstEmbed?.description ?? "")).toContain("Player 001");
     expect(getComponentCustomIds(firstPayload).slice(-2)).toEqual([
       "compo-replacements:pg:user-1:145000:0:-:p:0:0:b",
       "compo-replacements:pg:user-1:145000:0:-:p:0:0:n",
@@ -684,6 +785,9 @@ describe("/compo place command", () => {
       deferReply: vi.fn(async () => {
         nextInteraction.deferred = true;
       }),
+      deferUpdate: vi.fn(async () => {
+        nextInteraction.deferred = true;
+      }),
       editReply: vi.fn().mockResolvedValue(undefined),
       reply: vi.fn().mockResolvedValue(undefined),
     };
@@ -692,8 +796,33 @@ describe("/compo place command", () => {
 
     const nextPayload = nextInteraction.editReply.mock.calls.at(-1)?.[0];
     const nextEmbed = getEmbedJSON(nextPayload);
-    expect(String(nextEmbed?.footer?.text ?? "")).toMatch(/Page 2\/[2-9]\d*/);
+    expect(openInteraction.deferUpdate).not.toHaveBeenCalled();
+    expect(nextInteraction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(nextInteraction.deferReply).not.toHaveBeenCalled();
+    expect(String(nextEmbed?.footer?.text ?? "")).toBe("Page 2/2");
+    expect(String(nextEmbed?.description ?? "")).toContain("**RR**");
     expect(String(nextEmbed?.description ?? "")).toContain("Player 021");
+
+    const nextPageIds = getComponentCustomIds(nextPayload);
+    const clampedNextInteraction: any = {
+      customId: nextPageIds.at(-1),
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(),
+      deferUpdate: vi.fn(async () => {
+        clampedNextInteraction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleCompoReplacementButton(clampedNextInteraction as any);
+
+    const clampedEmbed = getEmbedJSON(clampedNextInteraction.editReply.mock.calls.at(-1)?.[0]);
+    expect(String(clampedEmbed?.footer?.text ?? "")).toBe("Page 2/2");
+    expect(String(clampedEmbed?.description ?? "")).toContain("Player 021");
   });
 
   it("round-trips compact replacement explorer state and keeps IDs under Discord's limit", () => {
