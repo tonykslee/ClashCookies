@@ -38,7 +38,11 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { CompoReplacementService } from "../src/services/CompoReplacementService";
+import {
+  CompoReplacementService,
+  filterAndSortCompoReplacementCandidates,
+  type CompoReplacementCandidate,
+} from "../src/services/CompoReplacementService";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -486,5 +490,222 @@ describe("CompoReplacementService", () => {
       fillerCount: 2,
       surplusCount: 3,
     });
+  });
+
+  it("enriches candidates with clan-scoped 30-day violation counts without changing eligibility", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P000090", discordUserId: "111111111111111111" },
+      { playerTag: "#P000092", discordUserId: "222222222222222222" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+    } as any);
+    const getViolationCounts = vi.fn().mockResolvedValue({
+      period: "30d",
+      cutoff: new Date("2026-04-20T12:00:00.000Z"),
+      clanTag: "#AAA111",
+      hasCompletedEvaluations: true,
+      evaluatedWarCount: 3,
+      violationCountByPlayerTag: new Map([["#P000090", 3]]),
+    });
+
+    const result = await new CompoReplacementService(undefined, {
+      getClanPlayerViolationCounts: getViolationCounts,
+    } as any).resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      context: makeContext({
+        members: [
+          { playerTag: "#P000090", playerName: "Violator", resolvedWeight: 145000 },
+          { playerTag: "#P000092", playerName: "No Violations", resolvedWeight: 145000 },
+        ],
+        bucketCounts: { TH15: 2 },
+        heatMapRef: makeHeatMapRef({ th15Count: 0 }),
+      }),
+    });
+
+    expect(getViolationCounts).toHaveBeenCalledTimes(1);
+    expect(getViolationCounts).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      playerTags: ["#P000090", "#P000092"],
+      period: "30d",
+    });
+    expect(result.candidates.map((candidate) => [candidate.playerTag, candidate.violationCount30d])).toEqual([
+      ["#P000092", 0],
+      ["#P000090", 3],
+    ]);
+  });
+
+  it("does not make violations alone broaden replacement eligibility", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P000090", discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+    } as any);
+    const getViolationCounts = vi.fn().mockResolvedValue({
+      period: "30d",
+      cutoff: new Date("2026-04-20T12:00:00.000Z"),
+      clanTag: "#AAA111",
+      hasCompletedEvaluations: true,
+      evaluatedWarCount: 3,
+      violationCountByPlayerTag: new Map([["#P000090", 5]]),
+    });
+
+    const result = await new CompoReplacementService(undefined, {
+      getClanPlayerViolationCounts: getViolationCounts,
+    } as any).resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      context: makeContext({
+        members: [
+          { playerTag: "#P000090", playerName: "Healthy TH17", resolvedWeight: 165000 },
+        ],
+        bucketCounts: { TH17: 1 },
+        heatMapRef: makeHeatMapRef({ th17Count: 1 }),
+      }),
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(getViolationCounts).not.toHaveBeenCalled();
+  });
+});
+
+function makeFilterCandidate(input: {
+  playerTag: string;
+  playerName: string;
+  clanTag?: string;
+  filler?: boolean;
+  inactive?: boolean;
+  unlinked?: boolean;
+  surplus?: boolean;
+  violationCount30d?: number;
+}): CompoReplacementCandidate {
+  const reasons = {
+    filler: input.filler ?? false,
+    inactive: input.inactive ?? false,
+    unlinked: input.unlinked ?? false,
+    surplus: input.surplus ?? false,
+  };
+  return {
+    clanTag: input.clanTag ?? "#PYLQ",
+    clanName: input.clanTag === "#GRJC" ? "Rising Dawn" : "Rocky Road",
+    playerTag: input.playerTag,
+    playerName: input.playerName,
+    resolvedWeight: 145000,
+    resolvedBucket: "TH15",
+    discordUserId: reasons.unlinked ? null : "111111111111111111",
+    discordMention: reasons.unlinked ? null : "<@111111111111111111>",
+    inactiveLabel: reasons.inactive ? "4d" : null,
+    surplusDelta: reasons.surplus ? 3 : null,
+    violationCount30d: input.violationCount30d ?? 0,
+    reasons,
+  };
+}
+
+describe("filterAndSortCompoReplacementCandidates", () => {
+  const candidates = [
+    makeFilterCandidate({ playerTag: "#P000001", playerName: "Filler", filler: true }),
+    makeFilterCandidate({ playerTag: "#P000002", playerName: "Inactive", inactive: true }),
+    makeFilterCandidate({ playerTag: "#P000003", playerName: "Violator", violationCount30d: 3 }),
+    makeFilterCandidate({ playerTag: "#P000004", playerName: "Healthy Surplus", surplus: true }),
+    makeFilterCandidate({ playerTag: "#P000005", playerName: "Unlinked", unlinked: true }),
+  ];
+  const extendedCandidates = [
+    ...candidates,
+    makeFilterCandidate({
+      playerTag: "#P000006",
+      playerName: "RR Surplus Violator",
+      clanTag: "#PYLQ",
+      surplus: true,
+      violationCount30d: 2,
+    }),
+    makeFilterCandidate({
+      playerTag: "#P000007",
+      playerName: "RD Surplus Violator",
+      clanTag: "#GRJC",
+      surplus: true,
+      violationCount30d: 5,
+    }),
+  ];
+
+  it("supports priority, all, clan, type, OR, threshold, and combined filters", () => {
+    const priority = filterAndSortCompoReplacementCandidates({
+      candidates,
+      filter: { view: "priority" },
+    });
+    expect(priority.candidates.map((candidate) => candidate.playerName)).toEqual([
+      "Filler",
+      "Violator",
+      "Inactive",
+    ]);
+    expect(priority.totalCandidateCount).toBe(5);
+    expect(priority.filteredCount).toBe(3);
+
+    expect(filterAndSortCompoReplacementCandidates({
+      candidates,
+      filter: { view: "all" },
+    }).filteredCount).toBe(5);
+    expect(filterAndSortCompoReplacementCandidates({
+      candidates,
+      filter: { view: "priority", clanTag: "#PYLQ" },
+    }).candidates.every((candidate) => candidate.clanTag === "#PYLQ")).toBe(true);
+    expect(filterAndSortCompoReplacementCandidates({
+      candidates: extendedCandidates,
+      filter: { view: "priority", types: ["surplus"] },
+    }).candidates.map((candidate) => candidate.playerName)).toEqual([
+      "RD Surplus Violator",
+      "RR Surplus Violator",
+      "Healthy Surplus",
+    ]);
+    expect(filterAndSortCompoReplacementCandidates({
+      candidates,
+      filter: { view: "all", types: ["filler", "inactive"] },
+    }).candidates.map((candidate) => candidate.playerName)).toEqual(["Filler", "Inactive"]);
+
+    for (const [threshold, expected] of [[1, 3], [2, 3], [3, 2], [5, 1]] as const) {
+      expect(filterAndSortCompoReplacementCandidates({
+        candidates: extendedCandidates,
+        filter: { view: "all", types: ["violations"], minimumViolations: threshold },
+      }).filteredCount).toBe(expected);
+    }
+
+    const combined = filterAndSortCompoReplacementCandidates({
+      candidates: extendedCandidates,
+      filter: {
+        view: "priority",
+        clanTag: "#PYLQ",
+        types: ["surplus"],
+        minimumViolations: 2,
+      },
+    });
+    expect(combined.candidates.map((candidate) => candidate.playerName)).toEqual([
+      "RR Surplus Violator",
+    ]);
+  });
+
+  it("ranks deterministically by filler, violations, inactivity, unlinked, then surplus-only", () => {
+    const result = filterAndSortCompoReplacementCandidates({
+      candidates: [
+        makeFilterCandidate({ playerTag: "#P000012", playerName: "Zulu", surplus: true }),
+        makeFilterCandidate({ playerTag: "#P000011", playerName: "Alpha", unlinked: true }),
+        makeFilterCandidate({ playerTag: "#P000010", playerName: "Bravo", inactive: true }),
+        makeFilterCandidate({ playerTag: "#P000009", playerName: "Charlie", violationCount30d: 2 }),
+        makeFilterCandidate({ playerTag: "#P000008", playerName: "Delta", filler: true }),
+      ],
+      filter: { view: "all" },
+    });
+    expect(result.candidates.map((candidate) => candidate.playerName)).toEqual([
+      "Delta",
+      "Charlie",
+      "Bravo",
+      "Alpha",
+      "Zulu",
+    ]);
   });
 });

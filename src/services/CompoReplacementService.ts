@@ -7,6 +7,23 @@ import {
 import { InactiveWarService } from "./InactiveWarService";
 import { normalizePlayerTag } from "./PlayerLinkService";
 import { projectCompoActualStateView } from "../helper/compoActualStateView";
+import { WarPlanViolationHistoryService } from "./WarPlanViolationHistoryService";
+
+export type CompoReplacementTypeFilter =
+  | "filler"
+  | "inactive"
+  | "unlinked"
+  | "surplus"
+  | "violations";
+
+export type CompoReplacementViewMode = "priority" | "all";
+
+export type CompoReplacementFilter = {
+  clanTag?: string | null;
+  view: CompoReplacementViewMode;
+  types?: CompoReplacementTypeFilter[];
+  minimumViolations?: number;
+};
 
 export type CompoReplacementReasonFlags = {
   filler: boolean;
@@ -26,6 +43,7 @@ export type CompoReplacementCandidate = {
   discordMention: string | null;
   inactiveLabel: string | null;
   surplusDelta: number | null;
+  violationCount30d: number;
   reasons: CompoReplacementReasonFlags;
 };
 
@@ -44,6 +62,12 @@ export type CompoReplacementResolution = {
   bucket: CompoWarDisplayBucket | null;
   summaryByClan: CompoReplacementClanSummary[];
   candidates: CompoReplacementCandidate[];
+};
+
+export type CompoReplacementFilterResult = {
+  candidates: CompoReplacementCandidate[];
+  totalCandidateCount: number;
+  filteredCount: number;
 };
 
 type ReplacementCandidateSeed = {
@@ -133,9 +157,105 @@ function summarizeCandidatesByClan(
   });
 }
 
+function normalizeMinimumViolations(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.trunc(value));
+}
+
+function hasReplacementType(
+  candidate: CompoReplacementCandidate,
+  type: CompoReplacementTypeFilter,
+): boolean {
+  if (type === "filler") return candidate.reasons.filler;
+  if (type === "inactive") return candidate.reasons.inactive;
+  if (type === "unlinked") return candidate.reasons.unlinked;
+  if (type === "surplus") return candidate.reasons.surplus;
+  return candidate.violationCount30d > 0;
+}
+
+function isPriorityReplacementCandidate(candidate: CompoReplacementCandidate): boolean {
+  return candidate.reasons.filler || candidate.reasons.inactive || candidate.violationCount30d > 0;
+}
+
+/** Purpose: rank resolved replacement candidates without changing eligibility or persistence. */
+export function compareCompoReplacementCandidates(
+  left: CompoReplacementCandidate,
+  right: CompoReplacementCandidate,
+): number {
+  if (left.reasons.filler !== right.reasons.filler) {
+    return left.reasons.filler ? -1 : 1;
+  }
+  if (left.violationCount30d !== right.violationCount30d) {
+    return right.violationCount30d - left.violationCount30d;
+  }
+  if (left.reasons.inactive !== right.reasons.inactive) {
+    return left.reasons.inactive ? -1 : 1;
+  }
+  if (left.reasons.unlinked !== right.reasons.unlinked) {
+    return left.reasons.unlinked ? -1 : 1;
+  }
+
+  const leftSurplusOnly =
+    left.reasons.surplus &&
+    !left.reasons.filler &&
+    !left.reasons.inactive &&
+    !left.reasons.unlinked &&
+    left.violationCount30d <= 0;
+  const rightSurplusOnly =
+    right.reasons.surplus &&
+    !right.reasons.filler &&
+    !right.reasons.inactive &&
+    !right.reasons.unlinked &&
+    right.violationCount30d <= 0;
+  if (leftSurplusOnly !== rightSurplusOnly) {
+    return leftSurplusOnly ? 1 : -1;
+  }
+
+  const nameCompare = left.playerName.toLowerCase().localeCompare(right.playerName.toLowerCase());
+  if (nameCompare !== 0) return nameCompare;
+  return left.playerTag.localeCompare(right.playerTag);
+}
+
+/** Purpose: apply pure clan/view/type/violation filters and deterministic ranking to resolved candidates. */
+export function filterAndSortCompoReplacementCandidates(input: {
+  candidates: CompoReplacementCandidate[];
+  filter: CompoReplacementFilter;
+}): CompoReplacementFilterResult {
+  const hasClanFilter = Boolean(input.filter.clanTag?.trim());
+  const requestedClanTag = hasClanFilter ? normalizeTagLike(input.filter.clanTag ?? "") : null;
+  const types = [...new Set(input.filter.types ?? [])];
+  const hasExplicitTypes = types.length > 0;
+  const minimumViolations = normalizeMinimumViolations(input.filter.minimumViolations);
+  const filtered = input.candidates
+    .filter((candidate) => {
+      if (
+        hasClanFilter &&
+        (!requestedClanTag || normalizeTagLike(candidate.clanTag) !== requestedClanTag)
+      ) {
+        return false;
+      }
+      if (candidate.violationCount30d < minimumViolations) return false;
+
+      if (hasExplicitTypes) {
+        return types.some((type) => hasReplacementType(candidate, type));
+      }
+      return input.filter.view === "all" || isPriorityReplacementCandidate(candidate);
+    })
+    .sort(compareCompoReplacementCandidates);
+
+  return {
+    candidates: filtered,
+    totalCandidateCount: input.candidates.length,
+    filteredCount: filtered.length,
+  };
+}
+
 /** Purpose: resolve DB-backed replacement candidates for one compo placement bucket without changing `/compo place` rendering yet. */
 export class CompoReplacementService {
-  private readonly inactiveWarService = new InactiveWarService();
+  constructor(
+    private readonly inactiveWarService = new InactiveWarService(),
+    private readonly violationHistoryService = new WarPlanViolationHistoryService(),
+  ) {}
 
   async resolveReplacementCandidates(input: {
     guildId?: string | null;
@@ -332,6 +452,34 @@ export class CompoReplacementService {
       }
     }
 
+    const violationCountByCandidateKey = new Map<string, number>();
+    if (input.guildId && uniqueByKey.size > 0) {
+      const seedsByClan = new Map<string, ReplacementCandidateSeed[]>();
+      for (const seed of uniqueByKey.values()) {
+        const clanSeeds = seedsByClan.get(seed.clanTag) ?? [];
+        clanSeeds.push(seed);
+        seedsByClan.set(seed.clanTag, clanSeeds);
+      }
+
+      await Promise.all(
+        [...seedsByClan.entries()].map(async ([clanTag, seeds]) => {
+          const result = await this.violationHistoryService.getClanPlayerViolationCounts({
+            guildId: input.guildId as string,
+            clanTag,
+            playerTags: seeds.map((seed) => seed.playerTag),
+            period: "30d",
+          });
+          for (const seed of seeds) {
+            const count = result.violationCountByPlayerTag.get(seed.playerTag) ?? 0;
+            violationCountByCandidateKey.set(
+              `${seed.clanTag}|${seed.playerTag}`,
+              Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0,
+            );
+          }
+        }),
+      );
+    }
+
     const candidates = [...uniqueByKey.values()]
       .sort((left, right) => sortCandidatesForDisplay(left, right, clanOrder))
       .map((seed) => ({
@@ -345,6 +493,8 @@ export class CompoReplacementService {
         discordMention: buildDiscordMention(seed.discordUserId),
         inactiveLabel: seed.inactiveLabel,
         surplusDelta: seed.surplusDelta,
+        violationCount30d:
+          violationCountByCandidateKey.get(`${seed.clanTag}|${seed.playerTag}`) ?? 0,
         reasons: seed.reasons,
       }));
 
