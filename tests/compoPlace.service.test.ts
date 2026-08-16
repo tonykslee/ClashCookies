@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { CompoReplacementService } from "../src/services/CompoReplacementService";
+import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -326,6 +328,14 @@ describe("CompoPlaceService", () => {
   });
 
   it("adds a compact Possible replacements summary after Composition and reuses the loaded ACTUAL context once", async () => {
+    const replacementResolveSpy = vi.spyOn(
+      CompoReplacementService.prototype,
+      "resolveReplacementCandidates",
+    );
+    const violationCountSpy = vi.spyOn(
+      WarPlanViolationHistoryService.prototype,
+      "getClanPlayerViolationCounts",
+    );
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan", "RR"),
       makeTrackedClan("#BBB222", "Bravo Clan", "RD"),
@@ -407,6 +417,15 @@ describe("CompoPlaceService", () => {
     });
 
     const result = await new CompoPlaceService().readPlace(145000, "TH15", "guild-1");
+
+    expect(replacementResolveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: "guild-1", weight: 145000 }),
+    );
+    expect(replacementResolveSpy.mock.calls[0]?.[0]).not.toHaveProperty(
+      "includeViolationCounts",
+      true,
+    );
+    expect(violationCountSpy).not.toHaveBeenCalled();
 
     expect(prismaMock.trackedClan.findMany).toHaveBeenCalledTimes(1);
     const embed = result.embeds[0]?.toJSON();
