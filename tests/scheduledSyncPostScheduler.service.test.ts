@@ -56,6 +56,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
     markSkipped: ReturnType<typeof vi.fn>;
     markDisabled: ReturnType<typeof vi.fn>;
   };
+  let autoPostService: { runCycle: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -67,6 +68,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       markSkipped: vi.fn().mockResolvedValue(undefined),
       markDisabled: vi.fn().mockResolvedValue(undefined),
     };
+    autoPostService = { runCycle: vi.fn().mockResolvedValue(undefined) };
   });
 
   afterEach(() => {
@@ -81,6 +83,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       15_000,
       statusService as any,
       syncService as any,
+      autoPostService as any,
     );
 
     const result = scheduler.start();
@@ -108,6 +111,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       15_000,
       statusService as any,
       syncService as any,
+      autoPostService as any,
     );
     vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
       order.push("expired");
@@ -119,6 +123,33 @@ describe("ScheduledSyncPostSchedulerService", () => {
 
     expect(syncService.runCycle).toHaveBeenCalledWith();
     expect(order).toEqual(["sync", "expired"]);
+  });
+
+  it("runs retrospective reconciliation before readiness work and isolates its failure", async () => {
+    const order: string[] = [];
+    const syncService = { runCycle: vi.fn().mockImplementation(async () => order.push("sync")) };
+    const autoPostService = { runCycle: vi.fn().mockImplementation(async () => {
+      order.push("retrospective");
+      throw new Error("retrospective unavailable");
+    }) };
+    const scheduler = new ScheduledSyncPostSchedulerService(
+      {} as Client,
+      15_000,
+      statusService as any,
+      syncService as any,
+      autoPostService as any,
+    );
+    vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
+      order.push("expired");
+      return [];
+    });
+    vi.spyOn(scheduledSyncPostService, "findDueScheduledSyncPosts").mockResolvedValue([]);
+
+    await scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime());
+
+    expect(autoPostService.runCycle).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["sync", "retrospective", "expired"]);
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining("sync_retrospective_auto_post_cycle_failed"));
   });
 
   it("claims and publishes one due schedule", async () => {
@@ -136,6 +167,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       } as any,
       15_000,
       statusService as any,
+      undefined,
+      autoPostService as any,
     );
 
     const dueRow = {
@@ -216,6 +249,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       } as any,
       15_000,
       statusService as any,
+      undefined,
+      autoPostService as any,
     );
 
     const dueRow = {
@@ -287,6 +322,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       } as any,
       15_000,
       statusService as any,
+      undefined,
+      autoPostService as any,
     );
 
     const dueRow = {

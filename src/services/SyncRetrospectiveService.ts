@@ -24,6 +24,18 @@ export type SyncRetrospectiveLatestInput = {
   guildId: string;
 };
 
+export type SyncRetrospectiveCompletionState = {
+  complete: boolean;
+  participantClanCount: number;
+  endedParticipantClanCount: number;
+  completedAt: Date | null;
+  reason:
+    | "complete"
+    | "no_participants"
+    | "incomplete_history"
+    | "completion_time_unavailable";
+};
+
 export type SyncRetrospectivePlayerRow = {
   playerTag: string;
   playerName: string | null;
@@ -118,6 +130,15 @@ type HistoryRow = {
   prepStartTime: Date | null;
   clanName: string | null;
   clanTag: string;
+};
+
+type CompletionHistoryRow = {
+  warId: number;
+  syncNumber: number | null;
+  clanTag: string;
+  warStartTime: Date | null;
+  warEndTime: Date | null;
+  opponentTag: string | null;
 };
 
 type SnapshotRow = {
@@ -311,6 +332,29 @@ function buildGuildOwnedHistoryWhere(
   return { syncNumber, OR: identityOr };
 }
 
+function buildPointsOwnedHistoryWhere(
+  pointsSyncRows: PointsSyncIdentityRow[],
+  syncNumber: number,
+): any | null {
+  const clauses = buildGuildOwnedHistoryClauses(pointsSyncRows, new Set([syncNumber]));
+  return clauses.length > 0 ? { syncNumber, OR: clauses } : null;
+}
+
+function normalizeCompletionHistoryRow(row: any): CompletionHistoryRow | null {
+  const warId = Number(row?.warId);
+  const syncNumber = normalizeSyncNumber(row?.syncNumber) || null;
+  const clanTag = normalizeTag(row?.clanTag);
+  if (!Number.isInteger(warId) || warId <= 0 || !clanTag || syncNumber === null) return null;
+  return {
+    warId,
+    syncNumber,
+    clanTag,
+    warStartTime: isValidDate(row?.warStartTime) ? row.warStartTime : null,
+    warEndTime: isValidDate(row?.warEndTime) ? row.warEndTime : null,
+    opponentTag: normalizeTag(row?.opponentTag) || null,
+  };
+}
+
 /** Purpose: build a DB-first read model for one historically mapped sync cycle without writes or external calls. */
 export class SyncRetrospectiveService {
   constructor(private readonly db: RetrospectiveDb = prisma as unknown as RetrospectiveDb) {}
@@ -396,6 +440,123 @@ export class SyncRetrospectiveService {
       }
     }
     return null;
+  }
+
+  /** Purpose: prove sync completion from the persisted participation cohort and canonical ended histories only. */
+  async getCompletionState(
+    input: SyncRetrospectiveInput,
+  ): Promise<SyncRetrospectiveCompletionState> {
+    const guildId = normalizeGuildId(input.guildId);
+    const syncNumber = normalizeSyncNumber(input.syncNumber);
+    const cycle = await this.db.syncCycle.findUnique({
+      where: { guildId_syncNumber: { guildId, syncNumber } },
+      select: { syncTime: true },
+    });
+    if (!cycle || !isValidDate(cycle.syncTime)) {
+      return {
+        complete: false,
+        participantClanCount: 0,
+        endedParticipantClanCount: 0,
+        completedAt: null,
+        reason: "incomplete_history",
+      };
+    }
+
+    const rawPointsRows = await this.db.clanPointsSync.findMany({
+      where: { guildId, syncNum: syncNumber },
+      select: {
+        clanTag: true,
+        warId: true,
+        warStartTime: true,
+        opponentTag: true,
+        syncNum: true,
+      },
+    });
+    const pointsSyncRows = rawPointsRows
+      .map(normalizePointsSyncIdentity)
+      .filter((row): row is PointsSyncIdentityRow => row !== null);
+    const participantTags = new Set(pointsSyncRows.map((row) => normalizeTag(row.clanTag)));
+    if (participantTags.size === 0) {
+      return {
+        complete: false,
+        participantClanCount: 0,
+        endedParticipantClanCount: 0,
+        completedAt: null,
+        reason: "no_participants",
+      };
+    }
+
+    const historyWhere = buildPointsOwnedHistoryWhere(pointsSyncRows, syncNumber);
+    const rawHistories = historyWhere
+      ? await this.db.clanWarHistory.findMany({
+          where: historyWhere,
+          select: {
+            warId: true,
+            syncNumber: true,
+            clanTag: true,
+            warStartTime: true,
+            warEndTime: true,
+            opponentTag: true,
+          },
+        })
+      : [];
+    const histories = rawHistories
+      .map(normalizeCompletionHistoryRow)
+      .filter((row): row is CompletionHistoryRow => row !== null);
+    const endedHistories: CompletionHistoryRow[] = [];
+    let missingHistory = false;
+    let missingCompletionTime = false;
+
+    for (const participantTag of participantTags) {
+      const participantRows = pointsSyncRows.filter((row) => normalizeTag(row.clanTag) === participantTag);
+      const matches = histories.filter((history) => participantRows.some((point) =>
+        point.warId !== null
+            ? history.warId === point.warId && history.syncNumber === syncNumber
+          : history.clanTag === participantTag &&
+            history.warStartTime?.getTime() === point.warStartTime.getTime() &&
+            history.opponentTag === normalizeTag(point.opponentTag)
+      ));
+      if (matches.length === 0) {
+        missingHistory = true;
+        continue;
+      }
+      const ended = matches.find((history) => history.warEndTime !== null);
+      if (!ended) {
+        missingCompletionTime = true;
+        continue;
+      }
+      endedHistories.push(ended);
+    }
+
+    const completedAt = endedHistories.length > 0
+      ? new Date(Math.max(...endedHistories.map((history) => history.warEndTime!.getTime())))
+      : null;
+    const endedParticipantClanCount = endedHistories.length;
+    if (missingHistory) {
+      return {
+        complete: false,
+        participantClanCount: participantTags.size,
+        endedParticipantClanCount,
+        completedAt,
+        reason: "incomplete_history",
+      };
+    }
+    if (missingCompletionTime || endedParticipantClanCount !== participantTags.size || !completedAt) {
+      return {
+        complete: false,
+        participantClanCount: participantTags.size,
+        endedParticipantClanCount,
+        completedAt,
+        reason: "completion_time_unavailable",
+      };
+    }
+    return {
+      complete: true,
+      participantClanCount: participantTags.size,
+      endedParticipantClanCount,
+      completedAt,
+      reason: "complete",
+    };
   }
 
   async getBySyncNumber(input: SyncRetrospectiveInput): Promise<SyncRetrospectiveResult> {

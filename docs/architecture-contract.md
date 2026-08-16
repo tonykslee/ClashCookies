@@ -169,7 +169,7 @@ Each domain concept must have exactly one authoritative owner.
 | Points sync metadata | ClanPointsSync |
 | War event idempotency | WarEvent |
 | Scheduled-sync clan readiness snapshot and exact filler-at-sync facts | SyncClanReadinessSnapshot |
-| Scheduled-sync clan-goal idempotency | SyncEvent |
+| Scheduled-sync clan-goal and sync-retrospective delivery idempotency | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
@@ -278,7 +278,8 @@ Rules:
 - `SyncClanReadinessSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan ACTUAL readiness snapshot used by `SYNC_ZERO_DEVIATION`. It owns exact boundary roster/readiness facts, including explicitly designated filler membership captured from the ACTUAL roster. `fillerCaptureComplete=false` means filler history is unavailable or unknown (including legacy rows); `true` with an empty tag array means exact zero designated fillers. Retrospective/history consumers must use captured `fillerPlayerTags`, not today's mutable `FillerAccount` registry. It stores audit facts only; it does not own delivery state.
 - `SyncRetrospectiveService` is a DB-first, read-only consumer of `SyncCycle`, `ClanWarHistory`, `ClanWarParticipation`, `WarLookup`, persisted compliance, and mapped readiness snapshots. It preserves unknown coverage rather than converting incomplete evidence to zero and must not infer filler history from mutable registries or membership intervals.
 - `FillerAccount` remains the mutable guild-scoped filler-designation registry. `AllianceClanMembershipInterval` remains observation-history ownership and is not the owner of exact filler-at-sync facts; membership intervals must not be used to infer them.
-- `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals. It is distinct from `WarEvent` and never fabricates a war identity.
+- `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals and automatic sync retrospectives. It is distinct from `WarEvent` and never fabricates a war identity. For alliance-scoped event types, including `sync_retrospective:auto_post`, `clanTag=""` is reserved; the unique identity is `guildId + syncTime + clanTag + eventType`. These events own delivery claims, leases, terminal status, and retry state only. They do not own sync identity, participation, war history, readiness, filler facts, or retrospective metrics.
+- `ClanPointsSync` is the participating-clan cohort for automatic sync-retrospective completion. `ClanWarHistory` is the canonical ended-war proof, `SyncCycle` owns sync-number/sync-time identity, and `BotSetting` through `BotLogChannelService` owns routing plus the durable no-backfill enable boundary.
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.

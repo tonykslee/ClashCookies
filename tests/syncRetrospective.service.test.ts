@@ -82,6 +82,84 @@ function pointsBridge(row: Record<string, any>, warId: number | null = row.warId
 }
 
 describe("SyncRetrospectiveService", () => {
+  it("proves completion from every distinct ClanPointsSync participant", async () => {
+    const first = history({ warId: 1001, clanTag: "#AAA111", warEndTime: new Date("2026-08-16T00:00:00.000Z") });
+    const second = history({ warId: 1002, clanTag: "#BBB222", warEndTime: new Date("2026-08-16T01:00:00.000Z") });
+    const db = makeDb({ histories: [first, second], pointsSync: [pointsBridge(first), pointsBridge(second)] });
+
+    await expect(new SyncRetrospectiveService(db).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toEqual({
+        complete: true,
+        participantClanCount: 2,
+        endedParticipantClanCount: 2,
+        completedAt: new Date("2026-08-16T01:00:00.000Z"),
+        reason: "complete",
+      });
+  });
+
+  it("stays incomplete while one participating clan lacks history", async () => {
+    const first = history({ warId: 1011, clanTag: "#AAA111", warEndTime: new Date("2026-08-16T00:00:00.000Z") });
+    const second = history({ warId: 1012, clanTag: "#BBB222" });
+    const db = makeDb({ histories: [first], pointsSync: [pointsBridge(first), pointsBridge(second)] });
+
+    await expect(new SyncRetrospectiveService(db).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, participantClanCount: 2, endedParticipantClanCount: 1, reason: "incomplete_history" });
+  });
+
+  it("fails closed for zero participants and orphan direct war IDs", async () => {
+    await expect(new SyncRetrospectiveService(makeDb()).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, participantClanCount: 0, reason: "no_participants" });
+
+    const orphan = history({ warId: 1021, clanTag: "#AAA111" });
+    const db = makeDb({ pointsSync: [pointsBridge(orphan)], histories: [] });
+    await expect(new SyncRetrospectiveService(db).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, participantClanCount: 1, endedParticipantClanCount: 0, reason: "incomplete_history" });
+  });
+
+  it("requires the exact sync number and exact fallback identity", async () => {
+    const wrongSync = history({ warId: 1031, syncNumber: 41, clanTag: "#AAA111" });
+    const point = history({ warId: 1031, clanTag: "#AAA111" });
+    const db = makeDb({ pointsSync: [pointsBridge(point)], histories: [wrongSync] });
+    await expect(new SyncRetrospectiveService(db).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, reason: "incomplete_history" });
+
+    const fallback = history({ warId: 1032, clanTag: "#AAA111", warEndTime: new Date("2026-08-16T02:00:00.000Z") });
+    const fallbackPoint = pointsBridge(fallback, null);
+    await expect(new SyncRetrospectiveService(makeDb({ pointsSync: [fallbackPoint], histories: [fallback] }))
+      .getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: true, endedParticipantClanCount: 1 });
+
+    const fuzzy = history({ warId: 1033, clanTag: "#AAA111", opponentTag: "#OTHER", warEndTime: new Date("2026-08-16T02:00:00.000Z") });
+    await expect(new SyncRetrospectiveService(makeDb({ pointsSync: [pointsBridge(fallback, null)], histories: [fuzzy] }))
+      .getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, reason: "incomplete_history" });
+  });
+
+  it("ignores non-participating snapshots and extra histories", async () => {
+    const participant = history({ warId: 1041, clanTag: "#AAA111", warEndTime: new Date("2026-08-16T03:00:00.000Z") });
+    const extra = history({ warId: 1042, clanTag: "#BBB222", warEndTime: new Date("2026-08-16T04:00:00.000Z") });
+    const db = makeDb({
+      pointsSync: [pointsBridge(participant)],
+      histories: [participant, extra],
+      snapshots: [{ guildId: "guild-1", syncTime, clanTag: "#NOTPART", clanName: "Snapshot" }],
+    });
+    await expect(new SyncRetrospectiveService(db).getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: true, participantClanCount: 1, endedParticipantClanCount: 1 });
+  });
+
+  it("uses the latest participating canonical war end and fails closed when it is unavailable", async () => {
+    const first = history({ warId: 1051, clanTag: "#AAA111", warEndTime: new Date("2026-08-16T05:00:00.000Z") });
+    const second = history({ warId: 1052, clanTag: "#BBB222", warEndTime: new Date("2026-08-16T06:00:00.000Z") });
+    await expect(new SyncRetrospectiveService(makeDb({ histories: [first, second], pointsSync: [pointsBridge(first), pointsBridge(second)] }))
+      .getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ completedAt: new Date("2026-08-16T06:00:00.000Z") });
+
+    const noEnd = history({ warId: 1053, clanTag: "#AAA111", warEndTime: null });
+    await expect(new SyncRetrospectiveService(makeDb({ histories: [noEnd], pointsSync: [pointsBridge(noEnd)] }))
+      .getCompletionState({ guildId: "guild-1", syncNumber: 42 }))
+      .resolves.toMatchObject({ complete: false, endedParticipantClanCount: 0, reason: "completion_time_unavailable" });
+  });
+
   it("skips an orphan points bridge and selects the older cycle with actual history", async () => {
     const olderHistory = history({ syncNumber: 545, warId: 5451 });
     const orphanPoint = history({ syncNumber: 546, warId: 5461 });
