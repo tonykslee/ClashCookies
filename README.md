@@ -166,6 +166,7 @@ Cadence defaults and cost controls:
 - optional global `Wars.json` sweep: disabled by default, configurable and chunked
 - command paths remain DB-first; `/compo state mode:war`, `/compo state mode:actual`, and `/compo place` now read persisted feed-backed state instead of relying on hot-path sheet reads
 - `/compo place` now includes an explicit in-message refresh button that refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
+- `/compo place` replacement suggestions also include active, linked, non-filler accounts from surplus ACTUAL Auto-Detect display buckets, with the surplus bucket and delta shown in the drill-down
 - `/compo state mode:actual` keeps its in-message refresh button and now refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
 
 Manual/dev operations (script tooling):

@@ -6,11 +6,13 @@ import {
 } from "./CompoActualStateService";
 import { InactiveWarService } from "./InactiveWarService";
 import { normalizePlayerTag } from "./PlayerLinkService";
+import { projectCompoActualStateView } from "../helper/compoActualStateView";
 
 export type CompoReplacementReasonFlags = {
   filler: boolean;
   inactive: boolean;
   unlinked: boolean;
+  surplus: boolean;
 };
 
 export type CompoReplacementCandidate = {
@@ -23,6 +25,7 @@ export type CompoReplacementCandidate = {
   discordUserId: string | null;
   discordMention: string | null;
   inactiveLabel: string | null;
+  surplusDelta: number | null;
   reasons: CompoReplacementReasonFlags;
 };
 
@@ -33,6 +36,7 @@ export type CompoReplacementClanSummary = {
   fillerCount: number;
   inactiveCount: number;
   unlinkedCount: number;
+  surplusCount: number;
 };
 
 export type CompoReplacementResolution = {
@@ -51,6 +55,7 @@ type ReplacementCandidateSeed = {
   resolvedBucket: CompoWarDisplayBucket;
   discordUserId: string | null;
   inactiveLabel: string | null;
+  surplusDelta: number | null;
   reasons: CompoReplacementReasonFlags;
 };
 
@@ -70,11 +75,13 @@ function buildReasonFlags(input: {
   filler: boolean;
   inactive: boolean;
   unlinked: boolean;
+  surplus: boolean;
 }): CompoReplacementReasonFlags {
   return {
     filler: input.filler,
     inactive: input.inactive,
     unlinked: input.unlinked,
+    surplus: input.surplus,
   };
 }
 
@@ -108,11 +115,13 @@ function summarizeCandidatesByClan(
         fillerCount: 0,
         inactiveCount: 0,
         unlinkedCount: 0,
+        surplusCount: 0,
       };
     existing.uniqueCandidateCount += 1;
     if (candidate.reasons.filler) existing.fillerCount += 1;
     if (candidate.reasons.inactive) existing.inactiveCount += 1;
     if (candidate.reasons.unlinked) existing.unlinkedCount += 1;
+    if (candidate.reasons.surplus) existing.surplusCount += 1;
     summaryByClan.set(candidate.clanTag, existing);
   }
 
@@ -252,31 +261,65 @@ export class CompoReplacementService {
     }
 
     for (const clan of context.clans) {
+      const projection = projectCompoActualStateView({
+        view: "auto",
+        base: clan.base,
+        heatMapRefs: context.heatMapRefs,
+      });
+      const surplusDeltaByBucket = new Map<CompoWarDisplayBucket, number>();
+      if (projection.selectedHeatMapRef) {
+        for (const displayBucket of [
+          "TH18",
+          "TH17",
+          "TH16",
+          "TH15",
+          "TH14",
+          "<=TH13",
+        ] as CompoWarDisplayBucket[]) {
+          const delta = projection.deltaByBucket[displayBucket];
+          if (delta !== null && delta > 0) {
+            surplusDeltaByBucket.set(displayBucket, delta);
+          }
+        }
+      }
+
       for (const member of clan.members) {
         const playerTag = normalizeTagLike(member.playerTag);
         if (!playerTag || !isPositiveWeight(member.resolvedWeight)) continue;
-        if (!member.resolvedBucket || member.resolvedBucket !== bucket) continue;
 
+        const resolvedBucket = getCompoWarDisplayBucket(member.resolvedWeight);
+        if (!resolvedBucket) continue;
+        const isSameBucket = resolvedBucket === bucket;
+        const surplusDelta = surplusDeltaByBucket.get(resolvedBucket) ?? null;
+        const hasSurplusReason = surplusDelta !== null;
         const discordUserId = linkedUserIdByPlayerTag.get(playerTag) ?? null;
+        const isFiller = fillerTagSet.has(playerTag);
+        const isInactive =
+          inactiveByDaysTagSet.has(playerTag) || inactiveByWarsTagSet.has(playerTag);
+        const isUnlinked = discordUserId === null;
+        const qualifiesByExistingRule =
+          isSameBucket && (isFiller || isInactive || isUnlinked);
+        const qualifiesBySurplus = hasSurplusReason;
+        if (!qualifiesByExistingRule && !qualifiesBySurplus) continue;
+
         const reasons = buildReasonFlags({
-          filler: fillerTagSet.has(playerTag),
-          inactive: inactiveByDaysTagSet.has(playerTag) || inactiveByWarsTagSet.has(playerTag),
-          unlinked: discordUserId === null,
+          filler: isFiller,
+          inactive: isInactive,
+          unlinked: isUnlinked,
+          surplus: hasSurplusReason,
         });
-        if (!reasons.filler && !reasons.inactive && !reasons.unlinked) {
-          continue;
-        }
 
         memberSeeds.push({
           key: `${clan.clanTag}|${playerTag}`,
           clanTag: clan.clanTag,
           clanName: clan.clanName,
           playerTag,
-          playerName: member.playerName,
+          playerName: member.playerName?.trim() || playerTag,
           resolvedWeight: member.resolvedWeight,
-          resolvedBucket: bucket,
+          resolvedBucket,
           discordUserId,
           inactiveLabel: inactiveLabelByPlayerTag.get(playerTag) ?? null,
+          surplusDelta,
           reasons,
         });
       }
@@ -301,6 +344,7 @@ export class CompoReplacementService {
         discordUserId: seed.discordUserId,
         discordMention: buildDiscordMention(seed.discordUserId),
         inactiveLabel: seed.inactiveLabel,
+        surplusDelta: seed.surplusDelta,
         reasons: seed.reasons,
       }));
 
@@ -317,4 +361,5 @@ export const resolveCompoReplacementCandidatesForTest = async (input: {
   guildId?: string | null;
   weight: number;
   bucket?: CompoWarDisplayBucket | null;
+  context?: CompoActualStateContext | null;
 }) => new CompoReplacementService().resolveReplacementCandidates(input);
