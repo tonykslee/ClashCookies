@@ -516,6 +516,7 @@ describe("CompoReplacementService", () => {
     } as any).resolveReplacementCandidates({
       guildId: "guild-1",
       weight: 145000,
+      includeViolationCounts: true,
       context: makeContext({
         members: [
           { playerTag: "#P000090", playerName: "Violator", resolvedWeight: 145000 },
@@ -537,6 +538,36 @@ describe("CompoReplacementService", () => {
       ["#P000092", 0],
       ["#P000090", 3],
     ]);
+  });
+
+  it("does not query violation history by default and returns zero counts", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P000090", discordUserId: "111111111111111111" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+    } as any);
+    const getViolationCounts = vi.fn();
+
+    const result = await new CompoReplacementService(undefined, {
+      getClanPlayerViolationCounts: getViolationCounts,
+    } as any).resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      context: makeContext({
+        members: [
+          { playerTag: "#P000090", playerName: "Candidate", resolvedWeight: 145000 },
+        ],
+        bucketCounts: { TH15: 1 },
+        heatMapRef: makeHeatMapRef({ th15Count: 0 }),
+      }),
+    });
+
+    expect(getViolationCounts).not.toHaveBeenCalled();
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.violationCount30d).toBe(0);
   });
 
   it("does not make violations alone broaden replacement eligibility", async () => {
@@ -562,6 +593,7 @@ describe("CompoReplacementService", () => {
     } as any).resolveReplacementCandidates({
       guildId: "guild-1",
       weight: 145000,
+      includeViolationCounts: true,
       context: makeContext({
         members: [
           { playerTag: "#P000090", playerName: "Healthy TH17", resolvedWeight: 165000 },

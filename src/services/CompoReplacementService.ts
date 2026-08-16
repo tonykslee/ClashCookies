@@ -262,6 +262,7 @@ export class CompoReplacementService {
     weight: number;
     bucket?: CompoWarDisplayBucket | null;
     context?: CompoActualStateContext | null;
+    includeViolationCounts?: boolean;
   }): Promise<CompoReplacementResolution> {
     const bucket = input.bucket ?? getCompoWarDisplayBucket(input.weight);
     if (!bucket) {
@@ -453,7 +454,7 @@ export class CompoReplacementService {
     }
 
     const violationCountByCandidateKey = new Map<string, number>();
-    if (input.guildId && uniqueByKey.size > 0) {
+    if (input.includeViolationCounts === true && input.guildId && uniqueByKey.size > 0) {
       const seedsByClan = new Map<string, ReplacementCandidateSeed[]>();
       for (const seed of uniqueByKey.values()) {
         const clanSeeds = seedsByClan.get(seed.clanTag) ?? [];
@@ -512,4 +513,5 @@ export const resolveCompoReplacementCandidatesForTest = async (input: {
   weight: number;
   bucket?: CompoWarDisplayBucket | null;
   context?: CompoActualStateContext | null;
+  includeViolationCounts?: boolean;
 }) => new CompoReplacementService().resolveReplacementCandidates(input);
