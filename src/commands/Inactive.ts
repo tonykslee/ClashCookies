@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ButtonInteraction,
   ChatInputCommandInteraction,
   Client,
   ComponentType,
@@ -34,6 +35,7 @@ const DEFAULT_MIN_COVERAGE = 0.8;
 const MAX_LINES_PER_PAGE = 24;
 const MAX_DESCRIPTION_LENGTH = 3900;
 type InactiveDisplayMode = "tag" | "weight";
+type InactiveResponseInteraction = ChatInputCommandInteraction | ButtonInteraction;
 
 function normalizeClanTagInput(input: string): string {
   return normalizeClashTagBareInput(input);
@@ -557,7 +559,7 @@ type InactiveDaysDiagnosticNote =
 const inactiveWarService = new InactiveWarService();
 
 async function fetchInactiveDaysEntries(
-  interaction: ChatInputCommandInteraction,
+  interaction: InactiveResponseInteraction,
   days: number,
   clanTag?: string | null,
   consecutive?: boolean,
@@ -752,7 +754,7 @@ async function fetchInactiveDaysEntries(
 }
 
 async function fetchInactiveWarEntries(
-  interaction: ChatInputCommandInteraction,
+  interaction: InactiveResponseInteraction,
   wars: number,
   clanTag?: string | null,
   consecutive?: boolean,
@@ -789,10 +791,11 @@ async function fetchInactiveWarEntries(
 }
 
 async function renderEmbedsWithPager(
-  interaction: ChatInputCommandInteraction,
+  interaction: InactiveResponseInteraction,
   title: string,
   pagesByMode: Record<InactiveDisplayMode, string[]>,
-  footerSuffix = ""
+  footerSuffix = "",
+  useInteractivePagination = true,
 ): Promise<void> {
   const embedsByMode = {
     tag: pagesByMode.tag.map(
@@ -827,6 +830,16 @@ async function renderEmbedsWithPager(
   const getCurrentPages = () => pagesByMode[displayMode];
   const getCurrentPage = () =>
     Math.min(pageByMode[displayMode], Math.max(0, getCurrentPages().length - 1));
+  if (!useInteractivePagination) {
+    await interaction.editReply({
+      embeds: [embedsByMode.tag[0]],
+      components: [],
+    });
+    for (const embed of embedsByMode.tag.slice(1)) {
+      await interaction.followUp({ ephemeral: true, embeds: [embed] });
+    }
+    return;
+  }
   const buildComponents = () =>
     hasDisplayToggle || usePagination
       ? [buildPaginationRow(customIdPrefix, displayMode, getCurrentPage(), getCurrentPages().length)]
@@ -944,8 +957,7 @@ function buildGroupedPages<T>(
 }
 
 async function runDaysMode(
-  interaction: ChatInputCommandInteraction,
-  cocService: CoCService,
+  interaction: InactiveResponseInteraction,
   townHallEmojiByLevel: TownHallEmojiMap,
   days: number,
   clanTag?: string | null,
@@ -1048,7 +1060,7 @@ async function runDaysMode(
 }
 
 async function runWarsMode(
-  interaction: ChatInputCommandInteraction,
+  interaction: InactiveResponseInteraction,
   townHallEmojiByLevel: TownHallEmojiMap,
   wars: number,
   clanTag?: string | null,
@@ -1125,14 +1137,14 @@ async function runWarsMode(
 }
 
 async function runCombinedMode(
-  interaction: ChatInputCommandInteraction,
-  cocService: CoCService,
+  interaction: InactiveResponseInteraction,
   townHallEmojiByLevel: TownHallEmojiMap,
   days: number,
   wars: number,
   clanTag?: string | null,
   consecutive?: boolean,
   inClan?: boolean,
+  useInteractivePagination = true,
 ): Promise<void> {
   const daysResult = await fetchInactiveDaysEntries(interaction, days, clanTag, consecutive, inClan);
   const warsResult = await fetchInactiveWarEntries(interaction, wars, clanTag, consecutive, inClan);
@@ -1316,7 +1328,26 @@ async function runCombinedMode(
     interaction,
     `Inactive Players - Days ${days} + Wars ${wars} (${rows.length})`,
     { tag: tagPages, weight: weightPages },
-    footerSuffix
+    footerSuffix,
+    useInteractivePagination,
+  );
+}
+
+/** Purpose: render the canonical combined inactivity detail for a Clan Health clan. */
+export async function runInactiveClanHealthDetail(
+  interaction: ButtonInteraction,
+  input: { clanTag: string },
+): Promise<void> {
+  const townHallEmojiByLevel = await resolveTownHallEmojiMap(interaction.client);
+  await runCombinedMode(
+    interaction,
+    townHallEmojiByLevel,
+    6,
+    3,
+    input.clanTag,
+    undefined,
+    true,
+    false,
   );
 }
 
@@ -1360,7 +1391,7 @@ export const Inactive: Command = {
   run: async (
     client: Client,
     interaction: ChatInputCommandInteraction,
-    cocService: CoCService
+    _cocService: CoCService
   ) => {
     await interaction.deferReply({ ephemeral: true });
     const townHallEmojiByLevel = await resolveTownHallEmojiMap(client);
@@ -1388,7 +1419,6 @@ export const Inactive: Command = {
     if (daysValue && warsValue) {
       await runCombinedMode(
         interaction,
-        cocService,
         townHallEmojiByLevel,
         daysValue,
         warsValue,
@@ -1401,7 +1431,6 @@ export const Inactive: Command = {
     if (daysValue) {
       await runDaysMode(
         interaction,
-        cocService,
         townHallEmojiByLevel,
         daysValue,
         clanValue,

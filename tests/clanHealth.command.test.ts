@@ -318,6 +318,14 @@ describe("/clan-health command", () => {
       "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**",
     );
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
+    const navigationButtons = payload.components[0].components.map((button: any) => button.toJSON());
+    expect(navigationButtons.map((button: any) => button.label)).toEqual([
+      "View Inactive",
+      "View Unlinked",
+      "View Compo",
+      "View Violations",
+    ]);
+    expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
   });
 
   it("renders an external snapshot with war data and omits tracked-only fields", async () => {
@@ -349,6 +357,7 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[1].value)).not.toContain("War Plan Compliance");
     expect(String(embedJson.fields[1].value)).not.toContain("Inactivity");
     expect(String(embedJson.fields[1].value)).not.toContain("Discord Links");
+    expect(payload.components).toBeUndefined();
   });
 
   it("renders an external snapshot without war data using only the composition field", async () => {
@@ -383,6 +392,7 @@ describe("/clan-health command", () => {
     const embedJson = payload.embeds[0].toJSON();
     expect(embedJson.fields.map((field: any) => field.name)).toEqual(["Current Composition"]);
     expect(String(embedJson.fields[0].value)).toContain("Members: **50/50**");
+    expect(payload.components).toBeUndefined();
   });
 
   it("renders only the no-evaluation compliance message when no completed evaluations exist", async () => {

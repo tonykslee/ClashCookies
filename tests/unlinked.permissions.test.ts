@@ -32,4 +32,20 @@ describe("unlinked permission defaults", () => {
     await expect(service.canUseAnyTarget(["unlinked:list"], interaction)).resolves.toBe(true);
     await expect(service.canUseAnyTarget(["unlinked:set-alert"], interaction)).resolves.toBe(true);
   });
+
+  it("lets parent unlinked authorization cover the normal list target set", async () => {
+    const settings = {
+      get: vi.fn(async (key: string) => {
+        if (key === "command_roles:unlinked") return "222222222222222222";
+        return null;
+      }),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const parentAuthorized = buildInteraction({ roleIds: ["222222222222222222"] });
+    const unrelated = buildInteraction({ roleIds: ["333333333333333333"] });
+    const normalUnlinkedListTargets = ["unlinked:list", "unlinked"];
+
+    await expect(service.canUseAnyTarget(normalUnlinkedListTargets, parentAuthorized)).resolves.toBe(true);
+    await expect(service.canUseAnyTarget(normalUnlinkedListTargets, unrelated)).resolves.toBe(false);
+  });
 });
