@@ -227,7 +227,7 @@ import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
 import {
   handleClanHealthNavigationButtonInteraction,
   isClanHealthNavigationButtonCustomId,
-} from "../services/ClanHealthNavigationService";
+} from "../commands/ClanHealthNavigation";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";

@@ -47,7 +47,7 @@ import {
   buildClanHealthNavigationRow,
   handleClanHealthNavigationButtonInteraction,
   parseClanHealthNavigationCustomId,
-} from "../src/services/ClanHealthNavigationService";
+} from "../src/commands/ClanHealthNavigation";
 
 function makeButton(customId: string, userId = "leader-1") {
   return {
@@ -111,15 +111,15 @@ describe("Clan Health navigation", () => {
   });
 
   it.each([
-    ["inactive", "inactive", "#AAA111"],
-    ["unlinked", "unlinked:list", "#AAA111"],
-    ["compo", "compo:advice", "#AAA111"],
-    ["violations", "fwa:violations", "#AAA111"],
+    ["inactive", ["inactive"], "#AAA111"],
+    ["unlinked", ["unlinked:list", "unlinked"], "#AAA111"],
+    ["compo", ["compo:advice"], "#AAA111"],
+    ["violations", ["fwa:violations"], "#AAA111"],
   ] as const)("routes %s to its owning workflow with an ephemeral response", async (action, target, clanTag) => {
     const interaction = makeButton(buildClanHealthNavigationCustomId(action, clanTag));
     await handleClanHealthNavigationButtonInteraction(interaction as any);
 
-    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith([target], interaction);
+    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(target, interaction);
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.message.edit).not.toHaveBeenCalled();
     expect(interaction.update).toBeUndefined();

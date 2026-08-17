@@ -6,13 +6,13 @@ import {
 } from "discord.js";
 import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { splitDiscordLineMessages } from "../helper/discordLineMessageSplit";
-import { runInactiveClanHealthDetail } from "../commands/Inactive";
-import { buildUnlinkedListLines } from "../commands/Unlinked";
-import { buildCompoAdviceResponsePayload } from "../commands/Compo";
-import { buildFwaViolationsClanDetailPayload } from "../commands/fwa/violationsCommand";
-import { CompoAdviceService } from "./CompoAdviceService";
-import { CommandPermissionService } from "./CommandPermissionService";
-import { unlinkedMemberAlertService } from "./UnlinkedMemberAlertService";
+import { runInactiveClanHealthDetail } from "./Inactive";
+import { buildUnlinkedListLines } from "./Unlinked";
+import { buildCompoAdviceResponsePayload } from "./Compo";
+import { buildFwaViolationsClanDetailPayload } from "./fwa/violationsCommand";
+import { CompoAdviceService } from "../services/CompoAdviceService";
+import { CommandPermissionService } from "../services/CommandPermissionService";
+import { unlinkedMemberAlertService } from "../services/UnlinkedMemberAlertService";
 
 const CLAN_HEALTH_NAVIGATION_PREFIX = "clan-health";
 
@@ -32,11 +32,14 @@ const CLAN_HEALTH_NAVIGATION_LABELS: Record<ClanHealthNavigationAction, string> 
   violations: "View Violations",
 };
 
-const CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS: Record<ClanHealthNavigationAction, string> = {
-  inactive: "inactive",
-  unlinked: "unlinked:list",
-  compo: "compo:advice",
-  violations: "fwa:violations",
+const CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS: Record<
+  ClanHealthNavigationAction,
+  readonly string[]
+> = {
+  inactive: ["inactive"],
+  unlinked: ["unlinked:list", "unlinked"],
+  compo: ["compo:advice"],
+  violations: ["fwa:violations"],
 };
 
 const SAFE_CLAN_TAG_BODY = /^[A-Z0-9]{1,15}$/;
@@ -124,8 +127,8 @@ export async function handleClanHealthNavigationButtonInteraction(
     return;
   }
 
-  const permissionTarget = CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS[parsed.action];
-  const allowed = await permissionService.canUseAnyTarget([permissionTarget], interaction);
+  const permissionTargets = CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS[parsed.action];
+  const allowed = await permissionService.canUseAnyTarget([...permissionTargets], interaction);
   if (!allowed) {
     await interaction.reply({
       ephemeral: true,

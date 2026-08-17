@@ -16,7 +16,7 @@ import {
   type ClanHealthTrackedSnapshot,
 } from "../services/ClanHealthSnapshotService";
 import { normalizeClashTagInput } from "../helper/clashTag";
-import { buildClanHealthNavigationRow } from "../services/ClanHealthNavigationService";
+import { buildClanHealthNavigationRow } from "./ClanHealthNavigation";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
