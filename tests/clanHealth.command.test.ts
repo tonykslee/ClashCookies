@@ -29,7 +29,7 @@ import type {
   ClanHealthTrackedSnapshot,
 } from "../src/services/ClanHealthSnapshotService";
 
-function makeInteraction(tagValue: string) {
+function makeInteraction(tagValue: string, windowValue: number | null = null) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
   return {
@@ -43,6 +43,7 @@ function makeInteraction(tagValue: string) {
         if (required) return tagValue;
         return null;
       }),
+      getInteger: vi.fn((name: string) => (name === "window" ? windowValue : null)),
       getFocused: vi.fn().mockReturnValue({ name: "tag", value: "alp" }),
     },
     respond: vi.fn().mockResolvedValue(undefined),
@@ -115,6 +116,8 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
+      historicalWindowDays: 30,
+      historicalCutoff: new Date("2026-02-07T12:00:00.000Z"),
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         period: "30d",
@@ -307,7 +310,7 @@ describe("/clan-health command", () => {
       "Affected wars: **4/9** evaluated FWA wars",
     );
     expect(String(embedJson.fields[0].value)).toContain(
-      "Match rate (last 30 ended wars): **70.0% (14/20)**",
+      "Match rate (last 30 days; 20 ended wars): **70.0% (14/20)**",
     );
     expect(String(embedJson.fields[0].value)).toContain(
       ":green_circle: 10 | :red_circle: 4 | :black_circle: 3 | :white_circle: 3",
@@ -315,8 +318,9 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
     expect(String(embedJson.fields[3].value)).toContain(
-      "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**",
+      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 days): **2**",
     );
+    expect(String(embedJson.fields[3].value)).toContain("Eligible ended FWA wars in window: **3**");
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
     const navigationButtons = payload.components[0].components.map((button: any) => button.toJSON());
     expect(navigationButtons.map((button: any) => button.label)).toEqual([
@@ -326,6 +330,26 @@ describe("/clan-health command", () => {
       "View Violations",
     ]);
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
+  });
+
+  it("declares the bounded optional window and forwards a selected value", async () => {
+    const windowOption = ClanHealth.options?.find((option: any) => option.name === "window") as any;
+    expect(windowOption).toMatchObject({
+      type: 4,
+      required: false,
+      min_value: 7,
+      max_value: 180,
+    });
+
+    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({ historicalWindowDays: 60 }));
+    const interaction = makeInteraction("AAA111", 60);
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    expect(serviceMock.getSnapshot).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      historicalWindowDays: 60,
+    });
   });
 
   it("renders an external snapshot with war data and omits tracked-only fields", async () => {

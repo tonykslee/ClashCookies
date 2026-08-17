@@ -538,10 +538,15 @@ function sortClanSummaries(
 function resolvePeriodWindow(input: {
   period: WarPlanViolationHistoryPeriod;
   now?: Date;
+  cutoff?: Date | null;
 }): PeriodWindow {
   const now = input.now ?? new Date();
   const cutoff =
-    input.period === "30d" ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) : null;
+    input.cutoff !== undefined
+      ? input.cutoff
+      : input.period === "30d"
+        ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        : null;
   return { now, cutoff };
 }
 
@@ -1831,6 +1836,8 @@ export class WarPlanViolationHistoryService {
     clanTag: string;
     period: WarPlanViolationHistoryPeriod;
     now?: Date;
+    /** Optional caller-owned cutoff for bounded internal reports such as Clan Health. */
+    cutoff?: Date | null;
   }): Promise<WarPlanViolationHistoryClanLeaderboardResult> {
     const guildId = String(input.guildId ?? "").trim();
     const normalizedClanTag = normalizeClashTagWithHash(input.clanTag);

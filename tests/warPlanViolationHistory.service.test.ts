@@ -1138,6 +1138,47 @@ describe("WarPlanViolationHistoryService", () => {
     });
   });
 
+  it("uses an explicit caller cutoff for bounded internal reports", async () => {
+    const cutoff = d("2026-01-08T12:00:00.000Z");
+    const { db, service } = buildService([
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-02-01T00:00:00.000Z"),
+        warEndTime: d("2026-02-01T01:00:00.000Z"),
+        violations: [
+          {
+            playerTag: "#PYLQ0289",
+            playerNameSnapshot: "Alpha One",
+            townHallLevelSnapshot: 16,
+          },
+        ],
+      }),
+    ]);
+
+    const result = await service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      period: "30d",
+      now: d("2026-06-01T00:00:00.000Z"),
+      cutoff,
+    });
+
+    const queryWhere = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where as Record<
+      string,
+      unknown
+    >;
+    expect((queryWhere.warHistory as { is?: { warEndTime?: unknown } }).is?.warEndTime).toEqual({
+      gte: cutoff,
+    });
+    expect(result).toMatchObject({
+      outcome: "success",
+      period: "30d",
+      cutoff,
+    });
+  });
+
   it("returns successful no-data metadata for a known clan with only outside-window evaluations", async () => {
     const { db, service } = buildService([
       buildFixture({
