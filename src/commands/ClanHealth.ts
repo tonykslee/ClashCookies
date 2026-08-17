@@ -16,6 +16,7 @@ import {
   type ClanHealthTrackedSnapshot,
 } from "../services/ClanHealthSnapshotService";
 import { normalizeClashTagInput } from "../helper/clashTag";
+import { buildClanHealthNavigationRow } from "../services/ClanHealthNavigationService";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
@@ -296,6 +297,9 @@ export const ClanHealth: Command = {
 
     await interaction.editReply({
       embeds: [buildClanHealthEmbed(snapshot)],
+      ...(snapshot.viewType === "tracked"
+        ? { components: [buildClanHealthNavigationRow(snapshot.clanTag)] }
+        : {}),
     });
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {

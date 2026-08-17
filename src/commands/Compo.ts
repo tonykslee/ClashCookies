@@ -2073,7 +2073,8 @@ async function buildCompoAdviceEmbed(input: {
   return embed;
 }
 
-async function buildCompoAdviceResponsePayload(input: {
+/** Purpose: render the canonical ACTUAL/WAR advice response payload for any interaction surface. */
+export async function buildCompoAdviceResponsePayload(input: {
   advice: CompoAdviceReadResult;
   client: Client;
 }): Promise<CompoRenderPayload> {

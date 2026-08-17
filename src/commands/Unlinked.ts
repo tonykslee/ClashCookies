@@ -102,7 +102,8 @@ function formatUnlinkedAlertRoutingConfirmation(
   return "Disabled unlinked-player alerts.";
 }
 
-function buildUnlinkedListLines(input: {
+/** Purpose: render the canonical persisted unlinked-member list shared by slash and drilldown views. */
+export function buildUnlinkedListLines(input: {
   entries: Array<{
     playerTag: string;
     playerName: string;

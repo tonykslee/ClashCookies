@@ -224,6 +224,10 @@ import {
   isRaidsIntelSelectMenuCustomId,
 } from "../commands/Raids";
 import { handleSayModalSubmit, isSayModalCustomId } from "../commands/Say";
+import {
+  handleClanHealthNavigationButtonInteraction,
+  isClanHealthNavigationButtonCustomId,
+} from "../services/ClanHealthNavigationService";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -987,6 +991,11 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isClanHealthNavigationButtonCustomId(interaction.customId)) {
+    await handleClanHealthNavigationButtonInteraction(interaction);
+    return;
+  }
 
   if (isBotStatusRefreshButtonCustomId(interaction.customId)) {
     try {
