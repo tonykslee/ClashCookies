@@ -121,11 +121,9 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      historicalWindow: overrides.historicalWindow ?? {
-        kind: "days",
-        days: 30,
-        cutoff: new Date("2026-02-07T12:00:00.000Z"),
-      },
+      historicalWindowDays: overrides.historicalWindowDays ?? 30,
+      historicalCutoff:
+        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         hasCompletedEvaluations: true,
@@ -267,26 +265,9 @@ describe("/clan-health command", () => {
     };
   }
 
-  async function renderTrackedSnapshot(snapshot: ClanHealthTrackedSnapshot) {
-    serviceMock.getSnapshot.mockResolvedValue(snapshot);
-    const interaction = makeInteraction("AAA111");
-    await ClanHealth.run({} as any, interaction as any, {
-      getCurrentWar: vi.fn(),
-      getClan: vi.fn(),
-      getPlayerRaw: vi.fn(),
-    } as any);
-    return interaction.editReply.mock.calls[0]?.[0].embeds[0].toJSON();
-  }
-
   it("renders leadership metrics and does not call external CoC API", async () => {
     serviceMock.getSnapshot.mockResolvedValue(
       makeSnapshot({
-        historicalWindow: {
-          kind: "syncs",
-          requestedSyncCount: 30,
-          syncNumbers: [901, 900],
-          syncTimes: [new Date("2026-03-09T12:00:00.000Z")],
-        },
         warPlanCompliance: makeComplianceSnapshot({
           hasCompletedEvaluations: true,
           evaluatedWarCount: 9,
@@ -315,7 +296,7 @@ describe("/clan-health command", () => {
     expect(embedJson.fields.map((field: any) => field.name)).toEqual([
       "War Performance",
       "Current Composition",
-      "War Plan Compliance — Last 30 Syncs",
+      "War Plan Compliance — Last 30 Days",
       "Inactivity",
       "Discord Links",
     ]);
@@ -331,7 +312,7 @@ describe("/clan-health command", () => {
       "Affected wars: **4/9** evaluated FWA wars",
     );
     expect(String(embedJson.fields[0].value)).toContain(
-      "Match rate (last 30 syncs; 20 ended wars): **70.0% (14/20)**",
+      "Match rate (last 30 days; 20 ended wars): **70.0% (14/20)**",
     );
     expect(String(embedJson.fields[0].value)).toContain(
       ":green_circle: 10 | :red_circle: 4 | :black_circle: 3 | :white_circle: 3",
@@ -339,7 +320,7 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
     expect(String(embedJson.fields[3].value)).toContain(
-      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 syncs): **2**",
+      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 days): **2**",
     );
     expect(String(embedJson.fields[3].value)).toContain("Eligible ended FWA wars in window: **3**");
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
@@ -351,54 +332,15 @@ describe("/clan-health command", () => {
       "View Violations",
       "War History",
     ]);
-    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:s30");
+    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:30");
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
     expect(payload.components).toHaveLength(2);
     expect(payload.components[1].components.map((button: any) => button.toJSON())).toEqual([
       expect.objectContaining({
         label: "View Trends",
-        custom_id: "clan-health:trends:AAA111:s30",
+        custom_id: "clan-health:trends:AAA111:30",
       }),
     ]);
-  });
-
-  it("reports partial mapped sync coverage without changing the default IDs", async () => {
-    const embed = await renderTrackedSnapshot(makeSnapshot({
-      historicalWindow: {
-        kind: "syncs",
-        requestedSyncCount: 30,
-        syncNumbers: Array.from({ length: 18 }, (_, index) => 900 - index),
-        syncTimes: [],
-      },
-    }));
-
-    expect(String(embed.fields[0].value)).toContain("Mapped syncs available: **18/30**");
-    expect(embed.fields[0].value).not.toContain("Mapped syncs available: **30/30**");
-  });
-
-  it("does not report a partial coverage note when all default syncs are mapped", async () => {
-    const embed = await renderTrackedSnapshot(makeSnapshot({
-      historicalWindow: {
-        kind: "syncs",
-        requestedSyncCount: 30,
-        syncNumbers: Array.from({ length: 30 }, (_, index) => 900 - index),
-        syncTimes: [],
-      },
-    }));
-
-    expect(String(embed.fields[0].value)).not.toContain("Mapped syncs available:");
-  });
-
-  it("does not report mapped sync coverage for explicit day windows", async () => {
-    const embed = await renderTrackedSnapshot(makeSnapshot({
-      historicalWindow: {
-        kind: "days",
-        days: 60,
-        cutoff: new Date("2026-01-09T12:00:00.000Z"),
-      },
-    }));
-
-    expect(String(embed.fields[0].value)).not.toContain("Mapped syncs available:");
   });
 
   it("declares the bounded optional window and forwards a selected value", async () => {
@@ -410,13 +352,7 @@ describe("/clan-health command", () => {
       max_value: 180,
     });
 
-    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({
-      historicalWindow: {
-        kind: "days",
-        days: 60,
-        cutoff: new Date("2026-01-08T12:00:00.000Z"),
-      },
-    }));
+    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({ historicalWindowDays: 60 }));
     const interaction = makeInteraction("AAA111", 60);
     await ClanHealth.run({} as any, interaction as any, {} as any);
 
