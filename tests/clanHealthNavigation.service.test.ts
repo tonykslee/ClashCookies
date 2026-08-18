@@ -15,6 +15,10 @@ const violationsMock = vi.hoisted(() => ({
 }));
 const historyMock = vi.hoisted(() => ({
   listEndedByClanSince: vi.fn(),
+  listEndedByClanSyncNumbers: vi.fn(),
+}));
+const historicalWindowMock = vi.hoisted(() => ({
+  resolveLatestSyncWindow: vi.fn(),
 }));
 const trendMock = vi.hoisted(() => ({
   getTrend: vi.fn(),
@@ -50,6 +54,11 @@ vi.mock("../src/commands/fwa/violationsCommand", () => ({
 vi.mock("../src/services/ClanHealthTrendService", () => ({
   ClanHealthTrendService: class {
     getTrend = trendMock.getTrend;
+  },
+}));
+vi.mock("../src/services/ClanHealthHistoricalWindowService", () => ({
+  ClanHealthHistoricalWindowService: class {
+    resolveLatestSyncWindow = historicalWindowMock.resolveLatestSyncWindow;
   },
 }));
 
@@ -96,6 +105,7 @@ describe("Clan Health navigation", () => {
       guildId: "guild-1",
       clanTag: "#AAA111",
       clanName: null,
+      window: { kind: "days", days: 60, cutoff: new Date("2026-01-01T00:00:00.000Z") },
       cutoff: new Date("2026-01-01T00:00:00.000Z"),
       now: new Date("2026-03-01T00:00:00.000Z"),
       snapshots: [],
@@ -106,6 +116,15 @@ describe("Clan Health navigation", () => {
       unresolved: { oldest: null, latest: null, average: null },
       fillers: { knownOldest: null, knownLatest: null, averageKnown: null, knownCount: 0 },
       algorithmVersions: [],
+    });
+    historyMock.listEndedByClanSyncNumbers.mockReset();
+    historicalWindowMock.resolveLatestSyncWindow.mockReset();
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
     });
   });
 
@@ -124,7 +143,7 @@ describe("Clan Health navigation", () => {
       "clan-health:unlinked:AAA111",
       "clan-health:compo:AAA111",
       "clan-health:violations:AAA111",
-      "clan-health:war-history:AAA111:30",
+      "clan-health:war-history:AAA111:s30",
     ]);
     expect(row.components.every((button) => (button.custom_id?.length ?? 0) <= 100)).toBe(true);
   });
@@ -145,6 +164,7 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId(historyId)).toEqual({
       action: "war-history",
       clanTag: "PYLQ02",
+      historicalWindow: { kind: "days", days: 60, cutoff: new Date(0) },
       historicalWindowDays: 60,
     });
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02")).toBeNull();
@@ -157,12 +177,27 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId(trendsId)).toEqual({
       action: "trends",
       clanTag: "PYLQ02",
+      historicalWindow: { kind: "days", days: 60, cutoff: new Date(0) },
       historicalWindowDays: 60,
     });
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:6")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:181")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:60.5")).toBeNull();
+
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:!!!:s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:trends::s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:#AAA111:s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:AAA111:s30")).toMatchObject({
+      action: "war-history",
+      clanTag: "AAA111",
+      historicalWindow: { kind: "syncs", requestedSyncCount: 30 },
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:AAA111:s30")).toMatchObject({
+      action: "trends",
+      clanTag: "AAA111",
+      historicalWindow: { kind: "syncs", requestedSyncCount: 30 },
+    });
   });
 
   it("carries a selected historical window in the War History button ID", () => {
@@ -323,6 +358,72 @@ describe("Clan Health navigation", () => {
     expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
+  it("re-resolves the default s30 range at click time", async () => {
+    const interaction = makeButton("clan-health:war-history:AAA111:s30");
+    const historyService = {
+      listEndedByClanSince: historyMock.listEndedByClanSince,
+      listEndedByClanSyncNumbers: historyMock.listEndedByClanSyncNumbers,
+    };
+    historyMock.listEndedByClanSyncNumbers.mockResolvedValue([]);
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+    });
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      historyService as any,
+      undefined,
+      historicalWindowMock as any,
+    );
+
+    expect(historicalWindowMock.resolveLatestSyncWindow).toHaveBeenCalledWith({
+      guildId: "guild-1",
+    });
+    expect(historyMock.listEndedByClanSyncNumbers).toHaveBeenCalledWith({
+      clanTag: "#AAA111",
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
+  it("renders an honest unavailable message when s30 baseline resolution fails", async () => {
+    const customId = "clan-health:war-history:AAA111:s30";
+    expect(parseClanHealthNavigationCustomId(customId)).not.toBeNull();
+    const interaction = makeButton(customId);
+    const historyService = {
+      listEndedByClanSince: historyMock.listEndedByClanSince,
+      listEndedByClanSyncNumbers: historyMock.listEndedByClanSyncNumbers,
+    };
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "unavailable",
+      requestedSyncCount: 30,
+      reason: "latest_sync_unavailable",
+    });
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      historyService as any,
+      undefined,
+      historicalWindowMock as any,
+    );
+
+    expect(historyMock.listEndedByClanSince).not.toHaveBeenCalled();
+    expect(historyMock.listEndedByClanSyncNumbers).not.toHaveBeenCalled();
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+    const description = String(interaction.editReply.mock.calls[0]?.[0]?.embeds[0]?.data.description);
+    expect(description).toContain("Latest sync range unavailable. Historical war data was not queried.");
+    expect(description).not.toContain("undefined");
+    expect(description).not.toContain("days");
+  });
+
   it("preserves denial behavior for the War History permission", async () => {
     permissionMock.canUseAnyTarget.mockResolvedValue(false);
     const denied = makeButton("clan-health:war-history:AAA111:30");
@@ -349,7 +450,11 @@ describe("Clan Health navigation", () => {
     expect(trendMock.getTrend).toHaveBeenCalledWith({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: expect.any(Date),
+      window: {
+        kind: "days",
+        days: 60,
+        cutoff: expect.any(Date),
+      },
       now: expect.any(Date),
     });
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });

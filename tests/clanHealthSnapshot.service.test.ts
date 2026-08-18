@@ -10,6 +10,9 @@ const prismaMock = vi.hoisted(() => ({
   clanWarHistory: {
     findMany: vi.fn(),
   },
+  clanPointsSync: {
+    findFirst: vi.fn(),
+  },
   clanWarParticipation: {
     findMany: vi.fn(),
   },
@@ -26,6 +29,11 @@ const prismaMock = vi.hoisted(() => ({
 
 const warPlanHistoryMock = vi.hoisted(() => ({
   getClanLeaderboardForCutoff: vi.fn(),
+  getClanLeaderboardForSyncNumbers: vi.fn(),
+}));
+
+const historicalWindowMock = vi.hoisted(() => ({
+  resolveLatestSyncWindow: vi.fn(),
 }));
 
 const compositionMock = vi.hoisted(() => ({
@@ -69,6 +77,18 @@ describe("ClanHealthSnapshotService", () => {
     syncStateMock.getState.mockReset();
     syncStateMock.getState.mockResolvedValue(null);
     warPlanHistoryMock.getClanLeaderboardForCutoff.mockReset();
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockReset();
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockImplementation(() =>
+      warPlanHistoryMock.getClanLeaderboardForCutoff(),
+    );
+    historicalWindowMock.resolveLatestSyncWindow.mockReset();
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
+      syncNumbers: Array.from({ length: 30 }, (_, index) => index + 516),
+    });
     warsSyncMock.syncClan.mockResolvedValue({
       rowCount: 0,
       changedRowCount: 0,
@@ -90,6 +110,7 @@ describe("ClanHealthSnapshotService", () => {
       warPlanHistoryMock as any,
       syncStateMock as any,
       warsSyncMock as any,
+      historicalWindowMock as any,
     );
   }
 
@@ -684,8 +705,11 @@ describe("ClanHealthSnapshotService", () => {
 
     expect(snapshot).not.toBeNull();
     expect(snapshot?.clanTag).toBe("#AAA111");
-    expect(snapshot?.historicalWindowDays).toBe(30);
-    expect(snapshot?.historicalCutoff).toEqual(new Date("2026-02-07T12:00:00.000Z"));
+    expect(snapshot?.historicalWindow).toEqual({
+      kind: "days",
+      days: 30,
+      cutoff: new Date("2026-02-07T12:00:00.000Z"),
+    });
     expect(snapshot?.warMetrics.endedWarSampleSize).toBe(30);
     expect(snapshot?.warMetrics.fwaMatchCount).toBe(26);
     expect(snapshot?.warMetrics.fwaWinCount).toBe(14);
@@ -723,7 +747,7 @@ describe("ClanHealthSnapshotService", () => {
       expect.objectContaining({
         where: {
           clanTag: "#AAA111",
-          warEndTime: { gte: new Date("2026-02-07T12:00:00.000Z") },
+          warEndTime: { not: null, gte: new Date("2026-02-07T12:00:00.000Z") },
         },
       }),
     );
@@ -779,8 +803,11 @@ describe("ClanHealthSnapshotService", () => {
     });
 
     expect(snapshot).toMatchObject({
-      historicalWindowDays: 60,
-      historicalCutoff: new Date("2026-01-08T12:00:00.000Z"),
+      historicalWindow: {
+        kind: "days",
+        days: 60,
+        cutoff: new Date("2026-01-08T12:00:00.000Z"),
+      },
       warMetrics: {
         endedWarSampleSize: 3,
       },
@@ -1181,5 +1208,44 @@ describe("ClanHealthSnapshotService", () => {
         clanTag: "#FFF666",
       })
     ).rejects.toThrow("leaderboard boom");
+  });
+
+  it("uses the latest contiguous sync range for an omitted historical window", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      tag: "#SYNC545",
+      name: "Sync Clan",
+    });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockResolvedValue(null);
+
+    const snapshot = await createService().getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#SYNC545",
+    });
+
+    expect(snapshot?.historicalWindow).toEqual({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+    });
+    expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          clanTag: "#SYNC545",
+          warEndTime: { not: null },
+          syncNumber: { in: Array.from({ length: 30 }, (_, index) => 516 + index) },
+        },
+      }),
+    );
+    expect(warPlanHistoryMock.getClanLeaderboardForSyncNumbers).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#SYNC545",
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+    });
   });
 });
