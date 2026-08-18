@@ -150,6 +150,13 @@ function buildTrackedHistoricalWindowLabel(window: ClanHealthHistoricalWindow): 
   return "latest sync range unavailable";
 }
 
+/** Purpose: show the exact contiguous sync-number range used by default historical reporting. */
+function buildTrackedSyncWindowLine(window: ClanHealthHistoricalWindow): string | null {
+  return window.kind === "syncs"
+    ? `Sync window: **#${window.startSyncNumber}–#${window.endSyncNumber}**`
+    : null;
+}
+
 /** Purpose: preserve the existing title-style label for the compliance field. */
 function buildTrackedComplianceWindowLabel(window: ClanHealthHistoricalWindow): string {
   if (window.kind === "syncs") return `Last ${window.requestedSyncCount} Syncs`;
@@ -191,6 +198,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "War Performance",
         value: [
+          buildTrackedSyncWindowLine(snapshot.historicalWindow),
           `Match rate (${buildTrackedHistoricalWindowLabel(snapshot.historicalWindow)}; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
             snapshot.warMetrics.endedWarSampleSize,
@@ -204,7 +212,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
             snapshot.warMetrics.winCount,
             snapshot.warMetrics.endedWarSampleSize,
           )}**`,
-        ].join("\n"),
+        ].filter((line): line is string => line !== null).join("\n"),
         inline: false,
       },
       {

@@ -184,6 +184,20 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:6")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:181")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:60.5")).toBeNull();
+
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:!!!:s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:trends::s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:#AAA111:s30")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:AAA111:s30")).toMatchObject({
+      action: "war-history",
+      clanTag: "AAA111",
+      historicalWindow: { kind: "syncs", requestedSyncCount: 30 },
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:AAA111:s30")).toMatchObject({
+      action: "trends",
+      clanTag: "AAA111",
+      historicalWindow: { kind: "syncs", requestedSyncCount: 30 },
+    });
   });
 
   it("carries a selected historical window in the War History button ID", () => {
@@ -369,7 +383,6 @@ describe("Clan Health navigation", () => {
 
     expect(historicalWindowMock.resolveLatestSyncWindow).toHaveBeenCalledWith({
       guildId: "guild-1",
-      clanTag: "#AAA111",
     });
     expect(historyMock.listEndedByClanSyncNumbers).toHaveBeenCalledWith({
       clanTag: "#AAA111",

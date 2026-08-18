@@ -347,6 +347,28 @@ describe("/clan-health command", () => {
     ]);
   });
 
+  it("renders the resolved sync range for tracked sync-mode history", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeSnapshot({
+        historicalWindow: {
+          kind: "syncs",
+          requestedSyncCount: 30,
+          startSyncNumber: 516,
+          endSyncNumber: 545,
+          syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+        },
+      }),
+    );
+
+    const interaction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const embedJson = payload.embeds[0].toJSON();
+    const warPerformance = embedJson.fields.find((field: any) => field.name === "War Performance");
+    expect(String(warPerformance?.value)).toContain("Sync window: **#516–#545**");
+  });
+
   it("declares the bounded optional window and forwards a selected value", async () => {
     const windowOption = ClanHealth.options?.find((option: any) => option.name === "window") as any;
     expect(windowOption).toMatchObject({

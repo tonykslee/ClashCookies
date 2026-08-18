@@ -163,6 +163,7 @@ export function parseClanHealthNavigationCustomId(
     const historicalWindowValue = parts[3];
     const historicalWindowDays = Number(historicalWindowValue);
     if (historicalWindowValue === "s30") {
+      if (!clanTag || parts[2] !== clanTag) return null;
       return {
         action: parts[1],
         clanTag,
@@ -457,7 +458,6 @@ export async function handleClanHealthNavigationButtonInteraction(
       const resolvedWindow = parsed.historicalWindow.kind === "syncs"
         ? await historicalWindowService.resolveLatestSyncWindow({
             guildId: interaction.guildId,
-            clanTag: `#${parsed.clanTag}`,
           })
         : parsed.historicalWindow;
       const effectiveWindow = resolvedWindow.kind === "days"
@@ -513,7 +513,6 @@ export async function handleClanHealthNavigationButtonInteraction(
       const resolvedWindow = parsed.historicalWindow.kind === "syncs"
         ? await historicalWindowService.resolveLatestSyncWindow({
             guildId: interaction.guildId,
-            clanTag: `#${parsed.clanTag}`,
           })
         : parsed.historicalWindow;
       const effectiveWindow = resolvedWindow.kind === "days"

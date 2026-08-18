@@ -1,6 +1,4 @@
 import { PointsSyncService } from "./PointsSyncService";
-import { normalizeClashTagBareInput } from "../helper/clashTag";
-import { prisma } from "../prisma";
 
 export const CLAN_HEALTH_DEFAULT_SYNC_COUNT = 30 as const;
 
@@ -68,48 +66,18 @@ export class ClanHealthHistoricalWindowService {
   public constructor(
     private readonly pointsSyncService: Pick<PointsSyncService, "findLatestSyncNum"> =
       new PointsSyncService(),
-    private readonly db: {
-      clanWarHistory?: {
-        findFirst: (args: unknown) => Promise<unknown>;
-      };
-    } = prisma as never,
   ) {}
 
   /** Purpose: resolve the default Clan Health window as a contiguous sync-number range. */
   public async resolveLatestSyncWindow(input: {
     guildId: string;
-    clanTag?: string;
   }): Promise<ClanHealthHistoricalWindow> {
     const guildId = String(input.guildId ?? "").trim();
     if (!guildId) return buildClanHealthHistoricalSyncWindow(null);
 
     try {
       const latestSyncNumber = await this.pointsSyncService.findLatestSyncNum({ guildId });
-      const primaryWindow = buildClanHealthHistoricalSyncWindow(latestSyncNumber);
-      if (primaryWindow.kind === "syncs") return primaryWindow;
-    } catch {
-      // The ended-war owner below is the bounded, DB-only fallback for a missing points baseline.
-    }
-
-    const clanTag = normalizeClashTagBareInput(String(input.clanTag ?? ""));
-    if (!clanTag || !this.db.clanWarHistory?.findFirst) {
-      return buildClanHealthHistoricalSyncWindow(null);
-    }
-    try {
-      const row = await this.db.clanWarHistory.findFirst({
-        where: {
-          OR: [
-            { clanTag: { equals: `#${clanTag}`, mode: "insensitive" } },
-            { clanTag: { equals: clanTag, mode: "insensitive" } },
-          ],
-          syncNumber: { not: null },
-        },
-        orderBy: { syncNumber: "desc" },
-        select: { syncNumber: true },
-      });
-      return buildClanHealthHistoricalSyncWindow(
-        Number((row as { syncNumber?: unknown } | null)?.syncNumber),
-      );
+      return buildClanHealthHistoricalSyncWindow(latestSyncNumber);
     } catch {
       return buildClanHealthHistoricalSyncWindow(null);
     }

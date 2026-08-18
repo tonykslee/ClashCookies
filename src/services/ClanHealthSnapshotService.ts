@@ -302,7 +302,6 @@ export class ClanHealthSnapshotService {
       const historicalWindow = input.historicalWindowDays === undefined
         ? await this.historicalWindowService.resolveLatestSyncWindow({
             guildId: input.guildId,
-            clanTag: input.clanTag,
           })
         : buildClanHealthHistoricalDaysWindow({
             days: normalizeClanHealthWindowDays(input.historicalWindowDays),

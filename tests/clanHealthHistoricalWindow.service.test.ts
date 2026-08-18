@@ -16,42 +16,55 @@ describe("ClanHealthHistoricalWindowService", () => {
     });
   });
 
-  it("uses the PointsSync baseline and never queries SyncCycle", async () => {
+  it("uses only the PointsSync baseline for the global range", async () => {
     const findLatestSyncNum = vi.fn().mockResolvedValue(545);
-    const findFirst = vi.fn();
-    const service = new ClanHealthHistoricalWindowService(
-      { findLatestSyncNum },
-      { clanWarHistory: { findFirst } },
-    );
+    const service = new ClanHealthHistoricalWindowService({ findLatestSyncNum });
 
     const window = await service.resolveLatestSyncWindow({
       guildId: "guild-1",
-      clanTag: "#AAA111",
     });
 
     expect(window.kind).toBe("syncs");
     expect(findLatestSyncNum).toHaveBeenCalledWith({ guildId: "guild-1" });
-    expect(findFirst).not.toHaveBeenCalled();
   });
 
-  it("falls back to the selected clan's latest persisted sync number", async () => {
-    const findFirst = vi.fn().mockResolvedValue({ syncNumber: 401 });
-    const service = new ClanHealthHistoricalWindowService(
-      { findLatestSyncNum: vi.fn().mockResolvedValue(null) },
-      { clanWarHistory: { findFirst } },
-    );
+  it("returns unavailable when the PointsSync baseline is null", async () => {
+    const findLatestSyncNum = vi.fn().mockResolvedValue(null);
+    const service = new ClanHealthHistoricalWindowService({ findLatestSyncNum });
+    await expect(
+      service.resolveLatestSyncWindow({ guildId: "guild-1" }),
+    ).resolves.toEqual({
+      kind: "unavailable",
+      requestedSyncCount: 30,
+      reason: "latest_sync_unavailable",
+    });
+    expect(findLatestSyncNum).toHaveBeenCalledWith({ guildId: "guild-1" });
+  });
+
+  it("returns unavailable when the PointsSync baseline throws", async () => {
+    const findLatestSyncNum = vi.fn().mockRejectedValue(new Error("points sync unavailable"));
+    const service = new ClanHealthHistoricalWindowService({ findLatestSyncNum });
 
     await expect(
-      service.resolveLatestSyncWindow({ guildId: "guild-1", clanTag: "aaa111" }),
+      service.resolveLatestSyncWindow({ guildId: "guild-1" }),
+    ).resolves.toEqual({
+      kind: "unavailable",
+      requestedSyncCount: 30,
+      reason: "latest_sync_unavailable",
+    });
+  });
+
+  it("does not let a clan with missing recent wars shift the global range", async () => {
+    const findLatestSyncNum = vi.fn().mockResolvedValue(545);
+    const service = new ClanHealthHistoricalWindowService({ findLatestSyncNum });
+
+    await expect(
+      service.resolveLatestSyncWindow({ guildId: "guild-1" }),
     ).resolves.toMatchObject({
       kind: "syncs",
-      startSyncNumber: 372,
-      endSyncNumber: 401,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
     });
-    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ syncNumber: { not: null } }),
-      orderBy: { syncNumber: "desc" },
-    }));
   });
 
   it("keeps explicit day windows separate from sync-number windows", () => {
