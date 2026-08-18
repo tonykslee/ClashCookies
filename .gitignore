@@ -142,3 +142,6 @@ AGENTS.local.md
 # Local scripts not meant for repo (if applicable)
 ops/observability/.env
 ops/observability/dozzle/users.yml
+
+# Temporary PostgreSQL clusters created by migration tests
+.tmp-migration-pg/

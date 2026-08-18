@@ -97,29 +97,4 @@ export class ClanWarHistoryService {
       select: CLAN_WAR_HISTORY_SELECT,
     }) as Promise<ClanWarHistoryRow[]>;
   }
-
-  /** Purpose: list ended wars for the exact persisted sync identities selected by Clan Health. */
-  public async listEndedByClanSyncNumbers(input: {
-    clanTag: string;
-    syncNumbers: readonly number[];
-  }): Promise<ClanWarHistoryRow[]> {
-    const tagWhere = buildClanTagWhere(input.clanTag);
-    const syncNumbers = [...new Set(input.syncNumbers.map((value) => Math.trunc(Number(value))))]
-      .filter((value) => Number.isInteger(value) && value > 0);
-    if (!tagWhere || syncNumbers.length === 0) return [];
-
-    return this.db.clanWarHistory.findMany({
-      where: {
-        ...tagWhere,
-        syncNumber: { in: syncNumbers },
-        warEndTime: { not: null },
-      },
-      orderBy: [
-        { warEndTime: "desc" },
-        { warStartTime: "desc" },
-        { warId: "desc" },
-      ],
-      select: CLAN_WAR_HISTORY_SELECT,
-    }) as Promise<ClanWarHistoryRow[]>;
-  }
 }
