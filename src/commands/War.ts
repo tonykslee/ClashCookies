@@ -15,14 +15,34 @@ import {
   normalizeClashTagBareInput,
   normalizeClashTagWithHash,
 } from "../helper/clashTag";
+import {
+  ClanWarHistoryRow,
+  ClanWarHistoryService,
+} from "../services/ClanWarHistoryService";
 
 function normalizeClanTag(input: string): string {
   return normalizeClashTagWithHash(input);
 }
 
-function formatPercent(value: number | null): string {
+export function formatWarHistoryPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "unknown";
   return `${value.toFixed(2)}%`;
+}
+
+export function buildWarHistoryField(row: ClanWarHistoryRow, displayName: string) {
+  const startTs = Math.floor(new Date(row.warStartTime).getTime() / 1000);
+  const endTs = row.warEndTime ? Math.floor(new Date(row.warEndTime).getTime() / 1000) : null;
+
+  return {
+    name: `War #${row.warId} | Start <t:${startTs}:f> | Sync ${row.syncNumber ?? "unknown"} | ${row.matchType ?? "unknown"}`,
+    value: [
+      `${displayName} ${row.clanStars ?? "?"} (${formatWarHistoryPercent(row.clanDestruction)}) vs ${row.opponentName ?? "Unknown"} ${row.opponentStars ?? "?"} (${formatWarHistoryPercent(row.opponentDestruction)})`,
+      `Expected: ${row.expectedOutcome ?? "UNKNOWN"} | Actual: ${row.actualOutcome ?? "UNKNOWN"}`,
+      `Points after war: ${row.pointsAfterWar ?? "unknown"}`,
+      `Start: <t:${startTs}:F>${endTs ? ` | End: <t:${endTs}:F>` : ""}`,
+    ].join("\n"),
+    inline: false,
+  } as const;
 }
 
 function csvEscape(value: unknown): string {
@@ -39,25 +59,6 @@ function buildCsv(rows: Array<Record<string, unknown>>, headers: string[]): stri
   }
   return out.join("\r\n");
 }
-
-type WarHistoryRow = {
-  warId: number;
-  syncNumber: number | null;
-  matchType: "FWA" | "BL" | "MM" | null;
-  clanStars: number | null;
-  clanDestruction: number | null;
-  opponentStars: number | null;
-  opponentDestruction: number | null;
-  pointsAfterWar: number | null;
-  expectedOutcome: string | null;
-  actualOutcome: string | null;
-  warStartTime: Date;
-  warEndTime: Date | null;
-  clanName: string | null;
-  clanTag: string;
-  opponentName: string | null;
-  opponentTag: string | null;
-};
 
 export const War: Command = {
   name: "war",
@@ -110,6 +111,7 @@ export const War: Command = {
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService
   ) => {
+    const historyService = new ClanWarHistoryService();
     await interaction.deferReply({ ephemeral: true });
     const sub = interaction.options.getSubcommand(true);
 
@@ -121,18 +123,7 @@ export const War: Command = {
       }
       const requestedLimit = interaction.options.getInteger("limit", false) ?? 10;
       const limit = Math.max(1, Math.min(50, requestedLimit));
-      const tagBare = normalizeClashTagBareInput(clanTag);
-
-      const rows = await prisma.$queryRaw<WarHistoryRow[]>(
-        Prisma.sql`
-          SELECT
-            "warId","syncNumber","matchType","clanStars","clanDestruction","opponentStars","opponentDestruction","pointsAfterWar","expectedOutcome","actualOutcome","warStartTime","warEndTime","clanName","clanTag","opponentName","opponentTag"
-          FROM "ClanWarHistory"
-          WHERE UPPER(REPLACE("clanTag",'#','')) = ${tagBare}
-          ORDER BY "warStartTime" DESC
-          LIMIT ${limit}
-        `
-      );
+      const rows = await historyService.listRecentByClan({ clanTag, limit });
 
       if (rows.length === 0) {
         await interaction.editReply(`No war history found for ${clanTag}.`);
@@ -147,18 +138,7 @@ export const War: Command = {
         .setTimestamp(new Date());
 
       for (const row of rows.slice(0, 10)) {
-        const startTs = Math.floor(new Date(row.warStartTime).getTime() / 1000);
-        const endTs = row.warEndTime ? Math.floor(new Date(row.warEndTime).getTime() / 1000) : null;
-        embed.addFields({
-          name: `War #${row.warId} | Start <t:${startTs}:f> | Sync ${row.syncNumber ?? "unknown"} | ${row.matchType ?? "unknown"}`,
-          value: [
-            `${displayName} ${row.clanStars ?? "?"} (${formatPercent(row.clanDestruction)}) vs ${row.opponentName ?? "Unknown"} ${row.opponentStars ?? "?"} (${formatPercent(row.opponentDestruction)})`,
-            `Expected: ${row.expectedOutcome ?? "UNKNOWN"} | Actual: ${row.actualOutcome ?? "UNKNOWN"}`,
-            `Points after war: ${row.pointsAfterWar ?? "unknown"}`,
-            `Start: <t:${startTs}:F>${endTs ? ` | End: <t:${endTs}:F>` : ""}`,
-          ].join("\n"),
-          inline: false,
-        });
+        embed.addFields(buildWarHistoryField(row, displayName));
       }
 
       await interaction.editReply({ embeds: [embed] });

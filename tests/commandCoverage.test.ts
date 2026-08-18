@@ -404,6 +404,8 @@ describe("command coverage", () => {
     expect(clanHealthHelpText).toContain("tracked metrics window (default 30 days; configurable from 7 to 180 days)");
     expect(clanHealthHelpText).toContain("currently linked Discord users involved");
     expect(clanHealthHelpText).toContain("Only completed evaluations recorded since violation tracking was enabled are counted");
+    expect(clanHealthHelpText).toContain("War History");
+    expect(clanHealthHelpText).toContain("latest 10");
     expect(clanHealthHelpText).toContain("FWA win/loss/BL/MM breakdown");
     expect(clanHealthHelpText).toContain("actual ended-war sample count");
     expect(clanHealthHelpText).toContain("BL-inclusive match rate");

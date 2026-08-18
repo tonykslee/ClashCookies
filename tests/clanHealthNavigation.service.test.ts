@@ -13,6 +13,9 @@ const compoMock = vi.hoisted(() => ({
 const violationsMock = vi.hoisted(() => ({
   buildFwaViolationsClanDetailPayload: vi.fn(),
 }));
+const historyMock = vi.hoisted(() => ({
+  listEndedByClanSince: vi.fn(),
+}));
 
 vi.mock("../src/services/CommandPermissionService", () => ({
   CommandPermissionService: class {
@@ -44,6 +47,7 @@ vi.mock("../src/commands/fwa/violationsCommand", () => ({
 
 import {
   buildClanHealthNavigationCustomId,
+  buildClanHealthWarHistoryNavigationCustomId,
   buildClanHealthNavigationRow,
   handleClanHealthNavigationButtonInteraction,
   parseClanHealthNavigationCustomId,
@@ -80,20 +84,22 @@ describe("Clan Health navigation", () => {
     violationsMock.buildFwaViolationsClanDetailPayload.mockResolvedValue({ embeds: [] });
   });
 
-  it("builds exactly four bounded buttons with deterministic IDs", () => {
+  it("builds exactly five bounded buttons with deterministic IDs", () => {
     const row = buildClanHealthNavigationRow("#AAA111").toJSON();
-    expect(row.components).toHaveLength(4);
+    expect(row.components).toHaveLength(5);
     expect(row.components.map((button) => button.label)).toEqual([
       "View Inactive",
       "View Unlinked",
       "View Compo",
       "View Violations",
+      "War History",
     ]);
     expect(row.components.map((button) => button.custom_id)).toEqual([
       "clan-health:inactive:AAA111",
       "clan-health:unlinked:AAA111",
       "clan-health:compo:AAA111",
       "clan-health:violations:AAA111",
+      "clan-health:war-history:AAA111:30",
     ]);
     expect(row.components.every((button) => (button.custom_id?.length ?? 0) <= 100)).toBe(true);
   });
@@ -108,6 +114,23 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId("clan-health:unknown:PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:compo:#PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:compo:")).toBeNull();
+
+    const historyId = buildClanHealthWarHistoryNavigationCustomId("#pylq02", 60);
+    expect(historyId).toBe("clan-health:war-history:PYLQ02:60");
+    expect(parseClanHealthNavigationCustomId(historyId)).toEqual({
+      action: "war-history",
+      clanTag: "PYLQ02",
+      historicalWindowDays: 60,
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:6")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:181")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:60.5")).toBeNull();
+  });
+
+  it("carries a selected historical window in the War History button ID", () => {
+    const row = buildClanHealthNavigationRow("#AAA111", 90).toJSON();
+    expect(row.components[4]?.custom_id).toBe("clan-health:war-history:AAA111:90");
   });
 
   it.each([
@@ -173,6 +196,68 @@ describe("Clan Health navigation", () => {
     expect(compoMock.readAdvice).toHaveBeenCalledTimes(2);
     expect(permissionMock.canUseAnyTarget).toHaveBeenNthCalledWith(1, ["compo:advice"], firstLeader);
     expect(permissionMock.canUseAnyTarget).toHaveBeenNthCalledWith(2, ["compo:advice"], secondLeader);
+  });
+
+  it("opens persisted ended history with the carried window and caps display at ten", async () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      warId: index + 1,
+      syncNumber: index + 1,
+      matchType: "FWA" as const,
+      clanStars: 30,
+      clanDestruction: 100,
+      opponentStars: 28,
+      opponentDestruction: 95,
+      pointsAfterWar: 1500,
+      expectedOutcome: "WIN",
+      actualOutcome: "WIN",
+      warStartTime: new Date("2026-03-01T00:00:00.000Z"),
+      warEndTime: new Date("2026-03-01T02:00:00.000Z"),
+      clanName: "Alpha",
+      clanTag: "#AAA111",
+      opponentName: "Opponent",
+      opponentTag: "#BBB222",
+    }));
+    historyMock.listEndedByClanSince.mockResolvedValue(rows);
+    const interaction = makeButton("clan-health:war-history:AAA111:60", "leader-2");
+    const historyService = { listEndedByClanSince: historyMock.listEndedByClanSince };
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      historyService as any,
+    );
+
+    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(["war"], interaction);
+    expect(historyMock.listEndedByClanSince).toHaveBeenCalledWith({
+      clanTag: "#AAA111",
+      cutoff: expect.any(Date),
+    });
+    const cutoff = historyMock.listEndedByClanSince.mock.calls[0][0].cutoff as Date;
+    expect(Date.now() - cutoff.getTime()).toBeGreaterThan(59 * 24 * 60 * 60 * 1000);
+    expect(Date.now() - cutoff.getTime()).toBeLessThan(61 * 24 * 60 * 60 * 1000);
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [
+        expect.objectContaining({
+          data: expect.objectContaining({
+            description: expect.stringContaining("Showing latest 10 of 12 ended wars in last 60 days"),
+          }),
+        }),
+      ],
+    });
+    const embed = interaction.editReply.mock.calls[0][0].embeds[0];
+    expect(embed.data.fields).toHaveLength(10);
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
+  it("preserves denial behavior for the War History permission", async () => {
+    permissionMock.canUseAnyTarget.mockResolvedValue(false);
+    const denied = makeButton("clan-health:war-history:AAA111:30");
+    await handleClanHealthNavigationButtonInteraction(denied as any, undefined, {
+      listEndedByClanSince: historyMock.listEndedByClanSince,
+    } as any);
+    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(["war"], denied);
+    expect(denied.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+    expect(denied.deferReply).not.toHaveBeenCalled();
   });
 
   it("fails malformed IDs safely and enforces permission denial", async () => {
