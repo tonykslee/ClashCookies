@@ -9,10 +9,13 @@ import { normalizeClashTagBareInput } from "../helper/clashTag";
 import { splitDiscordLineMessages } from "../helper/discordLineMessageSplit";
 import {
   buildClanHealthHistoricalCutoff,
-  CLAN_HEALTH_DEFAULT_WINDOW_DAYS,
   CLAN_HEALTH_MAX_WINDOW_DAYS,
   CLAN_HEALTH_MIN_WINDOW_DAYS,
 } from "../services/ClanHealthSnapshotService";
+import {
+  ClanHealthHistoricalWindowService,
+  type ClanHealthHistoricalWindow,
+} from "../services/ClanHealthHistoricalWindowService";
 import { ClanWarHistoryService } from "../services/ClanWarHistoryService";
 import { runInactiveClanHealthDetail } from "./Inactive";
 import { buildUnlinkedListLines } from "./Unlinked";
@@ -65,7 +68,8 @@ export type ClanHealthNavigationPayload =
   | {
       action: typeof CLAN_HEALTH_WAR_HISTORY_ACTION | typeof CLAN_HEALTH_TRENDS_ACTION;
       clanTag: string;
-      historicalWindowDays: number;
+      historicalWindow: Exclude<ClanHealthHistoricalWindow, { kind: "unavailable" }>;
+      historicalWindowDays?: number;
     };
 
 /** Purpose: normalize a tag for a component ID while keeping the ID alphabet-safe and bounded. */
@@ -104,37 +108,44 @@ function validateClanHealthNavigationWindow(historicalWindowDays: number): void 
 function buildClanHealthWindowedNavigationCustomId(
   action: typeof CLAN_HEALTH_WAR_HISTORY_ACTION | typeof CLAN_HEALTH_TRENDS_ACTION,
   clanTag: string,
-  historicalWindowDays: number,
+  historicalWindow: ClanHealthHistoricalWindow | number,
 ): string {
   const normalizedClanTag = normalizeNavigationClanTag(clanTag);
   if (!normalizedClanTag) {
     throw new Error("Invalid Clan Health navigation clan tag.");
   }
-  validateClanHealthNavigationWindow(historicalWindowDays);
-  return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}:${historicalWindowDays}`;
+  if (typeof historicalWindow === "number") {
+    validateClanHealthNavigationWindow(historicalWindow);
+    return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}:${historicalWindow}`;
+  }
+  if (historicalWindow.kind === "days") {
+    validateClanHealthNavigationWindow(historicalWindow.days);
+    return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}:${historicalWindow.days}`;
+  }
+  return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}:s30`;
 }
 
 /** Purpose: build the existing restart-safe War History custom ID without changing its public format. */
 export function buildClanHealthWarHistoryNavigationCustomId(
   clanTag: string,
-  historicalWindowDays: number,
+  historicalWindow: ClanHealthHistoricalWindow | number,
 ): string {
   return buildClanHealthWindowedNavigationCustomId(
     CLAN_HEALTH_WAR_HISTORY_ACTION,
     clanTag,
-    historicalWindowDays,
+    historicalWindow,
   );
 }
 
 /** Purpose: build the restart-safe bounded Trends custom ID for tracked Clan Health. */
 export function buildClanHealthTrendsNavigationCustomId(
   clanTag: string,
-  historicalWindowDays: number,
+  historicalWindow: ClanHealthHistoricalWindow | number,
 ): string {
   return buildClanHealthWindowedNavigationCustomId(
     CLAN_HEALTH_TRENDS_ACTION,
     clanTag,
-    historicalWindowDays,
+    historicalWindow,
   );
 }
 
@@ -149,7 +160,21 @@ export function parseClanHealthNavigationCustomId(
     (parts[1] === CLAN_HEALTH_WAR_HISTORY_ACTION || parts[1] === CLAN_HEALTH_TRENDS_ACTION)
   ) {
     const clanTag = normalizeNavigationClanTag(parts[2]);
-    const historicalWindowDays = Number(parts[3]);
+    const historicalWindowValue = parts[3];
+    const historicalWindowDays = Number(historicalWindowValue);
+    if (historicalWindowValue === "s30") {
+      return {
+        action: parts[1],
+        clanTag,
+        historicalWindow: {
+          kind: "syncs",
+          requestedSyncCount: 30,
+          startSyncNumber: 0,
+          endSyncNumber: 0,
+          syncNumbers: [],
+        },
+      };
+    }
     if (
       !clanTag ||
       parts[2] !== clanTag ||
@@ -160,7 +185,12 @@ export function parseClanHealthNavigationCustomId(
     ) {
       return null;
     }
-    return { action: parts[1], clanTag, historicalWindowDays };
+    return {
+      action: parts[1],
+      clanTag,
+      historicalWindow: { kind: "days", days: historicalWindowDays, cutoff: new Date(0) },
+      historicalWindowDays,
+    };
   }
   if (parts.length !== 3) return null;
   const action = parts[1] as ClanHealthNavigationAction;
@@ -178,7 +208,13 @@ export function isClanHealthNavigationButtonCustomId(customId: string): boolean 
 /** Purpose: render the single tracked-clan navigation row while respecting Discord component limits. */
 export function buildClanHealthNavigationRow(
   clanTag: string,
-  historicalWindowDays = CLAN_HEALTH_DEFAULT_WINDOW_DAYS,
+  historicalWindow: ClanHealthHistoricalWindow = {
+    kind: "syncs",
+    requestedSyncCount: 30,
+    startSyncNumber: 0,
+    endSyncNumber: 0,
+    syncNumbers: [],
+  },
 ): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     ...CLAN_HEALTH_NAVIGATION_ACTIONS.map((action) =>
@@ -191,7 +227,7 @@ export function buildClanHealthNavigationRow(
       .setCustomId(
         buildClanHealthWarHistoryNavigationCustomId(
           clanTag,
-          historicalWindowDays,
+          historicalWindow,
         ),
       )
       .setLabel("War History")
@@ -202,14 +238,20 @@ export function buildClanHealthNavigationRow(
 /** Purpose: render the second tracked-clan navigation row for the windowed Trends drilldown. */
 export function buildClanHealthTrendsNavigationRow(
   clanTag: string,
-  historicalWindowDays = CLAN_HEALTH_DEFAULT_WINDOW_DAYS,
+  historicalWindow: ClanHealthHistoricalWindow = {
+    kind: "syncs",
+    requestedSyncCount: 30,
+    startSyncNumber: 0,
+    endSyncNumber: 0,
+    syncNumbers: [],
+  },
 ): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(
         buildClanHealthTrendsNavigationCustomId(
           clanTag,
-          historicalWindowDays,
+          historicalWindow,
         ),
       )
       .setLabel("View Trends")
@@ -220,8 +262,11 @@ export function buildClanHealthTrendsNavigationRow(
 /** Purpose: render persisted sync-boundary trend facts as one compact ephemeral embed. */
 export function buildClanHealthTrendsEmbed(
   report: ClanHealthTrendReport,
-  historicalWindowDays: number,
+  historicalWindowDays?: number,
 ): EmbedBuilder {
+  const windowLabel = report.window.kind === "syncs"
+    ? `Last ${report.window.requestedSyncCount} syncs`
+    : `Last ${historicalWindowDays ?? report.window.days} days`;
   const tag = report.clanTag;
   const displayName = report.clanName &&
     report.clanName.replace(/^#/, "").toUpperCase() !== tag.replace(/^#/, "").toUpperCase()
@@ -305,6 +350,14 @@ export function buildClanHealthTrendsEmbed(
       },
     )
     .setTimestamp(report.now);
+  embed.setDescription(`Persisted sync-boundary readiness history - ${windowLabel}`);
+  embed.spliceFields(0, 1, {
+    name: "Coverage",
+    value: report.coverage.total === 0
+      ? `No sync-boundary readiness snapshots were captured for ${tag} in the ${windowLabel}.`
+      : `${report.coverage.total} captured sync boundaries in the selected ${windowLabel}.\nCaptured: ${formatDate(report.coverage.oldestSyncTime)} -> ${formatDate(report.coverage.newestSyncTime)}`,
+    inline: false,
+  });
   return embed;
 }
 
@@ -314,6 +367,7 @@ export async function handleClanHealthNavigationButtonInteraction(
   permissionService = new CommandPermissionService(),
   historyService = new ClanWarHistoryService(),
   trendService = new ClanHealthTrendService(),
+  historicalWindowService = new ClanHealthHistoricalWindowService(),
 ): Promise<void> {
   const startedAtMs = Date.now();
   const parsed = parseClanHealthNavigationCustomId(interaction.customId);
@@ -400,10 +454,35 @@ export async function handleClanHealthNavigationButtonInteraction(
         }),
       );
     } else if (parsed.action === CLAN_HEALTH_WAR_HISTORY_ACTION) {
-      const rows = await historyService.listEndedByClanSince({
-        clanTag: `#${parsed.clanTag}`,
-        cutoff: buildClanHealthHistoricalCutoff(new Date(), parsed.historicalWindowDays),
-      });
+      const resolvedWindow = parsed.historicalWindow.kind === "syncs"
+        ? await historicalWindowService.resolveLatestSyncWindow({
+            guildId: interaction.guildId,
+            clanTag: `#${parsed.clanTag}`,
+          })
+        : parsed.historicalWindow;
+      const effectiveWindow = resolvedWindow.kind === "days"
+        ? {
+            kind: "days" as const,
+            days: resolvedWindow.days,
+            cutoff: buildClanHealthHistoricalCutoff(new Date(), resolvedWindow.days),
+          }
+        : resolvedWindow;
+      const rows = effectiveWindow.kind === "syncs"
+        ? await historyService.listEndedByClanSyncNumbers({
+            clanTag: `#${parsed.clanTag}`,
+            syncNumbers: effectiveWindow.syncNumbers,
+          })
+        : effectiveWindow.kind === "days"
+          ? await historyService.listEndedByClanSince({
+              clanTag: `#${parsed.clanTag}`,
+              cutoff: effectiveWindow.cutoff,
+            })
+          : [];
+      const windowLabel = effectiveWindow.kind === "syncs"
+        ? `Last ${effectiveWindow.requestedSyncCount} syncs`
+        : effectiveWindow.kind === "days"
+          ? `Last ${effectiveWindow.days} days`
+          : "Latest sync range unavailable";
       const displayName = rows[0]?.clanName?.trim() || `#${parsed.clanTag}`;
       const title = rows.length === 0
         ? `War History - ${displayName}`
@@ -417,6 +496,13 @@ export async function handleClanHealthNavigationButtonInteraction(
         .setTitle(title)
         .setDescription(description)
         .setColor(0x3498db)
+        .setDescription(
+          effectiveWindow.kind === "syncs"
+            ? (total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
+              ? `${windowLabel} - ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in the selected window.`
+              : `${windowLabel} - ${total} ended war${total === 1 ? "" : "s"}.`)
+            : description,
+        )
         .setTimestamp(new Date());
       for (const row of rows.slice(0, CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT)) {
         embed.addFields(buildWarHistoryField(row, displayName));
@@ -424,14 +510,47 @@ export async function handleClanHealthNavigationButtonInteraction(
       await interaction.editReply({ embeds: [embed] });
     } else if (parsed.action === CLAN_HEALTH_TRENDS_ACTION) {
       const now = new Date();
+      const resolvedWindow = parsed.historicalWindow.kind === "syncs"
+        ? await historicalWindowService.resolveLatestSyncWindow({
+            guildId: interaction.guildId,
+            clanTag: `#${parsed.clanTag}`,
+          })
+        : parsed.historicalWindow;
+      const effectiveWindow = resolvedWindow.kind === "days"
+        ? {
+            kind: "days" as const,
+            days: resolvedWindow.days,
+            cutoff: buildClanHealthHistoricalCutoff(now, resolvedWindow.days),
+          }
+        : resolvedWindow;
       const report = await trendService.getTrend({
         guildId: interaction.guildId,
         clanTag: `#${parsed.clanTag}`,
-        cutoff: buildClanHealthHistoricalCutoff(now, parsed.historicalWindowDays),
+        window: effectiveWindow.kind === "syncs"
+          ? {
+              kind: "syncs",
+              requestedSyncCount: effectiveWindow.requestedSyncCount,
+              startSyncNumber: effectiveWindow.startSyncNumber,
+              endSyncNumber: effectiveWindow.endSyncNumber,
+              syncNumbers: effectiveWindow.syncNumbers,
+            }
+          : effectiveWindow.kind === "days"
+          ? {
+              kind: "days",
+              days: effectiveWindow.days,
+              cutoff: effectiveWindow.cutoff,
+            }
+          : {
+              kind: "syncs",
+              requestedSyncCount: 30,
+              startSyncNumber: 0,
+              endSyncNumber: 0,
+              syncNumbers: [],
+            },
         now,
       });
       await interaction.editReply({
-        embeds: [buildClanHealthTrendsEmbed(report, parsed.historicalWindowDays)],
+        embeds: [buildClanHealthTrendsEmbed(report)],
       });
     }
     outcome("success");

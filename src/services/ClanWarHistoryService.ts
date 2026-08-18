@@ -97,4 +97,30 @@ export class ClanWarHistoryService {
       select: CLAN_WAR_HISTORY_SELECT,
     }) as Promise<ClanWarHistoryRow[]>;
   }
+
+  /** Purpose: read all ended wars whose persisted canonical sync number is in an exact bounded range. */
+  public async listEndedByClanSyncNumbers(input: {
+    clanTag: string;
+    syncNumbers: readonly number[];
+  }): Promise<ClanWarHistoryRow[]> {
+    const tagWhere = buildClanTagWhere(input.clanTag);
+    const syncNumbers = [...new Set(input.syncNumbers)]
+      .filter((value) => Number.isInteger(value) && value > 0)
+      .map((value) => Math.trunc(value));
+    if (!tagWhere || syncNumbers.length === 0) return [];
+
+    return this.db.clanWarHistory.findMany({
+      where: {
+        ...tagWhere,
+        syncNumber: { in: syncNumbers },
+        warEndTime: { not: null },
+      },
+      orderBy: [
+        { warEndTime: "desc" },
+        { warStartTime: "desc" },
+        { warId: "desc" },
+      ],
+      select: CLAN_WAR_HISTORY_SELECT,
+    }) as Promise<ClanWarHistoryRow[]>;
+  }
 }

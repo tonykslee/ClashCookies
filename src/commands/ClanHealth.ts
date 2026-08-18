@@ -20,6 +20,7 @@ import {
   buildClanHealthNavigationRow,
   buildClanHealthTrendsNavigationRow,
 } from "./ClanHealthNavigation";
+import type { ClanHealthHistoricalWindow } from "../services/ClanHealthHistoricalWindowService";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
@@ -142,6 +143,20 @@ function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
   ];
 }
 
+/** Purpose: render the selected tracked historical range without conflating syncs and days. */
+function buildTrackedHistoricalWindowLabel(window: ClanHealthHistoricalWindow): string {
+  if (window.kind === "syncs") return `last ${window.requestedSyncCount} syncs`;
+  if (window.kind === "days") return `last ${window.days} days`;
+  return "latest sync range unavailable";
+}
+
+/** Purpose: preserve the existing title-style label for the compliance field. */
+function buildTrackedComplianceWindowLabel(window: ClanHealthHistoricalWindow): string {
+  if (window.kind === "syncs") return `Last ${window.requestedSyncCount} Syncs`;
+  if (window.kind === "days") return `Last ${window.days} Days`;
+  return "Latest Sync Range Unavailable";
+}
+
 /** Purpose: build response embed for a clan-health snapshot. */
 function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
   if (snapshot.viewType === "external") {
@@ -176,7 +191,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "War Performance",
         value: [
-          `Match rate (last ${snapshot.historicalWindowDays} days; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
+          `Match rate (${buildTrackedHistoricalWindowLabel(snapshot.historicalWindow)}; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
             snapshot.warMetrics.endedWarSampleSize,
           )}**`,
@@ -198,14 +213,14 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
         inline: false,
       },
       {
-        name: `War Plan Compliance \u2014 Last ${snapshot.historicalWindowDays} Days`,
+        name: `War Plan Compliance \u2014 ${buildTrackedComplianceWindowLabel(snapshot.historicalWindow)}`,
         value: buildWarPlanComplianceLines(snapshot).join("\n"),
         inline: false,
       },
       {
         name: "Inactivity",
         value: [
-          `Missed both attacks (distinct players, >=1 eligible FWA war in last ${snapshot.historicalWindowDays} days): **${snapshot.inactiveWars.inactivePlayerCount}**`,
+          `Missed both attacks (distinct players, >=1 eligible FWA war in ${buildTrackedHistoricalWindowLabel(snapshot.historicalWindow)}): **${snapshot.inactiveWars.inactivePlayerCount}**`,
           `Eligible ended FWA wars in window: **${snapshot.inactiveWars.warsSampled}**`,
           `Inactive (days, >=${snapshot.inactiveDays.thresholdDays}d): **${snapshot.inactiveDays.inactivePlayerCount}**`,
           `Observed members (updated in last ${snapshot.inactiveDays.staleHours}h): **${snapshot.inactiveDays.observedMemberCount}**`,
@@ -261,7 +276,7 @@ export const ClanHealth: Command = {
     },
     {
       name: "window",
-      description: "Tracked metrics history window in days",
+      description: "History window in days; omit for last 30 syncs",
       type: ApplicationCommandOptionType.Integer,
       required: false,
       min_value: 7,
@@ -316,11 +331,11 @@ export const ClanHealth: Command = {
             components: [
               buildClanHealthNavigationRow(
                 snapshot.clanTag,
-                snapshot.historicalWindowDays,
+                snapshot.historicalWindow,
               ),
               buildClanHealthTrendsNavigationRow(
                 snapshot.clanTag,
-                snapshot.historicalWindowDays,
+                snapshot.historicalWindow,
               ),
             ],
           }

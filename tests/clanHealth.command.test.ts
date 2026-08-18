@@ -108,6 +108,8 @@ describe("/clan-health command", () => {
 
   function makeSnapshot(
     overrides: Partial<ClanHealthTrackedSnapshot> & {
+      historicalWindowDays?: number;
+      historicalCutoff?: Date;
       warPlanCompliance?: Partial<ClanHealthTrackedSnapshot["warPlanCompliance"]>;
       warMetrics?: Partial<ClanHealthTrackedSnapshot["warMetrics"]>;
       inactiveWars?: Partial<ClanHealthTrackedSnapshot["inactiveWars"]>;
@@ -121,9 +123,11 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      historicalWindowDays: overrides.historicalWindowDays ?? 30,
-      historicalCutoff:
-        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
+      historicalWindow: overrides.historicalWindow ?? {
+        kind: "days",
+        days: overrides.historicalWindowDays ?? 30,
+        cutoff: overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
+      },
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         hasCompletedEvaluations: true,

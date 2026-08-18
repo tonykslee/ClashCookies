@@ -3,10 +3,20 @@ import { normalizeClashTagBareInput } from "../helper/clashTag";
 
 const SAFE_CLAN_TAG_BODY = /^[A-Z0-9]{1,15}$/;
 
+export type ClanHealthTrendWindow =
+  | { kind: "days"; days: number; cutoff: Date }
+  | {
+      kind: "syncs";
+      requestedSyncCount: number;
+      startSyncNumber: number;
+      endSyncNumber: number;
+      syncNumbers: readonly number[];
+    };
+
 export type ClanHealthTrendInput = {
   guildId: string;
   clanTag: string;
-  cutoff: Date;
+  window: ClanHealthTrendWindow;
   now: Date;
 };
 
@@ -29,6 +39,7 @@ export type ClanHealthTrendReport = {
   guildId: string;
   clanTag: string;
   clanName: string | null;
+  window: ClanHealthTrendWindow;
   cutoff: Date;
   now: Date;
   snapshots: ClanHealthTrendSnapshot[];
@@ -135,14 +146,15 @@ function normalizeSnapshot(input: unknown, clanTag: string): ClanHealthTrendSnap
 function emptyReport(input: {
   guildId: string;
   clanTag: string;
-  cutoff: Date;
+  window: ClanHealthTrendWindow;
   now: Date;
 }): ClanHealthTrendReport {
   return {
     guildId: input.guildId,
     clanTag: input.clanTag,
     clanName: null,
-    cutoff: input.cutoff,
+    window: input.window,
+    cutoff: input.window.kind === "days" ? input.window.cutoff : new Date(0),
     now: input.now,
     snapshots: [],
     displayedSnapshots: [],
@@ -199,7 +211,7 @@ function mapSyncNumbers(
 function buildReport(input: {
   guildId: string;
   clanTag: string;
-  cutoff: Date;
+  window: ClanHealthTrendWindow;
   now: Date;
   snapshots: ClanHealthTrendSnapshot[];
 }): ClanHealthTrendReport {
@@ -236,7 +248,8 @@ function buildReport(input: {
     guildId: input.guildId,
     clanTag: input.clanTag,
     clanName: snapshots.find((snapshot) => snapshot.clanName)?.clanName ?? null,
-    cutoff: input.cutoff,
+    window: input.window,
+    cutoff: input.window.kind === "days" ? input.window.cutoff : new Date(0),
     now: input.now,
     snapshots,
     displayedSnapshots: snapshots.slice(0, 10),
@@ -284,24 +297,33 @@ export class ClanHealthTrendService {
   async getTrend(input: ClanHealthTrendInput): Promise<ClanHealthTrendReport> {
     const guildId = String(input.guildId ?? "").trim();
     const clanTag = normalizeTrendClanTag(input.clanTag);
-    const cutoff = toValidDate(input.cutoff);
+    const window = input.window;
+    const cutoff = window.kind === "days" ? toValidDate(window.cutoff) : null;
     const now = toValidDate(input.now);
-    if (!guildId || !clanTag || !cutoff || !now || !this.db.syncClanReadinessSnapshot?.findMany) {
+    if (
+      !guildId ||
+      !clanTag ||
+      !now ||
+      (window.kind === "days" && !cutoff) ||
+      !this.db.syncClanReadinessSnapshot?.findMany
+    ) {
       return emptyReport({
         guildId,
         clanTag,
-        cutoff: cutoff ?? new Date(0),
+        window,
         now: now ?? new Date(0),
       });
     }
+    const syncMode = window.kind === "syncs";
 
     const rawSnapshots = await this.db.syncClanReadinessSnapshot.findMany({
       where: {
         guildId,
         clanTag,
-        syncTime: { gte: cutoff, lte: now },
+        syncTime: syncMode ? { lte: now } : { gte: cutoff as Date, lte: now },
       },
       orderBy: [{ syncTime: "desc" }, { id: "desc" }],
+      ...(syncMode ? { take: window.requestedSyncCount } : {}),
       select: {
         guildId: true,
         syncTime: true,
@@ -331,6 +353,6 @@ export class ClanHealthTrendService {
       mapSyncNumbers(snapshots, cycles);
     }
 
-    return buildReport({ guildId, clanTag, cutoff, now, snapshots });
+    return buildReport({ guildId, clanTag, window, now, snapshots });
   }
 }

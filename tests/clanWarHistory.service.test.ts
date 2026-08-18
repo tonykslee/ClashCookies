@@ -57,4 +57,31 @@ describe("ClanWarHistoryService", () => {
     expect(normalizeWarHistoryLimit(75)).toBe(50);
     expect(normalizeWarHistoryLimit(12.8)).toBe(12);
   });
+
+  it("queries ended wars by exact sync numbers without stretching the range", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const service = new ClanWarHistoryService({ clanWarHistory: { findMany } } as any);
+
+    await service.listEndedByClanSyncNumbers({
+      clanTag: "AAA111",
+      syncNumbers: [516, 517, 545],
+    });
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        OR: [
+          { clanTag: { equals: "#AAA111", mode: "insensitive" } },
+          { clanTag: { equals: "AAA111", mode: "insensitive" } },
+        ],
+        syncNumber: { in: [516, 517, 545] },
+        warEndTime: { not: null },
+      },
+      orderBy: [
+        { warEndTime: "desc" },
+        { warStartTime: "desc" },
+        { warId: "desc" },
+      ],
+    }));
+    expect(findMany.mock.calls[0][0]).not.toHaveProperty("take");
+  });
 });
