@@ -392,6 +392,38 @@ describe("Clan Health navigation", () => {
     expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
+  it("renders an honest unavailable message when s30 baseline resolution fails", async () => {
+    const customId = "clan-health:war-history:AAA111:s30";
+    expect(parseClanHealthNavigationCustomId(customId)).not.toBeNull();
+    const interaction = makeButton(customId);
+    const historyService = {
+      listEndedByClanSince: historyMock.listEndedByClanSince,
+      listEndedByClanSyncNumbers: historyMock.listEndedByClanSyncNumbers,
+    };
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "unavailable",
+      requestedSyncCount: 30,
+      reason: "latest_sync_unavailable",
+    });
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      historyService as any,
+      undefined,
+      historicalWindowMock as any,
+    );
+
+    expect(historyMock.listEndedByClanSince).not.toHaveBeenCalled();
+    expect(historyMock.listEndedByClanSyncNumbers).not.toHaveBeenCalled();
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+    const description = String(interaction.editReply.mock.calls[0]?.[0]?.embeds[0]?.data.description);
+    expect(description).toContain("Latest sync range unavailable. Historical war data was not queried.");
+    expect(description).not.toContain("undefined");
+    expect(description).not.toContain("days");
+  });
+
   it("preserves denial behavior for the War History permission", async () => {
     permissionMock.canUseAnyTarget.mockResolvedValue(false);
     const denied = makeButton("clan-health:war-history:AAA111:30");

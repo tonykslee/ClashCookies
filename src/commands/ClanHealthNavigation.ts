@@ -362,6 +362,24 @@ export function buildClanHealthTrendsEmbed(
   return embed;
 }
 
+function buildWarHistoryDescription(input: {
+  window: ClanHealthHistoricalWindow;
+  total: number;
+}): string {
+  const { window, total } = input;
+  if (window.kind === "syncs") {
+    return total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
+      ? `Last ${window.requestedSyncCount} syncs - ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in the selected window.`
+      : `Last ${window.requestedSyncCount} syncs - ${total} ended war${total === 1 ? "" : "s"}.`;
+  }
+  if (window.kind === "days") {
+    return total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
+      ? `Last ${window.days} days \u2022 ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in last ${window.days} days.`
+      : `Last ${window.days} days \u2022 ${total} ended war${total === 1 ? "" : "s"}.`;
+  }
+  return "Latest sync range unavailable. Historical war data was not queried.";
+}
+
 /** Purpose: execute one authorized Clan Health drilldown without mutating the originating message. */
 export async function handleClanHealthNavigationButtonInteraction(
   interaction: ButtonInteraction,
@@ -478,31 +496,16 @@ export async function handleClanHealthNavigationButtonInteraction(
               cutoff: effectiveWindow.cutoff,
             })
           : [];
-      const windowLabel = effectiveWindow.kind === "syncs"
-        ? `Last ${effectiveWindow.requestedSyncCount} syncs`
-        : effectiveWindow.kind === "days"
-          ? `Last ${effectiveWindow.days} days`
-          : "Latest sync range unavailable";
       const displayName = rows[0]?.clanName?.trim() || `#${parsed.clanTag}`;
       const title = rows.length === 0
         ? `War History - ${displayName}`
         : `War History - ${displayName} (#${parsed.clanTag})`;
       const total = rows.length;
-      const description =
-        total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
-          ? `Last ${parsed.historicalWindowDays} days • ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in last ${parsed.historicalWindowDays} days.`
-          : `Last ${parsed.historicalWindowDays} days • ${total} ended war${total === 1 ? "" : "s"}.`;
+      const description = buildWarHistoryDescription({ window: effectiveWindow, total });
       const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
         .setColor(0x3498db)
-        .setDescription(
-          effectiveWindow.kind === "syncs"
-            ? (total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
-              ? `${windowLabel} - ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in the selected window.`
-              : `${windowLabel} - ${total} ended war${total === 1 ? "" : "s"}.`)
-            : description,
-        )
         .setTimestamp(new Date());
       for (const row of rows.slice(0, CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT)) {
         embed.addFields(buildWarHistoryField(row, displayName));
