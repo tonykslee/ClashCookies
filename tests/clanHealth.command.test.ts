@@ -17,6 +17,11 @@ vi.mock("../src/services/ClanHealthSnapshotService", () => ({
   ClanHealthSnapshotService: class {
     getSnapshot = serviceMock.getSnapshot;
   },
+  CLAN_HEALTH_DEFAULT_WINDOW_DAYS: 30,
+  CLAN_HEALTH_MIN_WINDOW_DAYS: 7,
+  CLAN_HEALTH_MAX_WINDOW_DAYS: 180,
+  buildClanHealthHistoricalCutoff: (now: Date, days: number) =>
+    new Date(now.getTime() - days * 24 * 60 * 60 * 1000),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -116,8 +121,9 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      historicalWindowDays: 30,
-      historicalCutoff: new Date("2026-02-07T12:00:00.000Z"),
+      historicalWindowDays: overrides.historicalWindowDays ?? 30,
+      historicalCutoff:
+        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         hasCompletedEvaluations: true,
@@ -324,7 +330,9 @@ describe("/clan-health command", () => {
       "View Unlinked",
       "View Compo",
       "View Violations",
+      "War History",
     ]);
+    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:30");
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
   });
 
@@ -346,6 +354,10 @@ describe("/clan-health command", () => {
       clanTag: "#AAA111",
       historicalWindowDays: 60,
     });
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    expect(payload.components[0].components[4].toJSON().custom_id).toBe(
+      "clan-health:war-history:AAA111:60",
+    );
   });
 
   it("renders an external snapshot with war data and omits tracked-only fields", async () => {

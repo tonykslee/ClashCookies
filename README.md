@@ -33,7 +33,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ### Reporting and visibility
 - Produces matchup, sync, activity, and compliance views for tracked clans.
-- Supports leadership-focused summaries such as inactivity and clan-health snapshots, including tracked-clan full reports with direct Inactive, Unlinked, Compo, and Violations drilldowns plus external active FWA clan snapshots from persisted data.
+- Supports leadership-focused summaries such as inactivity and clan-health snapshots, including tracked-clan full reports with direct Inactive, Unlinked, Compo, Violations, and War History drilldowns. War History reads persisted ended wars from the selected historical window; external active FWA clan snapshots remain persisted-data views.
 - Includes telemetry reporting and scheduled report delivery in Discord.
 
 ### Operational automation

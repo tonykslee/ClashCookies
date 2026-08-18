@@ -309,7 +309,14 @@ export const ClanHealth: Command = {
     await interaction.editReply({
       embeds: [buildClanHealthEmbed(snapshot)],
       ...(snapshot.viewType === "tracked"
-        ? { components: [buildClanHealthNavigationRow(snapshot.clanTag)] }
+        ? {
+            components: [
+              buildClanHealthNavigationRow(
+                snapshot.clanTag,
+                snapshot.historicalWindowDays,
+              ),
+            ],
+          }
         : {}),
     });
   },
