@@ -167,6 +167,13 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       .setFooter({ text: `${snapshot.clanTag} • External FWAStats snapshot` });
   }
 
+  const historicalWindowLabel = snapshot.historicalWindow.kind === "syncs"
+    ? `last ${snapshot.historicalWindow.requestedSyncCount} syncs`
+    : `last ${snapshot.historicalWindow.days} days`;
+  const historicalWindowTitle = snapshot.historicalWindow.kind === "syncs"
+    ? `Last ${snapshot.historicalWindow.requestedSyncCount} Syncs`
+    : `Last ${snapshot.historicalWindow.days} Days`;
+
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
     .setDescription(
@@ -176,7 +183,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "War Performance",
         value: [
-          `Match rate (last ${snapshot.historicalWindowDays} days; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
+          `Match rate (${historicalWindowLabel}; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
             snapshot.warMetrics.endedWarSampleSize,
           )}**`,
@@ -198,14 +205,14 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
         inline: false,
       },
       {
-        name: `War Plan Compliance \u2014 Last ${snapshot.historicalWindowDays} Days`,
+        name: `War Plan Compliance \u2014 ${historicalWindowTitle}`,
         value: buildWarPlanComplianceLines(snapshot).join("\n"),
         inline: false,
       },
       {
         name: "Inactivity",
         value: [
-          `Missed both attacks (distinct players, >=1 eligible FWA war in last ${snapshot.historicalWindowDays} days): **${snapshot.inactiveWars.inactivePlayerCount}**`,
+          `Missed both attacks (distinct players, >=1 eligible FWA war in ${historicalWindowLabel}): **${snapshot.inactiveWars.inactivePlayerCount}**`,
           `Eligible ended FWA wars in window: **${snapshot.inactiveWars.warsSampled}**`,
           `Inactive (days, >=${snapshot.inactiveDays.thresholdDays}d): **${snapshot.inactiveDays.inactivePlayerCount}**`,
           `Observed members (updated in last ${snapshot.inactiveDays.staleHours}h): **${snapshot.inactiveDays.observedMemberCount}**`,
@@ -261,7 +268,7 @@ export const ClanHealth: Command = {
     },
     {
       name: "window",
-      description: "Tracked metrics history window in days",
+      description: "History window in days; omit for last 30 syncs",
       type: ApplicationCommandOptionType.Integer,
       required: false,
       min_value: 7,
@@ -316,11 +323,15 @@ export const ClanHealth: Command = {
             components: [
               buildClanHealthNavigationRow(
                 snapshot.clanTag,
-                snapshot.historicalWindowDays,
+                snapshot.historicalWindow.kind === "syncs"
+                  ? { kind: "syncs", syncCount: snapshot.historicalWindow.requestedSyncCount }
+                  : snapshot.historicalWindow.days,
               ),
               buildClanHealthTrendsNavigationRow(
                 snapshot.clanTag,
-                snapshot.historicalWindowDays,
+                snapshot.historicalWindow.kind === "syncs"
+                  ? { kind: "syncs", syncCount: snapshot.historicalWindow.requestedSyncCount }
+                  : snapshot.historicalWindow.days,
               ),
             ],
           }

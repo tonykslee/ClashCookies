@@ -15,6 +15,10 @@ const violationsMock = vi.hoisted(() => ({
 }));
 const historyMock = vi.hoisted(() => ({
   listEndedByClanSince: vi.fn(),
+  listEndedByClanSyncNumbers: vi.fn(),
+}));
+const historicalWindowMock = vi.hoisted(() => ({
+  resolveLatestSyncWindow: vi.fn(),
 }));
 const trendMock = vi.hoisted(() => ({
   getTrend: vi.fn(),
@@ -51,6 +55,18 @@ vi.mock("../src/services/ClanHealthTrendService", () => ({
   ClanHealthTrendService: class {
     getTrend = trendMock.getTrend;
   },
+}));
+vi.mock("../src/services/ClanWarHistoryService", () => ({
+  ClanWarHistoryService: class {
+    listEndedByClanSince = historyMock.listEndedByClanSince;
+    listEndedByClanSyncNumbers = historyMock.listEndedByClanSyncNumbers;
+  },
+}));
+vi.mock("../src/services/ClanHealthHistoricalWindowService", () => ({
+  ClanHealthHistoricalWindowService: class {
+    resolveLatestSyncWindow = historicalWindowMock.resolveLatestSyncWindow;
+  },
+  CLAN_HEALTH_DEFAULT_SYNC_COUNT: 30,
 }));
 
 import {
@@ -96,6 +112,7 @@ describe("Clan Health navigation", () => {
       guildId: "guild-1",
       clanTag: "#AAA111",
       clanName: null,
+      window: { kind: "days", days: 60, cutoff: new Date("2026-01-01T00:00:00.000Z") },
       cutoff: new Date("2026-01-01T00:00:00.000Z"),
       now: new Date("2026-03-01T00:00:00.000Z"),
       snapshots: [],
@@ -124,7 +141,7 @@ describe("Clan Health navigation", () => {
       "clan-health:unlinked:AAA111",
       "clan-health:compo:AAA111",
       "clan-health:violations:AAA111",
-      "clan-health:war-history:AAA111:30",
+      "clan-health:war-history:AAA111:s30",
     ]);
     expect(row.components.every((button) => (button.custom_id?.length ?? 0) <= 100)).toBe(true);
   });
@@ -145,7 +162,12 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId(historyId)).toEqual({
       action: "war-history",
       clanTag: "PYLQ02",
-      historicalWindowDays: 60,
+      window: { kind: "days", days: 60 },
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:30")).toEqual({
+      action: "war-history",
+      clanTag: "PYLQ02",
+      window: { kind: "days", days: 30 },
     });
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:6")).toBeNull();
@@ -157,7 +179,7 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId(trendsId)).toEqual({
       action: "trends",
       clanTag: "PYLQ02",
-      historicalWindowDays: 60,
+      window: { kind: "days", days: 60 },
     });
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:6")).toBeNull();
@@ -168,6 +190,32 @@ describe("Clan Health navigation", () => {
   it("carries a selected historical window in the War History button ID", () => {
     const row = buildClanHealthNavigationRow("#AAA111", 90).toJSON();
     expect(row.components[4]?.custom_id).toBe("clan-health:war-history:AAA111:90");
+  });
+
+  it("routes the omitted-window War History ID through exact selected syncs", async () => {
+    const now = new Date("2026-03-09T12:00:00.000Z");
+    const rows = [{ clanName: "Alpha", warId: 1 }];
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      syncNumbers: [901, 900],
+      syncTimes: [now, new Date("2026-03-09T11:00:00.000Z")],
+    });
+    historyMock.listEndedByClanSyncNumbers.mockResolvedValue(rows);
+    const interaction = makeButton("clan-health:war-history:AAA111:s30");
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      { listEndedByClanSyncNumbers: historyMock.listEndedByClanSyncNumbers } as any,
+    );
+
+    expect(historyMock.listEndedByClanSyncNumbers).toHaveBeenCalledWith({
+      clanTag: "#AAA111",
+      syncNumbers: [901, 900],
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ embeds: expect.any(Array) }));
+    expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
   it("adds a second row with only the windowed Trends action", () => {
@@ -349,7 +397,7 @@ describe("Clan Health navigation", () => {
     expect(trendMock.getTrend).toHaveBeenCalledWith({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: expect.any(Date),
+      window: { kind: "days", days: 60, cutoff: expect.any(Date) },
       now: expect.any(Date),
     });
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });

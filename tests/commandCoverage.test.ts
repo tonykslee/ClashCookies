@@ -401,7 +401,7 @@ describe("command coverage", () => {
 
   it("documents the /clan-health war breakdown and six-day inactivity threshold", () => {
     const clanHealthHelpText = helpEmbedText("clan-health");
-    expect(clanHealthHelpText).toContain("tracked metrics window (default 30 days; configurable from 7 to 180 days)");
+    expect(clanHealthHelpText).toContain("omit window for the latest 30 syncs; configure 7 to 180 days when supplied");
     expect(clanHealthHelpText).toContain("currently linked Discord users involved");
     expect(clanHealthHelpText).toContain("Only completed evaluations recorded since violation tracking was enabled are counted");
     expect(clanHealthHelpText).toContain("War History");

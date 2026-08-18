@@ -121,9 +121,11 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      historicalWindowDays: overrides.historicalWindowDays ?? 30,
-      historicalCutoff:
-        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
+      historicalWindow: overrides.historicalWindow ?? {
+        kind: "days",
+        days: 30,
+        cutoff: new Date("2026-02-07T12:00:00.000Z"),
+      },
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         hasCompletedEvaluations: true,
@@ -268,6 +270,12 @@ describe("/clan-health command", () => {
   it("renders leadership metrics and does not call external CoC API", async () => {
     serviceMock.getSnapshot.mockResolvedValue(
       makeSnapshot({
+        historicalWindow: {
+          kind: "syncs",
+          requestedSyncCount: 30,
+          syncNumbers: [901, 900],
+          syncTimes: [new Date("2026-03-09T12:00:00.000Z")],
+        },
         warPlanCompliance: makeComplianceSnapshot({
           hasCompletedEvaluations: true,
           evaluatedWarCount: 9,
@@ -296,7 +304,7 @@ describe("/clan-health command", () => {
     expect(embedJson.fields.map((field: any) => field.name)).toEqual([
       "War Performance",
       "Current Composition",
-      "War Plan Compliance — Last 30 Days",
+      "War Plan Compliance — Last 30 Syncs",
       "Inactivity",
       "Discord Links",
     ]);
@@ -312,7 +320,7 @@ describe("/clan-health command", () => {
       "Affected wars: **4/9** evaluated FWA wars",
     );
     expect(String(embedJson.fields[0].value)).toContain(
-      "Match rate (last 30 days; 20 ended wars): **70.0% (14/20)**",
+      "Match rate (last 30 syncs; 20 ended wars): **70.0% (14/20)**",
     );
     expect(String(embedJson.fields[0].value)).toContain(
       ":green_circle: 10 | :red_circle: 4 | :black_circle: 3 | :white_circle: 3",
@@ -320,7 +328,7 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
     expect(String(embedJson.fields[3].value)).toContain(
-      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 days): **2**",
+      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 syncs): **2**",
     );
     expect(String(embedJson.fields[3].value)).toContain("Eligible ended FWA wars in window: **3**");
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
@@ -332,13 +340,13 @@ describe("/clan-health command", () => {
       "View Violations",
       "War History",
     ]);
-    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:30");
+    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:s30");
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
     expect(payload.components).toHaveLength(2);
     expect(payload.components[1].components.map((button: any) => button.toJSON())).toEqual([
       expect.objectContaining({
         label: "View Trends",
-        custom_id: "clan-health:trends:AAA111:30",
+        custom_id: "clan-health:trends:AAA111:s30",
       }),
     ]);
   });
@@ -352,7 +360,13 @@ describe("/clan-health command", () => {
       max_value: 180,
     });
 
-    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({ historicalWindowDays: 60 }));
+    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({
+      historicalWindow: {
+        kind: "days",
+        days: 60,
+        cutoff: new Date("2026-01-08T12:00:00.000Z"),
+      },
+    }));
     const interaction = makeInteraction("AAA111", 60);
     await ClanHealth.run({} as any, interaction as any, {} as any);
 
