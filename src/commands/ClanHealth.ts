@@ -16,7 +16,10 @@ import {
   type ClanHealthTrackedSnapshot,
 } from "../services/ClanHealthSnapshotService";
 import { normalizeClashTagInput } from "../helper/clashTag";
-import { buildClanHealthNavigationRow } from "./ClanHealthNavigation";
+import {
+  buildClanHealthNavigationRow,
+  buildClanHealthTrendsNavigationRow,
+} from "./ClanHealthNavigation";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
@@ -312,6 +315,10 @@ export const ClanHealth: Command = {
         ? {
             components: [
               buildClanHealthNavigationRow(
+                snapshot.clanTag,
+                snapshot.historicalWindowDays,
+              ),
+              buildClanHealthTrendsNavigationRow(
                 snapshot.clanTag,
                 snapshot.historicalWindowDays,
               ),

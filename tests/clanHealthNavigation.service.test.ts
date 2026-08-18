@@ -16,6 +16,9 @@ const violationsMock = vi.hoisted(() => ({
 const historyMock = vi.hoisted(() => ({
   listEndedByClanSince: vi.fn(),
 }));
+const trendMock = vi.hoisted(() => ({
+  getTrend: vi.fn(),
+}));
 
 vi.mock("../src/services/CommandPermissionService", () => ({
   CommandPermissionService: class {
@@ -44,11 +47,18 @@ vi.mock("../src/services/CompoAdviceService", () => ({
 vi.mock("../src/commands/fwa/violationsCommand", () => ({
   buildFwaViolationsClanDetailPayload: violationsMock.buildFwaViolationsClanDetailPayload,
 }));
+vi.mock("../src/services/ClanHealthTrendService", () => ({
+  ClanHealthTrendService: class {
+    getTrend = trendMock.getTrend;
+  },
+}));
 
 import {
   buildClanHealthNavigationCustomId,
   buildClanHealthWarHistoryNavigationCustomId,
+  buildClanHealthTrendsNavigationCustomId,
   buildClanHealthNavigationRow,
+  buildClanHealthTrendsNavigationRow,
   handleClanHealthNavigationButtonInteraction,
   parseClanHealthNavigationCustomId,
 } from "../src/commands/ClanHealthNavigation";
@@ -82,6 +92,21 @@ describe("Clan Health navigation", () => {
     compoMock.readAdvice.mockResolvedValue({ kind: "ready", selectedView: "auto" });
     compoMock.buildCompoAdviceResponsePayload.mockResolvedValue({ embeds: [] });
     violationsMock.buildFwaViolationsClanDetailPayload.mockResolvedValue({ embeds: [] });
+    trendMock.getTrend.mockResolvedValue({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: null,
+      cutoff: new Date("2026-01-01T00:00:00.000Z"),
+      now: new Date("2026-03-01T00:00:00.000Z"),
+      snapshots: [],
+      displayedSnapshots: [],
+      coverage: { total: 0, oldestSyncTime: null, newestSyncTime: null },
+      deviation: { validCount: 0, oldest: null, latest: null, change: null, direction: null, average: null, best: null, worst: null },
+      roster: { oldest: null, latest: null, delta: null, average: null, fullCount: 0 },
+      unresolved: { oldest: null, latest: null, average: null },
+      fillers: { knownOldest: null, knownLatest: null, averageKnown: null, knownCount: 0 },
+      algorithmVersions: [],
+    });
   });
 
   it("builds exactly five bounded buttons with deterministic IDs", () => {
@@ -126,11 +151,33 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:6")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:181")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:war-history:PYLQ02:60.5")).toBeNull();
+
+    const trendsId = buildClanHealthTrendsNavigationCustomId("#pylq02", 60);
+    expect(trendsId).toBe("clan-health:trends:PYLQ02:60");
+    expect(parseClanHealthNavigationCustomId(trendsId)).toEqual({
+      action: "trends",
+      clanTag: "PYLQ02",
+      historicalWindowDays: 60,
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:6")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:181")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:trends:PYLQ02:60.5")).toBeNull();
   });
 
   it("carries a selected historical window in the War History button ID", () => {
     const row = buildClanHealthNavigationRow("#AAA111", 90).toJSON();
     expect(row.components[4]?.custom_id).toBe("clan-health:war-history:AAA111:90");
+  });
+
+  it("adds a second row with only the windowed Trends action", () => {
+    const row = buildClanHealthTrendsNavigationRow("#AAA111", 60).toJSON();
+    expect(row.components).toHaveLength(1);
+    expect(row.components[0]).toMatchObject({
+      label: "View Trends",
+      custom_id: "clan-health:trends:AAA111:60",
+    });
+    expect(row.components[0]?.custom_id?.length ?? 0).toBeLessThanOrEqual(100);
   });
 
   it.each([
@@ -285,6 +332,34 @@ describe("Clan Health navigation", () => {
     expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(["war"], denied);
     expect(denied.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
     expect(denied.deferReply).not.toHaveBeenCalled();
+  });
+
+  it("routes Trends through Clan Health permission with an ephemeral unchanged-message response", async () => {
+    const interaction = makeButton("clan-health:trends:AAA111:60", "leader-2");
+    const trendService = { getTrend: trendMock.getTrend };
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      undefined,
+      trendService as any,
+    );
+
+    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(["clan-health"], interaction);
+    expect(trendMock.getTrend).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      cutoff: expect.any(Date),
+      now: expect.any(Date),
+    });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+    const embedJson = interaction.editReply.mock.calls[0][0].embeds[0].toJSON();
+    expect(embedJson.title).toBe("Clan Health Trends - #AAA111");
+    expect(embedJson.description).toContain("Last 60 days");
+    expect(String(embedJson.fields.find((field: any) => field.name === "Coverage")?.value)).toContain(
+      "No sync-boundary readiness snapshots were captured for #AAA111",
+    );
   });
 
   it("fails malformed IDs safely and enforces permission denial", async () => {
