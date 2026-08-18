@@ -173,6 +173,10 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
   const historicalWindowTitle = snapshot.historicalWindow.kind === "syncs"
     ? `Last ${snapshot.historicalWindow.requestedSyncCount} Syncs`
     : `Last ${snapshot.historicalWindow.days} Days`;
+  const syncCoverageLine = snapshot.historicalWindow.kind === "syncs" &&
+    snapshot.historicalWindow.syncNumbers.length < snapshot.historicalWindow.requestedSyncCount
+    ? `Mapped syncs available: **${snapshot.historicalWindow.syncNumbers.length}/${snapshot.historicalWindow.requestedSyncCount}**`
+    : null;
 
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
@@ -196,6 +200,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
             snapshot.warMetrics.winCount,
             snapshot.warMetrics.endedWarSampleSize,
           )}**`,
+          ...(syncCoverageLine ? [syncCoverageLine] : []),
         ].join("\n"),
         inline: false,
       },

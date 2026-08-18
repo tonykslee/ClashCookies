@@ -267,6 +267,17 @@ describe("/clan-health command", () => {
     };
   }
 
+  async function renderTrackedSnapshot(snapshot: ClanHealthTrackedSnapshot) {
+    serviceMock.getSnapshot.mockResolvedValue(snapshot);
+    const interaction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, interaction as any, {
+      getCurrentWar: vi.fn(),
+      getClan: vi.fn(),
+      getPlayerRaw: vi.fn(),
+    } as any);
+    return interaction.editReply.mock.calls[0]?.[0].embeds[0].toJSON();
+  }
+
   it("renders leadership metrics and does not call external CoC API", async () => {
     serviceMock.getSnapshot.mockResolvedValue(
       makeSnapshot({
@@ -349,6 +360,45 @@ describe("/clan-health command", () => {
         custom_id: "clan-health:trends:AAA111:s30",
       }),
     ]);
+  });
+
+  it("reports partial mapped sync coverage without changing the default IDs", async () => {
+    const embed = await renderTrackedSnapshot(makeSnapshot({
+      historicalWindow: {
+        kind: "syncs",
+        requestedSyncCount: 30,
+        syncNumbers: Array.from({ length: 18 }, (_, index) => 900 - index),
+        syncTimes: [],
+      },
+    }));
+
+    expect(String(embed.fields[0].value)).toContain("Mapped syncs available: **18/30**");
+    expect(embed.fields[0].value).not.toContain("Mapped syncs available: **30/30**");
+  });
+
+  it("does not report a partial coverage note when all default syncs are mapped", async () => {
+    const embed = await renderTrackedSnapshot(makeSnapshot({
+      historicalWindow: {
+        kind: "syncs",
+        requestedSyncCount: 30,
+        syncNumbers: Array.from({ length: 30 }, (_, index) => 900 - index),
+        syncTimes: [],
+      },
+    }));
+
+    expect(String(embed.fields[0].value)).not.toContain("Mapped syncs available:");
+  });
+
+  it("does not report mapped sync coverage for explicit day windows", async () => {
+    const embed = await renderTrackedSnapshot(makeSnapshot({
+      historicalWindow: {
+        kind: "days",
+        days: 60,
+        cutoff: new Date("2026-01-09T12:00:00.000Z"),
+      },
+    }));
+
+    expect(String(embed.fields[0].value)).not.toContain("Mapped syncs available:");
   });
 
   it("declares the bounded optional window and forwards a selected value", async () => {
