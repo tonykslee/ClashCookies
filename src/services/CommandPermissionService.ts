@@ -1,4 +1,5 @@
 import {
+  ButtonInteraction,
   ChatInputCommandInteraction,
   ModalSubmitInteraction,
   PermissionFlagsBits,
@@ -188,6 +189,7 @@ export type CommandPermissionTarget =
   (typeof COMMAND_PERMISSION_TARGETS)[number];
 
 type GuildInteraction =
+  | ButtonInteraction
   | ChatInputCommandInteraction
   | ModalSubmitInteraction
   | StringSelectMenuInteraction;

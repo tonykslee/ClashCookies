@@ -17,6 +17,11 @@ vi.mock("../src/services/ClanHealthSnapshotService", () => ({
   ClanHealthSnapshotService: class {
     getSnapshot = serviceMock.getSnapshot;
   },
+  CLAN_HEALTH_DEFAULT_WINDOW_DAYS: 30,
+  CLAN_HEALTH_MIN_WINDOW_DAYS: 7,
+  CLAN_HEALTH_MAX_WINDOW_DAYS: 180,
+  buildClanHealthHistoricalCutoff: (now: Date, days: number) =>
+    new Date(now.getTime() - days * 24 * 60 * 60 * 1000),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -29,7 +34,7 @@ import type {
   ClanHealthTrackedSnapshot,
 } from "../src/services/ClanHealthSnapshotService";
 
-function makeInteraction(tagValue: string) {
+function makeInteraction(tagValue: string, windowValue: number | null = null) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
   return {
@@ -43,6 +48,7 @@ function makeInteraction(tagValue: string) {
         if (required) return tagValue;
         return null;
       }),
+      getInteger: vi.fn((name: string) => (name === "window" ? windowValue : null)),
       getFocused: vi.fn().mockReturnValue({ name: "tag", value: "alp" }),
     },
     respond: vi.fn().mockResolvedValue(undefined),
@@ -115,9 +121,11 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
+      historicalWindowDays: overrides.historicalWindowDays ?? 30,
+      historicalCutoff:
+        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
-        period: "30d",
         hasCompletedEvaluations: true,
         evaluatedWarCount: 9,
         affectedWarCount: 4,
@@ -127,7 +135,6 @@ describe("/clan-health command", () => {
         ...overrides.warPlanCompliance,
       },
       warMetrics: {
-        windowSize: 30,
         endedWarSampleSize: 20,
         fwaMatchCount: 14,
         fwaWinCount: 10,
@@ -139,7 +146,6 @@ describe("/clan-health command", () => {
         ...overrides.warMetrics,
       },
       inactiveWars: {
-        windowSize: 3,
         warsAvailable: 3,
         warsSampled: 3,
         inactivePlayerCount: 2,
@@ -217,7 +223,6 @@ describe("/clan-health command", () => {
       overrides.warPerformance === null
         ? null
         : {
-            windowSize: 30,
             endedWarSampleSize: 4,
             recognizedWarRows: 4,
             fwaMatchCount: 2,
@@ -307,7 +312,7 @@ describe("/clan-health command", () => {
       "Affected wars: **4/9** evaluated FWA wars",
     );
     expect(String(embedJson.fields[0].value)).toContain(
-      "Match rate (last 30 ended wars): **70.0% (14/20)**",
+      "Match rate (last 30 days; 20 ended wars): **70.0% (14/20)**",
     );
     expect(String(embedJson.fields[0].value)).toContain(
       ":green_circle: 10 | :red_circle: 4 | :black_circle: 3 | :white_circle: 3",
@@ -315,9 +320,54 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
     expect(String(embedJson.fields[3].value)).toContain(
-      "Missed both attacks (distinct players, >=1 of last 3 ended FWA wars): **2**",
+      "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 days): **2**",
     );
+    expect(String(embedJson.fields[3].value)).toContain("Eligible ended FWA wars in window: **3**");
     expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
+    const navigationButtons = payload.components[0].components.map((button: any) => button.toJSON());
+    expect(navigationButtons.map((button: any) => button.label)).toEqual([
+      "View Inactive",
+      "View Unlinked",
+      "View Compo",
+      "View Violations",
+      "War History",
+    ]);
+    expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:30");
+    expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
+    expect(payload.components).toHaveLength(2);
+    expect(payload.components[1].components.map((button: any) => button.toJSON())).toEqual([
+      expect.objectContaining({
+        label: "View Trends",
+        custom_id: "clan-health:trends:AAA111:30",
+      }),
+    ]);
+  });
+
+  it("declares the bounded optional window and forwards a selected value", async () => {
+    const windowOption = ClanHealth.options?.find((option: any) => option.name === "window") as any;
+    expect(windowOption).toMatchObject({
+      type: 4,
+      required: false,
+      min_value: 7,
+      max_value: 180,
+    });
+
+    serviceMock.getSnapshot.mockResolvedValue(makeSnapshot({ historicalWindowDays: 60 }));
+    const interaction = makeInteraction("AAA111", 60);
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    expect(serviceMock.getSnapshot).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      historicalWindowDays: 60,
+    });
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    expect(payload.components[0].components[4].toJSON().custom_id).toBe(
+      "clan-health:war-history:AAA111:60",
+    );
+    expect(payload.components[1].components[0].toJSON().custom_id).toBe(
+      "clan-health:trends:AAA111:60",
+    );
   });
 
   it("renders an external snapshot with war data and omits tracked-only fields", async () => {
@@ -349,6 +399,7 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[1].value)).not.toContain("War Plan Compliance");
     expect(String(embedJson.fields[1].value)).not.toContain("Inactivity");
     expect(String(embedJson.fields[1].value)).not.toContain("Discord Links");
+    expect(payload.components).toBeUndefined();
   });
 
   it("renders an external snapshot without war data using only the composition field", async () => {
@@ -383,6 +434,7 @@ describe("/clan-health command", () => {
     const embedJson = payload.embeds[0].toJSON();
     expect(embedJson.fields.map((field: any) => field.name)).toEqual(["Current Composition"]);
     expect(String(embedJson.fields[0].value)).toContain("Members: **50/50**");
+    expect(payload.components).toBeUndefined();
   });
 
   it("renders only the no-evaluation compliance message when no completed evaluations exist", async () => {
@@ -397,7 +449,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 0,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -408,7 +459,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -466,7 +516,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 0,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -477,7 +526,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -534,7 +582,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 1,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -545,7 +592,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -600,7 +646,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 2,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -611,7 +656,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,

@@ -249,6 +249,33 @@ async function buildViolationsEmbed(input: {
   return null;
 }
 
+/** Purpose: build the canonical persisted 30-day clan violations response for drilldown callers. */
+export async function buildFwaViolationsClanDetailPayload(input: {
+  guildId: string;
+  clanTag: string;
+  client: Client;
+  historyService?: WarPlanViolationHistoryService;
+  townHallIconSource?: TownHallEmojiMap;
+}): Promise<{ embeds: [ReturnType<typeof buildWarPlanViolationsClanLeaderboardEmbed>]; allowedMentions: typeof NO_ALLOWED_MENTIONS }> {
+  const historyService = input.historyService ?? defaultHistoryService;
+  const townHallIconSource =
+    input.townHallIconSource ?? (await resolveTownHallEmojiMap(input.client));
+  const result = await buildViolationsEmbed({
+    route: { type: "clan", clanTag: input.clanTag },
+    period: "30d",
+    guildId: input.guildId,
+    historyService,
+    townHallIconSource,
+  });
+  if (!result) {
+    throw new Error("Failed to build clan violations detail.");
+  }
+  return {
+    embeds: [result.embed as ReturnType<typeof buildWarPlanViolationsClanLeaderboardEmbed>],
+    allowedMentions: NO_ALLOWED_MENTIONS,
+  };
+}
+
 export async function runFwaViolationsCommand(
   interaction: ChatInputCommandInteraction,
   _cocService: CoCService,

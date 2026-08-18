@@ -16,6 +16,10 @@ import {
   type ClanHealthTrackedSnapshot,
 } from "../services/ClanHealthSnapshotService";
 import { normalizeClashTagInput } from "../helper/clashTag";
+import {
+  buildClanHealthNavigationRow,
+  buildClanHealthTrendsNavigationRow,
+} from "./ClanHealthNavigation";
 
 const clanHealthSnapshotService = new ClanHealthSnapshotService();
 
@@ -120,7 +124,7 @@ function buildExternalWarPerformanceLines(snapshot: ClanHealthExternalSnapshot):
   ];
 }
 
-/** Purpose: render the persisted 30-day war-plan compliance summary for clan-health. */
+/** Purpose: render the selected historical war-plan compliance summary for clan-health. */
 function buildWarPlanComplianceLines(snapshot: ClanHealthSnapshot): string[] {
   if (snapshot.viewType !== "tracked") {
     return ["No completed FWA war-plan evaluations are available yet."];
@@ -172,7 +176,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "War Performance",
         value: [
-          `Match rate (last ${snapshot.warMetrics.windowSize} ended wars): **${formatRate(
+          `Match rate (last ${snapshot.historicalWindowDays} days; ${snapshot.warMetrics.endedWarSampleSize} ended wars): **${formatRate(
             snapshot.warMetrics.fwaMatchCount,
             snapshot.warMetrics.endedWarSampleSize,
           )}**`,
@@ -194,14 +198,15 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
         inline: false,
       },
       {
-        name: "War Plan Compliance \u2014 Last 30 Days",
+        name: `War Plan Compliance \u2014 Last ${snapshot.historicalWindowDays} Days`,
         value: buildWarPlanComplianceLines(snapshot).join("\n"),
         inline: false,
       },
       {
         name: "Inactivity",
         value: [
-          `Missed both attacks (distinct players, >=1 of last ${snapshot.inactiveWars.windowSize} ended FWA wars): **${snapshot.inactiveWars.inactivePlayerCount}**`,
+          `Missed both attacks (distinct players, >=1 eligible FWA war in last ${snapshot.historicalWindowDays} days): **${snapshot.inactiveWars.inactivePlayerCount}**`,
+          `Eligible ended FWA wars in window: **${snapshot.inactiveWars.warsSampled}**`,
           `Inactive (days, >=${snapshot.inactiveDays.thresholdDays}d): **${snapshot.inactiveDays.inactivePlayerCount}**`,
           `Observed members (updated in last ${snapshot.inactiveDays.staleHours}h): **${snapshot.inactiveDays.observedMemberCount}**`,
         ].join("\n"),
@@ -255,6 +260,14 @@ export const ClanHealth: Command = {
       autocomplete: true,
     },
     {
+      name: "window",
+      description: "Tracked metrics history window in days",
+      type: ApplicationCommandOptionType.Integer,
+      required: false,
+      min_value: 7,
+      max_value: 180,
+    },
+    {
       name: "visibility",
       description: "Response visibility",
       type: ApplicationCommandOptionType.String,
@@ -278,6 +291,7 @@ export const ClanHealth: Command = {
     }
 
     const tagInput = interaction.options.getString("tag", true);
+    const historicalWindowDays = interaction.options.getInteger("window", false);
     const normalizedTag = normalizeClanTag(tagInput);
     if (!normalizedTag) {
       await interaction.editReply("Invalid clan tag.");
@@ -287,6 +301,7 @@ export const ClanHealth: Command = {
     const snapshot = await clanHealthSnapshotService.getSnapshot({
       guildId: interaction.guildId,
       clanTag: normalizedTag,
+      historicalWindowDays: historicalWindowDays ?? undefined,
     });
 
     if (!snapshot) {
@@ -296,6 +311,20 @@ export const ClanHealth: Command = {
 
     await interaction.editReply({
       embeds: [buildClanHealthEmbed(snapshot)],
+      ...(snapshot.viewType === "tracked"
+        ? {
+            components: [
+              buildClanHealthNavigationRow(
+                snapshot.clanTag,
+                snapshot.historicalWindowDays,
+              ),
+              buildClanHealthTrendsNavigationRow(
+                snapshot.clanTag,
+                snapshot.historicalWindowDays,
+              ),
+            ],
+          }
+        : {}),
     });
   },
   autocomplete: async (interaction: AutocompleteInteraction) => {
