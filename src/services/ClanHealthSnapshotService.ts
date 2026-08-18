@@ -12,6 +12,11 @@ import {
   WarPlanViolationHistoryService,
   type WarPlanViolationHistoryClanLeaderboardBoundedResult,
 } from "./WarPlanViolationHistoryService";
+import {
+  buildClanHealthHistoricalDaysWindow,
+  ClanHealthHistoricalWindowService,
+  type ClanHealthHistoricalWindow,
+} from "./ClanHealthHistoricalWindowService";
 import { FwaClanWarsSyncService } from "./fwa-feeds/FwaClanWarsSyncService";
 import { FwaFeedSyncStateService } from "./fwa-feeds/FwaFeedSyncStateService";
 import { classifyOpponentInfo } from "./fwa-feeds/FwaClanMatchStatsCurrentSyncService";
@@ -48,8 +53,7 @@ export type ClanHealthTrackedSnapshot = {
   viewType: "tracked";
   clanTag: string;
   clanName: string;
-  historicalWindowDays: number;
-  historicalCutoff: Date;
+  historicalWindow: ClanHealthHistoricalWindow;
   composition: CompoActualStateTrackedClanComposition;
   warPlanCompliance: {
     hasCompletedEvaluations: boolean;
@@ -270,10 +274,11 @@ export class ClanHealthSnapshotService {
     },
     private readonly warPlanViolationHistoryService: Pick<
       WarPlanViolationHistoryService,
-      "getClanLeaderboardForCutoff"
+      "getClanLeaderboardForCutoff" | "getClanLeaderboardForSyncNumbers"
     > = new WarPlanViolationHistoryService(),
     private readonly feedSyncStateService: Pick<FwaFeedSyncStateService, "getState"> = new FwaFeedSyncStateService(),
-    private readonly clanWarsSyncService: Pick<FwaClanWarsSyncService, "syncClan"> = new FwaClanWarsSyncService()
+    private readonly clanWarsSyncService: Pick<FwaClanWarsSyncService, "syncClan"> = new FwaClanWarsSyncService(),
+    private readonly historicalWindowService: ClanHealthHistoricalWindowService = new ClanHealthHistoricalWindowService()
   ) {}
 
   /** Purpose: load a single-clan leadership snapshot from persisted DB state only. */
@@ -293,10 +298,19 @@ export class ClanHealthSnapshotService {
       select: { tag: true, name: true, shortName: true },
     });
     if (trackedClan) {
+      const now = resolveSnapshotNow(input.now);
+      const historicalWindow = input.historicalWindowDays === undefined
+        ? await this.historicalWindowService.resolveLatestSyncWindow({
+            guildId: input.guildId,
+          })
+        : buildClanHealthHistoricalDaysWindow({
+            days: normalizeClanHealthWindowDays(input.historicalWindowDays),
+            now,
+          });
       return this.buildTrackedSnapshot({
         guildId: input.guildId,
         trackedClan,
-        historicalWindowDays: normalizeClanHealthWindowDays(input.historicalWindowDays),
+        historicalWindow,
         inactiveDaysThreshold: Math.max(
           1,
           Math.trunc(input.inactiveDaysThreshold ?? DEFAULT_INACTIVE_DAYS_THRESHOLD),
@@ -308,7 +322,7 @@ export class ClanHealthSnapshotService {
               Number(process.env.INACTIVE_STALE_HOURS ?? DEFAULT_INACTIVE_STALE_HOURS),
           ),
         ),
-        now: resolveSnapshotNow(input.now),
+        now,
       });
     }
 
@@ -328,7 +342,7 @@ export class ClanHealthSnapshotService {
   private async buildTrackedSnapshot(input: {
     guildId: string;
     trackedClan: Pick<TrackedClan, "tag" | "name"> & { shortName?: string | null };
-    historicalWindowDays: number;
+    historicalWindow: ClanHealthHistoricalWindow;
     inactiveDaysThreshold: number;
     inactiveStaleHours: number;
     now: Date;
@@ -336,10 +350,40 @@ export class ClanHealthSnapshotService {
     const startedAtMs = Date.now();
     const canonicalClanTag = normalizeClanTag(input.trackedClan.tag);
     const canonicalClanName = String(input.trackedClan.name ?? "").trim() || canonicalClanTag;
-    const historicalCutoff = buildClanHealthHistoricalCutoff(input.now, input.historicalWindowDays);
     const staleCutoff = new Date(input.now.getTime() - input.inactiveStaleHours * 60 * 60 * 1000);
     const inactiveCutoff = new Date(input.now.getTime() - input.inactiveDaysThreshold * DAY_MS);
     const compositionNow = input.now;
+    const historicalWarRowsPromise = input.historicalWindow.kind === "unavailable"
+      ? Promise.resolve([] as WarHistoryMetricRow[])
+      : this.db.clanWarHistory.findMany({
+          where: {
+            clanTag: canonicalClanTag,
+            warEndTime: {
+              not: null,
+              ...(input.historicalWindow.kind === "days"
+                ? { gte: input.historicalWindow.cutoff }
+                : { }),
+            },
+            ...(input.historicalWindow.kind === "syncs"
+              ? { syncNumber: { in: input.historicalWindow.syncNumbers } }
+              : {}),
+          },
+          orderBy: [{ warEndTime: "desc" }, { warStartTime: "desc" }],
+          select: { warId: true, syncNumber: true, matchType: true, actualOutcome: true },
+        });
+    const warPlanLeaderboardPromise = input.historicalWindow.kind === "unavailable"
+      ? Promise.resolve(null)
+      : input.historicalWindow.kind === "syncs"
+        ? this.warPlanViolationHistoryService.getClanLeaderboardForSyncNumbers({
+            guildId: input.guildId,
+            clanTag: canonicalClanTag,
+            syncNumbers: input.historicalWindow.syncNumbers,
+          })
+        : this.warPlanViolationHistoryService.getClanLeaderboardForCutoff({
+            guildId: input.guildId,
+            clanTag: canonicalClanTag,
+            cutoff: input.historicalWindow.cutoff,
+          });
     const compositionPromise = this.compoActualStateService.readTrackedClanCurrentComposition({
       guildId: input.guildId,
       trackedClan: input.trackedClan,
@@ -347,14 +391,7 @@ export class ClanHealthSnapshotService {
     });
 
     const [warRows, activityRows, warPlanLeaderboard, composition] = await Promise.all([
-      this.db.clanWarHistory.findMany({
-        where: {
-          clanTag: canonicalClanTag,
-          warEndTime: { gte: historicalCutoff },
-        },
-        orderBy: [{ warEndTime: "desc" }, { warStartTime: "desc" }],
-        select: { warId: true, matchType: true, actualOutcome: true },
-      }),
+      historicalWarRowsPromise,
       this.db.playerActivity.findMany({
         where: {
           guildId: input.guildId,
@@ -363,11 +400,7 @@ export class ClanHealthSnapshotService {
         },
         select: { tag: true, lastSeenAt: true },
       }),
-      this.warPlanViolationHistoryService.getClanLeaderboardForCutoff({
-        guildId: input.guildId,
-        clanTag: canonicalClanTag,
-        cutoff: historicalCutoff,
-      }),
+      warPlanLeaderboardPromise,
       compositionPromise,
     ]);
     if (!composition) {
@@ -421,14 +454,16 @@ export class ClanHealthSnapshotService {
     const warMetrics = computeWarMetrics(warRows);
     const inactivePlayerCount = computeInactiveWarsPlayerCount(participationRows);
     const durationMs = Date.now() - startedAtMs;
-    const warPlanCompliance = buildWarPlanComplianceSummary(warPlanLeaderboard);
+    const warPlanCompliance = warPlanLeaderboard
+      ? buildWarPlanComplianceSummary(warPlanLeaderboard)
+      : buildEmptyWarPlanComplianceSummary();
     const warSourceAgeMs = null;
 
     this.logClanHealthSnapshot({
       guildId: input.guildId,
       clanTag: canonicalClanTag,
       viewType: "tracked",
-      historicalWindowDays: input.historicalWindowDays,
+      historicalWindow: input.historicalWindow,
       warRows: warRows.length,
       recognizedWarRows: warRows.length,
       complianceEvaluatedWarCount: warPlanCompliance.evaluatedWarCount,
@@ -453,8 +488,7 @@ export class ClanHealthSnapshotService {
       viewType: "tracked",
       clanTag: canonicalClanTag,
       clanName: canonicalClanName,
-      historicalWindowDays: input.historicalWindowDays,
-      historicalCutoff,
+      historicalWindow: input.historicalWindow,
       composition,
       warPlanCompliance,
       warMetrics,
@@ -719,7 +753,7 @@ export class ClanHealthSnapshotService {
     guildId: string;
     clanTag: string;
     viewType: ClanHealthSnapshot["viewType"];
-    historicalWindowDays?: number;
+    historicalWindow?: ClanHealthHistoricalWindow;
     warRows: number;
     recognizedWarRows: number | null;
     complianceEvaluatedWarCount?: number;
@@ -745,8 +779,17 @@ export class ClanHealthSnapshotService {
         `guild=${input.guildId}`,
         `clan=${input.clanTag}`,
         `view_type=${input.viewType}`,
-        input.historicalWindowDays !== undefined
-          ? `historical_window_days=${input.historicalWindowDays}`
+        input.historicalWindow
+          ? `historical_window_kind=${input.historicalWindow.kind}`
+          : null,
+        input.historicalWindow?.kind === "days"
+          ? `historical_window_days=${input.historicalWindow.days}`
+          : null,
+        input.historicalWindow?.kind === "syncs"
+          ? `historical_sync_range=${input.historicalWindow.startSyncNumber}-${input.historicalWindow.endSyncNumber}`
+          : null,
+        input.historicalWindow?.kind === "unavailable"
+          ? `historical_syncs_unavailable_reason=${input.historicalWindow.reason}`
           : null,
         `war_rows=${input.warRows}`,
         `recognized_war_rows=${input.recognizedWarRows ?? "n/a"}`,
@@ -781,6 +824,18 @@ export class ClanHealthSnapshotService {
         .join(" "),
     );
   }
+}
+
+/** Purpose: represent truthful empty compliance when no historical sync baseline is available. */
+function buildEmptyWarPlanComplianceSummary(): ClanHealthTrackedSnapshot["warPlanCompliance"] {
+  return {
+    hasCompletedEvaluations: false,
+    evaluatedWarCount: 0,
+    affectedWarCount: 0,
+    violationCount: 0,
+    distinctPlayerCount: 0,
+    distinctCurrentDiscordUserCount: 0,
+  };
 }
 
 /** Purpose: normalize the persisted war-plan leaderboard into the clan-health summary shape. */

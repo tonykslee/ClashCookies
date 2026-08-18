@@ -45,7 +45,7 @@ describe("ClanHealthTrendService", () => {
     const report = await new ClanHealthTrendService(db).getTrend({
       guildId: "guild-1",
       clanTag: "AAA111",
-      cutoff,
+      window: { kind: "days", days: 10, cutoff },
       now,
     });
 
@@ -105,7 +105,7 @@ describe("ClanHealthTrendService", () => {
     const report = await new ClanHealthTrendService(db).getTrend({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: syncTime(1),
+      window: { kind: "days", days: 10, cutoff: syncTime(1) },
       now: syncTime(24),
     });
 
@@ -120,7 +120,7 @@ describe("ClanHealthTrendService", () => {
     const empty = await new ClanHealthTrendService(db).getTrend({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: syncTime(1),
+      window: { kind: "days", days: 10, cutoff: syncTime(1) },
       now: syncTime(10),
     });
     expect(empty.clanTag).toBe("#AAA111");
@@ -131,7 +131,7 @@ describe("ClanHealthTrendService", () => {
     const report = await new ClanHealthTrendService(withUnmapped).getTrend({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: syncTime(10),
+      window: { kind: "days", days: 1, cutoff: syncTime(10) },
       now: syncTime(10),
     });
     expect(report.snapshots).toHaveLength(1);
@@ -147,7 +147,7 @@ describe("ClanHealthTrendService", () => {
     const report = await new ClanHealthTrendService(db).getTrend({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: syncTime(1),
+      window: { kind: "days", days: 10, cutoff: syncTime(1) },
       now: syncTime(10),
     });
     expect(report.deviation.validCount).toBe(1);
@@ -164,7 +164,7 @@ describe("ClanHealthTrendService", () => {
     const report = await new ClanHealthTrendService(db).getTrend({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      cutoff: syncTime(1),
+      window: { kind: "days", days: 10, cutoff: syncTime(1) },
       now: syncTime(10),
     });
     expect(report.fillers).toEqual({
@@ -174,5 +174,34 @@ describe("ClanHealthTrendService", () => {
       knownCount: 1,
     });
     expect(db).not.toHaveProperty("fillerAccount");
+  });
+
+  it("uses the latest 30 persisted readiness snapshots for sync mode", async () => {
+    const db = makeDb(Array.from({ length: 35 }, (_, index) => snapshot(24 - (index % 24))));
+    const window = {
+      kind: "syncs" as const,
+      requestedSyncCount: 30,
+      startSyncNumber: 516,
+      endSyncNumber: 545,
+      syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+    };
+
+    await new ClanHealthTrendService(db).getTrend({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      window,
+      now: syncTime(24),
+    });
+
+    expect(db.syncClanReadinessSnapshot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId: "guild-1",
+          clanTag: "#AAA111",
+          syncTime: { lte: syncTime(24) },
+        },
+        take: 30,
+      }),
+    );
   });
 });

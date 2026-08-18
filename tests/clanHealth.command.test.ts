@@ -108,6 +108,8 @@ describe("/clan-health command", () => {
 
   function makeSnapshot(
     overrides: Partial<ClanHealthTrackedSnapshot> & {
+      historicalWindowDays?: number;
+      historicalCutoff?: Date;
       warPlanCompliance?: Partial<ClanHealthTrackedSnapshot["warPlanCompliance"]>;
       warMetrics?: Partial<ClanHealthTrackedSnapshot["warMetrics"]>;
       inactiveWars?: Partial<ClanHealthTrackedSnapshot["inactiveWars"]>;
@@ -121,9 +123,11 @@ describe("/clan-health command", () => {
       viewType: "tracked",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      historicalWindowDays: overrides.historicalWindowDays ?? 30,
-      historicalCutoff:
-        overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
+      historicalWindow: overrides.historicalWindow ?? {
+        kind: "days",
+        days: overrides.historicalWindowDays ?? 30,
+        cutoff: overrides.historicalCutoff ?? new Date("2026-02-07T12:00:00.000Z"),
+      },
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
         hasCompletedEvaluations: true,
@@ -341,6 +345,28 @@ describe("/clan-health command", () => {
         custom_id: "clan-health:trends:AAA111:30",
       }),
     ]);
+  });
+
+  it("renders the resolved sync range for tracked sync-mode history", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeSnapshot({
+        historicalWindow: {
+          kind: "syncs",
+          requestedSyncCount: 30,
+          startSyncNumber: 516,
+          endSyncNumber: 545,
+          syncNumbers: Array.from({ length: 30 }, (_, index) => 516 + index),
+        },
+      }),
+    );
+
+    const interaction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const embedJson = payload.embeds[0].toJSON();
+    const warPerformance = embedJson.fields.find((field: any) => field.name === "War Performance");
+    expect(String(warPerformance?.value)).toContain("Sync window: **#516–#545**");
   });
 
   it("declares the bounded optional window and forwards a selected value", async () => {
