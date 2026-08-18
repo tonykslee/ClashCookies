@@ -77,6 +77,29 @@ export type WarPlanViolationHistoryClanLeaderboardResult =
   | WarPlanViolationHistoryClanLeaderboardSuccess
   | WarPlanViolationHistoryClanLeaderboardNotFound;
 
+export type WarPlanViolationHistoryBoundedWindow = {
+  kind: "bounded";
+  cutoff: Date;
+};
+
+export type WarPlanViolationHistoryClanLeaderboardBoundedSuccess = Omit<
+  WarPlanViolationHistoryClanLeaderboardSuccess,
+  "period" | "cutoff"
+> & {
+  reportingWindow: WarPlanViolationHistoryBoundedWindow;
+};
+
+export type WarPlanViolationHistoryClanLeaderboardBoundedNotFound = Omit<
+  WarPlanViolationHistoryClanLeaderboardNotFound,
+  "period" | "cutoff"
+> & {
+  reportingWindow: WarPlanViolationHistoryBoundedWindow;
+};
+
+export type WarPlanViolationHistoryClanLeaderboardBoundedResult =
+  | WarPlanViolationHistoryClanLeaderboardBoundedSuccess
+  | WarPlanViolationHistoryClanLeaderboardBoundedNotFound;
+
 export type WarPlanViolationHistoryPlayerHistoryEntry = {
   violationId: string;
   evaluationId: string;
@@ -409,6 +432,18 @@ type PeriodWindow = {
   cutoff: Date | null;
 };
 
+type ClanLeaderboardWindow =
+  | {
+      kind: "public";
+      period: WarPlanViolationHistoryPeriod;
+      cutoff: Date | null;
+    }
+  | WarPlanViolationHistoryBoundedWindow;
+
+type ClanLeaderboardWindowMetadata =
+  | Pick<WarPlanViolationHistoryClanLeaderboardSuccess, "period" | "cutoff">
+  | Pick<WarPlanViolationHistoryClanLeaderboardBoundedSuccess, "reportingWindow">;
+
 /** Purpose: normalize free-form display text while preserving empty-as-null semantics. */
 function normalizeDisplayText(input: unknown): string | null {
   const normalized = String(input ?? "")
@@ -538,16 +573,25 @@ function sortClanSummaries(
 function resolvePeriodWindow(input: {
   period: WarPlanViolationHistoryPeriod;
   now?: Date;
-  cutoff?: Date | null;
 }): PeriodWindow {
   const now = input.now ?? new Date();
-  const cutoff =
-    input.cutoff !== undefined
-      ? input.cutoff
-      : input.period === "30d"
-        ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-        : null;
+  const cutoff = input.period === "30d" ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) : null;
   return { now, cutoff };
+}
+
+/** Purpose: reject invalid internal bounded-window cutoffs before they reach Prisma. */
+function requireValidBoundedCutoff(cutoff: Date): Date {
+  if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) {
+    throw new Error("Clan Health compliance cutoff must be a valid Date.");
+  }
+  return cutoff;
+}
+
+/** Purpose: expose accurate metadata for public periods and internal bounded reports. */
+function buildClanLeaderboardWindowMetadata(window: ClanLeaderboardWindow): ClanLeaderboardWindowMetadata {
+  return window.kind === "public"
+    ? { period: window.period, cutoff: window.cutoff }
+    : { reportingWindow: window };
 }
 
 /** Purpose: aggregate canonical history rows into deterministic player/clan summaries. */
@@ -1830,25 +1874,70 @@ export class WarPlanViolationHistoryService {
     return (rows as Array<{ playerTag: string }>).map((row) => normalizeTag(row.playerTag)).filter(Boolean);
   }
 
-  /** Purpose: build the read-only war-plan leaderboard for one clan. */
+  /** Purpose: build the public /fwa violations clan leaderboard for one selected public period. */
   async getClanLeaderboard(input: {
     guildId: string;
     clanTag: string;
     period: WarPlanViolationHistoryPeriod;
     now?: Date;
-    /** Optional caller-owned cutoff for bounded internal reports such as Clan Health. */
-    cutoff?: Date | null;
   }): Promise<WarPlanViolationHistoryClanLeaderboardResult> {
+    const { cutoff } = resolvePeriodWindow(input);
+    return this.buildClanLeaderboard({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      window: {
+        kind: "public",
+        period: input.period,
+        cutoff,
+      },
+    });
+  }
+
+  /** Purpose: build Clan Health's bounded read-only clan leaderboard without masquerading as a public period. */
+  async getClanLeaderboardForCutoff(input: {
+    guildId: string;
+    clanTag: string;
+    cutoff: Date;
+  }): Promise<WarPlanViolationHistoryClanLeaderboardBoundedResult> {
+    const cutoff = requireValidBoundedCutoff(input.cutoff);
+    return this.buildClanLeaderboard({
+      guildId: input.guildId,
+      clanTag: input.clanTag,
+      window: {
+        kind: "bounded",
+        cutoff,
+      },
+    });
+  }
+
+  /** Purpose: share canonical clan leaderboard identity, Prisma loading, and aggregation across public and bounded windows. */
+  private async buildClanLeaderboard(input: {
+    guildId: string;
+    clanTag: string;
+    window: Extract<ClanLeaderboardWindow, { kind: "public" }>;
+  }): Promise<WarPlanViolationHistoryClanLeaderboardResult>;
+  private async buildClanLeaderboard(input: {
+    guildId: string;
+    clanTag: string;
+    window: WarPlanViolationHistoryBoundedWindow;
+  }): Promise<WarPlanViolationHistoryClanLeaderboardBoundedResult>;
+  private async buildClanLeaderboard(input: {
+    guildId: string;
+    clanTag: string;
+    window: ClanLeaderboardWindow;
+  }): Promise<
+    | WarPlanViolationHistoryClanLeaderboardResult
+    | WarPlanViolationHistoryClanLeaderboardBoundedResult
+  > {
     const guildId = String(input.guildId ?? "").trim();
     const normalizedClanTag = normalizeClashTagWithHash(input.clanTag);
-    const { cutoff } = resolvePeriodWindow(input);
+    const windowMetadata = buildClanLeaderboardWindowMetadata(input.window);
     if (!guildId || !normalizedClanTag) {
       return {
         outcome: "not_found",
         clanTag: normalizedClanTag,
         clanName: null,
-        period: input.period,
-        cutoff,
+        ...windowMetadata,
         trackingSince: null,
         evaluatedWarCount: 0,
         affectedWarCount: 0,
@@ -1883,8 +1972,7 @@ export class WarPlanViolationHistoryService {
         outcome: "not_found",
         clanTag: normalizedClanTag,
         clanName: null,
-        period: input.period,
-        cutoff,
+        ...windowMetadata,
         trackingSince: null,
         evaluatedWarCount: 0,
         affectedWarCount: 0,
@@ -1897,7 +1985,7 @@ export class WarPlanViolationHistoryService {
 
     const rows = await this.loadCompletedEvaluations({
       guildId,
-      cutoff,
+      cutoff: input.window.cutoff,
       clanTag: normalizedClanTag,
     });
     if (rows.length === 0) {
@@ -1905,8 +1993,7 @@ export class WarPlanViolationHistoryService {
         outcome: "success",
         clanTag: normalizedClanTag,
         clanName: normalizeDisplayText(identityRow.clanName) ?? normalizedClanTag,
-        period: input.period,
-        cutoff,
+        ...windowMetadata,
         trackingSince: null,
         evaluatedWarCount: 0,
         affectedWarCount: 0,
@@ -1936,8 +2023,7 @@ export class WarPlanViolationHistoryService {
         clanSummary?.clanNameSnapshot ??
         normalizeDisplayText(identityRow.clanName) ??
         normalizedClanTag,
-      period: input.period,
-      cutoff,
+      ...windowMetadata,
       trackingSince: aggregate.trackingSince,
       evaluatedWarCount: aggregate.evaluatedWarCount,
       affectedWarCount: aggregate.affectedWarCount,

@@ -1138,7 +1138,7 @@ describe("WarPlanViolationHistoryService", () => {
     });
   });
 
-  it("uses an explicit caller cutoff for bounded internal reports", async () => {
+  it("uses an explicit caller cutoff for bounded internal reports without a public period label", async () => {
     const cutoff = d("2026-01-08T12:00:00.000Z");
     const { db, service } = buildService([
       buildFixture({
@@ -1157,11 +1157,9 @@ describe("WarPlanViolationHistoryService", () => {
       }),
     ]);
 
-    const result = await service.getClanLeaderboard({
+    const result = await service.getClanLeaderboardForCutoff({
       guildId: "guild-1",
       clanTag: "#2QG2C08UP",
-      period: "30d",
-      now: d("2026-06-01T00:00:00.000Z"),
       cutoff,
     });
 
@@ -1174,9 +1172,55 @@ describe("WarPlanViolationHistoryService", () => {
     });
     expect(result).toMatchObject({
       outcome: "success",
-      period: "30d",
-      cutoff,
+      reportingWindow: {
+        kind: "bounded",
+        cutoff,
+      },
     });
+    expect(result).not.toHaveProperty("period");
+  });
+
+  it("keeps public 30d and lifetime clan periods distinct from the bounded entrypoint", async () => {
+    const fixtures = [
+      buildFixture({
+        warId: 1,
+        clanTag: "#2QG2C08UP",
+        clanName: "Alpha",
+        warStartTime: d("2026-05-10T00:00:00.000Z"),
+        warEndTime: d("2026-05-10T01:00:00.000Z"),
+        violations: [],
+      }),
+    ];
+    const now = d("2026-06-01T00:00:00.000Z");
+
+    const thirtyDay = buildService(fixtures);
+    const thirtyDayResult = await thirtyDay.service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      period: "30d",
+      now,
+    });
+    expect(thirtyDayResult).toMatchObject({
+      period: "30d",
+      cutoff: d("2026-05-02T00:00:00.000Z"),
+    });
+    expect(
+      (thirtyDay.db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where?.warHistory as any)
+        ?.is?.warEndTime,
+    ).toEqual({ gte: d("2026-05-02T00:00:00.000Z") });
+
+    const lifetime = buildService(fixtures);
+    const lifetimeResult = await lifetime.service.getClanLeaderboard({
+      guildId: "guild-1",
+      clanTag: "#2QG2C08UP",
+      period: "lifetime",
+      now,
+    });
+    expect(lifetimeResult).toMatchObject({ period: "lifetime", cutoff: null });
+    expect(
+      (lifetime.db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where?.warHistory as any)
+        ?.is?.warEndTime,
+    ).toBeUndefined();
   });
 
   it("returns successful no-data metadata for a known clan with only outside-window evaluations", async () => {

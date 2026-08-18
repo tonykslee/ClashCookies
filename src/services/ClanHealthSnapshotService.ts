@@ -10,7 +10,7 @@ import {
 } from "./CompoActualStateService";
 import {
   WarPlanViolationHistoryService,
-  type WarPlanViolationHistoryClanLeaderboardResult,
+  type WarPlanViolationHistoryClanLeaderboardBoundedResult,
 } from "./WarPlanViolationHistoryService";
 import { FwaClanWarsSyncService } from "./fwa-feeds/FwaClanWarsSyncService";
 import { FwaFeedSyncStateService } from "./fwa-feeds/FwaFeedSyncStateService";
@@ -52,7 +52,6 @@ export type ClanHealthTrackedSnapshot = {
   historicalCutoff: Date;
   composition: CompoActualStateTrackedClanComposition;
   warPlanCompliance: {
-    period: "30d";
     hasCompletedEvaluations: boolean;
     evaluatedWarCount: number;
     affectedWarCount: number;
@@ -61,7 +60,6 @@ export type ClanHealthTrackedSnapshot = {
     distinctCurrentDiscordUserCount: number;
   };
   warMetrics: {
-    windowSize: number;
     endedWarSampleSize: number;
     fwaMatchCount: number;
     fwaWinCount: number;
@@ -72,7 +70,6 @@ export type ClanHealthTrackedSnapshot = {
     winCount: number;
   };
   inactiveWars: {
-    windowSize: number;
     warsAvailable: number;
     warsSampled: number;
     inactivePlayerCount: number;
@@ -136,10 +133,8 @@ type ActivityMetricRow = {
   lastSeenAt: Date;
 };
 
-const DEFAULT_INACTIVE_WAR_WINDOW_SIZE = 3;
 const DEFAULT_INACTIVE_DAYS_THRESHOLD = 6;
 const DEFAULT_INACTIVE_STALE_HOURS = 6;
-const WAR_PLAN_COMPLIANCE_PERIOD = "30d" as const;
 
 /** Purpose: normalize the optional Discord/runtime window into the supported day range. */
 export function normalizeClanHealthWindowDays(input: unknown): number {
@@ -170,7 +165,7 @@ function normalizeClanTag(input: string): string {
 }
 
 /** Purpose: derive ended-war rate metrics from the selected historical day window. */
-function computeWarMetrics(rows: WarHistoryMetricRow[], windowSize: number) {
+function computeWarMetrics(rows: WarHistoryMetricRow[]) {
   const endedWarSampleSize = rows.length;
   const fwaRows = rows.filter((row) => String(row.matchType ?? "").toUpperCase() === "FWA");
   const fwaMatchCount = fwaRows.length;
@@ -181,7 +176,6 @@ function computeWarMetrics(rows: WarHistoryMetricRow[], windowSize: number) {
   const blInclusiveMatchCount = fwaMatchCount + blMatchCount;
   const winCount = rows.filter((row) => String(row.actualOutcome ?? "").toUpperCase() === "WIN").length;
   return {
-    windowSize,
     endedWarSampleSize,
     fwaMatchCount,
     fwaWinCount,
@@ -276,7 +270,7 @@ export class ClanHealthSnapshotService {
     },
     private readonly warPlanViolationHistoryService: Pick<
       WarPlanViolationHistoryService,
-      "getClanLeaderboard"
+      "getClanLeaderboardForCutoff"
     > = new WarPlanViolationHistoryService(),
     private readonly feedSyncStateService: Pick<FwaFeedSyncStateService, "getState"> = new FwaFeedSyncStateService(),
     private readonly clanWarsSyncService: Pick<FwaClanWarsSyncService, "syncClan"> = new FwaClanWarsSyncService()
@@ -287,7 +281,6 @@ export class ClanHealthSnapshotService {
     guildId: string;
     clanTag: string;
     historicalWindowDays?: number;
-    inactiveWarWindowSize?: number;
     inactiveDaysThreshold?: number;
     inactiveStaleHours?: number;
     now?: Date;
@@ -304,10 +297,6 @@ export class ClanHealthSnapshotService {
         guildId: input.guildId,
         trackedClan,
         historicalWindowDays: normalizeClanHealthWindowDays(input.historicalWindowDays),
-        inactiveWarWindowSize: Math.max(
-          1,
-          Math.trunc(input.inactiveWarWindowSize ?? DEFAULT_INACTIVE_WAR_WINDOW_SIZE),
-        ),
         inactiveDaysThreshold: Math.max(
           1,
           Math.trunc(input.inactiveDaysThreshold ?? DEFAULT_INACTIVE_DAYS_THRESHOLD),
@@ -340,7 +329,6 @@ export class ClanHealthSnapshotService {
     guildId: string;
     trackedClan: Pick<TrackedClan, "tag" | "name"> & { shortName?: string | null };
     historicalWindowDays: number;
-    inactiveWarWindowSize: number;
     inactiveDaysThreshold: number;
     inactiveStaleHours: number;
     now: Date;
@@ -375,10 +363,9 @@ export class ClanHealthSnapshotService {
         },
         select: { tag: true, lastSeenAt: true },
       }),
-      this.warPlanViolationHistoryService.getClanLeaderboard({
+      this.warPlanViolationHistoryService.getClanLeaderboardForCutoff({
         guildId: input.guildId,
         clanTag: canonicalClanTag,
-        period: WAR_PLAN_COMPLIANCE_PERIOD,
         cutoff: historicalCutoff,
       }),
       compositionPromise,
@@ -431,7 +418,7 @@ export class ClanHealthSnapshotService {
       thresholdDays: input.inactiveDaysThreshold,
       staleHours: input.inactiveStaleHours,
     });
-    const warMetrics = computeWarMetrics(warRows, input.historicalWindowDays);
+    const warMetrics = computeWarMetrics(warRows);
     const inactivePlayerCount = computeInactiveWarsPlayerCount(participationRows);
     const durationMs = Date.now() - startedAtMs;
     const warPlanCompliance = buildWarPlanComplianceSummary(warPlanLeaderboard);
@@ -472,7 +459,6 @@ export class ClanHealthSnapshotService {
       warPlanCompliance,
       warMetrics,
       inactiveWars: {
-        windowSize: input.historicalWindowDays,
         warsAvailable: eligibleFwaWarIds.length,
         warsSampled: eligibleFwaWarIds.length,
         inactivePlayerCount,
@@ -799,11 +785,10 @@ export class ClanHealthSnapshotService {
 
 /** Purpose: normalize the persisted war-plan leaderboard into the clan-health summary shape. */
 function buildWarPlanComplianceSummary(
-  result: WarPlanViolationHistoryClanLeaderboardResult
+  result: WarPlanViolationHistoryClanLeaderboardBoundedResult
 ): ClanHealthTrackedSnapshot["warPlanCompliance"] {
   if (result.outcome === "not_found") {
     return {
-      period: WAR_PLAN_COMPLIANCE_PERIOD,
       hasCompletedEvaluations: false,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
@@ -821,7 +806,6 @@ function buildWarPlanComplianceSummary(
   ).size;
 
   return {
-    period: WAR_PLAN_COMPLIANCE_PERIOD,
     hasCompletedEvaluations: result.hasCompletedEvaluations,
     evaluatedWarCount: result.evaluatedWarCount,
     affectedWarCount: result.affectedWarCount,

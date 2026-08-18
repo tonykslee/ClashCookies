@@ -25,7 +25,7 @@ const prismaMock = vi.hoisted(() => ({
 }));
 
 const warPlanHistoryMock = vi.hoisted(() => ({
-  getClanLeaderboard: vi.fn(),
+  getClanLeaderboardForCutoff: vi.fn(),
 }));
 
 const compositionMock = vi.hoisted(() => ({
@@ -68,7 +68,7 @@ describe("ClanHealthSnapshotService", () => {
     );
     syncStateMock.getState.mockReset();
     syncStateMock.getState.mockResolvedValue(null);
-    warPlanHistoryMock.getClanLeaderboard.mockReset();
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockReset();
     warsSyncMock.syncClan.mockResolvedValue({
       rowCount: 0,
       changedRowCount: 0,
@@ -165,7 +165,7 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot).toBeNull();
     expect(prismaMock.clanWarHistory.findMany).not.toHaveBeenCalled();
     expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
-    expect(warPlanHistoryMock.getClanLeaderboard).not.toHaveBeenCalled();
+    expect(warPlanHistoryMock.getClanLeaderboardForCutoff).not.toHaveBeenCalled();
   });
 
   it("returns an external snapshot with shared war classification for fresh persisted rows", async () => {
@@ -632,12 +632,14 @@ describe("ClanHealthSnapshotService", () => {
       { tag: "#P3", lastSeenAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([{ playerTag: "#P1" }, { playerTag: "#P2" }]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "success",
       clanTag: "#AAA111",
       clanName: "Alpha",
-      period: "30d",
-      cutoff: new Date("2026-02-08T12:00:00.000Z"),
+      reportingWindow: {
+        kind: "bounded",
+        cutoff: new Date("2026-02-07T12:00:00.000Z"),
+      },
       trackingSince: new Date("2026-02-01T00:00:00.000Z"),
       evaluatedWarCount: 9,
       affectedWarCount: 4,
@@ -677,7 +679,6 @@ describe("ClanHealthSnapshotService", () => {
       guildId: "guild-1",
       clanTag: "aaa111",
       historicalWindowDays: 30,
-      inactiveWarWindowSize: 3,
       inactiveStaleHours: 6,
     });
 
@@ -706,7 +707,6 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.composition.deviationScore).toBe(4);
     expect(snapshot?.composition.sourceAgeMs).toBe(3_600_000);
     expect(snapshot?.warPlanCompliance).toEqual({
-      period: "30d",
       hasCompletedEvaluations: true,
       evaluatedWarCount: 9,
       affectedWarCount: 4,
@@ -714,10 +714,9 @@ describe("ClanHealthSnapshotService", () => {
       distinctPlayerCount: 5,
       distinctCurrentDiscordUserCount: 2,
     });
-    expect(warPlanHistoryMock.getClanLeaderboard).toHaveBeenCalledWith({
+    expect(warPlanHistoryMock.getClanLeaderboardForCutoff).toHaveBeenCalledWith({
       guildId: "guild-1",
       clanTag: "#AAA111",
-      period: "30d",
       cutoff: new Date("2026-02-07T12:00:00.000Z"),
     });
     expect(prismaMock.clanWarHistory.findMany).toHaveBeenCalledWith(
@@ -756,12 +755,14 @@ describe("ClanHealthSnapshotService", () => {
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "not_found",
       clanTag: "#CUT777",
       clanName: null,
-      period: "30d",
-      cutoff: new Date("2026-01-08T12:00:00.000Z"),
+      reportingWindow: {
+        kind: "bounded",
+        cutoff: new Date("2026-01-08T12:00:00.000Z"),
+      },
       trackingSince: null,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
@@ -781,7 +782,6 @@ describe("ClanHealthSnapshotService", () => {
       historicalWindowDays: 60,
       historicalCutoff: new Date("2026-01-08T12:00:00.000Z"),
       warMetrics: {
-        windowSize: 60,
         endedWarSampleSize: 3,
       },
       inactiveWars: {
@@ -798,10 +798,9 @@ describe("ClanHealthSnapshotService", () => {
         }),
       }),
     );
-    expect(warPlanHistoryMock.getClanLeaderboard).toHaveBeenCalledWith({
+    expect(warPlanHistoryMock.getClanLeaderboardForCutoff).toHaveBeenCalledWith({
       guildId: "guild-1",
       clanTag: "#CUT777",
-      period: "30d",
       cutoff: new Date("2026-01-08T12:00:00.000Z"),
     });
   });
@@ -818,12 +817,11 @@ describe("ClanHealthSnapshotService", () => {
       { tag: "#P2", lastSeenAt: new Date("2026-03-08T21:00:00.000Z") },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([{ playerTag: "#P1" }, { playerTag: "#P2" }]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "success",
       clanTag: "#BBB222",
       clanName: "Bravo",
-      period: "30d",
-      cutoff: null,
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
       trackingSince: null,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
@@ -859,12 +857,11 @@ describe("ClanHealthSnapshotService", () => {
       { tag: "#P2", lastSeenAt: new Date("2026-03-01T00:00:00.000Z") },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "not_found",
       clanTag: "#CCC333",
       clanName: null,
-      period: "30d",
-      cutoff: null,
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
       trackingSince: null,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
@@ -884,7 +881,6 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.missingLinks.missingMemberCount).toBe(2);
     expect(snapshot?.missingLinks.linkedMemberCount).toBe(0);
     expect(snapshot?.warPlanCompliance).toEqual({
-      period: "30d",
       hasCompletedEvaluations: false,
       evaluatedWarCount: 0,
       affectedWarCount: 0,
@@ -904,12 +900,11 @@ describe("ClanHealthSnapshotService", () => {
     prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "success",
       clanTag: "#DDD444",
       clanName: "Delta",
-      period: "30d",
-      cutoff: null,
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
       trackingSince: null,
       evaluatedWarCount: 12,
       affectedWarCount: 4,
@@ -999,12 +994,11 @@ describe("ClanHealthSnapshotService", () => {
     prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "success",
       clanTag: "#EEE555",
       clanName: "Echo",
-      period: "30d",
-      cutoff: null,
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
       trackingSince: null,
       evaluatedWarCount: 4,
       affectedWarCount: 2,
@@ -1073,12 +1067,11 @@ describe("ClanHealthSnapshotService", () => {
     prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockResolvedValue({
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
       outcome: "success",
       clanTag: "#GGG777",
       clanName: "Golf",
-      period: "30d",
-      cutoff: null,
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
       trackingSince: null,
       evaluatedWarCount: 2,
       affectedWarCount: 2,
@@ -1179,7 +1172,7 @@ describe("ClanHealthSnapshotService", () => {
     prismaMock.clanWarParticipation.findMany.mockResolvedValueOnce([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
-    warPlanHistoryMock.getClanLeaderboard.mockRejectedValue(new Error("leaderboard boom"));
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockRejectedValue(new Error("leaderboard boom"));
 
     const service = createService();
     await expect(

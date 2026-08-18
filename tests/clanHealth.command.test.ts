@@ -120,7 +120,6 @@ describe("/clan-health command", () => {
       historicalCutoff: new Date("2026-02-07T12:00:00.000Z"),
       composition: makeCompositionSnapshot(overrides.composition),
       warPlanCompliance: {
-        period: "30d",
         hasCompletedEvaluations: true,
         evaluatedWarCount: 9,
         affectedWarCount: 4,
@@ -130,7 +129,6 @@ describe("/clan-health command", () => {
         ...overrides.warPlanCompliance,
       },
       warMetrics: {
-        windowSize: 30,
         endedWarSampleSize: 20,
         fwaMatchCount: 14,
         fwaWinCount: 10,
@@ -142,7 +140,6 @@ describe("/clan-health command", () => {
         ...overrides.warMetrics,
       },
       inactiveWars: {
-        windowSize: 3,
         warsAvailable: 3,
         warsSampled: 3,
         inactivePlayerCount: 2,
@@ -220,7 +217,6 @@ describe("/clan-health command", () => {
       overrides.warPerformance === null
         ? null
         : {
-            windowSize: 30,
             endedWarSampleSize: 4,
             recognizedWarRows: 4,
             fwaMatchCount: 2,
@@ -431,7 +427,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 0,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -442,7 +437,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -500,7 +494,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 0,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -511,7 +504,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -568,7 +560,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 1,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -579,7 +570,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
@@ -634,7 +624,6 @@ describe("/clan-health command", () => {
           distinctCurrentDiscordUserCount: 2,
         }),
         warMetrics: {
-          windowSize: 30,
           endedWarSampleSize: 0,
           fwaMatchCount: 0,
           fwaWinCount: 0,
@@ -645,7 +634,6 @@ describe("/clan-health command", () => {
           winCount: 0,
         },
         inactiveWars: {
-          windowSize: 3,
           warsAvailable: 0,
           warsSampled: 0,
           inactivePlayerCount: 0,
