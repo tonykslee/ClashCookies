@@ -249,6 +249,33 @@ describe("Clan Health navigation", () => {
     expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
+  it("renders an unambiguous ephemeral zero-history state", async () => {
+    historyMock.listEndedByClanSince.mockResolvedValue([]);
+    const interaction = makeButton("clan-health:war-history:AAA111:45");
+
+    await handleClanHealthNavigationButtonInteraction(
+      interaction as any,
+      undefined,
+      { listEndedByClanSince: historyMock.listEndedByClanSince } as any,
+    );
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      embeds: [
+        expect.objectContaining({
+          data: expect.objectContaining({
+            title: "War History - #AAA111",
+            description: "Last 45 days • 0 ended wars.",
+          }),
+        }),
+      ],
+    });
+    expect(interaction.editReply.mock.calls[0][0].embeds[0].data.title).not.toContain(
+      "#AAA111 (#AAA111)",
+    );
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
   it("preserves denial behavior for the War History permission", async () => {
     permissionMock.canUseAnyTarget.mockResolvedValue(false);
     const denied = makeButton("clan-health:war-history:AAA111:30");

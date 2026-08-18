@@ -251,13 +251,16 @@ export async function handleClanHealthNavigationButtonInteraction(
         cutoff: buildClanHealthHistoricalCutoff(new Date(), parsed.historicalWindowDays),
       });
       const displayName = rows[0]?.clanName?.trim() || `#${parsed.clanTag}`;
+      const title = rows.length === 0
+        ? `War History - ${displayName}`
+        : `War History - ${displayName} (#${parsed.clanTag})`;
       const total = rows.length;
       const description =
         total > CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT
           ? `Last ${parsed.historicalWindowDays} days • ${total} ended wars\nShowing latest ${CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT} of ${total} ended wars in last ${parsed.historicalWindowDays} days.`
           : `Last ${parsed.historicalWindowDays} days • ${total} ended war${total === 1 ? "" : "s"}.`;
       const embed = new EmbedBuilder()
-        .setTitle(`War History - ${displayName} (#${parsed.clanTag})`)
+        .setTitle(title)
         .setDescription(description)
         .setColor(0x3498db)
         .setTimestamp(new Date());
