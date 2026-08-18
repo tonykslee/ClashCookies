@@ -26,6 +26,11 @@ const prismaMock = vi.hoisted(() => ({
 
 const warPlanHistoryMock = vi.hoisted(() => ({
   getClanLeaderboardForCutoff: vi.fn(),
+  getClanLeaderboardForSyncNumbers: vi.fn(),
+}));
+
+const historicalWindowMock = vi.hoisted(() => ({
+  resolveLatestSyncWindow: vi.fn(),
 }));
 
 const compositionMock = vi.hoisted(() => ({
@@ -69,6 +74,38 @@ describe("ClanHealthSnapshotService", () => {
     syncStateMock.getState.mockReset();
     syncStateMock.getState.mockResolvedValue(null);
     warPlanHistoryMock.getClanLeaderboardForCutoff.mockReset();
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockReset();
+    warPlanHistoryMock.getClanLeaderboardForCutoff.mockResolvedValue({
+      outcome: "success",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      reportingWindow: { kind: "bounded", cutoff: new Date("2026-02-07T12:00:00.000Z") },
+      trackingSince: null,
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      players: [],
+      hasCompletedEvaluations: false,
+    });
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockResolvedValue({
+      outcome: "success",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      reportingWindow: { kind: "syncs", syncNumbers: [] },
+      trackingSince: null,
+      evaluatedWarCount: 0,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      players: [],
+      hasCompletedEvaluations: false,
+    });
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "days",
+      days: 30,
+      cutoff: new Date("2026-02-07T12:00:00.000Z"),
+    });
     warsSyncMock.syncClan.mockResolvedValue({
       rowCount: 0,
       changedRowCount: 0,
@@ -83,13 +120,14 @@ describe("ClanHealthSnapshotService", () => {
     vi.useRealTimers();
   });
 
-  function createService() {
+  function createService(windowService: unknown = historicalWindowMock) {
     return new ClanHealthSnapshotService(
       prismaMock as any,
       compositionMock as any,
       warPlanHistoryMock as any,
       syncStateMock as any,
       warsSyncMock as any,
+      windowService as any,
     );
   }
 
@@ -145,7 +183,7 @@ describe("ClanHealthSnapshotService", () => {
   }
 
   it("normalizes the optional historical window to the supported bounded integer", () => {
-    expect(normalizeClanHealthWindowDays(undefined)).toBe(30);
+    expect(() => normalizeClanHealthWindowDays(undefined)).toThrow();
     expect(normalizeClanHealthWindowDays("not-a-number")).toBe(30);
     expect(normalizeClanHealthWindowDays(3)).toBe(7);
     expect(normalizeClanHealthWindowDays(90.9)).toBe(90);
@@ -166,6 +204,65 @@ describe("ClanHealthSnapshotService", () => {
     expect(prismaMock.clanWarHistory.findMany).not.toHaveBeenCalled();
     expect(prismaMock.playerActivity.findMany).not.toHaveBeenCalled();
     expect(warPlanHistoryMock.getClanLeaderboardForCutoff).not.toHaveBeenCalled();
+  });
+
+  it("uses the exact latest sync identities for the omitted tracked window", async () => {
+    const syncTimes = [
+      new Date("2026-03-09T12:00:00.000Z"),
+      new Date("2026-03-08T12:00:00.000Z"),
+    ];
+    historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      syncNumbers: [901, 900],
+      syncTimes,
+    });
+    prismaMock.trackedClan.findFirst.mockResolvedValue({ tag: "#AAA111", name: "Alpha" });
+    prismaMock.clanWarHistory.findMany.mockResolvedValue([
+      { warId: 1, syncNumber: 901, matchType: "FWA", actualOutcome: "WIN" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue([]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    warPlanHistoryMock.getClanLeaderboardForSyncNumbers.mockResolvedValue({
+      outcome: "success",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      reportingWindow: { kind: "syncs", syncNumbers: [901, 900] },
+      trackingSince: null,
+      evaluatedWarCount: 1,
+      affectedWarCount: 0,
+      violationCount: 0,
+      distinctPlayerCount: 0,
+      players: [],
+      hasCompletedEvaluations: true,
+    });
+
+    const snapshot = await createService().getSnapshot({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      now: new Date("2026-03-09T12:30:00.000Z"),
+    });
+
+    expect(snapshot?.viewType).toBe("tracked");
+    expect(snapshot && snapshot.viewType === "tracked" ? snapshot.historicalWindow : null).toEqual({
+      kind: "syncs",
+      requestedSyncCount: 30,
+      syncNumbers: [901, 900],
+      syncTimes,
+    });
+    expect(prismaMock.clanWarHistory.findMany.mock.calls[0][0]).toMatchObject({
+      where: {
+        clanTag: "#AAA111",
+        syncNumber: { in: [901, 900] },
+        warEndTime: { not: null },
+      },
+    });
+    expect(warPlanHistoryMock.getClanLeaderboardForSyncNumbers).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      syncNumbers: [901, 900],
+    });
   });
 
   it("returns an external snapshot with shared war classification for fresh persisted rows", async () => {
@@ -684,8 +781,11 @@ describe("ClanHealthSnapshotService", () => {
 
     expect(snapshot).not.toBeNull();
     expect(snapshot?.clanTag).toBe("#AAA111");
-    expect(snapshot?.historicalWindowDays).toBe(30);
-    expect(snapshot?.historicalCutoff).toEqual(new Date("2026-02-07T12:00:00.000Z"));
+    expect(snapshot?.historicalWindow).toEqual({
+      kind: "days",
+      days: 30,
+      cutoff: new Date("2026-02-07T12:00:00.000Z"),
+    });
     expect(snapshot?.warMetrics.endedWarSampleSize).toBe(30);
     expect(snapshot?.warMetrics.fwaMatchCount).toBe(26);
     expect(snapshot?.warMetrics.fwaWinCount).toBe(14);
@@ -779,8 +879,11 @@ describe("ClanHealthSnapshotService", () => {
     });
 
     expect(snapshot).toMatchObject({
-      historicalWindowDays: 60,
-      historicalCutoff: new Date("2026-01-08T12:00:00.000Z"),
+      historicalWindow: {
+        kind: "days",
+        days: 60,
+        cutoff: new Date("2026-01-08T12:00:00.000Z"),
+      },
       warMetrics: {
         endedWarSampleSize: 3,
       },
