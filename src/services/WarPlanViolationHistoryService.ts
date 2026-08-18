@@ -80,9 +80,6 @@ export type WarPlanViolationHistoryClanLeaderboardResult =
 export type WarPlanViolationHistoryBoundedWindow = {
   kind: "bounded";
   cutoff: Date;
-} | {
-  kind: "syncs";
-  syncNumbers: number[];
 };
 
 export type WarPlanViolationHistoryClanLeaderboardBoundedSuccess = Omit<
@@ -755,15 +752,11 @@ function toClanSummaries(
 function buildCompletedEvaluationWhere(input: {
   guildId: string;
   cutoff: Date | null;
-  syncNumbers?: readonly number[];
   clanTag: string | null;
 }): Prisma.WarPlanComplianceEvaluationWhereInput {
   const warHistoryFilter: Prisma.ClanWarHistoryWhereInput = {};
   if (input.cutoff) {
     warHistoryFilter.warEndTime = { gte: input.cutoff };
-  }
-  if (input.syncNumbers) {
-    warHistoryFilter.syncNumber = { in: [...input.syncNumbers] };
   }
   if (input.clanTag) {
     warHistoryFilter.clanTag = input.clanTag;
@@ -1917,24 +1910,6 @@ export class WarPlanViolationHistoryService {
     });
   }
 
-  /** Purpose: build Clan Health's exact persisted-sync leaderboard without exposing a public custom period. */
-  async getClanLeaderboardForSyncNumbers(input: {
-    guildId: string;
-    clanTag: string;
-    syncNumbers: readonly number[];
-  }): Promise<WarPlanViolationHistoryClanLeaderboardBoundedResult> {
-    const syncNumbers = [...new Set(input.syncNumbers.map((value) => Math.trunc(Number(value))))]
-      .filter((value) => Number.isInteger(value) && value > 0);
-    return this.buildClanLeaderboard({
-      guildId: input.guildId,
-      clanTag: input.clanTag,
-      window: {
-        kind: "syncs",
-        syncNumbers,
-      },
-    });
-  }
-
   /** Purpose: share canonical clan leaderboard identity, Prisma loading, and aggregation across public and bounded windows. */
   private async buildClanLeaderboard(input: {
     guildId: string;
@@ -2010,8 +1985,7 @@ export class WarPlanViolationHistoryService {
 
     const rows = await this.loadCompletedEvaluations({
       guildId,
-      cutoff: input.window.kind === "syncs" ? null : input.window.cutoff,
-      syncNumbers: input.window.kind === "syncs" ? input.window.syncNumbers : undefined,
+      cutoff: input.window.cutoff,
       clanTag: normalizedClanTag,
     });
     if (rows.length === 0) {
@@ -2404,13 +2378,11 @@ export class WarPlanViolationHistoryService {
   private async loadCompletedEvaluations(input: {
     guildId: string;
     cutoff: Date | null;
-    syncNumbers?: readonly number[];
     clanTag?: string | null;
   }): Promise<CompletedEvaluationRow[]> {
     const where = buildCompletedEvaluationWhere({
       guildId: input.guildId,
       cutoff: input.cutoff,
-      syncNumbers: input.syncNumbers,
       clanTag: input.clanTag ?? null,
     });
     const rows = await this.db.warPlanComplianceEvaluation.findMany({

@@ -208,14 +208,14 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary:
       "Leadership snapshot for one tracked clan or external active FWA clan using persisted data only.",
     details: [
-      "Shows a persisted war-plan compliance summary over the tracked metrics window (omit window for the latest 30 syncs; configure 7 to 180 days when supplied) with violations, distinct violating player accounts, currently linked Discord users involved, and affected/evaluated FWA wars.",
+      "Shows a persisted war-plan compliance summary over the tracked metrics window (default 30 days; configurable from 7 to 180 days) with violations, distinct violating player accounts, currently linked Discord users involved, and affected/evaluated FWA wars.",
       "Only completed evaluations recorded since violation tracking was enabled are counted; there is no historical backfill.",
       "Shows ended-war match metrics within the tracked metrics window with an FWA win/loss/BL/MM breakdown, the actual ended-war sample count, and a BL-inclusive match rate.",
       "Tracked clans keep the full report; manually entered active FWA clan tags fall back to an external clan view that shows only War Performance and Current Composition from persisted FWAStats data.",
       "Shows a Current Composition section with collapsed TH18, TH17, TH16, TH15, TH14, and <=TH13 counts, N/50 member count, deviation, and persisted source freshness.",
       "Shows inactivity counts from two signals: distinct players who missed both attacks in at least one eligible FWA war within the tracked metrics window, and last-seen inactivity >= 6 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
-      "Tracked Clan Health results provide a first ephemeral action row with View Inactive, View Unlinked, View Compo, View Violations, and War History, plus a second row with View Trends; each opens a clan-scoped workflow with its permission target. Omitted window uses the latest 30 syncs; an explicit 7-to-180 value uses days. War History shows persisted ended wars from that selected window and renders the latest 10. Trends shows captured sync-boundary readiness history from that selected window. External clan views do not include these buttons.",
+      "Tracked Clan Health results provide a first ephemeral action row with View Inactive, View Unlinked, View Compo, View Violations, and War History, plus a second row with View Trends; each opens a clan-scoped workflow with its permission target. War History shows persisted ended wars from the selected 7-to-180-day window and renders the latest 10. Trends shows captured sync-boundary readiness history from that selected window, preserves partial coverage, and does not historicalize current-only links, activity, or TH-bucket composition. External clan views do not include these buttons.",
       "Command path is DB-only (no live CoC/points HTTP calls).",
     ],
     examples: [

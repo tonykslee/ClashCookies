@@ -1180,35 +1180,6 @@ describe("WarPlanViolationHistoryService", () => {
     expect(result).not.toHaveProperty("period");
   });
 
-  it("loads Clan Health compliance by exact sync numbers without a public period label", async () => {
-    const { db, service } = buildService([
-      buildFixture({
-        warId: 11,
-        syncNumber: 901,
-        clanTag: "#2QG2C08UP",
-        clanName: "Alpha",
-        warStartTime: d("2026-02-01T00:00:00.000Z"),
-        warEndTime: d("2026-02-01T01:00:00.000Z"),
-        violations: [],
-      }),
-    ]);
-
-    const result = await service.getClanLeaderboardForSyncNumbers({
-      guildId: "guild-1",
-      clanTag: "#2QG2C08UP",
-      syncNumbers: [901, 900],
-    });
-    const queryWhere = db.warPlanComplianceEvaluation.findMany.mock.calls[0]?.[0]?.where as any;
-
-    expect(queryWhere.warHistory.is.syncNumber).toEqual({ in: [901, 900] });
-    expect(queryWhere.warHistory.is).not.toHaveProperty("warEndTime");
-    expect(result).toMatchObject({
-      outcome: "success",
-      reportingWindow: { kind: "syncs", syncNumbers: [901, 900] },
-    });
-    expect(result).not.toHaveProperty("period");
-  });
-
   it("keeps public 30d and lifetime clan periods distinct from the bounded entrypoint", async () => {
     const fixtures = [
       buildFixture({
