@@ -334,6 +334,13 @@ describe("/clan-health command", () => {
     ]);
     expect(navigationButtons[4].custom_id).toBe("clan-health:war-history:AAA111:30");
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
+    expect(payload.components).toHaveLength(2);
+    expect(payload.components[1].components.map((button: any) => button.toJSON())).toEqual([
+      expect.objectContaining({
+        label: "View Trends",
+        custom_id: "clan-health:trends:AAA111:30",
+      }),
+    ]);
   });
 
   it("declares the bounded optional window and forwards a selected value", async () => {
@@ -357,6 +364,9 @@ describe("/clan-health command", () => {
     const payload = interaction.editReply.mock.calls[0]?.[0];
     expect(payload.components[0].components[4].toJSON().custom_id).toBe(
       "clan-health:war-history:AAA111:60",
+    );
+    expect(payload.components[1].components[0].toJSON().custom_id).toBe(
+      "clan-health:trends:AAA111:60",
     );
   });
 

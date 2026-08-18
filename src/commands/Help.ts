@@ -215,7 +215,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Shows a Current Composition section with collapsed TH18, TH17, TH16, TH15, TH14, and <=TH13 counts, N/50 member count, deviation, and persisted source freshness.",
       "Shows inactivity counts from two signals: distinct players who missed both attacks in at least one eligible FWA war within the tracked metrics window, and last-seen inactivity >= 6 days.",
       "Shows missing Discord links among observed clan members updated within the configured stale window.",
-      "Tracked Clan Health results provide direct ephemeral buttons for View Inactive, View Unlinked, View Compo, View Violations, and War History; each opens the existing clan-scoped workflow with its own permission target. War History shows persisted ended wars from the selected 7-to-180-day window and renders the latest 10. External clan views do not include these buttons.",
+      "Tracked Clan Health results provide a first ephemeral action row with View Inactive, View Unlinked, View Compo, View Violations, and War History, plus a second row with View Trends; each opens a clan-scoped workflow with its permission target. War History shows persisted ended wars from the selected 7-to-180-day window and renders the latest 10. Trends shows captured sync-boundary readiness history from that selected window, preserves partial coverage, and does not historicalize current-only links, activity, or TH-bucket composition. External clan views do not include these buttons.",
       "Command path is DB-only (no live CoC/points HTTP calls).",
     ],
     examples: [
@@ -1904,4 +1904,3 @@ export const Help: Command = {
     );
   },
 };
-

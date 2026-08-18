@@ -405,6 +405,8 @@ describe("command coverage", () => {
     expect(clanHealthHelpText).toContain("currently linked Discord users involved");
     expect(clanHealthHelpText).toContain("Only completed evaluations recorded since violation tracking was enabled are counted");
     expect(clanHealthHelpText).toContain("War History");
+    expect(clanHealthHelpText).toContain("View Trends");
+    expect(clanHealthHelpText).toContain("sync-boundary readiness history");
     expect(clanHealthHelpText).toContain("latest 10");
     expect(clanHealthHelpText).toContain("FWA win/loss/BL/MM breakdown");
     expect(clanHealthHelpText).toContain("actual ended-war sample count");
