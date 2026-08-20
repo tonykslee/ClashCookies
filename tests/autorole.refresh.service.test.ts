@@ -452,6 +452,43 @@ async function assertMalformedTrackedRoleRefreshAborts(input: {
   );
 }
 
+async function assertMalformedTrackedGuildRosterAborts(input: {
+  clan: unknown;
+  reason: string;
+}) {
+  await expect(refreshTrackedLeadGuildScenario({
+    cocService: {
+      getClan: vi.fn(async () => input.clan),
+    },
+    linkedAccounts: [
+      makeLinkedAccount({
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        playerName: "Departed Account",
+      }),
+    ],
+    persistedPlayerCurrent: [
+      makePlayerCurrent({
+        playerTag: "#PYLQ0289",
+        playerName: "Departed Account",
+        currentClanTag: "#2QG2C08UP",
+        role: "coLeader",
+      }),
+    ],
+    liveMembers: [
+      makeClanMember({
+        tag: "#QGRJ2222",
+        name: "Ordinary Member",
+        role: "member",
+      }),
+    ],
+  })).rejects.toThrow("Tracked clan fetch failed");
+  expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+  expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+    expect.stringContaining(`reason=${input.reason}`),
+  );
+}
+
 describe("AutoRoleRefreshService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -504,7 +541,13 @@ describe("AutoRoleRefreshService", () => {
       getClan: vi.fn().mockResolvedValue({
         tag: "#PYLQ0289",
         name: "Clan One",
-        memberList: [],
+        memberList: [
+          makeClanMember({
+            tag: "#QGRJ2222",
+            name: "Ordinary Member",
+            role: "member",
+          }),
+        ],
       }),
     };
 
@@ -2332,7 +2375,13 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            memberList: [],
+            memberList: [
+              makeClanMember({
+                tag: "#QGRJ2222",
+                name: "Tracked Member",
+                role: "member",
+              }),
+            ],
           };
         }
         throw new Error(`unexpected clan lookup ${tag}`);
@@ -3232,6 +3281,11 @@ describe("AutoRoleRefreshService", () => {
           name: "Downgraded Leader",
           role: "member",
         }),
+        makeClanMember({
+          tag: "#QGRJ2222",
+          name: "Elder Member",
+          role: "elder",
+        }),
       ],
     });
 
@@ -3299,7 +3353,13 @@ describe("AutoRoleRefreshService", () => {
           role: "coLeader",
         }),
       ],
-      liveMembers: [],
+      liveMembers: [
+        makeClanMember({
+          tag: "#QGRJ2222",
+          name: "Ordinary Member",
+          role: "member",
+        }),
+      ],
     });
 
     expect(member.roles.remove).not.toHaveBeenCalledWith(leadRoleId);
@@ -3366,6 +3426,39 @@ describe("AutoRoleRefreshService", () => {
     expect(dozzleLogMock.warn).toHaveBeenCalledWith(
       expect.stringContaining("reason=roster_missing"),
     );
+  });
+
+  it("aborts a guild tracked-clan refresh when a roster member role is missing", async () => {
+    await assertMalformedTrackedGuildRosterAborts({
+      clan: {
+        tag: "#2QG2C08UP",
+        name: "Lead Clan",
+        memberList: [{ tag: "#QGRJ2222", name: "Unknown Rank" }],
+      },
+      reason: "roster_member_role_invalid",
+    });
+  });
+
+  it("aborts a guild tracked-clan refresh when a roster member role is unrecognized", async () => {
+    await assertMalformedTrackedGuildRosterAborts({
+      clan: {
+        tag: "#2QG2C08UP",
+        name: "Lead Clan",
+        memberList: [{ tag: "#QGRJ2222", name: "Unknown Rank", role: "chief" }],
+      },
+      reason: "roster_member_role_invalid",
+    });
+  });
+
+  it("aborts a guild tracked-clan refresh when the live roster is empty", async () => {
+    await assertMalformedTrackedGuildRosterAborts({
+      clan: {
+        tag: "#2QG2C08UP",
+        name: "Lead Clan",
+        memberList: [],
+      },
+      reason: "roster_empty",
+    });
   });
 
   it("aborts a tracked-clan lead-role refresh when the returned roster is unusable", async () => {

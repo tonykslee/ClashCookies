@@ -609,14 +609,22 @@ function createTrackedClanPlayerCurrent(input: {
 
 type TrackedClanRosterValidation =
   | { usable: true; members: unknown[] }
-  | { usable: false; reason: "roster_missing" | "roster_not_array" | "roster_member_invalid" };
+  | {
+      usable: false;
+      reason:
+        | "roster_missing"
+        | "roster_not_array"
+        | "roster_empty"
+        | "roster_member_invalid"
+        | "roster_member_role_invalid";
+    };
 
 function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
   if (!clan || typeof clan !== "object") {
     return { usable: false, reason: "roster_missing" };
   }
 
-  const record = clan as { memberList?: unknown; members?: unknown };
+  const record = clan as { memberList?: unknown };
   const hasMemberListField = Object.prototype.hasOwnProperty.call(record, "memberList");
   const roster = Array.isArray(record.memberList) ? record.memberList : null;
 
@@ -627,6 +635,10 @@ function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
     };
   }
 
+  if (roster.length === 0) {
+    return { usable: false, reason: "roster_empty" };
+  }
+
   if (roster.some((member) => {
     if (!member || typeof member !== "object") {
       return true;
@@ -635,6 +647,15 @@ function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
     return playerTag.length === 0;
   })) {
     return { usable: false, reason: "roster_member_invalid" };
+  }
+
+  if (roster.some((member) => {
+    if (!member || typeof member !== "object") {
+      return true;
+    }
+    return normalizeClanMemberRole((member as { role?: unknown }).role ?? null) === null;
+  })) {
+    return { usable: false, reason: "roster_member_role_invalid" };
   }
 
   return { usable: true, members: roster };
