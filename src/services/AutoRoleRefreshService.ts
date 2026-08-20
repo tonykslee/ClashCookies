@@ -607,6 +607,60 @@ function createTrackedClanPlayerCurrent(input: {
   };
 }
 
+type TrackedClanRosterValidation =
+  | { usable: true; members: unknown[] }
+  | {
+      usable: false;
+      reason:
+        | "roster_missing"
+        | "roster_not_array"
+        | "roster_empty"
+        | "roster_member_invalid"
+        | "roster_member_role_invalid";
+    };
+
+function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
+  if (!clan || typeof clan !== "object") {
+    return { usable: false, reason: "roster_missing" };
+  }
+
+  const record = clan as { memberList?: unknown };
+  const hasMemberListField = Object.prototype.hasOwnProperty.call(record, "memberList");
+  const roster = Array.isArray(record.memberList) ? record.memberList : null;
+
+  if (!roster) {
+    return {
+      usable: false,
+      reason: hasMemberListField ? "roster_not_array" : "roster_missing",
+    };
+  }
+
+  if (roster.length === 0) {
+    return { usable: false, reason: "roster_empty" };
+  }
+
+  if (roster.some((member) => {
+    if (!member || typeof member !== "object") {
+      return true;
+    }
+    const playerTag = normalizePlayerTag(String((member as { tag?: unknown }).tag ?? ""));
+    return playerTag.length === 0;
+  })) {
+    return { usable: false, reason: "roster_member_invalid" };
+  }
+
+  if (roster.some((member) => {
+    if (!member || typeof member !== "object") {
+      return true;
+    }
+    return normalizeClanMemberRole((member as { role?: unknown }).role ?? null) === null;
+  })) {
+    return { usable: false, reason: "roster_member_role_invalid" };
+  }
+
+  return { usable: true, members: roster };
+}
+
 async function fetchClanWithTelemetry(input: {
   cocService: CoCService;
   clanTag: string;
@@ -626,9 +680,21 @@ async function fetchClanWithTelemetry(input: {
       }
       return null;
     }
+    const rosterValidation = validateTrackedClanRoster(clan);
+    if (!rosterValidation.usable) {
+      dozzleLog.warn(
+        `[autorole] event=live_clan_roster_failure guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} reason=${rosterValidation.reason} action=fail_closed`,
+      );
+      if (input.telemetry?.refreshId) {
+        dozzleLog.info(
+          `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} status=failure duration_ms=${Date.now() - startedAtMs} error=${rosterValidation.reason}`,
+        );
+      }
+      return null;
+    }
     if (input.telemetry?.refreshId) {
       dozzleLog.info(
-        `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} clan_name=${String(clan.name ?? clanTag).replace(/\s+/g, " ").trim()} member_count=${Array.isArray(clan.members) ? clan.members.length : 0} status=success duration_ms=${Date.now() - startedAtMs}`,
+        `[autorole] event=live_clan_fetch source=${input.telemetry.schedulerSource ?? "autorole_scheduler"} autorole_refresh_id=${input.telemetry.refreshId} guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} clan_name=${String(clan.name ?? clanTag).replace(/\s+/g, " ").trim()} member_count=${rosterValidation.members.length} status=success duration_ms=${Date.now() - startedAtMs}`,
       );
     }
     return clan;
@@ -1298,11 +1364,16 @@ async function loadTrackedFwaClanRefreshState(input: {
       leadRoleId: String(row.leadRoleId ?? "").trim() || null,
     });
 
-    const members = Array.isArray(clan?.members)
-      ? clan.members
-      : Array.isArray(clan?.memberList)
-        ? clan.memberList
-        : [];
+    const rosterValidation = validateTrackedClanRoster(clan);
+    if (!rosterValidation.usable) {
+      failedClanTags.add(clanTag);
+      clanMembershipIndex.set(clanTag, {
+        source: "UNKNOWN",
+        playerTags: new Set<string>(),
+      });
+      continue;
+    }
+    const members = rosterValidation.members;
     const playerTags = new Set<string>();
     for (const member of members) {
       const clanMember = member as {
@@ -1464,11 +1535,12 @@ async function loadTrackedLeadRoleRefreshState(input: {
       leadRoleId: String(lookup.row.leadRoleId ?? "").trim() || null,
     });
 
-    const members = Array.isArray(lookup.clan?.members)
-      ? lookup.clan.members
-      : Array.isArray(lookup.clan?.memberList)
-        ? lookup.clan.memberList
-        : [];
+    const rosterValidation = validateTrackedClanRoster(lookup.clan);
+    if (!rosterValidation.usable) {
+      failedClanTags.add(clanTag);
+      continue;
+    }
+    const members = rosterValidation.members;
     const playerTags = new Set<string>();
     for (const member of members) {
       const clanMember = member as {
@@ -1674,11 +1746,12 @@ async function loadTrackedClanRoleRefreshState(input: {
       leadRoleId: String(lookup.row.leadRoleId ?? "").trim() || null,
     });
 
-    const members = Array.isArray(lookup.clan?.members)
-      ? lookup.clan.members
-      : Array.isArray(lookup.clan?.memberList)
-        ? lookup.clan.memberList
-        : [];
+    const rosterValidation = validateTrackedClanRoster(lookup.clan);
+    if (!rosterValidation.usable) {
+      failedClanTags.add(clanTag);
+      continue;
+    }
+    const members = rosterValidation.members;
     const playerTags = new Set<string>();
     for (const member of members) {
       const clanMember = member as {
@@ -2145,7 +2218,7 @@ function buildLeadRoleRemovalSuppression(input: {
   }
 
   if (input.scope.kind === "guild") {
-    return new Set(input.configuredLeadRoleIds);
+    return new Set<string>();
   }
 
   if (input.scope.kind === "role") {
@@ -2416,6 +2489,7 @@ async function runRefreshPass(input: {
   preferCurrentClanTagForClanRules?: boolean;
   visitorRoleAvailable?: boolean;
   visitorRoleAdditionsSuppressed?: boolean;
+  trackedClanMembershipAuthoritative?: boolean;
   memberSourceSummary?: AutoRoleRefreshMemberSourceSummary | null;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
@@ -2515,6 +2589,7 @@ async function runRefreshPass(input: {
         trackedClanScope: input.trackedMembershipScope,
         trackedClans: input.trackedClans,
         preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
+        trackedClanMembershipAuthoritative: input.trackedClanMembershipAuthoritative ?? false,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
@@ -2822,6 +2897,7 @@ export class AutoRoleRefreshService {
             candidateUserIdsOverride: clanRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
             preferCurrentClanTagForClanRules: true,
+            trackedClanMembershipAuthoritative: true,
             trackedFwaMemberTags: clanRoleState.trackedMembershipScope.fwaMemberTags,
             visitorRoleAvailable,
             visitorRoleAdditionsSuppressed,
@@ -2912,6 +2988,7 @@ export class AutoRoleRefreshService {
             now: input.now,
             candidateUserIdsOverride: leadRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
+            trackedClanMembershipAuthoritative: true,
             trackedFwaMemberTags: leadRoleState.trackedMembershipScope.fwaMemberTags,
             visitorRoleAvailable,
             visitorRoleAdditionsSuppressed,
@@ -2958,6 +3035,13 @@ export class AutoRoleRefreshService {
             );
             throw error;
           }
+        }
+        const trackedClanMembershipAuthoritative = Boolean(input.cocService);
+        if (!trackedClanMembershipAuthoritative) {
+          suppressRemovalRoleIds = new Set([
+            ...suppressRemovalRoleIds,
+            ...collectConfiguredLeadRoleIds(trackedFwaRefresh.trackedClans),
+          ]);
         }
 
         const cachedMembersById = getGuildCachedMembersMap(input.guild);
@@ -3054,6 +3138,7 @@ export class AutoRoleRefreshService {
           now: input.now,
           candidateUserIdsOverride: candidateUserIds,
           suppressRemovalRoleIds,
+          trackedClanMembershipAuthoritative,
           trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
           visitorRoleAvailable,
           visitorRoleAdditionsSuppressed,
