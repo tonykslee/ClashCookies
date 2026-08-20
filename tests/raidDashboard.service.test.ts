@@ -53,6 +53,7 @@ import {
   listRaidDashboardRowsWithQueueContext,
   normalizeAttackSections,
   parseRaidSeasonTimeMs,
+  resolveRaidDashboardDefensiveMedals,
 } from "../src/services/RaidDashboardService";
 
 describe("RaidDashboardService", () => {
@@ -863,6 +864,27 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("Est. Offense ~1452 | Defense 120 | Total ~1572");
   });
 
+  it("preserves the offense, defense, and total medal display caps", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      attacksCompleted: 6,
+      offensiveDistrictsDestroyed: 1,
+      raidMedalEstimate: {
+        offensiveMedalsForSixAttacks: 8700,
+        defensiveMedals: 999,
+      },
+    };
+
+    const overview = buildRaidDashboardOverviewDescription([row] as any);
+    const drilldown = buildRaidDashboardSingleClanDescription(row as any);
+
+    expect(overview).toContain("Est. Offense ~1620 | Defense 350 | Total ~1970");
+    expect(drilldown).toContain(
+      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 999 raw → 350 capped | Total 1970 capped",
+    );
+  });
+
   it("uses defensiveReward from the active raid season for defensive medal estimates", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
@@ -913,6 +935,48 @@ describe("RaidDashboardService", () => {
 
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
     expect(overview).toContain("Est. Offense ~1452 | Defense 123 | Total ~1575");
+  });
+
+  it("uses finalized season rewards even for historical seasons", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 10,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+    ];
+
+    const finalizedReward = resolveRaidDashboardDefensiveMedals({
+      state: "completed",
+      startTime: "2025-01-03T00:00:00.000Z",
+      endTime: "2025-01-06T00:00:00.000Z",
+      defensiveReward: 123,
+      defenseLog,
+    } as any);
+    const finalizedZeroReward = resolveRaidDashboardDefensiveMedals({
+      state: "finished",
+      startTime: "2025-01-10T00:00:00.000Z",
+      endTime: "2025-01-13T00:00:00.000Z",
+      defensiveReward: 0,
+      defenseLog,
+    } as any);
+    const activeRewardEstimate = resolveRaidDashboardDefensiveMedals({
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      defensiveReward: 0,
+      defenseLog,
+    } as any);
+
+    expect(finalizedReward).toBe(123);
+    expect(finalizedZeroReward).toBe(0);
+    expect(activeRewardEstimate).toBe(55);
   });
 
   it("predicts active-weekend defense medals from defense log with ClashCliffs housing-space math", async () => {
@@ -1002,12 +1066,80 @@ describe("RaidDashboardService", () => {
     const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(8700);
-    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(112);
-    expect(overview).toContain("Est. Offense ~1620 | Defense 112 | Total ~1732");
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(131);
+    expect(overview).toContain("Est. Offense ~1620 | Defense 131 | Total ~1751");
     expect(overview).not.toContain("Defense 0");
     expect(drilldown).toContain(
-      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 112 raw → 112 capped | Total 1732 capped",
+      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 131 raw → 131 capped | Total 1751 capped",
     );
+  });
+
+  it("treats an active defense log without usable attack data as unknown", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 6,
+          districtCount: 9,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [
+        {
+          districts: [
+            {
+              id: 70000001,
+              districtHallLevel: 5,
+              destructionPercent: 100,
+              totalLooted: 1000,
+            },
+          ],
+        },
+      ],
+      defensiveReward: 0,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
+
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBeNull();
+    expect(overview).toContain("Est. Offense ~1452 | Defense —");
+    expect(overview).not.toContain("Defense 0");
+    expect(drilldown).toContain("Estimated medals: Offense 1452 raw → 1452 capped | Defense —");
+    expect(drilldown).not.toContain("Total");
   });
 
   it("treats an empty active defense log as unknown for dashboard display", async () => {
@@ -3330,4 +3462,3 @@ describe("RaidDashboardService", () => {
     expect(choices.filter((choice) => choice.value === selectedClanTag)).toHaveLength(1);
   });
 });
-
