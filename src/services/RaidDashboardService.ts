@@ -691,7 +691,7 @@ function isRaidSeasonFinalized(season: ClanCapitalRaidSeason | null | undefined)
   );
 }
 
-function resolveRaidDashboardDefensiveMedals(
+export function resolveRaidDashboardDefensiveMedals(
   season: ClanCapitalRaidSeason | null | undefined,
 ): number | null {
   const reward = normalizeNonNegativeInt(season?.defensiveReward);
@@ -2105,4 +2105,3 @@ function sortRaidDashboardRows(rows: RaidDashboardClanRow[]): RaidDashboardClanR
     })
     .map(({ overviewSortIndex: _overviewSortIndex, ...row }) => row);
 }
-
