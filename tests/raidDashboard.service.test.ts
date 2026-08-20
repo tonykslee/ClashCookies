@@ -51,6 +51,7 @@ import {
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
+  normalizeAttackSections,
   parseRaidSeasonTimeMs,
 } from "../src/services/RaidDashboardService";
 
@@ -1694,6 +1695,102 @@ describe("RaidDashboardService", () => {
     expect(rows[0]?.hasOngoingRaid).toBe(false);
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Attacks:");
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
+  });
+
+  it("renders observed attack totals for active, completed, and unavailable raid logs", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: null,
+      attacksMax: null,
+      raidsCompleted: null,
+    } as any;
+
+    const render = (season: any) => {
+      const [section] = normalizeAttackSections(season);
+      expect(section).toBeDefined();
+      return buildRaidDashboardSingleClanDescription(row, {
+        activeSeason: season,
+        attackSections: [section!],
+        defenseSections: [],
+        raidsCompleted: null,
+      });
+    };
+
+    const aggregateDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          attackCount: 5,
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 5, attackCount: 3 },
+            { name: "Wizard Valley", districtHallLevel: 4, attackCount: 1 },
+          ],
+        },
+      ],
+    });
+    expect(aggregateDescription).toContain(
+      "### [Defender One](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UR>) `#2QG2C08UR` | 5🗡",
+    );
+
+    const fallbackDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 5, attackCount: 3 },
+            { name: "Wizard Valley", districtHallLevel: 4, attackCount: 2 },
+          ],
+        },
+      ],
+    });
+    expect(fallbackDescription).toContain("`#2QG2C08UR` | 5🗡");
+    expect(fallbackDescription).toContain("Capital Hall DH5 — 3 attacks");
+    expect(fallbackDescription).toContain("Wizard Valley DH4 — 2 attacks");
+
+    const inProgressDescription = render({
+      attackLog: [
+        {
+          defender: { name: "In Progress", tag: "#2QG2C08UP" },
+          attackCount: 4,
+          complete: false,
+          districts: [{ name: "Capital Hall", districtHallLevel: 5, attackCount: 4, stars: 2 }],
+        },
+      ],
+    });
+    expect(inProgressDescription).toContain("`#2QG2C08UP` | 4🗡");
+
+    const historicalCompletedDescription = render({
+      startTime: "2025-01-03T00:00:00.000Z",
+      endTime: "2025-01-06T00:00:00.000Z",
+      state: "completed",
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#2QG2C08UQ" },
+          attackCount: 7,
+          complete: true,
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 10, attackCount: 4, stars: 3 },
+            { name: "Barbarian Camp", districtHallLevel: 5, attackCount: 3, stars: 3 },
+          ],
+        },
+      ],
+    });
+    expect(historicalCompletedDescription).toContain("`#2QG2C08UQ` | 7🗡");
+
+    const unavailableDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Unknown Count" },
+          districts: [{ name: "Capital Hall", districtHallLevel: 5, stars: 1 }],
+        },
+      ],
+    });
+    expect(unavailableDescription).toContain("### Unknown Count | —🗡");
   });
 
   it("renders MAX for maxed raid district hall levels and falls back to DH labels otherwise", () => {
