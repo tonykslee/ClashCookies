@@ -2145,7 +2145,7 @@ function buildLeadRoleRemovalSuppression(input: {
   }
 
   if (input.scope.kind === "guild") {
-    return new Set(input.configuredLeadRoleIds);
+    return new Set<string>();
   }
 
   if (input.scope.kind === "role") {
@@ -2416,6 +2416,7 @@ async function runRefreshPass(input: {
   preferCurrentClanTagForClanRules?: boolean;
   visitorRoleAvailable?: boolean;
   visitorRoleAdditionsSuppressed?: boolean;
+  trackedClanMembershipAuthoritative?: boolean;
   memberSourceSummary?: AutoRoleRefreshMemberSourceSummary | null;
 }): Promise<AutoRoleRefreshResult> {
   const now = input.now;
@@ -2515,6 +2516,7 @@ async function runRefreshPass(input: {
         trackedClanScope: input.trackedMembershipScope,
         trackedClans: input.trackedClans,
         preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
+        trackedClanMembershipAuthoritative: input.trackedClanMembershipAuthoritative ?? false,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
@@ -2822,6 +2824,7 @@ export class AutoRoleRefreshService {
             candidateUserIdsOverride: clanRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
             preferCurrentClanTagForClanRules: true,
+            trackedClanMembershipAuthoritative: true,
             trackedFwaMemberTags: clanRoleState.trackedMembershipScope.fwaMemberTags,
             visitorRoleAvailable,
             visitorRoleAdditionsSuppressed,
@@ -2912,6 +2915,7 @@ export class AutoRoleRefreshService {
             now: input.now,
             candidateUserIdsOverride: leadRoleState.loadedCandidateUserIds,
             suppressRemovalRoleIds,
+            trackedClanMembershipAuthoritative: true,
             trackedFwaMemberTags: leadRoleState.trackedMembershipScope.fwaMemberTags,
             visitorRoleAvailable,
             visitorRoleAdditionsSuppressed,
@@ -2958,6 +2962,13 @@ export class AutoRoleRefreshService {
             );
             throw error;
           }
+        }
+        const trackedClanMembershipAuthoritative = Boolean(input.cocService);
+        if (!trackedClanMembershipAuthoritative) {
+          suppressRemovalRoleIds = new Set([
+            ...suppressRemovalRoleIds,
+            ...collectConfiguredLeadRoleIds(trackedFwaRefresh.trackedClans),
+          ]);
         }
 
         const cachedMembersById = getGuildCachedMembersMap(input.guild);
@@ -3054,6 +3065,7 @@ export class AutoRoleRefreshService {
           now: input.now,
           candidateUserIdsOverride: candidateUserIds,
           suppressRemovalRoleIds,
+          trackedClanMembershipAuthoritative,
           trackedFwaMemberTags: trackedMembershipScopeForRefresh.fwaMemberTags,
           visitorRoleAvailable,
           visitorRoleAdditionsSuppressed,

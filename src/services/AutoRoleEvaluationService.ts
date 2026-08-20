@@ -92,6 +92,7 @@ export type AutoRoleEvaluationInput = {
   trackedClanScope: AutoRoleTrackedClanScope;
   trackedClans?: AutoRoleTrackedClanLeadRole[];
   preferCurrentClanTagForClanRules?: boolean;
+  trackedClanMembershipAuthoritative?: boolean;
 };
 
 type RankedLinkedAccount = PlayerLinkWithTrust & {
@@ -161,12 +162,29 @@ function isLinkedAccountInTrackedMembershipTags(
   return playerTag.length > 0 && trackedMemberTags.has(playerTag);
 }
 
+function clanMembershipForTargetHasPlayer(
+  clanMembership: AutoRoleClanMembershipIndexRow | null,
+  playerTag: string,
+): boolean {
+  const normalizedPlayerTag = normalizePlayerTag(playerTag);
+  return Boolean(clanMembership && normalizedPlayerTag && clanMembership.playerTags.has(normalizedPlayerTag));
+}
+
 function isLinkedAccountLeaderInTrackedClan(
   linkedAccount: RankedLinkedAccount,
   targetClanTag: string,
+  clanMembership: AutoRoleClanMembershipIndexRow | null,
+  trackedClanMembershipAuthoritative: boolean,
 ): boolean {
   const normalizedTarget = normalizeClanTag(targetClanTag);
   if (!normalizedTarget) return false;
+
+  if (
+    trackedClanMembershipAuthoritative &&
+    (!clanMembershipForTargetHasPlayer(clanMembership, linkedAccount.playerTag) || clanMembership?.source !== "FWA")
+  ) {
+    return false;
+  }
 
   const currentClanTag = resolveMemberSourceCurrentClanTag(linkedAccount);
   if (currentClanTag !== normalizedTarget) {
@@ -223,7 +241,7 @@ function buildResultHash(input: {
   return createHash("sha256").update(payload).digest("hex");
 }
 
-/** Purpose: evaluate autorole desired state for one Discord member from persisted link/current-clan facts. */
+/** Purpose: evaluate autorole desired state for one Discord member from linked account and current-clan facts. */
 export class AutoRoleEvaluationService {
   /** Purpose: get the active managed-role set for one guild snapshot. */
   getManagedRoleIds(input: {
@@ -336,6 +354,11 @@ export class AutoRoleEvaluationService {
       }
 
       if (clanRoleId && input.managedRoleIds.has(clanRoleId) && linkedAccounts.some((account) => {
+        if (input.trackedClanMembershipAuthoritative) {
+          const clanMembership = input.clanMembershipByTag.get(clanTag) ?? null;
+          return clanMembership?.source === "FWA" && clanMembershipForTargetHasPlayer(clanMembership, account.playerTag);
+        }
+
         const currentClanTag = resolveMemberSourceCurrentClanTag(account);
         return currentClanTag === clanTag;
       })) {
@@ -346,7 +369,12 @@ export class AutoRoleEvaluationService {
         continue;
       }
 
-      if (linkedAccounts.some((account) => isLinkedAccountLeaderInTrackedClan(account, clanTag))) {
+      if (linkedAccounts.some((account) => isLinkedAccountLeaderInTrackedClan(
+        account,
+        clanTag,
+        input.clanMembershipByTag.get(clanTag) ?? null,
+        input.trackedClanMembershipAuthoritative ?? false,
+      ))) {
         desiredManagedRoleIds.add(leadRoleId);
       }
     }

@@ -357,6 +357,50 @@ function filterPlayerCurrentRows(rows: any[], where: any): any[] {
   return filtered;
 }
 
+async function refreshTrackedLeadGuildScenario(input: {
+  linkedAccounts: any[];
+  persistedPlayerCurrent: any[];
+  liveMembers: any[];
+  removeStaleManagedRoles?: boolean;
+  cocService?: any;
+}) {
+  const leadRoleId = "222222222222222222";
+  const clanTag = "#2QG2C08UP";
+  const userId = "111111111111111111";
+  const member = makeMember(userId, [leadRoleId]);
+  const guild = makeGuild(new Map([[userId, member]]), [leadRoleId]);
+  const cocService = input.cocService ?? {
+    getClan: vi.fn(async () => ({
+      tag: clanTag,
+      name: "Lead Clan",
+      members: input.liveMembers,
+    })),
+  };
+
+  prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) =>
+    filterPlayerLinkRows(input.linkedAccounts, where));
+  prismaMock.playerCurrent.findMany.mockImplementation(async ({ where }: any) =>
+    filterPlayerCurrentRows(input.persistedPlayerCurrent, where));
+  prismaMock.trackedClan.findMany.mockResolvedValue([
+    { tag: clanTag, name: "Lead Clan", shortName: "LC", leadRoleId },
+  ]);
+  vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+    config: makeConfig({
+      applyNicknames: false,
+      removeStaleManagedRoles: input.removeStaleManagedRoles ?? true,
+    }),
+    rules: [],
+    exclusions: { users: [], roles: [] },
+  } as any);
+
+  const result = await autoRoleRefreshService.refreshGuild({
+    guild,
+    guildId: "111111111111111111",
+    cocService,
+  });
+  return { result, member, leadRoleId, cocService };
+}
+
 describe("AutoRoleRefreshService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -3022,7 +3066,7 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
-  it("does not remove stale tracked-clan lead roles during a guild refresh", async () => {
+  it("removes stale tracked-clan lead roles during a successful guild refresh", async () => {
     const leadRoleId = "222222222222222222";
     const clanTag = "#2QG2C08UP";
     const currentHolderId = "111111111111111111";
@@ -3072,6 +3116,19 @@ describe("AutoRoleRefreshService", () => {
         where,
       );
     });
+    prismaMock.playerCurrent.findMany.mockImplementation(async ({ where }: any) => {
+      return filterPlayerCurrentRows(
+        [
+          makePlayerCurrent({
+            playerTag: "#PYLQ0289",
+            playerName: "Stale Holder",
+            currentClanTag: clanTag,
+            role: "coLeader",
+          }),
+        ],
+        where,
+      );
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: clanTag, name: "Lead Clan", shortName: "LC", leadRoleId }]);
     vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
       config: makeConfig({
@@ -3089,16 +3146,143 @@ describe("AutoRoleRefreshService", () => {
     });
 
     expect(cocService.getClan).toHaveBeenCalledTimes(1);
-    expect(currentHolder.roles.remove).not.toHaveBeenCalledWith(leadRoleId);
-    expect(currentHolder.__roleIds).toContain(leadRoleId);
+    expect(currentHolder.roles.remove).toHaveBeenCalledWith(leadRoleId);
+    expect(currentHolder.__roleIds).not.toContain(leadRoleId);
     expect(leaderUser.roles.add).toHaveBeenCalledWith(leadRoleId);
     expect(result).toMatchObject({
       evaluatedCount: 2,
       addedCount: 1,
-      removedCount: 0,
-      skippedCount: 1,
+      removedCount: 1,
+      skippedCount: 0,
       failedCount: 0,
     });
+  });
+
+  it("removes a tracked-clan lead role when the fresh roster downgrades the persisted leader", async () => {
+    const { result, member, leadRoleId } = await refreshTrackedLeadGuildScenario({
+      linkedAccounts: [
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: "111111111111111111",
+          playerName: "Downgraded Leader",
+        }),
+      ],
+      persistedPlayerCurrent: [
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Downgraded Leader",
+          currentClanTag: "#2QG2C08UP",
+          role: "leader",
+        }),
+      ],
+      liveMembers: [
+        makeClanMember({
+          tag: "#PYLQ0289",
+          name: "Downgraded Leader",
+          role: "member",
+        }),
+      ],
+    });
+
+    expect(member.roles.remove).toHaveBeenCalledWith(leadRoleId);
+    expect(result.removedCount).toBe(1);
+  });
+
+  it("retains a tracked-clan lead role when another linked account is a current co-leader", async () => {
+    const { result, member, leadRoleId } = await refreshTrackedLeadGuildScenario({
+      linkedAccounts: [
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: "111111111111111111",
+          playerName: "Departed Account",
+        }),
+        makeLinkedAccount({
+          playerTag: "#QGRJ2222",
+          discordUserId: "111111111111111111",
+          playerName: "Current CoLeader",
+        }),
+      ],
+      persistedPlayerCurrent: [
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Departed Account",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+        makePlayerCurrent({
+          playerTag: "#QGRJ2222",
+          playerName: "Current CoLeader",
+          currentClanTag: "#2QG2C08UP",
+          role: "member",
+        }),
+      ],
+      liveMembers: [
+        makeClanMember({
+          tag: "#QGRJ2222",
+          name: "Current CoLeader",
+          role: "coLeader",
+        }),
+      ],
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalledWith(leadRoleId);
+    expect(member.__roleIds).toContain(leadRoleId);
+    expect(result.removedCount).toBe(0);
+  });
+
+  it("preserves a stale tracked-clan lead role during guild refresh when stale removal is disabled", async () => {
+    const { result, member, leadRoleId } = await refreshTrackedLeadGuildScenario({
+      removeStaleManagedRoles: false,
+      linkedAccounts: [
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: "111111111111111111",
+          playerName: "Departed Account",
+        }),
+      ],
+      persistedPlayerCurrent: [
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Departed Account",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+      ],
+      liveMembers: [],
+    });
+
+    expect(member.roles.remove).not.toHaveBeenCalledWith(leadRoleId);
+    expect(member.__roleIds).toContain(leadRoleId);
+    expect(result.removedCount).toBe(0);
+  });
+
+  it("aborts a guild tracked-clan refresh before any lead-role removal when the live fetch fails", async () => {
+    const failingCocService = {
+      getClan: vi.fn(async () => {
+        throw new Error("tracked clan fetch failed");
+      }),
+    };
+
+    await expect(refreshTrackedLeadGuildScenario({
+      cocService: failingCocService,
+      linkedAccounts: [
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: "111111111111111111",
+          playerName: "Departed Account",
+        }),
+      ],
+      persistedPlayerCurrent: [
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Departed Account",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+      ],
+      liveMembers: [],
+    })).rejects.toThrow("Tracked clan fetch failed");
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
   });
 
   it("does not remove tracked-clan lead roles during a non-lead role refresh", async () => {
