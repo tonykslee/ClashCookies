@@ -31,6 +31,24 @@ describe("RaidDefenseMedalEstimator", () => {
     expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(63);
   });
 
+  it("clamps a low-loot district lower bound at zero", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 1,
+            destructionPercent: 100,
+            totalLooted: 500,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(2);
+  });
+
   it("keeps shared district bounds independent by district id", () => {
     const defenseLog = [
       {

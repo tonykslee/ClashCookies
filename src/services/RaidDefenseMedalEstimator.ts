@@ -123,10 +123,7 @@ function calculateRaidDefenseDistrictWeights(
       }
       const existingLower = lower.get(districtId);
       const existingUpper = upper.get(districtId);
-      lower.set(
-        districtId,
-        existingLower === undefined ? totalLooted - 750 : Math.max(existingLower, totalLooted - 750),
-      );
+      lower.set(districtId, Math.max(totalLooted - 750, existingLower ?? 0));
       upper.set(
         districtId,
         existingUpper === undefined ? totalLooted : Math.min(existingUpper, totalLooted),
