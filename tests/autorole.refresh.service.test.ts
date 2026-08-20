@@ -373,7 +373,7 @@ async function refreshTrackedLeadGuildScenario(input: {
     getClan: vi.fn(async () => ({
       tag: clanTag,
       name: "Lead Clan",
-      members: input.liveMembers,
+      memberList: input.liveMembers,
     })),
   };
 
@@ -399,6 +399,57 @@ async function refreshTrackedLeadGuildScenario(input: {
     cocService,
   });
   return { result, member, leadRoleId, cocService };
+}
+
+async function assertMalformedTrackedRoleRefreshAborts(input: {
+  roleId: string;
+  roleField: "leadRoleId" | "clanRoleId";
+}) {
+  const userId = "111111111111111111";
+  const clanTag = "#2QG2C08UP";
+  const member = makeMember(userId, [input.roleId]);
+  const guild = makeRoleRefreshGuild({
+    initialMembers: new Map(),
+    fullMembers: new Map([[userId, member]]),
+    roleIds: [input.roleId],
+    memberCount: 1,
+  });
+  const cocService = {
+    getClan: vi.fn(async () => ({
+      tag: clanTag,
+      name: "Tracked Clan",
+      members: [],
+    })),
+  };
+
+  prismaMock.playerLink.findMany.mockResolvedValue([]);
+  prismaMock.trackedClan.findMany.mockResolvedValue([
+    { tag: clanTag, name: "Tracked Clan", shortName: "TC", [input.roleField]: input.roleId },
+  ]);
+  vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+    config: makeConfig({
+      applyNicknames: false,
+      removeStaleManagedRoles: true,
+    }),
+    rules: [],
+    exclusions: { users: [], roles: [] },
+  } as any);
+
+  await expect(
+    autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: input.roleId,
+      cocService: cocService as any,
+    }),
+  ).rejects.toThrow("Tracked clan fetch failed");
+
+  expect(cocService.getClan).toHaveBeenCalledWith(clanTag);
+  expect(member.roles.remove).not.toHaveBeenCalled();
+  expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+  expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+    expect.stringContaining("reason=roster_missing"),
+  );
 }
 
 describe("AutoRoleRefreshService", () => {
@@ -453,7 +504,7 @@ describe("AutoRoleRefreshService", () => {
       getClan: vi.fn().mockResolvedValue({
         tag: "#PYLQ0289",
         name: "Clan One",
-        members: [],
+        memberList: [],
       }),
     };
 
@@ -1814,7 +1865,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: "#2QG2C08UP",
             name: "Tracked FWA",
-            members: [
+            memberList: [
               {
                 tag: "#PYLQ0289",
                 name: "Pending Clan",
@@ -2134,7 +2185,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#PYLQ0289",
                 name: "Linked Member",
@@ -2281,7 +2332,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [],
+            memberList: [],
           };
         }
         throw new Error(`unexpected clan lookup ${tag}`);
@@ -2395,7 +2446,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#PYLQ0289",
                 name: "Live Member",
@@ -2582,7 +2633,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Lead Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -2714,7 +2765,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Lead Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -2890,7 +2941,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Lead Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -2976,7 +3027,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTagA,
             name: "Lead Clan A",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -2991,7 +3042,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTagB,
             name: "Lead Clan B",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#GRJQ2222",
                 name: "CoLeader Player",
@@ -3083,7 +3134,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Lead Clan",
-            members: [
+            memberList: [
               makeClanMember({
                 tag: "#QGRJ2222",
                 name: "Leader Player",
@@ -3283,6 +3334,52 @@ describe("AutoRoleRefreshService", () => {
       liveMembers: [],
     })).rejects.toThrow("Tracked clan fetch failed");
     expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+  });
+
+  it("aborts a guild tracked-clan refresh when the returned roster is missing", async () => {
+    await expect(refreshTrackedLeadGuildScenario({
+      cocService: {
+        getClan: vi.fn(async () => ({
+          tag: "#2QG2C08UP",
+          name: "Lead Clan",
+          members: [],
+        })),
+      },
+      linkedAccounts: [
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: "111111111111111111",
+          playerName: "Departed Account",
+        }),
+      ],
+      persistedPlayerCurrent: [
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Departed Account",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+      ],
+      liveMembers: [],
+    })).rejects.toThrow("Tracked clan fetch failed");
+    expect(prismaMock.autoRoleMemberState.upsert).not.toHaveBeenCalled();
+    expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+      expect.stringContaining("reason=roster_missing"),
+    );
+  });
+
+  it("aborts a tracked-clan lead-role refresh when the returned roster is unusable", async () => {
+    await assertMalformedTrackedRoleRefreshAborts({
+      roleId: "222222222222222222",
+      roleField: "leadRoleId",
+    });
+  });
+
+  it("aborts a tracked-clan clan-role refresh when the returned roster is unusable", async () => {
+    await assertMalformedTrackedRoleRefreshAborts({
+      roleId: "333333333333333333",
+      roleField: "clanRoleId",
+    });
   });
 
   it("does not remove tracked-clan lead roles during a non-lead role refresh", async () => {
@@ -3779,7 +3876,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [
+            memberList: [
               {
                 tag: "#QGRJ2222",
                 name: "Tracked Member",
@@ -3869,7 +3966,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [
+            memberList: [
               {
                 tag: "#PYLQ0289",
                 name: "Modern League Member",
@@ -4023,7 +4120,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: clanTag,
             name: "Tracked Clan",
-            members: [
+            memberList: [
               {
                 tag: "#2QG2C08UP",
                 name: "Family Member",
@@ -4220,7 +4317,7 @@ describe("AutoRoleRefreshService", () => {
           return {
             tag: "#2QG2C08UP",
             name: "Tracked Clan",
-            members: [
+            memberList: [
               {
                 tag: "#2QG2C08UP",
                 name: "Visitor Member",
