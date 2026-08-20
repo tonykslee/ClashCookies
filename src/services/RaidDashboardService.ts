@@ -146,6 +146,7 @@ export type RaidDashboardDistrictAttackRow = {
 export type RaidDashboardAttackSection = {
   defenderName: string | null;
   defenderTag: string | null;
+  attackCount: number | null;
   districts: RaidDashboardDistrictRow[];
 };
 
@@ -896,7 +897,10 @@ function buildRaidIntelSectionLines(section: RaidIntelDefender): RaidDetailLine[
 function buildRaidAttackSectionLines(section: RaidDashboardAttackSection): RaidDetailLine[] {
   const defenderTag = section.defenderTag ? formatRaidTrackedClanTag(section.defenderTag) : null;
   const title = buildClanProfileMarkdownLink(section.defenderName, section.defenderTag);
-  const header = defenderTag ? `### ${title} \`${defenderTag}\`` : `### ${title}`;
+  const attackCount = typeof section.attackCount === "number" ? String(section.attackCount) : "—";
+  const header = defenderTag
+    ? `### ${title} \`${defenderTag}\` | ${attackCount}🗡`
+    : `### ${title} | ${attackCount}🗡`;
 
   if (section.districts.length <= 0) {
     return [
@@ -1092,7 +1096,7 @@ function buildRaidDetailLines(detail: RaidDashboardSeasonDetail): RaidDetailLine
   return lines;
 }
 
-function normalizeAttackSections(season: ClanCapitalRaidSeason): RaidDashboardAttackSection[] {
+export function normalizeAttackSections(season: ClanCapitalRaidSeason): RaidDashboardAttackSection[] {
   if (!Array.isArray(season.attackLog) || season.attackLog.length <= 0) return [];
   return season.attackLog
     .map((entry) => {
@@ -1103,11 +1107,13 @@ function normalizeAttackSections(season: ClanCapitalRaidSeason): RaidDashboardAt
             .map((district) => normalizeRaidDistrictRow(district))
             .filter((district): district is RaidDashboardDistrictRow => district !== null)
         : [];
+      const attackCount = calculateAttackCountFromRaidLogEntry(value, districts);
       return {
         defenderName: normalizeDistrictName((value.defender as { name?: unknown } | null | undefined)?.name ?? value.defenderName),
         defenderTag: normalizeRaidTrackedClanTag(
           String((value.defender as { tag?: unknown } | null | undefined)?.tag ?? value.defenderTag ?? ""),
         ),
+        attackCount,
         districts,
       };
     })
