@@ -74,6 +74,8 @@ const RAID_INTEL_SUMMARY_DISTRICT_ABBREVIATIONS = new Map<string, string>([
 const RAID_MEDAL_OFFENSE_DISPLAY_CAP = 1620;
 const RAID_MEDAL_DEFENSE_DISPLAY_CAP = 350;
 const RAID_MEDAL_TOTAL_DISPLAY_CAP = 1970;
+export const RAID_DASHBOARD_HISTORY_LIMIT = 8;
+const RAID_DASHBOARD_CURRENT_SEASON_LIMIT = 2;
 
 export {
   buildRaidIntelDistrictKey,
@@ -428,6 +430,74 @@ function selectCurrentRaidSeason(input: {
     return input.nowMs >= candidate.startMs && input.nowMs < candidate.endMs;
   });
   return active?.season ?? null;
+}
+
+function parseRaidDashboardSeasonTimeRange(
+  season: ClanCapitalRaidSeason | null | undefined,
+): { startMs: number; endMs: number } | null {
+  if (!season) return null;
+  const startMs = parseRaidSeasonTimeMs(season.startTime);
+  const endMs = parseRaidSeasonTimeMs(season.endTime);
+  if (startMs === null || endMs === null || endMs < startMs) {
+    return null;
+  }
+  return { startMs, endMs };
+}
+
+export function selectLatestRaidDashboardSeason(input: {
+  seasons: ClanCapitalRaidSeason[];
+  nowMs: number;
+}): ClanCapitalRaidSeason | null {
+  if (!Array.isArray(input.seasons) || input.seasons.length <= 0) {
+    return null;
+  }
+
+  const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
+  const candidates = input.seasons
+    .map((season) => {
+      const range = parseRaidDashboardSeasonTimeRange(season);
+      return range ? { season, ...range } : null;
+    })
+    .filter(
+      (candidate): candidate is { season: ClanCapitalRaidSeason; startMs: number; endMs: number } =>
+        candidate !== null && candidate.startMs <= nowMs,
+    )
+    .sort((left, right) => right.startMs - left.startMs);
+
+  const active = candidates.find((candidate) => nowMs < candidate.endMs);
+  if (active) {
+    return active.season;
+  }
+  return candidates[0]?.season ?? null;
+}
+
+export function selectRaidDashboardSeasonByStartTime(input: {
+  seasons: ClanCapitalRaidSeason[];
+  selectedRaidSeasonStartTimeMs: number | null | undefined;
+}): ClanCapitalRaidSeason | null {
+  if (!Array.isArray(input.seasons) || input.seasons.length <= 0) {
+    return null;
+  }
+  const requestedStartMs = input.selectedRaidSeasonStartTimeMs;
+  if (requestedStartMs === null || requestedStartMs === undefined || !Number.isFinite(requestedStartMs)) {
+    return null;
+  }
+
+  for (const season of input.seasons) {
+    const range = parseRaidDashboardSeasonTimeRange(season);
+    if (range?.startMs === requestedStartMs) {
+      return season;
+    }
+  }
+  return null;
+}
+
+function isRaidDashboardSeasonActiveAt(
+  season: ClanCapitalRaidSeason | null | undefined,
+  nowMs: number,
+): boolean {
+  const range = parseRaidDashboardSeasonTimeRange(season);
+  return range !== null && nowMs >= range.startMs && nowMs < range.endMs;
 }
 
 function normalizeRaidJoinType(
@@ -991,44 +1061,53 @@ type RaidDashboardSeasonSnapshot = {
   counts: RaidDashboardCountRow;
 };
 
+function emptyRaidDashboardSeasonSnapshot(): RaidDashboardSeasonSnapshot {
+  return {
+    activeSeason: null,
+    attackSections: [],
+    defenseSections: [],
+    counts: {
+      attacksCompleted: null,
+      attacksMax: null,
+      hasOngoingRaid: false,
+      raidsCompleted: null,
+    },
+  };
+}
+
+async function loadRaidDashboardSeasonHistory(input: {
+  cocService: CoCService | null;
+  clanTag: string;
+  limit: number;
+}): Promise<ClanCapitalRaidSeason[]> {
+  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
+    return [];
+  }
+  return input.cocService
+    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), input.limit)
+    .catch(() => []);
+}
+
 async function loadRaidDashboardSeasonSnapshot(input: {
   cocService: CoCService | null;
   clanTag: string;
   nowMs: number;
+  season?: ClanCapitalRaidSeason | null;
 }): Promise<RaidDashboardSeasonSnapshot> {
-  if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
-    return {
-      activeSeason: null,
-      attackSections: [],
-      defenseSections: [],
-      counts: {
-        attacksCompleted: null,
-        attacksMax: null,
-        hasOngoingRaid: false,
-        raidsCompleted: null,
-      },
-    };
+  let activeSeason = input.season;
+  if (activeSeason === undefined) {
+    const seasons = await loadRaidDashboardSeasonHistory({
+      cocService: input.cocService,
+      clanTag: input.clanTag,
+      limit: RAID_DASHBOARD_CURRENT_SEASON_LIMIT,
+    });
+    activeSeason = selectCurrentRaidSeason({
+      seasons,
+      nowMs: input.nowMs,
+    });
   }
-
-  const seasons = await input.cocService
-    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), 2)
-    .catch(() => []);
-  const activeSeason = selectCurrentRaidSeason({
-    seasons,
-    nowMs: input.nowMs,
-  });
   if (!activeSeason) {
-    return {
-      activeSeason: null,
-      attackSections: [],
-      defenseSections: [],
-      counts: {
-        attacksCompleted: null,
-        attacksMax: null,
-        hasOngoingRaid: false,
-        raidsCompleted: null,
-      },
-    };
+    return emptyRaidDashboardSeasonSnapshot();
   }
 
   const attackSections = normalizeAttackSections(activeSeason);
@@ -1041,7 +1120,9 @@ async function loadRaidDashboardSeasonSnapshot(input: {
     attacksMax: Array.isArray(activeSeason.members) && activeSeason.members.length > 0
       ? activeSeason.members.length * 6
       : null,
-    hasOngoingRaid: calculateHasOngoingRaidFromAttackLog(activeSeason.attackLog),
+    hasOngoingRaid:
+      isRaidDashboardSeasonActiveAt(activeSeason, input.nowMs) &&
+      calculateHasOngoingRaidFromAttackLog(activeSeason.attackLog),
     raidsCompleted: calculateCompletedRaidsFromSeason(activeSeason, attackSections),
   };
 
@@ -1271,11 +1352,25 @@ async function loadSelectedClanDetail(input: {
   cocService: CoCService | null;
   clanTag: string;
   source: string;
+  raidSeasonStartTimeMs?: number | null;
 }): Promise<RaidDashboardSeasonDetail | null> {
+  let selectedSeason: ClanCapitalRaidSeason | null | undefined;
+  if (input.raidSeasonStartTimeMs !== undefined) {
+    const seasons = await loadRaidDashboardSeasonHistory({
+      cocService: input.cocService,
+      clanTag: input.clanTag,
+      limit: RAID_DASHBOARD_HISTORY_LIMIT,
+    });
+    selectedSeason = selectRaidDashboardSeasonByStartTime({
+      seasons,
+      selectedRaidSeasonStartTimeMs: input.raidSeasonStartTimeMs,
+    });
+  }
   const snapshot = await loadRaidDashboardSeasonSnapshot({
     cocService: input.cocService,
     clanTag: input.clanTag,
     nowMs: Date.now(),
+    season: selectedSeason,
   });
   const activeSeason = snapshot.activeSeason;
   if (!activeSeason) {
@@ -1304,6 +1399,7 @@ export async function loadRaidDashboardSeasonDetailWithQueueContext(input: {
   cocService: CoCService | null;
   clanTag: string;
   source: string;
+  raidSeasonStartTimeMs?: number | null;
 }): Promise<RaidDashboardSeasonDetail | null> {
   return runWithCoCQueueContext(
     {
@@ -1579,6 +1675,8 @@ function getRaidDashboardRowsFromSourceRows(input: {
   cocService: CoCService | null;
   guildId?: string | null;
   source: string;
+  nowMs?: number;
+  selectedSeasonsByTag?: ReadonlyMap<string, ClanCapitalRaidSeason | null>;
 }): Promise<RaidDashboardClanRow[]> {
   return loadRaidDashboardRowsFromSourceRows(input);
 }
@@ -1588,6 +1686,8 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
   cocService: CoCService | null;
   guildId?: string | null;
   source: string;
+  nowMs?: number;
+  selectedSeasonsByTag?: ReadonlyMap<string, ClanCapitalRaidSeason | null>;
 }): Promise<RaidDashboardClanRow[]> {
   const tracked = input.sourceRows;
   if (tracked.length <= 0) {
@@ -1597,15 +1697,18 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     tracked.map((row) => [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, row] as const),
   );
 
-  const nowMs = Date.now();
+  const nowMs = input.nowMs ?? Date.now();
+  const hasSelectedSeasons = input.selectedSeasonsByTag !== undefined;
   const snapshots = await Promise.all(
     tracked.map(async (row) => {
+      const normalizedTag = normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag;
       const snapshot = await loadRaidDashboardSeasonSnapshot({
         cocService: input.cocService,
         clanTag: row.clanTag,
         nowMs,
+        season: hasSelectedSeasons ? input.selectedSeasonsByTag?.get(normalizedTag) ?? null : undefined,
       });
-      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, snapshot] as const;
+      return [normalizedTag, snapshot] as const;
     }),
   );
   const allDefenseSections = snapshots.flatMap(([, snapshot]) => snapshot.defenseSections);
@@ -1662,7 +1765,12 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const activeSeasonStartMs = snapshot.activeSeason?.startTime
       ? parseRaidSeasonTimeMs(snapshot.activeSeason.startTime)
       : null;
-    if (input.guildId && activeSeasonStartMs !== null && snapshot.attackSections.length > 0) {
+    if (
+      input.guildId &&
+      activeSeasonStartMs !== null &&
+      isRaidDashboardSeasonActiveAt(snapshot.activeSeason, nowMs) &&
+      snapshot.attackSections.length > 0
+    ) {
       hitHistoryPersistenceTasks.push(
         persistRaidDistrictHitHistoryFromAttackSections({
           guildId: input.guildId,
@@ -1794,41 +1902,50 @@ export async function listRaidDashboardRowsWithQueueContext(input: {
   );
 }
 
+function getRaidDashboardSourceLabel(sourceMode: RaidDashboardOverviewSourceMode): string {
+  return sourceMode === "fwa"
+    ? "raids:overview:fwa"
+    : sourceMode === "custom"
+      ? "raids:overview:custom"
+      : "raids:overview";
+}
+
+async function listRaidDashboardSourceRows(input: {
+  cocService: CoCService | null;
+  guildId?: string | null;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  customClanTag?: string | null;
+}): Promise<{ sourceRows: RaidDashboardSourceClanRow[]; source: string }> {
+  const source = getRaidDashboardSourceLabel(input.sourceMode);
+  if (input.sourceMode === "custom") {
+    const customClanTag = normalizeRaidTrackedClanTag(input.customClanTag ?? "");
+    if (!customClanTag) {
+      return { sourceRows: [], source };
+    }
+    return { sourceRows: [toSyntheticRaidDashboardSourceRow(customClanTag)], source };
+  }
+
+  if (input.sourceMode === "fwa") {
+    const fwaRows = await listFwaTrackedClansForDisplay();
+    return { sourceRows: fwaRows.map(toRaidDashboardSourceRowFromFwaTrackedClan), source };
+  }
+
+  const trackedRows = await listRaidTrackedClansForDisplay();
+  return { sourceRows: trackedRows.map(toRaidDashboardSourceRowFromRaidTrackedClan), source };
+}
+
 export async function listRaidDashboardRowsForSource(input: {
   cocService: CoCService | null;
   guildId?: string | null;
   sourceMode: RaidDashboardOverviewSourceMode;
   customClanTag?: string | null;
 }): Promise<RaidDashboardClanRow[]> {
-  if (input.sourceMode === "custom") {
-    const customClanTag = normalizeRaidTrackedClanTag(input.customClanTag ?? "");
-    if (!customClanTag) {
-      return [];
-    }
-    return getRaidDashboardRowsFromSourceRows({
-      sourceRows: [toSyntheticRaidDashboardSourceRow(customClanTag)],
-      cocService: input.cocService,
-      guildId: input.guildId ?? null,
-      source: "raids:overview:custom",
-    });
-  }
-
-  if (input.sourceMode === "fwa") {
-    const fwaRows = await listFwaTrackedClansForDisplay();
-    return getRaidDashboardRowsFromSourceRows({
-      sourceRows: fwaRows.map(toRaidDashboardSourceRowFromFwaTrackedClan),
-      cocService: input.cocService,
-      guildId: input.guildId ?? null,
-      source: "raids:overview:fwa",
-    });
-  }
-
-  const trackedRows = await listRaidTrackedClansForDisplay();
+  const sourceInput = await listRaidDashboardSourceRows(input);
   return getRaidDashboardRowsFromSourceRows({
-    sourceRows: trackedRows.map(toRaidDashboardSourceRowFromRaidTrackedClan),
+    sourceRows: sourceInput.sourceRows,
     cocService: input.cocService,
     guildId: input.guildId ?? null,
-    source: "raids:overview",
+    source: sourceInput.source,
   });
 }
 
@@ -1841,12 +1958,7 @@ export async function listRaidDashboardRowsForSourceWithQueueContext(input: {
   return runWithCoCQueueContext(
     {
       priority: "interactive",
-      source:
-        input.sourceMode === "fwa"
-          ? "raids:overview:fwa"
-          : input.sourceMode === "custom"
-            ? "raids:overview:custom"
-            : "raids:overview",
+      source: getRaidDashboardSourceLabel(input.sourceMode),
     },
     () =>
       listRaidDashboardRowsForSource({
@@ -1855,6 +1967,96 @@ export async function listRaidDashboardRowsForSourceWithQueueContext(input: {
         sourceMode: input.sourceMode,
         customClanTag: input.customClanTag ?? null,
       }),
+  );
+}
+
+export type RaidDashboardOverviewLoadResult = {
+  rows: RaidDashboardClanRow[];
+  selectedRaidSeasonStartTimeMs: number | null;
+  selectedRaidSeasonEndTimeMs: number | null;
+  latestRaidSeasonStartTimeMs: number | null;
+};
+
+export async function loadRaidDashboardOverviewForSource(input: {
+  cocService: CoCService | null;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  guildId?: string | null;
+  customClanTag?: string | null;
+  selectedRaidSeasonStartTimeMs?: number | null;
+  nowMs?: number;
+}): Promise<RaidDashboardOverviewLoadResult> {
+  const nowMs = input.nowMs ?? Date.now();
+  const sourceInput = await listRaidDashboardSourceRows(input);
+  const seasonHistories = await Promise.all(
+    sourceInput.sourceRows.map(async (row) => {
+      const seasons = await loadRaidDashboardSeasonHistory({
+        cocService: input.cocService,
+        clanTag: row.clanTag,
+        limit: RAID_DASHBOARD_HISTORY_LIMIT,
+      });
+      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, seasons] as const;
+    }),
+  );
+  const seasonHistoriesByTag = new Map(seasonHistories);
+  const allSeasons = seasonHistories.flatMap(([, seasons]) => seasons);
+  const latestSeason = selectLatestRaidDashboardSeason({ seasons: allSeasons, nowMs });
+  const latestRaidSeasonStartTimeMs = parseRaidSeasonTimeMs(latestSeason?.startTime);
+  const hasExplicitSelection =
+    input.selectedRaidSeasonStartTimeMs !== undefined && input.selectedRaidSeasonStartTimeMs !== null;
+  const selectedRaidSeasonStartTimeMs = hasExplicitSelection
+    ? Number.isFinite(input.selectedRaidSeasonStartTimeMs)
+      ? Math.trunc(input.selectedRaidSeasonStartTimeMs as number)
+      : null
+    : latestRaidSeasonStartTimeMs;
+  const selectedSeasonsByTag = new Map<string, ClanCapitalRaidSeason | null>();
+  for (const [tag, seasons] of seasonHistoriesByTag) {
+    selectedSeasonsByTag.set(
+      tag,
+      selectedRaidSeasonStartTimeMs === null
+        ? null
+        : selectRaidDashboardSeasonByStartTime({
+            seasons,
+            selectedRaidSeasonStartTimeMs,
+          }),
+    );
+  }
+  const selectedSeason = allSeasons.find((season) => {
+    const range = parseRaidDashboardSeasonTimeRange(season);
+    return range?.startMs === selectedRaidSeasonStartTimeMs;
+  });
+  const selectedRaidSeasonEndTimeMs = selectedSeason
+    ? parseRaidDashboardSeasonTimeRange(selectedSeason)?.endMs ?? null
+    : null;
+  const rows = await getRaidDashboardRowsFromSourceRows({
+    sourceRows: sourceInput.sourceRows,
+    cocService: input.cocService,
+    guildId: input.guildId ?? null,
+    source: sourceInput.source,
+    nowMs,
+    selectedSeasonsByTag,
+  });
+  return {
+    rows,
+    selectedRaidSeasonStartTimeMs,
+    selectedRaidSeasonEndTimeMs,
+    latestRaidSeasonStartTimeMs,
+  };
+}
+
+export async function loadRaidDashboardOverviewForSourceWithQueueContext(input: {
+  cocService: CoCService | null;
+  sourceMode: RaidDashboardOverviewSourceMode;
+  guildId?: string | null;
+  customClanTag?: string | null;
+  selectedRaidSeasonStartTimeMs?: number | null;
+  nowMs?: number;
+}): Promise<RaidDashboardOverviewLoadResult> {
+  return runWithCoCQueueContext(
+    {
+      priority: "interactive",
+      source: getRaidDashboardSourceLabel(input.sourceMode),
+    },
+    () => loadRaidDashboardOverviewForSource(input),
   );
 }
 
