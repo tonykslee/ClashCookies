@@ -321,7 +321,9 @@ describe("command coverage", () => {
     expect(raidsHelpText).toContain("Medal estimates");
     expect(raidsHelpText).toContain("cleared districts/capital peaks");
     expect(raidsHelpText).toContain("defensiveReward");
-    expect(raidsHelpText).toContain("Total appears only when both values are available");
+    expect(raidsHelpText).toContain("Older");
+    expect(raidsHelpText).toContain("previous 7 calendar weekends");
+    expect(raidsHelpText).toContain("active-weekend Defense can be estimated");
     expect(raidsHelpText).toContain("/raids roster add");
     expect(raidsHelpText).toContain("/raids roster status");
     expect(raidsHelpText).toContain("already on roster");

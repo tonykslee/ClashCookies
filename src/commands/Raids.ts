@@ -1198,11 +1198,19 @@ export async function handleRaidsSelectMenuInteraction(
     return;
   }
 
-  const selectedClanTag = normalizeRaidTrackedClanTag(interaction.values[0] ?? "") ?? null;
-  session.selectedClanTag = selectedClanTag;
+  if (session.refreshing) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    return;
+  }
 
-  await interaction.deferUpdate();
+  const selectedClanTag = normalizeRaidTrackedClanTag(interaction.values[0] ?? "") ?? null;
+  session.refreshing = true;
   try {
+    await interaction.deferUpdate();
+    session.selectedClanTag = selectedClanTag;
     const payload = await buildRaidDashboardPayload({
       sessionId: parsed.sessionId,
       selectedClanTag,
@@ -1237,6 +1245,8 @@ export async function handleRaidsSelectMenuInteraction(
       ephemeral: true,
       content: "Failed to update the raids view.",
     });
+  } finally {
+    session.refreshing = false;
   }
 }
 
@@ -1271,9 +1281,9 @@ export async function handleRaidsButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate();
   session.refreshing = true;
   try {
+    await interaction.deferUpdate();
     if (parsed.action === "refresh") {
       await refreshRaidDashboardState({ cocService });
     }

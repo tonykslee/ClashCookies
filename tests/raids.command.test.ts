@@ -436,6 +436,16 @@ function makeSelectInteraction(customId: string, value: string) {
   return interaction;
 }
 
+function makeDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("/raids command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -802,6 +812,98 @@ describe("/raids command", () => {
       content: "Only the command user can control this raids view.",
     });
     expect(selectInteraction.editReply).not.toHaveBeenCalled();
+  });
+
+  it("claims the dashboard lock before button defer completes", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const initialSeasonCallCount = cocService.getClanCapitalRaidSeasons.mock.calls.length;
+
+    const defer = makeDeferred<void>();
+    const firstInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    firstInteraction.deferUpdate.mockImplementation(() => defer.promise);
+    const firstPromise = handleRaidsButtonInteraction(firstInteraction as any, cocService as any);
+
+    const secondInteraction = makeButtonInteraction("raids:raids-itx-1:newer");
+    await handleRaidsButtonInteraction(secondInteraction as any, cocService as any);
+
+    expect(secondInteraction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    expect(secondInteraction.deferUpdate).not.toHaveBeenCalled();
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledTimes(initialSeasonCallCount);
+
+    defer.resolve();
+    await firstPromise;
+  });
+
+  it("prevents clan selection from racing history navigation and works after release", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const defer = makeDeferred<void>();
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    olderInteraction.deferUpdate.mockImplementation(() => defer.promise);
+    const olderPromise = handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+
+    const racingSelect = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(racingSelect as any, cocService as any);
+    expect(racingSelect.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    expect(racingSelect.deferUpdate).not.toHaveBeenCalled();
+    expect(racingSelect.editReply).not.toHaveBeenCalled();
+
+    defer.resolve();
+    await olderPromise;
+    const olderPayload = olderInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(olderPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(olderPayload.embeds[0].toJSON().description).toContain("## Raid Clans");
+
+    const normalSelect = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(normalSelect as any, cocService as any);
+    expect(normalSelect.editReply).toHaveBeenCalled();
+    expect(normalSelect.editReply.mock.calls.at(-1)?.[0].embeds[0].toJSON().description).toContain(
+      "## Raid Clan",
+    );
+  });
+
+  it("releases the dashboard lock when defer fails", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const failedInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    failedInteraction.deferUpdate.mockRejectedValue(new Error("interaction expired"));
+    await handleRaidsButtonInteraction(failedInteraction as any, cocService as any);
+    expect(failedInteraction.followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to update the raids view.",
+    });
+
+    const nextInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(nextInteraction as any, cocService as any);
+    expect(nextInteraction.deferUpdate).toHaveBeenCalled();
+    expect(nextInteraction.editReply).toHaveBeenCalled();
   });
 
   it("renders a public overview that any user can keep alive with select refresh and back", async () => {
@@ -2193,6 +2295,4 @@ describe("/raids command", () => {
     expect(refreshedDescription).toContain("## Defending");
   });
 });
-
-
 
