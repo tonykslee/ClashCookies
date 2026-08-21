@@ -654,6 +654,52 @@ describe("/raids command", () => {
     expect(newerPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
   });
 
+  it("preserves finalized medals through latest, older, newer, and refresh navigation", async () => {
+    const latest = {
+      ...makeRaidWeekend("2026-05-08T00:00:00.000Z", 6),
+      state: "ended",
+      offensiveReward: 1620,
+      defensiveReward: 340,
+    };
+    const older = {
+      ...makeRaidWeekend("2026-05-01T00:00:00.000Z", 2),
+      state: "ended",
+      offensiveReward: 900,
+      defensiveReward: 200,
+    };
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const initialPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const initialDescription = initialPayload.embeds[0].toJSON().description;
+    expect(initialDescription).toContain("- 🏅 Offense 1620 | Defense 340 | Total 1960");
+
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+    expect(olderInteraction.editReply.mock.calls.at(-1)?.[0].embeds[0].toJSON().title).toBe(
+      "Raid Overview — May 1–4, 2026",
+    );
+
+    const newerInteraction = makeButtonInteraction("raids:raids-itx-1:newer");
+    await handleRaidsButtonInteraction(newerInteraction as any, cocService as any);
+    const returnedPayload = newerInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(returnedPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
+    expect(returnedPayload.embeds[0].toJSON().description).toContain(
+      "- 🏅 Offense 1620 | Defense 340 | Total 1960",
+    );
+
+    const refreshInteraction = makeButtonInteraction("raids:raids-itx-1:refresh");
+    await handleRaidsButtonInteraction(refreshInteraction as any, cocService as any);
+    expect(refreshInteraction.editReply.mock.calls.at(-1)?.[0].embeds[0].toJSON().description).toContain(
+      "- 🏅 Offense 1620 | Defense 340 | Total 1960",
+    );
+    expect(initialDescription).toBe(returnedPayload.embeds[0].toJSON().description);
+  });
+
   it("enforces latest controls and the eight-week history floor", async () => {
     const latestStartMs = Date.parse("2026-05-08T00:00:00.000Z");
     const seasons = Array.from({ length: 8 }, (_, index) =>
@@ -2295,4 +2341,3 @@ describe("/raids command", () => {
     expect(refreshedDescription).toContain("## Defending");
   });
 });
-
