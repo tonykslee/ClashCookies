@@ -98,10 +98,14 @@ export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCoun
   maxDefenseAttacksUsed: number | null;
   offensiveDistrictsDestroyed: number | null;
   offensiveAverageAttacksPerCompletedRaid: number | null;
-  raidMedalEstimate?: RaidMedalEstimate | null;
+  raidMedalEstimate?: RaidDashboardMedalEstimate | null;
   intelGradeScore: number;
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
+};
+
+type RaidDashboardMedalEstimate = RaidMedalEstimate & {
+  source: "finalized" | "estimated";
 };
 
 export type RaidDashboardOverviewSourceMode = "raids" | "fwa" | "custom";
@@ -734,20 +738,28 @@ function capRaidMedalValue(value: number | null, cap: number): number | null {
   return value === null ? null : Math.min(value, cap);
 }
 
-function getRaidMedalDisplayValues(estimate: RaidMedalEstimate): {
+function getRaidMedalDisplayValues(estimate: RaidDashboardMedalEstimate): {
   offense: number | null;
   defense: number | null;
   total: number | null;
 } {
-  const offense = capRaidMedalValue(
-    estimate.offensiveMedalsForSixAttacks,
-    RAID_MEDAL_OFFENSE_DISPLAY_CAP,
-  );
-  const defense = capRaidMedalValue(estimate.defensiveMedals, RAID_MEDAL_DEFENSE_DISPLAY_CAP);
+  const offense =
+    estimate.source === "finalized"
+      ? estimate.offensiveMedalsForSixAttacks
+      : capRaidMedalValue(
+          estimate.offensiveMedalsForSixAttacks,
+          RAID_MEDAL_OFFENSE_DISPLAY_CAP,
+        );
+  const defense =
+    estimate.source === "finalized"
+      ? estimate.defensiveMedals
+      : capRaidMedalValue(estimate.defensiveMedals, RAID_MEDAL_DEFENSE_DISPLAY_CAP);
   const total =
     offense === null || defense === null
       ? null
-      : Math.min(offense + defense, RAID_MEDAL_TOTAL_DISPLAY_CAP);
+      : estimate.source === "finalized"
+        ? offense + defense
+        : Math.min(offense + defense, RAID_MEDAL_TOTAL_DISPLAY_CAP);
   return { offense, defense, total };
 }
 
@@ -774,13 +786,52 @@ export function resolveRaidDashboardDefensiveMedals(
   return predictRaidDefenseMedalsFromDefenseLog(season.defenseLog);
 }
 
+export function resolveRaidDashboardOffensiveMedals(
+  season: ClanCapitalRaidSeason | null | undefined,
+): number | null {
+  if (!isRaidSeasonFinalized(season)) {
+    return null;
+  }
+  return normalizeNonNegativeInt(season?.offensiveReward);
+}
+
 function buildRaidDashboardMedalEstimate(input: {
   attackSections: RaidDashboardAttackSection[];
   attacksCompleted: number | null;
+  finalizedOffensiveMedals: number | null;
+  isFinalized: boolean;
   defensiveMedals: number | null;
-}): RaidMedalEstimate | null {
+}): RaidDashboardMedalEstimate | null {
   if ((input.attacksCompleted ?? 0) <= 0) {
     return null;
+  }
+
+  if (input.isFinalized) {
+    return {
+      offensiveBaseValue: 0,
+      offensiveMedalsPerAttack: null,
+      offensiveMedalsForSixAttacks: input.finalizedOffensiveMedals,
+      defensiveMedals: input.defensiveMedals,
+      totalEstimatedMedals:
+        input.finalizedOffensiveMedals === null || input.defensiveMedals === null
+          ? null
+          : input.finalizedOffensiveMedals + input.defensiveMedals,
+      confidence:
+        input.finalizedOffensiveMedals === null
+          ? "insufficient_offense"
+          : input.defensiveMedals === null
+            ? "partial"
+            : "complete",
+      sourceNotes: [
+        input.finalizedOffensiveMedals === null
+          ? "offensive_medals_unavailable=finalized_reward_missing"
+          : "offensive_medals=provided_finalized_reward",
+        input.defensiveMedals === null
+          ? "defensive_medals=unknown_not_guessed"
+          : "defensive_medals=provided_source_value",
+      ],
+      source: "finalized",
+    };
   }
 
   const destroyedDistrictHallLevels: number[] = [];
@@ -798,12 +849,15 @@ function buildRaidDashboardMedalEstimate(input: {
     }
   }
 
-  return estimateRaidMedals({
-    destroyedDistrictHallLevels,
-    destroyedCapitalHallLevels,
-    totalClanOffensiveAttacksUsed: input.attacksCompleted ?? 0,
-    defensiveMedals: input.defensiveMedals,
-  });
+  return {
+    ...estimateRaidMedals({
+      destroyedDistrictHallLevels,
+      destroyedCapitalHallLevels,
+      totalClanOffensiveAttacksUsed: input.attacksCompleted ?? 0,
+      defensiveMedals: input.defensiveMedals,
+    }),
+    source: "estimated",
+  };
 }
 
 function formatRaidDashboardAverageAttacksPerCompletedRaid(value: number | null): string {
@@ -851,8 +905,12 @@ function buildRaidDashboardOverviewMedalLine(row: RaidDashboardClanRow): string 
   const totalText =
     display.total === null
       ? ""
-      : ` | Total ~${display.total}`;
-  return `- 🏅 Est. Offense ~${display.offense} | Defense ${displayDefenseText}${totalText}`;
+      : ` | Total ${estimate.source === "finalized" ? "" : "~"}${display.total}`;
+  const offenseText =
+    estimate.source === "finalized"
+      ? `Offense ${display.offense}`
+      : `Est. Offense ~${display.offense}`;
+  return `- 🏅 ${offenseText} | Defense ${displayDefenseText}${totalText}`;
 }
 
 function buildRaidDashboardMedalDetailLine(row: RaidDashboardClanRow): string | null {
@@ -868,18 +926,16 @@ function buildRaidDashboardMedalDetailLine(row: RaidDashboardClanRow): string | 
   if (display.offense === null) {
     return null;
   }
-  const parts = [
-    `Offense ${estimate.offensiveMedalsForSixAttacks} raw → ${display.offense} capped`,
-  ];
+  const parts = [`Offense ${display.offense}`];
   if (estimate.defensiveMedals === null || display.defense === null) {
     parts.push("Defense —");
   } else {
-    parts.push(`Defense ${estimate.defensiveMedals} raw → ${display.defense} capped`);
+    parts.push(`Defense ${display.defense}`);
   }
   if (display.total !== null) {
-    parts.push(`Total ${display.total} capped`);
+    parts.push(`Total ${display.total}`);
   }
-  return `Estimated medals: ${parts.join(" | ")}`;
+  return `${estimate.source === "finalized" ? "Medals" : "Estimated medals"}: ${parts.join(" | ")}`;
 }
 
 function buildRaidDistrictLabel(row: RaidDashboardDistrictRow): string {
@@ -1843,6 +1899,8 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
     const raidMedalEstimate = buildRaidDashboardMedalEstimate({
       attackSections: snapshot.attackSections,
       attacksCompleted: snapshot.counts.attacksCompleted,
+      finalizedOffensiveMedals: resolveRaidDashboardOffensiveMedals(snapshot.activeSeason),
+      isFinalized: isRaidSeasonFinalized(snapshot.activeSeason),
       defensiveMedals: resolveRaidDashboardDefensiveMedals(snapshot.activeSeason),
     });
     const openDefenseSections = snapshot.activeSeason
