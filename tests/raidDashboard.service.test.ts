@@ -46,12 +46,18 @@ import {
   buildRaidDashboardOverviewDescription,
   buildRaidDashboardSelectChoices,
   buildRaidDashboardSingleClanDescription,
+  loadRaidDashboardOverviewForSourceWithQueueContext,
   normalizeRaidClanJoinRequirements,
   loadRaidDashboardSeasonDetailWithQueueContext,
   loadRaidIntelSeasonDetailWithQueueContext,
   listRaidDashboardRows,
   listRaidDashboardRowsWithQueueContext,
+  normalizeAttackSections,
   parseRaidSeasonTimeMs,
+  RAID_DASHBOARD_HISTORY_LIMIT,
+  resolveRaidDashboardDefensiveMedals,
+  selectLatestRaidDashboardSeason,
+  selectRaidDashboardSeasonByStartTime,
 } from "../src/services/RaidDashboardService";
 
 describe("RaidDashboardService", () => {
@@ -862,6 +868,27 @@ describe("RaidDashboardService", () => {
     expect(overview).toContain("Est. Offense ~1452 | Defense 120 | Total ~1572");
   });
 
+  it("preserves the offense, defense, and total medal display caps", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      attacksCompleted: 6,
+      offensiveDistrictsDestroyed: 1,
+      raidMedalEstimate: {
+        offensiveMedalsForSixAttacks: 8700,
+        defensiveMedals: 999,
+      },
+    };
+
+    const overview = buildRaidDashboardOverviewDescription([row] as any);
+    const drilldown = buildRaidDashboardSingleClanDescription(row as any);
+
+    expect(overview).toContain("Est. Offense ~1620 | Defense 350 | Total ~1970");
+    expect(drilldown).toContain(
+      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 999 raw → 350 capped | Total 1970 capped",
+    );
+  });
+
   it("uses defensiveReward from the active raid season for defensive medal estimates", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
@@ -912,6 +939,48 @@ describe("RaidDashboardService", () => {
 
     expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(123);
     expect(overview).toContain("Est. Offense ~1452 | Defense 123 | Total ~1575");
+  });
+
+  it("uses finalized season rewards even for historical seasons", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 10,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+    ];
+
+    const finalizedReward = resolveRaidDashboardDefensiveMedals({
+      state: "completed",
+      startTime: "2025-01-03T00:00:00.000Z",
+      endTime: "2025-01-06T00:00:00.000Z",
+      defensiveReward: 123,
+      defenseLog,
+    } as any);
+    const finalizedZeroReward = resolveRaidDashboardDefensiveMedals({
+      state: "finished",
+      startTime: "2025-01-10T00:00:00.000Z",
+      endTime: "2025-01-13T00:00:00.000Z",
+      defensiveReward: 0,
+      defenseLog,
+    } as any);
+    const activeRewardEstimate = resolveRaidDashboardDefensiveMedals({
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      defensiveReward: 0,
+      defenseLog,
+    } as any);
+
+    expect(finalizedReward).toBe(123);
+    expect(finalizedZeroReward).toBe(0);
+    expect(activeRewardEstimate).toBe(55);
   });
 
   it("predicts active-weekend defense medals from defense log with ClashCliffs housing-space math", async () => {
@@ -1001,12 +1070,80 @@ describe("RaidDashboardService", () => {
     const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
 
     expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(8700);
-    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(112);
-    expect(overview).toContain("Est. Offense ~1620 | Defense 112 | Total ~1732");
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBe(131);
+    expect(overview).toContain("Est. Offense ~1620 | Defense 131 | Total ~1751");
     expect(overview).not.toContain("Defense 0");
     expect(drilldown).toContain(
-      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 112 raw → 112 capped | Total 1732 capped",
+      "Estimated medals: Offense 8700 raw → 1620 capped | Defense 131 raw → 131 capped | Total 1751 capped",
     );
+  });
+
+  it("treats an active defense log without usable attack data as unknown", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          defender: { name: "Current Raid", tag: "#CURRENT" },
+          attackCount: 6,
+          districtCount: 9,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [
+        {
+          districts: [
+            {
+              id: 70000001,
+              districtHallLevel: 5,
+              destructionPercent: 100,
+              totalLooted: 1000,
+            },
+          ],
+        },
+      ],
+      defensiveReward: 0,
+    };
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
+
+    expect(rows[0]?.raidMedalEstimate?.defensiveMedals).toBeNull();
+    expect(overview).toContain("Est. Offense ~1452 | Defense —");
+    expect(overview).not.toContain("Defense 0");
+    expect(drilldown).toContain("Estimated medals: Offense 1452 raw → 1452 capped | Defense —");
+    expect(drilldown).not.toContain("Total");
   });
 
   it("treats an empty active defense log as unknown for dashboard display", async () => {
@@ -1696,6 +1833,102 @@ describe("RaidDashboardService", () => {
     expect(buildRaidDashboardOverviewDescription(rows)).not.toContain("Raids completed:");
   });
 
+  it("renders observed attack totals for active, completed, and unavailable raid logs", () => {
+    const row = {
+      clanTag: "2QG2C08UP",
+      clanName: "Alpha Raid",
+      upgrades: 2210,
+      joinType: "open",
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      attacksCompleted: null,
+      attacksMax: null,
+      raidsCompleted: null,
+    } as any;
+
+    const render = (season: any) => {
+      const [section] = normalizeAttackSections(season);
+      expect(section).toBeDefined();
+      return buildRaidDashboardSingleClanDescription(row, {
+        activeSeason: season,
+        attackSections: [section!],
+        defenseSections: [],
+        raidsCompleted: null,
+      });
+    };
+
+    const aggregateDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          attackCount: 5,
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 5, attackCount: 3 },
+            { name: "Wizard Valley", districtHallLevel: 4, attackCount: 1 },
+          ],
+        },
+      ],
+    });
+    expect(aggregateDescription).toContain(
+      "### [Defender One](<https://link.clashofclans.com/en/?action=OpenClanProfile&tag=2QG2C08UR>) `#2QG2C08UR` | 5🗡",
+    );
+
+    const fallbackDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Defender One", tag: "#2QG2C08UR" },
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 5, attackCount: 3 },
+            { name: "Wizard Valley", districtHallLevel: 4, attackCount: 2 },
+          ],
+        },
+      ],
+    });
+    expect(fallbackDescription).toContain("`#2QG2C08UR` | 5🗡");
+    expect(fallbackDescription).toContain("Capital Hall DH5 — 3 attacks");
+    expect(fallbackDescription).toContain("Wizard Valley DH4 — 2 attacks");
+
+    const inProgressDescription = render({
+      attackLog: [
+        {
+          defender: { name: "In Progress", tag: "#2QG2C08UP" },
+          attackCount: 4,
+          complete: false,
+          districts: [{ name: "Capital Hall", districtHallLevel: 5, attackCount: 4, stars: 2 }],
+        },
+      ],
+    });
+    expect(inProgressDescription).toContain("`#2QG2C08UP` | 4🗡");
+
+    const historicalCompletedDescription = render({
+      startTime: "2025-01-03T00:00:00.000Z",
+      endTime: "2025-01-06T00:00:00.000Z",
+      state: "completed",
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#2QG2C08UQ" },
+          attackCount: 7,
+          complete: true,
+          districts: [
+            { name: "Capital Hall", districtHallLevel: 10, attackCount: 4, stars: 3 },
+            { name: "Barbarian Camp", districtHallLevel: 5, attackCount: 3, stars: 3 },
+          ],
+        },
+      ],
+    });
+    expect(historicalCompletedDescription).toContain("`#2QG2C08UQ` | 7🗡");
+
+    const unavailableDescription = render({
+      attackLog: [
+        {
+          defender: { name: "Unknown Count" },
+          districts: [{ name: "Capital Hall", districtHallLevel: 5, stars: 1 }],
+        },
+      ],
+    });
+    expect(unavailableDescription).toContain("### Unknown Count | —🗡");
+  });
+
   it("renders MAX for maxed raid district hall levels and falls back to DH labels otherwise", () => {
     const row = {
       clanTag: "2QG2C08UP",
@@ -2122,6 +2355,72 @@ describe("RaidDashboardService", () => {
     expect(parseRaidSeasonTimeMs("20260508T070000.000Z")).toBe(Date.parse("2026-05-08T07:00:00.000Z"));
   });
 
+  it("selects the latest relevant dashboard weekend and ignores future seasons", () => {
+    const activeAug14 = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "ongoing",
+    };
+    const completedAug7 = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+    };
+    const completedAug14 = { ...activeAug14, state: "completed" };
+    const futureAug21 = {
+      startTime: "2026-08-21T00:00:00.000Z",
+      endTime: "2026-08-24T00:00:00.000Z",
+      state: "ongoing",
+    };
+
+    expect(
+      selectLatestRaidDashboardSeason({
+        seasons: [activeAug14, completedAug7] as any,
+        nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      })?.startTime,
+    ).toBe(activeAug14.startTime);
+    expect(
+      selectLatestRaidDashboardSeason({
+        seasons: [completedAug14, completedAug7] as any,
+        nowMs: Date.parse("2026-08-20T12:00:00.000Z"),
+      })?.startTime,
+    ).toBe(completedAug14.startTime);
+    expect(
+      selectLatestRaidDashboardSeason({
+        seasons: [futureAug21, completedAug14] as any,
+        nowMs: Date.parse("2026-08-20T12:00:00.000Z"),
+      })?.startTime,
+    ).toBe(completedAug14.startTime);
+  });
+
+  it("selects an exact dashboard weekend without falling back to another season", () => {
+    const aug14 = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+    };
+    const aug7 = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+    };
+    const jul31 = {
+      startTime: "2026-07-31T00:00:00.000Z",
+      endTime: "2026-08-03T00:00:00.000Z",
+    };
+
+    expect(
+      selectRaidDashboardSeasonByStartTime({
+        seasons: [aug14, aug7, jul31] as any,
+        selectedRaidSeasonStartTimeMs: Date.parse(aug7.startTime),
+      })?.startTime,
+    ).toBe(aug7.startTime);
+    expect(
+      selectRaidDashboardSeasonByStartTime({
+        seasons: [aug14, jul31] as any,
+        selectedRaidSeasonStartTimeMs: Date.parse(aug7.startTime),
+      }),
+    ).toBeNull();
+  });
+
   it("returns no active season when raid timestamps are invalid", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {
@@ -2184,6 +2483,346 @@ describe("RaidDashboardService", () => {
     );
     expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledTimes(1);
     expect(rows[0]?.attacksCompleted).toBeNull();
+  });
+
+  it("aligns every clan to one selected weekend and preserves skipped-weekend no-data", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Clan A",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-15T11:00:00.000Z"),
+      },
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Clan B",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-15T11:00:00.000Z"),
+      },
+    ]);
+
+    const aug14 = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 6 }],
+      attackLog: [],
+      defenseLog: [],
+      defensiveReward: 10,
+    };
+    const aug7 = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 5 }],
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#HIST" },
+          attackCount: 5,
+          districtCount: 1,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 5,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      defensiveReward: 123,
+    };
+    const jul31 = {
+      startTime: "2026-07-31T00:00:00.000Z",
+      endTime: "2026-08-03T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 2 }],
+      attackLog: [],
+      defenseLog: [],
+      defensiveReward: 8,
+    };
+    const seasonsByTag = new Map([
+      ["#2QG2C08UP", [aug14, aug7, jul31]],
+      ["#2RVGJYLC0", [aug14, jul31]],
+    ]);
+    const getSeasons = vi.fn(async (tag: string, limit: number) => {
+      expect(limit).toBe(RAID_DASHBOARD_HISTORY_LIMIT);
+      return seasonsByTag.get(tag) ?? [];
+    });
+    const cocService = {
+      getClanCapitalRaidSeasons: getSeasons,
+      getClan: vi.fn(),
+    };
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: cocService as any,
+      sourceMode: "raids",
+      guildId: "guild-1",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-07T00:00:00.000Z"),
+    });
+    const clanA = result.rows.find((row) => row.clanTag === "2QG2C08UP");
+    const clanB = result.rows.find((row) => row.clanTag === "2RVGJYLC0");
+
+    expect(getSeasons).toHaveBeenCalledTimes(2);
+    expect(result.selectedRaidSeasonStartTimeMs).toBe(Date.parse("2026-08-07T00:00:00.000Z"));
+    expect(result.selectedRaidSeasonEndTimeMs).toBe(Date.parse("2026-08-10T00:00:00.000Z"));
+    expect(result.latestRaidSeasonStartTimeMs).toBe(Date.parse("2026-08-14T00:00:00.000Z"));
+    expect(clanA?.attacksCompleted).toBe(5);
+    expect(clanA?.raidMedalEstimate?.defensiveMedals).toBe(123);
+    expect(clanB?.attacksCompleted).toBeNull();
+    expect(clanB?.raidMedalEstimate).toBeNull();
+  });
+
+  it("keeps active selected-weekend hit-history persistence enabled", async () => {
+    const activeSeason = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "ongoing",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Active Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+    const getSeasons = vi.fn(async (_tag: string, limit: number) => {
+      expect(limit).toBe(RAID_DASHBOARD_HISTORY_LIMIT);
+      return [activeSeason];
+    });
+
+    await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: { getClanCapitalRaidSeasons: getSeasons } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      guildId: "guild-1",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-14T00:00:00.000Z"),
+    });
+
+    expect(getSeasons).toHaveBeenCalledTimes(1);
+    expect(prismaMock.raidDistrictHitHistory.upsert).toHaveBeenCalled();
+  });
+
+  it("does not write hit history while viewing a completed historical weekend", async () => {
+    const historicalSeason = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      defensiveReward: 0,
+    };
+
+    await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: {
+        getClanCapitalRaidSeasons: vi.fn(async () => [historicalSeason]),
+      } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      guildId: "guild-1",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-07T00:00:00.000Z"),
+    });
+
+    expect(prismaMock.raidDistrictHitHistory.upsert).not.toHaveBeenCalled();
+  });
+
+  it("marks an active selected weekend with an unfinished final capital as ongoing", async () => {
+    const activeSeason = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "ongoing",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Active Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: {
+        getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-14T00:00:00.000Z"),
+    });
+
+    expect(result.rows[0]?.hasOngoingRaid).toBe(true);
+  });
+
+  it("does not mark an unfinished final capital as ongoing in historical overview", async () => {
+    const historicalSeason = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: {
+        getClanCapitalRaidSeasons: vi.fn(async () => [historicalSeason]),
+      } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-07T00:00:00.000Z"),
+    });
+    const overview = buildRaidDashboardOverviewDescription(result.rows);
+
+    expect(result.rows[0]?.hasOngoingRaid).toBe(false);
+    expect(overview).not.toContain("⚔️");
+  });
+
+  it("loads historical detail from the exact requested weekend and preserves defender attack counts", async () => {
+    const newerSeason = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 9 }],
+      attackLog: [
+        {
+          defender: { name: "Newer Defender", tag: "#NEW" },
+          attackCount: 9,
+          districts: [],
+        },
+      ],
+      defenseLog: [],
+    };
+    const historicalSeason = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 5 }],
+      attackLog: [
+        {
+        defender: { name: "Historical Defender", tag: "#2QG2C08UR" },
+          attackCount: 5,
+          districts: [],
+        },
+      ],
+      defenseLog: [],
+    };
+    const getSeasons = vi.fn(async (_tag: string, limit: number) => {
+      expect(limit).toBe(RAID_DASHBOARD_HISTORY_LIMIT);
+      return [newerSeason, historicalSeason];
+    });
+
+    const detail = await loadRaidDashboardSeasonDetailWithQueueContext({
+      cocService: { getClanCapitalRaidSeasons: getSeasons } as any,
+      clanTag: "2QG2C08UP",
+      source: "raids:overview:detail",
+      raidSeasonStartTimeMs: Date.parse("2026-08-07T00:00:00.000Z"),
+    });
+    const description = buildRaidDashboardSingleClanDescription(
+      {
+        clanTag: "2QG2C08UP",
+        clanName: "Alpha Raid",
+        attacksCompleted: 5,
+        attacksMax: 6,
+        raidsCompleted: 1,
+      } as any,
+      detail,
+    );
+
+    expect(getSeasons).toHaveBeenCalledTimes(1);
+    expect(detail?.activeSeason?.startTime).toBe(historicalSeason.startTime);
+    expect(detail?.attackSections[0]?.defenderTag).toBe("2QG2C08UR");
+    expect(detail?.attackSections[0]?.attackCount).toBe(5);
+    expect(description).toContain("### [Historical Defender]");
+    expect(description).toContain("`#2QG2C08UR` | 5🗡");
+    expect(description).not.toContain("Newer Defender");
   });
 
   it("computes raids completed and renders attack and defense detail sections for a selected clan", async () => {
@@ -3017,7 +3656,7 @@ describe("RaidDashboardService", () => {
       raidsCompleted: null,
     });
 
-    expect(description).toBe("No active raid weekend data available.");
+    expect(description).toBe("No Raid Weekend data available for this clan for the selected weekend.");
     expect(description).not.toContain("No attack log available yet.");
     expect(description).not.toContain("No defense log available yet.");
   });
@@ -3233,4 +3872,3 @@ describe("RaidDashboardService", () => {
     expect(choices.filter((choice) => choice.value === selectedClanTag)).toHaveLength(1);
   });
 });
-

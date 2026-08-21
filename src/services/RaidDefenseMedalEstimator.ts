@@ -40,57 +40,79 @@ function getDistrictTotalLooted(district: Record<string, unknown>): number | nul
   return normalizeNonNegativeInteger(district.totalLooted ?? district.looted);
 }
 
-function calculateRaidDefenseHousingSpace(
-  defenseLog: ClanCapitalRaidSeason["defenseLog"],
-): number {
-  if (!Array.isArray(defenseLog) || defenseLog.length <= 0) {
-    return 0;
+type RaidDefenseOpponent = {
+  districts: Record<string, unknown>[];
+};
+
+function normalizeUsableDefenseOpponent(opponent: unknown): RaidDefenseOpponent | null {
+  if (!opponent || typeof opponent !== "object") {
+    return null;
+  }
+  const rawDistricts = (opponent as Record<string, unknown>).districts;
+  if (!Array.isArray(rawDistricts) || rawDistricts.length <= 0) {
+    return null;
   }
 
-  const firstOpponent = defenseLog[0];
-  if (!firstOpponent || typeof firstOpponent !== "object") {
-    return 0;
-  }
-  const districts = Array.isArray((firstOpponent as Record<string, unknown>).districts)
-    ? ((firstOpponent as Record<string, unknown>).districts as unknown[])
-    : [];
-
-  let housingSpace = 0;
-  for (const rawDistrict of districts) {
-    if (!rawDistrict || typeof rawDistrict !== "object") continue;
+  const districts: Record<string, unknown>[] = [];
+  for (const rawDistrict of rawDistricts) {
+    if (!rawDistrict || typeof rawDistrict !== "object") {
+      return null;
+    }
     const district = rawDistrict as Record<string, unknown>;
-    const districtId = getDistrictId(district);
-    const hallLevel = getDistrictHallLevel(district);
-    if (districtId === 70000001 && hallLevel !== null) {
-      housingSpace += 3 * (25 + 5 * hallLevel);
-    } else if (districtId === 70000002 && hallLevel !== null && hallLevel > 1) {
-      housingSpace += 25 + 5 * hallLevel;
-    } else if (districtId === 70000005 && hallLevel !== null) {
-      housingSpace += 25 + 5 * hallLevel;
+    if (
+      getDistrictId(district) === null ||
+      getDistrictHallLevel(district) === null ||
+      getDistrictAttackCount(district) === null ||
+      getDistrictDestructionPercent(district) === null
+    ) {
+      return null;
+    }
+    if (
+      getDistrictDestructionPercent(district) === 100 &&
+      (getDistrictTotalLooted(district) === null || getDistrictId(district) === null)
+    ) {
+      return null;
+    }
+    districts.push(district);
+  }
+
+  return { districts };
+}
+
+function calculateRaidDefenseHousingSpace(
+  opponents: RaidDefenseOpponent[],
+): number | null {
+  for (const opponent of opponents) {
+    let housingSpace = 0;
+    const districts = opponent.districts;
+
+    for (const district of districts) {
+      const districtId = getDistrictId(district);
+      const hallLevel = getDistrictHallLevel(district);
+      if (districtId === 70000001 && hallLevel !== null) {
+        housingSpace += 3 * (25 + 5 * hallLevel);
+      } else if (districtId === 70000002 && hallLevel !== null && hallLevel > 1) {
+        housingSpace += 25 + 5 * hallLevel;
+      } else if (districtId === 70000005 && hallLevel !== null) {
+        housingSpace += 25 + 5 * hallLevel;
+      }
+    }
+    if (housingSpace > 0) {
+      return housingSpace;
     }
   }
 
-  return housingSpace;
+  return null;
 }
 
 function calculateRaidDefenseDistrictWeights(
-  defenseLog: ClanCapitalRaidSeason["defenseLog"],
+  opponents: RaidDefenseOpponent[],
 ): Map<number, number> {
   const lower = new Map<number, number>();
   const upper = new Map<number, number>();
 
-  if (!Array.isArray(defenseLog) || defenseLog.length <= 0) {
-    return new Map();
-  }
-
-  for (const opponent of defenseLog) {
-    if (!opponent || typeof opponent !== "object") continue;
-    const districts = Array.isArray((opponent as Record<string, unknown>).districts)
-      ? ((opponent as Record<string, unknown>).districts as unknown[])
-      : [];
-    for (const rawDistrict of districts) {
-      if (!rawDistrict || typeof rawDistrict !== "object") continue;
-      const district = rawDistrict as Record<string, unknown>;
+  for (const opponent of opponents) {
+    for (const district of opponent.districts) {
       if (getDistrictDestructionPercent(district) !== 100) {
         continue;
       }
@@ -99,8 +121,13 @@ function calculateRaidDefenseDistrictWeights(
       if (districtId === null || totalLooted === null) {
         continue;
       }
-      lower.set(districtId, Math.max(totalLooted - 750, lower.get(districtId) ?? 0));
-      upper.set(districtId, Math.min(totalLooted, upper.get(districtId) ?? 0));
+      const existingLower = lower.get(districtId);
+      const existingUpper = upper.get(districtId);
+      lower.set(districtId, Math.max(totalLooted - 750, existingLower ?? 0));
+      upper.set(
+        districtId,
+        existingUpper === undefined ? totalLooted : Math.min(existingUpper, totalLooted),
+      );
     }
   }
 
@@ -114,31 +141,31 @@ function calculateRaidDefenseDistrictWeights(
 
 export function predictRaidDefenseMedalsFromDefenseLog(
   defenseLog: ClanCapitalRaidSeason["defenseLog"],
-): number {
+): number | null {
   if (!Array.isArray(defenseLog) || defenseLog.length <= 0) {
-    return 0;
+    return null;
   }
 
-  const housingSpace = calculateRaidDefenseHousingSpace(defenseLog);
-  const districtWeights = calculateRaidDefenseDistrictWeights(defenseLog);
+  const opponents = defenseLog
+    .map((opponent) => normalizeUsableDefenseOpponent(opponent))
+    .filter((opponent): opponent is RaidDefenseOpponent => opponent !== null);
+  if (opponents.length <= 0) {
+    return null;
+  }
+
+  const housingSpace = calculateRaidDefenseHousingSpace(opponents);
+  if (housingSpace === null) {
+    return null;
+  }
+  const districtWeights = calculateRaidDefenseDistrictWeights(opponents);
   const troopsKilled: number[] = [];
 
-  for (const opponent of defenseLog) {
-    if (!opponent || typeof opponent !== "object") continue;
-    const districts = Array.isArray((opponent as Record<string, unknown>).districts)
-      ? ((opponent as Record<string, unknown>).districts as unknown[])
-      : [];
+  for (const opponent of opponents) {
+    let opponentTroopsKilled = 0;
+    for (const district of opponent.districts) {
+      const attackCount = getDistrictAttackCount(district)!;
 
-    troopsKilled.push(0);
-    for (const rawDistrict of districts) {
-      if (!rawDistrict || typeof rawDistrict !== "object") continue;
-      const district = rawDistrict as Record<string, unknown>;
-      const attackCount = getDistrictAttackCount(district);
-      if (attackCount === null) {
-        continue;
-      }
-
-      troopsKilled[troopsKilled.length - 1] += attackCount * housingSpace;
+      opponentTroopsKilled += attackCount * housingSpace;
 
       if (getDistrictDestructionPercent(district) !== 100) {
         continue;
@@ -148,14 +175,15 @@ export function predictRaidDefenseMedalsFromDefenseLog(
       if (districtId === null || totalLooted === null) {
         continue;
       }
-      troopsKilled[troopsKilled.length - 1] -= Math.floor(
-        (totalLooted - (districtWeights.get(districtId) ?? 0)) / 3,
+      opponentTroopsKilled -= Math.floor(
+        (totalLooted! - districtWeights.get(districtId)!) / 3,
       );
     }
+    troopsKilled.push(opponentTroopsKilled);
   }
 
   if (troopsKilled.length <= 0) {
-    return 0;
+    return null;
   }
 
   return Math.min(Math.floor(Math.max(...troopsKilled) / 25), 350);

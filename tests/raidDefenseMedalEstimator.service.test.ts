@@ -28,7 +28,97 @@ describe("RaidDefenseMedalEstimator", () => {
       },
     ];
 
-    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(56);
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(63);
+  });
+
+  it("clamps a low-loot district lower bound at zero", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 1,
+            destructionPercent: 100,
+            totalLooted: 500,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(2);
+  });
+
+  it("keeps shared district bounds independent by district id", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 2,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+          {
+            id: 70000002,
+            districtHallLevel: 4,
+            attackCount: 1,
+            destructionPercent: 100,
+            totalLooted: 500,
+          },
+        ],
+      },
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 3,
+            destructionPercent: 100,
+            totalLooted: 1600,
+          },
+          {
+            id: 70000002,
+            districtHallLevel: 4,
+            attackCount: 4,
+            destructionPercent: 100,
+            totalLooted: 800,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(38);
+  });
+
+  it("uses the single best defense result rather than summing opponents", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 10,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 20,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(115);
   });
 
   it("caps the predicted defense reward at 350", () => {
@@ -49,8 +139,53 @@ describe("RaidDefenseMedalEstimator", () => {
     expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(350);
   });
 
-  it("returns zero for missing or empty defense logs", () => {
-    expect(predictRaidDefenseMedalsFromDefenseLog(null as any)).toBe(0);
-    expect(predictRaidDefenseMedalsFromDefenseLog([] as any)).toBe(0);
+  it("returns unknown for missing or empty defense logs", () => {
+    expect(predictRaidDefenseMedalsFromDefenseLog(null as any)).toBeNull();
+    expect(predictRaidDefenseMedalsFromDefenseLog([] as any)).toBeNull();
+  });
+
+  it("returns unknown for nonempty defense logs without usable attack data", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBeNull();
+  });
+
+  it("ignores a partially malformed opponent when selecting the best defense", () => {
+    const defenseLog = [
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 2,
+            destructionPercent: 100,
+            totalLooted: 1000,
+          },
+        ],
+      },
+      {
+        districts: [
+          {
+            id: 70000001,
+            districtHallLevel: 5,
+            attackCount: 100,
+            destructionPercent: 100,
+          },
+        ],
+      },
+    ];
+
+    expect(predictRaidDefenseMedalsFromDefenseLog(defenseLog as any)).toBe(7);
   });
 });

@@ -505,6 +505,87 @@ describe("AutoRoleEvaluationService league rules", () => {
     expect(elderResult.desiredManagedRoleIds).not.toContain(leadRoleId);
   });
 
+  it("does not use stale PlayerCurrent for configured tracked-clan roles when live membership is authoritative", () => {
+    const member = makeMember();
+    const clanRoleId = "666666666666666666";
+    const leadRoleId = "777777777777777777";
+    const trackedClans = [{ tag: "#2QG2C08UP", clanRoleId, leadRoleId }];
+    const liveMembership: AutoRoleClanMembershipIndex = new Map([
+      ["#2QG2C08UP", { source: "FWA", playerTags: new Set<string>() }],
+    ]);
+    const staleCurrent = new Map([
+      [
+        "#2QG2C08UP",
+        makePlayerCurrent({
+          playerTag: "#2QG2C08UP",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+      ],
+    ]);
+
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [],
+      managedRoleIds: new Set([clanRoleId, leadRoleId]),
+      member,
+      linkedAccounts: [makeLinkedAccount({ playerTag: "#2QG2C08UP" })],
+      playerCurrentByTag: staleCurrent,
+      clanMembershipByTag: liveMembership,
+      trackedClanScope,
+      trackedClans,
+      trackedClanMembershipAuthoritative: true,
+    });
+
+    expect(result.desiredManagedRoleIds).not.toContain(clanRoleId);
+    expect(result.desiredManagedRoleIds).not.toContain(leadRoleId);
+  });
+
+  it("retains configured tracked-clan roles for a current qualifying linked account despite another stale account", () => {
+    const member = makeMember();
+    const leadRoleId = "777777777777777777";
+    const trackedClans = [{ tag: "#2QG2C08UP", leadRoleId }];
+    const liveMembership: AutoRoleClanMembershipIndex = new Map([
+      ["#2QG2C08UP", { source: "FWA", playerTags: new Set(["#QGRJ2222"]) }],
+    ]);
+    const current = new Map([
+      [
+        "#2QG2C08UP",
+        makePlayerCurrent({
+          playerTag: "#2QG2C08UP",
+          currentClanTag: "#2QG2C08UP",
+          role: "coLeader",
+        }),
+      ],
+      [
+        "#QGRJ2222",
+        makePlayerCurrent({
+          playerTag: "#QGRJ2222",
+          currentClanTag: "#2QG2C08UP",
+          role: "leader",
+        }),
+      ],
+    ]);
+
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [],
+      managedRoleIds: new Set([leadRoleId]),
+      member,
+      linkedAccounts: [
+        makeLinkedAccount({ playerTag: "#2QG2C08UP" }),
+        makeLinkedAccount({ playerTag: "#QGRJ2222" }),
+      ],
+      playerCurrentByTag: current,
+      clanMembershipByTag: liveMembership,
+      trackedClanScope,
+      trackedClans,
+      trackedClanMembershipAuthoritative: true,
+    });
+
+    expect(result.desiredManagedRoleIds).toContain(leadRoleId);
+  });
+
   it("does not grant a tracked-clan lead role for a different tracked clan", () => {
     const member = makeMember();
     const leadRoleId = "555555555555555555";
