@@ -2675,6 +2675,96 @@ describe("RaidDashboardService", () => {
     expect(prismaMock.raidDistrictHitHistory.upsert).not.toHaveBeenCalled();
   });
 
+  it("marks an active selected weekend with an unfinished final capital as ongoing", async () => {
+    const activeSeason = {
+      startTime: "2026-08-14T00:00:00.000Z",
+      endTime: "2026-08-17T00:00:00.000Z",
+      state: "ongoing",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Active Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: {
+        getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-14T00:00:00.000Z"),
+    });
+
+    expect(result.rows[0]?.hasOngoingRaid).toBe(true);
+  });
+
+  it("does not mark an unfinished final capital as ongoing in historical overview", async () => {
+    const historicalSeason = {
+      startTime: "2026-08-07T00:00:00.000Z",
+      endTime: "2026-08-10T00:00:00.000Z",
+      state: "completed",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Historical Defender", tag: "#2QG2C08UR" },
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 5,
+              attackCount: 1,
+              destructionPercent: 42,
+              stars: 1,
+              attackLog: [
+                {
+                  attacker: { name: "Attacker", tag: "#PYPYQG2C" },
+                  destructionPercent: 42,
+                  stars: 1,
+                  attackOrder: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: {
+        getClanCapitalRaidSeasons: vi.fn(async () => [historicalSeason]),
+      } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      nowMs: Date.parse("2026-08-15T12:00:00.000Z"),
+      selectedRaidSeasonStartTimeMs: Date.parse("2026-08-07T00:00:00.000Z"),
+    });
+    const overview = buildRaidDashboardOverviewDescription(result.rows);
+
+    expect(result.rows[0]?.hasOngoingRaid).toBe(false);
+    expect(overview).not.toContain("⚔️");
+  });
+
   it("loads historical detail from the exact requested weekend and preserves defender attack counts", async () => {
     const newerSeason = {
       startTime: "2026-08-14T00:00:00.000Z",

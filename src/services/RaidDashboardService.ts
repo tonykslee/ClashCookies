@@ -1120,7 +1120,9 @@ async function loadRaidDashboardSeasonSnapshot(input: {
     attacksMax: Array.isArray(activeSeason.members) && activeSeason.members.length > 0
       ? activeSeason.members.length * 6
       : null,
-    hasOngoingRaid: calculateHasOngoingRaidFromAttackLog(activeSeason.attackLog),
+    hasOngoingRaid:
+      isRaidDashboardSeasonActiveAt(activeSeason, input.nowMs) &&
+      calculateHasOngoingRaidFromAttackLog(activeSeason.attackLog),
     raidsCompleted: calculateCompletedRaidsFromSeason(activeSeason, attackSections),
   };
 
