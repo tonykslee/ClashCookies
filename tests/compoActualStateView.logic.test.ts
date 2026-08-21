@@ -243,6 +243,40 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket["<=TH13"]).toBe(1);
   });
 
+  it("projects ACTUAL deltas from a newly granular upper HeatMapRef band", () => {
+    const result = projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 8_250_000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({
+          TH18: 23,
+          TH17: 10,
+          TH16: 7,
+          TH15: 5,
+          TH14: 3,
+          TH13: 1,
+          TH12: 1,
+        }),
+      },
+      heatMapRefs: HEAT_MAP_REF_SEED_ROWS.map((row) => makeHeatMapRef(row)),
+    });
+
+    expect(result.selectedHeatMapRef).toMatchObject({
+      weightMinInclusive: 8_200_001,
+      weightMaxInclusive: 8_300_000,
+    });
+    expect(result.deltaByBucket).toEqual({
+      TH18: -1,
+      TH17: 1,
+      TH16: 0,
+      TH15: 0,
+      TH14: 0,
+      "<=TH13": 0,
+    });
+  });
+
   it("uses deterministic low-bucket overflow when Auto-Detect has more missing slots than deficits", () => {
     const result = projectCompoActualStateView({
       view: "auto",

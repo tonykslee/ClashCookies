@@ -79,25 +79,39 @@ describe("HeatMapRef continuity", () => {
     expect(validation.duplicateBandKeys).toEqual([]);
   });
 
-  it("treats the corrected bootstrap bands as continuous and resolves 8109000", () => {
+  it("treats the 14 bootstrap bands as continuous and resolves every upper boundary", () => {
     const validation = validateHeatMapRefContinuity(HEAT_MAP_REF_SEED_ROWS);
-    const resolvedBand = findHeatMapRefForWeight(HEAT_MAP_REF_SEED_ROWS, 8_109_000);
 
+    expect(validation.bandCount).toBe(14);
     expect(validation.hasContinuousCoverage).toBe(true);
     expect(validation.firstGap).toBeNull();
     expect(validation.firstOverlap).toBeNull();
     expect(validation.duplicateBandKeys).toEqual([]);
-    expect(resolvedBand).toMatchObject({
-      weightMinInclusive: 8_100_001,
-      weightMaxInclusive: 9_999_999,
-    });
+
+    const boundaryCases = [
+      { weight: 8_100_000, min: 8_000_001, max: 8_100_000 },
+      { weight: 8_100_001, min: 8_100_001, max: 8_200_000 },
+      { weight: 8_200_000, min: 8_100_001, max: 8_200_000 },
+      { weight: 8_200_001, min: 8_200_001, max: 8_300_000 },
+      { weight: 8_300_000, min: 8_200_001, max: 8_300_000 },
+      { weight: 8_300_001, min: 8_300_001, max: 8_400_000 },
+      { weight: 8_400_000, min: 8_300_001, max: 8_400_000 },
+      { weight: 8_400_001, min: 8_400_001, max: 9_999_999 },
+    ];
+
+    for (const testCase of boundaryCases) {
+      expect(findHeatMapRefForWeight(HEAT_MAP_REF_SEED_ROWS, testCase.weight)).toMatchObject({
+        weightMinInclusive: testCase.min,
+        weightMaxInclusive: testCase.max,
+      });
+    }
   });
 
   it("keeps Rocky Road-style ACTUAL projections on a valid band when coverage is continuous", () => {
     const result = projectCompoActualStateView({
       view: "raw",
       base: {
-        resolvedTotalWeight: 8_109_000,
+        resolvedTotalWeight: 8_250_000,
         unresolvedWeightCount: 0,
         memberCount: 50,
         bucketCounts: makeBucketCounts({

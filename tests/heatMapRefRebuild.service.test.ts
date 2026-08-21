@@ -169,8 +169,8 @@ describe("HeatMapRefRebuildService", () => {
     ]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows());
-    prismaMock.heatMapRef.deleteMany.mockResolvedValue({ count: 11 });
-    prismaMock.heatMapRef.createMany.mockResolvedValue({ count: 11 });
+    prismaMock.heatMapRef.deleteMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
+    prismaMock.heatMapRef.createMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as never);

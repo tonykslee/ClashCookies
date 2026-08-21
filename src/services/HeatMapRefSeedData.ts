@@ -1,7 +1,7 @@
 import type { HeatMapRefSeedRow } from "./HeatMapRefService";
 
-const SOURCE_VERSION = "bootstrap-2026-03-17";
-const REFRESHED_AT = new Date("2026-03-17T00:00:00.000Z");
+const SOURCE_VERSION = "bootstrap-2026-08-21";
+const REFRESHED_AT = new Date("2026-08-21T00:00:00.000Z");
 
 /**
  * Purpose: provide the checked-in authoritative HeatMapRef bootstrap dataset.
@@ -173,14 +173,62 @@ export const HEAT_MAP_REF_SEED_ROWS: readonly HeatMapRefSeedRow[] = [
   },
   {
     weightMinInclusive: 8_100_001,
-    weightMaxInclusive: 9_999_999,
-    th18Count: 22,
-    th17Count: 11,
+    weightMaxInclusive: 8_200_000,
+    th18Count: 24,
+    th17Count: 9,
     th16Count: 7,
-    th15Count: 6,
+    th15Count: 5,
     th14Count: 3,
     th13Count: 1,
-    th12Count: 0,
+    th12Count: 1,
+    th11Count: 0,
+    th10OrLowerCount: 0,
+    contributingClanCount: 0,
+    sourceVersion: SOURCE_VERSION,
+    refreshedAt: REFRESHED_AT,
+  },
+  {
+    weightMinInclusive: 8_200_001,
+    weightMaxInclusive: 8_300_000,
+    th18Count: 24,
+    th17Count: 9,
+    th16Count: 7,
+    th15Count: 5,
+    th14Count: 3,
+    th13Count: 1,
+    th12Count: 1,
+    th11Count: 0,
+    th10OrLowerCount: 0,
+    contributingClanCount: 0,
+    sourceVersion: SOURCE_VERSION,
+    refreshedAt: REFRESHED_AT,
+  },
+  {
+    weightMinInclusive: 8_300_001,
+    weightMaxInclusive: 8_400_000,
+    th18Count: 24,
+    th17Count: 9,
+    th16Count: 7,
+    th15Count: 5,
+    th14Count: 3,
+    th13Count: 1,
+    th12Count: 1,
+    th11Count: 0,
+    th10OrLowerCount: 0,
+    contributingClanCount: 0,
+    sourceVersion: SOURCE_VERSION,
+    refreshedAt: REFRESHED_AT,
+  },
+  {
+    weightMinInclusive: 8_400_001,
+    weightMaxInclusive: 9_999_999,
+    th18Count: 24,
+    th17Count: 9,
+    th16Count: 7,
+    th15Count: 5,
+    th14Count: 3,
+    th13Count: 1,
+    th12Count: 1,
     th11Count: 0,
     th10OrLowerCount: 0,
     contributingClanCount: 0,
