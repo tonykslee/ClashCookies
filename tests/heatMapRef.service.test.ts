@@ -21,7 +21,7 @@ describe("HeatMapRefService", () => {
   });
 
   it("uses the corrected checked-in HeatMapRef bootstrap rows", () => {
-    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(11);
+    expect(HEAT_MAP_REF_SEED_ROWS).toHaveLength(14);
     expect(HEAT_MAP_REF_SEED_ROWS[0]).toMatchObject({
       weightMinInclusive: 0,
       weightMaxInclusive: 7_200_000,
@@ -35,7 +35,7 @@ describe("HeatMapRefService", () => {
       th11Count: 2,
       th10OrLowerCount: 0,
       contributingClanCount: 0,
-      sourceVersion: "bootstrap-2026-03-17",
+      sourceVersion: "bootstrap-2026-08-21",
     });
     expect(HEAT_MAP_REF_SEED_ROWS[9]).toMatchObject({
       weightMinInclusive: 8_000_001,
@@ -51,20 +51,68 @@ describe("HeatMapRefService", () => {
       th10OrLowerCount: 0,
       contributingClanCount: 0,
     });
-    expect(HEAT_MAP_REF_SEED_ROWS[10]).toMatchObject({
-      weightMinInclusive: 8_100_001,
-      weightMaxInclusive: 9_999_999,
-      th18Count: 22,
-      th17Count: 11,
-      th16Count: 7,
-      th15Count: 6,
-      th14Count: 3,
-      th13Count: 1,
-      th12Count: 0,
-      th11Count: 0,
-      th10OrLowerCount: 0,
-      contributingClanCount: 0,
-    });
+    expect(HEAT_MAP_REF_SEED_ROWS.slice(10)).toEqual([
+      expect.objectContaining({
+        weightMinInclusive: 8_100_001,
+        weightMaxInclusive: 8_200_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "bootstrap-2026-08-21",
+      }),
+      expect.objectContaining({
+        weightMinInclusive: 8_200_001,
+        weightMaxInclusive: 8_300_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "bootstrap-2026-08-21",
+      }),
+      expect.objectContaining({
+        weightMinInclusive: 8_300_001,
+        weightMaxInclusive: 8_400_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "bootstrap-2026-08-21",
+      }),
+      expect.objectContaining({
+        weightMinInclusive: 8_400_001,
+        weightMaxInclusive: 9_999_999,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+        th11Count: 0,
+        th10OrLowerCount: 0,
+        contributingClanCount: 0,
+        sourceVersion: "bootstrap-2026-08-21",
+      }),
+    ]);
   });
 
   it("refuses to persist gapped HeatMapRef seed rows before any write occurs", async () => {

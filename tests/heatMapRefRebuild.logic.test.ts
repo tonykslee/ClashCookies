@@ -118,6 +118,55 @@ describe("heatMapRefRebuild helpers", () => {
     expect(result.rows[0]?.contributingClanCount).toBe(1);
   });
 
+  it("routes qualifying rosters into each of the four granular upper bands", () => {
+    const seedBands = [
+      makeBand(8_100_001, 8_200_000),
+      makeBand(8_200_001, 8_300_000),
+      makeBand(8_300_001, 8_400_000),
+      makeBand(8_400_001, 9_999_999),
+    ];
+    const seedCounts = makeCounts({
+      th18Count: 24,
+      th17Count: 9,
+      th16Count: 7,
+      th15Count: 5,
+      th14Count: 3,
+      th13Count: 1,
+      th12Count: 1,
+    });
+    const seedRowsByBandKey = new Map(
+      seedBands.map((band) => [getHeatMapRefBandKey(band), seedCounts] as const),
+    );
+    const sourceRosters = [
+      makeRoster({ clanTag: "#UPPER1", weights: Array.from({ length: 50 }, () => 163_000) }),
+      makeRoster({ clanTag: "#UPPER2", weights: Array.from({ length: 50 }, () => 165_000) }),
+      makeRoster({ clanTag: "#UPPER3", weights: Array.from({ length: 50 }, () => 167_000) }),
+      makeRoster({ clanTag: "#UPPER4", weights: Array.from({ length: 50 }, () => 169_000) }),
+    ];
+
+    const result = buildHeatMapRefRebuildRows({
+      sourceRosters,
+      seedBands,
+      seedRowsByBandKey,
+      now: new Date("2026-08-21T00:00:00.000Z"),
+    });
+
+    expect(result.excludedRosters).toEqual([]);
+    expect(result.qualifyingRosters.map((roster) => getHeatMapRefBandKey(roster.band))).toEqual([
+      "8100001-8200000",
+      "8200001-8300000",
+      "8300001-8400000",
+      "8400001-9999999",
+    ]);
+    expect(result.rows.map((row) => getHeatMapRefBandKey(row))).toEqual([
+      "8100001-8200000",
+      "8200001-8300000",
+      "8300001-8400000",
+      "8400001-9999999",
+    ]);
+    expect(result.rows.map((row) => row.contributingClanCount)).toEqual([1, 1, 1, 1]);
+  });
+
   it("aggregates observed averages per band and blends them against the seed baseline", () => {
     const band = makeBand(0, 9_999_999);
     const qualified: HeatMapRefRebuildQualifiedRoster[] = [
