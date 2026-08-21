@@ -318,12 +318,12 @@ describe("command coverage", () => {
     expect(raidsHelpText).toContain("type:fwa");
     expect(raidsHelpText).toContain("type:custom");
     expect(raidsHelpText).not.toContain("type:custom tag:");
-    expect(raidsHelpText).toContain("Medal estimates");
+    expect(raidsHelpText).toContain("active-weekend medal estimates");
     expect(raidsHelpText).toContain("cleared districts/capital peaks");
     expect(raidsHelpText).toContain("defensiveReward");
     expect(raidsHelpText).toContain("Older");
     expect(raidsHelpText).toContain("previous 7 calendar weekends");
-    expect(raidsHelpText).toContain("active-weekend Defense can be estimated");
+    expect(raidsHelpText).toContain("Defense estimated from the defense log");
     expect(raidsHelpText).toContain("/raids roster add");
     expect(raidsHelpText).toContain("/raids roster status");
     expect(raidsHelpText).toContain("already on roster");
