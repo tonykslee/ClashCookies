@@ -345,9 +345,47 @@ describe("CompoWarStateService", () => {
       }),
       makeHeatMapRef({
         weightMinInclusive: 8_100_001,
+        weightMaxInclusive: 8_200_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 8_200_001,
+        weightMaxInclusive: 8_300_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 8_300_001,
+        weightMaxInclusive: 8_400_000,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
+      }),
+      makeHeatMapRef({
+        weightMinInclusive: 8_400_001,
         weightMaxInclusive: 9_999_999,
-        th18Count: 22,
-        th17Count: 11,
+        th18Count: 24,
+        th17Count: 9,
+        th16Count: 7,
+        th15Count: 5,
+        th14Count: 3,
+        th13Count: 1,
+        th12Count: 1,
       }),
     ];
 
@@ -365,7 +403,7 @@ describe("CompoWarStateService", () => {
     });
     expect(findHeatMapRefForWeightForTest(refs, 8_109_000)).toMatchObject({
       weightMinInclusive: 8_100_001,
-      weightMaxInclusive: 9_999_999,
+      weightMaxInclusive: 8_200_000,
     });
   });
 
