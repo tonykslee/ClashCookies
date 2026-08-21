@@ -30,9 +30,10 @@ import {
   findRaidIntelDistrictByKey,
   findRaidDashboardClanRow,
   loadRaidIntelSeasonDetailWithQueueContext,
+  loadRaidDashboardOverviewForSourceWithQueueContext,
   loadRaidDashboardSeasonDetailWithQueueContext,
-  listRaidDashboardRowsForSourceWithQueueContext,
   parseRaidSeasonTimeMs,
+  RAID_DASHBOARD_HISTORY_LIMIT,
   resolveRaidIntelDefenderUpgrade,
   type RaidDashboardOverviewSourceMode,
   type RaidDashboardClanRow,
@@ -68,6 +69,7 @@ import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
 const RAID_DASHBOARD_TIMEOUT_MS = 10 * 60 * 1000;
 const RAID_DASHBOARD_PUBLIC_TIMEOUT_MS = 60 * 60 * 1000;
 const RAID_DASHBOARD_PREFIX = "raids";
+const RAID_DASHBOARD_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 type RaidsDashboardVisibility = "private" | "public";
 
 type RaidsDashboardSession = {
@@ -78,6 +80,9 @@ type RaidsDashboardSession = {
   customClanTag: string | null;
   selectedClanTag: string | null;
   rows: RaidDashboardClanRow[];
+  selectedRaidSeasonStartTimeMs: number | null;
+  selectedRaidSeasonEndTimeMs: number | null;
+  latestRaidSeasonStartTimeMs: number | null;
   refreshing: boolean;
   timeoutHandle: ReturnType<typeof setTimeout> | null;
 };
@@ -162,16 +167,30 @@ const RAID_INTEL_SAVE_MARKS_ERROR_MESSAGE = "Failed to save raid intel layout ma
 const raidsDashboardSessions = new Map<string, RaidsDashboardSession>();
 const raidsIntelSessions = new Map<string, RaidIntelSession>();
 
-function buildRaidsCustomId(sessionId: string, action: "select" | "refresh" | "back"): string {
+function buildRaidsCustomId(
+  sessionId: string,
+  action: "select" | "refresh" | "back" | "older" | "newer" | "latest",
+): string {
   return `${RAID_DASHBOARD_PREFIX}:${sessionId}:${action}`;
 }
 
-function parseRaidsCustomId(customId: string): { sessionId: string; action: "select" | "refresh" | "back" } | null {
+function parseRaidsCustomId(customId: string): {
+  sessionId: string;
+  action: "select" | "refresh" | "back" | "older" | "newer" | "latest";
+} | null {
   const parts = customId.split(":");
   if (parts.length !== 3 || parts[0] !== RAID_DASHBOARD_PREFIX) return null;
   const sessionId = parts[1]?.trim() ?? "";
   const action = parts[2]?.trim() ?? "";
-  if (!sessionId || (action !== "select" && action !== "refresh" && action !== "back")) {
+  if (
+    !sessionId ||
+    (action !== "select" &&
+      action !== "refresh" &&
+      action !== "back" &&
+      action !== "older" &&
+      action !== "newer" &&
+      action !== "latest")
+  ) {
     return null;
   }
   return { sessionId, action };
@@ -428,15 +447,64 @@ async function applyRaidIntelDistrictGradeArgs(input: {
     : null;
 }
 
+type RaidDashboardSeasonMetadata = {
+  selectedRaidSeasonStartTimeMs: number | null;
+  selectedRaidSeasonEndTimeMs: number | null;
+  latestRaidSeasonStartTimeMs: number | null;
+};
+
+function formatRaidDashboardUtcDate(ms: number): { month: string; day: string; year: string } | null {
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(ms);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).formatToParts(date);
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  const month = values.get("month");
+  const day = values.get("day");
+  const year = values.get("year");
+  return month && day && year ? { month, day, year } : null;
+}
+
+function buildRaidDashboardWeekendHeading(season: RaidDashboardSeasonMetadata): string {
+  const start =
+    season.selectedRaidSeasonStartTimeMs === null
+      ? null
+      : formatRaidDashboardUtcDate(season.selectedRaidSeasonStartTimeMs);
+  if (!start) return "Raid Overview";
+
+  const end =
+    season.selectedRaidSeasonEndTimeMs === null
+      ? null
+      : formatRaidDashboardUtcDate(season.selectedRaidSeasonEndTimeMs);
+  if (!end) return `Raid Overview — ${start.month} ${start.day}, ${start.year}`;
+
+  const range =
+    start.year === end.year
+      ? start.month === end.month
+        ? `${start.month} ${start.day}–${end.day}, ${start.year}`
+        : `${start.month} ${start.day}–${end.month} ${end.day}, ${start.year}`
+      : `${start.month} ${start.day}, ${start.year}–${end.month} ${end.day}, ${end.year}`;
+  return `Raid Overview — ${range}`;
+}
+
 function buildRaidDashboardEmbed(
   rows: RaidDashboardClanRow[],
   selectedRow: RaidDashboardClanRow | null,
   detail: Awaited<ReturnType<typeof loadRaidDashboardSeasonDetailWithQueueContext>> | null,
+  season: RaidDashboardSeasonMetadata,
 ) {
   const description = selectedRow
     ? buildRaidDashboardSingleClanDescription(selectedRow, detail)
     : buildRaidDashboardOverviewDescription(rows);
-  return new EmbedBuilder().setDescription(description).setColor(0x5865f2);
+  return new EmbedBuilder()
+    .setTitle(buildRaidDashboardWeekendHeading(season))
+    .setDescription(description)
+    .setColor(0x5865f2);
 }
 
 function buildRaidIntelEmbed(input: {
@@ -499,6 +567,7 @@ function buildRaidsButtonRow(input: {
   sessionId: string;
   selectedClanTag: string | null;
   refreshing: boolean;
+  season: RaidDashboardSeasonMetadata;
 }): ActionRowBuilder<ButtonBuilder> {
   const buttons: ButtonBuilder[] = [];
   if (input.selectedClanTag) {
@@ -510,6 +579,40 @@ function buildRaidsButtonRow(input: {
         .setDisabled(input.refreshing),
     );
   }
+
+  const latestStart = input.season.latestRaidSeasonStartTimeMs;
+  const selectedStart = input.season.selectedRaidSeasonStartTimeMs;
+  const hasSeasonSelection = selectedStart !== null && latestStart !== null;
+  const historyFloor = hasSeasonSelection
+    ? latestStart - (RAID_DASHBOARD_HISTORY_LIMIT - 1) * RAID_DASHBOARD_WEEK_MS
+    : null;
+  const olderDisabled =
+    input.refreshing ||
+    !hasSeasonSelection ||
+    (historyFloor !== null && selectedStart <= historyFloor);
+  const latestDisabled = input.refreshing || !hasSeasonSelection || selectedStart === latestStart;
+  const newerDisabled =
+    input.refreshing ||
+    !hasSeasonSelection ||
+    (latestStart !== null && selectedStart >= latestStart);
+
+  buttons.push(
+    new ButtonBuilder()
+      .setCustomId(buildRaidsCustomId(input.sessionId, "older"))
+      .setLabel("◀ Older")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(olderDisabled),
+    new ButtonBuilder()
+      .setCustomId(buildRaidsCustomId(input.sessionId, "latest"))
+      .setLabel("Latest")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(latestDisabled),
+    new ButtonBuilder()
+      .setCustomId(buildRaidsCustomId(input.sessionId, "newer"))
+      .setLabel("Newer ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(newerDisabled),
+  );
   buttons.push(
     new ButtonBuilder()
       .setCustomId(buildRaidsCustomId(input.sessionId, "refresh"))
@@ -947,20 +1050,36 @@ async function buildRaidDashboardPayload(input: {
   guildId?: string | null;
   customClanTag?: string | null;
   rows?: RaidDashboardClanRow[];
+  season?: RaidDashboardSeasonMetadata;
+  selectedRaidSeasonStartTimeMs?: number | null;
   detailSource?: string | null;
 }): Promise<{
   embeds: EmbedBuilder[];
   components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>>;
   rows: RaidDashboardClanRow[];
+  season: RaidDashboardSeasonMetadata;
 }> {
-  const rows =
-    input.rows ??
-    (await listRaidDashboardRowsForSourceWithQueueContext({
-      cocService: input.cocService,
-      sourceMode: input.sourceMode,
-      guildId: input.guildId ?? null,
-      customClanTag: input.customClanTag ?? null,
-    }));
+  const overview = input.rows
+    ? null
+    : await loadRaidDashboardOverviewForSourceWithQueueContext({
+        cocService: input.cocService,
+        sourceMode: input.sourceMode,
+        guildId: input.guildId ?? null,
+        customClanTag: input.customClanTag ?? null,
+        selectedRaidSeasonStartTimeMs: input.selectedRaidSeasonStartTimeMs,
+      });
+  const rows = input.rows ?? overview?.rows ?? [];
+  const season = overview
+    ? {
+        selectedRaidSeasonStartTimeMs: overview.selectedRaidSeasonStartTimeMs,
+        selectedRaidSeasonEndTimeMs: overview.selectedRaidSeasonEndTimeMs,
+        latestRaidSeasonStartTimeMs: overview.latestRaidSeasonStartTimeMs,
+      }
+    : input.season ?? {
+        selectedRaidSeasonStartTimeMs: null,
+        selectedRaidSeasonEndTimeMs: null,
+        latestRaidSeasonStartTimeMs: null,
+      };
   const selectedRow = input.selectedClanTag ? findRaidDashboardClanRow(rows, input.selectedClanTag) : null;
   const effectiveSelectedTag = selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null;
   const detail =
@@ -969,9 +1088,10 @@ async function buildRaidDashboardPayload(input: {
           cocService: input.cocService,
           clanTag: selectedRow.clanTag,
           source: input.detailSource,
+          raidSeasonStartTimeMs: season.selectedRaidSeasonStartTimeMs,
         })
       : null;
-  const embed = buildRaidDashboardEmbed(rows, selectedRow, detail);
+  const embed = buildRaidDashboardEmbed(rows, selectedRow, detail, season);
   const components: Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> = [];
   if (rows.length > 0) {
     components.push(
@@ -987,6 +1107,7 @@ async function buildRaidDashboardPayload(input: {
         sessionId: input.sessionId,
         selectedClanTag: effectiveSelectedTag,
         refreshing: input.refreshing,
+        season,
       }),
     );
   }
@@ -994,6 +1115,7 @@ async function buildRaidDashboardPayload(input: {
     embeds: [embed],
     components,
     rows,
+    season,
   };
 }
 
@@ -1076,11 +1198,19 @@ export async function handleRaidsSelectMenuInteraction(
     return;
   }
 
-  const selectedClanTag = normalizeRaidTrackedClanTag(interaction.values[0] ?? "") ?? null;
-  session.selectedClanTag = selectedClanTag;
+  if (session.refreshing) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    return;
+  }
 
-  await interaction.deferUpdate();
+  const selectedClanTag = normalizeRaidTrackedClanTag(interaction.values[0] ?? "") ?? null;
+  session.refreshing = true;
   try {
+    await interaction.deferUpdate();
+    session.selectedClanTag = selectedClanTag;
     const payload = await buildRaidDashboardPayload({
       sessionId: parsed.sessionId,
       selectedClanTag,
@@ -1090,6 +1220,7 @@ export async function handleRaidsSelectMenuInteraction(
       customClanTag: session.customClanTag,
       guildId: session.guildId,
       rows: session.rows,
+      season: session,
       detailSource: selectedClanTag ? "raids:overview:detail" : null,
     });
     if (payload.rows.length <= 0) {
@@ -1114,6 +1245,8 @@ export async function handleRaidsSelectMenuInteraction(
       ephemeral: true,
       content: "Failed to update the raids view.",
     });
+  } finally {
+    session.refreshing = false;
   }
 }
 
@@ -1148,11 +1281,44 @@ export async function handleRaidsButtonInteraction(
     return;
   }
 
-  await interaction.deferUpdate();
   session.refreshing = true;
   try {
+    await interaction.deferUpdate();
     if (parsed.action === "refresh") {
       await refreshRaidDashboardState({ cocService });
+    }
+
+    const isHistoryNavigation =
+      parsed.action === "older" || parsed.action === "newer" || parsed.action === "latest";
+    let rows = session.rows;
+    let season: RaidDashboardSeasonMetadata = session;
+    if (parsed.action === "refresh" || isHistoryNavigation) {
+      const selectedStart = session.selectedRaidSeasonStartTimeMs;
+      const latestStart = session.latestRaidSeasonStartTimeMs;
+      let targetStart = selectedStart;
+      if (isHistoryNavigation && selectedStart !== null && latestStart !== null) {
+        const historyFloor = latestStart - (RAID_DASHBOARD_HISTORY_LIMIT - 1) * RAID_DASHBOARD_WEEK_MS;
+        targetStart =
+          parsed.action === "older"
+            ? Math.max(historyFloor, selectedStart - RAID_DASHBOARD_WEEK_MS)
+            : parsed.action === "newer"
+              ? Math.min(latestStart, selectedStart + RAID_DASHBOARD_WEEK_MS)
+              : latestStart;
+      }
+
+      const overview = await loadRaidDashboardOverviewForSourceWithQueueContext({
+        cocService,
+        sourceMode: session.sourceMode,
+        guildId: session.guildId,
+        customClanTag: session.customClanTag,
+        selectedRaidSeasonStartTimeMs: targetStart,
+      });
+      rows = overview.rows;
+      season = {
+        selectedRaidSeasonStartTimeMs: overview.selectedRaidSeasonStartTimeMs,
+        selectedRaidSeasonEndTimeMs: overview.selectedRaidSeasonEndTimeMs,
+        latestRaidSeasonStartTimeMs: overview.latestRaidSeasonStartTimeMs,
+      };
     }
 
     const nextSelectedClanTag = parsed.action === "back" ? null : session.selectedClanTag;
@@ -1167,10 +1333,13 @@ export async function handleRaidsButtonInteraction(
       sourceMode: session.sourceMode,
       customClanTag: session.customClanTag,
       guildId: session.guildId,
-      rows: parsed.action === "refresh" ? undefined : session.rows,
+      rows,
+      season,
       detailSource:
         nextSelectedClanTag && parsed.action === "refresh"
           ? "raids:overview:detail:refresh"
+          : nextSelectedClanTag && isHistoryNavigation
+            ? "raids:overview:detail:history"
           : nextSelectedClanTag
             ? "raids:overview:detail"
             : null,
@@ -1188,6 +1357,9 @@ export async function handleRaidsButtonInteraction(
       components: payload.components,
     });
     session.rows = payload.rows;
+    session.selectedRaidSeasonStartTimeMs = payload.season.selectedRaidSeasonStartTimeMs;
+    session.selectedRaidSeasonEndTimeMs = payload.season.selectedRaidSeasonEndTimeMs;
+    session.latestRaidSeasonStartTimeMs = payload.season.latestRaidSeasonStartTimeMs;
     if (session.visibility === "public") {
       scheduleSessionTimer(parsed.sessionId, session);
     }
@@ -1209,7 +1381,13 @@ export function isRaidsSelectMenuCustomId(customId: string): boolean {
 
 export function isRaidsButtonCustomId(customId: string): boolean {
   const parsed = parseRaidsCustomId(customId);
-  return parsed?.action === "refresh" || parsed?.action === "back";
+  return (
+    parsed?.action === "refresh" ||
+    parsed?.action === "back" ||
+    parsed?.action === "older" ||
+    parsed?.action === "newer" ||
+    parsed?.action === "latest"
+  );
 }
 
 export function isRaidsIntelSelectMenuCustomId(customId: string): boolean {
@@ -1367,12 +1545,13 @@ export const Raids: Command = {
         return;
       }
 
-      const rows = await listRaidDashboardRowsForSourceWithQueueContext({
+      const overview = await loadRaidDashboardOverviewForSourceWithQueueContext({
         cocService,
         guildId: interaction.guildId ?? null,
         sourceMode,
         customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
       });
+      const rows = overview.rows;
       if (rows.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
@@ -1400,6 +1579,9 @@ export const Raids: Command = {
         customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
         selectedClanTag: selectedRow ? normalizeRaidTrackedClanTag(selectedRow.clanTag) ?? selectedRow.clanTag : null,
         rows,
+        selectedRaidSeasonStartTimeMs: overview.selectedRaidSeasonStartTimeMs,
+        selectedRaidSeasonEndTimeMs: overview.selectedRaidSeasonEndTimeMs,
+        latestRaidSeasonStartTimeMs: overview.latestRaidSeasonStartTimeMs,
         refreshing: false,
         timeoutHandle: null,
       });
@@ -1414,6 +1596,7 @@ export const Raids: Command = {
         customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
         guildId: interaction.guildId ?? null,
         rows,
+        season: overview,
         detailSource: selectedRow ? "raids:overview:detail" : null,
       });
       await interaction.editReply({

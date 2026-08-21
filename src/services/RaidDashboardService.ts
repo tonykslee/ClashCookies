@@ -2185,7 +2185,7 @@ export function buildRaidDashboardSingleClanDescription(
   detail?: RaidDashboardSeasonDetail | null,
 ): string {
   if (detail && detail.activeSeason === null) {
-    return "No active raid weekend data available.";
+    return "No Raid Weekend data available for this clan for the selected weekend.";
   }
 
   const raidsCompleted = row.raidsCompleted ?? detail?.raidsCompleted ?? null;

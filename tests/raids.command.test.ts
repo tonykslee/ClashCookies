@@ -279,6 +279,16 @@ function makeCompletedSeason() {
   };
 }
 
+function makeRaidWeekend(startTime: string, attacks: number) {
+  const endTime = new Date(Date.parse(startTime) + 3 * 24 * 60 * 60 * 1000).toISOString();
+  return {
+    ...makeCompletedSeason(),
+    startTime,
+    endTime,
+    members: [{ attacks }],
+  };
+}
+
 function makeEmptySeason() {
   return [];
 }
@@ -426,6 +436,16 @@ function makeSelectInteraction(customId: string, value: string) {
   return interaction;
 }
 
+function makeDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("/raids command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -539,6 +559,7 @@ describe("/raids command", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
+    expect(payload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
     expect(description).toContain("## Raid Clans");
     expect(description).toContain("\u2694\ufe0f [Alpha Raid]");
     expect(description).toContain("\ud83c\udf04 [Bravo Raid]");
@@ -575,7 +596,12 @@ describe("/raids command", () => {
     const buttonIds = payload.components[1]?.toJSON?.().components.map((component: any) =>
       String(component.custom_id ?? ""),
     );
-    expect(buttonIds).toEqual(["raids:raids-itx-1:refresh"]);
+    expect(buttonIds).toEqual([
+      "raids:raids-itx-1:older",
+      "raids:raids-itx-1:latest",
+      "raids:raids-itx-1:newer",
+      "raids:raids-itx-1:refresh",
+    ]);
     expect(cocQueueMock.runWithCoCQueueContext).toHaveBeenCalledWith(
       expect.objectContaining({
         priority: "interactive",
@@ -583,6 +609,180 @@ describe("/raids command", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("defaults between weekends to the latest completed weekend", async () => {
+    vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
+    const latestCompleted = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const olderCompleted = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latestCompleted, olderCompleted]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#2QG2C08UP", 8);
+  });
+
+  it("navigates older and newer weekends through the canonical overview loader", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+    cocService.getClanCapitalRaidSeasons.mockClear();
+
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+
+    const olderPayload = olderInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(olderPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledWith("#2QG2C08UP", 8);
+    const olderCalls = cocService.getClanCapitalRaidSeasons.mock.calls.length;
+    expect(olderCalls).toBeGreaterThan(0);
+
+    const newerInteraction = makeButtonInteraction("raids:raids-itx-1:newer");
+    await handleRaidsButtonInteraction(newerInteraction as any, cocService as any);
+    const newerPayload = newerInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(newerPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
+  });
+
+  it("enforces latest controls and the eight-week history floor", async () => {
+    const latestStartMs = Date.parse("2026-05-08T00:00:00.000Z");
+    const seasons = Array.from({ length: 8 }, (_, index) =>
+      makeRaidWeekend(new Date(latestStartMs - index * 7 * 24 * 60 * 60 * 1000).toISOString(), 6 - index),
+    );
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => seasons),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const latestPayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const latestButtons = latestPayload.components[1]?.toJSON?.().components;
+    expect(latestButtons?.[0]?.disabled).toBe(false);
+    expect(latestButtons?.[1]?.disabled).toBe(true);
+    expect(latestButtons?.[2]?.disabled).toBe(true);
+
+    let floorPayload: any = null;
+    for (let index = 0; index < 7; index += 1) {
+      const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+      await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+      floorPayload = olderInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    }
+    expect(floorPayload.embeds[0].toJSON().title).toBe("Raid Overview — Mar 20–23, 2026");
+    const floorButtons = floorPayload.components[1]?.toJSON?.().components;
+    expect(floorButtons?.[0]?.disabled).toBe(true);
+    expect(floorButtons?.[1]?.disabled).toBe(false);
+    expect(floorButtons?.[2]?.disabled).toBe(false);
+
+    const latestInteraction = makeButtonInteraction("raids:raids-itx-1:latest");
+    await handleRaidsButtonInteraction(latestInteraction as any, cocService as any);
+    const returnedLatestPayload = latestInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(returnedLatestPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
+    const returnedLatestButtons = returnedLatestPayload.components[1]?.toJSON?.().components;
+    expect(returnedLatestButtons?.[1]?.disabled).toBe(true);
+    expect(returnedLatestButtons?.[2]?.disabled).toBe(true);
+  });
+
+  it("keeps the selected clan and exact weekend through historical navigation and refresh", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        if (tag === "#2RVGJYLC0") return [latest, older];
+        return [latest, older];
+      }),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+    const selectedPayload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(selectedPayload.embeds[0].toJSON().description).toContain("Attacks: 2");
+
+    cocService.getClanCapitalRaidSeasons.mockClear();
+    const refreshInteraction = makeButtonInteraction("raids:raids-itx-1:refresh");
+    await handleRaidsButtonInteraction(refreshInteraction as any, cocService as any);
+    const refreshedPayload = refreshInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(refreshedPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(refreshedPayload.embeds[0].toJSON().description).toContain("Attacks: 2");
+    expect(cocService.getClanCapitalRaidSeasons.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("returns to historical overview without reloading or losing the selected weekend", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+    cocService.getClanCapitalRaidSeasons.mockClear();
+
+    const backInteraction = makeButtonInteraction("raids:raids-itx-1:back");
+    await handleRaidsButtonInteraction(backInteraction as any, cocService as any);
+    const backPayload = backInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(backPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(backPayload.embeds[0].toJSON().description).toContain("## Raid Clans");
+    expect(cocService.getClanCapitalRaidSeasons).not.toHaveBeenCalled();
+  });
+
+  it("keeps skipped clans on the selected weekend with neutral no-data detail", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) =>
+        tag === "#2QG2C08UP" ? [latest, older] : [latest],
+      ),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+
+    const selectInteraction = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(selectInteraction as any, cocService as any);
+    const payload = selectInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(payload.embeds[0].toJSON().description).toContain(
+      "No Raid Weekend data available for this clan for the selected weekend.",
+    );
+  });
+
+  it("resolves direct clan drilldown through the same selected completed weekend", async () => {
+    vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction({ type: "raids", clan: "2RVGJYLC0" });
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
+    expect(payload.embeds[0].toJSON().description).toContain("Attacks: 6");
   });
 
   it("keeps overview controls invoker-only when visibility is private", async () => {
@@ -612,6 +812,98 @@ describe("/raids command", () => {
       content: "Only the command user can control this raids view.",
     });
     expect(selectInteraction.editReply).not.toHaveBeenCalled();
+  });
+
+  it("claims the dashboard lock before button defer completes", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+    const initialSeasonCallCount = cocService.getClanCapitalRaidSeasons.mock.calls.length;
+
+    const defer = makeDeferred<void>();
+    const firstInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    firstInteraction.deferUpdate.mockImplementation(() => defer.promise);
+    const firstPromise = handleRaidsButtonInteraction(firstInteraction as any, cocService as any);
+
+    const secondInteraction = makeButtonInteraction("raids:raids-itx-1:newer");
+    await handleRaidsButtonInteraction(secondInteraction as any, cocService as any);
+
+    expect(secondInteraction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    expect(secondInteraction.deferUpdate).not.toHaveBeenCalled();
+    expect(cocService.getClanCapitalRaidSeasons).toHaveBeenCalledTimes(initialSeasonCallCount);
+
+    defer.resolve();
+    await firstPromise;
+  });
+
+  it("prevents clan selection from racing history navigation and works after release", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const defer = makeDeferred<void>();
+    const olderInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    olderInteraction.deferUpdate.mockImplementation(() => defer.promise);
+    const olderPromise = handleRaidsButtonInteraction(olderInteraction as any, cocService as any);
+
+    const racingSelect = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(racingSelect as any, cocService as any);
+    expect(racingSelect.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Raids view is already refreshing.",
+    });
+    expect(racingSelect.deferUpdate).not.toHaveBeenCalled();
+    expect(racingSelect.editReply).not.toHaveBeenCalled();
+
+    defer.resolve();
+    await olderPromise;
+    const olderPayload = olderInteraction.editReply.mock.calls.at(-1)?.[0] as any;
+    expect(olderPayload.embeds[0].toJSON().title).toBe("Raid Overview — May 1–4, 2026");
+    expect(olderPayload.embeds[0].toJSON().description).toContain("## Raid Clans");
+
+    const normalSelect = makeSelectInteraction("raids:raids-itx-1:select", "2RVGJYLC0");
+    await handleRaidsSelectMenuInteraction(normalSelect as any, cocService as any);
+    expect(normalSelect.editReply).toHaveBeenCalled();
+    expect(normalSelect.editReply.mock.calls.at(-1)?.[0].embeds[0].toJSON().description).toContain(
+      "## Raid Clan",
+    );
+  });
+
+  it("releases the dashboard lock when defer fails", async () => {
+    const latest = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);
+    const older = makeRaidWeekend("2026-05-01T00:00:00.000Z", 2);
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [latest, older]),
+      getClan: vi.fn(async () => ({ type: "open" })),
+    };
+    const interaction = makeChatInteraction();
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    const failedInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    failedInteraction.deferUpdate.mockRejectedValue(new Error("interaction expired"));
+    await handleRaidsButtonInteraction(failedInteraction as any, cocService as any);
+    expect(failedInteraction.followUp).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to update the raids view.",
+    });
+
+    const nextInteraction = makeButtonInteraction("raids:raids-itx-1:older");
+    await handleRaidsButtonInteraction(nextInteraction as any, cocService as any);
+    expect(nextInteraction.deferUpdate).toHaveBeenCalled();
+    expect(nextInteraction.editReply).toHaveBeenCalled();
   });
 
   it("renders a public overview that any user can keep alive with select refresh and back", async () => {
@@ -866,7 +1158,13 @@ describe("/raids command", () => {
     const buttonIds = payload.components[1]?.toJSON?.().components.map((component: any) =>
       String(component.custom_id ?? ""),
     );
-    expect(buttonIds).toEqual(["raids:raids-itx-1:back", "raids:raids-itx-1:refresh"]);
+    expect(buttonIds).toEqual([
+      "raids:raids-itx-1:back",
+      "raids:raids-itx-1:older",
+      "raids:raids-itx-1:latest",
+      "raids:raids-itx-1:newer",
+      "raids:raids-itx-1:refresh",
+    ]);
   });
 
   it("rejects a custom overview without a clan tag", async () => {
@@ -1798,7 +2096,7 @@ describe("/raids command", () => {
     expect(description).toContain("Join type: Closed");
     expect(description).not.toContain("Updated:");
     expect(description).toContain("Upgrades: —");
-    expect(payload.embeds[0].toJSON().title).toBeUndefined();
+    expect(payload.embeds[0].toJSON().title).toBe("Raid Overview — May 8–11, 2026");
     expect(description).toContain("Bravo Raid");
     expect(description).toContain("## Attacking");
     expect(description).toContain("### [Defender One]");
@@ -1822,6 +2120,9 @@ describe("/raids command", () => {
     );
     expect(buttonIds).toEqual([
       "raids:raids-itx-1:back",
+      "raids:raids-itx-1:older",
+      "raids:raids-itx-1:latest",
+      "raids:raids-itx-1:newer",
       "raids:raids-itx-1:refresh",
     ]);
   });
@@ -1842,7 +2143,7 @@ describe("/raids command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0] as any;
     const description = payload.embeds[0].toJSON().description as string;
-    expect(description).toBe("No active raid weekend data available.");
+    expect(description).toBe("No Raid Weekend data available for this clan for the selected weekend.");
   });
 
   it("shows the no-tracked-clans message when intel has no configured raid clans", async () => {
@@ -1994,6 +2295,4 @@ describe("/raids command", () => {
     expect(refreshedDescription).toContain("## Defending");
   });
 });
-
-
 

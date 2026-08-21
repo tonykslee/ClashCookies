@@ -3656,7 +3656,7 @@ describe("RaidDashboardService", () => {
       raidsCompleted: null,
     });
 
-    expect(description).toBe("No active raid weekend data available.");
+    expect(description).toBe("No Raid Weekend data available for this clan for the selected weekend.");
     expect(description).not.toContain("No attack log available yet.");
     expect(description).not.toContain("No defense log available yet.");
   });
