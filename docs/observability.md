@@ -60,6 +60,17 @@ Representative examples:
 
 Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
 
+## Home Away sync alerts
+
+The existing scheduled-sync scheduler runs the Home Away alert lifecycle as a failure-isolated sibling. Useful bounded lifecycle events include:
+
+- `[home-away-sync-alert] schedule_created` for a newly persisted randomized fire time
+- `[home-away-sync-alert] evaluated` for a due HomeRoster evaluation and recipient count
+- `[home-away-sync-alert] delivery_failed` for a claim failure classified as retryable or terminal
+- `[home-away-sync-alert] completed`, `schedule_cancelled`, and `schedule_expired` for terminal lifecycle transitions
+
+Logs contain identifiers, counts, status, and failure codes; schedule lifecycle logs may include operational epochs, but never DM bodies. Exact sync timing is not exposed in Discord. The immutable message content and delivery claims remain in the alert tables for restart-safe auditing; mirror mode only copies those rows.
+
 At runtime, the app installs a console shim so existing app-owned `console.*` call sites are normalized without changing their structured fields.
 
 Queue observability now includes:

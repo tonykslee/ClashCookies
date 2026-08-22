@@ -129,6 +129,8 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-29T00:05:00.000Z"),
       },
     ],
+    HomeAwaySyncAlertSchedule: [],
+    HomeAwaySyncAlertDelivery: [],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
     WarPlanComplianceEvaluation: [
       {
@@ -381,6 +383,12 @@ function buildSourceClient(
     clanHomeTransferCandidate: {
       findMany: vi.fn(async () => cloneRows(store.ClanHomeTransferCandidate)),
     },
+    homeAwaySyncAlertSchedule: {
+      findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertSchedule)),
+    },
+    homeAwaySyncAlertDelivery: {
+      findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertDelivery)),
+    },
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
@@ -514,6 +522,14 @@ function buildTargetClient(
     clanHomeTransferCandidate: {
       deleteMany: deleteMany("ClanHomeTransferCandidate"),
       createMany: createMany("ClanHomeTransferCandidate"),
+    },
+    homeAwaySyncAlertSchedule: {
+      deleteMany: deleteMany("HomeAwaySyncAlertSchedule"),
+      createMany: createMany("HomeAwaySyncAlertSchedule"),
+    },
+    homeAwaySyncAlertDelivery: {
+      deleteMany: deleteMany("HomeAwaySyncAlertDelivery"),
+      createMany: createMany("HomeAwaySyncAlertDelivery"),
     },
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
