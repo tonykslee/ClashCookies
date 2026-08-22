@@ -831,6 +831,23 @@ enum AllianceClanMembershipIntervalEndReason {
   TRACKING_STOPPED
 }
 
+enum ClanHomeMembershipEstablishmentSource {
+  AUTO_3_SYNC
+  MANUAL
+  TRANSFER
+}
+
+enum ClanHomeMembershipEndReason {
+  TRANSFERRED
+  MANUAL
+}
+
+enum ClanHomeTransferCandidateStatus {
+  PENDING
+  KEPT_HOME
+  CONFIRMED
+}
+
 model AllianceClanMembershipInterval {
   id              String                               @id @default(cuid())
   guildId         String
@@ -846,6 +863,46 @@ model AllianceClanMembershipInterval {
   @@index([guildId, playerTag, firstObservedAt, endedAt])
   @@index([guildId, clanTag, firstObservedAt, endedAt])
   @@index([guildId, firstObservedAt, endedAt])
+}
+
+model ClanHomeMembershipPeriod {
+  id                     String                              @id @default(cuid())
+  guildId                String
+  playerTag              String                              @db.VarChar(16)
+  clanTag                String                              @db.VarChar(16)
+  startedAtSyncTime      DateTime
+  qualifiedAtSyncTime    DateTime
+  endedAtSyncTime        DateTime?
+  establishmentSource    ClanHomeMembershipEstablishmentSource
+  endReason              ClanHomeMembershipEndReason?
+  createdAt              DateTime                            @default(now())
+  updatedAt              DateTime                            @updatedAt
+
+  @@index([guildId, playerTag, endedAtSyncTime])
+  @@index([guildId, clanTag, endedAtSyncTime])
+  @@index([guildId, playerTag, startedAtSyncTime])
+  @@index([guildId, qualifiedAtSyncTime])
+}
+
+model ClanHomeTransferCandidate {
+  id                     String                           @id @default(cuid())
+  guildId                String
+  playerTag              String                           @db.VarChar(16)
+  homeMembershipPeriodId String
+  fromClanTag            String                           @db.VarChar(16)
+  toClanTag              String                           @db.VarChar(16)
+  startedAtSyncTime      DateTime
+  qualifiedAtSyncTime    DateTime
+  status                 ClanHomeTransferCandidateStatus
+  decidedAt              DateTime?
+  decidedByDiscordUserId String?
+  createdAt              DateTime                         @default(now())
+  updatedAt              DateTime                         @updatedAt
+
+  @@unique([homeMembershipPeriodId, toClanTag, startedAtSyncTime, qualifiedAtSyncTime])
+  @@index([guildId, playerTag, status])
+  @@index([homeMembershipPeriodId, status])
+  @@index([guildId, fromClanTag, status])
 }
 
 model CwlSeasonRosterState {
@@ -1151,6 +1208,23 @@ enum ScheduledSyncPostStatus {
   REPLACED
 }
 
+enum HomeAwaySyncAlertScheduleStatus {
+  PENDING
+  CLAIMED
+  EVALUATED
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+enum HomeAwaySyncAlertDeliveryStatus {
+  PENDING
+  CLAIMED
+  SENT
+  FAILED
+  EXPIRED
+}
+
 enum SyncCycleResolutionSource {
   ENDED_WAR_CANONICAL
 }
@@ -1214,6 +1288,49 @@ model ScheduledSyncPost {
   @@index([nextAttemptAt])
 }
 
+model HomeAwaySyncAlertSchedule {
+  id                  String                          @id @default(cuid())
+  guildId             String
+  scheduledSyncPostId String                          @unique
+  syncTime            DateTime
+  fireAt              DateTime
+  status              HomeAwaySyncAlertScheduleStatus @default(PENDING)
+  claimToken          String?
+  claimedAt           DateTime?
+  evaluatedAt         DateTime?
+  completedAt         DateTime?
+  failureCode         String?
+  failureReason       String?
+  createdAt           DateTime                        @default(now())
+  updatedAt           DateTime                        @updatedAt
+
+  @@unique([guildId, syncTime])
+  @@index([status, fireAt])
+  @@index([guildId, status, syncTime])
+}
+
+model HomeAwaySyncAlertDelivery {
+  id              String                          @id @default(cuid())
+  alertScheduleId String
+  guildId         String
+  discordUserId   String
+  messageContent  String                          @db.Text
+  status          HomeAwaySyncAlertDeliveryStatus @default(PENDING)
+  claimToken      String?
+  claimedAt       DateTime?
+  attemptCount    Int                             @default(0)
+  nextAttemptAt   DateTime?
+  sentAt          DateTime?
+  failureCode     String?
+  failureReason   String?
+  createdAt       DateTime                        @default(now())
+  updatedAt       DateTime                        @updatedAt
+
+  @@unique([alertScheduleId, discordUserId])
+  @@index([alertScheduleId, status, nextAttemptAt])
+  @@index([guildId, status, nextAttemptAt])
+}
+
 model SyncCycle {
   id                  String                    @id @default(cuid())
   guildId             String
@@ -1252,6 +1369,20 @@ model SyncClanReadinessSnapshot {
   @@unique([guildId, syncTime, clanTag])
   @@index([guildId, syncTime])
   @@index([syncTime, projectionComplete, deviationScore])
+}
+
+model SyncClanMemberSnapshot {
+  id        String   @id @default(cuid())
+  guildId   String
+  syncTime  DateTime
+  clanTag   String   @db.VarChar(16)
+  playerTag String   @db.VarChar(16)
+  createdAt DateTime @default(now())
+
+  @@unique([guildId, syncTime, clanTag, playerTag])
+  @@index([guildId, playerTag, syncTime])
+  @@index([guildId, clanTag, syncTime])
+  @@index([guildId, syncTime, playerTag])
 }
 
 model SyncEvent {

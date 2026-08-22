@@ -12,6 +12,7 @@ export const LINK_LIST_SORT_MODE_CYCLE = [
   "clan-rank",
   "inactivity",
   "violations",
+  "tenure",
 ] as const;
 
 export type LinkListSortMode = (typeof LINK_LIST_SORT_MODE_CYCLE)[number];
@@ -27,7 +28,8 @@ export type LinkListColumnId =
   | "inactivity"
   | "clan-role"
   | "player-tag"
-  | "violations";
+  | "violations"
+  | "tenure";
 
 export const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
 export const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
@@ -44,6 +46,7 @@ export const LINK_LIST_SELECTABLE_COLUMNS: readonly LinkListColumnId[] = [
   "clan-role",
   "player-tag",
   "violations",
+  "tenure",
 ];
 
 export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
@@ -56,6 +59,7 @@ export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
   "clan-role": "Clan Role",
   "player-tag": "Player Tag",
   violations: "Violations (30d)",
+  tenure: "Tenure",
 };
 
 const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
@@ -68,6 +72,7 @@ const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
   "clan-role": "cr",
   "player-tag": "pt",
   violations: "v30",
+  tenure: "tn",
 };
 
 const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
@@ -80,6 +85,7 @@ const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
   cr: "clan-role",
   pt: "player-tag",
   v30: "violations",
+  tn: "tenure",
 };
 
 const LINK_LIST_LINKED_STATUS_EMOJI = "\u2705";
@@ -103,6 +109,13 @@ export type LinkListRowViewModel = {
   clanRoleLabel: string;
   playerTag: string;
   violationsLabel: string;
+  tenureLabel?: string;
+  clanTenureValue?: number | null;
+  clanTenureIsLowerBound?: boolean;
+  clanStreakValue?: number | null;
+  clanStreakIsLowerBound?: boolean;
+  allianceStreakValue?: number | null;
+  allianceStreakIsLowerBound?: boolean;
   linkedStatusMarkerOverride?: string | null;
   rightMarker?: string | null;
   isLinked: boolean;
@@ -151,7 +164,8 @@ export function normalizeLinkListSortMode(
     value === "player" ||
     value === "clan-rank" ||
     value === "inactivity" ||
-    value === "violations"
+    value === "violations" ||
+    value === "tenure"
   ) {
     return value;
   }
@@ -165,6 +179,7 @@ export function getLinkListSortModeLabel(mode: LinkListSortMode): string {
   if (mode === "clan-rank") return "Clan Role";
   if (mode === "inactivity") return "Inactivity";
   if (mode === "violations") return "Violations (30d)";
+  if (mode === "tenure") return "Clan Tenure";
   return "Discord Name";
 }
 
@@ -296,6 +311,9 @@ export function getLinkListDefaultColumnsForSortMode(
   if (sortMode === "violations") {
     return ["townhall", "player-name", "violations"];
   }
+  if (sortMode === "tenure") {
+    return ["townhall", "player-name", "tenure"];
+  }
   return ["townhall", "player-name", "discord-display-name"];
 }
 
@@ -311,6 +329,7 @@ function getLinkListRowColumnValue(
   if (columnId === "inactivity") return row.inactivityLabel;
   if (columnId === "clan-role") return row.clanRoleLabel;
   if (columnId === "violations") return row.violationsLabel;
+  if (columnId === "tenure") return row.tenureLabel ?? WEIGHT_PLACEHOLDER;
   return row.playerTag;
 }
 
@@ -374,6 +393,9 @@ export function sortLinkListRows(
     playerSort: string;
     discordSort: string;
     violationsValue: number | null;
+    clanTenureValue?: number | null;
+    clanStreakValue?: number | null;
+    allianceStreakValue?: number | null;
     row: LinkListRowViewModel;
   }[],
   sortMode: LinkListSortMode,
@@ -389,6 +411,9 @@ export function sortLinkListRows(
   playerSort: string;
   discordSort: string;
   violationsValue: number | null;
+  clanTenureValue?: number | null;
+  clanStreakValue?: number | null;
+  allianceStreakValue?: number | null;
   row: LinkListRowViewModel;
 }[] {
   return [...rows].sort((a, b) => {
@@ -408,6 +433,29 @@ export function sortLinkListRows(
       if (a.playerTag !== b.playerTag) {
         return compareSortText(a.playerTag, b.playerTag);
       }
+      return a.defaultIndex - b.defaultIndex;
+    }
+
+    if (sortMode === "tenure") {
+      const aHasTenure = a.clanTenureValue !== null && a.clanTenureValue !== undefined;
+      const bHasTenure = b.clanTenureValue !== null && b.clanTenureValue !== undefined;
+      if (aHasTenure !== bHasTenure) return aHasTenure ? -1 : 1;
+      if (aHasTenure && bHasTenure && a.clanTenureValue !== b.clanTenureValue) {
+        return (b.clanTenureValue ?? 0) - (a.clanTenureValue ?? 0);
+      }
+      const aHasClanStreak = a.clanStreakValue !== null && a.clanStreakValue !== undefined;
+      const bHasClanStreak = b.clanStreakValue !== null && b.clanStreakValue !== undefined;
+      if (aHasClanStreak && bHasClanStreak && a.clanStreakValue !== b.clanStreakValue) {
+        return (b.clanStreakValue ?? 0) - (a.clanStreakValue ?? 0);
+      }
+      const aHasAllianceStreak = a.allianceStreakValue !== null && a.allianceStreakValue !== undefined;
+      const bHasAllianceStreak = b.allianceStreakValue !== null && b.allianceStreakValue !== undefined;
+      if (aHasAllianceStreak && bHasAllianceStreak && a.allianceStreakValue !== b.allianceStreakValue) {
+        return (b.allianceStreakValue ?? 0) - (a.allianceStreakValue ?? 0);
+      }
+      const byPlayer = compareSortText(a.playerSort, b.playerSort);
+      if (byPlayer !== 0) return byPlayer;
+      if (a.playerTag !== b.playerTag) return compareSortText(a.playerTag, b.playerTag);
       return a.defaultIndex - b.defaultIndex;
     }
 
@@ -578,6 +626,30 @@ export function formatLinkListViolationCountLabel(
   return String(Math.max(0, Math.trunc(violationCount)));
 }
 
+/** Purpose: render compact Home tenure and streak analytics without hiding uncertainty. */
+export function formatLinkListTenureLabel(input: {
+  homeMembershipPeriodId: string | null;
+  clanTenureSyncs: number | null;
+  clanTenureIsLowerBound: boolean;
+  clanStreakSyncs: number | null;
+  clanStreakIsLowerBound: boolean;
+  allianceStreakSyncs: number | null;
+  allianceStreakIsLowerBound: boolean;
+} | null | undefined): string {
+  if (!input?.homeMembershipPeriodId) return WEIGHT_PLACEHOLDER;
+  const formatMetric = (value: number | null, lowerBound: boolean): string => {
+    if (value === null || !Number.isFinite(value)) return WEIGHT_PLACEHOLDER;
+    return `${Math.max(0, Math.trunc(value))}${lowerBound ? "+" : ""}`;
+  };
+  const values = [
+    formatMetric(input.clanTenureSyncs, input.clanTenureIsLowerBound),
+    formatMetric(input.clanStreakSyncs, input.clanStreakIsLowerBound),
+    formatMetric(input.allianceStreakSyncs, input.allianceStreakIsLowerBound),
+  ];
+  if (values.every((value) => value === WEIGHT_PLACEHOLDER)) return WEIGHT_PLACEHOLDER;
+  return `C${values[0]}/S${values[1]}/A${values[2]}`;
+}
+
 export function normalizePositiveTownHall(input: number | null | undefined): number | null {
   if (input === null || input === undefined) return null;
   if (!Number.isFinite(input)) return null;
@@ -610,6 +682,10 @@ export function buildLinkListDescriptionLines(input: {
     input.columns ?? getLinkListDefaultColumnsForSortMode(input.sortMode ?? LINK_LIST_DEFAULT_SORT_MODE);
   const widths = computeColumnWidths(linkedRows, unlinkedRows, columns);
   const lines: string[] = [];
+
+  if (columns.includes("tenure")) {
+    lines.push("C = Clan Tenure • S = Clan Streak • A = Alliance Streak");
+  }
 
   if (linkedRows.length > 0) {
     lines.push(`Linked Users: ${linkedRows.length}`);

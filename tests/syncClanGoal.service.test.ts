@@ -16,6 +16,7 @@ const dozzleLogMock = vi.hoisted(() => ({
 }));
 const prismaMock = vi.hoisted(() => ({
   scheduledSyncPost: { findMany: vi.fn() },
+  syncClanMemberSnapshot: { createMany: vi.fn() },
   syncClanReadinessSnapshot: { findMany: vi.fn(), createMany: vi.fn() },
   syncEvent: {
     findMany: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("../src/helper/dozzleLogger", () => ({
 
 import {
   SYNC_BOUNDARY_CAPTURE_GRACE_MS,
+  buildSyncClanMemberSnapshotRows,
   SyncClanGoalService,
 } from "../src/services/SyncClanGoalService";
 
@@ -123,6 +125,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
     });
     loadContextMock.mockResolvedValue(makeContext());
     fillerTagsMock.mockResolvedValue([]);
+    prismaMock.syncClanMemberSnapshot.createMany.mockResolvedValue({ count: 0 });
     prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
       { id: "schedule-1", guildId: "guild-1", syncTime: SYNC_TIME, status: "PUBLISHED" },
     ]);
@@ -136,6 +139,97 @@ describe("SYNC_ZERO_DEVIATION", () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#CLAN", logChannelId: "123", leaderChannelId: null },
     ]);
+  });
+
+  it("normalizes, deduplicates, sorts, and preserves ambiguous clan facts", () => {
+    const context = makeContext();
+    context.clans = [
+      {
+        ...context.clans[0],
+        clanTag: "clanbbb",
+        members: [
+          { playerTag: "p222", clanTag: "clanbbb", playerName: "B", townHall: null, resolvedWeight: null, resolvedBucket: null, resolvedWeightSource: null },
+          { playerTag: "#P999", clanTag: "clanbbb", playerName: "A", townHall: null, resolvedWeight: 1, resolvedBucket: null, resolvedWeightSource: "member" },
+          { playerTag: "p222", clanTag: "clanbbb", playerName: "B duplicate", townHall: 18, resolvedWeight: null, resolvedBucket: null, resolvedWeightSource: "defer" },
+        ],
+      },
+      {
+        ...context.clans[0],
+        clanTag: "#CLANAAA",
+        members: [
+          { playerTag: "#P999", clanTag: "#CLANAAA", playerName: "A", townHall: 18, resolvedWeight: null, resolvedBucket: null, resolvedWeightSource: null },
+        ],
+      },
+    ];
+
+    expect(buildSyncClanMemberSnapshotRows({
+      guildId: "guild-1",
+      syncTime: SYNC_TIME,
+      context,
+    })).toEqual([
+      { guildId: "guild-1", syncTime: SYNC_TIME, clanTag: "#CLANAAA", playerTag: "#P999" },
+      { guildId: "guild-1", syncTime: SYNC_TIME, clanTag: "#CLANBBB", playerTag: "#P222" },
+      { guildId: "guild-1", syncTime: SYNC_TIME, clanTag: "#CLANBBB", playerTag: "#P999" },
+    ]);
+  });
+
+  it("captures physical members including unresolved weights without adding filler fields", async () => {
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [{
+        ...makeContext().clans[0],
+        members: [
+          { playerTag: "#P222", clanTag: "#CLAN", playerName: "Unresolved", townHall: 18, resolvedWeight: null, resolvedBucket: null, resolvedWeightSource: null },
+        ],
+      }],
+    });
+    prismaMock.syncClanMemberSnapshot.createMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
+
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.membershipRowsAttempted).toBe(1);
+    expect(result.membershipRowsCaptured).toBe(1);
+    expect(prismaMock.syncClanMemberSnapshot.createMany).toHaveBeenCalledWith({
+      data: [{
+        guildId: "guild-1",
+        syncTime: SYNC_TIME,
+        clanTag: "#CLAN",
+        playerTag: "#P222",
+      }],
+      skipDuplicates: true,
+    });
+  });
+
+  it("does not let membership persistence failure suppress readiness capture", async () => {
+    prismaMock.syncClanMemberSnapshot.createMany.mockRejectedValueOnce(new Error("membership db unavailable"));
+    prismaMock.syncClanReadinessSnapshot.createMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.syncClanReadinessSnapshot.findMany.mockResolvedValue([]);
+    loadContextMock.mockResolvedValueOnce({
+      ...makeContext(),
+      clans: [{
+        ...makeContext().clans[0],
+        members: [{ playerTag: "#P222", clanTag: "#CLAN", playerName: "P2", townHall: 18, resolvedWeight: null, resolvedBucket: null, resolvedWeightSource: null }],
+      }],
+    });
+
+    const service = makeService(
+      { channels: { fetch: vi.fn() } } as any,
+      { getRoutingConfigForType: vi.fn(), getChannelId: vi.fn() } as any,
+    );
+
+    const result = await service.runCycle(NOW);
+
+    expect(result.membershipCaptureFailures).toBe(1);
+    expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining(
+      "event=membership_capture outcome=failure",
+    ));
   });
 
   afterEach(() => {

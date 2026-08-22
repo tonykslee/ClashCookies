@@ -135,6 +135,34 @@ function activity(seed: Seed = {}) {
 }
 
 describe("CwlAllianceActivityService", () => {
+  it("exposes a lightweight persisted CWL-window primitive without activity reads", async () => {
+    const db = makeDb();
+    const window = await new CwlAllianceActivityService(db as any).getCwlWindow({ season });
+
+    expect(window).toMatchObject({
+      season,
+      startsAt: at("2026-04-01T00:00:00.000Z"),
+      endsAt: at("2026-04-08T00:00:00.000Z"),
+      hasTrackedCwlClans: true,
+      resolvedEventCount: 1,
+      startTimingResolved: true,
+      endTimingResolved: true,
+    });
+    expect(db.trackedClan.findMany).not.toHaveBeenCalled();
+    expect(db.cwlPlayerClanSeason.findMany).not.toHaveBeenCalled();
+    expect(db.clanWarHistory.findMany).not.toHaveBeenCalled();
+    expect(db.clanWarParticipation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("treats a season without tracked CWL registry as ordinary-capable metadata", async () => {
+    const db = makeDb({ cwlTrackedClan: [] });
+
+    const window = await new CwlAllianceActivityService(db as any).getCwlWindow({ season });
+
+    expect(window).toMatchObject({ hasTrackedCwlClans: false, resolvedEventCount: 0, missingTimingDetails: ["NO_TRACKED_CWL_REGISTRY"] });
+    expect(db.cwlEventClan.findMany).not.toHaveBeenCalled();
+  });
+
   it("returns the canonical requested YYYY-MM season", async () => {
     const { run } = activity();
     expect((await run()).season).toBe(season);

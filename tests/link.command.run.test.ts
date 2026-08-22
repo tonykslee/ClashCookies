@@ -49,8 +49,16 @@ const prismaMock = vi.hoisted(() => ({
   },
 }));
 
+const homeMembershipAnalyticsMock = vi.hoisted(() => ({
+  getAnalyticsForPlayers: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+}));
+
+vi.mock("../src/services/HomeMembershipAnalyticsService", () => ({
+  homeMembershipAnalyticsService: homeMembershipAnalyticsMock,
 }));
 
 import {
@@ -86,6 +94,7 @@ import {
 import { buildDescriptionEmbeds } from "../src/commands/link/LinkListRender";
 import {
   formatLinkListViolationCountLabel,
+  formatLinkListTenureLabel,
   getLinkListSortModeLabel,
   getNextLinkListSortMode,
   normalizeLinkListSortMode,
@@ -97,6 +106,7 @@ import {
   buildReminderLinkCancelCustomId,
   buildReminderLinkConfirmCustomId,
 } from "../src/services/reminders/ReminderLinkActions";
+import { homeMembershipAnalyticsService } from "../src/services/HomeMembershipAnalyticsService";
 
 beforeEach(() => {
   emojiResolverService.invalidateCache();
@@ -347,6 +357,7 @@ describe("/link run", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.spyOn(homeMembershipAnalyticsService, "getAnalyticsForPlayers").mockResolvedValue([]);
     prismaMock.playerLink.findUnique.mockReset();
     prismaMock.playerLink.create.mockReset();
     prismaMock.playerLink.delete.mockReset();
@@ -1989,19 +2000,121 @@ describe("/link run", () => {
     });
     expect(customId).toContain("v30");
     expect(customId.length).toBeLessThan(100);
+
+    const tenureCustomId = buildLinkListColumnsSelectCustomIdForTest(
+      "111111111111111111",
+      "#PQL0289",
+      "tenure",
+      ["townhall", "player-name", "tenure"],
+    );
+    expect(tenureCustomId).toContain("tn");
+    expect(parseLinkListColumnsSelectCustomIdForTest(tenureCustomId)).toMatchObject({
+      sortMode: "tenure",
+      columns: ["townhall", "player-name", "tenure"],
+    });
   });
 
   it("normalizes the violations sort mode and keeps the cycle stable", () => {
     expect(normalizeLinkListSortMode("violations")).toBe("violations");
     expect(getLinkListSortModeLabel("violations")).toBe("Violations (30d)");
     expect(getNextLinkListSortMode("inactivity")).toBe("violations");
-    expect(getNextLinkListSortMode("violations")).toBe("discord");
+    expect(getNextLinkListSortMode("violations")).toBe("tenure");
+  });
+
+  it("supports the Tenure sort mode and defaults", () => {
+    expect(normalizeLinkListSortMode("tenure")).toBe("tenure");
+    expect(getLinkListSortModeLabel("tenure")).toBe("Clan Tenure");
+    expect(getLinkListDefaultColumnsForSortModeForTest("tenure")).toEqual([
+      "townhall",
+      "player-name",
+      "tenure",
+    ]);
+    expect(getNextLinkListSortMode("violations")).toBe("tenure");
+    expect(getNextLinkListSortMode("tenure")).toBe("discord");
   });
 
   it("renders violation counts with known zeros and unavailable values", () => {
     expect(formatLinkListViolationCountLabel(4)).toBe("4");
     expect(formatLinkListViolationCountLabel(0)).toBe("0");
     expect(formatLinkListViolationCountLabel(null)).toBe("—");
+  });
+
+  it("formats exact, lower-bound, partial, and no-Home Tenure values", () => {
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: "home-1",
+      clanTenureSyncs: 63,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: 31,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: 118,
+      allianceStreakIsLowerBound: false,
+    })).toBe("C63/S31/A118");
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: "home-1",
+      clanTenureSyncs: 63,
+      clanTenureIsLowerBound: true,
+      clanStreakSyncs: 31,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 118,
+      allianceStreakIsLowerBound: true,
+    })).toBe("C63+/S31+/A118+");
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: "home-1",
+      clanTenureSyncs: 63,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: null,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: 118,
+      allianceStreakIsLowerBound: false,
+    })).toBe("C63/S—/A118");
+    expect(formatLinkListTenureLabel(null)).toBe("—");
+  });
+
+  it("sorts Tenure by known minimum, then Home Clan and Alliance streaks", () => {
+    const base = {
+      isLinked: true,
+      defaultIndex: 0,
+      weightValue: null,
+      inactivityDays: null,
+      inactivityMissedWars: null,
+      inactivityParticipationWars: null,
+      clanRoleSortScore: 0,
+      discordSort: "ignored",
+      row: {} as any,
+    };
+    const sorted = sortLinkListRows([
+      { ...base, playerTag: "#P3333", playerSort: "Charlie", clanTenureValue: null, clanStreakValue: null, allianceStreakValue: null, violationsValue: null },
+      { ...base, playerTag: "#P1111", playerSort: "Alpha", clanTenureValue: 63, clanStreakValue: 2, allianceStreakValue: 4, violationsValue: null },
+      { ...base, playerTag: "#P2222", playerSort: "Bravo", clanTenureValue: 63, clanStreakValue: 3, allianceStreakValue: 1, violationsValue: null },
+      { ...base, playerTag: "#P4444", playerSort: "Delta", clanTenureValue: 80, clanStreakValue: 1, allianceStreakValue: 1, violationsValue: null },
+    ], "tenure");
+
+    expect(sorted.map((row) => row.playerTag)).toEqual(["#P4444", "#P2222", "#P1111", "#P3333"]);
+  });
+
+  it("adds the Tenure legend once without turning it into a row", () => {
+    const lines = buildLinkListDescriptionLinesForTest({
+      linkedRows: [{
+        townHallLabel: "18",
+        playerName: "Home Player",
+        displayValue: null,
+        discordDisplayName: "Home Player",
+        discordUsername: "home",
+        weightLabel: "—",
+        inactivityLabel: "—",
+        clanRoleLabel: "mem",
+        playerTag: "#P2222",
+        violationsLabel: "—",
+        tenureLabel: "C3/S3/A3",
+        isLinked: true,
+      }],
+      unlinkedRows: [],
+      statusIcons: { linked: "✅", unlinked: "❌" },
+      columns: ["townhall", "player-name", "tenure"],
+    });
+
+    expect(lines.filter((line) => line.startsWith("C = Clan Tenure")).length).toBe(1);
+    expect(lines.filter((line) => line.includes("C3/S3/A3")).length).toBe(1);
   });
 
   it("normalizes duplicate and unknown columns while keeping at most five", () => {
@@ -2241,6 +2354,57 @@ describe("/link run", () => {
     const description = payload.embeds[0].toJSON().description as string;
     expect(description).toContain("persisted");
     expect(description).not.toContain("<@111111111111111111>");
+  });
+
+  it("does not load Home analytics for an ordinary Link List view", async () => {
+    const analyticsSpy = vi.mocked(homeMembershipAnalyticsService.getAnalyticsForPlayers);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(makeLinkListClanMembers({ clanTag: "#PQL0289", count: 1 }));
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+
+    await Link.run({} as any, makeInteraction({ subcommand: "list", clanTag: "#PQL0289" }) as any, {} as any);
+
+    expect(analyticsSpy).not.toHaveBeenCalled();
+  });
+
+  it("loads Home analytics once for the whole roster when Tenure sort is selected", async () => {
+    const analyticsSpy = vi.mocked(homeMembershipAnalyticsService.getAnalyticsForPlayers);
+    analyticsSpy.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        homeMembershipPeriodId: "home-1",
+        homeClanTag: "#PQL0289",
+        clanTenureSyncs: 3,
+        clanTenureIsLowerBound: false,
+        clanStreakSyncs: 3,
+        clanStreakIsLowerBound: false,
+        allianceStreakSyncs: 3,
+        allianceStreakIsLowerBound: false,
+      },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([{
+      ...makeLinkListClanMembers({ clanTag: "#PQL0289", count: 1 })[0],
+      playerTag: "#PYLQ0289",
+    }]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    const interaction: any = {
+      ...makeInteraction({ subcommand: "list", clanTag: "#PQL0289" }),
+      customId: buildLinkListSortButtonCustomId("111111111111111111", "#PQL0289", "violations", ["townhall", "player-name", "violations"]),
+      message: makePublicLinkListMessage(),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleLinkListSortButton(interaction, {} as any);
+
+    expect(analyticsSpy).toHaveBeenCalledTimes(1);
+    expect(analyticsSpy).toHaveBeenCalledWith({ guildId: "guild-1", playerTags: ["#PYLQ0289"] });
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(String(payload.embeds[0].toJSON().description ?? "")).toContain("C3/S3/A3");
   });
 
   it("renders Discord display and username as different columns when both are available", async () => {
@@ -3682,12 +3846,12 @@ describe("/link list sort button", () => {
     expect(fromViolations.update).not.toHaveBeenCalled();
     const payloadDiscordAgain = fromViolations.editReply.mock.calls[0]?.[0] as any;
     const embedDiscordAgain = payloadDiscordAgain.embeds[0].toJSON();
-    expect(embedDiscordAgain.footer?.text).toBe("Sort: Discord Name");
+    expect(embedDiscordAgain.footer?.text).toBe("Sort: Clan Tenure");
     expect(payloadDiscordAgain.components[0].components[0].toJSON().label).toBe(
       "Refresh Data",
     );
     expect(payloadDiscordAgain.components[1].components[0].toJSON().label).toBe(
-      "Sort: Discord Name",
+      "Sort: Clan Tenure",
     );
     expect(violationSpy).toHaveBeenCalled();
   });
@@ -4110,7 +4274,7 @@ describe("/link list sort button", () => {
     violationSpy.mockRestore();
   });
 
-  it("renders a realistic 50-member Discord Name view without aggressively trimming", async () => {
+  it("renders a realistic 50-member Tenure view without aggressively trimming", async () => {
     const rows = makeLinkListClanMembers({
       clanTag: "#PQL0289",
       count: 50,
@@ -4186,9 +4350,9 @@ describe("/link list sort button", () => {
     expect(description).not.toMatch(/^[\u2705\u274C]\s+`?\d+`?\s*$/um);
     expect(description).toContain("Linked Users: 40");
     expect(description).toContain("Unlinked users: 10");
-    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Discord Name");
+    expect(payload.embeds.at(-1)?.toJSON().footer?.text).toBe("Sort: Clan Tenure");
     expect(getInlineRowSegments(renderedRows[0] ?? "").playerName.trim()).toHaveLength(15);
-    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("Linked 1");
+    expect(getInlineRowSegments(renderedRows[0] ?? "").value).toBe("—");
     expect(
       getInlineRows(payload.embeds.at(-1)?.toJSON().description ?? "")[0] ?? "",
     ).toMatch(LINK_LIST_ROW_LINE_RE);

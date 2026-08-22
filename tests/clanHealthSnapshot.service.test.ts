@@ -49,6 +49,10 @@ const warsSyncMock = vi.hoisted(() => ({
   syncClan: vi.fn(),
 }));
 
+const homeRosterMock = vi.hoisted(() => ({
+  getClanHomeRoster: vi.fn(),
+}));
+
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
@@ -95,6 +99,22 @@ describe("ClanHealthSnapshotService", () => {
       contentHash: null,
       status: "NOOP",
     });
+    homeRosterMock.getClanHomeRoster.mockResolvedValue({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      homeMemberCount: 0,
+      presentCount: 0,
+      awayCount: 0,
+      unknownCount: 0,
+      openHomeSpots: 50,
+      currentClanMemberCount: 0,
+      unassignedPresentCount: 0,
+      pendingTransferCount: 0,
+      currentRosterCoverage: "UNAVAILABLE" as const,
+      currentRosterObservedAt: null,
+      members: [],
+    });
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-09T12:00:00.000Z"));
   });
@@ -111,6 +131,7 @@ describe("ClanHealthSnapshotService", () => {
       syncStateMock as any,
       warsSyncMock as any,
       historicalWindowMock as any,
+      homeRosterMock as any,
     );
   }
 
@@ -730,6 +751,14 @@ describe("ClanHealthSnapshotService", () => {
     expect(snapshot?.composition.selectedHeatMapRefAvailable).toBe(true);
     expect(snapshot?.composition.deviationScore).toBe(4);
     expect(snapshot?.composition.sourceAgeMs).toBe(3_600_000);
+    expect(snapshot?.homeRoster).toMatchObject({
+      homeMemberCount: 0,
+      presentCount: 0,
+      awayCount: 0,
+      unknownCount: 0,
+      openHomeSpots: 50,
+      pendingTransferCount: 0,
+    });
     expect(snapshot?.warPlanCompliance).toEqual({
       hasCompletedEvaluations: true,
       evaluatedWarCount: 9,

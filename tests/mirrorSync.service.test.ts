@@ -52,6 +52,30 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-30T01:00:00.000Z"),
       },
     ],
+    AllianceClanMembershipInterval: [
+      {
+        id: "interval-1",
+        guildId: "g1",
+        playerTag: "#P1",
+        clanTag: "#AAA111",
+        firstObservedAt: new Date("2026-03-29T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-03-29T01:00:00.000Z"),
+        endedAt: null,
+        endReason: null,
+        createdAt: new Date("2026-03-29T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-29T01:00:00.000Z"),
+      },
+    ],
+    SyncClanMemberSnapshot: [
+      {
+        id: "member-snapshot-1",
+        guildId: "g1",
+        syncTime: new Date("2026-03-29T00:00:00.000Z"),
+        clanTag: "#AAA111",
+        playerTag: "#P1",
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
     SyncClanReadinessSnapshot: [
       {
         id: "snapshot-1",
@@ -73,6 +97,40 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-29T00:05:00.000Z"),
       },
     ],
+    ClanHomeMembershipPeriod: [
+      {
+        id: "home-1",
+        guildId: "g1",
+        playerTag: "#P1",
+        clanTag: "#AAA111",
+        startedAtSyncTime: new Date("2026-03-29T00:00:00.000Z"),
+        qualifiedAtSyncTime: new Date("2026-03-29T00:00:00.000Z"),
+        endedAtSyncTime: null,
+        establishmentSource: "AUTO_3_SYNC",
+        endReason: null,
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
+    ClanHomeTransferCandidate: [
+      {
+        id: "candidate-1",
+        guildId: "g1",
+        playerTag: "#P1",
+        homeMembershipPeriodId: "home-1",
+        fromClanTag: "#AAA111",
+        toClanTag: "#BBB222",
+        startedAtSyncTime: new Date("2026-03-28T00:00:00.000Z"),
+        qualifiedAtSyncTime: new Date("2026-03-29T00:00:00.000Z"),
+        status: "PENDING",
+        decidedAt: null,
+        decidedByDiscordUserId: null,
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
+    HomeAwaySyncAlertSchedule: [],
+    HomeAwaySyncAlertDelivery: [],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
     WarPlanComplianceEvaluation: [
       {
@@ -310,8 +368,26 @@ function buildSourceClient(
     syncCycle: {
       findMany: vi.fn(async () => cloneRows(store.SyncCycle)),
     },
+    allianceClanMembershipInterval: {
+      findMany: vi.fn(async () => cloneRows(store.AllianceClanMembershipInterval)),
+    },
+    syncClanMemberSnapshot: {
+      findMany: vi.fn(async () => cloneRows(store.SyncClanMemberSnapshot)),
+    },
     syncClanReadinessSnapshot: {
       findMany: vi.fn(async () => cloneRows(store.SyncClanReadinessSnapshot)),
+    },
+    clanHomeMembershipPeriod: {
+      findMany: vi.fn(async () => cloneRows(store.ClanHomeMembershipPeriod)),
+    },
+    clanHomeTransferCandidate: {
+      findMany: vi.fn(async () => cloneRows(store.ClanHomeTransferCandidate)),
+    },
+    homeAwaySyncAlertSchedule: {
+      findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertSchedule)),
+    },
+    homeAwaySyncAlertDelivery: {
+      findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertDelivery)),
     },
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
@@ -427,9 +503,33 @@ function buildTargetClient(
       deleteMany: deleteMany("SyncCycle"),
       createMany: createMany("SyncCycle"),
     },
+    allianceClanMembershipInterval: {
+      deleteMany: deleteMany("AllianceClanMembershipInterval"),
+      createMany: createMany("AllianceClanMembershipInterval"),
+    },
+    syncClanMemberSnapshot: {
+      deleteMany: deleteMany("SyncClanMemberSnapshot"),
+      createMany: createMany("SyncClanMemberSnapshot"),
+    },
     syncClanReadinessSnapshot: {
       deleteMany: deleteMany("SyncClanReadinessSnapshot"),
       createMany: createMany("SyncClanReadinessSnapshot"),
+    },
+    clanHomeMembershipPeriod: {
+      deleteMany: deleteMany("ClanHomeMembershipPeriod"),
+      createMany: createMany("ClanHomeMembershipPeriod"),
+    },
+    clanHomeTransferCandidate: {
+      deleteMany: deleteMany("ClanHomeTransferCandidate"),
+      createMany: createMany("ClanHomeTransferCandidate"),
+    },
+    homeAwaySyncAlertSchedule: {
+      deleteMany: deleteMany("HomeAwaySyncAlertSchedule"),
+      createMany: createMany("HomeAwaySyncAlertSchedule"),
+    },
+    homeAwaySyncAlertDelivery: {
+      deleteMany: deleteMany("HomeAwaySyncAlertDelivery"),
+      createMany: createMany("HomeAwaySyncAlertDelivery"),
     },
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
@@ -484,10 +584,11 @@ function buildTargetClient(
 }
 
 describe("MirrorSyncService", () => {
-  it("does not full-overwrite append-oriented alliance membership history", () => {
-    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain(
-      "AllianceClanMembershipInterval",
-    );
+  it("mirrors both historical membership owners as persisted production facts", () => {
+    expect(MIRRORED_RUNTIME_TABLES).toContain("AllianceClanMembershipInterval");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("SyncClanMemberSnapshot");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("ClanHomeMembershipPeriod");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("ClanHomeTransferCandidate");
   });
 
   it("mirrors retrospective owners but not scheduled-post lifecycle state", () => {
@@ -597,6 +698,10 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CwlRotationPlan[0]?.eventInstanceId).toBe("event-current");
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
+    expect(targetStore.AllianceClanMembershipInterval).toEqual(sourceStore.AllianceClanMembershipInterval);
+    expect(targetStore.SyncClanMemberSnapshot).toEqual(sourceStore.SyncClanMemberSnapshot);
+    expect(targetStore.ClanHomeMembershipPeriod).toEqual(sourceStore.ClanHomeMembershipPeriod);
+    expect(targetStore.ClanHomeTransferCandidate).toEqual(sourceStore.ClanHomeTransferCandidate);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
     expect(targetStore.WarPlanComplianceEvaluation).toEqual(
       sourceStore.WarPlanComplianceEvaluation,

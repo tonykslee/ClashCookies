@@ -57,6 +57,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
     markDisabled: ReturnType<typeof vi.fn>;
   };
   let autoPostService: { runCycle: ReturnType<typeof vi.fn> };
+  let homeService: { reconcileLatestExactBoundaries: ReturnType<typeof vi.fn> };
+  let homeAwayService: { runCycle: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,6 +71,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       markDisabled: vi.fn().mockResolvedValue(undefined),
     };
     autoPostService = { runCycle: vi.fn().mockResolvedValue(undefined) };
+    homeService = { reconcileLatestExactBoundaries: vi.fn().mockResolvedValue(undefined) };
+    homeAwayService = { runCycle: vi.fn().mockResolvedValue(undefined) };
   });
 
   afterEach(() => {
@@ -84,6 +88,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       statusService as any,
       syncService as any,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
 
     const result = scheduler.start();
@@ -112,6 +118,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       statusService as any,
       syncService as any,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
     vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
       order.push("expired");
@@ -125,19 +133,24 @@ describe("ScheduledSyncPostSchedulerService", () => {
     expect(order).toEqual(["sync", "expired"]);
   });
 
-  it("runs retrospective reconciliation before readiness work and isolates its failure", async () => {
+  it("runs Home reconciliation after capture and isolates retrospective failure", async () => {
     const order: string[] = [];
     const syncService = { runCycle: vi.fn().mockImplementation(async () => order.push("sync")) };
     const autoPostService = { runCycle: vi.fn().mockImplementation(async () => {
       order.push("retrospective");
       throw new Error("retrospective unavailable");
     }) };
+    homeService.reconcileLatestExactBoundaries.mockImplementation(async () => {
+      order.push("home");
+    });
     const scheduler = new ScheduledSyncPostSchedulerService(
       {} as Client,
       15_000,
       statusService as any,
       syncService as any,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
     vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
       order.push("expired");
@@ -148,8 +161,30 @@ describe("ScheduledSyncPostSchedulerService", () => {
     await scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime());
 
     expect(autoPostService.runCycle).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(["sync", "retrospective", "expired"]);
+    expect(order).toEqual(["sync", "home", "retrospective", "expired"]);
     expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining("sync_retrospective_auto_post_cycle_failed"));
+  });
+
+  it("runs the Home Away alert sibling and isolates its failure", async () => {
+    homeAwayService.runCycle.mockRejectedValueOnce(new Error("alert unavailable"));
+    const scheduler = new ScheduledSyncPostSchedulerService(
+      {} as Client,
+      15_000,
+      statusService as any,
+      undefined,
+      autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
+    );
+    vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockResolvedValue([]);
+    vi.spyOn(scheduledSyncPostService, "findDueScheduledSyncPosts").mockResolvedValue([]);
+
+    await expect(scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime())).resolves.toMatchObject({
+      scanned: 0,
+    });
+    expect(homeAwayService.runCycle).toHaveBeenCalledWith(expect.any(Date));
+    expect(autoPostService.runCycle).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining("home_away_sync_alert_cycle_failed"));
   });
 
   it("claims and publishes one due schedule", async () => {
@@ -169,6 +204,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       statusService as any,
       undefined,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
@@ -251,6 +288,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       statusService as any,
       undefined,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
@@ -324,6 +363,8 @@ describe("ScheduledSyncPostSchedulerService", () => {
       statusService as any,
       undefined,
       autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
