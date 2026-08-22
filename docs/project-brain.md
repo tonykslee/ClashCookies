@@ -47,6 +47,7 @@ Core subsystems:
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
 - Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals for later camping analytics and future read-only reporting, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. `/cwl activity` does not read this table.
+- Read-only membership streak analytics: `SyncCycle + SyncClanReadinessSnapshot / SyncClanMemberSnapshot + guild-scoped canonical FWA history/participation fallback + AllianceClanMembershipInterval -> MembershipStreakService`; this is a bounded bulk DB-first reader for physical FWA clan streaks and monitored-alliance streaks. Exact snapshots win over fallback, unknown/ambiguous boundaries are never bridged, and no derived streak counters are persisted. `ClanWarParticipation` is fallback evidence only and is never written into `SyncClanMemberSnapshot`.
 - Read-only CWL alliance activity reporting: `CwlEventInstance / CwlEventClan / persisted CWL round/history owners / CwlPlayerClanSeason / ClanWarHistory / ClanWarParticipation -> CwlAllianceActivityService -> /cwl activity`; the service derives deterministic report cohorts without writes, external API calls, `AllianceClanMembershipInterval` reads, or ownership changes.
 - Read-only CWL camping reporting: `AllianceClanMembershipInterval + CwlAllianceActivityService historical home attribution/CWL window + CwlTrackedClan -> CwlAllianceCampingService -> /cwl camping`; the service measures observed non-home CWL-clan residence, keeps unattributed evidence separate, reconciles overlaps without writes, and is not a state owner.
 - Snapshot-backed todo: `PlayerLink + TodoUserUsage + CurrentWar + CurrentCwlRound/CwlRoundMemberCurrent + activity signals -> TodoSnapshotService -> TodoPlayerSnapshot`, with event-owned WAR/RAID/CWL context plus Clan Games lifecycle state whose clan ownership remains current membership, so stale event state can be cleared independently of the latest clan observation.
@@ -98,6 +99,7 @@ Important owners:
 | Points sync metadata | ClanPointsSync |
 | Scheduled-sync clan readiness and exact filler-at-sync facts | SyncClanReadinessSnapshot |
 | DB-first Sync Retrospective read model | SyncRetrospectiveService (consumer only; no writes) |
+| Derived clan/alliance streak analytics | MembershipStreakService (consumer only; no writes or persisted counters) |
 | Mutable guild-scoped filler designations | FillerAccount |
 | Scheduled-sync clan-goal and retrospective delivery claims | SyncEvent |
 | Posted notify/mail messages | ClanPostedMessage |
