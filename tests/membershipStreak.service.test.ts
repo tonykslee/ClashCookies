@@ -120,6 +120,35 @@ function readinessRows(days: number[], rowsPerBoundary = 1) {
 }
 
 describe("MembershipStreakService", () => {
+  it("returns the existing streak results together with newest-to-oldest boundaries", async () => {
+    const db = makeDb({
+      cycles: cycleRows([1, 2, 3]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr), snapshot(3, rr)],
+    });
+    const service = new MembershipStreakService(db);
+
+    const batch = await service.getMembershipStreakBatchForPlayers(streakInput());
+    const existing = await service.getMembershipStreaksForPlayers(streakInput());
+
+    expect(batch.streaks).toEqual(existing);
+    expect(batch.boundaryTimes).toEqual([time(3), time(2), time(1)]);
+    expect(batch.boundaryHistoryTruncated).toBe(false);
+  });
+
+  it("does not report interval-row capping as boundary-history truncation", async () => {
+    const intervals = Array.from({ length: 12 }, (_, index) => interval(1, 2, `#C${String(index).padStart(3, "2")}`));
+    const db = makeDb({
+      cycles: cycleRows([1, 2]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr)],
+      intervals,
+    });
+
+    const batch = await new MembershipStreakService(db).getMembershipStreakBatchForPlayers(streakInput([playerTag], 2));
+
+    expect(batch.boundaryHistoryTruncated).toBe(false);
+    expect(batch.streaks[0]).toMatchObject({ allianceStreakSyncs: 2, allianceStreakIsLowerBound: true });
+  });
+
   it("counts three exact snapshots as three-sync clan and alliance streaks", async () => {
     const db = makeDb({
       cycles: cycleRows([1, 2, 3]),
