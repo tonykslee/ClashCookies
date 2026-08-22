@@ -119,6 +119,7 @@ type HomeAwaySyncAlertDependencies = {
   db?: HomeAwaySyncAlertDb;
   homeRosterService?: Pick<HomeRosterService, "getClanHomeRoster">;
   random?: () => number;
+  clock?: () => Date;
 };
 
 type RecipientAccount = {
@@ -147,6 +148,10 @@ const EVALUATION_STATUSES = [
   HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.PENDING,
   HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CLAIMED,
 ];
+const CANCELLABLE_SCHEDULE_STATUSES = [
+  ...EVALUATION_STATUSES,
+  HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED,
+] as HomeAwaySyncAlertScheduleStatus[];
 const NONTERMINAL_DELIVERY_STATUSES = [
   HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.PENDING,
   HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.CLAIMED,
@@ -289,6 +294,7 @@ export class HomeAwaySyncAlertService {
   private readonly db: HomeAwaySyncAlertDb;
   private readonly homeRosterReader: Pick<HomeRosterService, "getClanHomeRoster">;
   private readonly random: () => number;
+  private readonly clock: () => Date;
 
   /** Purpose: inject active Discord delivery, persistence, Home roster, and deterministic randomness dependencies. */
   constructor(
@@ -298,6 +304,14 @@ export class HomeAwaySyncAlertService {
     this.db = dependencies.db ?? defaultDb;
     this.homeRosterReader = dependencies.homeRosterService ?? homeRosterService;
     this.random = dependencies.random ?? Math.random;
+    this.clock = dependencies.clock ?? (() => new Date());
+  }
+
+  /** Purpose: advance a deterministic cycle timestamp to the latest injected or wall-clock time. */
+  private getEffectiveNow(cycleNow: Date): Date {
+    const current = this.clock();
+    if (!isValidDate(current) || current.getTime() <= cycleNow.getTime()) return new Date(cycleNow);
+    return new Date(current);
   }
 
   /** Purpose: run the alert lifecycle from cheap persisted rows while evaluating Home presence only when due. */
@@ -318,6 +332,23 @@ export class HomeAwaySyncAlertService {
       const activeSourceIds = activeSources
         .map((row) => normalizeId(row.id))
         .filter(Boolean);
+      const sourcesByGuild = new Map<string, typeof activeSources>();
+      for (const source of activeSources) {
+        const guildId = normalizeId(source.guildId);
+        if (!guildId) continue;
+        const guildSources = sourcesByGuild.get(guildId) ?? [];
+        guildSources.push(source);
+        sourcesByGuild.set(guildId, guildSources);
+      }
+      const ambiguousSourceIds = new Set(
+        [...sourcesByGuild.values()]
+          .filter((guildSources) => guildSources.length > 1)
+          .flatMap((guildSources) => guildSources.map((source) => normalizeId(source.id)))
+          .filter(Boolean),
+      );
+      const authoritativeSources = activeSources.filter(
+        (source) => !ambiguousSourceIds.has(normalizeId(source.id)),
+      );
 
       const existingSchedules = activeSourceIds.length === 0
         ? []
@@ -328,7 +359,14 @@ export class HomeAwaySyncAlertService {
         existingSchedules.map((row) => [normalizeId(row.scheduledSyncPostId), row]),
       );
 
-      for (const source of activeSources) {
+      for (const sourceId of ambiguousSourceIds) {
+        const existing = existingBySourceId.get(sourceId);
+        if (!existing || !CANCELLABLE_SCHEDULE_STATUSES.includes(existing.status)) continue;
+        await this.cancelSchedule(existing.id, "source_ambiguous");
+        counts.cancelled += 1;
+      }
+
+      for (const source of authoritativeSources) {
         const sourceId = normalizeId(source.id);
         if (!sourceId || !isValidDate(source.syncTime)) continue;
         const existing = existingBySourceId.get(sourceId);
@@ -640,19 +678,47 @@ export class HomeAwaySyncAlertService {
     schedule: HomeAwaySyncAlertScheduleRow,
     now: Date,
   ): Promise<boolean> {
-    const source = await db.scheduledSyncPost.findUnique({
-      where: { id: schedule.scheduledSyncPostId },
+    const sources = await db.scheduledSyncPost.findMany({
+      where: {
+        guildId: schedule.guildId,
+        status: { in: ACTIVE_SOURCE_STATUSES },
+        syncTime: { gt: now },
+      },
       select: { id: true, guildId: true, syncTime: true, status: true },
     });
-    return Boolean(
-      source &&
+    const matchingSources = sources.filter(
+      (source) =>
         normalizeId(source.id) === normalizeId(schedule.scheduledSyncPostId) &&
         normalizeId(source.guildId) === normalizeId(schedule.guildId) &&
         isValidDate(source.syncTime) &&
-        source.syncTime.getTime() === schedule.syncTime.getTime() &&
-        ACTIVE_SOURCE_STATUSES.includes(source.status) &&
-        source.syncTime.getTime() > now.getTime(),
+        source.syncTime.getTime() === schedule.syncTime.getTime(),
     );
+    return matchingSources.length === 1 && sources.length === 1;
+  }
+
+  /** Purpose: distinguish a missing source from a legacy multi-source ambiguity for fail-closed cancellation. */
+  private async validateSource(
+    db: Pick<HomeAwaySyncAlertDb, "scheduledSyncPost">,
+    schedule: HomeAwaySyncAlertScheduleRow,
+    now: Date,
+  ): Promise<"valid" | "ambiguous" | "invalid"> {
+    const sources = await db.scheduledSyncPost.findMany({
+      where: {
+        guildId: schedule.guildId,
+        status: { in: ACTIVE_SOURCE_STATUSES },
+        syncTime: { gt: now },
+      },
+      select: { id: true, guildId: true, syncTime: true, status: true },
+    });
+    if (sources.length > 1) return "ambiguous";
+    const source = sources[0];
+    return source &&
+      normalizeId(source.id) === normalizeId(schedule.scheduledSyncPostId) &&
+      normalizeId(source.guildId) === normalizeId(schedule.guildId) &&
+      isValidDate(source.syncTime) &&
+      source.syncTime.getTime() === schedule.syncTime.getTime()
+      ? "valid"
+      : "invalid";
   }
 
   /** Purpose: materialize the one-time Away snapshot only after the source remains authorized. */
@@ -738,9 +804,14 @@ export class HomeAwaySyncAlertService {
       }));
 
     const materialized = await this.db.$transaction(async (tx) => {
-      if (!(await this.isSourceValid(tx, schedule, now))) {
-        await this.cancelScheduleInTransaction(tx, schedule.id, "source_replaced_or_cancelled");
-        return false;
+      const sourceValidation = await this.validateSource(tx, schedule, now);
+      if (sourceValidation !== "valid") {
+        await this.cancelScheduleInTransaction(
+          tx,
+          schedule.id,
+          sourceValidation === "ambiguous" ? "source_ambiguous" : "source_replaced_or_cancelled",
+        );
+        return sourceValidation;
       }
       if (recipients.length > 0) {
         await tx.homeAwaySyncAlertDelivery.createMany({
@@ -766,11 +837,11 @@ export class HomeAwaySyncAlertService {
           claimedAt: null,
         },
       });
-      return true;
+      return "valid";
     });
-    if (!materialized) {
+    if (materialized !== "valid") {
       dozzleLog.info(
-        `[home-away-sync-alert] schedule_cancelled alert_id=${schedule.id} reason=source_replaced_or_cancelled`,
+        `[home-away-sync-alert] schedule_cancelled alert_id=${schedule.id} reason=${materialized === "ambiguous" ? "source_ambiguous" : "source_replaced_or_cancelled"}`,
       );
       return {
         evaluated: false,
@@ -799,7 +870,8 @@ export class HomeAwaySyncAlertService {
     schedule: HomeAwaySyncAlertScheduleRow,
     now: Date,
   ): Promise<{ sent: number; failed: number; expired: number; completed: boolean }> {
-    if (now.getTime() >= schedule.syncTime.getTime()) {
+    const cycleEffectiveNow = this.getEffectiveNow(now);
+    if (cycleEffectiveNow.getTime() >= schedule.syncTime.getTime()) {
       await this.expireSchedule(schedule.id, "sync_time_passed_before_delivery");
       return { sent: 0, failed: 0, expired: 1, completed: false };
     }
@@ -812,16 +884,49 @@ export class HomeAwaySyncAlertService {
     });
     let sent = 0;
     let failed = 0;
+    let expired = 0;
     for (const delivery of deliveries) {
       const claimed = await this.claimDelivery(delivery, now);
       if (!claimed) continue;
-      if (now.getTime() >= schedule.syncTime.getTime()) {
+      const beforeFetchNow = this.getEffectiveNow(now);
+      if (beforeFetchNow.getTime() >= schedule.syncTime.getTime()) {
         await this.expireDelivery(delivery.id, claimed.claimToken, "sync_time_passed_before_send");
+        expired += 1;
+        continue;
+      }
+      const beforeFetchValidation = await this.validateSource(this.db, schedule, beforeFetchNow);
+      const beforeFetchSchedule = await this.db.homeAwaySyncAlertSchedule.findUnique({
+        where: { id: schedule.id },
+      });
+      const beforeFetchScheduleCurrent = Boolean(
+        beforeFetchSchedule &&
+          beforeFetchSchedule.status === HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED &&
+          normalizeId(beforeFetchSchedule.scheduledSyncPostId) === normalizeId(schedule.scheduledSyncPostId) &&
+          normalizeId(beforeFetchSchedule.guildId) === normalizeId(schedule.guildId) &&
+          isValidDate(beforeFetchSchedule.syncTime) &&
+          beforeFetchSchedule.syncTime.getTime() === schedule.syncTime.getTime(),
+      );
+      if (beforeFetchValidation !== "valid") {
+        await this.cancelSchedule(
+          schedule.id,
+          beforeFetchValidation === "ambiguous" ? "source_ambiguous" : "source_replaced_or_cancelled",
+        );
+        continue;
+      }
+      if (!beforeFetchScheduleCurrent) {
+        await this.expireDelivery(delivery.id, claimed.claimToken, "schedule_no_longer_evaluated");
+        expired += 1;
         continue;
       }
       try {
         const user = await this.client.users.fetch(delivery.discordUserId);
-        const sourceValid = await this.isSourceValid(this.db, schedule, now);
+        const finalNow = this.getEffectiveNow(now);
+        if (finalNow.getTime() >= schedule.syncTime.getTime()) {
+          await this.expireDelivery(delivery.id, claimed.claimToken, "sync_time_passed_before_send");
+          expired += 1;
+          continue;
+        }
+        const finalSourceValidation = await this.validateSource(this.db, schedule, finalNow);
         const currentSchedule = await this.db.homeAwaySyncAlertSchedule.findUnique({
           where: { id: schedule.id },
         });
@@ -833,8 +938,11 @@ export class HomeAwaySyncAlertService {
             isValidDate(currentSchedule.syncTime) &&
             currentSchedule.syncTime.getTime() === schedule.syncTime.getTime(),
         );
-        if (!sourceValid) {
-          await this.cancelSchedule(schedule.id, "source_replaced_or_cancelled");
+        if (finalSourceValidation !== "valid") {
+          await this.cancelSchedule(
+            schedule.id,
+            finalSourceValidation === "ambiguous" ? "source_ambiguous" : "source_replaced_or_cancelled",
+          );
           continue;
         }
         if (!scheduleCurrent) {
@@ -848,7 +956,7 @@ export class HomeAwaySyncAlertService {
             status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.SENT,
             claimToken: null,
             claimedAt: null,
-            sentAt: now,
+            sentAt: finalNow,
             failureCode: null,
             failureReason: null,
           },
@@ -856,7 +964,13 @@ export class HomeAwaySyncAlertService {
         if (marked.count === 1) sent += 1;
       } catch (error) {
         failed += 1;
-        await this.recordDeliveryFailure({ delivery, claimToken: claimed.claimToken, error, now, syncTime: schedule.syncTime });
+        await this.recordDeliveryFailure({
+          delivery,
+          claimToken: claimed.claimToken,
+          error,
+          now: this.getEffectiveNow(now),
+          syncTime: schedule.syncTime,
+        });
       }
     }
 
@@ -868,19 +982,20 @@ export class HomeAwaySyncAlertService {
       select: { id: true },
     });
     if (remaining.length === 0) {
+      const completedAt = this.getEffectiveNow(now);
       const completed = await this.db.homeAwaySyncAlertSchedule.updateMany({
         where: { id: schedule.id, status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED },
         data: {
           status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.COMPLETED,
-          completedAt: now,
+          completedAt,
         },
       });
       if (completed.count === 1) {
         dozzleLog.info(`[home-away-sync-alert] completed alert_id=${schedule.id} guild_id=${schedule.guildId}`);
-        return { sent, failed, expired: 0, completed: true };
+        return { sent, failed, expired, completed: true };
       }
     }
-    return { sent, failed, expired: 0, completed: false };
+    return { sent, failed, expired, completed: false };
   }
 
   /** Purpose: atomically claim one recipient delivery or recover its stale retry lease. */

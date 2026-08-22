@@ -35,6 +35,7 @@ function buildHarness(input: {
   rosters?: Record<string, any>;
   users?: Record<string, any>;
   random?: () => number;
+  clock?: () => Date;
 }) {
   const state = {
     sources: input.sources ?? [],
@@ -141,6 +142,7 @@ function buildHarness(input: {
     db,
     homeRosterService: rosterReader,
     random: input.random ?? (() => 0.5),
+    clock: input.clock ?? (() => now),
   });
   return { service, db, state, client, rosterReader };
 }
@@ -401,6 +403,23 @@ describe("HomeAwaySyncAlertService", () => {
     expect(terminal.state.schedules[0].status).toBe("COMPLETED");
   });
 
+  it("treats one future FAILED source as the sole valid source and can alert", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-failed-alone", "FAILED", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+  });
+
   it("skips cancelled sources without reading HomeRoster", async () => {
     const harness = buildHarness({ sources: [source("post-cancelled", "CANCELLED", 4)] });
     await harness.service.runCycle(now);
@@ -421,6 +440,171 @@ describe("HomeAwaySyncAlertService", () => {
     await harness.service.runCycle(now);
     expect(harness.state.schedules.find((row) => row.scheduledSyncPostId === "post-old")?.status).toBe("CANCELLED");
     expect(harness.state.schedules.find((row) => row.scheduledSyncPostId === "post-new")?.fireAt).not.toEqual(oldFireAt);
+  });
+
+  it("fails closed without creating alerts when a guild has multiple eligible future sources", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-ambiguous-old", "FAILED", 8), source("post-ambiguous-new", "PENDING", 10)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(harness.state.schedules).toHaveLength(0);
+    expect(harness.rosterReader.getClanHomeRoster).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("cancels preexisting ambiguous alert work and never sends two DMs", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const older = source("post-legacy-old", "FAILED", 8);
+    const newer = source("post-legacy-new", "PENDING", 10);
+    const harness = buildHarness({
+      sources: [older],
+      users: { "user-1": { send } },
+    });
+    await harness.service.runCycle(now);
+    const oldSchedule = harness.state.schedules[0];
+    const oldFireAt = oldSchedule.fireAt;
+    oldSchedule.status = "EVALUATED";
+    harness.state.deliveries.push({
+      id: "delivery-old",
+      alertScheduleId: oldSchedule.id,
+      guildId: "guild-1",
+      discordUserId: "user-1",
+      messageContent: "old",
+      status: "PENDING",
+      claimToken: null,
+      claimedAt: null,
+      attemptCount: 0,
+      nextAttemptAt: null,
+      sentAt: null,
+      failureCode: null,
+      failureReason: null,
+    });
+    const newSchedule = {
+      ...oldSchedule,
+      id: "alert-new",
+      scheduledSyncPostId: newer.id,
+      syncTime: newer.syncTime,
+      fireAt: new Date(now.getTime() - 1),
+      status: "EVALUATED",
+    };
+    harness.state.schedules.push(newSchedule);
+    harness.state.deliveries.push({
+      id: "delivery-new",
+      alertScheduleId: newSchedule.id,
+      guildId: "guild-1",
+      discordUserId: "user-1",
+      messageContent: "new",
+      status: "PENDING",
+      claimToken: null,
+      claimedAt: null,
+      attemptCount: 0,
+      nextAttemptAt: null,
+      sentAt: null,
+      failureCode: null,
+      failureReason: null,
+    });
+    harness.state.sources.push(newer);
+
+    await harness.service.runCycle(now);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(harness.state.schedules.map((row) => row.status)).toEqual(["CANCELLED", "CANCELLED"]);
+    expect(harness.state.deliveries.map((row) => row.failureCode)).toEqual(["source_cancelled", "source_cancelled"]);
+    expect(oldSchedule.fireAt).toEqual(oldFireAt);
+  });
+
+  it("reactivates the sole source after ambiguity resolves without rerandomizing fireAt", async () => {
+    const random = vi.fn(() => 0.25);
+    const older = source("post-resolve-old", "FAILED", 8);
+    const newer = source("post-resolve-new", "PENDING", 10);
+    const harness = buildHarness({ sources: [older], random });
+    await harness.service.runCycle(now);
+    const original = { ...harness.state.schedules[0] };
+    harness.state.sources.push(newer);
+    await harness.service.runCycle(now);
+    expect(harness.state.schedules[0].status).toBe("CANCELLED");
+
+    harness.state.sources = harness.state.sources.filter((row) => row.id !== newer.id);
+    await harness.service.runCycle(now);
+
+    expect(harness.state.schedules[0].status).toBe("PENDING");
+    expect(harness.state.schedules[0].id).toBe(original.id);
+    expect(harness.state.schedules[0].fireAt).toEqual(original.fireAt);
+    expect(random).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses effective current time at the final send boundary and schedules no retry after sync", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    let effectiveNow = now;
+    const scheduleSource = source("post-clock-deadline", "PENDING", 4);
+    const harness = buildHarness({
+      sources: [scheduleSource],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+      clock: () => effectiveNow,
+    });
+    harness.client.users.fetch.mockImplementationOnce(async () => {
+      effectiveNow = new Date(scheduleSource.syncTime.getTime() + 1);
+      return { send };
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
+    expect(harness.state.deliveries[0].nextAttemptAt).toBeNull();
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+  });
+
+  it("sends normally when effective current time remains before sync", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-clock-before-sync", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+      clock: () => now,
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses effective current time in source validation before sending", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const effectiveNow = new Date(now.getTime() + HOUR);
+    const harness = buildHarness({
+      sources: [source("post-clock-validation", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+      clock: () => effectiveNow,
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(
+      harness.db.scheduledSyncPost.findMany.mock.calls.some(
+        ([args]: any[]) => args?.where?.syncTime?.gt?.getTime?.() === effectiveNow.getTime(),
+      ),
+    ).toBe(true);
   });
 
   it("reactivates a pre-fire cancellation with the same alert ID and fireAt", async () => {

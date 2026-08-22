@@ -183,6 +183,7 @@ describe("ScheduledSyncPostService", () => {
           OR: [
             { status: { in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] } },
             { status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED, syncTime: { gt: expect.any(Date) } },
+            { status: SCHEDULED_SYNC_POST_STATUS.FAILED, syncTime: { gt: expect.any(Date) } },
           ],
         },
         data: expect.objectContaining({
@@ -198,6 +199,29 @@ describe("ScheduledSyncPostService", () => {
     expect(txMock.scheduledSyncPost.create).toHaveBeenCalledTimes(1);
     expect(result.action).toBe("replaced");
     expect(result.schedule.id).toBe("scheduled-sync-1");
+  });
+
+  it("replaces an older future FAILED schedule when a different future schedule is created", async () => {
+    const rows = useInMemoryScheduleStore();
+    await scheduleRequest("2026-06-16T01:30:00.000Z");
+    const older = [...rows.values()][0];
+    older.status = SCHEDULED_SYNC_POST_STATUS.FAILED;
+
+    await scheduleRequest("2026-06-16T02:30:00.000Z");
+
+    expect(older.status).toBe(SCHEDULED_SYNC_POST_STATUS.REPLACED);
+    expect([...rows.values()][1].status).toBe(SCHEDULED_SYNC_POST_STATUS.PENDING);
+  });
+
+  it("keeps a past FAILED schedule historical when creating a future replacement", async () => {
+    const rows = useInMemoryScheduleStore();
+    await scheduleRequest("2026-06-15T22:30:00.000Z");
+    const historical = [...rows.values()][0];
+    historical.status = SCHEDULED_SYNC_POST_STATUS.FAILED;
+
+    await scheduleRequest("2026-06-16T02:30:00.000Z");
+
+    expect(historical.status).toBe(SCHEDULED_SYNC_POST_STATUS.FAILED);
   });
 
   it("reuses an existing schedule for the same guild and sync time", async () => {
@@ -244,6 +268,7 @@ describe("ScheduledSyncPostService", () => {
           OR: [
             { status: { in: [SCHEDULED_SYNC_POST_STATUS.PENDING, SCHEDULED_SYNC_POST_STATUS.CLAIMED] } },
             { status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED, syncTime: { gt: expect.any(Date) } },
+            { status: SCHEDULED_SYNC_POST_STATUS.FAILED, syncTime: { gt: expect.any(Date) } },
           ],
         }),
       }),
