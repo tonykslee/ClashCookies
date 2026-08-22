@@ -171,20 +171,31 @@ describe("ClanHomeMembershipService", () => {
   });
 
   it("does not establish Home after one qualifying exact sync", async () => {
-    const { service, state } = serviceFor({ evidence: [fwaEvidence(3)] });
+    const built = serviceFor({ evidence: [fwaEvidence(3)] });
 
-    const result = await service.reconcileLatestExactBoundaries();
+    const result = await built.service.reconcileLatestExactBoundaries();
+    const replay = await built.service.reconcileLatestExactBoundaries();
 
     expect(result.established).toBe(0);
-    expect(state.periods).toHaveLength(0);
+    expect(result.retryable).toBe(0);
+    expect(replay.retryable).toBe(0);
+    expect(built.state.periods).toHaveLength(0);
+    expect(built.db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(1);
+    expect(built.evidenceService.getMembershipBoundaryEvidenceForPlayers).toHaveBeenCalledTimes(1);
   });
 
   it("does not establish Home after two qualifying exact syncs", async () => {
-    const { service, state } = serviceFor({ evidence: [fwaEvidence(3), fwaEvidence(2)] });
+    const built = serviceFor({ evidence: [fwaEvidence(3), fwaEvidence(2)] });
 
-    await service.reconcileLatestExactBoundaries();
+    const result = await built.service.reconcileLatestExactBoundaries();
+    const replay = await built.service.reconcileLatestExactBoundaries();
 
-    expect(state.periods).toHaveLength(0);
+    expect(result.established).toBe(0);
+    expect(result.retryable).toBe(0);
+    expect(replay.retryable).toBe(0);
+    expect(built.state.periods).toHaveLength(0);
+    expect(built.db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(1);
+    expect(built.evidenceService.getMembershipBoundaryEvidenceForPlayers).toHaveBeenCalledTimes(1);
   });
 
   it("establishes one Home period after three consecutive exact non-filler syncs", async () => {
@@ -213,12 +224,35 @@ describe("ClanHomeMembershipService", () => {
   });
 
   it("does not duplicate a replayed boundary", async () => {
-    const { service, state } = serviceFor();
+    const built = serviceFor();
 
-    await service.reconcileLatestExactBoundaries();
-    await service.reconcileLatestExactBoundaries();
+    await built.service.reconcileLatestExactBoundaries();
+    const memberReads = built.db.syncClanMemberSnapshot.findMany.mock.calls.length;
+    const evidenceReads = built.evidenceService.getMembershipBoundaryEvidenceForPlayers.mock.calls.length;
+    const readinessReads = built.db.syncClanReadinessSnapshot.findMany.mock.calls.length;
+    const activeHomeReads = built.db.clanHomeMembershipPeriod.findMany.mock.calls.length;
+    const activeHomeChecks = built.db.clanHomeMembershipPeriod.findFirst.mock.calls.length;
+    const homeWrites = built.db.clanHomeMembershipPeriod.create.mock.calls.length;
 
-    expect(state.periods).toHaveLength(1);
+    const replay = await built.service.reconcileLatestExactBoundaries();
+
+    expect(replay).toEqual({
+      guilds: 0,
+      boundaries: 0,
+      evaluated: 0,
+      established: 0,
+      skippedExisting: 0,
+      skippedFillerOrUnknown: 0,
+      retryable: 0,
+    });
+    expect(built.db.syncClanMemberSnapshot.groupBy).toHaveBeenCalledTimes(2);
+    expect(built.db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(memberReads);
+    expect(built.evidenceService.getMembershipBoundaryEvidenceForPlayers).toHaveBeenCalledTimes(evidenceReads);
+    expect(built.db.syncClanReadinessSnapshot.findMany).toHaveBeenCalledTimes(readinessReads);
+    expect(built.db.clanHomeMembershipPeriod.findMany).toHaveBeenCalledTimes(activeHomeReads);
+    expect(built.db.clanHomeMembershipPeriod.findFirst).toHaveBeenCalledTimes(activeHomeChecks);
+    expect(built.db.clanHomeMembershipPeriod.create).toHaveBeenCalledTimes(homeWrites);
+    expect(built.state.periods).toHaveLength(1);
   });
 
   it("remains idempotent after service restart", async () => {
@@ -307,6 +341,40 @@ describe("ClanHomeMembershipService", () => {
     await service.reconcileLatestExactBoundaries();
 
     expect(state.periods).toHaveLength(0);
+  });
+
+  it("treats known filler as permanent even when an older readiness row is missing", async () => {
+    const built = serviceFor({
+      readinessRows: [readiness(3), readiness(2, { fillerPlayerTags: [playerTag] })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.retryable).toBe(0);
+    expect(result.skippedFillerOrUnknown).toBe(1);
+    expect(built.state.periods).toHaveLength(0);
+  });
+
+  it("treats incomplete filler capture as permanent even when an older readiness row is missing", async () => {
+    const built = serviceFor({
+      readinessRows: [readiness(3), readiness(2, { complete: false })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.retryable).toBe(0);
+    expect(result.skippedFillerOrUnknown).toBe(1);
+    expect(built.state.periods).toHaveLength(0);
+  });
+
+  it("keeps an otherwise eligible candidate retryable when only readiness is missing", async () => {
+    const built = serviceFor({ readinessRows: [readiness(3), readiness(2)] });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.retryable).toBe(1);
+    expect(result.skippedFillerOrUnknown).toBe(0);
+    expect(built.state.periods).toHaveLength(0);
   });
 
   it("uses immutable readiness filler facts and never consults FillerAccount", async () => {

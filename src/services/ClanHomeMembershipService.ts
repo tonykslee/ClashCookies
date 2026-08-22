@@ -244,11 +244,14 @@ export class ClanHomeMembershipService {
       _max: { syncTime: true },
     });
     const latestBoundaries = normalizeLatestBoundaries(groupedBoundaries);
-    if (latestBoundaries.length === 0) return summary;
+    const pendingBoundaries = latestBoundaries.filter((boundary) =>
+      this.successfullyEvaluatedBoundaryByGuild.get(boundary.guildId) !== boundaryKey(boundary.guildId, boundary.syncTime),
+    );
+    if (pendingBoundaries.length === 0) return summary;
 
     const latestRows = normalizeCandidateSnapshots(await this.db.syncClanMemberSnapshot.findMany({
       where: {
-        OR: latestBoundaries.map((boundary) => ({
+        OR: pendingBoundaries.map((boundary) => ({
           guildId: boundary.guildId,
           syncTime: boundary.syncTime,
         })),
@@ -263,14 +266,11 @@ export class ClanHomeMembershipService {
       rowsByGuild.set(row.guildId, rows);
     }
 
-    summary.guilds = latestBoundaries.length;
-    summary.boundaries = latestBoundaries.length;
+    summary.guilds = pendingBoundaries.length;
+    summary.boundaries = pendingBoundaries.length;
     let firstFailure: unknown = null;
     const establishmentContexts: Array<{ boundary: LatestBoundary; result: GuildEvaluationResult }> = [];
-    for (const boundary of latestBoundaries) {
-      if (this.successfullyEvaluatedBoundaryByGuild.get(boundary.guildId) === boundaryKey(boundary.guildId, boundary.syncTime)) {
-        continue;
-      }
+    for (const boundary of pendingBoundaries) {
       try {
         const result = await this.reconcileGuildBoundary(
           boundary,
@@ -349,11 +349,11 @@ export class ClanHomeMembershipService {
       maxBoundaries: AUTO_ESTABLISHMENT_SYNC_COUNT,
     });
     const firstEvidence = evidenceByPlayer[candidates[0]] ?? [];
-    if (
-      firstEvidence.length < AUTO_ESTABLISHMENT_SYNC_COUNT ||
-      firstEvidence[0]?.boundaryTime.getTime() !== boundary.syncTime.getTime()
-    ) {
+    if (firstEvidence[0]?.boundaryTime.getTime() !== boundary.syncTime.getTime()) {
       return { status: "retryable", ...baseResult };
+    }
+    if (firstEvidence.length < AUTO_ESTABLISHMENT_SYNC_COUNT) {
+      return { status: "evaluated", ...baseResult };
     }
     const boundaryTimes = firstEvidence
       .slice(0, AUTO_ESTABLISHMENT_SYNC_COUNT)
@@ -402,7 +402,11 @@ export class ClanHomeMembershipService {
         }
       }
       if (missing) {
-        readinessMissing = true;
+        if (fillerOrUnknown) {
+          baseResult.skippedFillerOrUnknown += 1;
+        } else {
+          readinessMissing = true;
+        }
       } else if (fillerOrUnknown) {
         baseResult.skippedFillerOrUnknown += 1;
       } else {
