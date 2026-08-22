@@ -890,9 +890,8 @@ export class HomeAwaySyncAlertService {
       if (!claimed) continue;
       const beforeFetchNow = this.getEffectiveNow(now);
       if (beforeFetchNow.getTime() >= schedule.syncTime.getTime()) {
-        await this.expireDelivery(delivery.id, claimed.claimToken, "sync_time_passed_before_send");
-        expired += 1;
-        continue;
+        await this.expireSchedule(schedule.id, "sync_time_passed_before_send");
+        return { sent, failed, expired: expired + 1, completed: false };
       }
       const beforeFetchValidation = await this.validateSource(this.db, schedule, beforeFetchNow);
       const beforeFetchSchedule = await this.db.homeAwaySyncAlertSchedule.findUnique({
@@ -922,9 +921,8 @@ export class HomeAwaySyncAlertService {
         const user = await this.client.users.fetch(delivery.discordUserId);
         const finalNow = this.getEffectiveNow(now);
         if (finalNow.getTime() >= schedule.syncTime.getTime()) {
-          await this.expireDelivery(delivery.id, claimed.claimToken, "sync_time_passed_before_send");
-          expired += 1;
-          continue;
+          await this.expireSchedule(schedule.id, "sync_time_passed_before_send");
+          return { sent, failed, expired: expired + 1, completed: false };
         }
         const finalSourceValidation = await this.validateSource(this.db, schedule, finalNow);
         const currentSchedule = await this.db.homeAwaySyncAlertSchedule.findUnique({

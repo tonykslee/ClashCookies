@@ -564,7 +564,64 @@ describe("HomeAwaySyncAlertService", () => {
     expect(send).not.toHaveBeenCalled();
     expect(harness.state.deliveries[0].status).toBe("EXPIRED");
     expect(harness.state.deliveries[0].nextAttemptAt).toBeNull();
-    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+    expect(harness.state.schedules[0].status).toBe("EXPIRED");
+  });
+
+  it("expires the whole alert before user fetch when effective time reaches sync", async () => {
+    let clockCalls = 0;
+    const afterSync = new Date(source("post-before-fetch", "PENDING", 4).syncTime.getTime() + 1);
+    const fetch = vi.fn();
+    const harness = buildHarness({
+      sources: [source("post-before-fetch", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send: vi.fn() } },
+      clock: () => (clockCalls++ === 0 ? now : afterSync),
+    });
+    harness.client.users.fetch.mockImplementation(fetch);
+
+    await harness.service.runCycle(now);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(harness.state.schedules[0].status).toBe("EXPIRED");
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
+    expect(harness.state.deliveries[0].nextAttemptAt).toBeNull();
+  });
+
+  it("expires every remaining recipient when the first delivery crosses the deadline", async () => {
+    let clockCalls = 0;
+    const scheduleSource = source("post-multi-deadline", "PENDING", 4);
+    const afterSync = new Date(scheduleSource.syncTime.getTime() + 1);
+    const firstFetch = vi.fn();
+    const secondFetch = vi.fn();
+    const harness = buildHarness({
+      sources: [scheduleSource],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [
+        { playerTag: "#AWAY1", discordUserId: "user-1" },
+        { playerTag: "#AWAY2", discordUserId: "user-2" },
+      ],
+      rosters: {
+        "#HOME": roster("#HOME", [
+          member("#AWAY1", "Away One", "AWAY"),
+          member("#AWAY2", "Away Two", "AWAY"),
+        ]),
+      },
+      users: { "user-1": { send: firstFetch }, "user-2": { send: secondFetch } },
+      clock: () => (clockCalls++ === 0 ? now : afterSync),
+    });
+
+    await harness.service.runCycle(now);
+
+    expect(harness.client.users.fetch).not.toHaveBeenCalled();
+    expect(firstFetch).not.toHaveBeenCalled();
+    expect(secondFetch).not.toHaveBeenCalled();
+    expect(harness.state.deliveries).toHaveLength(2);
+    expect(harness.state.deliveries.every((delivery) => delivery.status === "EXPIRED")).toBe(true);
+    expect(harness.state.schedules[0].status).toBe("EXPIRED");
   });
 
   it("sends normally when effective current time remains before sync", async () => {
