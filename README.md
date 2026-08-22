@@ -33,7 +33,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ### Reporting and visibility
 - Produces matchup, sync, activity, and compliance views for tracked clans.
-- Supports leadership-focused summaries such as inactivity and clan-health snapshots, including tracked-clan full reports with Inactive, Unlinked, Compo, Violations, War History, and Trends drilldowns. Omitted history uses the latest 30 sync numbers; explicit windows use days. War History reads persisted ended wars from the selected historical window, while Trends reads captured sync-boundary readiness history; external active FWA clan snapshots remain persisted-data views.
+- Supports leadership-focused summaries such as inactivity and clan-health snapshots, including tracked-clan full reports with Home Roster, Inactive, Unlinked, Compo, Violations, War History, and Trends drilldowns. Home Roster is a read-only account/playerTag-level view: active Home periods reserve slots even while Away, Present/Away is derived from persisted current-roster coverage, and unavailable coverage remains Unknown. Current unassigned occupants do not silently become Home, and pending transfers are annotated read-only. Omitted history uses the latest 30 sync numbers; explicit windows use days. War History reads persisted ended wars from the selected historical window, while Trends reads captured sync-boundary readiness history; external active FWA clan snapshots remain persisted-data views.
 - Includes telemetry reporting and scheduled report delivery in Discord.
 
 ### Operational automation

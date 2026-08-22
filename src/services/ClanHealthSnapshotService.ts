@@ -20,6 +20,7 @@ import {
 import { FwaClanWarsSyncService } from "./fwa-feeds/FwaClanWarsSyncService";
 import { FwaFeedSyncStateService } from "./fwa-feeds/FwaFeedSyncStateService";
 import { classifyOpponentInfo } from "./fwa-feeds/FwaClanMatchStatsCurrentSyncService";
+import { homeRosterService, type ClanHomeRoster } from "./HomeRosterService";
 
 const EXTERNAL_WAR_REFRESH_MINIMUM_INTERVAL_MS = 15 * 60 * 1000;
 const EXTERNAL_WAR_FRESHNESS_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -89,6 +90,7 @@ export type ClanHealthTrackedSnapshot = {
     linkedMemberCount: number;
     missingMemberCount: number;
   };
+  homeRoster: ClanHomeRoster;
   telemetry: ClanHealthSnapshotTelemetry;
 };
 
@@ -278,7 +280,8 @@ export class ClanHealthSnapshotService {
     > = new WarPlanViolationHistoryService(),
     private readonly feedSyncStateService: Pick<FwaFeedSyncStateService, "getState"> = new FwaFeedSyncStateService(),
     private readonly clanWarsSyncService: Pick<FwaClanWarsSyncService, "syncClan"> = new FwaClanWarsSyncService(),
-    private readonly historicalWindowService: ClanHealthHistoricalWindowService = new ClanHealthHistoricalWindowService()
+    private readonly historicalWindowService: ClanHealthHistoricalWindowService = new ClanHealthHistoricalWindowService(),
+    private readonly homeRosterReader: Pick<typeof homeRosterService, "getClanHomeRoster"> = homeRosterService,
   ) {}
 
   /** Purpose: load a single-clan leadership snapshot from persisted DB state only. */
@@ -389,8 +392,13 @@ export class ClanHealthSnapshotService {
       trackedClan: input.trackedClan,
       now: compositionNow,
     });
+    const homeRosterPromise = this.homeRosterReader.getClanHomeRoster({
+      guildId: input.guildId,
+      clanTag: canonicalClanTag,
+      now: input.now,
+    });
 
-    const [warRows, activityRows, warPlanLeaderboard, composition] = await Promise.all([
+    const [warRows, activityRows, warPlanLeaderboard, composition, homeRoster] = await Promise.all([
       historicalWarRowsPromise,
       this.db.playerActivity.findMany({
         where: {
@@ -402,6 +410,7 @@ export class ClanHealthSnapshotService {
       }),
       warPlanLeaderboardPromise,
       compositionPromise,
+      homeRosterPromise,
     ]);
     if (!composition) {
       return null;
@@ -499,6 +508,7 @@ export class ClanHealthSnapshotService {
       },
       inactiveDays: activityAndLinks.inactiveDays,
       missingLinks: activityAndLinks.missingLinks,
+      homeRoster,
       telemetry: {
         warRows: warRows.length,
         recognizedWarRows: warRows.length,

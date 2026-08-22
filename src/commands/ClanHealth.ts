@@ -90,6 +90,25 @@ function buildTrackedCurrentCompositionLines(snapshot: ClanHealthTrackedSnapshot
   ];
 }
 
+/** Purpose: render the compact DB-backed Home membership summary without implying a reserved composition score. */
+function buildTrackedHomeRosterLines(snapshot: ClanHealthTrackedSnapshot): string[] {
+  const home = snapshot.homeRoster;
+  const observed = home.currentRosterObservedAt
+    ? `<t:${Math.floor(home.currentRosterObservedAt.getTime() / 1000)}:R>`
+    : "unavailable";
+  return [
+    `Reserved: **${home.homeMemberCount}/50** • Open Home spots: **${home.openHomeSpots}**`,
+    home.currentRosterObservedAt
+      ? `Present: **${home.presentCount}** • Away: **${home.awayCount}**`
+      : `Present/Away: **unavailable** • Unknown: **${home.unknownCount}**`,
+    `Current unassigned: **${home.unassignedPresentCount}**`,
+    `Possible transfers: **${home.pendingTransferCount}**`,
+    home.currentRosterObservedAt
+      ? `Roster observed: ${observed}`
+      : "Current roster coverage: **unavailable**",
+  ];
+}
+
 /** Purpose: render the current persisted catalog-backed composition spread for external clans. */
 function buildExternalCurrentCompositionLines(snapshot: ClanHealthExternalSnapshot): string[] {
   const composition = snapshot.composition;
@@ -192,7 +211,7 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle(`Clan Health: ${snapshot.clanName}`)
     .setDescription(
-      "Leadership snapshot: current composition, persisted war-plan compliance, inactivity, and missing Discord links.",
+      "Leadership snapshot: Home Roster, current composition, persisted war-plan compliance, inactivity, and missing Discord links.",
     )
     .addFields(
       {
@@ -218,6 +237,11 @@ function buildClanHealthEmbed(snapshot: ClanHealthSnapshot): EmbedBuilder {
       {
         name: "Current Composition",
         value: buildTrackedCurrentCompositionLines(snapshot).join("\n"),
+        inline: false,
+      },
+      {
+        name: "🏠 Home Roster",
+        value: buildTrackedHomeRosterLines(snapshot).join("\n"),
         inline: false,
       },
       {
@@ -273,7 +297,7 @@ function buildTrackedClanAutocompleteChoices(input: { nameQuery: string; tagQuer
 export const ClanHealth: Command = {
   name: "clan-health",
   description:
-    "Leadership snapshot: composition, war performance, compliance, inactivity, and Discord links",
+    "Leadership snapshot: Home Roster, composition, war performance, compliance, inactivity, and links",
   options: [
     {
       name: "tag",
