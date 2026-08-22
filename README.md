@@ -40,6 +40,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Polls and reconciles war-related state with explicit lifecycle ownership.
 - Refreshes tracked war-mail posts and applies guarded reconciliation rules for missing/stale targets.
 - Uses bounded feed-sync/watch loops for external data ingestion and update timing.
+- Established Home accounts can receive a randomized, persisted pre-sync return DM when authoritative Home state is AWAY; UNKNOWN is suppressed, linked accounts for one user are grouped, exact sync timing is deliberately hidden, and normal replay is restart-safe/idempotent.
 - Supports mirror-mode staging via guarded prod-to-staging runtime snapshot sync.
 - Exposes `/livez` and `/healthz` for liveness/readiness checks.
 

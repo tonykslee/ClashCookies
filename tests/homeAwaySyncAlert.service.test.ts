@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { HomeAwaySyncAlertService } from "../src/services/HomeAwaySyncAlertService";
+import {
+  buildHomeAwaySyncAlertMessage,
+  HomeAwaySyncAlertService,
+} from "../src/services/HomeAwaySyncAlertService";
+import { dozzleLog } from "../src/helper/dozzleLogger";
 
 const HOUR = 60 * 60 * 1000;
 const now = new Date("2026-08-22T12:00:00.000Z");
@@ -50,6 +54,7 @@ function buildHarness(input: {
   const db: any = {
     scheduledSyncPost: {
       findMany: vi.fn(async ({ where }: any = {}) => state.sources.filter((row) => matches(row, where))),
+      findUnique: vi.fn(async ({ where }: any) => state.sources.find((row) => matches(row, where)) ?? null),
     },
     homeAwaySyncAlertSchedule: {
       findMany: vi.fn(async ({ where }: any = {}) => state.schedules.filter((row) => matches(row, where))),
@@ -191,11 +196,84 @@ describe("HomeAwaySyncAlertService", () => {
 
   it("keeps the ordinary empty cycle on persisted schedule reads only", async () => {
     const harness = buildHarness({});
+    const infoSpy = vi.spyOn(dozzleLog, "info").mockImplementation(() => undefined);
+    const debugSpy = vi.spyOn(dozzleLog, "debug").mockImplementation(() => undefined);
     await harness.service.runCycle(now);
     expect(harness.rosterReader.getClanHomeRoster).not.toHaveBeenCalled();
     expect(harness.db.clanHomeMembershipPeriod.findMany).not.toHaveBeenCalled();
     expect(harness.db.trackedClan.findMany).not.toHaveBeenCalled();
     expect(harness.db.playerLink.findMany).not.toHaveBeenCalled();
+    expect(infoSpy).not.toHaveBeenCalledWith(expect.stringContaining("[home-away-sync-alert] cycle_complete"));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("[home-away-sync-alert] cycle_complete"));
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it.each(["REPLACED", "CANCELLED"] as const)(
+    "cancels without materializing when the source changes to %s during evaluation",
+    async (status) => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const harness = buildHarness({
+        sources: [source("post-race", "PENDING", 4)],
+        homes: [{ clanTag: "#HOME" }],
+        trackedClans: [{ tag: "#HOME" }],
+        links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+        rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+        users: { "user-1": { send } },
+      });
+      harness.db.playerLink.findMany.mockImplementationOnce(async () => {
+        harness.state.sources[0].status = status;
+        return [{ playerTag: "#AWAY1", discordUserId: "user-1" }];
+      });
+
+      await harness.service.runCycle(now);
+      expect(harness.state.deliveries).toHaveLength(0);
+      expect(harness.state.schedules[0].status).toBe("CANCELLED");
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
+
+  it("revalidates the source after materialization and before sending", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-send-race", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+    harness.client.users.fetch.mockImplementationOnce(async () => {
+      harness.state.sources[0].status = "REPLACED";
+      return { send };
+    });
+
+    await harness.service.runCycle(now);
+    expect(send).not.toHaveBeenCalled();
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
+    expect(harness.state.deliveries[0].failureCode).toBe("source_cancelled");
+    expect(harness.state.schedules[0].status).toBe("CANCELLED");
+  });
+
+  it("cancels remaining alert work when the source disappears before send", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-missing", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+    harness.client.users.fetch.mockImplementationOnce(async () => {
+      harness.state.sources.splice(0, 1);
+      return { send };
+    });
+
+    await harness.service.runCycle(now);
+    expect(send).not.toHaveBeenCalled();
+    expect(harness.state.schedules[0].status).toBe("CANCELLED");
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
   });
 
   it("evaluates a late-created alert immediately and does not send after sync time", async () => {
@@ -279,6 +357,13 @@ describe("HomeAwaySyncAlertService", () => {
     await harness.service.runCycle(now);
     expect(send).toHaveBeenCalledTimes(1);
     expect(harness.rosterReader.getClanHomeRoster).toHaveBeenCalledTimes(1);
+
+    harness.state.sources[0].status = "CANCELLED";
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "PENDING";
+    await harness.service.runCycle(now);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
   });
 
   it("retries transient delivery failures before the sync and terminalizes permanent failures", async () => {
@@ -336,6 +421,154 @@ describe("HomeAwaySyncAlertService", () => {
     await harness.service.runCycle(now);
     expect(harness.state.schedules.find((row) => row.scheduledSyncPostId === "post-old")?.status).toBe("CANCELLED");
     expect(harness.state.schedules.find((row) => row.scheduledSyncPostId === "post-new")?.fireAt).not.toEqual(oldFireAt);
+  });
+
+  it("reactivates a pre-fire cancellation with the same alert ID and fireAt", async () => {
+    const random = vi.fn(() => 0.25);
+    const harness = buildHarness({ sources: [source("post-reactivate")], random });
+    await harness.service.runCycle(now);
+    const original = { ...harness.state.schedules[0] };
+    harness.state.sources[0].status = "CANCELLED";
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "PENDING";
+    await harness.service.runCycle(now);
+    expect(harness.state.schedules[0].id).toBe(original.id);
+    expect(harness.state.schedules[0].fireAt).toEqual(original.fireAt);
+    expect(harness.state.schedules[0].status).toBe("PENDING");
+    expect(random).toHaveBeenCalledTimes(1);
+  });
+
+  it("reactivates after the original fireAt and evaluates immediately", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-reactivate-due", "PENDING", 8)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+    const beforeFire = new Date(now.getTime() - 3 * HOUR);
+    await harness.service.runCycle(beforeFire);
+    const original = { ...harness.state.schedules[0] };
+    harness.state.sources[0].status = "REPLACED";
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "PUBLISHED";
+    await harness.service.runCycle(new Date(now.getTime() + 3 * HOUR));
+    expect(harness.state.schedules[0].id).toBe(original.id);
+    expect(harness.state.schedules[0].fireAt).toEqual(original.fireAt);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+  });
+
+  it("reactivates evaluated cancellation from the immutable recipient snapshot", async () => {
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("temporary"), { status: 500 }))
+      .mockResolvedValueOnce(undefined);
+    const harness = buildHarness({
+      sources: [source("post-reactivate-evaluated", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+    await harness.service.runCycle(now);
+    const originalMessage = harness.state.deliveries[0].messageContent;
+    expect(harness.state.schedules[0].status).toBe("EVALUATED");
+    harness.state.sources[0].status = "CANCELLED";
+    await harness.service.runCycle(now);
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
+    expect(harness.state.deliveries[0].failureCode).toBe("source_cancelled");
+    harness.state.sources[0].status = "PENDING";
+    await harness.service.runCycle(now);
+    expect(harness.rosterReader.getClanHomeRoster).toHaveBeenCalledTimes(1);
+    expect(harness.state.deliveries[0].messageContent).toBe(originalMessage);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(harness.state.deliveries[0].status).toBe("SENT");
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+  });
+
+  it("does not resend SENT recipients when an evaluated alert is reactivated", async () => {
+    const firstSend = vi.fn().mockResolvedValue(undefined);
+    const secondSend = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("temporary"), { status: 500 }))
+      .mockResolvedValueOnce(undefined);
+    const harness = buildHarness({
+      sources: [source("post-reactivate-partial", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [
+        { playerTag: "#AWAY1", discordUserId: "user-1" },
+        { playerTag: "#AWAY2", discordUserId: "user-2" },
+      ],
+      rosters: {
+        "#HOME": roster("#HOME", [
+          member("#AWAY1", "Away One", "AWAY"),
+          member("#AWAY2", "Away Two", "AWAY"),
+        ]),
+      },
+      users: { "user-1": { send: firstSend }, "user-2": { send: secondSend } },
+    });
+    await harness.service.runCycle(now);
+    expect(firstSend).toHaveBeenCalledTimes(1);
+    expect(secondSend).toHaveBeenCalledTimes(1);
+    harness.state.sources[0].status = "CANCELLED";
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "PENDING";
+    await harness.service.runCycle(now);
+    expect(firstSend).toHaveBeenCalledTimes(1);
+    expect(secondSend).toHaveBeenCalledTimes(2);
+    expect(harness.state.deliveries.filter((row) => row.status === "SENT")).toHaveLength(2);
+  });
+
+  it("keeps a completed alert terminal when its source is reactivated", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const harness = buildHarness({
+      sources: [source("post-completed", "PENDING", 4)],
+      homes: [{ clanTag: "#HOME" }],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "PENDING";
+    await harness.service.runCycle(now);
+    expect(harness.state.schedules[0].status).toBe("COMPLETED");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds pathological message content and reports omitted accounts deterministically", () => {
+    const accounts = Array.from({ length: 20 }, (_, index) => ({
+      playerName: `${String(index).padStart(2, "0")}-${"Name".repeat(200)}`,
+      playerTag: `#${"TAG".repeat(200)}`,
+      homeClanName: `Clan-${"Home".repeat(200)}`,
+      homeClanTag: `#${"CLAN".repeat(200)}`,
+    }));
+    const message = buildHomeAwaySyncAlertMessage(accounts);
+    expect(message.length).toBeLessThanOrEqual(2_000);
+    expect(message).toContain("…and 19 more away Home Clan accounts.");
+    expect(message).not.toMatch(/2026|\b[567] hours?\b|fireAt/i);
+    expect(message).toBe(buildHomeAwaySyncAlertMessage([...accounts].reverse()));
+  });
+
+  it("preserves ordinary single and multi-account message text", () => {
+    const one = {
+      playerName: "Away One",
+      playerTag: "#AWAY1",
+      homeClanName: "Rocky Road",
+      homeClanTag: "#HOME",
+    };
+    expect(buildHomeAwaySyncAlertMessage([one])).toBe(
+      "⚠️ Please return **Away One** to **Rocky Road** before the upcoming FWA sync.\n\nThis account is currently away from its Home Clan.",
+    );
+    expect(buildHomeAwaySyncAlertMessage([one, { ...one, playerName: "Away Two", playerTag: "#AWAY2" }])).toBe(
+      "⚠️ Please return your away Home Clan accounts before the upcoming FWA sync.\n\n• Away One (`#AWAY1`) → **Rocky Road**\n• Away Two (`#AWAY2`) → **Rocky Road**",
+    );
   });
 
   it("does not write or evaluate in mirror mode", async () => {

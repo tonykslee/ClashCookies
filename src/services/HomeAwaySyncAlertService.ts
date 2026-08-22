@@ -76,11 +76,21 @@ type HomeAwaySyncAlertDeliveryRow = {
   attemptCount: number;
   nextAttemptAt: Date | null;
   sentAt: Date | null;
+  failureCode: string | null;
+  failureReason: string | null;
+};
+
+type ScheduledSyncPostSourceRow = {
+  id: string;
+  guildId: string;
+  syncTime: Date;
+  status: string;
 };
 
 type HomeAwaySyncAlertDb = {
   scheduledSyncPost: {
     findMany: (args?: any) => Promise<any[]>;
+    findUnique: (args?: any) => Promise<ScheduledSyncPostSourceRow | null>;
   };
   homeAwaySyncAlertSchedule: {
     findMany: (args?: any) => Promise<HomeAwaySyncAlertScheduleRow[]>;
@@ -130,6 +140,8 @@ const FIVE_HOURS_MS = 5 * HOUR_MS;
 const TWO_HOURS_MS = 2 * HOUR_MS;
 const CLAIM_STALE_MS = 5 * 60 * 1000;
 const MAX_DELIVERY_ATTEMPTS = 5;
+const MAX_DISCORD_MESSAGE_LENGTH = 2_000;
+const MAX_MESSAGE_FIELD_LENGTH = 512;
 const ACTIVE_SOURCE_STATUSES = ["PENDING", "CLAIMED", "PUBLISHED", "FAILED"];
 const EVALUATION_STATUSES = [
   HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.PENDING,
@@ -140,6 +152,7 @@ const NONTERMINAL_DELIVERY_STATUSES = [
   HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.CLAIMED,
 ];
 
+/** Purpose: initialize the bounded counters reported by one alert lifecycle cycle. */
 function zeroCounts(): HomeAwaySyncAlertCounts {
   return {
     ensured: 0,
@@ -156,28 +169,34 @@ function zeroCounts(): HomeAwaySyncAlertCounts {
   };
 }
 
+/** Purpose: accept only finite Date values at persistence and scheduler boundaries. */
 function isValidDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
+/** Purpose: normalize persisted identifiers before comparison or member-facing rendering. */
 function normalizeId(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+/** Purpose: identify the expected concurrent schedule-creation race from Prisma. */
 function isUniqueViolation(error: unknown): boolean {
   return String((error as { code?: unknown } | null | undefined)?.code ?? "") === "P2002";
 }
 
+/** Purpose: derive the one-time uniform five-to-seven-hour pre-sync fire time. */
 function computeFireAt(syncTime: Date, random: () => number): Date {
   const randomValue = Number(random());
   const bounded = Number.isFinite(randomValue) ? Math.min(1, Math.max(0, randomValue)) : 0.5;
   return new Date(syncTime.getTime() - FIVE_HOURS_MS - bounded * TWO_HOURS_MS);
 }
 
+/** Purpose: calculate bounded exponential retry delay for one failed DM attempt. */
 function computeRetryAfterMs(attemptCount: number): number {
   return Math.min(5 * 60_000, 60_000 * 2 ** Math.max(0, attemptCount - 1));
 }
 
+/** Purpose: identify claims old enough for safe restart recovery. */
 function isStaleClaim(claimedAt: Date | null, now: Date): boolean {
   return Boolean(
     claimedAt &&
@@ -186,6 +205,7 @@ function isStaleClaim(claimedAt: Date | null, now: Date): boolean {
   );
 }
 
+/** Purpose: snapshot the authoritative Home roster identity used in immutable DM content. */
 function normalizeRosterMember(member: HomeRosterMember, roster: ClanHomeRoster): RecipientAccount {
   return {
     playerTag: normalizeId(member.playerTag),
@@ -195,7 +215,30 @@ function normalizeRosterMember(member: HomeRosterMember, roster: ClanHomeRoster)
   };
 }
 
-/** Purpose: build immutable DM text without exposing sync, fire, or readiness timing. */
+/** Purpose: truncate one message field without splitting Unicode code points. */
+function truncateMessageField(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const kept: string[] = [];
+  let length = 0;
+  for (const character of value) {
+    if (length + character.length > Math.max(0, maxLength - 1)) break;
+    kept.push(character);
+    length += character.length;
+  }
+  return `${kept.join("")}…`;
+}
+
+/** Purpose: format one complete account line while keeping pathological roster text bounded. */
+function buildBoundedAccountLine(account: RecipientAccount): string {
+  return `• ${truncateMessageField(account.playerName, MAX_MESSAGE_FIELD_LENGTH)} (\`${truncateMessageField(account.playerTag, MAX_MESSAGE_FIELD_LENGTH)}\`) → **${truncateMessageField(account.homeClanName, MAX_MESSAGE_FIELD_LENGTH)}**`;
+}
+
+/** Purpose: format the compact overflow line without exposing sync timing. */
+function buildOverflowSummary(omittedCount: number): string {
+  return `• …and ${omittedCount} more away Home Clan accounts.`;
+}
+
+/** Purpose: compose bounded immutable DM text without exposing sync, fire, or readiness timing. */
 export function buildHomeAwaySyncAlertMessage(accounts: readonly RecipientAccount[]): string {
   const sorted = [...accounts].sort(
     (left, right) =>
@@ -205,21 +248,40 @@ export function buildHomeAwaySyncAlertMessage(accounts: readonly RecipientAccoun
   );
   if (sorted.length === 1) {
     const account = sorted[0];
-    return [
+    const message = [
       `⚠️ Please return **${account.playerName}** to **${account.homeClanName}** before the upcoming FWA sync.`,
+      "",
+      "This account is currently away from its Home Clan.",
+    ].join("\n");
+    if (message.length <= MAX_DISCORD_MESSAGE_LENGTH) return message;
+    return [
+      `⚠️ Please return **${truncateMessageField(account.playerName, MAX_MESSAGE_FIELD_LENGTH)}** to **${truncateMessageField(account.homeClanName, MAX_MESSAGE_FIELD_LENGTH)}** before the upcoming FWA sync.`,
       "",
       "This account is currently away from its Home Clan.",
     ].join("\n");
   }
 
-  return [
+  const header = [
     "⚠️ Please return your away Home Clan accounts before the upcoming FWA sync.",
     "",
-    ...sorted.map(
-      (account) =>
-        `• ${account.playerName} (\`${account.playerTag}\`) → **${account.homeClanName}**`,
-    ),
-  ].join("\n");
+  ];
+  const fullLines = sorted.map((account) =>
+    `• ${account.playerName} (\`${account.playerTag}\`) → **${account.homeClanName}**`);
+  const fullMessage = [...header, ...fullLines].join("\n");
+  if (fullMessage.length <= MAX_DISCORD_MESSAGE_LENGTH) return fullMessage;
+
+  const lines: string[] = [];
+  for (let index = 0; index < sorted.length; index += 1) {
+    const line = buildBoundedAccountLine(sorted[index]);
+    const omittedCount = sorted.length - index - 1;
+    const candidateLines = omittedCount > 0
+      ? [...header, ...lines, line, buildOverflowSummary(omittedCount)]
+      : [...header, ...lines, line];
+    if (candidateLines.join("\n").length > MAX_DISCORD_MESSAGE_LENGTH) break;
+    lines.push(line);
+  }
+  const omittedCount = sorted.length - lines.length;
+  return [...header, ...lines, ...(omittedCount > 0 ? [buildOverflowSummary(omittedCount)] : [])].join("\n");
 }
 
 /** Purpose: own durable random fire times and idempotent recipient delivery for Home Away events. */
@@ -228,6 +290,7 @@ export class HomeAwaySyncAlertService {
   private readonly homeRosterReader: Pick<HomeRosterService, "getClanHomeRoster">;
   private readonly random: () => number;
 
+  /** Purpose: inject active Discord delivery, persistence, Home roster, and deterministic randomness dependencies. */
   constructor(
     private readonly client: Client,
     dependencies: HomeAwaySyncAlertDependencies = {},
@@ -268,7 +331,15 @@ export class HomeAwaySyncAlertService {
       for (const source of activeSources) {
         const sourceId = normalizeId(source.id);
         if (!sourceId || !isValidDate(source.syncTime)) continue;
-        if (existingBySourceId.has(sourceId)) continue;
+        const existing = existingBySourceId.get(sourceId);
+        if (existing) {
+          const reactivated = await this.reactivateScheduleIfNeeded(existing, now);
+          if (reactivated) {
+            existingBySourceId.set(sourceId, reactivated);
+            counts.ensured += 1;
+          }
+          continue;
+        }
         const created = await this.createScheduleIfAbsent({
           scheduledSyncPostId: sourceId,
           guildId: normalizeId(source.guildId),
@@ -321,6 +392,7 @@ export class HomeAwaySyncAlertService {
         const evaluation = await this.evaluateSchedule(claimed, now);
         counts.evaluated += evaluation.evaluated ? 1 : 0;
         counts.completed += evaluation.completed ? 1 : 0;
+        counts.cancelled += evaluation.cancelled ? 1 : 0;
         counts.recipients += evaluation.recipients;
         counts.unlinked += evaluation.unlinked;
         counts.unknown += evaluation.unknown;
@@ -358,7 +430,7 @@ export class HomeAwaySyncAlertService {
         counts.expired += 1;
       }
 
-      dozzleLog.info(
+      dozzleLog.debug(
         `[home-away-sync-alert] cycle_complete ensured=${counts.ensured} due=${counts.due} evaluated=${counts.evaluated} recipients=${counts.recipients} sent=${counts.sent} failed=${counts.failed} unlinked=${counts.unlinked} unknown=${counts.unknown} cancelled=${counts.cancelled} expired=${counts.expired} completed=${counts.completed}`,
       );
       return counts;
@@ -368,6 +440,7 @@ export class HomeAwaySyncAlertService {
     }
   }
 
+  /** Purpose: create one durable schedule while converging concurrent creators on its existing row. */
   private async createScheduleIfAbsent(input: {
     scheduledSyncPostId: string;
     guildId: string;
@@ -391,44 +464,138 @@ export class HomeAwaySyncAlertService {
     }
   }
 
+  /** Purpose: cancel source-owned work and expire only delivery claims that are still sendable. */
   private async cancelSchedule(scheduleId: string, reason: string): Promise<void> {
     await this.db.$transaction(async (tx) => {
-      await tx.homeAwaySyncAlertDelivery.updateMany({
-        where: {
-          alertScheduleId: scheduleId,
-          status: { in: NONTERMINAL_DELIVERY_STATUSES },
-        },
-        data: {
-          status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.EXPIRED,
-          claimToken: null,
-          claimedAt: null,
-          failureCode: "source_cancelled",
-          failureReason: reason,
-        },
-      });
-      await tx.homeAwaySyncAlertSchedule.updateMany({
-        where: {
-          id: scheduleId,
-          status: {
-            in: [
-              HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.PENDING,
-              HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CLAIMED,
-              HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED,
-            ],
-          },
-        },
-        data: {
-          status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CANCELLED,
-          claimToken: null,
-          claimedAt: null,
-          failureCode: "source_cancelled",
-          failureReason: reason,
-        },
-      });
+      await this.cancelScheduleInTransaction(tx, scheduleId, reason);
     });
     dozzleLog.info(`[home-away-sync-alert] schedule_cancelled alert_id=${scheduleId} reason=${reason}`);
   }
 
+  /** Purpose: apply source-cancellation state atomically inside an existing alert transaction. */
+  private async cancelScheduleInTransaction(
+    tx: HomeAwaySyncAlertDb,
+    scheduleId: string,
+    reason: string,
+  ): Promise<void> {
+    await tx.homeAwaySyncAlertDelivery.updateMany({
+      where: {
+        alertScheduleId: scheduleId,
+        status: { in: NONTERMINAL_DELIVERY_STATUSES },
+      },
+      data: {
+        status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.EXPIRED,
+        claimToken: null,
+        claimedAt: null,
+        failureCode: "source_cancelled",
+        failureReason: reason,
+      },
+    });
+    await tx.homeAwaySyncAlertSchedule.updateMany({
+      where: {
+        id: scheduleId,
+        status: {
+          in: [
+            HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.PENDING,
+            HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CLAIMED,
+            HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED,
+          ],
+        },
+      },
+      data: {
+        status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CANCELLED,
+        claimToken: null,
+        claimedAt: null,
+        failureCode: "source_cancelled",
+        failureReason: reason,
+      },
+    });
+  }
+
+  /** Purpose: reactivate a cancelled alert without rerandomizing or re-evaluating an existing snapshot. */
+  private async reactivateScheduleIfNeeded(
+    schedule: HomeAwaySyncAlertScheduleRow,
+    now: Date,
+  ): Promise<HomeAwaySyncAlertScheduleRow | null> {
+    if (schedule.status !== HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CANCELLED) return null;
+    if (!(await this.isSourceValid(this.db, schedule, now))) return null;
+    const deliveries = await this.db.homeAwaySyncAlertDelivery.findMany({
+      where: { alertScheduleId: schedule.id },
+    });
+    const resumable = deliveries.filter(
+      (delivery) =>
+        delivery.status === HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.EXPIRED &&
+        delivery.failureCode === "source_cancelled",
+    );
+    if (resumable.length > 0) {
+      await this.db.$transaction(async (tx) => {
+        await tx.homeAwaySyncAlertDelivery.updateMany({
+          where: {
+            alertScheduleId: schedule.id,
+            status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.EXPIRED,
+            failureCode: "source_cancelled",
+          },
+          data: {
+            status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.PENDING,
+            claimToken: null,
+            claimedAt: null,
+            nextAttemptAt: null,
+            failureCode: null,
+            failureReason: null,
+          },
+        });
+        await tx.homeAwaySyncAlertSchedule.updateMany({
+          where: { id: schedule.id, status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CANCELLED },
+          data: {
+            status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED,
+            claimToken: null,
+            claimedAt: null,
+            completedAt: null,
+            failureCode: null,
+            failureReason: null,
+          },
+        });
+      });
+      return {
+        ...schedule,
+        status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED,
+        claimToken: null,
+        claimedAt: null,
+        completedAt: null,
+      };
+    }
+
+    const allTerminal = deliveries.length > 0 && deliveries.every(
+      (delivery) =>
+        delivery.status === HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.SENT ||
+        delivery.status === HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.FAILED,
+    );
+    const nextStatus = deliveries.length === 0
+      ? HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.PENDING
+      : allTerminal
+        ? HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.COMPLETED
+        : HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED;
+    await this.db.homeAwaySyncAlertSchedule.updateMany({
+      where: { id: schedule.id, status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CANCELLED },
+      data: {
+        status: nextStatus,
+        claimToken: null,
+        claimedAt: null,
+        completedAt: nextStatus === HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.COMPLETED ? now : null,
+        failureCode: null,
+        failureReason: null,
+      },
+    });
+    return {
+      ...schedule,
+      status: nextStatus,
+      claimToken: null,
+      claimedAt: null,
+      completedAt: nextStatus === HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.COMPLETED ? now : null,
+    };
+  }
+
+  /** Purpose: atomically claim one due schedule or recover its stale evaluation lease. */
   private async claimSchedule(
     schedule: HomeAwaySyncAlertScheduleRow,
     now: Date,
@@ -467,19 +634,49 @@ export class HomeAwaySyncAlertService {
     };
   }
 
+  /** Purpose: authorize later alert side effects against the current immutable sync source row. */
+  private async isSourceValid(
+    db: Pick<HomeAwaySyncAlertDb, "scheduledSyncPost">,
+    schedule: HomeAwaySyncAlertScheduleRow,
+    now: Date,
+  ): Promise<boolean> {
+    const source = await db.scheduledSyncPost.findUnique({
+      where: { id: schedule.scheduledSyncPostId },
+      select: { id: true, guildId: true, syncTime: true, status: true },
+    });
+    return Boolean(
+      source &&
+        normalizeId(source.id) === normalizeId(schedule.scheduledSyncPostId) &&
+        normalizeId(source.guildId) === normalizeId(schedule.guildId) &&
+        isValidDate(source.syncTime) &&
+        source.syncTime.getTime() === schedule.syncTime.getTime() &&
+        ACTIVE_SOURCE_STATUSES.includes(source.status) &&
+        source.syncTime.getTime() > now.getTime(),
+    );
+  }
+
+  /** Purpose: materialize the one-time Away snapshot only after the source remains authorized. */
   private async evaluateSchedule(
     schedule: HomeAwaySyncAlertScheduleRow,
     now: Date,
   ): Promise<{
     evaluated: boolean;
     completed: boolean;
+    cancelled: boolean;
     recipients: number;
     unlinked: number;
     unknown: number;
   }> {
     if (now.getTime() >= schedule.syncTime.getTime()) {
       await this.expireSchedule(schedule.id, "sync_time_passed_before_evaluation");
-      return { evaluated: false, completed: false, recipients: 0, unlinked: 0, unknown: 0 };
+      return {
+        evaluated: false,
+        completed: false,
+        cancelled: false,
+        recipients: 0,
+        unlinked: 0,
+        unknown: 0,
+      };
     }
 
     const homeRows = await this.db.clanHomeMembershipPeriod.findMany({
@@ -540,7 +737,11 @@ export class HomeAwaySyncAlertService {
         messageContent: buildHomeAwaySyncAlertMessage(accounts),
       }));
 
-    await this.db.$transaction(async (tx) => {
+    const materialized = await this.db.$transaction(async (tx) => {
+      if (!(await this.isSourceValid(tx, schedule, now))) {
+        await this.cancelScheduleInTransaction(tx, schedule.id, "source_replaced_or_cancelled");
+        return false;
+      }
       if (recipients.length > 0) {
         await tx.homeAwaySyncAlertDelivery.createMany({
           data: recipients.map((recipient) => ({
@@ -565,19 +766,35 @@ export class HomeAwaySyncAlertService {
           claimedAt: null,
         },
       });
+      return true;
     });
+    if (!materialized) {
+      dozzleLog.info(
+        `[home-away-sync-alert] schedule_cancelled alert_id=${schedule.id} reason=source_replaced_or_cancelled`,
+      );
+      return {
+        evaluated: false,
+        completed: false,
+        cancelled: true,
+        recipients: 0,
+        unlinked: 0,
+        unknown: 0,
+      };
+    }
     dozzleLog.info(
       `[home-away-sync-alert] evaluated alert_id=${schedule.id} guild_id=${schedule.guildId} recipients=${recipients.length} away=${awayMembers.length} unlinked=${unlinked} unknown=${unknown}`,
     );
     return {
       evaluated: true,
       completed: recipients.length === 0,
+      cancelled: false,
       recipients: recipients.length,
       unlinked,
       unknown,
     };
   }
 
+  /** Purpose: claim and deliver immutable recipients only while the source and schedule remain current. */
   private async processDeliveries(
     schedule: HomeAwaySyncAlertScheduleRow,
     now: Date,
@@ -604,6 +821,26 @@ export class HomeAwaySyncAlertService {
       }
       try {
         const user = await this.client.users.fetch(delivery.discordUserId);
+        const sourceValid = await this.isSourceValid(this.db, schedule, now);
+        const currentSchedule = await this.db.homeAwaySyncAlertSchedule.findUnique({
+          where: { id: schedule.id },
+        });
+        const scheduleCurrent = Boolean(
+          currentSchedule &&
+            currentSchedule.status === HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.EVALUATED &&
+            normalizeId(currentSchedule.scheduledSyncPostId) === normalizeId(schedule.scheduledSyncPostId) &&
+            normalizeId(currentSchedule.guildId) === normalizeId(schedule.guildId) &&
+            isValidDate(currentSchedule.syncTime) &&
+            currentSchedule.syncTime.getTime() === schedule.syncTime.getTime(),
+        );
+        if (!sourceValid) {
+          await this.cancelSchedule(schedule.id, "source_replaced_or_cancelled");
+          continue;
+        }
+        if (!scheduleCurrent) {
+          await this.expireDelivery(delivery.id, claimed.claimToken, "schedule_no_longer_evaluated");
+          continue;
+        }
         await user.send({ content: delivery.messageContent });
         const marked = await this.db.homeAwaySyncAlertDelivery.updateMany({
           where: { id: delivery.id, claimToken: claimed.claimToken, status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.CLAIMED },
@@ -646,6 +883,7 @@ export class HomeAwaySyncAlertService {
     return { sent, failed, expired: 0, completed: false };
   }
 
+  /** Purpose: atomically claim one recipient delivery or recover its stale retry lease. */
   private async claimDelivery(
     delivery: HomeAwaySyncAlertDeliveryRow,
     now: Date,
@@ -681,6 +919,7 @@ export class HomeAwaySyncAlertService {
     return result.count === 1 ? { claimToken } : null;
   }
 
+  /** Purpose: classify one failed DM and persist bounded retry or terminal failure state. */
   private async recordDeliveryFailure(input: {
     delivery: HomeAwaySyncAlertDeliveryRow;
     claimToken: string;
@@ -724,6 +963,7 @@ export class HomeAwaySyncAlertService {
     );
   }
 
+  /** Purpose: prevent a claimed recipient from sending after its sync or schedule expires. */
   private async expireDelivery(deliveryId: string, claimToken: string, reason: string): Promise<void> {
     await this.db.homeAwaySyncAlertDelivery.updateMany({
       where: { id: deliveryId, claimToken, status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.CLAIMED },
@@ -737,6 +977,7 @@ export class HomeAwaySyncAlertService {
     });
   }
 
+  /** Purpose: expire all remaining alert work when the immutable sync deadline has passed. */
   private async expireSchedule(scheduleId: string, reason: string): Promise<void> {
     await this.db.$transaction(async (tx) => {
       await tx.homeAwaySyncAlertDelivery.updateMany({
