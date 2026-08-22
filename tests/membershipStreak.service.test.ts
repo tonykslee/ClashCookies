@@ -3,6 +3,7 @@ import { MembershipStreakService } from "../src/services/MembershipStreakService
 
 const guildId = "guild-1";
 const playerTag = "#P2222";
+const otherPlayerTag = "#P8888";
 const rr = "#RRRR";
 const eb = "#GJJJ";
 const cwlOne = "#CULL";
@@ -23,11 +24,61 @@ type Fixture = {
   evaluations?: any[];
 };
 
+function matchesWhere(row: any, where: any): boolean {
+  if (!where) return true;
+  for (const [field, condition] of Object.entries(where)) {
+    if (field === "AND" || field === "OR") continue;
+    const value = row?.[field];
+    if (value === undefined) continue;
+    if (condition && typeof condition === "object" && "in" in condition) {
+      const values = (condition as { in: unknown[] }).in;
+      if (!values.some((candidate) => candidate instanceof Date && value instanceof Date
+        ? candidate.getTime() === value.getTime()
+        : String(candidate) === String(value))) return false;
+      continue;
+    }
+    if (condition && typeof condition === "object" && "syncNumber" in condition) continue;
+    if (condition && typeof condition === "object" && "lte" in condition) {
+      if (value instanceof Date && value.getTime() > (condition as { lte: Date }).lte.getTime()) return false;
+      continue;
+    }
+    if (condition && typeof condition === "object" && "gte" in condition) {
+      if (value instanceof Date && value.getTime() < (condition as { gte: Date }).gte.getTime()) return false;
+      continue;
+    }
+    if (String(value) !== String(condition)) return false;
+  }
+  return true;
+}
+
+function filteredRows(rows: any[], args: any): any[] {
+  return rows.filter((row) => matchesWhere(row, args?.where));
+}
+
+function groupedBoundaryRows(rows: any[], args: any): any[] {
+  const byTime = new Map<number, Date>();
+  for (const row of rows) {
+    if (row?.syncTime instanceof Date) byTime.set(row.syncTime.getTime(), row.syncTime);
+  }
+  return [...byTime.values()]
+    .sort((a, b) => b.getTime() - a.getTime())
+    .slice(0, args?.take ?? Number.MAX_SAFE_INTEGER)
+    .map((syncTime) => ({ syncTime }));
+}
+
 function makeDb(fixture: Fixture = {}) {
   const db = {
-    syncCycle: { findMany: vi.fn(async () => fixture.cycles ?? []) },
-    syncClanReadinessSnapshot: { findMany: vi.fn(async () => fixture.readiness ?? []) },
-    syncClanMemberSnapshot: { findMany: vi.fn(async () => fixture.snapshots ?? []) },
+    syncCycle: {
+      findMany: vi.fn(async (args: any) => filteredRows(fixture.cycles ?? [], args)),
+      groupBy: vi.fn(async (args: any) => groupedBoundaryRows(fixture.cycles ?? [], args)),
+    },
+    syncClanReadinessSnapshot: {
+      groupBy: vi.fn(async (args: any) => groupedBoundaryRows(fixture.readiness ?? [], args)),
+    },
+    syncClanMemberSnapshot: {
+      findMany: vi.fn(async (args: any) => filteredRows(fixture.snapshots ?? [], args)),
+      groupBy: vi.fn(async (args: any) => groupedBoundaryRows(fixture.snapshots ?? [], args)),
+    },
     allianceClanMembershipInterval: { findMany: vi.fn(async () => fixture.intervals ?? []) },
     clanPointsSync: { findMany: vi.fn(async () => fixture.points ?? []) },
     warPlanComplianceEvaluation: { findMany: vi.fn(async () => fixture.evaluations ?? []) },
@@ -38,7 +89,7 @@ function makeDb(fixture: Fixture = {}) {
 }
 
 function cycleRows(days: number[]) {
-  return days.map((day, index) => ({ syncNumber: 540 + index, syncTime: time(day) }));
+  return days.map((day, index) => ({ guildId, syncNumber: 540 + index, syncTime: time(day) }));
 }
 
 function snapshot(day: number, clanTag: string, tag = playerTag) {
@@ -58,6 +109,14 @@ function interval(dayStart: number, dayEnd: number, clanTag: string, tag = playe
 
 function streakInput(playerTags = [playerTag], maxBoundaries?: number) {
   return { guildId, playerTags, ...(maxBoundaries === undefined ? {} : { maxBoundaries }) };
+}
+
+function readinessRows(days: number[], rowsPerBoundary = 1) {
+  return days.flatMap((day) => Array.from({ length: rowsPerBoundary }, (_, index) => ({
+    guildId,
+    syncTime: time(day),
+    clanTag: `#C${String(index).padStart(3, "2")}`,
+  })));
 }
 
 describe("MembershipStreakService", () => {
@@ -233,7 +292,7 @@ describe("MembershipStreakService", () => {
       allianceStreakSyncs: 2,
       allianceStreakIsLowerBound: true,
     });
-    expect(db.syncCycle.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
+    expect(db.syncCycle.groupBy).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
   });
 
   it("resolves a 50-player batch with bounded bulk reads and no per-player calls", async () => {
@@ -256,11 +315,13 @@ describe("MembershipStreakService", () => {
 
     expect(results).toHaveLength(50);
     expect(db.syncCycle.findMany).toHaveBeenCalledTimes(1);
-    expect(db.syncClanReadinessSnapshot.findMany).toHaveBeenCalledTimes(1);
+    expect(db.syncCycle.groupBy).toHaveBeenCalledTimes(1);
+    expect(db.syncClanReadinessSnapshot.groupBy).toHaveBeenCalledTimes(1);
+    expect(db.syncClanMemberSnapshot.groupBy).toHaveBeenCalledTimes(1);
     expect(db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(1);
     expect(db.allianceClanMembershipInterval.findMany).toHaveBeenCalledTimes(1);
-    expect(db.clanPointsSync.findMany).toHaveBeenCalledTimes(1);
-    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
+    expect(db.clanPointsSync.findMany).not.toHaveBeenCalled();
+    expect(db.warPlanComplianceEvaluation.findMany).not.toHaveBeenCalled();
     expect(db.clanWarParticipation.findMany).not.toHaveBeenCalled();
   });
 
@@ -272,6 +333,72 @@ describe("MembershipStreakService", () => {
     );
 
     expect(results.map((row) => row.playerTag)).toEqual(["#P2222", "#P8888"]);
-    expect(db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(1);
+    expect(db.syncClanMemberSnapshot.groupBy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the distinct boundary window when readiness has many clan rows per boundary", async () => {
+    const db = makeDb({
+      cycles: cycleRows([1, 3, 4]),
+      readiness: readinessRows([1, 2, 3, 4], 10),
+      snapshots: [snapshot(3, rr), snapshot(4, rr), snapshot(2, rr, otherPlayerTag)],
+    });
+
+    const service = new MembershipStreakService(db);
+    const evidence = await service.getMembershipBoundaryEvidenceForPlayers(streakInput([playerTag], 3));
+
+    expect(evidence[playerTag].map((row) => row.boundaryTime)).toEqual([time(4), time(3), time(2)]);
+    expect(evidence[playerTag][2].fwa.status).toBe("ABSENT");
+  });
+
+  it("treats an exact-captured absence as authoritative over conflicting fallback participation", async () => {
+    const db = makeDb({
+      cycles: [{ guildId, syncNumber: 1, syncTime: time(1) }],
+      snapshots: [snapshot(1, rr, otherPlayerTag)],
+      points: [{ syncNum: 1, warId: "103", clanTag: rr, warStartTime: time(1), opponentTag: "#0PP2" }],
+      histories: [{ warId: 103, syncNumber: 1, matchType: "FWA", clanTag: rr }],
+      participation: [{ warId: "103", clanTag: rr, playerTag }],
+    });
+
+    const evidence = await new MembershipStreakService(db).getRecentFwaEvidenceForPlayers(streakInput());
+
+    expect(evidence[playerTag][0].fwa).toEqual({
+      status: "ABSENT",
+      clanTag: null,
+      clanTags: [],
+      source: "SYNC_SNAPSHOT",
+    });
+    expect(db.clanWarParticipation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("breaks a clan streak on an exact physical absence without marking it unknown", async () => {
+    const db = makeDb({
+      cycles: cycleRows([1, 2, 3]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr, otherPlayerTag), snapshot(3, rr)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 1,
+      clanStreakIsLowerBound: false,
+      latestFwaClanTag: rr,
+    });
+  });
+
+  it("preserves alliance streak through an exact FWA absence covered by a CWL interval", async () => {
+    const db = makeDb({
+      cycles: cycleRows([1, 2, 3]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr, otherPlayerTag), snapshot(3, rr)],
+      intervals: [interval(2, 2, cwlOne)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 1,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: 3,
+      allianceStreakIsLowerBound: false,
+    });
   });
 });
