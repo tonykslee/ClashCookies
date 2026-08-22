@@ -106,6 +106,7 @@ type Fixture = {
   cwlWindows?: Record<string, any>;
   candidateRaceOnCreate?: boolean;
   raceOnCreate?: boolean;
+  mirrorMode?: boolean;
 };
 
 function makeDb(fixture: Fixture = {}) {
@@ -118,6 +119,7 @@ function makeDb(fixture: Fixture = {}) {
     cwlWindows: fixture.cwlWindows ?? {},
     candidateRaceOnCreate: fixture.candidateRaceOnCreate ?? false,
     raceOnCreate: fixture.raceOnCreate ?? false,
+    mirrorMode: fixture.mirrorMode ?? false,
   };
   const evidenceByPlayer: MembershipBoundaryEvidenceByPlayer = {
     [playerTag]: fixture.evidence ?? [fwaEvidence(3), fwaEvidence(2), fwaEvidence(1)],
@@ -245,9 +247,24 @@ function serviceFor(fixture: Fixture = {}) {
   };
   return {
     ...built,
-    service: new ClanHomeMembershipService(built.db as any, evidenceService, cwlWindowReader),
+    service: new ClanHomeMembershipService(
+      built.db as any,
+      evidenceService,
+      cwlWindowReader,
+      () => built.state.mirrorMode,
+    ),
     evidenceService,
     cwlWindowReader,
+  };
+}
+
+function decisionInput(candidateId: string, actorDiscordUserId: string, decidedAt?: Date) {
+  return {
+    candidateId,
+    actorDiscordUserId,
+    guildId,
+    expectedFromClanTag: rr,
+    ...(decidedAt ? { decidedAt } : {}),
   };
 }
 
@@ -695,13 +712,16 @@ describe("ClanHomeMembershipService", () => {
     await built.service.reconcileLatestExactBoundaries();
     const candidateId = built.state.candidateRows[0].id;
 
-    const result = await built.service.keepHomeTransferCandidate({
-      candidateId,
-      actorDiscordUserId: "leader-1",
-      decidedAt: time(10),
-    });
+    const result = await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-1", time(10)));
 
     expect(result.status).toBe("KEPT_HOME");
+    expect(result).toMatchObject({
+      candidate: {
+        status: "KEPT_HOME",
+        decidedAt: time(10),
+        decidedByDiscordUserId: "leader-1",
+      },
+    });
     expect(built.state.candidateRows[0]).toMatchObject({ status: "KEPT_HOME", decidedAt: time(10), decidedByDiscordUserId: "leader-1" });
     expect(built.state.periods).toMatchObject([{ id: "home-1", clanTag: rr, endedAtSyncTime: null }]);
   });
@@ -716,8 +736,8 @@ describe("ClanHomeMembershipService", () => {
     await built.service.reconcileLatestExactBoundaries();
     const candidateId = built.state.candidateRows[0].id;
 
-    await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(10) });
-    const replay = await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-2", decidedAt: time(11) });
+    await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-1", time(10)));
+    const replay = await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-2", time(11)));
 
     expect(replay).toEqual({ status: "ALREADY_RESOLVED", candidateId, resolvedStatus: "KEPT_HOME" });
     expect(built.state.candidateRows[0].decidedByDiscordUserId).toBe("leader-1");
@@ -732,7 +752,7 @@ describe("ClanHomeMembershipService", () => {
     });
     await built.service.reconcileLatestExactBoundaries();
     const candidateId = built.state.candidateRows[0].id;
-    await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(12) });
+    await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-1", time(12)));
 
     built.state.memberRows = [member(13, eb)];
     built.evidenceByPlayer[playerTag] = [fwaEvidence(13, { clanTag: eb }), fwaEvidence(12, { clanTag: eb }), fwaEvidence(11, { clanTag: eb })];
@@ -757,13 +777,16 @@ describe("ClanHomeMembershipService", () => {
     await built.service.reconcileLatestExactBoundaries();
     const candidate = built.state.candidateRows[0];
 
-    const result = await built.service.confirmHomeTransferCandidate({
-      candidateId: candidate.id,
-      actorDiscordUserId: "leader-1",
-      decidedAt: time(10),
-    });
+    const result = await built.service.confirmHomeTransferCandidate(decisionInput(candidate.id, "leader-1", time(10)));
 
     expect(result.status).toBe("CONFIRMED");
+    expect(result).toMatchObject({
+      candidate: {
+        status: "CONFIRMED",
+        decidedAt: time(10),
+        decidedByDiscordUserId: "leader-1",
+      },
+    });
     expect(built.state.periods).toMatchObject([
       { id: "home-1", clanTag: rr, endedAtSyncTime: time(1), endReason: "TRANSFERRED" },
       { clanTag: eb, startedAtSyncTime: time(1), qualifiedAtSyncTime: time(3), establishmentSource: "TRANSFER", endedAtSyncTime: null },
@@ -780,9 +803,9 @@ describe("ClanHomeMembershipService", () => {
     });
     await built.service.reconcileLatestExactBoundaries();
     const candidateId = built.state.candidateRows[0].id;
-    await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(10) });
+    await built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-1", time(10)));
 
-    const replay = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-2", decidedAt: time(11) });
+    const replay = await built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-2", time(11)));
 
     expect(replay).toEqual({ status: "ALREADY_RESOLVED", candidateId, resolvedStatus: "CONFIRMED" });
     expect(built.state.periods.filter((period) => period.endedAtSyncTime === null)).toHaveLength(1);
@@ -799,8 +822,8 @@ describe("ClanHomeMembershipService", () => {
     const candidateId = built.state.candidateRows[0].id;
 
     const [confirm, keep] = await Promise.all([
-      built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-confirm", decidedAt: time(10) }),
-      built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-keep", decidedAt: time(11) }),
+      built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-confirm", time(10))),
+      built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-keep", time(11))),
     ]);
 
     expect([confirm.status, keep.status].filter((status) => status === "CONFIRMED" || status === "KEPT_HOME")).toHaveLength(1);
@@ -819,7 +842,7 @@ describe("ClanHomeMembershipService", () => {
     const candidateId = built.state.candidateRows[0].id;
     built.state.periods[0].endedAtSyncTime = time(4);
 
-    const result = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1" });
+    const result = await built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-1"));
 
     expect(result).toEqual({ status: "STALE", candidateId, reason: "HOME_PERIOD_NO_LONGER_MATCHES" });
     expect(built.state.candidateRows[0].status).toBe("PENDING");
@@ -837,10 +860,71 @@ describe("ClanHomeMembershipService", () => {
     const candidateId = built.state.candidateRows[0].id;
     built.state.trackedTags = [rr];
 
-    const result = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1" });
+    const result = await built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-1"));
 
     expect(result).toEqual({ status: "STALE", candidateId, reason: "DESTINATION_NOT_TRACKED" });
     expect(built.state.periods).toHaveLength(1);
+  });
+
+  it.each([
+    ["guild", { guildId: "forged-guild", expectedFromClanTag: rr }],
+    ["clan", { guildId, expectedFromClanTag: eb }],
+  ])("rejects a forged %s decision scope without mutation", async (_label, scope) => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+
+    const result = await built.service.keepHomeTransferCandidate({
+      ...decisionInput(candidateId, "leader-1"),
+      ...scope,
+    });
+
+    expect(result).toMatchObject({ status: "STALE" });
+    expect(built.state.candidateRows[0].status).toBe("PENDING");
+    expect(built.state.periods).toMatchObject([{ id: "home-1", endedAtSyncTime: null }]);
+    expect(built.db.clanHomeTransferCandidate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale active Home period for Keep Home without mutation", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    built.state.periods[0].endedAtSyncTime = time(4);
+
+    const result = await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-1"));
+
+    expect(result).toEqual({ status: "STALE", candidateId, reason: "HOME_PERIOD_NO_LONGER_MATCHES" });
+    expect(built.db.clanHomeTransferCandidate.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["keep", "confirm"] as const)("blocks direct %s decisions in mirror mode", async (decision) => {
+    const built = serviceFor({
+      mirrorMode: true,
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    built.db.$transaction.mockClear();
+    const result = decision === "keep"
+      ? await built.service.keepHomeTransferCandidate(decisionInput(candidateId, "leader-1"))
+      : await built.service.confirmHomeTransferCandidate(decisionInput(candidateId, "leader-1"));
+
+    expect(result).toEqual({ status: "WRITE_DISABLED", candidateId, reason: "MIRROR_MODE" });
+    expect(built.state.candidateRows[0].status).toBe("PENDING");
+    expect(built.db.$transaction).not.toHaveBeenCalled();
   });
 
   it("reads pending candidates in bulk without N+1 queries", async () => {

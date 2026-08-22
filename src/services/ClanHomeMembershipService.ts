@@ -12,6 +12,7 @@ import {
   type MembershipBoundaryEvidence,
   type MembershipBoundaryEvidenceByPlayer,
 } from "./MembershipStreakService";
+import { isMirrorPollingMode } from "./PollingModeService";
 
 const AUTO_ESTABLISHMENT_SYNC_COUNT = 3;
 
@@ -47,14 +48,23 @@ export type PendingHomeTransferCandidate = {
 export type HomeTransferDecisionInput = {
   candidateId: string;
   actorDiscordUserId: string;
+  guildId: string;
+  expectedFromClanTag: string;
   decidedAt?: Date;
 };
 
+export type ResolvedHomeTransferCandidate = Omit<PendingHomeTransferCandidate, "status"> & {
+  status: "KEPT_HOME" | "CONFIRMED";
+  decidedAt: Date;
+  decidedByDiscordUserId: string;
+};
+
 export type HomeTransferDecisionResult =
-  | { status: "KEPT_HOME"; candidate: PendingHomeTransferCandidate }
-  | { status: "CONFIRMED"; candidate: PendingHomeTransferCandidate }
+  | { status: "KEPT_HOME"; candidate: ResolvedHomeTransferCandidate }
+  | { status: "CONFIRMED"; candidate: ResolvedHomeTransferCandidate }
   | { status: "ALREADY_RESOLVED"; candidateId: string; resolvedStatus: string }
-  | { status: "STALE"; candidateId: string; reason: string };
+  | { status: "STALE"; candidateId: string; reason: string }
+  | { status: "WRITE_DISABLED"; candidateId: string; reason: "MIRROR_MODE" };
 
 export type ClanHomeMembershipReconciliationSummary = {
   guilds: number;
@@ -128,6 +138,7 @@ type GuildEvaluationResult = {
 };
 
 type CwlWindowReader = Pick<typeof cwlAllianceActivityService, "getCwlWindow">;
+type MirrorModeReader = () => boolean;
 
 type TransferCandidateRecord = Omit<PendingHomeTransferCandidate, "status"> & {
   status: "PENDING" | "KEPT_HOME" | "CONFIRMED";
@@ -323,6 +334,7 @@ export class ClanHomeMembershipService {
     private readonly db: ClanHomeMembershipDb = defaultDb,
     private readonly evidenceService = membershipStreakService,
     private readonly cwlWindowReader: CwlWindowReader = cwlAllianceActivityService,
+    private readonly mirrorModeReader: MirrorModeReader = () => isMirrorPollingMode(),
   ) {}
 
   /** Purpose: read active Home periods in one guild-scoped bulk query without external calls. */
@@ -392,14 +404,30 @@ export class ClanHomeMembershipService {
   async keepHomeTransferCandidate(input: HomeTransferDecisionInput): Promise<HomeTransferDecisionResult> {
     const candidateId = String(input.candidateId ?? "").trim();
     const actorDiscordUserId = String(input.actorDiscordUserId ?? "").trim();
+    const guildId = String(input.guildId ?? "").trim();
+    const expectedFromClanTag = normalizeTag(input.expectedFromClanTag);
     const decidedAt = input.decidedAt ?? new Date();
+    if (this.mirrorModeReader()) return { status: "WRITE_DISABLED", candidateId, reason: "MIRROR_MODE" };
     const result = await this.db.$transaction(async (tx) => {
       const candidate = normalizeTransferCandidate(await tx.clanHomeTransferCandidate.findFirst({
         where: { id: candidateId },
       }));
       if (!candidate) return { status: "STALE" as const, candidateId, reason: "CANDIDATE_NOT_FOUND" };
+      if (candidate.guildId !== guildId) return { status: "STALE" as const, candidateId, reason: "GUILD_SCOPE_MISMATCH" };
+      if (candidate.fromClanTag !== expectedFromClanTag) return { status: "STALE" as const, candidateId, reason: "CLAN_SCOPE_MISMATCH" };
       if (candidate.status !== "PENDING") {
         return { status: "ALREADY_RESOLVED" as const, candidateId, resolvedStatus: candidate.status };
+      }
+      const home = await tx.clanHomeMembershipPeriod.findFirst({
+        where: {
+          id: candidate.homeMembershipPeriodId,
+          guildId,
+          playerTag: candidate.playerTag,
+          endedAtSyncTime: null,
+        },
+      });
+      if (!home || normalizeTag(home.clanTag) !== expectedFromClanTag) {
+        return { status: "STALE" as const, candidateId, reason: "HOME_PERIOD_NO_LONGER_MATCHES" };
       }
       const claimed = await tx.clanHomeTransferCandidate.updateMany({
         where: { id: candidateId, status: "PENDING" },
@@ -419,7 +447,9 @@ export class ClanHomeMembershipService {
         status: "KEPT_HOME" as const,
         candidate: {
           ...candidate,
-          status: "PENDING" as const,
+          status: "KEPT_HOME" as const,
+          decidedAt,
+          decidedByDiscordUserId: actorDiscordUserId,
         },
       };
     });
@@ -435,7 +465,10 @@ export class ClanHomeMembershipService {
   async confirmHomeTransferCandidate(input: HomeTransferDecisionInput): Promise<HomeTransferDecisionResult> {
     const candidateId = String(input.candidateId ?? "").trim();
     const actorDiscordUserId = String(input.actorDiscordUserId ?? "").trim();
+    const guildId = String(input.guildId ?? "").trim();
+    const expectedFromClanTag = normalizeTag(input.expectedFromClanTag);
     const decidedAt = input.decidedAt ?? new Date();
+    if (this.mirrorModeReader()) return { status: "WRITE_DISABLED", candidateId, reason: "MIRROR_MODE" };
     let result: HomeTransferDecisionResult;
     try {
       result = await this.db.$transaction(async (tx) => {
@@ -443,18 +476,20 @@ export class ClanHomeMembershipService {
           where: { id: candidateId },
         }));
         if (!candidate) return { status: "STALE" as const, candidateId, reason: "CANDIDATE_NOT_FOUND" };
+        if (candidate.guildId !== guildId) return { status: "STALE" as const, candidateId, reason: "GUILD_SCOPE_MISMATCH" };
+        if (candidate.fromClanTag !== expectedFromClanTag) return { status: "STALE" as const, candidateId, reason: "CLAN_SCOPE_MISMATCH" };
         if (candidate.status !== "PENDING") {
           return { status: "ALREADY_RESOLVED" as const, candidateId, resolvedStatus: candidate.status };
         }
         const home = await tx.clanHomeMembershipPeriod.findFirst({
           where: {
             id: candidate.homeMembershipPeriodId,
-            guildId: candidate.guildId,
+            guildId,
             playerTag: candidate.playerTag,
             endedAtSyncTime: null,
           },
         });
-        if (!home || normalizeTag(home.clanTag) !== candidate.fromClanTag) {
+        if (!home || normalizeTag(home.clanTag) !== expectedFromClanTag) {
           return { status: "STALE" as const, candidateId, reason: "HOME_PERIOD_NO_LONGER_MATCHES" };
         }
         const trackedDestination = await tx.trackedClan.findMany({
@@ -508,7 +543,9 @@ export class ClanHomeMembershipService {
           status: "CONFIRMED" as const,
           candidate: {
             ...candidate,
-            status: "PENDING" as const,
+            status: "CONFIRMED" as const,
+            decidedAt,
+            decidedByDiscordUserId: actorDiscordUserId,
           },
         };
       });
