@@ -52,6 +52,30 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-30T01:00:00.000Z"),
       },
     ],
+    AllianceClanMembershipInterval: [
+      {
+        id: "interval-1",
+        guildId: "g1",
+        playerTag: "#P1",
+        clanTag: "#AAA111",
+        firstObservedAt: new Date("2026-03-29T00:00:00.000Z"),
+        lastObservedAt: new Date("2026-03-29T01:00:00.000Z"),
+        endedAt: null,
+        endReason: null,
+        createdAt: new Date("2026-03-29T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-29T01:00:00.000Z"),
+      },
+    ],
+    SyncClanMemberSnapshot: [
+      {
+        id: "member-snapshot-1",
+        guildId: "g1",
+        syncTime: new Date("2026-03-29T00:00:00.000Z"),
+        clanTag: "#AAA111",
+        playerTag: "#P1",
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
     SyncClanReadinessSnapshot: [
       {
         id: "snapshot-1",
@@ -310,6 +334,12 @@ function buildSourceClient(
     syncCycle: {
       findMany: vi.fn(async () => cloneRows(store.SyncCycle)),
     },
+    allianceClanMembershipInterval: {
+      findMany: vi.fn(async () => cloneRows(store.AllianceClanMembershipInterval)),
+    },
+    syncClanMemberSnapshot: {
+      findMany: vi.fn(async () => cloneRows(store.SyncClanMemberSnapshot)),
+    },
     syncClanReadinessSnapshot: {
       findMany: vi.fn(async () => cloneRows(store.SyncClanReadinessSnapshot)),
     },
@@ -427,6 +457,14 @@ function buildTargetClient(
       deleteMany: deleteMany("SyncCycle"),
       createMany: createMany("SyncCycle"),
     },
+    allianceClanMembershipInterval: {
+      deleteMany: deleteMany("AllianceClanMembershipInterval"),
+      createMany: createMany("AllianceClanMembershipInterval"),
+    },
+    syncClanMemberSnapshot: {
+      deleteMany: deleteMany("SyncClanMemberSnapshot"),
+      createMany: createMany("SyncClanMemberSnapshot"),
+    },
     syncClanReadinessSnapshot: {
       deleteMany: deleteMany("SyncClanReadinessSnapshot"),
       createMany: createMany("SyncClanReadinessSnapshot"),
@@ -484,10 +522,9 @@ function buildTargetClient(
 }
 
 describe("MirrorSyncService", () => {
-  it("does not full-overwrite append-oriented alliance membership history", () => {
-    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain(
-      "AllianceClanMembershipInterval",
-    );
+  it("mirrors both historical membership owners as persisted production facts", () => {
+    expect(MIRRORED_RUNTIME_TABLES).toContain("AllianceClanMembershipInterval");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("SyncClanMemberSnapshot");
   });
 
   it("mirrors retrospective owners but not scheduled-post lifecycle state", () => {
@@ -597,6 +634,8 @@ describe("MirrorSyncService", () => {
     expect(targetStore.CwlRotationPlan[0]?.eventInstanceId).toBe("event-current");
     expect(targetStore.ClanPointsSync).toEqual(sourceStore.ClanPointsSync);
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
+    expect(targetStore.AllianceClanMembershipInterval).toEqual(sourceStore.AllianceClanMembershipInterval);
+    expect(targetStore.SyncClanMemberSnapshot).toEqual(sourceStore.SyncClanMemberSnapshot);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
     expect(targetStore.WarPlanComplianceEvaluation).toEqual(
       sourceStore.WarPlanComplianceEvaluation,
