@@ -29,6 +29,11 @@ import {
   ClanHealthTrendService,
   type ClanHealthTrendReport,
 } from "../services/ClanHealthTrendService";
+import {
+  clanHomeMembershipService,
+  type HomeTransferDecisionResult,
+} from "../services/ClanHomeMembershipService";
+import { isMirrorPollingMode } from "../services/PollingModeService";
 import { homeRosterService, type ClanHomeRoster, type HomeRosterMember } from "../services/HomeRosterService";
 
 const CLAN_HEALTH_NAVIGATION_PREFIX = "clan-health";
@@ -37,7 +42,12 @@ const CLAN_HEALTH_TRENDS_ACTION = "trends" as const;
 const CLAN_HEALTH_HOME_ROSTER_ACTION = "home-roster" as const;
 const CLAN_HEALTH_AWAY_ACTION = "away" as const;
 const CLAN_HEALTH_TRANSFERS_ACTION = "transfers" as const;
+const CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION = "transfer-prev" as const;
+const CLAN_HEALTH_TRANSFER_NEXT_ACTION = "transfer-next" as const;
+const CLAN_HEALTH_TRANSFER_KEEP_ACTION = "transfer-keep" as const;
+const CLAN_HEALTH_TRANSFER_CONFIRM_ACTION = "transfer-confirm" as const;
 const CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT = 10;
+const CLAN_HEALTH_TRANSFER_CANDIDATE_ID_MAX_LENGTH = 64;
 
 export const CLAN_HEALTH_NAVIGATION_ACTIONS = [
   "inactive",
@@ -78,7 +88,20 @@ export type ClanHealthNavigationPayload =
   | {
       action: ClanHealthHomeNavigationAction;
       clanTag: string;
-    };
+    }
+  | ClanHealthTransferNavigationPayload;
+
+type ClanHealthTransferNavigationAction =
+  | typeof CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION
+  | typeof CLAN_HEALTH_TRANSFER_NEXT_ACTION
+  | typeof CLAN_HEALTH_TRANSFER_KEEP_ACTION
+  | typeof CLAN_HEALTH_TRANSFER_CONFIRM_ACTION;
+
+export type ClanHealthTransferNavigationPayload = {
+  action: ClanHealthTransferNavigationAction;
+  clanTag: string;
+  candidateId: string;
+};
 
 type ClanHealthHomeNavigationAction =
   | typeof CLAN_HEALTH_HOME_ROSTER_ACTION
@@ -175,6 +198,34 @@ export function buildClanHealthHomeNavigationCustomId(
   return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}`;
 }
 
+/** Purpose: build a bounded restart-safe transfer review action for one candidate. */
+export function buildClanHealthTransferNavigationCustomId(
+  action: ClanHealthTransferNavigationAction,
+  clanTag: string,
+  candidateId: string,
+): string {
+  const transferActions = [
+    CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION,
+    CLAN_HEALTH_TRANSFER_NEXT_ACTION,
+    CLAN_HEALTH_TRANSFER_KEEP_ACTION,
+    CLAN_HEALTH_TRANSFER_CONFIRM_ACTION,
+  ];
+  if (!transferActions.includes(action)) throw new Error("Unsupported Clan Health transfer action.");
+  const normalizedClanTag = normalizeNavigationClanTag(clanTag);
+  const normalizedCandidateId = String(candidateId ?? "").trim();
+  if (
+    !normalizedClanTag ||
+    !normalizedCandidateId ||
+    normalizedCandidateId.length > CLAN_HEALTH_TRANSFER_CANDIDATE_ID_MAX_LENGTH ||
+    normalizedCandidateId.includes(":")
+  ) {
+    throw new Error("Invalid Clan Health transfer candidate scope.");
+  }
+  const customId = `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}:${normalizedCandidateId}`;
+  if (customId.length > 100) throw new Error("Clan Health transfer custom ID is too long.");
+  return customId;
+}
+
 /** Purpose: parse and validate a Clan Health navigation custom ID without trusting user input. */
 export function parseClanHealthNavigationCustomId(
   customId: string,
@@ -227,6 +278,31 @@ export function parseClanHealthNavigationCustomId(
     const clanTag = normalizeNavigationClanTag(parts[2]);
     if (!clanTag || parts[2] !== clanTag) return null;
     return { action: parts[1] as ClanHealthHomeNavigationAction, clanTag };
+  }
+  if (
+    parts.length === 4 &&
+    [
+      CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION,
+      CLAN_HEALTH_TRANSFER_NEXT_ACTION,
+      CLAN_HEALTH_TRANSFER_KEEP_ACTION,
+      CLAN_HEALTH_TRANSFER_CONFIRM_ACTION,
+    ].includes(parts[1] as ClanHealthTransferNavigationAction)
+  ) {
+    const clanTag = normalizeNavigationClanTag(parts[2]);
+    const candidateId = parts[3];
+    if (
+      !clanTag ||
+      parts[2] !== clanTag ||
+      !candidateId ||
+      candidateId.length > CLAN_HEALTH_TRANSFER_CANDIDATE_ID_MAX_LENGTH ||
+      candidateId.includes(":") ||
+      `${CLAN_HEALTH_NAVIGATION_PREFIX}:${parts[1]}:${clanTag}:${candidateId}`.length > 100
+    ) return null;
+    return {
+      action: parts[1] as ClanHealthTransferNavigationAction,
+      clanTag,
+      candidateId,
+    };
   }
   if (parts.length !== 3) return null;
   const action = parts[1] as ClanHealthNavigationAction;
@@ -390,20 +466,92 @@ function buildAwayRosterLines(roster: ClanHomeRoster, clanName: string): string[
 }
 
 /** Purpose: render pending candidates read-only with their persisted qualification timestamps. */
-function buildTransferRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
-  const transfers = roster.members
-    .filter((member) => member.pendingTransfer)
-    .sort(homeRosterMemberSort);
-  if (transfers.length === 0) return ["No pending Home transfer candidates."];
-  return [
-    `↔ Pending Home transfer candidates for ${clanName}`,
-    "Read-only; no Home or candidate decision was made.",
-    "",
-    ...transfers.map((member) => {
-      const candidate = member.pendingTransfer!;
-      return `${member.playerName} \`${member.playerTag}\` — ${clanName} → ${candidate.toClanName ?? candidate.toClanTag} • qualifies ${formatHomeRosterObservedAt(candidate.startedAtSyncTime)} to ${formatHomeRosterObservedAt(candidate.qualifiedAtSyncTime)}`;
-    }),
-  ];
+type PendingTransferMember = HomeRosterMember & {
+  pendingTransfer: NonNullable<HomeRosterMember["pendingTransfer"]>;
+};
+
+/** Purpose: return pending transfer candidates in one deterministic display order. */
+function listPendingTransferMembers(roster: ClanHomeRoster): PendingTransferMember[] {
+  return roster.members
+    .filter((member): member is PendingTransferMember => member.pendingTransfer !== null)
+    .sort((left, right) =>
+      left.pendingTransfer.qualifiedAtSyncTime.getTime() - right.pendingTransfer.qualifiedAtSyncTime.getTime() ||
+      homeRosterMemberSort(left, right) ||
+      left.pendingTransfer.id.localeCompare(right.pendingTransfer.id),
+    );
+}
+
+/** Purpose: render one bounded transfer-review panel with restart-safe navigation and decision controls. */
+function buildTransferReviewPayload(input: {
+  roster: ClanHomeRoster;
+  clanName: string;
+  candidateId?: string;
+  notice?: string;
+}): { content: string; components: ActionRowBuilder<ButtonBuilder>[] } {
+  const transfers = listPendingTransferMembers(input.roster);
+  if (transfers.length === 0) {
+    return {
+      content: [input.notice, "No pending Home transfer candidates."].filter(Boolean).join("\n\n"),
+      components: [],
+    };
+  }
+  const requestedIndex = input.candidateId
+    ? transfers.findIndex((member) => member.pendingTransfer.id === input.candidateId)
+    : 0;
+  const index = requestedIndex >= 0 ? requestedIndex : 0;
+  const member = transfers[index];
+  const candidate = member.pendingTransfer;
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthTransferNavigationCustomId(CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION, input.roster.clanTag, candidate.id))
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(index === 0),
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthTransferNavigationCustomId(CLAN_HEALTH_TRANSFER_NEXT_ACTION, input.roster.clanTag, candidate.id))
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(index === transfers.length - 1),
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthTransferNavigationCustomId(CLAN_HEALTH_TRANSFER_KEEP_ACTION, input.roster.clanTag, candidate.id))
+      .setLabel("Keep Home")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthTransferNavigationCustomId(CLAN_HEALTH_TRANSFER_CONFIRM_ACTION, input.roster.clanTag, candidate.id))
+      .setLabel("Confirm Transfer")
+      .setStyle(ButtonStyle.Danger),
+  );
+  return {
+    content: [
+      input.notice,
+      "↔ Home Transfer Review",
+      `${member.playerName} \`${member.playerTag}\``,
+      `Home: ${input.clanName}`,
+      `Proposed: ${candidate.toClanName ?? candidate.toClanTag}`,
+      `Qualifying run: ${formatHomeRosterObservedAt(candidate.startedAtSyncTime)} → ${formatHomeRosterObservedAt(candidate.qualifiedAtSyncTime)}`,
+      `Candidate **${index + 1}/${transfers.length}**`,
+    ].filter(Boolean).join("\n"),
+    components: [row],
+  };
+}
+
+/** Purpose: render a friendly result message for one transactional Home transfer decision. */
+function buildTransferDecisionNotice(
+  result: HomeTransferDecisionResult,
+  displayedMember: PendingTransferMember | null,
+  homeClanName: string,
+): string {
+  const playerName = displayedMember?.playerName ?? ("candidate" in result ? result.candidate.playerTag : "this candidate");
+  if (result.status === "KEPT_HOME") {
+    return `✅ Home kept\n${playerName} remains assigned to ${homeClanName}.\n\nA new Possible Transfer will require three fresh qualifying syncs.`;
+  }
+  if (result.status === "CONFIRMED") {
+    const toClan = displayedMember?.pendingTransfer.toClanName ?? displayedMember?.pendingTransfer.toClanTag ?? result.candidate.toClanTag;
+    return `✅ Home transferred\n${playerName}\n${homeClanName} → ${toClan}\n\nEffective from the first qualifying transfer sync.`;
+  }
+  if (result.status === "ALREADY_RESOLVED") return "This Home transfer candidate was already handled. Showing the current pending candidates.";
+  if (result.status === "STALE") return "This Home transfer candidate is no longer valid for the current Home state or destination. Showing the current pending candidates.";
+  return "Home transfer decisions are disabled in mirror mode.";
 }
 
 /** Purpose: render persisted sync-boundary trend facts as one compact ephemeral embed. */
@@ -534,6 +682,8 @@ export async function handleClanHealthNavigationButtonInteraction(
   trendService = new ClanHealthTrendService(),
   historicalWindowService = new ClanHealthHistoricalWindowService(),
   homeRosterReader: Pick<typeof homeRosterService, "getClanHomeRoster"> = homeRosterService,
+  homeMembershipWriter: Pick<typeof clanHomeMembershipService, "keepHomeTransferCandidate" | "confirmHomeTransferCandidate"> = clanHomeMembershipService,
+  mirrorModeReader: () => boolean = () => isMirrorPollingMode(),
 ): Promise<void> {
   const startedAtMs = Date.now();
   const parsed = parseClanHealthNavigationCustomId(interaction.customId);
@@ -569,7 +719,11 @@ export async function handleClanHealthNavigationButtonInteraction(
         ? ["clan-health"]
         : parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION ||
             parsed.action === CLAN_HEALTH_AWAY_ACTION ||
-            parsed.action === CLAN_HEALTH_TRANSFERS_ACTION
+            parsed.action === CLAN_HEALTH_TRANSFERS_ACTION ||
+            parsed.action === CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION ||
+            parsed.action === CLAN_HEALTH_TRANSFER_NEXT_ACTION ||
+            parsed.action === CLAN_HEALTH_TRANSFER_KEEP_ACTION ||
+            parsed.action === CLAN_HEALTH_TRANSFER_CONFIRM_ACTION
           ? ["clan-health"]
         : CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS[parsed.action];
   const allowed = await permissionService.canUseAnyTarget([...permissionTargets], interaction);
@@ -623,11 +777,7 @@ export async function handleClanHealthNavigationButtonInteraction(
           client: interaction.client,
         }),
       );
-    } else if (
-      parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION ||
-      parsed.action === CLAN_HEALTH_AWAY_ACTION ||
-      parsed.action === CLAN_HEALTH_TRANSFERS_ACTION
-    ) {
+    } else if (parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION || parsed.action === CLAN_HEALTH_AWAY_ACTION) {
       const roster = await homeRosterReader.getClanHomeRoster({
         guildId: interaction.guildId,
         clanTag: `#${parsed.clanTag}`,
@@ -635,14 +785,78 @@ export async function handleClanHealthNavigationButtonInteraction(
       const clanName = roster.clanName || `#${parsed.clanTag}`;
       const lines = parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION
         ? buildHomeRosterLines(roster, clanName)
-        : parsed.action === CLAN_HEALTH_AWAY_ACTION
-          ? buildAwayRosterLines(roster, clanName)
-          : buildTransferRosterLines(roster, clanName);
+        : buildAwayRosterLines(roster, clanName);
       const messages = splitDiscordLineMessages({ lines, maxMessages: 5 });
       await interaction.editReply(messages[0] ?? "No Home roster details are available.");
       for (const message of messages.slice(1)) {
         await interaction.followUp({ ephemeral: true, content: message });
       }
+    } else if (parsed.action === CLAN_HEALTH_TRANSFERS_ACTION) {
+      const roster = await homeRosterReader.getClanHomeRoster({
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      });
+      const clanName = roster.clanName || `#${parsed.clanTag}`;
+      await interaction.editReply(buildTransferReviewPayload({ roster, clanName }));
+    } else if (
+      parsed.action === CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION ||
+      parsed.action === CLAN_HEALTH_TRANSFER_NEXT_ACTION
+    ) {
+      const roster = await homeRosterReader.getClanHomeRoster({
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      });
+      const clanName = roster.clanName || `#${parsed.clanTag}`;
+      const transfers = listPendingTransferMembers(roster);
+      const currentIndex = transfers.findIndex((member) => member.pendingTransfer.id === parsed.candidateId);
+      const notice = currentIndex < 0
+        ? "The previously displayed candidate is no longer pending. Showing the current candidates."
+        : undefined;
+      const targetIndex = currentIndex < 0
+        ? undefined
+        : parsed.action === CLAN_HEALTH_TRANSFER_PREVIOUS_ACTION
+          ? Math.max(0, currentIndex - 1)
+          : Math.min(transfers.length - 1, currentIndex + 1);
+      await interaction.editReply(buildTransferReviewPayload({
+        roster,
+        clanName,
+        candidateId: targetIndex === undefined ? undefined : transfers[targetIndex]?.pendingTransfer.id,
+        notice,
+      }));
+    } else if (
+      parsed.action === CLAN_HEALTH_TRANSFER_KEEP_ACTION ||
+      parsed.action === CLAN_HEALTH_TRANSFER_CONFIRM_ACTION
+    ) {
+      if (mirrorModeReader()) {
+        await interaction.editReply("Home transfer decisions are disabled in mirror mode.");
+        outcome("mirror_blocked");
+        return;
+      }
+      const rosterBefore = await homeRosterReader.getClanHomeRoster({
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      });
+      const displayedMember = listPendingTransferMembers(rosterBefore)
+        .find((member) => member.pendingTransfer.id === parsed.candidateId) ?? null;
+      const decisionInput = {
+        candidateId: parsed.candidateId,
+        actorDiscordUserId: interaction.user.id,
+        guildId: interaction.guildId,
+        expectedFromClanTag: `#${parsed.clanTag}`,
+      };
+      const result = parsed.action === CLAN_HEALTH_TRANSFER_KEEP_ACTION
+        ? await homeMembershipWriter.keepHomeTransferCandidate(decisionInput)
+        : await homeMembershipWriter.confirmHomeTransferCandidate(decisionInput);
+      const rosterAfter = await homeRosterReader.getClanHomeRoster({
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      });
+      const clanName = rosterAfter.clanName || rosterBefore.clanName || `#${parsed.clanTag}`;
+      await interaction.editReply(buildTransferReviewPayload({
+        roster: rosterAfter,
+        clanName,
+        notice: buildTransferDecisionNotice(result, displayedMember, clanName),
+      }));
     } else if (parsed.action === CLAN_HEALTH_WAR_HISTORY_ACTION) {
       const resolvedWindow = parsed.historicalWindow.kind === "syncs"
         ? await historicalWindowService.resolveLatestSyncWindow({
