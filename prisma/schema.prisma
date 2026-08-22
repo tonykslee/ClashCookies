@@ -831,6 +831,17 @@ enum AllianceClanMembershipIntervalEndReason {
   TRACKING_STOPPED
 }
 
+enum ClanHomeMembershipEstablishmentSource {
+  AUTO_3_SYNC
+  MANUAL
+  TRANSFER
+}
+
+enum ClanHomeMembershipEndReason {
+  TRANSFERRED
+  MANUAL
+}
+
 model AllianceClanMembershipInterval {
   id              String                               @id @default(cuid())
   guildId         String
@@ -846,6 +857,25 @@ model AllianceClanMembershipInterval {
   @@index([guildId, playerTag, firstObservedAt, endedAt])
   @@index([guildId, clanTag, firstObservedAt, endedAt])
   @@index([guildId, firstObservedAt, endedAt])
+}
+
+model ClanHomeMembershipPeriod {
+  id                     String                              @id @default(cuid())
+  guildId                String
+  playerTag              String                              @db.VarChar(16)
+  clanTag                String                              @db.VarChar(16)
+  startedAtSyncTime      DateTime
+  qualifiedAtSyncTime    DateTime
+  endedAtSyncTime        DateTime?
+  establishmentSource    ClanHomeMembershipEstablishmentSource
+  endReason              ClanHomeMembershipEndReason?
+  createdAt              DateTime                            @default(now())
+  updatedAt              DateTime                            @updatedAt
+
+  @@index([guildId, playerTag, endedAtSyncTime])
+  @@index([guildId, clanTag, endedAtSyncTime])
+  @@index([guildId, playerTag, startedAtSyncTime])
+  @@index([guildId, qualifiedAtSyncTime])
 }
 
 model CwlSeasonRosterState {

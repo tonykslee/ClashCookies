@@ -16,6 +16,10 @@ import {
 } from "./SyncTimePostPublisherService";
 import { SyncClanGoalService } from "./SyncClanGoalService";
 import { SyncRetrospectiveAutoPostService } from "./SyncRetrospectiveAutoPostService";
+import {
+  clanHomeMembershipService as defaultClanHomeMembershipService,
+  type ClanHomeMembershipService,
+} from "./ClanHomeMembershipService";
 
 export const DEFAULT_SCHEDULED_SYNC_POST_INTERVAL_MS = 15 * 1000;
 export const SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY = "scheduled_sync_post_scheduler";
@@ -79,6 +83,8 @@ export class ScheduledSyncPostSchedulerService {
       new SyncClanGoalService(client),
     private readonly syncRetrospectiveAutoPostService: Pick<SyncRetrospectiveAutoPostService, "runCycle"> =
       new SyncRetrospectiveAutoPostService(client),
+    private readonly clanHomeMembershipService: Pick<ClanHomeMembershipService, "reconcileLatestExactBoundaries"> =
+      defaultClanHomeMembershipService,
   ) {}
 
   start(): ScheduledSyncPostSchedulerStartResult {
@@ -167,6 +173,14 @@ export class ScheduledSyncPostSchedulerService {
       } catch (err) {
         dozzleLog.error(
           `[scheduled-readiness-post] sync_clan_goal_cycle_failed error=${formatError(err)}`,
+        );
+      }
+
+      try {
+        await this.clanHomeMembershipService.reconcileLatestExactBoundaries();
+      } catch (err) {
+        dozzleLog.error(
+          `[scheduled-readiness-post] home_membership_reconciliation_failed error=${formatError(err)}`,
         );
       }
 
