@@ -842,6 +842,12 @@ enum ClanHomeMembershipEndReason {
   MANUAL
 }
 
+enum ClanHomeTransferCandidateStatus {
+  PENDING
+  KEPT_HOME
+  CONFIRMED
+}
+
 model AllianceClanMembershipInterval {
   id              String                               @id @default(cuid())
   guildId         String
@@ -876,6 +882,27 @@ model ClanHomeMembershipPeriod {
   @@index([guildId, clanTag, endedAtSyncTime])
   @@index([guildId, playerTag, startedAtSyncTime])
   @@index([guildId, qualifiedAtSyncTime])
+}
+
+model ClanHomeTransferCandidate {
+  id                     String                           @id @default(cuid())
+  guildId                String
+  playerTag              String                           @db.VarChar(16)
+  homeMembershipPeriodId String
+  fromClanTag            String                           @db.VarChar(16)
+  toClanTag              String                           @db.VarChar(16)
+  startedAtSyncTime      DateTime
+  qualifiedAtSyncTime    DateTime
+  status                 ClanHomeTransferCandidateStatus
+  decidedAt              DateTime?
+  decidedByDiscordUserId String?
+  createdAt              DateTime                         @default(now())
+  updatedAt              DateTime                         @updatedAt
+
+  @@unique([homeMembershipPeriodId, toClanTag, startedAtSyncTime, qualifiedAtSyncTime])
+  @@index([guildId, playerTag, status])
+  @@index([homeMembershipPeriodId, status])
+  @@index([guildId, fromClanTag, status])
 }
 
 model CwlSeasonRosterState {
