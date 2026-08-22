@@ -1254,6 +1254,20 @@ model SyncClanReadinessSnapshot {
   @@index([syncTime, projectionComplete, deviationScore])
 }
 
+model SyncClanMemberSnapshot {
+  id        String   @id @default(cuid())
+  guildId   String
+  syncTime  DateTime
+  clanTag   String   @db.VarChar(16)
+  playerTag String   @db.VarChar(16)
+  createdAt DateTime @default(now())
+
+  @@unique([guildId, syncTime, clanTag, playerTag])
+  @@index([guildId, playerTag, syncTime])
+  @@index([guildId, clanTag, syncTime])
+  @@index([guildId, syncTime, playerTag])
+}
+
 model SyncEvent {
   id        String   @id @default(cuid())
   guildId   String

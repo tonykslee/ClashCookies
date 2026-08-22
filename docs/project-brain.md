@@ -84,6 +84,7 @@ Important owners:
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner artifacts | CwlRotationPlan* tables |
 | Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
+| Immutable scheduled-sync FWA physical-membership facts | SyncClanMemberSnapshot |
 | Current player state | PlayerCurrent |
 | Current FWA clan roster state | FwaClanMemberCurrent |
 | Read-only CWL alliance activity reporting | CwlAllianceActivityService (consumer only; no interval/current-state writes) |
@@ -114,7 +115,7 @@ Important owners:
 
 Do not duplicate ownership across tables.
 
-`AllianceClanMembershipInterval` remains the owner of observation-based membership history and is not used to infer exact filler-at-sync facts. The sync snapshot captures filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's ACTUAL roster.
+`AllianceClanMembershipInterval` remains the owner of observation-based, continuously observed alliance/CWL clan-membership intervals. `SyncClanMemberSnapshot` owns the separate immutable scheduled-sync FWA physical-membership fact for each normalized clan/player roster entry. They are different concepts, not competing owners: the former describes observed residence over time, while the latter describes exact membership available at one scheduled boundary. The sync snapshot deliberately contains no filler status; `SyncClanReadinessSnapshot` owns filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's ACTUAL roster.
 
 ---
 
@@ -123,7 +124,7 @@ Do not duplicate ownership across tables.
 - Active mode owns external pollers and schedulers.
 - Mirror mode is read-oriented and only runs guarded prod-to-staging snapshot sync for the runtime allowlist.
 - Mirror mode does not capture sync-boundary readiness snapshots, claim sync-goal or retrospective events, or deliver scheduled-sync clan goals or automatic retrospectives.
-- `AllianceClanMembershipInterval` is excluded from the full-overwrite mirror allowlist. Production activity observation is its writer; mirror mode performs no membership-history polling or writes, and future read-only reporting consumers such as `CwlAllianceActivityService` do not become mirror owners.
+- `AllianceClanMembershipInterval` and `SyncClanMemberSnapshot` are both included in the full-overwrite mirror allowlist. Active production remains the only writer/observer; mirror mode copies persisted rows for staging reads and performs no membership-history polling or writes.
 - Expensive upstream fetches should happen in background services, not in user-facing commands.
 - Derived tables and snapshots must be recreatable by their owning service.
 - Mirror runtime should include runtime-owned CWL round/history tables, event identity tables, and planner tables when staging needs consistent `/cwl` rendering against mirrored prod data.

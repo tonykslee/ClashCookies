@@ -4,7 +4,9 @@ import {
   type ClanWarHistory,
   type ClanWarParticipation,
   type SyncCycle,
+  type SyncClanMemberSnapshot,
   type SyncClanReadinessSnapshot,
+  type AllianceClanMembershipInterval,
   type CwlEventClan,
   type CwlEventInstance,
   type CwlEventWarTag,
@@ -49,6 +51,8 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanPointsSync",
   "ClanWarHistory",
   "SyncCycle",
+  "AllianceClanMembershipInterval",
+  "SyncClanMemberSnapshot",
   "SyncClanReadinessSnapshot",
   "ClanWarParticipation",
   "WarPlanComplianceEvaluation",
@@ -145,6 +149,12 @@ type MirrorSyncSourceClient = {
   clanPointsSync: { findMany: (args?: unknown) => Promise<ClanPointsSync[]> };
   clanWarHistory: { findMany: (args?: unknown) => Promise<ClanWarHistory[]> };
   syncCycle: { findMany: (args?: unknown) => Promise<SyncCycle[]> };
+  allianceClanMembershipInterval: {
+    findMany: (args?: unknown) => Promise<AllianceClanMembershipInterval[]>;
+  };
+  syncClanMemberSnapshot: {
+    findMany: (args?: unknown) => Promise<SyncClanMemberSnapshot[]>;
+  };
   syncClanReadinessSnapshot: {
     findMany: (args?: unknown) => Promise<SyncClanReadinessSnapshot[]>;
   };
@@ -219,6 +229,14 @@ type MirrorSyncTargetClient = {
   syncCycle: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: SyncCycle[] }) => Promise<CreateManyResult>;
+  };
+  allianceClanMembershipInterval: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: AllianceClanMembershipInterval[] }) => Promise<CreateManyResult>;
+  };
+  syncClanMemberSnapshot: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: SyncClanMemberSnapshot[] }) => Promise<CreateManyResult>;
   };
   syncClanReadinessSnapshot: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -335,6 +353,8 @@ type MirrorSyncSourceRows = {
   ClanPointsSync: ClanPointsSync[];
   ClanWarHistory: ClanWarHistory[];
   SyncCycle: SyncCycle[];
+  AllianceClanMembershipInterval: AllianceClanMembershipInterval[];
+  SyncClanMemberSnapshot: SyncClanMemberSnapshot[];
   SyncClanReadinessSnapshot: SyncClanReadinessSnapshot[];
   ClanWarParticipation: ClanWarParticipation[];
   WarPlanComplianceEvaluation: WarPlanComplianceEvaluation[];
@@ -647,6 +667,12 @@ export class MirrorSyncService {
       SyncCycle: await sourceClient.syncCycle.findMany({
         orderBy: [{ guildId: "asc" }, { syncNumber: "asc" }],
       }),
+      AllianceClanMembershipInterval: await sourceClient.allianceClanMembershipInterval.findMany({
+        orderBy: [{ guildId: "asc" }, { playerTag: "asc" }, { firstObservedAt: "asc" }],
+      }),
+      SyncClanMemberSnapshot: await sourceClient.syncClanMemberSnapshot.findMany({
+        orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+      }),
       SyncClanReadinessSnapshot: await sourceClient.syncClanReadinessSnapshot.findMany({
         orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }],
       }),
@@ -795,6 +821,24 @@ export class MirrorSyncService {
       const deletedRows = (await tx.syncCycle.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as SyncCycle[], (batch) =>
         tx.syncCycle.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "AllianceClanMembershipInterval") {
+      const deletedRows = (await tx.allianceClanMembershipInterval.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as AllianceClanMembershipInterval[],
+        (batch) => tx.allianceClanMembershipInterval.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "SyncClanMemberSnapshot") {
+      const deletedRows = (await tx.syncClanMemberSnapshot.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as SyncClanMemberSnapshot[],
+        (batch) => tx.syncClanMemberSnapshot.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

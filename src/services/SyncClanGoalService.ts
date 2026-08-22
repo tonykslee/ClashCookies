@@ -85,6 +85,9 @@ export type SyncClanGoalCycleSummary = {
   delivered: number;
   skipped: number;
   failed: number;
+  membershipRowsAttempted: number;
+  membershipRowsCaptured: number;
+  membershipCaptureFailures: number;
 };
 
 function zeroSummary(): SyncClanGoalCycleSummary {
@@ -100,6 +103,9 @@ function zeroSummary(): SyncClanGoalCycleSummary {
     delivered: 0,
     skipped: 0,
     failed: 0,
+    membershipRowsAttempted: 0,
+    membershipRowsCaptured: 0,
+    membershipCaptureFailures: 0,
   };
 }
 
@@ -195,6 +201,46 @@ export function buildSyncClanReadinessSnapshotRows(input: {
   });
 }
 
+/** Purpose: normalize ACTUAL physical clan membership into immutable sync-boundary facts. */
+export function buildSyncClanMemberSnapshotRows(input: {
+  guildId: string;
+  syncTime: Date;
+  context: CompoActualStateContext;
+}): Array<{
+  guildId: string;
+  syncTime: Date;
+  clanTag: string;
+  playerTag: string;
+}> {
+  const rowsByIdentity = new Map<string, {
+    guildId: string;
+    syncTime: Date;
+    clanTag: string;
+    playerTag: string;
+  }>();
+  const syncIdentity = input.syncTime.toISOString();
+
+  for (const clan of input.context.clans) {
+    const clanTag = normalizeTag(clan.clanTag);
+    if (!clanTag) continue;
+    for (const member of clan.members) {
+      const playerTag = normalizePlayerTag(member.playerTag);
+      if (!playerTag) continue;
+      const identity = `${input.guildId}\u0000${syncIdentity}\u0000${clanTag}\u0000${playerTag}`;
+      rowsByIdentity.set(identity, {
+        guildId: input.guildId,
+        syncTime: input.syncTime,
+        clanTag,
+        playerTag,
+      });
+    }
+  }
+
+  return [...rowsByIdentity.values()].sort((left, right) =>
+    left.clanTag.localeCompare(right.clanTag) || left.playerTag.localeCompare(right.playerTag),
+  );
+}
+
 export class SyncClanGoalService {
   constructor(
     private readonly client: Client,
@@ -209,6 +255,7 @@ export class SyncClanGoalService {
     const scheduleModel = (prisma as any).scheduledSyncPost;
     const snapshotModel = (prisma as any).syncClanReadinessSnapshot;
     const eventModel = (prisma as any).syncEvent;
+    const memberSnapshotModel = (prisma as any).syncClanMemberSnapshot;
     if (
       !scheduleModel?.findMany ||
       !snapshotModel?.findMany ||
@@ -235,7 +282,8 @@ export class SyncClanGoalService {
     const fillerTagsByBoundary = new Map<string, Promise<string[]>>();
     const rowsByBoundary = new Map<string, {
       syncTime: Date;
-      rows: ReturnType<typeof buildSyncClanReadinessSnapshotRows>;
+      readinessRows: ReturnType<typeof buildSyncClanReadinessSnapshotRows> | null;
+      membershipRows: ReturnType<typeof buildSyncClanMemberSnapshotRows>;
     }>();
     const activeCaptureCandidates = captureCandidates.filter((schedule) =>
       schedule.status !== "CANCELLED" && schedule.status !== "REPLACED",
@@ -259,6 +307,16 @@ export class SyncClanGoalService {
           summary.stale += 1;
           continue;
         }
+        const boundary = rowsByBoundary.get(contextKey) ?? {
+          syncTime: schedule.syncTime,
+          readinessRows: null,
+          membershipRows: buildSyncClanMemberSnapshotRows({
+            guildId: schedule.guildId,
+            syncTime: schedule.syncTime,
+            context,
+          }),
+        };
+        rowsByBoundary.set(contextKey, boundary);
         let fillerTagsPromise = fillerTagsByBoundary.get(contextKey);
         if (!fillerTagsPromise) {
           fillerTagsPromise = listFillerAccountTagsForGuild({ guildId: schedule.guildId });
@@ -294,7 +352,7 @@ export class SyncClanGoalService {
           else summary.incomplete += 1;
           if (row.projectionComplete) summary.complete += 1;
         }
-        rowsByBoundary.set(contextKey, { syncTime: schedule.syncTime, rows });
+        boundary.readinessRows = rows;
       } catch (error) {
         dozzleLog.error(
           `[sync-clan-goals] event=readiness_capture outcome=failure guild_id=${schedule.guildId} sync_identity=${schedule.syncTime.toISOString()} error=${formatError(error)}`,
@@ -303,13 +361,41 @@ export class SyncClanGoalService {
     }
 
     const rowsToCreate: ReturnType<typeof buildSyncClanReadinessSnapshotRows> = [];
+    const membershipRowsToCreate: ReturnType<typeof buildSyncClanMemberSnapshotRows> = [];
     for (const boundary of rowsByBoundary.values()) {
       const freshnessNow = this.clock();
       if (freshnessNow.getTime() - boundary.syncTime.getTime() > SYNC_BOUNDARY_CAPTURE_GRACE_MS) {
         summary.stale += 1;
         continue;
       }
-      rowsToCreate.push(...boundary.rows);
+      if (boundary.readinessRows) rowsToCreate.push(...boundary.readinessRows);
+      membershipRowsToCreate.push(...boundary.membershipRows);
+    }
+
+    if (membershipRowsToCreate.length > 0) {
+      summary.membershipRowsAttempted = membershipRowsToCreate.length;
+      if (memberSnapshotModel?.createMany) {
+        try {
+          const result = await memberSnapshotModel.createMany({
+            data: membershipRowsToCreate,
+            skipDuplicates: true,
+          });
+          summary.membershipRowsCaptured = Number(result?.count ?? 0);
+          const captureLog = summary.membershipRowsCaptured > 0 ? dozzleLog.info : dozzleLog.debug;
+          captureLog(
+            `[sync-clan-goals] event=membership_capture outcome=success attempted=${summary.membershipRowsAttempted} captured=${summary.membershipRowsCaptured} stale=${summary.stale}`,
+          );
+        } catch (error) {
+          summary.membershipCaptureFailures += 1;
+          dozzleLog.error(
+            `[sync-clan-goals] event=membership_capture outcome=failure attempted=${summary.membershipRowsAttempted} guild_sync_boundaries=${rowsByBoundary.size} error=${formatError(error)}`,
+          );
+        }
+      } else {
+        dozzleLog.debug(
+          `[sync-clan-goals] event=membership_capture outcome=skip reason=model_unavailable attempted=${summary.membershipRowsAttempted}`,
+        );
+      }
     }
 
     if (rowsToCreate.length > 0) {

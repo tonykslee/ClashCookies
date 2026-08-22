@@ -156,6 +156,7 @@ Each domain concept must have exactly one authoritative owner.
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner state | CwlRotationPlan, CwlRotationPlanDay, CwlRotationPlanMember |
 | Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
+| Immutable scheduled-sync FWA physical-membership facts | SyncClanMemberSnapshot |
 | Player-to-Discord links | PlayerLink |
 | Guild-scoped roster default columns | RosterGuildConfig |
 | Live war state | CurrentWar |
@@ -195,7 +196,7 @@ Each domain concept must have exactly one authoritative owner.
 
 `AllianceClanMembershipInterval` is the sole owner of historical observed alliance clan-membership intervals intended for camping analytics and future read-only reporting. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals. No manual/frozen CWL alliance baseline owner remains.
 
-The interval table is intentionally excluded from `MirrorSyncService`'s full-overwrite runtime allowlist. It is append-oriented production history, so mirroring it through a delete-and-reinsert sync would erase or rewrite staging history and make the mirror an additional state owner. Mirror mode therefore performs no new membership-history polling or writes.
+`SyncClanMemberSnapshot` is the sole owner of immutable scheduled-sync FWA physical-membership facts. It records normalized roster presence at a specific scheduled boundary and intentionally does not store weight, composition, filler, or presentation fields. These are different concepts, not competing owners: the interval table represents continuously observed alliance/CWL membership over an observation interval, while the sync snapshot represents the exact FWA roster facts available at one scheduled boundary. The active runtime writes both owners; `MirrorSyncService` only copies their persisted rows to staging and performs no new membership polling or writes.
 
 Rules:
 
@@ -276,8 +277,9 @@ Rules:
 
 - `WarEvent` is the war-event dedupe guard.
 - `SyncClanReadinessSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan ACTUAL readiness snapshot used by `SYNC_ZERO_DEVIATION`. It owns exact boundary roster/readiness facts, including explicitly designated filler membership captured from the ACTUAL roster. `fillerCaptureComplete=false` means filler history is unavailable or unknown (including legacy rows); `true` with an empty tag array means exact zero designated fillers. Retrospective/history consumers must use captured `fillerPlayerTags`, not today's mutable `FillerAccount` registry. It stores audit facts only; it does not own delivery state.
+- `SyncClanMemberSnapshot` is the immutable, per-guild/per-scheduled-sync/per-clan/player ACTUAL physical-membership fact. It is intentionally separate from `AllianceClanMembershipInterval`, which remains authoritative for continuously observed alliance/CWL membership intervals. A player can validly have facts in multiple source clan contexts at one boundary; consumers must handle that ambiguity rather than collapsing the source facts.
 - `SyncRetrospectiveService` is a DB-first, read-only consumer of `SyncCycle`, `ClanWarHistory`, `ClanWarParticipation`, `WarLookup`, persisted compliance, and mapped readiness snapshots. It preserves unknown coverage rather than converting incomplete evidence to zero and must not infer filler history from mutable registries or membership intervals.
-- `FillerAccount` remains the mutable guild-scoped filler-designation registry. `AllianceClanMembershipInterval` remains observation-history ownership and is not the owner of exact filler-at-sync facts; membership intervals must not be used to infer them.
+- `FillerAccount` remains the mutable guild-scoped filler-designation registry. `SyncClanReadinessSnapshot` remains the owner of exact filler-at-sync facts; neither membership-history table stores or infers filler status.
 - `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals and automatic sync retrospectives. It is distinct from `WarEvent` and never fabricates a war identity. For alliance-scoped event types, including `sync_retrospective:auto_post`, `clanTag=""` is reserved; the unique identity is `guildId + syncTime + clanTag + eventType`. These events own delivery claims, leases, terminal status, and retry state only. They do not own sync identity, participation, war history, readiness, filler facts, or retrospective metrics.
 - `ClanPointsSync` is the participating-clan cohort for automatic sync-retrospective completion. `ClanWarHistory` is the canonical ended-war proof, `SyncCycle` owns sync-number/sync-time identity, and `BotSetting` through `BotLogChannelService` owns routing plus the durable no-backfill enable boundary.
 - `ClanPostedMessage` tracks posted notify/mail messages.
