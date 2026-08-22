@@ -182,6 +182,7 @@ describe("/clan-health command", () => {
         currentClanMemberCount: 50,
         unassignedPresentCount: 3,
         pendingTransferCount: 1,
+        currentRosterCoverage: "CURRENT" as const,
         currentRosterObservedAt: new Date("2026-03-09T11:48:00.000Z"),
         members: [],
         ...overrides.homeRoster,
@@ -364,6 +365,32 @@ describe("/clan-health command", () => {
       expect.objectContaining({ label: "View Transfers", custom_id: "clan-health:transfers:AAA111" }),
       expect.objectContaining({ label: "View Trends", custom_id: "clan-health:trends:AAA111:30" }),
     ]);
+  });
+
+  it("does not show numeric current unassigned counts for stale Home coverage", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeSnapshot({
+        homeRoster: {
+          currentRosterCoverage: "STALE",
+          currentRosterObservedAt: new Date("2026-03-09T10:00:00.000Z"),
+          presentCount: 0,
+          awayCount: 0,
+          unknownCount: 50,
+          currentClanMemberCount: null,
+          unassignedPresentCount: null,
+        },
+      }),
+    );
+
+    const interaction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const homeField = payload.embeds[0].toJSON().fields.find((field: any) => field.name === "🏠 Home Roster");
+    expect(homeField.value).toContain("Present/Away: **unavailable** • Unknown: **50**");
+    expect(homeField.value).toContain("Current unassigned: **unavailable**");
+    expect(homeField.value).toContain("Roster coverage stale");
+    expect(homeField.value).not.toContain("Current unassigned: **3**");
   });
 
   it("renders the resolved sync range for tracked sync-mode history", async () => {

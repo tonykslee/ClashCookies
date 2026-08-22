@@ -98,14 +98,18 @@ function buildTrackedHomeRosterLines(snapshot: ClanHealthTrackedSnapshot): strin
     : "unavailable";
   return [
     `Reserved: **${home.homeMemberCount}/50** • Open Home spots: **${home.openHomeSpots}**`,
-    home.currentRosterObservedAt
+    home.currentRosterCoverage === "CURRENT"
       ? `Present: **${home.presentCount}** • Away: **${home.awayCount}**`
       : `Present/Away: **unavailable** • Unknown: **${home.unknownCount}**`,
-    `Current unassigned: **${home.unassignedPresentCount}**`,
+    home.currentRosterCoverage === "CURRENT"
+      ? `Current unassigned: **${home.unassignedPresentCount}**`
+      : "Current unassigned: **unavailable**",
     `Possible transfers: **${home.pendingTransferCount}**`,
-    home.currentRosterObservedAt
+    home.currentRosterCoverage === "CURRENT"
       ? `Roster observed: ${observed}`
-      : "Current roster coverage: **unavailable**",
+      : home.currentRosterCoverage === "STALE"
+        ? `Roster coverage stale • Last successful observation: ${observed}`
+        : "Current roster coverage: **unavailable**",
   ];
 }
 

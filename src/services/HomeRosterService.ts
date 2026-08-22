@@ -11,12 +11,18 @@ import {
 } from "./fwa-feeds/FwaFeedSyncStateService";
 import {
   isAuthoritativeLivePlayerCurrentSource,
+  PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
   playerCurrentService,
   type PlayerCurrentLike,
   type PlayerCurrentService,
 } from "./PlayerCurrentService";
 
 export type HomeRosterPresence = "PRESENT" | "AWAY" | "UNKNOWN";
+export type HomeRosterCoverage = "CURRENT" | "STALE" | "UNAVAILABLE";
+
+export const HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES = 15;
+export const HOME_ROSTER_COVERAGE_CADENCE_MULTIPLIER = 3;
+const HOME_ROSTER_COVERAGE_SCHEDULER_JITTER_MS = 30_000;
 
 export type HomeRosterMember = {
   playerTag: string;
@@ -46,9 +52,10 @@ export type ClanHomeRoster = {
   awayCount: number;
   unknownCount: number;
   openHomeSpots: number;
-  currentClanMemberCount: number;
-  unassignedPresentCount: number;
+  currentClanMemberCount: number | null;
+  unassignedPresentCount: number | null;
   pendingTransferCount: number;
+  currentRosterCoverage: HomeRosterCoverage;
   currentRosterObservedAt: Date | null;
   members: HomeRosterMember[];
 };
@@ -72,23 +79,28 @@ type HomeRosterDependencies = {
   homeMembershipService?: Pick<ClanHomeMembershipService, "getPendingTransferCandidates">;
 };
 
+/** Purpose: normalize a player or clan tag for deterministic persisted lookups. */
 function normalizeTag(value: unknown): string {
   return normalizeClashTagWithHash(String(value ?? ""));
 }
 
+/** Purpose: normalize optional display text while collapsing whitespace and empty values. */
 function normalizeText(value: unknown): string | null {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text || null;
 }
 
+/** Purpose: accept only finite Date instances from persisted or test input. */
 function isValidDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
+/** Purpose: convert an invalid persisted date into an explicit null. */
 function validDateOrNull(value: unknown): Date | null {
   return isValidDate(value) ? value : null;
 }
 
+/** Purpose: normalize one active Home period row while preserving its immutable qualification facts. */
 function normalizeActiveHome(row: any): ActiveHomeMembership | null {
   const guildId = normalizeText(row?.guildId);
   const playerTag = normalizeTag(row?.playerTag);
@@ -108,6 +120,7 @@ function normalizeActiveHome(row: any): ActiveHomeMembership | null {
   };
 }
 
+/** Purpose: normalize one pending transfer candidate before matching it to an active Home period. */
 function normalizePendingCandidate(row: PendingHomeTransferCandidate): PendingHomeTransferCandidate | null {
   const playerTag = normalizeTag(row.playerTag);
   const fromClanTag = normalizeTag(row.fromClanTag);
@@ -121,6 +134,7 @@ function normalizePendingCandidate(row: PendingHomeTransferCandidate): PendingHo
   };
 }
 
+/** Purpose: choose the deterministic display-name fallback order for one Home member. */
 function chooseName(input: {
   playerTag: string;
   currentMemberName: string | null;
@@ -128,6 +142,69 @@ function chooseName(input: {
   catalogName: string | null;
 }): string {
   return input.currentMemberName || normalizeText(input.playerCurrent?.playerName) || input.catalogName || input.playerTag;
+}
+
+/** Purpose: derive the bounded Home-roster coverage age from the configured feed cadence. */
+export function getHomeRosterCoverageMaxAgeMs(cadenceMinutes: number): number {
+  const normalizedCadenceMinutes = Math.max(
+    HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES,
+    Number.isFinite(cadenceMinutes) ? cadenceMinutes : HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES,
+  );
+  return normalizedCadenceMinutes * HOME_ROSTER_COVERAGE_CADENCE_MULTIPLIER * 60_000 + HOME_ROSTER_COVERAGE_SCHEDULER_JITTER_MS;
+}
+
+/** Purpose: classify persisted CLAN_MEMBERS coverage deterministically as current, stale, or unavailable. */
+export function getHomeRosterCoverage(input: {
+  lastSuccessAt: Date | null | undefined;
+  now: Date;
+  cadenceMinutes?: number;
+}): { coverage: HomeRosterCoverage; observedAt: Date | null } {
+  const observedAt = validDateOrNull(input.lastSuccessAt);
+  if (!observedAt) return { coverage: "UNAVAILABLE", observedAt: null };
+  const now = isValidDate(input.now) ? input.now : new Date();
+  const ageMs = now.getTime() - observedAt.getTime();
+  return {
+    coverage: ageMs <= getHomeRosterCoverageMaxAgeMs(input.cadenceMinutes ?? HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES)
+      ? "CURRENT"
+      : "STALE",
+    observedAt,
+  };
+}
+
+/** Purpose: read the configured CLAN_MEMBERS cadence using the scheduler's safe minimum. */
+function getConfiguredClanMembersCadenceMinutes(): number {
+  const configured = Number(process.env.FWA_CLAN_MEMBERS_SYNC_MINUTES ?? HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES, configured)
+    : HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES;
+}
+
+/** Purpose: select the newest real PlayerCurrent timestamp that can describe clan location. */
+function getPlayerCurrentLocationObservedAt(playerCurrent: PlayerCurrentLike): Date | null {
+  return [validDateOrNull(playerCurrent.lastFetchedAt), validDateOrNull(playerCurrent.lastSeenAt)]
+    .filter((value): value is Date => value !== null)
+    .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+}
+
+/** Purpose: allow only fresh, authoritative, non-contradictory Away destinations into the read model. */
+function getAuthoritativeAwayLocation(input: {
+  playerCurrent: PlayerCurrentLike | undefined;
+  homeClanTag: string;
+  currentRosterObservedAt: Date;
+  now: Date;
+}): { clanTag: string; clanName: string | null; observedAt: Date } | null {
+  const playerCurrent = input.playerCurrent;
+  if (!playerCurrent || !isAuthoritativeLivePlayerCurrentSource(playerCurrent.lastSource)) return null;
+  const observedAt = getPlayerCurrentLocationObservedAt(playerCurrent);
+  const clanTag = normalizeTag(playerCurrent.currentClanTag);
+  if (!observedAt || !clanTag || clanTag === input.homeClanTag) return null;
+  if (observedAt.getTime() < input.currentRosterObservedAt.getTime()) return null;
+  if (input.now.getTime() - observedAt.getTime() > PLAYER_CURRENT_SIGNUP_MAX_AGE_MS) return null;
+  return {
+    clanTag,
+    clanName: normalizeText(playerCurrent.currentClanName),
+    observedAt,
+  };
 }
 
 /** Purpose: read the authoritative persisted Home roster facts without refreshing any source. */
@@ -144,6 +221,7 @@ export class HomeRosterService {
     this.homeMembershipService = dependencies.homeMembershipService ?? defaultHomeMembershipService;
   }
 
+  /** Purpose: load one guild-scoped Home roster from persisted membership, feed, player, and candidate facts. */
   async getClanHomeRoster(input: { guildId: string; clanTag: string; now?: Date }): Promise<ClanHomeRoster> {
     const guildId = String(input.guildId ?? "").trim();
     const clanTag = normalizeTag(input.clanTag);
@@ -207,6 +285,7 @@ export class HomeRosterService {
     }
     const currentTags = new Set(currentMemberByTag.keys());
     const homeTags = new Set(playerTags);
+    const activeHomeByPlayer = new Map(activeHomes.map((home) => [home.playerTag, home]));
     const catalogNameByTag = new Map<string, string>();
     for (const row of catalogRows) {
       const tag = normalizeTag(row?.playerTag);
@@ -216,7 +295,13 @@ export class HomeRosterService {
     const pendingByPlayer = new Map<string, PendingHomeTransferCandidate>();
     for (const candidate of pendingCandidates) {
       const normalized = normalizePendingCandidate(candidate);
-      if (normalized && !pendingByPlayer.has(normalized.playerTag)) {
+      const activeHome = normalized ? activeHomeByPlayer.get(normalized.playerTag) : undefined;
+      if (
+        normalized &&
+        activeHome?.id === normalized.homeMembershipPeriodId &&
+        normalized.fromClanTag === clanTag &&
+        !pendingByPlayer.has(normalized.playerTag)
+      ) {
         pendingByPlayer.set(normalized.playerTag, normalized);
       }
     }
@@ -237,18 +322,29 @@ export class HomeRosterService {
       if (name) destinationNameByTag.set(tag, name);
     }
 
-    const currentRosterObservedAt = validDateOrNull(feedState?.lastSuccessAt);
-    const hasCoverage = currentRosterObservedAt !== null;
+    const coverageResult = getHomeRosterCoverage({
+      lastSuccessAt: feedState?.lastSuccessAt,
+      now,
+      cadenceMinutes: getConfiguredClanMembersCadenceMinutes(),
+    });
+    const currentRosterCoverage = coverageResult.coverage;
+    const currentRosterObservedAt = coverageResult.observedAt;
+    const hasCurrentCoverage = currentRosterCoverage === "CURRENT" && currentRosterObservedAt !== null;
     const members = activeHomes.map((home) => {
       const current = playerCurrentByTag.get(home.playerTag);
-      const presence: HomeRosterPresence = !hasCoverage
+      const presence: HomeRosterPresence = !hasCurrentCoverage
         ? "UNKNOWN"
         : currentTags.has(home.playerTag)
           ? "PRESENT"
           : "AWAY";
       const pending = pendingByPlayer.get(home.playerTag) ?? null;
-      const authoritativeLocation = current && isAuthoritativeLivePlayerCurrentSource(current.lastSource)
-        ? current
+      const authoritativeLocation = presence === "AWAY" && currentRosterObservedAt
+        ? getAuthoritativeAwayLocation({
+            playerCurrent: current,
+            homeClanTag: clanTag,
+            currentRosterObservedAt,
+            now,
+          })
         : null;
       return {
         playerTag: home.playerTag,
@@ -262,11 +358,9 @@ export class HomeRosterService {
         startedAtSyncTime: home.startedAtSyncTime,
         qualifiedAtSyncTime: home.qualifiedAtSyncTime,
         presence,
-        currentClanTag: presence === "AWAY" ? normalizeTag(authoritativeLocation?.currentClanTag) || null : null,
-        currentClanName: presence === "AWAY" ? normalizeText(authoritativeLocation?.currentClanName) : null,
-        currentLocationObservedAt: presence === "AWAY"
-          ? validDateOrNull(authoritativeLocation?.lastFetchedAt) ?? validDateOrNull(authoritativeLocation?.lastSeenAt) ?? validDateOrNull(authoritativeLocation?.updatedAt)
-          : null,
+        currentClanTag: authoritativeLocation?.clanTag ?? null,
+        currentClanName: authoritativeLocation?.clanName ?? null,
+        currentLocationObservedAt: authoritativeLocation?.observedAt ?? null,
         pendingTransfer: pending
           ? {
               id: pending.id,
@@ -291,9 +385,10 @@ export class HomeRosterService {
       awayCount,
       unknownCount,
       openHomeSpots: Math.max(0, 50 - activeHomes.length),
-      currentClanMemberCount: currentTags.size,
-      unassignedPresentCount,
+      currentClanMemberCount: hasCurrentCoverage ? currentTags.size : null,
+      unassignedPresentCount: hasCurrentCoverage ? unassignedPresentCount : null,
       pendingTransferCount: pendingByPlayer.size,
+      currentRosterCoverage,
       currentRosterObservedAt,
       members,
     };
@@ -303,6 +398,7 @@ export class HomeRosterService {
     return result;
   }
 
+  /** Purpose: return an explicit empty/unavailable read model for invalid scope input. */
   private emptyRoster(guildId: string, clanTag: string): ClanHomeRoster {
     return {
       guildId,
@@ -313,9 +409,10 @@ export class HomeRosterService {
       awayCount: 0,
       unknownCount: 0,
       openHomeSpots: 50,
-      currentClanMemberCount: 0,
-      unassignedPresentCount: 0,
+      currentClanMemberCount: null,
+      unassignedPresentCount: null,
       pendingTransferCount: 0,
+      currentRosterCoverage: "UNAVAILABLE",
       currentRosterObservedAt: null,
       members: [],
     };

@@ -307,10 +307,12 @@ export function buildClanHealthTrendsNavigationRow(
   );
 }
 
+/** Purpose: render a persisted observation timestamp in Discord's relative-time format. */
 function formatHomeRosterObservedAt(value: Date | null): string {
   return value ? `<t:${Math.floor(value.getTime() / 1000)}:R>` : "unavailable";
 }
 
+/** Purpose: order Home members by actionable Away state, uncertainty, presence, and stable identity. */
 function homeRosterMemberSort(left: HomeRosterMember, right: HomeRosterMember): number {
   const rank = { AWAY: 0, UNKNOWN: 1, PRESENT: 2 };
   return rank[left.presence] - rank[right.presence] ||
@@ -318,6 +320,7 @@ function homeRosterMemberSort(left: HomeRosterMember, right: HomeRosterMember): 
     left.playerTag.localeCompare(right.playerTag);
 }
 
+/** Purpose: render one read-only Home member line without exposing transfer decision controls. */
 function buildHomeRosterMemberLine(member: HomeRosterMember): string {
   const icon = member.presence === "AWAY" ? "⚠️" : member.presence === "PRESENT" ? "✅" : "❔";
   let presence = member.presence === "PRESENT"
@@ -333,22 +336,28 @@ function buildHomeRosterMemberLine(member: HomeRosterMember): string {
   return `${icon} ${member.playerName} \`${member.playerTag}\` — ${presence}`;
 }
 
+/** Purpose: render the compact Home roster totals and explicit coverage state. */
 function buildHomeRosterSummaryLines(roster: ClanHomeRoster, clanName: string): string[] {
   const lines = [
     `🏠 ${clanName} Home Roster`,
     `Reserved: **${roster.homeMemberCount}/50** • Open Home spots: **${roster.openHomeSpots}**`,
-    roster.currentRosterObservedAt
+    roster.currentRosterCoverage === "CURRENT"
       ? `Present: **${roster.presentCount}** • Away: **${roster.awayCount}**`
       : `Present/Away: **unavailable** • Unknown: **${roster.unknownCount}**`,
-    `Current unassigned: **${roster.unassignedPresentCount}**`,
+    roster.currentRosterCoverage === "CURRENT"
+      ? `Current unassigned: **${roster.unassignedPresentCount}**`
+      : "Current unassigned: **unavailable**",
     `Possible transfers: **${roster.pendingTransferCount}**`,
-    roster.currentRosterObservedAt
+    roster.currentRosterCoverage === "CURRENT"
       ? `Roster observed: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`
-      : "Current roster coverage: **unavailable**",
+      : roster.currentRosterCoverage === "STALE"
+        ? `Roster coverage stale • Last successful observation: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`
+        : "Current roster coverage: **unavailable**",
   ];
   return lines;
 }
 
+/** Purpose: render the full read-only Home roster with Discord-safe line boundaries. */
 function buildHomeRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
   return [
     ...buildHomeRosterSummaryLines(roster, clanName),
@@ -357,8 +366,15 @@ function buildHomeRosterLines(roster: ClanHomeRoster, clanName: string): string[
   ];
 }
 
+/** Purpose: render only Away Home members while refusing to infer Away from stale or unavailable coverage. */
 function buildAwayRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
-  if (!roster.currentRosterObservedAt) {
+  if (roster.currentRosterCoverage === "STALE") {
+    return [
+      `Home roster coverage for ${clanName} is stale; Away members cannot be determined.`,
+      `Last successful roster observation: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`,
+    ];
+  }
+  if (roster.currentRosterCoverage === "UNAVAILABLE") {
     return [`Home roster coverage for ${clanName} is unavailable; Away members cannot be determined yet.`];
   }
   const awayMembers = roster.members.filter((member) => member.presence === "AWAY").sort(homeRosterMemberSort);
@@ -373,6 +389,7 @@ function buildAwayRosterLines(roster: ClanHomeRoster, clanName: string): string[
   ];
 }
 
+/** Purpose: render pending candidates read-only with their persisted qualification timestamps. */
 function buildTransferRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
   const transfers = roster.members
     .filter((member) => member.pendingTransfer)

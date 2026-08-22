@@ -138,6 +138,7 @@ describe("Clan Health navigation", () => {
       currentClanMemberCount: 0,
       unassignedPresentCount: 0,
       pendingTransferCount: 0,
+      currentRosterCoverage: "CURRENT" as const,
       currentRosterObservedAt: new Date("2026-03-01T00:00:00.000Z"),
       members: [],
     });
@@ -300,6 +301,7 @@ describe("Clan Health navigation", () => {
       currentClanMemberCount: 50,
       unassignedPresentCount: 0,
       pendingTransferCount: 0,
+      currentRosterCoverage: "CURRENT" as const,
       currentRosterObservedAt: new Date("2026-03-01T00:00:00.000Z"),
       members: Array.from({ length: 50 }, (_, index) => ({
         playerTag: `#P${index.toString(36).toUpperCase().padStart(3, "0")}`,
@@ -325,6 +327,31 @@ describe("Clan Health navigation", () => {
     expect(messages.every((message) => message.length <= 2000)).toBe(true);
     expect(messages.join("\n")).not.toContain("Confirm Transfer");
     expect(messages.join("\n")).not.toContain("Keep Home");
+  });
+
+  it("does not claim that nobody is away when Home coverage is stale", async () => {
+    homeRosterMock.getClanHomeRoster.mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      homeMemberCount: 50,
+      presentCount: 0,
+      awayCount: 0,
+      unknownCount: 50,
+      openHomeSpots: 0,
+      currentClanMemberCount: null,
+      unassignedPresentCount: null,
+      pendingTransferCount: 0,
+      currentRosterCoverage: "STALE" as const,
+      currentRosterObservedAt: new Date("2026-02-28T00:00:00.000Z"),
+      members: [],
+    });
+    const interaction = makeButton("clan-health:away:AAA111");
+    await handleClanHealthNavigationButtonInteraction(interaction as any);
+
+    const content = String(interaction.editReply.mock.calls[0]?.[0]);
+    expect(content).toContain("coverage for Alpha is stale");
+    expect(content).not.toContain("No Home members are currently known to be away");
   });
 
   it("keeps the originating clan scope for inactive, unlinked, compo, and violations", async () => {

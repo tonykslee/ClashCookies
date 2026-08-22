@@ -111,6 +111,7 @@ describe("ClanHealthSnapshotService", () => {
       currentClanMemberCount: 0,
       unassignedPresentCount: 0,
       pendingTransferCount: 0,
+      currentRosterCoverage: "UNAVAILABLE" as const,
       currentRosterObservedAt: null,
       members: [],
     });
