@@ -169,7 +169,7 @@ function readDeliveryFailureCode(error: unknown): string | null {
 }
 
 /** Purpose: classify whether a Discord delivery failure is transient enough to retry later. */
-function classifyDiscordDeliveryRetryability(error: unknown): {
+export function classifyDiscordDeliveryRetryability(error: unknown): {
   retryable: boolean;
   code: string | null;
   status: number | null;

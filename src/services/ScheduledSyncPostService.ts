@@ -116,6 +116,10 @@ async function supersedeOtherActiveSchedules(
           status: SCHEDULED_SYNC_POST_STATUS.PUBLISHED as any,
           syncTime: { gt: input.now },
         },
+        {
+          status: SCHEDULED_SYNC_POST_STATUS.FAILED as any,
+          syncTime: { gt: input.now },
+        },
       ],
     },
     data: {

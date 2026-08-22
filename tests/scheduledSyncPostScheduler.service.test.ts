@@ -58,6 +58,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
   };
   let autoPostService: { runCycle: ReturnType<typeof vi.fn> };
   let homeService: { reconcileLatestExactBoundaries: ReturnType<typeof vi.fn> };
+  let homeAwayService: { runCycle: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -71,6 +72,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
     };
     autoPostService = { runCycle: vi.fn().mockResolvedValue(undefined) };
     homeService = { reconcileLatestExactBoundaries: vi.fn().mockResolvedValue(undefined) };
+    homeAwayService = { runCycle: vi.fn().mockResolvedValue(undefined) };
   });
 
   afterEach(() => {
@@ -87,6 +89,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       syncService as any,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
 
     const result = scheduler.start();
@@ -116,6 +119,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       syncService as any,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
     vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
       order.push("expired");
@@ -146,6 +150,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       syncService as any,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
     vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockImplementation(async () => {
       order.push("expired");
@@ -158,6 +163,28 @@ describe("ScheduledSyncPostSchedulerService", () => {
     expect(autoPostService.runCycle).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["sync", "home", "retrospective", "expired"]);
     expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining("sync_retrospective_auto_post_cycle_failed"));
+  });
+
+  it("runs the Home Away alert sibling and isolates its failure", async () => {
+    homeAwayService.runCycle.mockRejectedValueOnce(new Error("alert unavailable"));
+    const scheduler = new ScheduledSyncPostSchedulerService(
+      {} as Client,
+      15_000,
+      statusService as any,
+      undefined,
+      autoPostService as any,
+      homeService as any,
+      homeAwayService as any,
+    );
+    vi.spyOn(scheduledSyncPostService, "findExpiredScheduledSyncPosts").mockResolvedValue([]);
+    vi.spyOn(scheduledSyncPostService, "findDueScheduledSyncPosts").mockResolvedValue([]);
+
+    await expect(scheduler.runCycle(new Date("2026-06-15T23:00:00.000Z").getTime())).resolves.toMatchObject({
+      scanned: 0,
+    });
+    expect(homeAwayService.runCycle).toHaveBeenCalledWith(expect.any(Date));
+    expect(autoPostService.runCycle).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.error).toHaveBeenCalledWith(expect.stringContaining("home_away_sync_alert_cycle_failed"));
   });
 
   it("claims and publishes one due schedule", async () => {
@@ -178,6 +205,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       undefined,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
@@ -261,6 +289,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       undefined,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
@@ -335,6 +364,7 @@ describe("ScheduledSyncPostSchedulerService", () => {
       undefined,
       autoPostService as any,
       homeService as any,
+      homeAwayService as any,
     );
 
     const dueRow = {
