@@ -38,12 +38,19 @@ export type MembershipBoundaryEvidence = {
 export type MembershipStreakResult = {
   playerTag: string;
   latestBoundaryTime: Date | null;
+  latestFwaEvidenceStatus: MembershipFwaEvidence["status"];
   latestFwaClanTag: string | null;
   clanStreakSyncs: number;
   clanStreakIsLowerBound: boolean;
   allianceStreakSyncs: number;
   allianceStreakIsLowerBound: boolean;
   latestEvidenceAvailable: boolean;
+};
+
+export type MembershipStreakBatchResult = {
+  streaks: MembershipStreakResult[];
+  boundaryTimes: Date[];
+  boundaryHistoryTruncated: boolean;
 };
 
 export type MembershipBoundaryEvidenceByPlayer = Record<string, MembershipBoundaryEvidence[]>;
@@ -101,6 +108,7 @@ type LoadedEvidence = {
   boundaries: Date[];
   evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
   historyBoundReached: boolean;
+  boundaryHistoryTruncated: boolean;
 };
 
 /** Purpose: normalize a guild identifier before applying guild-scoped reads. */
@@ -389,6 +397,7 @@ function computeStreaks(
   return {
     playerTag,
     latestBoundaryTime,
+    latestFwaEvidenceStatus: latest?.fwa.status ?? "UNKNOWN",
     latestFwaClanTag: latest?.fwa.status === "RESOLVED" ? latest.fwa.clanTag : null,
     clanStreakSyncs,
     clanStreakIsLowerBound,
@@ -402,8 +411,8 @@ function computeStreaks(
 export class MembershipStreakService {
   constructor(private readonly db: MembershipStreakDb = defaultDb) {}
 
-  /** Purpose: return deterministic clan and alliance streaks for a normalized player batch. */
-  async getMembershipStreaksForPlayers(input: MembershipStreakInput): Promise<MembershipStreakResult[]> {
+  /** Purpose: return streaks and the same canonical boundary window through one bulk evidence load. */
+  async getMembershipStreakBatchForPlayers(input: MembershipStreakInput): Promise<MembershipStreakBatchResult> {
     const loaded = await this.loadEvidence(input);
     const evidenceMaps = new Map(
       loaded.playerTags.map((playerTag) => [
@@ -420,7 +429,16 @@ export class MembershipStreakService {
     console.debug(
       `[membership-streak] event=bulk_resolution guild_id=${normalizeGuildId(input.guildId) || "unknown"} players=${loaded.playerTags.length} boundaries=${loaded.boundaries.length} lower_bound=${loaded.historyBoundReached ? 1 : 0}`,
     );
-    return results;
+    return {
+      streaks: results,
+      boundaryTimes: [...loaded.boundaries],
+      boundaryHistoryTruncated: loaded.boundaryHistoryTruncated,
+    };
+  }
+
+  /** Purpose: preserve the existing streak-only API while delegating to the shared batch primitive. */
+  async getMembershipStreaksForPlayers(input: MembershipStreakInput): Promise<MembershipStreakResult[]> {
+    return (await this.getMembershipStreakBatchForPlayers(input)).streaks;
   }
 
   /** Purpose: expose the recent boundary evidence primitive for later Home Clan establishment logic. */
@@ -443,7 +461,13 @@ export class MembershipStreakService {
     const playerTags = normalizePlayerTags(input.playerTags);
     const maxBoundaries = normalizeMaxBoundaries(input.maxBoundaries);
     if (!guildId || playerTags.length === 0) {
-      return { playerTags, boundaries: [], evidenceByPlayer: {}, historyBoundReached: false };
+      return {
+        playerTags,
+        boundaries: [],
+        evidenceByPlayer: {},
+        historyBoundReached: false,
+        boundaryHistoryTruncated: false,
+      };
     }
 
     const boundaryTake = maxBoundaries + 1;
@@ -482,6 +506,7 @@ export class MembershipStreakService {
       readinessBoundaryTimes.length > maxBoundaries ||
       memberBoundaryTimes.length > maxBoundaries ||
       sortedBoundaryTimes.length > maxBoundaries;
+    const boundaryHistoryTruncated = historyBoundReached;
     const boundaries = sortedBoundaryTimes.slice(0, maxBoundaries);
     const boundaryTimeSet = new Set(boundaries.map(dateKey));
     const exactCaptureBoundarySet = new Set(
@@ -640,6 +665,7 @@ export class MembershipStreakService {
       boundaries,
       evidenceByPlayer,
       historyBoundReached: historyBoundReached || intervalHistoryBoundReached,
+      boundaryHistoryTruncated,
     };
   }
 }

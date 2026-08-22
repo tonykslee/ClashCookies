@@ -28,6 +28,10 @@ import { listFillerAccountTagsForGuild } from "../services/FillerAccountService"
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
 import { WarPlanViolationHistoryService } from "../services/WarPlanViolationHistoryService";
 import {
+  homeMembershipAnalyticsService,
+  type HomeMembershipAnalyticsResult,
+} from "../services/HomeMembershipAnalyticsService";
+import {
   createPlayerLink,
   createPlayerLinkFromEmbed,
   deletePlayerLink,
@@ -77,6 +81,7 @@ import {
   resolveLinkListStatusIcons,
   resolveLinkListTownHall,
   formatLinkListViolationCountLabel,
+  formatLinkListTenureLabel,
   sanitizeInlineCodeCell,
   sanitizeTableText,
   sortLinkListRows,
@@ -104,6 +109,9 @@ type LinkListResolvedMemberRow = {
   playerSort: string;
   discordSort: string;
   violationsValue: number | null;
+  clanTenureValue: number | null;
+  clanStreakValue: number | null;
+  allianceStreakValue: number | null;
   row: LinkListRowViewModel;
 };
 
@@ -704,6 +712,7 @@ async function buildLinkListView(input: {
   const activeColumns = normalizeLinkListColumns(input.columns, sortMode);
   const needsViolationCounts =
     sortMode === "violations" || activeColumns.includes("violations");
+  const needsHomeAnalytics = sortMode === "tenure" || activeColumns.includes("tenure");
 
   if (!input.interaction.guildId) {
     return { ok: false, message: "This command can only be used in a server." };
@@ -762,6 +771,12 @@ async function buildLinkListView(input: {
     .map((row) => normalizePlayerTag(row.playerTag))
     .filter((tag): tag is string => Boolean(tag));
   const inactivityNeeded = sortMode === "inactivity" || activeColumns.includes("inactivity");
+  const homeAnalyticsPromise = needsHomeAnalytics
+    ? homeMembershipAnalyticsService.getAnalyticsForPlayers({
+        guildId: input.interaction.guildId,
+        playerTags: memberTags,
+      })
+    : Promise.resolve(null);
   const repBadgeTokensByTagPromise = listTrackedClanRepBadgesForPlayerTags(memberTags);
   const violationCountsPromise = needsViolationCounts
       ? warPlanViolationHistoryService
@@ -778,7 +793,7 @@ async function buildLinkListView(input: {
           return null;
         })
     : Promise.resolve(null);
-  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows, repBadgeTokensByTag, violationCountsResult] = await Promise.all([
+  const [catalogRows, playerCurrentRows, playerActivityRows, inactivityMetricRows, repBadgeTokensByTag, violationCountsResult, homeAnalytics] = await Promise.all([
     prisma.fwaPlayerCatalog.findMany({
       where: { playerTag: { in: memberTags } },
       select: { playerTag: true, latestTownHall: true },
@@ -805,6 +820,7 @@ async function buildLinkListView(input: {
       : Promise.resolve(new Map<string, InactiveWarMetricRow>()),
       repBadgeTokensByTagPromise,
       violationCountsPromise,
+      homeAnalyticsPromise,
     ]) as [
     LinkListTownHallCatalogRow[],
     LinkListTownHallRow[],
@@ -812,7 +828,9 @@ async function buildLinkListView(input: {
     Map<string, InactiveWarMetricRow>,
     Map<string, string[]>,
     Awaited<ReturnType<WarPlanViolationHistoryService["getClanPlayerViolationCounts"]>> | null,
+    HomeMembershipAnalyticsResult[] | null,
   ];
+  const homeAnalyticsByTag = new Map((homeAnalytics ?? []).map((result) => [result.playerTag, result]));
   let violationCountsAvailable = false;
   const violationCountByTag = new Map<string, number>();
   if (violationCountsResult) {
@@ -878,6 +896,7 @@ async function buildLinkListView(input: {
     const weightValue = weightByTag.get(playerTag) ?? null;
     const inactivityRow = inactivityByTag.get(playerTag) ?? null;
     const inactivityDays = inactivityDaysByTag.get(playerTag) ?? null;
+    const homeAnalyticsRow = homeAnalyticsByTag.get(playerTag) ?? null;
       const inactivityMissedWars = inactivityRow?.missedWars ?? null;
       const inactivityParticipationWars = inactivityRow?.participationWars ?? null;
       const violationsValue = violationCountsAvailable
@@ -920,6 +939,7 @@ async function buildLinkListView(input: {
       }),
     );
     const clanRoleLabel = sanitizeInlineCodeCell(formatLinkListClanRole(member.role));
+    const tenureLabel = sanitizeInlineCodeCell(formatLinkListTenureLabel(homeAnalyticsRow));
     const discordSort =
       sortMode === "player-tags"
         ? playerTag
@@ -940,6 +960,9 @@ async function buildLinkListView(input: {
         playerSort: sanitizeTableText(member.playerName) || "Unknown",
         discordSort: sanitizeTableText(discordSort),
         violationsValue,
+        clanTenureValue: homeAnalyticsRow?.clanTenureSyncs ?? null,
+        clanStreakValue: homeAnalyticsRow?.clanStreakSyncs ?? null,
+        allianceStreakValue: homeAnalyticsRow?.allianceStreakSyncs ?? null,
         row: {
           townHallLabel: formatLinkListTownHallLabel(
             townHallByTag.get(playerTag) ?? member.townHall ?? null,
@@ -955,6 +978,13 @@ async function buildLinkListView(input: {
           violationsLabel: sanitizeInlineCodeCell(
             formatLinkListViolationCountLabel(violationsValue),
           ),
+          tenureLabel,
+          clanTenureValue: homeAnalyticsRow?.clanTenureSyncs ?? null,
+          clanTenureIsLowerBound: homeAnalyticsRow?.clanTenureIsLowerBound ?? false,
+          clanStreakValue: homeAnalyticsRow?.clanStreakSyncs ?? null,
+          clanStreakIsLowerBound: homeAnalyticsRow?.clanStreakIsLowerBound ?? false,
+          allianceStreakValue: homeAnalyticsRow?.allianceStreakSyncs ?? null,
+          allianceStreakIsLowerBound: homeAnalyticsRow?.allianceStreakIsLowerBound ?? false,
           linkedStatusMarkerOverride: isLinked
             ? repBadgeTokensByTag.get(playerTag)?.[0] ?? null
             : null,
