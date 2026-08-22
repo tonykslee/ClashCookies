@@ -6,6 +6,7 @@ import {
   type SyncCycle,
   type SyncClanMemberSnapshot,
   type SyncClanReadinessSnapshot,
+  type ClanHomeMembershipPeriod,
   type AllianceClanMembershipInterval,
   type CwlEventClan,
   type CwlEventInstance,
@@ -54,6 +55,7 @@ export const MIRRORED_RUNTIME_TABLES = [
   "AllianceClanMembershipInterval",
   "SyncClanMemberSnapshot",
   "SyncClanReadinessSnapshot",
+  "ClanHomeMembershipPeriod",
   "ClanWarParticipation",
   "WarPlanComplianceEvaluation",
   "WarPlanViolation",
@@ -158,6 +160,9 @@ type MirrorSyncSourceClient = {
   syncClanReadinessSnapshot: {
     findMany: (args?: unknown) => Promise<SyncClanReadinessSnapshot[]>;
   };
+  clanHomeMembershipPeriod: {
+    findMany: (args?: unknown) => Promise<ClanHomeMembershipPeriod[]>;
+  };
   clanWarParticipation: {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
@@ -241,6 +246,10 @@ type MirrorSyncTargetClient = {
   syncClanReadinessSnapshot: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: SyncClanReadinessSnapshot[] }) => Promise<CreateManyResult>;
+  };
+  clanHomeMembershipPeriod: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: ClanHomeMembershipPeriod[] }) => Promise<CreateManyResult>;
   };
   clanWarParticipation: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -356,6 +365,7 @@ type MirrorSyncSourceRows = {
   AllianceClanMembershipInterval: AllianceClanMembershipInterval[];
   SyncClanMemberSnapshot: SyncClanMemberSnapshot[];
   SyncClanReadinessSnapshot: SyncClanReadinessSnapshot[];
+  ClanHomeMembershipPeriod: ClanHomeMembershipPeriod[];
   ClanWarParticipation: ClanWarParticipation[];
   WarPlanComplianceEvaluation: WarPlanComplianceEvaluation[];
   WarPlanViolation: WarPlanViolation[];
@@ -676,6 +686,9 @@ export class MirrorSyncService {
       SyncClanReadinessSnapshot: await sourceClient.syncClanReadinessSnapshot.findMany({
         orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }],
       }),
+      ClanHomeMembershipPeriod: await sourceClient.clanHomeMembershipPeriod.findMany({
+        orderBy: [{ guildId: "asc" }, { playerTag: "asc" }, { startedAtSyncTime: "asc" }],
+      }),
       ClanWarParticipation: await sourceClient.clanWarParticipation.findMany({
         orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
       }),
@@ -848,6 +861,15 @@ export class MirrorSyncService {
       const insertedRows = await this.insertBatches(
         rows as SyncClanReadinessSnapshot[],
         (batch) => tx.syncClanReadinessSnapshot.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "ClanHomeMembershipPeriod") {
+      const deletedRows = (await tx.clanHomeMembershipPeriod.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as ClanHomeMembershipPeriod[],
+        (batch) => tx.clanHomeMembershipPeriod.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }
@@ -1060,4 +1082,3 @@ export class MirrorSyncService {
     `);
   }
 }
-

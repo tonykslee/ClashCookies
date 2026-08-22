@@ -97,6 +97,21 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         updatedAt: new Date("2026-03-29T00:05:00.000Z"),
       },
     ],
+    ClanHomeMembershipPeriod: [
+      {
+        id: "home-1",
+        guildId: "g1",
+        playerTag: "#P1",
+        clanTag: "#AAA111",
+        startedAtSyncTime: new Date("2026-03-29T00:00:00.000Z"),
+        qualifiedAtSyncTime: new Date("2026-03-29T00:00:00.000Z"),
+        endedAtSyncTime: null,
+        establishmentSource: "AUTO_3_SYNC",
+        endReason: null,
+        createdAt: new Date("2026-03-29T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-29T00:05:00.000Z"),
+      },
+    ],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
     WarPlanComplianceEvaluation: [
       {
@@ -343,6 +358,9 @@ function buildSourceClient(
     syncClanReadinessSnapshot: {
       findMany: vi.fn(async () => cloneRows(store.SyncClanReadinessSnapshot)),
     },
+    clanHomeMembershipPeriod: {
+      findMany: vi.fn(async () => cloneRows(store.ClanHomeMembershipPeriod)),
+    },
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
@@ -469,6 +487,10 @@ function buildTargetClient(
       deleteMany: deleteMany("SyncClanReadinessSnapshot"),
       createMany: createMany("SyncClanReadinessSnapshot"),
     },
+    clanHomeMembershipPeriod: {
+      deleteMany: deleteMany("ClanHomeMembershipPeriod"),
+      createMany: createMany("ClanHomeMembershipPeriod"),
+    },
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
       createMany: createMany("ClanWarParticipation"),
@@ -525,6 +547,7 @@ describe("MirrorSyncService", () => {
   it("mirrors both historical membership owners as persisted production facts", () => {
     expect(MIRRORED_RUNTIME_TABLES).toContain("AllianceClanMembershipInterval");
     expect(MIRRORED_RUNTIME_TABLES).toContain("SyncClanMemberSnapshot");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("ClanHomeMembershipPeriod");
   });
 
   it("mirrors retrospective owners but not scheduled-post lifecycle state", () => {
@@ -636,6 +659,7 @@ describe("MirrorSyncService", () => {
     expect(targetStore.ClanWarHistory).toEqual(sourceStore.ClanWarHistory);
     expect(targetStore.AllianceClanMembershipInterval).toEqual(sourceStore.AllianceClanMembershipInterval);
     expect(targetStore.SyncClanMemberSnapshot).toEqual(sourceStore.SyncClanMemberSnapshot);
+    expect(targetStore.ClanHomeMembershipPeriod).toEqual(sourceStore.ClanHomeMembershipPeriod);
     expect(targetStore.ClanWarParticipation).toEqual(sourceStore.ClanWarParticipation);
     expect(targetStore.WarPlanComplianceEvaluation).toEqual(
       sourceStore.WarPlanComplianceEvaluation,
