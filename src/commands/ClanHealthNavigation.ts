@@ -29,10 +29,14 @@ import {
   ClanHealthTrendService,
   type ClanHealthTrendReport,
 } from "../services/ClanHealthTrendService";
+import { homeRosterService, type ClanHomeRoster, type HomeRosterMember } from "../services/HomeRosterService";
 
 const CLAN_HEALTH_NAVIGATION_PREFIX = "clan-health";
 const CLAN_HEALTH_WAR_HISTORY_ACTION = "war-history" as const;
 const CLAN_HEALTH_TRENDS_ACTION = "trends" as const;
+const CLAN_HEALTH_HOME_ROSTER_ACTION = "home-roster" as const;
+const CLAN_HEALTH_AWAY_ACTION = "away" as const;
+const CLAN_HEALTH_TRANSFERS_ACTION = "transfers" as const;
 const CLAN_HEALTH_WAR_HISTORY_DISPLAY_LIMIT = 10;
 
 export const CLAN_HEALTH_NAVIGATION_ACTIONS = [
@@ -70,7 +74,16 @@ export type ClanHealthNavigationPayload =
       clanTag: string;
       historicalWindow: Exclude<ClanHealthHistoricalWindow, { kind: "unavailable" }>;
       historicalWindowDays?: number;
+    }
+  | {
+      action: ClanHealthHomeNavigationAction;
+      clanTag: string;
     };
+
+type ClanHealthHomeNavigationAction =
+  | typeof CLAN_HEALTH_HOME_ROSTER_ACTION
+  | typeof CLAN_HEALTH_AWAY_ACTION
+  | typeof CLAN_HEALTH_TRANSFERS_ACTION;
 
 /** Purpose: normalize a tag for a component ID while keeping the ID alphabet-safe and bounded. */
 function normalizeNavigationClanTag(input: string): string {
@@ -149,6 +162,19 @@ export function buildClanHealthTrendsNavigationCustomId(
   );
 }
 
+/** Purpose: build a restart-safe read-only Home leadership action custom ID. */
+export function buildClanHealthHomeNavigationCustomId(
+  action: ClanHealthHomeNavigationAction,
+  clanTag: string,
+): string {
+  if (![CLAN_HEALTH_HOME_ROSTER_ACTION, CLAN_HEALTH_AWAY_ACTION, CLAN_HEALTH_TRANSFERS_ACTION].includes(action)) {
+    throw new Error("Unsupported Clan Health Home navigation action.");
+  }
+  const normalizedClanTag = normalizeNavigationClanTag(clanTag);
+  if (!normalizedClanTag) throw new Error("Invalid Clan Health navigation clan tag.");
+  return `${CLAN_HEALTH_NAVIGATION_PREFIX}:${action}:${normalizedClanTag}`;
+}
+
 /** Purpose: parse and validate a Clan Health navigation custom ID without trusting user input. */
 export function parseClanHealthNavigationCustomId(
   customId: string,
@@ -192,6 +218,15 @@ export function parseClanHealthNavigationCustomId(
       historicalWindow: { kind: "days", days: historicalWindowDays, cutoff: new Date(0) },
       historicalWindowDays,
     };
+  }
+  if (parts.length === 3 && [
+    CLAN_HEALTH_HOME_ROSTER_ACTION,
+    CLAN_HEALTH_AWAY_ACTION,
+    CLAN_HEALTH_TRANSFERS_ACTION,
+  ].includes(parts[1] as ClanHealthHomeNavigationAction)) {
+    const clanTag = normalizeNavigationClanTag(parts[2]);
+    if (!clanTag || parts[2] !== clanTag) return null;
+    return { action: parts[1] as ClanHealthHomeNavigationAction, clanTag };
   }
   if (parts.length !== 3) return null;
   const action = parts[1] as ClanHealthNavigationAction;
@@ -249,6 +284,18 @@ export function buildClanHealthTrendsNavigationRow(
 ): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
+      .setCustomId(buildClanHealthHomeNavigationCustomId(CLAN_HEALTH_HOME_ROSTER_ACTION, clanTag))
+      .setLabel("View Home Roster")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthHomeNavigationCustomId(CLAN_HEALTH_AWAY_ACTION, clanTag))
+      .setLabel("View Away")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(buildClanHealthHomeNavigationCustomId(CLAN_HEALTH_TRANSFERS_ACTION, clanTag))
+      .setLabel("View Transfers")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
       .setCustomId(
         buildClanHealthTrendsNavigationCustomId(
           clanTag,
@@ -258,6 +305,105 @@ export function buildClanHealthTrendsNavigationRow(
       .setLabel("View Trends")
       .setStyle(ButtonStyle.Secondary),
   );
+}
+
+/** Purpose: render a persisted observation timestamp in Discord's relative-time format. */
+function formatHomeRosterObservedAt(value: Date | null): string {
+  return value ? `<t:${Math.floor(value.getTime() / 1000)}:R>` : "unavailable";
+}
+
+/** Purpose: order Home members by actionable Away state, uncertainty, presence, and stable identity. */
+function homeRosterMemberSort(left: HomeRosterMember, right: HomeRosterMember): number {
+  const rank = { AWAY: 0, UNKNOWN: 1, PRESENT: 2 };
+  return rank[left.presence] - rank[right.presence] ||
+    left.playerName.localeCompare(right.playerName, undefined, { sensitivity: "base" }) ||
+    left.playerTag.localeCompare(right.playerTag);
+}
+
+/** Purpose: render one read-only Home member line without exposing transfer decision controls. */
+function buildHomeRosterMemberLine(member: HomeRosterMember): string {
+  const icon = member.presence === "AWAY" ? "⚠️" : member.presence === "PRESENT" ? "✅" : "❔";
+  let presence = member.presence === "PRESENT"
+    ? "Present"
+    : member.presence === "UNKNOWN"
+      ? "Current roster coverage unavailable"
+      : member.currentClanTag
+        ? `Away • ${member.currentClanName ? `${member.currentClanName} ` : ""}${member.currentClanTag}`
+        : "Away • Current location unknown";
+  if (member.pendingTransfer) {
+    presence += ` ↔ Possible transfer → ${member.pendingTransfer.toClanName ?? member.pendingTransfer.toClanTag}`;
+  }
+  return `${icon} ${member.playerName} \`${member.playerTag}\` — ${presence}`;
+}
+
+/** Purpose: render the compact Home roster totals and explicit coverage state. */
+function buildHomeRosterSummaryLines(roster: ClanHomeRoster, clanName: string): string[] {
+  const lines = [
+    `🏠 ${clanName} Home Roster`,
+    `Reserved: **${roster.homeMemberCount}/50** • Open Home spots: **${roster.openHomeSpots}**`,
+    roster.currentRosterCoverage === "CURRENT"
+      ? `Present: **${roster.presentCount}** • Away: **${roster.awayCount}**`
+      : `Present/Away: **unavailable** • Unknown: **${roster.unknownCount}**`,
+    roster.currentRosterCoverage === "CURRENT"
+      ? `Current unassigned: **${roster.unassignedPresentCount}**`
+      : "Current unassigned: **unavailable**",
+    `Possible transfers: **${roster.pendingTransferCount}**`,
+    roster.currentRosterCoverage === "CURRENT"
+      ? `Roster observed: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`
+      : roster.currentRosterCoverage === "STALE"
+        ? `Roster coverage stale • Last successful observation: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`
+        : "Current roster coverage: **unavailable**",
+  ];
+  return lines;
+}
+
+/** Purpose: render the full read-only Home roster with Discord-safe line boundaries. */
+function buildHomeRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
+  return [
+    ...buildHomeRosterSummaryLines(roster, clanName),
+    "",
+    ...[...roster.members].sort(homeRosterMemberSort).map(buildHomeRosterMemberLine),
+  ];
+}
+
+/** Purpose: render only Away Home members while refusing to infer Away from stale or unavailable coverage. */
+function buildAwayRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
+  if (roster.currentRosterCoverage === "STALE") {
+    return [
+      `Home roster coverage for ${clanName} is stale; Away members cannot be determined.`,
+      `Last successful roster observation: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`,
+    ];
+  }
+  if (roster.currentRosterCoverage === "UNAVAILABLE") {
+    return [`Home roster coverage for ${clanName} is unavailable; Away members cannot be determined yet.`];
+  }
+  const awayMembers = roster.members.filter((member) => member.presence === "AWAY").sort(homeRosterMemberSort);
+  if (awayMembers.length === 0) {
+    return [`No Home members are currently known to be away from ${clanName}.`];
+  }
+  return [
+    `⚠️ ${clanName} Away Home Members`,
+    `Roster observed: ${formatHomeRosterObservedAt(roster.currentRosterObservedAt)}`,
+    "",
+    ...awayMembers.map(buildHomeRosterMemberLine),
+  ];
+}
+
+/** Purpose: render pending candidates read-only with their persisted qualification timestamps. */
+function buildTransferRosterLines(roster: ClanHomeRoster, clanName: string): string[] {
+  const transfers = roster.members
+    .filter((member) => member.pendingTransfer)
+    .sort(homeRosterMemberSort);
+  if (transfers.length === 0) return ["No pending Home transfer candidates."];
+  return [
+    `↔ Pending Home transfer candidates for ${clanName}`,
+    "Read-only; no Home or candidate decision was made.",
+    "",
+    ...transfers.map((member) => {
+      const candidate = member.pendingTransfer!;
+      return `${member.playerName} \`${member.playerTag}\` — ${clanName} → ${candidate.toClanName ?? candidate.toClanTag} • qualifies ${formatHomeRosterObservedAt(candidate.startedAtSyncTime)} to ${formatHomeRosterObservedAt(candidate.qualifiedAtSyncTime)}`;
+    }),
+  ];
 }
 
 /** Purpose: render persisted sync-boundary trend facts as one compact ephemeral embed. */
@@ -387,6 +533,7 @@ export async function handleClanHealthNavigationButtonInteraction(
   historyService = new ClanWarHistoryService(),
   trendService = new ClanHealthTrendService(),
   historicalWindowService = new ClanHealthHistoricalWindowService(),
+  homeRosterReader: Pick<typeof homeRosterService, "getClanHomeRoster"> = homeRosterService,
 ): Promise<void> {
   const startedAtMs = Date.now();
   const parsed = parseClanHealthNavigationCustomId(interaction.customId);
@@ -420,6 +567,10 @@ export async function handleClanHealthNavigationButtonInteraction(
       ? ["war"]
       : parsed.action === CLAN_HEALTH_TRENDS_ACTION
         ? ["clan-health"]
+        : parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION ||
+            parsed.action === CLAN_HEALTH_AWAY_ACTION ||
+            parsed.action === CLAN_HEALTH_TRANSFERS_ACTION
+          ? ["clan-health"]
         : CLAN_HEALTH_NAVIGATION_PERMISSION_TARGETS[parsed.action];
   const allowed = await permissionService.canUseAnyTarget([...permissionTargets], interaction);
   if (!allowed) {
@@ -472,6 +623,26 @@ export async function handleClanHealthNavigationButtonInteraction(
           client: interaction.client,
         }),
       );
+    } else if (
+      parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION ||
+      parsed.action === CLAN_HEALTH_AWAY_ACTION ||
+      parsed.action === CLAN_HEALTH_TRANSFERS_ACTION
+    ) {
+      const roster = await homeRosterReader.getClanHomeRoster({
+        guildId: interaction.guildId,
+        clanTag: `#${parsed.clanTag}`,
+      });
+      const clanName = roster.clanName || `#${parsed.clanTag}`;
+      const lines = parsed.action === CLAN_HEALTH_HOME_ROSTER_ACTION
+        ? buildHomeRosterLines(roster, clanName)
+        : parsed.action === CLAN_HEALTH_AWAY_ACTION
+          ? buildAwayRosterLines(roster, clanName)
+          : buildTransferRosterLines(roster, clanName);
+      const messages = splitDiscordLineMessages({ lines, maxMessages: 5 });
+      await interaction.editReply(messages[0] ?? "No Home roster details are available.");
+      for (const message of messages.slice(1)) {
+        await interaction.followUp({ ephemeral: true, content: message });
+      }
     } else if (parsed.action === CLAN_HEALTH_WAR_HISTORY_ACTION) {
       const resolvedWindow = parsed.historicalWindow.kind === "syncs"
         ? await historicalWindowService.resolveLatestSyncWindow({

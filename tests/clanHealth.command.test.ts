@@ -33,6 +33,7 @@ import type {
   ClanHealthExternalSnapshot,
   ClanHealthTrackedSnapshot,
 } from "../src/services/ClanHealthSnapshotService";
+import type { ClanHomeRoster } from "../src/services/HomeRosterService";
 
 function makeInteraction(tagValue: string, windowValue: number | null = null) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -115,6 +116,7 @@ describe("/clan-health command", () => {
       inactiveWars?: Partial<ClanHealthTrackedSnapshot["inactiveWars"]>;
       inactiveDays?: Partial<ClanHealthTrackedSnapshot["inactiveDays"]>;
       missingLinks?: Partial<ClanHealthTrackedSnapshot["missingLinks"]>;
+      homeRoster?: Partial<ClanHomeRoster>;
       composition?: Partial<ClanHealthTrackedSnapshot["composition"]>;
       telemetry?: Partial<ClanHealthTrackedSnapshot["telemetry"]>;
     } = {}
@@ -167,6 +169,23 @@ describe("/clan-health command", () => {
         linkedMemberCount: 35,
         missingMemberCount: 5,
         ...overrides.missingLinks,
+      },
+      homeRoster: {
+        guildId: "guild-1",
+        clanTag: "#AAA111",
+        clanName: "Alpha",
+        homeMemberCount: 50,
+        presentCount: 47,
+        awayCount: 3,
+        unknownCount: 0,
+        openHomeSpots: 0,
+        currentClanMemberCount: 50,
+        unassignedPresentCount: 3,
+        pendingTransferCount: 1,
+        currentRosterCoverage: "CURRENT" as const,
+        currentRosterObservedAt: new Date("2026-03-09T11:48:00.000Z"),
+        members: [],
+        ...overrides.homeRoster,
       },
       telemetry: {
         warRows: 20,
@@ -300,6 +319,7 @@ describe("/clan-health command", () => {
     expect(embedJson.fields.map((field: any) => field.name)).toEqual([
       "War Performance",
       "Current Composition",
+      "🏠 Home Roster",
       "War Plan Compliance — Last 30 Days",
       "Inactivity",
       "Discord Links",
@@ -308,11 +328,11 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[1].value)).toContain("Members: **50/50**");
     expect(String(embedJson.fields[1].value)).toContain("Deviation: **✅ 0**");
     expect(String(embedJson.fields[1].value)).toContain("Source age: **1h**");
-    expect(String(embedJson.fields[2].value)).toContain(
+    expect(String(embedJson.fields[3].value)).toContain(
       "Violations: **7** across **5** player accounts",
     );
-    expect(String(embedJson.fields[2].value)).toContain("Linked Discord users involved: **3**");
-    expect(String(embedJson.fields[2].value)).toContain(
+    expect(String(embedJson.fields[3].value)).toContain("Linked Discord users involved: **3**");
+    expect(String(embedJson.fields[3].value)).toContain(
       "Affected wars: **4/9** evaluated FWA wars",
     );
     expect(String(embedJson.fields[0].value)).toContain(
@@ -323,11 +343,11 @@ describe("/clan-health command", () => {
     );
     expect(String(embedJson.fields[0].value)).toContain("Match rate (including BL): **85.0%**");
     expect(String(embedJson.fields[0].value)).toContain("Win rate (same window): **65.0% (13/20)**");
-    expect(String(embedJson.fields[3].value)).toContain(
+    expect(String(embedJson.fields[4].value)).toContain(
       "Missed both attacks (distinct players, >=1 eligible FWA war in last 30 days): **2**",
     );
-    expect(String(embedJson.fields[3].value)).toContain("Eligible ended FWA wars in window: **3**");
-    expect(String(embedJson.fields[3].value)).toContain("Inactive (days, >=6d): **5**");
+    expect(String(embedJson.fields[4].value)).toContain("Eligible ended FWA wars in window: **3**");
+    expect(String(embedJson.fields[4].value)).toContain("Inactive (days, >=6d): **5**");
     const navigationButtons = payload.components[0].components.map((button: any) => button.toJSON());
     expect(navigationButtons.map((button: any) => button.label)).toEqual([
       "View Inactive",
@@ -340,11 +360,37 @@ describe("/clan-health command", () => {
     expect(navigationButtons.every((button: any) => button.custom_id.length <= 100)).toBe(true);
     expect(payload.components).toHaveLength(2);
     expect(payload.components[1].components.map((button: any) => button.toJSON())).toEqual([
-      expect.objectContaining({
-        label: "View Trends",
-        custom_id: "clan-health:trends:AAA111:30",
-      }),
+      expect.objectContaining({ label: "View Home Roster", custom_id: "clan-health:home-roster:AAA111" }),
+      expect.objectContaining({ label: "View Away", custom_id: "clan-health:away:AAA111" }),
+      expect.objectContaining({ label: "View Transfers", custom_id: "clan-health:transfers:AAA111" }),
+      expect.objectContaining({ label: "View Trends", custom_id: "clan-health:trends:AAA111:30" }),
     ]);
+  });
+
+  it("does not show numeric current unassigned counts for stale Home coverage", async () => {
+    serviceMock.getSnapshot.mockResolvedValue(
+      makeSnapshot({
+        homeRoster: {
+          currentRosterCoverage: "STALE",
+          currentRosterObservedAt: new Date("2026-03-09T10:00:00.000Z"),
+          presentCount: 0,
+          awayCount: 0,
+          unknownCount: 50,
+          currentClanMemberCount: null,
+          unassignedPresentCount: null,
+        },
+      }),
+    );
+
+    const interaction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0];
+    const homeField = payload.embeds[0].toJSON().fields.find((field: any) => field.name === "🏠 Home Roster");
+    expect(homeField.value).toContain("Present/Away: **unavailable** • Unknown: **50**");
+    expect(homeField.value).toContain("Current unassigned: **unavailable**");
+    expect(homeField.value).toContain("Roster coverage stale");
+    expect(homeField.value).not.toContain("Current unassigned: **3**");
   });
 
   it("renders the resolved sync range for tracked sync-mode history", async () => {
@@ -391,7 +437,7 @@ describe("/clan-health command", () => {
     expect(payload.components[0].components[4].toJSON().custom_id).toBe(
       "clan-health:war-history:AAA111:60",
     );
-    expect(payload.components[1].components[0].toJSON().custom_id).toBe(
+    expect(payload.components[1].components[3].toJSON().custom_id).toBe(
       "clan-health:trends:AAA111:60",
     );
   });
@@ -522,12 +568,12 @@ describe("/clan-health command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0];
     const embedJson = payload.embeds[0].toJSON();
-    expect(String(embedJson.fields[2].value)).toBe(
+    expect(String(embedJson.fields[3].value)).toBe(
       "No completed FWA war-plan evaluations are available yet.",
     );
-    expect(String(embedJson.fields[2].value)).not.toContain("Violations:");
-    expect(String(embedJson.fields[2].value)).not.toContain("Linked Discord users involved:");
-    expect(String(embedJson.fields[2].value)).not.toContain("0/0");
+    expect(String(embedJson.fields[3].value)).not.toContain("Violations:");
+    expect(String(embedJson.fields[3].value)).not.toContain("Linked Discord users involved:");
+    expect(String(embedJson.fields[3].value)).not.toContain("0/0");
   });
 
   it("renders the zero-violation summary and pluralizes player accounts correctly", async () => {
@@ -589,11 +635,11 @@ describe("/clan-health command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0];
     const embedJson = payload.embeds[0].toJSON();
-    expect(String(embedJson.fields[2].value)).toContain(
+    expect(String(embedJson.fields[3].value)).toContain(
       "Violations: **0** across **0** player accounts",
     );
-    expect(String(embedJson.fields[2].value)).toContain("Linked Discord users involved: **0**");
-    expect(String(embedJson.fields[2].value)).toContain("Affected wars: **0/9** evaluated FWA wars");
+    expect(String(embedJson.fields[3].value)).toContain("Linked Discord users involved: **0**");
+    expect(String(embedJson.fields[3].value)).toContain("Affected wars: **0/9** evaluated FWA wars");
   });
 
   it("renders a singular player account label for one violating account", async () => {
@@ -655,7 +701,7 @@ describe("/clan-health command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0];
     const embedJson = payload.embeds[0].toJSON();
-    expect(String(embedJson.fields[2].value)).toContain(
+    expect(String(embedJson.fields[3].value)).toContain(
       "Violations: **1** across **1** player account",
     );
   });
@@ -719,7 +765,7 @@ describe("/clan-health command", () => {
 
     const payload = interaction.editReply.mock.calls[0]?.[0];
     const embedJson = payload.embeds[0].toJSON();
-    expect(String(embedJson.fields[2].value)).toContain(
+    expect(String(embedJson.fields[3].value)).toContain(
       "Violations: **2** across **2** player accounts",
     );
   });

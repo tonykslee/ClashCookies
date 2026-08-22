@@ -23,6 +23,9 @@ const historicalWindowMock = vi.hoisted(() => ({
 const trendMock = vi.hoisted(() => ({
   getTrend: vi.fn(),
 }));
+const homeRosterMock = vi.hoisted(() => ({
+  getClanHomeRoster: vi.fn(),
+}));
 
 vi.mock("../src/services/CommandPermissionService", () => ({
   CommandPermissionService: class {
@@ -61,11 +64,15 @@ vi.mock("../src/services/ClanHealthHistoricalWindowService", () => ({
     resolveLatestSyncWindow = historicalWindowMock.resolveLatestSyncWindow;
   },
 }));
+vi.mock("../src/services/HomeRosterService", () => ({
+  homeRosterService: { getClanHomeRoster: homeRosterMock.getClanHomeRoster },
+}));
 
 import {
   buildClanHealthNavigationCustomId,
   buildClanHealthWarHistoryNavigationCustomId,
   buildClanHealthTrendsNavigationCustomId,
+  buildClanHealthHomeNavigationCustomId,
   buildClanHealthNavigationRow,
   buildClanHealthTrendsNavigationRow,
   handleClanHealthNavigationButtonInteraction,
@@ -118,6 +125,23 @@ describe("Clan Health navigation", () => {
       algorithmVersions: [],
     });
     historyMock.listEndedByClanSyncNumbers.mockReset();
+    homeRosterMock.getClanHomeRoster.mockReset();
+    homeRosterMock.getClanHomeRoster.mockResolvedValue({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      homeMemberCount: 0,
+      presentCount: 0,
+      awayCount: 0,
+      unknownCount: 0,
+      openHomeSpots: 50,
+      currentClanMemberCount: 0,
+      unassignedPresentCount: 0,
+      pendingTransferCount: 0,
+      currentRosterCoverage: "CURRENT" as const,
+      currentRosterObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+      members: [],
+    });
     historicalWindowMock.resolveLatestSyncWindow.mockReset();
     historicalWindowMock.resolveLatestSyncWindow.mockResolvedValue({
       kind: "syncs",
@@ -158,6 +182,15 @@ describe("Clan Health navigation", () => {
     expect(parseClanHealthNavigationCustomId("clan-health:unknown:PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:compo:#PYLQ02")).toBeNull();
     expect(parseClanHealthNavigationCustomId("clan-health:compo:")).toBeNull();
+
+    const homeId = buildClanHealthHomeNavigationCustomId("home-roster", "#pylq02");
+    expect(homeId).toBe("clan-health:home-roster:PYLQ02");
+    expect(parseClanHealthNavigationCustomId(homeId)).toEqual({
+      action: "home-roster",
+      clanTag: "PYLQ02",
+    });
+    expect(parseClanHealthNavigationCustomId("clan-health:away:#PYLQ02")).toBeNull();
+    expect(parseClanHealthNavigationCustomId("clan-health:transfers:!!!")).toBeNull();
 
     const historyId = buildClanHealthWarHistoryNavigationCustomId("#pylq02", 60);
     expect(historyId).toBe("clan-health:war-history:PYLQ02:60");
@@ -207,12 +240,20 @@ describe("Clan Health navigation", () => {
 
   it("adds a second row with only the windowed Trends action", () => {
     const row = buildClanHealthTrendsNavigationRow("#AAA111", 60).toJSON();
-    expect(row.components).toHaveLength(1);
-    expect(row.components[0]).toMatchObject({
-      label: "View Trends",
-      custom_id: "clan-health:trends:AAA111:60",
-    });
-    expect(row.components[0]?.custom_id?.length ?? 0).toBeLessThanOrEqual(100);
+    expect(row.components).toHaveLength(4);
+    expect(row.components.map((button) => button.label)).toEqual([
+      "View Home Roster",
+      "View Away",
+      "View Transfers",
+      "View Trends",
+    ]);
+    expect(row.components.map((button) => button.custom_id)).toEqual([
+      "clan-health:home-roster:AAA111",
+      "clan-health:away:AAA111",
+      "clan-health:transfers:AAA111",
+      "clan-health:trends:AAA111:60",
+    ]);
+    expect(row.components.every((button) => (button.custom_id?.length ?? 0) <= 100)).toBe(true);
   });
 
   it.each([
@@ -228,6 +269,89 @@ describe("Clan Health navigation", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expect(interaction.message.edit).not.toHaveBeenCalled();
     expect(interaction.update).toBeUndefined();
+  });
+
+  it.each([
+    ["home-roster", "View Home Roster"],
+    ["away", "View Away"],
+    ["transfers", "View Transfers"],
+  ] as const)("routes read-only Home action %s through clan-health permission", async (action) => {
+    const interaction = makeButton(`clan-health:${action}:AAA111`);
+    await handleClanHealthNavigationButtonInteraction(interaction as any);
+
+    expect(permissionMock.canUseAnyTarget).toHaveBeenCalledWith(["clan-health"], interaction);
+    expect(homeRosterMock.getClanHomeRoster).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+    });
+    expect(interaction.editReply).toHaveBeenCalled();
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
+  it("splits a full Home roster into Discord-safe ephemeral messages without decision controls", async () => {
+    homeRosterMock.getClanHomeRoster.mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      homeMemberCount: 50,
+      presentCount: 50,
+      awayCount: 0,
+      unknownCount: 0,
+      openHomeSpots: 0,
+      currentClanMemberCount: 50,
+      unassignedPresentCount: 0,
+      pendingTransferCount: 0,
+      currentRosterCoverage: "CURRENT" as const,
+      currentRosterObservedAt: new Date("2026-03-01T00:00:00.000Z"),
+      members: Array.from({ length: 50 }, (_, index) => ({
+        playerTag: `#P${index.toString(36).toUpperCase().padStart(3, "0")}`,
+        playerName: `Player ${index}`,
+        homeClanTag: "#AAA111",
+        startedAtSyncTime: new Date("2026-01-01T00:00:00.000Z"),
+        qualifiedAtSyncTime: new Date("2026-01-03T00:00:00.000Z"),
+        presence: "PRESENT" as const,
+        currentClanTag: null,
+        currentClanName: null,
+        currentLocationObservedAt: null,
+        pendingTransfer: null,
+      })),
+    });
+    const interaction = makeButton("clan-health:home-roster:AAA111");
+    await handleClanHealthNavigationButtonInteraction(interaction as any);
+
+    const messages = [
+      interaction.editReply.mock.calls[0]?.[0],
+      ...interaction.followUp.mock.calls.map((call: any[]) => call[0]?.content),
+    ].filter((message): message is string => typeof message === "string");
+    expect(messages.length).toBeGreaterThanOrEqual(1);
+    expect(messages.every((message) => message.length <= 2000)).toBe(true);
+    expect(messages.join("\n")).not.toContain("Confirm Transfer");
+    expect(messages.join("\n")).not.toContain("Keep Home");
+  });
+
+  it("does not claim that nobody is away when Home coverage is stale", async () => {
+    homeRosterMock.getClanHomeRoster.mockResolvedValueOnce({
+      guildId: "guild-1",
+      clanTag: "#AAA111",
+      clanName: "Alpha",
+      homeMemberCount: 50,
+      presentCount: 0,
+      awayCount: 0,
+      unknownCount: 50,
+      openHomeSpots: 0,
+      currentClanMemberCount: null,
+      unassignedPresentCount: null,
+      pendingTransferCount: 0,
+      currentRosterCoverage: "STALE" as const,
+      currentRosterObservedAt: new Date("2026-02-28T00:00:00.000Z"),
+      members: [],
+    });
+    const interaction = makeButton("clan-health:away:AAA111");
+    await handleClanHealthNavigationButtonInteraction(interaction as any);
+
+    const content = String(interaction.editReply.mock.calls[0]?.[0]);
+    expect(content).toContain("coverage for Alpha is stale");
+    expect(content).not.toContain("No Home members are currently known to be away");
   });
 
   it("keeps the originating clan scope for inactive, unlinked, compo, and violations", async () => {
