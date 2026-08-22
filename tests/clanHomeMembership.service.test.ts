@@ -12,6 +12,7 @@ const guildId = "guild-1";
 const playerTag = "#P2222";
 const rr = "#RRRR";
 const eb = "#GJJJ";
+const de = "#DEEE";
 
 function time(day: number): Date {
   return new Date(`2026-08-${String(day).padStart(2, "0")}T12:00:00.000Z`);
@@ -31,6 +32,36 @@ function readiness(
     clanTag: options.clanTag ?? rr,
     fillerCaptureComplete: options.complete ?? true,
     fillerPlayerTags: options.fillerPlayerTags ?? [],
+  };
+}
+
+function activeHome(clanTag = rr): ActiveHomeMembership {
+  return {
+    id: "home-1",
+    guildId,
+    playerTag,
+    clanTag,
+    startedAtSyncTime: time(1),
+    qualifiedAtSyncTime: time(1),
+    endedAtSyncTime: null,
+    establishmentSource: "AUTO_3_SYNC",
+    endReason: null,
+  };
+}
+
+function cwlWindow(overrides: Partial<Record<string, any>> = {}) {
+  return {
+    season: "2026-08",
+    startsAt: null,
+    endsAt: null,
+    timingCoverageComplete: false,
+    startTimingResolved: false,
+    endTimingResolved: false,
+    missingTimingDetails: ["NO_TRACKED_CWL_REGISTRY"],
+    hasTrackedCwlClans: false,
+    resolvedEventCount: 0,
+    unresolvedCwlClans: [],
+    ...overrides,
   };
 }
 
@@ -71,6 +102,9 @@ type Fixture = {
   trackedTags?: string[];
   evidence?: MembershipBoundaryEvidence[];
   periods?: ActiveHomeMembership[];
+  candidateRows?: any[];
+  cwlWindows?: Record<string, any>;
+  candidateRaceOnCreate?: boolean;
   raceOnCreate?: boolean;
 };
 
@@ -80,6 +114,9 @@ function makeDb(fixture: Fixture = {}) {
     readinessRows: fixture.readinessRows ?? [readiness(3), readiness(2), readiness(1)],
     trackedTags: fixture.trackedTags ?? [rr],
     periods: [...(fixture.periods ?? [])],
+    candidateRows: [...(fixture.candidateRows ?? [])],
+    cwlWindows: fixture.cwlWindows ?? {},
+    candidateRaceOnCreate: fixture.candidateRaceOnCreate ?? false,
     raceOnCreate: fixture.raceOnCreate ?? false,
   };
   const evidenceByPlayer: MembershipBoundaryEvidenceByPlayer = {
@@ -105,6 +142,49 @@ function makeDb(fixture: Fixture = {}) {
         throw error;
       }
       return created;
+    }),
+    updateMany: vi.fn(async ({ where, data }: any) => {
+      let count = 0;
+      for (const row of state.periods) {
+        const matches = Object.entries(where ?? {}).every(([key, condition]: [string, any]) => {
+          if (condition && typeof condition === "object" && "in" in condition) return condition.in.includes(row[key]);
+          return row[key] === condition;
+        });
+        if (!matches) continue;
+        Object.assign(row, data);
+        count += 1;
+      }
+      return { count };
+    }),
+  };
+  const candidateModel = {
+    findMany: vi.fn(async ({ where }: any = {}) => state.candidateRows.filter((row) =>
+      Object.entries(where ?? {}).every(([key, condition]: [string, any]) => {
+        if (condition && typeof condition === "object" && "in" in condition) return condition.in.includes(row[key]);
+        return row[key] === condition;
+      }),
+    )),
+    findFirst: vi.fn(async ({ where }: any = {}) => state.candidateRows.find((row) =>
+      Object.entries(where ?? {}).every(([key, condition]: [string, any]) => row[key] === condition),
+    ) ?? null),
+    create: vi.fn(async ({ data }: any) => {
+      const created = { id: `candidate-${state.candidateRows.length + 1}`, ...data, createdAt: time(3), updatedAt: time(3) };
+      state.candidateRows.push(created);
+      if (state.candidateRaceOnCreate) {
+        const error = Object.assign(new Error("pending candidate already exists"), { code: "P2002" });
+        throw error;
+      }
+      return created;
+    }),
+    updateMany: vi.fn(async ({ where, data }: any) => {
+      let count = 0;
+      for (const row of state.candidateRows) {
+        const matches = Object.entries(where ?? {}).every(([key, condition]: [string, any]) => row[key] === condition);
+        if (!matches) continue;
+        Object.assign(row, data);
+        count += 1;
+      }
+      return { count };
     }),
   };
   const db = {
@@ -134,7 +214,12 @@ function makeDb(fixture: Fixture = {}) {
       findMany: vi.fn(async () => state.trackedTags.map((tag) => ({ tag }))),
     },
     clanHomeMembershipPeriod: periodModel,
-    $transaction: vi.fn(async (fn: (tx: any) => Promise<unknown>) => fn({ clanHomeMembershipPeriod: periodModel })),
+    clanHomeTransferCandidate: candidateModel,
+    $transaction: vi.fn(async (fn: (tx: any) => Promise<unknown>) => fn({
+      clanHomeMembershipPeriod: periodModel,
+      clanHomeTransferCandidate: candidateModel,
+      trackedClan: db.trackedClan,
+    })),
   };
   return { db, state, evidenceByPlayer };
 }
@@ -144,10 +229,25 @@ function serviceFor(fixture: Fixture = {}) {
   const evidenceService = {
     getMembershipBoundaryEvidenceForPlayers: vi.fn(async () => built.evidenceByPlayer),
   };
+  const cwlWindowReader = {
+    getCwlWindow: vi.fn(async ({ season }: { season: string }) => built.state.cwlWindows[season] ?? {
+      season,
+      startsAt: null,
+      endsAt: null,
+      timingCoverageComplete: false,
+      startTimingResolved: false,
+      endTimingResolved: false,
+      missingTimingDetails: ["NO_TRACKED_CWL_REGISTRY"],
+      hasTrackedCwlClans: false,
+      resolvedEventCount: 0,
+      unresolvedCwlClans: [],
+    }),
+  };
   return {
     ...built,
-    service: new ClanHomeMembershipService(built.db as any, evidenceService),
+    service: new ClanHomeMembershipService(built.db as any, evidenceService, cwlWindowReader),
     evidenceService,
+    cwlWindowReader,
   };
 }
 
@@ -244,6 +344,10 @@ describe("ClanHomeMembershipService", () => {
       skippedExisting: 0,
       skippedFillerOrUnknown: 0,
       retryable: 0,
+      transferEvaluated: 0,
+      transferCandidatesCreated: 0,
+      transferPendingExisting: 0,
+      transferCwlSuppressed: 0,
     });
     expect(built.db.syncClanMemberSnapshot.groupBy).toHaveBeenCalledTimes(2);
     expect(built.db.syncClanMemberSnapshot.findMany).toHaveBeenCalledTimes(memberReads);
@@ -375,6 +479,382 @@ describe("ClanHomeMembershipService", () => {
     expect(result.retryable).toBe(1);
     expect(result.skippedFillerOrUnknown).toBe(0);
     expect(built.state.periods).toHaveLength(0);
+  });
+
+  it("does not create a transfer candidate after one ordinary EB boundary", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCandidatesCreated).toBe(0);
+    expect(result.retryable).toBe(0);
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("does not create a transfer candidate after two ordinary EB boundaries", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCandidatesCreated).toBe(0);
+    expect(result.retryable).toBe(0);
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("creates one pending transfer candidate after three ordinary EB boundaries", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCandidatesCreated).toBe(1);
+    expect(built.state.candidateRows).toMatchObject([{
+      status: "PENDING",
+      homeMembershipPeriodId: "home-1",
+      fromClanTag: rr,
+      toClanTag: eb,
+      startedAtSyncTime: time(1),
+      qualifiedAtSyncTime: time(3),
+    }]);
+  });
+
+  it.each([
+    ["RR -> EB -> DE -> EB", [fwaEvidence(4, { clanTag: eb }), fwaEvidence(3, { clanTag: de }), fwaEvidence(2, { clanTag: eb })]],
+    ["UNKNOWN middle boundary", [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { status: "UNKNOWN", clanTag: null }), fwaEvidence(1, { clanTag: eb })]],
+    ["ABSENT middle boundary", [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { status: "ABSENT", clanTag: null }), fwaEvidence(1, { clanTag: eb })]],
+    ["AMBIGUOUS middle boundary", [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { status: "AMBIGUOUS", clanTag: eb }), fwaEvidence(1, { clanTag: eb })]],
+    ["historical fallback", [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb, source: "FWA_WAR_PARTICIPATION_FALLBACK" }), fwaEvidence(1, { clanTag: eb })]],
+  ])("does not qualify a transfer from %s", async (_label, evidence) => {
+    const built = serviceFor({
+      memberRows: [member(evidence[0].boundaryTime.getUTCDate(), eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb, de],
+      evidence,
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("does not qualify a destination that is not a permanent TrackedClan", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("does not qualify three syncs that remain in the active Home clan", async () => {
+    const built = serviceFor({
+      periods: [activeHome(rr)],
+      trackedTags: [rr],
+      evidence: [fwaEvidence(3, { clanTag: rr }), fwaEvidence(2, { clanTag: rr }), fwaEvidence(1, { clanTag: rr })],
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("does not duplicate a pending candidate across replay or service restart", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+    await built.service.reconcileLatestExactBoundaries();
+    const restarted = new ClanHomeMembershipService(built.db as any, {
+      getMembershipBoundaryEvidenceForPlayers: vi.fn(async () => built.evidenceByPlayer),
+    }, built.cwlWindowReader);
+    await restarted.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(1);
+  });
+
+  it("treats a concurrent candidate-create unique race as one pending candidate", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+      candidateRaceOnCreate: true,
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCandidatesCreated).toBe(0);
+    expect(built.state.candidateRows).toHaveLength(1);
+  });
+
+  it("does not create another candidate while one is pending", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      candidateRows: [{
+        id: "candidate-1",
+        guildId,
+        playerTag,
+        homeMembershipPeriodId: "home-1",
+        fromClanTag: rr,
+        toClanTag: eb,
+        startedAtSyncTime: time(1),
+        qualifiedAtSyncTime: time(3),
+        status: "PENDING",
+        decidedAt: null,
+        decidedByDiscordUserId: null,
+      }],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCandidatesCreated).toBe(0);
+    expect(result.transferPendingExisting).toBe(1);
+    expect(built.evidenceService.getMembershipBoundaryEvidenceForPlayers).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["inside a persisted CWL window", cwlWindow({ hasTrackedCwlClans: true, resolvedEventCount: 1, startsAt: time(1), endsAt: time(4), startTimingResolved: true, endTimingResolved: true, timingCoverageComplete: true, missingTimingDetails: [] }), [3, 2, 1]],
+    ["after an ongoing CWL start", cwlWindow({ hasTrackedCwlClans: true, resolvedEventCount: 1, startsAt: time(2), endsAt: null, startTimingResolved: true, endTimingResolved: false, missingTimingDetails: ["event-1:FINAL_END_ROUND_7"] }), [3, 2, 1]],
+    ["with unresolved CWL timing", cwlWindow({ hasTrackedCwlClans: true, resolvedEventCount: 1, startsAt: null, endsAt: null, startTimingResolved: false, endTimingResolved: false, timingCoverageComplete: false, missingTimingDetails: ["event-1:START_ROUND_1"] }), [3, 2, 1]],
+  ])("suppresses a transfer when the run is %s", async (_label, window, days) => {
+    const built = serviceFor({
+      memberRows: [member(days[0], eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      cwlWindows: { "2026-08": window },
+      evidence: days.map((day) => fwaEvidence(day, { clanTag: eb })),
+    });
+
+    const result = await built.service.reconcileLatestExactBoundaries();
+
+    expect(result.transferCwlSuppressed).toBe(1);
+    expect(built.state.candidateRows).toHaveLength(0);
+  });
+
+  it("keeps known pre-CWL boundaries ordinary", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      cwlWindows: { "2026-08": cwlWindow({ hasTrackedCwlClans: true, resolvedEventCount: 1, startsAt: time(5), startTimingResolved: true, missingTimingDetails: ["event-1:FINAL_END_ROUND_7"] }) },
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(1);
+  });
+
+  it("keeps known post-CWL boundaries ordinary", async () => {
+    const days = [6, 5, 4];
+    const built = serviceFor({
+      memberRows: [member(days[0], eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      cwlWindows: { "2026-08": cwlWindow({ hasTrackedCwlClans: true, resolvedEventCount: 1, startsAt: time(1), endsAt: time(3), startTimingResolved: true, endTimingResolved: true, timingCoverageComplete: true, missingTimingDetails: [] }) },
+      evidence: days.map((day) => fwaEvidence(day, { clanTag: eb })),
+    });
+
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(1);
+  });
+
+  it("Keep Home leaves the active Home untouched and records the decision", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+
+    const result = await built.service.keepHomeTransferCandidate({
+      candidateId,
+      actorDiscordUserId: "leader-1",
+      decidedAt: time(10),
+    });
+
+    expect(result.status).toBe("KEPT_HOME");
+    expect(built.state.candidateRows[0]).toMatchObject({ status: "KEPT_HOME", decidedAt: time(10), decidedByDiscordUserId: "leader-1" });
+    expect(built.state.periods).toMatchObject([{ id: "home-1", clanTag: rr, endedAtSyncTime: null }]);
+  });
+
+  it("Keep Home is idempotent on replay", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+
+    await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(10) });
+    const replay = await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-2", decidedAt: time(11) });
+
+    expect(replay).toEqual({ status: "ALREADY_RESOLVED", candidateId, resolvedStatus: "KEPT_HOME" });
+    expect(built.state.candidateRows[0].decidedByDiscordUserId).toBe("leader-1");
+  });
+
+  it("requires three fresh boundaries after Keep Home before creating another candidate", async () => {
+    const built = serviceFor({
+      memberRows: [member(12, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(12, { clanTag: eb }), fwaEvidence(11, { clanTag: eb }), fwaEvidence(10, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    await built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(12) });
+
+    built.state.memberRows = [member(13, eb)];
+    built.evidenceByPlayer[playerTag] = [fwaEvidence(13, { clanTag: eb }), fwaEvidence(12, { clanTag: eb }), fwaEvidence(11, { clanTag: eb })];
+    await built.service.reconcileLatestExactBoundaries();
+    expect(built.state.candidateRows).toHaveLength(1);
+
+    built.state.memberRows = [member(15, eb)];
+    built.evidenceByPlayer[playerTag] = [fwaEvidence(15, { clanTag: eb }), fwaEvidence(14, { clanTag: eb }), fwaEvidence(13, { clanTag: eb })];
+    await built.service.reconcileLatestExactBoundaries();
+
+    expect(built.state.candidateRows).toHaveLength(2);
+    expect(built.state.candidateRows[1]).toMatchObject({ startedAtSyncTime: time(13), qualifiedAtSyncTime: time(15) });
+  });
+
+  it("confirms a transfer by ending the old Home and creating a TRANSFER Home", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidate = built.state.candidateRows[0];
+
+    const result = await built.service.confirmHomeTransferCandidate({
+      candidateId: candidate.id,
+      actorDiscordUserId: "leader-1",
+      decidedAt: time(10),
+    });
+
+    expect(result.status).toBe("CONFIRMED");
+    expect(built.state.periods).toMatchObject([
+      { id: "home-1", clanTag: rr, endedAtSyncTime: time(1), endReason: "TRANSFERRED" },
+      { clanTag: eb, startedAtSyncTime: time(1), qualifiedAtSyncTime: time(3), establishmentSource: "TRANSFER", endedAtSyncTime: null },
+    ]);
+    expect(built.state.candidateRows[0]).toMatchObject({ status: "CONFIRMED", decidedAt: time(10), decidedByDiscordUserId: "leader-1" });
+  });
+
+  it("returns already resolved on repeat confirm", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1", decidedAt: time(10) });
+
+    const replay = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-2", decidedAt: time(11) });
+
+    expect(replay).toEqual({ status: "ALREADY_RESOLVED", candidateId, resolvedStatus: "CONFIRMED" });
+    expect(built.state.periods.filter((period) => period.endedAtSyncTime === null)).toHaveLength(1);
+  });
+
+  it("resolves confirm-versus-keep races to one decision", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+
+    const [confirm, keep] = await Promise.all([
+      built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-confirm", decidedAt: time(10) }),
+      built.service.keepHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-keep", decidedAt: time(11) }),
+    ]);
+
+    expect([confirm.status, keep.status].filter((status) => status === "CONFIRMED" || status === "KEPT_HOME")).toHaveLength(1);
+    expect([confirm.status, keep.status].some((status) => status === "ALREADY_RESOLVED")).toBe(true);
+    expect(built.state.periods.filter((period) => period.endedAtSyncTime === null)).toHaveLength(1);
+  });
+
+  it("fails closed when the referenced Home period is stale", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    built.state.periods[0].endedAtSyncTime = time(4);
+
+    const result = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1" });
+
+    expect(result).toEqual({ status: "STALE", candidateId, reason: "HOME_PERIOD_NO_LONGER_MATCHES" });
+    expect(built.state.candidateRows[0].status).toBe("PENDING");
+    expect(built.state.periods).toHaveLength(1);
+  });
+
+  it("fails closed when the destination is no longer permanently tracked", async () => {
+    const built = serviceFor({
+      memberRows: [member(3, eb)],
+      periods: [activeHome(rr)],
+      trackedTags: [rr, eb],
+      evidence: [fwaEvidence(3, { clanTag: eb }), fwaEvidence(2, { clanTag: eb }), fwaEvidence(1, { clanTag: eb })],
+    });
+    await built.service.reconcileLatestExactBoundaries();
+    const candidateId = built.state.candidateRows[0].id;
+    built.state.trackedTags = [rr];
+
+    const result = await built.service.confirmHomeTransferCandidate({ candidateId, actorDiscordUserId: "leader-1" });
+
+    expect(result).toEqual({ status: "STALE", candidateId, reason: "DESTINATION_NOT_TRACKED" });
+    expect(built.state.periods).toHaveLength(1);
+  });
+
+  it("reads pending candidates in bulk without N+1 queries", async () => {
+    const built = serviceFor({ candidateRows: [
+      {
+        id: "candidate-1", guildId, playerTag, homeMembershipPeriodId: "home-1", fromClanTag: rr, toClanTag: eb,
+        startedAtSyncTime: time(1), qualifiedAtSyncTime: time(3), status: "PENDING", decidedAt: null, decidedByDiscordUserId: null,
+      },
+    ] });
+
+    const result = await built.service.getPendingTransferCandidates({ guildId, playerTags: [playerTag], fromClanTag: rr });
+
+    expect(result).toMatchObject([{ id: "candidate-1", playerTag, fromClanTag: rr, toClanTag: eb }]);
+    expect(built.db.clanHomeTransferCandidate.findMany).toHaveBeenCalledTimes(1);
   });
 
   it("uses immutable readiness filler facts and never consults FillerAccount", async () => {

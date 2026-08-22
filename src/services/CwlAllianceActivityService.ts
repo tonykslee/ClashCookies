@@ -6,6 +6,19 @@ export type CwlAllianceActivityInput = {
   guildId?: string | null;
 };
 
+export type PersistedCwlWindow = {
+  season: string;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  timingCoverageComplete: boolean;
+  startTimingResolved: boolean;
+  endTimingResolved: boolean;
+  missingTimingDetails: string[];
+  hasTrackedCwlClans: boolean;
+  resolvedEventCount: number;
+  unresolvedCwlClans: Array<{ clanTag: string; clanName: string | null; reason: string }>;
+};
+
 export type CwlAllianceActivitySourceWar = {
   warId: number;
   clanTag: string;
@@ -134,6 +147,48 @@ const activityDb = prisma as unknown as ActivityDb;
 export class CwlAllianceActivityService {
   constructor(private readonly db: ActivityDb = activityDb) {}
 
+  /** Purpose: read only the persisted season CWL window without building the activity report. */
+  async getCwlWindow(input: { season: string }): Promise<PersistedCwlWindow> {
+    const season = normalizeSeason(input.season);
+    const trackedCwlClans = normalizeTrackedCwlClans(await this.db.cwlTrackedClan.findMany({
+      where: { season },
+      orderBy: [{ tag: "asc" }, { id: "asc" }],
+      select: { tag: true, name: true },
+    }));
+    if (trackedCwlClans.length === 0) {
+      return {
+        season,
+        startsAt: null,
+        endsAt: null,
+        timingCoverageComplete: false,
+        startTimingResolved: false,
+        endTimingResolved: false,
+        missingTimingDetails: ["NO_TRACKED_CWL_REGISTRY"],
+        hasTrackedCwlClans: false,
+        resolvedEventCount: 0,
+        unresolvedCwlClans: [],
+      };
+    }
+    const eventResolution = await resolveHistoricalEvents({
+      db: this.db,
+      season,
+      cwlClans: trackedCwlClans,
+    });
+    const resolved = await resolveCwlWindow({
+      db: this.db,
+      eventInstanceIds: eventResolution.eventInstanceIds,
+    });
+    return {
+      season,
+      ...resolved.window,
+      startTimingResolved: resolved.startTimingResolved,
+      endTimingResolved: resolved.endTimingResolved,
+      hasTrackedCwlClans: true,
+      resolvedEventCount: eventResolution.eventInstanceIds.length,
+      unresolvedCwlClans: eventResolution.unresolvedCwlClans,
+    };
+  }
+
   async getActivity(input: CwlAllianceActivityInput): Promise<CwlAllianceActivityResult> {
     const startedAtMs = Date.now();
     const season = normalizeSeason(input.season);
@@ -149,10 +204,10 @@ export class CwlAllianceActivityService {
       season,
       cwlClans,
     });
-    const cwlWindow = await resolveCwlWindow({
+    const cwlWindow = (await resolveCwlWindow({
       db: this.db,
       eventInstanceIds: eventResolution.eventInstanceIds,
-    });
+    })).window;
     const trackedFwaClans = normalizeTrackedFwaClans(
       await this.db.trackedClan.findMany({
         orderBy: [{ tag: "asc" }, { id: "asc" }],
@@ -389,18 +444,27 @@ function compareHistoricalEventRows(a: any, b: any): number {
 }
 
 type CwlWindow = CwlAllianceActivityResult["cwlWindow"];
+type ResolvedCwlWindow = {
+  window: CwlWindow;
+  startTimingResolved: boolean;
+  endTimingResolved: boolean;
+};
 
 /** Purpose: derive the CWL window from Round 1 and ended Round 7 owners without inventing ongoing end times. */
 async function resolveCwlWindow(input: {
   db: ActivityDb;
   eventInstanceIds: string[];
-}): Promise<CwlWindow> {
+}): Promise<ResolvedCwlWindow> {
   if (input.eventInstanceIds.length <= 0) {
     return {
-      startsAt: null,
-      endsAt: null,
-      timingCoverageComplete: false,
-      missingTimingDetails: ["NO_RESOLVED_EVENTS"],
+      window: {
+        startsAt: null,
+        endsAt: null,
+        timingCoverageComplete: false,
+        missingTimingDetails: ["NO_RESOLVED_EVENTS"],
+      },
+      startTimingResolved: false,
+      endTimingResolved: false,
     };
   }
   const where = { eventInstanceId: { in: input.eventInstanceIds } };
@@ -445,12 +509,17 @@ async function resolveCwlWindow(input: {
     }
   }
   const startCoverageComplete = !missingTimingDetails.some((detail) => detail.endsWith(":START_ROUND_1"));
-  const complete = missingTimingDetails.length === 0;
+  const endCoverageComplete = !missingTimingDetails.some((detail) => detail.endsWith(":FINAL_END_ROUND_7"));
+  const complete = startCoverageComplete && endCoverageComplete;
   return {
-    startsAt: startCoverageComplete && starts.length > 0 ? minDate(starts) : null,
-    endsAt: complete && ends.length > 0 ? maxDate(ends) : null,
-    timingCoverageComplete: complete,
-    missingTimingDetails,
+    window: {
+      startsAt: startCoverageComplete && starts.length > 0 ? minDate(starts) : null,
+      endsAt: complete && ends.length > 0 ? maxDate(ends) : null,
+      timingCoverageComplete: complete,
+      missingTimingDetails,
+    },
+    startTimingResolved: startCoverageComplete && starts.length > 0,
+    endTimingResolved: complete && ends.length > 0,
   };
 }
 
