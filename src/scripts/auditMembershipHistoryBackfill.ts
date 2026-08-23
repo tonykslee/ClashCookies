@@ -11,7 +11,9 @@ import {
   hasMembershipHistorySyncNumberDisagreement,
   hasMembershipHistoryPartialIdentityConflict,
   historicalHistoryMatchesPoint,
+  membershipHistoryConflictingPersistedOwnerKeys,
   membershipHistoryPointIdentityKey,
+  normalizeMembershipHistoryClanTag,
 } from "../services/membershipHistoryIdentity";
 
 export const SCHEDULE_CORRELATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
@@ -283,29 +285,6 @@ function findScheduleCandidates(
     .sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
 }
 
-/** Purpose: map canonical histories to a points identity without nearest-time guessing. */
-/** Purpose: detect conflicting persisted owners for one historical war and clan. */
-function hasConflictingPersistedOwners(points: readonly AuditPointEvidence[]): boolean {
-  const ownersByWarClan = new Map<string, Set<string>>();
-  for (const point of points) {
-    if (point.warId === null) continue;
-    const key = `${normalizeClanTag(point.clanTag)}|${point.warId}`;
-    const owners = ownersByWarClan.get(key) ?? new Set<string>();
-    owners.add(`${point.guildId}|${point.syncNumber}`);
-    ownersByWarClan.set(key, owners);
-  }
-  return [...ownersByWarClan.values()].some((owners) => owners.size > 1);
-}
-
-/** Purpose: apply persisted-owner conflict detection only to the current cycle identity. */
-function pointHasConflictingPersistedOwner(point: AuditPointEvidence, points: readonly AuditPointEvidence[]): boolean {
-  if (point.warId === null) return false;
-  const owners = new Set(points
-    .filter((candidate) => candidate.warId === point.warId && normalizeClanTag(candidate.clanTag) === normalizeClanTag(point.clanTag))
-    .map((candidate) => `${candidate.guildId}|${candidate.syncNumber}`));
-  return owners.size > 1;
-}
-
 /** Purpose: build one diagnostic report from already-normalized historical evidence. */
 export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
   const guildId = normalizeGuildId(input.guildId);
@@ -346,13 +325,16 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     }
   }
   const conflicts = [...(input.explicitConflicts ?? [])];
+  const conflictingPersistedOwnerKeys = membershipHistoryConflictingPersistedOwnerKeys(points);
   const identityKeysByClan = new Map<string, Set<string>>();
   for (const point of points) {
     const identities = identityKeysByClan.get(normalizeClanTag(point.clanTag)) ?? new Set<string>();
     identities.add(reconciledWarIdentityKey(point, points));
     identityKeysByClan.set(normalizeClanTag(point.clanTag), identities);
     if (hasPersistedSyncNumberDisagreement(point, histories)) conflicts.push("persisted_sync_number_disagreement");
-    if (pointHasConflictingPersistedOwner(point, points)) conflicts.push("conflicting_persisted_identity_sources");
+    if (point.warId !== null && conflictingPersistedOwnerKeys.has(`${normalizeMembershipHistoryClanTag(point.clanTag)}|${point.warId}`)) {
+      conflicts.push("conflicting_persisted_identity_sources");
+    }
   }
   if ([...identityKeysByClan.values()].some((identities) => identities.size > 1)) {
     conflicts.push("conflicting_war_identities");
@@ -685,24 +667,7 @@ export function buildCycleInputs(
   cycles: any[],
 ): AuditCycleInput[] {
   const identities = new Map<string, { guildId: string; syncNumber: number; points: AuditPointEvidence[]; syncCycleTime: Date | null }>();
-  const conflictingWarClanKeys = new Set<string>();
-  const ownersByWarClan = new Map<string, Set<string>>();
-  for (const point of points) {
-    if (point.warId === null) continue;
-    const key = `${normalizeClanTag(point.clanTag)}|${point.warId}`;
-    const owners = ownersByWarClan.get(key) ?? new Set<string>();
-    owners.add(`${point.guildId}|${point.syncNumber}`);
-    ownersByWarClan.set(key, owners);
-  }
-  for (const [key, owners] of ownersByWarClan) {
-    if (owners.size > 1) conflictingWarClanKeys.add(key);
-  }
-  // Keep this helper in the normalization path so future callers cannot accidentally drop owner conflicts.
-  if (hasConflictingPersistedOwners(points)) {
-    for (const [key, owners] of ownersByWarClan) {
-      if (owners.size > 1) conflictingWarClanKeys.add(key);
-    }
-  }
+  const conflictingWarClanKeys = membershipHistoryConflictingPersistedOwnerKeys(points);
   const partialIdentityConflictOwners = new Set<string>();
   for (const point of points) {
     if (hasMembershipHistoryPartialIdentityConflict(point, points)) {

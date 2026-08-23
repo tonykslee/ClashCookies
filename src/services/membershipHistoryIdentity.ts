@@ -100,3 +100,20 @@ export function hasMembershipHistoryPartialIdentityConflict(
 export function membershipCanonicalHistoryKey(history: MembershipCanonicalHistoryIdentity): string {
   return `${history.warId}|${normalizeMembershipHistoryClanTag(history.clanTag)}`;
 }
+
+/** Purpose: return raw non-null clan/war identities claimed by more than one persisted guild/sync owner. */
+export function membershipHistoryConflictingPersistedOwnerKeys(
+  points: readonly MembershipHistoryPointIdentity[],
+): Set<string> {
+  const ownersByIdentity = new Map<string, Set<string>>();
+  for (const point of points) {
+    if (point.warId === null) continue;
+    const identityKey = `${normalizeMembershipHistoryClanTag(point.clanTag)}|${point.warId}`;
+    const owners = ownersByIdentity.get(identityKey) ?? new Set<string>();
+    owners.add(`${point.guildId ?? ""}|${point.syncNumber}`);
+    ownersByIdentity.set(identityKey, owners);
+  }
+  return new Set([...ownersByIdentity.entries()]
+    .filter(([, owners]) => owners.size > 1)
+    .map(([identityKey]) => identityKey));
+}

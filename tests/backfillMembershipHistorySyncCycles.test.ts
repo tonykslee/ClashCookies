@@ -37,6 +37,16 @@ function history(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function complianceEvaluation(overrides: Record<string, unknown> = {}) {
+  return {
+    guildId: otherGuildId,
+    warId: 100,
+    matchType: "FWA",
+    warHistory: history(),
+    ...overrides,
+  };
+}
+
 function schedule(overrides: Record<string, unknown> = {}) {
   return { id: "schedule-520", guildId, syncTime, status: "PENDING", ...overrides };
 }
@@ -53,8 +63,24 @@ function makeDb(options: {
   const histories = [...(options.histories ?? [history()])];
   const schedules = [...(options.schedules ?? [schedule()])];
   const cycles = [...(options.cycles ?? [])];
+  const matchesPointWhere = (row: any, where: any) => {
+    if (where?.guildId && row.guildId !== where.guildId) return false;
+    if (where?.syncNum?.in && !where.syncNum.in.includes(row.syncNum)) return false;
+    if (where?.OR) {
+      return where.OR.some((condition: any) =>
+        (condition.syncNum?.in && condition.syncNum.in.includes(row.syncNum)) ||
+        (condition.warId !== undefined && String(row.warId) === String(condition.warId)));
+    }
+    return true;
+  };
+  const matchesHistoryWhere = (row: any, where: any) => {
+    if (!where?.OR) return true;
+    return where.OR.some((condition: any) =>
+      (condition.syncNumber?.in && condition.syncNumber.in.includes(row.syncNumber)) ||
+      (condition.warId !== undefined && row.warId === condition.warId));
+  };
   const syncCycle = {
-    findMany: vi.fn(async () => cycles),
+    findMany: vi.fn(async ({ where }: any = {}) => cycles.filter((row) => !where?.guildId || row.guildId === where.guildId)),
     findUnique: vi.fn(async ({ where }: any) => {
       if (where.guildId_syncNumber) {
         return cycles.find((row) => row.guildId === where.guildId_syncNumber.guildId && row.syncNumber === where.guildId_syncNumber.syncNumber) ?? null;
@@ -74,11 +100,15 @@ function makeDb(options: {
   };
   const db: any = {
     clanPointsSync: {
-      findMany: vi.fn(async ({ where }: any) => where?.guildId ? points.filter((row) => row.guildId === where.guildId) : points),
+      findMany: vi.fn(async ({ where }: any = {}) => points.filter((row) => matchesPointWhere(row, where))),
     },
-    warPlanComplianceEvaluation: { findMany: vi.fn(async () => evaluations) },
-    clanWarHistory: { findMany: vi.fn(async () => histories) },
-    scheduledSyncPost: { findMany: vi.fn(async () => schedules) },
+    warPlanComplianceEvaluation: {
+      findMany: vi.fn(async ({ where }: any = {}) => evaluations.filter((row) =>
+        (!where?.guildId || row.guildId === where.guildId) &&
+        (!where?.warId?.in || where.warId.in.includes(row.warId)))),
+    },
+    clanWarHistory: { findMany: vi.fn(async ({ where }: any = {}) => histories.filter((row) => matchesHistoryWhere(row, where))) },
+    scheduledSyncPost: { findMany: vi.fn(async ({ where }: any = {}) => schedules.filter((row) => !where?.guildId || row.guildId === where.guildId)) },
     syncCycle,
   };
   db.$transaction = vi.fn(async (callback: (tx: any) => Promise<unknown>) => callback(db));
@@ -139,6 +169,62 @@ describe("MembershipHistorySyncCycleBackfillService", () => {
     });
     const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
     expect(plan.rows[0].action).toBe("CREATE");
+  });
+
+  it("rejects a raw clan/war owner collision from another sync before canonical matching", async () => {
+    const db = makeDb({
+      points: [point(), point({ guildId: otherGuildId, syncNum: 519 })],
+      histories: [history()],
+    });
+    const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
+    expect(plan.rows[0].action).toBe("CONFLICT");
+    expect(plan.rows[0].reasons).toContain("conflicting_persisted_identity_sources");
+  });
+
+  it("rejects a raw clan/war owner collision from another guild in the same sync", async () => {
+    const db = makeDb({
+      points: [point(), point({ guildId: otherGuildId })],
+      histories: [history()],
+    });
+    const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
+    expect(plan.rows[0].action).toBe("CONFLICT");
+    expect(plan.rows[0].reasons).toContain("conflicting_persisted_identity_sources");
+  });
+
+  it("does not collide raw numeric war IDs when the persisted clans differ", async () => {
+    const db = makeDb({
+      points: [
+        point({ warId: 100 }),
+        point({ guildId: otherGuildId, syncNum: 519, clanTag: "#OTHER", warId: 100 }),
+      ],
+      histories: [history()],
+    });
+    const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
+    expect(plan.rows[0].action).toBe("CREATE");
+    expect(plan.rows[0].reasons).not.toContain("conflicting_persisted_identity_sources");
+  });
+
+  it("includes bounded cross-guild compliance owners in ambiguity checks", async () => {
+    const db = makeDb({ evaluations: [complianceEvaluation()] });
+    const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
+    expect(plan.rows[0].action).toBe("CONFLICT");
+    expect(plan.rows[0].reasons).toContain("conflicting_persisted_identity_sources");
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { warId: { in: [100] } },
+    }));
+  });
+
+  it("preserves stale raw-ID recovery when an unrelated clan owns that raw ID", async () => {
+    const db = makeDb({
+      points: [
+        point({ warId: 900001 }),
+        point({ guildId: otherGuildId, syncNum: 519, clanTag: "#OTHER", warId: 900001 }),
+      ],
+      histories: [history({ warId: 100123 })],
+    });
+    const plan = await new MembershipHistorySyncCycleBackfillService(db).plan(guildId, new Set([520]));
+    expect(plan.rows[0].action).toBe("CREATE");
+    expect(plan.rows[0].reasons).not.toContain("conflicting_persisted_identity_sources");
   });
 
   it("rejects persisted same-clan sync disagreement", async () => {

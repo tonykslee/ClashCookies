@@ -4,6 +4,7 @@ import {
   hasMembershipHistorySyncNumberDisagreement,
   historicalHistoryMatchesPoint,
   membershipCanonicalHistoryKey,
+  membershipHistoryConflictingPersistedOwnerKeys,
   normalizeMembershipHistoryClanTag,
   type MembershipCanonicalHistoryIdentity,
   type MembershipHistoryPointIdentity,
@@ -153,6 +154,19 @@ function parseOwnerKey(point: PointIdentity): string {
   return `${point.guildId ?? ""}|${point.syncNumber}`;
 }
 
+function normalizeCompliancePoint(row: any): PointIdentity | null {
+  const history = row?.warHistory;
+  return normalizePoint({
+    guildId: row?.guildId,
+    syncNum: history?.syncNumber,
+    warId: row?.warId,
+    clanTag: history?.clanTag,
+    warStartTime: history?.warStartTime,
+    opponentTag: history?.opponentTag,
+    isFwa: normalizeComparable(row?.matchType ?? history?.matchType) === "FWA",
+  });
+}
+
 function scheduleCandidates(guildId: string, history: HistoryIdentity, schedules: readonly ScheduleIdentity[]): ScheduleIdentity[] {
   if (!history.prepStartTime) return [];
   const lower = history.prepStartTime.getTime() - SCHEDULE_LOOKBACK_MS;
@@ -177,6 +191,14 @@ function historyOwnerConflictReasons(
   };
   const matchedOwnersByHistory = new Map<string, Set<string>>();
   const matchedClansByWar = new Map<number, Set<string>>();
+  const conflictingPersistedOwnerKeys = membershipHistoryConflictingPersistedOwnerKeys(allPoints);
+
+  for (const point of allPoints) {
+    if (!point.isFwa || point.warId === null) continue;
+    if (conflictingPersistedOwnerKeys.has(`${normalizeMembershipHistoryClanTag(point.clanTag)}|${point.warId}`)) {
+      add(parseOwnerKey(point), "conflicting_persisted_identity_sources");
+    }
+  }
 
   for (const point of allPoints) {
     if (!point.isFwa) continue;
@@ -253,28 +275,27 @@ export class MembershipHistorySyncCycleBackfillService {
       },
     });
     const scopedPoints = uniquePoints(scopedPointRows.map(normalizePoint).filter((point): point is PointIdentity => Boolean(point)));
-    const evaluationPoints = scopedEvaluationRows.map((row) => normalizePoint({
-      guildId: row.guildId,
-      syncNum: row.warHistory?.syncNumber,
-      warId: row.warId,
-      clanTag: row.warHistory?.clanTag,
-      warStartTime: row.warHistory?.warStartTime,
-      opponentTag: row.warHistory?.opponentTag,
-      isFwa: normalizeComparable(row.matchType ?? row.warHistory?.matchType) === "FWA",
-    })).filter((point): point is PointIdentity => Boolean(point));
+    const evaluationPoints = scopedEvaluationRows
+      .map(normalizeCompliancePoint)
+      .filter((point): point is PointIdentity => Boolean(point));
     const targetPoints = uniquePoints([...scopedPoints, ...evaluationPoints]).filter((point) => syncFilter === null || syncFilter.has(point.syncNumber));
     const syncNumbers = new Set(targetPoints.map((point) => point.syncNumber));
+    const targetRawWarIds = [...new Set(targetPoints.map((point) => point.warId).filter((warId): warId is number => warId !== null))];
     const allPointRows = syncNumbers.size > 0
       ? await this.db.clanPointsSync.findMany({
-          where: { syncNum: { in: [...syncNumbers] } },
+          where: {
+            OR: [
+              { syncNum: { in: [...syncNumbers] } },
+              ...targetRawWarIds.map((warId) => ({ warId: String(warId) })),
+            ],
+          },
           select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
         })
       : [];
-    const allPoints = uniquePoints([
-      ...allPointRows.map(normalizePoint).filter((point): point is PointIdentity => Boolean(point)),
-      ...targetPoints,
-    ]);
-    const rawWarIds = [...new Set(allPoints.map((point) => point.warId).filter((warId): warId is number => warId !== null))];
+    const normalizedAllPointRows = allPointRows.map(normalizePoint).filter((point): point is PointIdentity => Boolean(point));
+    const rawWarIds = [...new Set([...normalizedAllPointRows, ...targetPoints]
+      .map((point) => point.warId)
+      .filter((warId): warId is number => warId !== null))];
     const rawHistories = syncNumbers.size > 0
       ? await this.db.clanWarHistory.findMany({
           where: {
@@ -296,6 +317,25 @@ export class MembershipHistorySyncCycleBackfillService {
         })
       : [];
     const histories = uniqueHistories(rawHistories.map(normalizeHistory).filter((history): history is HistoryIdentity => Boolean(history)));
+    const crossOwnerEvaluationRows = histories.length > 0
+      ? await this.db.warPlanComplianceEvaluation.findMany({
+          where: { warId: { in: histories.map((history) => history.warId) } },
+          select: {
+            guildId: true,
+            warId: true,
+            matchType: true,
+            warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true } },
+          },
+        })
+      : [];
+    const crossOwnerEvaluationPoints = crossOwnerEvaluationRows
+      .map(normalizeCompliancePoint)
+      .filter((point): point is PointIdentity => Boolean(point));
+    const allPoints = uniquePoints([
+      ...normalizedAllPointRows,
+      ...targetPoints,
+      ...crossOwnerEvaluationPoints,
+    ]);
     const schedules = (await this.db.scheduledSyncPost.findMany({
       where: { guildId },
       select: { id: true, guildId: true, syncTime: true, status: true },
@@ -329,6 +369,7 @@ export class MembershipHistorySyncCycleBackfillService {
       }
       if (resolvedSchedules.size > 1) reasons.add("histories_resolve_to_different_schedules");
       if (reasons.size > 0 && [...reasons].some((reason) => [
+        "conflicting_persisted_identity_sources",
         "persisted_sync_number_disagreement",
         "conflicting_war_identities",
         "conflicting_partial_war_identity_across_sync_buckets",
