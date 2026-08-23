@@ -252,12 +252,32 @@ export function buildRealizedFwaClusters(input: {
     const distinctClans = new Set(clusterHistories.map((history) => normalizeMembershipHistoryClanTag(history.clanTag)).filter(Boolean));
     const clusterParticipation = (input.participation ?? []).filter((entry) => clusterHistories.some((history) =>
       history.warId === entry.warId && normalizeMembershipHistoryClanTag(history.clanTag) === normalizeMembershipHistoryClanTag(entry.clanTag)));
-    const distinctPlayers = new Set(clusterParticipation.map((entry) => `${normalizeMembershipHistoryClanTag(entry.clanTag)}|${entry.playerTag}`));
+    const distinctPlayers = new Set(clusterParticipation.map((entry) => normalizeMembershipHistoryClanTag(entry.playerTag)));
     const persistedSyncNumbers = [...new Set(clusterHistories.map((history) => history.syncNumber).filter((value): value is number => value !== null))].sort((left, right) => left - right);
     const hasMissing = clusterHistories.some((history) => history.syncNumber === null);
     const clusterReasons = new Set<string>();
     if (summary.excessiveSpread) clusterReasons.add("realized_cluster_prep_spread_exceeds_limit");
     if (new Set(clusterHistories.map((history) => history.warId)).size !== clusterHistories.length) clusterReasons.add("duplicate_realized_history_identity");
+    const identitiesByClan = new Map<string, Set<string>>();
+    for (const history of clusterHistories) {
+      const clan = normalizeMembershipHistoryClanTag(history.clanTag);
+      const identities = identitiesByClan.get(clan) ?? new Set<string>();
+      identities.add(`${history.warId}|${history.warStartTime.getTime()}|${normalizeMembershipHistoryClanTag(history.opponentTag)}`);
+      identitiesByClan.set(clan, identities);
+    }
+    if ([...identitiesByClan.values()].some((identities) => identities.size > 1)) {
+      clusterReasons.add("multiple_wars_for_clan_in_realized_cluster");
+    }
+    const clansByPlayer = new Map<string, Set<string>>();
+    for (const entry of clusterParticipation) {
+      const player = normalizeMembershipHistoryClanTag(entry.playerTag);
+      const clans = clansByPlayer.get(player) ?? new Set<string>();
+      clans.add(normalizeMembershipHistoryClanTag(entry.clanTag));
+      clansByPlayer.set(player, clans);
+    }
+    for (const [player, clans] of clansByPlayer) {
+      if (clans.size > 1) clusterReasons.add(`player_in_multiple_clans_in_realized_cluster:${player}`);
+    }
     return {
       histories: [...clusterHistories].sort((left, right) => left.warId - right.warId || normalizeMembershipHistoryClanTag(left.clanTag).localeCompare(normalizeMembershipHistoryClanTag(right.clanTag))),
       ...summary,
@@ -312,6 +332,9 @@ export function corroborateRealizedFwaSequence(input: {
   });
   const clustered = buildRealizedFwaClusters({ histories: inInterval, participation: input.participation });
   const reasons = new Set<string>(clustered.reasons);
+  for (const cluster of clustered.clusters) {
+    for (const reason of cluster.reasons) reasons.add(reason);
+  }
   if (clustered.unclusteredHistoryWarIds.length > 0) reasons.add("realized_history_missing_prep_start_time");
   const lowerCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.lower));
   const upperCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.upper));
@@ -319,19 +342,11 @@ export function corroborateRealizedFwaSequence(input: {
     cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.lower.syncNumber && cluster.reasons.length === 0);
   const upperAnchorContextClusters = upperCandidates.filter((cluster) =>
     cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.upper.syncNumber && cluster.reasons.length === 0);
-  if (lowerCandidates.length > 1) reasons.add("multiple_lower_anchor_context_clusters");
-  if (upperCandidates.length > 1) reasons.add("multiple_upper_anchor_context_clusters");
-  if (lowerCandidates.length === 1 && lowerAnchorContextClusters.length === 0 &&
-    (lowerCandidates[0].unanimousPersistedSyncNumber === null ||
-      lowerCandidates[0].unanimousPersistedSyncNumber <= input.lower.syncNumber ||
-      lowerCandidates[0].unanimousPersistedSyncNumber >= input.upper.syncNumber)) {
-    reasons.add("lower_anchor_context_sync_number_disagreement");
+  if (lowerAnchorContextClusters.length > 1 || (lowerCandidates.length > 0 && lowerAnchorContextClusters.length === 0)) {
+    reasons.add("lower_anchor_context_ambiguous");
   }
-  if (upperCandidates.length === 1 && upperAnchorContextClusters.length === 0 &&
-    (upperCandidates[0].unanimousPersistedSyncNumber === null ||
-      upperCandidates[0].unanimousPersistedSyncNumber <= input.lower.syncNumber ||
-      upperCandidates[0].unanimousPersistedSyncNumber >= input.upper.syncNumber)) {
-    reasons.add("upper_anchor_context_sync_number_disagreement");
+  if (upperAnchorContextClusters.length > 1 || (upperCandidates.length > 0 && upperAnchorContextClusters.length === 0)) {
+    reasons.add("upper_anchor_context_ambiguous");
   }
   if (lowerAnchorContextClusters.some((cluster) => upperAnchorContextClusters.includes(cluster))) reasons.add("one_cluster_claims_both_anchor_contexts");
   const anchorContextClusters = new Set([...lowerAnchorContextClusters, ...upperAnchorContextClusters]);
