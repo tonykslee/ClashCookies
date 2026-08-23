@@ -130,9 +130,12 @@ export type RealizedFwaSequencePlan = {
   upper: ReconciliationAnchor;
   expectedMissingSyncCount: number;
   realizedClusterCount: number;
+  lowerAnchorContextClusters: RealizedFwaCluster[];
+  upperAnchorContextClusters: RealizedFwaCluster[];
   classification: "REALIZED_SEQUENCE_CORROBORATED" | "REALIZED_SEQUENCE_AMBIGUOUS";
   reasons: string[];
   cycles: RealizedFwaCyclePlan[];
+  ambiguousScheduleCandidates: ReconciliationSchedule[];
   unusedEligibleSchedules: ReconciliationSchedule[];
 };
 
@@ -284,6 +287,15 @@ function schedulesForRealizedCluster(cluster: RealizedFwaCluster, schedules: rea
     .sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
 }
 
+function clusterCompatibleWithAnchor(cluster: RealizedFwaCluster, anchor: ReconciliationAnchor): boolean {
+  return cluster.histories.length > 0 && cluster.histories.every((history) => {
+    const prep = validPrepTime(history)?.getTime();
+    if (prep === undefined) return false;
+    const delta = prep - anchor.syncTime.getTime();
+    return delta >= 0 && delta <= HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+}
+
 /** Purpose: corroborate chronological realized FWA numbering, then correlate each realized cycle to exact persisted schedules. */
 export function corroborateRealizedFwaSequence(input: {
   lower: ReconciliationAnchor;
@@ -296,18 +308,41 @@ export function corroborateRealizedFwaSequence(input: {
   const expectedMissingSyncCount = Math.max(0, input.upper.syncNumber - input.lower.syncNumber - 1);
   const inInterval = input.histories.filter((history) => {
     const timing = validPrepTime(history)?.getTime() ?? history.warStartTime.getTime();
-    return timing > input.lower.syncTime.getTime() && timing < input.upper.syncTime.getTime();
+    return timing >= input.lower.syncTime.getTime() && timing <= input.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS;
   });
   const clustered = buildRealizedFwaClusters({ histories: inInterval, participation: input.participation });
   const reasons = new Set<string>(clustered.reasons);
   if (clustered.unclusteredHistoryWarIds.length > 0) reasons.add("realized_history_missing_prep_start_time");
-  if (clustered.clusters.length !== expectedMissingSyncCount) {
-    reasons.add("realized_cluster_count_does_not_match_numeric_gap");
-    if (clustered.clusters.length < expectedMissingSyncCount) reasons.add("realized_cluster_missing");
-    if (clustered.clusters.length > expectedMissingSyncCount) reasons.add("realized_cluster_extra");
+  const lowerCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.lower));
+  const upperCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.upper));
+  const lowerAnchorContextClusters = lowerCandidates.filter((cluster) =>
+    cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.lower.syncNumber && cluster.reasons.length === 0);
+  const upperAnchorContextClusters = upperCandidates.filter((cluster) =>
+    cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.upper.syncNumber && cluster.reasons.length === 0);
+  if (lowerCandidates.length > 1) reasons.add("multiple_lower_anchor_context_clusters");
+  if (upperCandidates.length > 1) reasons.add("multiple_upper_anchor_context_clusters");
+  if (lowerCandidates.length === 1 && lowerAnchorContextClusters.length === 0 &&
+    (lowerCandidates[0].unanimousPersistedSyncNumber === null ||
+      lowerCandidates[0].unanimousPersistedSyncNumber <= input.lower.syncNumber ||
+      lowerCandidates[0].unanimousPersistedSyncNumber >= input.upper.syncNumber)) {
+    reasons.add("lower_anchor_context_sync_number_disagreement");
   }
-  const cycles = clustered.clusters.map((cluster, index) => {
-    const expectedSyncNumber = clustered.clusters.length === expectedMissingSyncCount ? input.lower.syncNumber + index + 1 : null;
+  if (upperCandidates.length === 1 && upperAnchorContextClusters.length === 0 &&
+    (upperCandidates[0].unanimousPersistedSyncNumber === null ||
+      upperCandidates[0].unanimousPersistedSyncNumber <= input.lower.syncNumber ||
+      upperCandidates[0].unanimousPersistedSyncNumber >= input.upper.syncNumber)) {
+    reasons.add("upper_anchor_context_sync_number_disagreement");
+  }
+  if (lowerAnchorContextClusters.some((cluster) => upperAnchorContextClusters.includes(cluster))) reasons.add("one_cluster_claims_both_anchor_contexts");
+  const anchorContextClusters = new Set([...lowerAnchorContextClusters, ...upperAnchorContextClusters]);
+  const missingClusters = clustered.clusters.filter((cluster) => !anchorContextClusters.has(cluster));
+  if (missingClusters.length !== expectedMissingSyncCount) {
+    reasons.add("realized_cluster_count_does_not_match_numeric_gap");
+    if (missingClusters.length < expectedMissingSyncCount) reasons.add("realized_cluster_missing");
+    if (missingClusters.length > expectedMissingSyncCount) reasons.add("realized_cluster_extra");
+  }
+  const cycles = missingClusters.map((cluster, index) => {
+    const expectedSyncNumber = missingClusters.length === expectedMissingSyncCount ? input.lower.syncNumber + index + 1 : null;
     const candidates = schedulesForRealizedCluster(cluster, input.schedules.filter((schedule) =>
       schedule.syncTime.getTime() > input.lower.syncTime.getTime() && schedule.syncTime.getTime() < input.upper.syncTime.getTime()));
     const cycleReasons = new Set(cluster.reasons);
@@ -349,9 +384,14 @@ export function corroborateRealizedFwaSequence(input: {
   });
   const usedScheduleIds = new Set(cycles.filter((cycle) => cycle.selectedSchedule && ["EXACT_SYNC_CYCLE_CANDIDATE", "ALREADY_PRESENT"].includes(cycle.action)).map((cycle) => cycle.selectedSchedule!.id));
   const intervalSchedules = input.schedules.filter((schedule) => scheduleIsEligible(schedule) && schedule.syncTime.getTime() > input.lower.syncTime.getTime() && schedule.syncTime.getTime() < input.upper.syncTime.getTime());
-  const unusedEligibleSchedules = intervalSchedules.filter((schedule) => !usedScheduleIds.has(schedule.id)).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
+  const candidateScheduleIds = new Set([
+    ...cycles.flatMap((cycle) => cycle.scheduleCandidates.map((schedule) => schedule.id)),
+    ...[...anchorContextClusters].flatMap((cluster) => schedulesForRealizedCluster(cluster, intervalSchedules).map((schedule) => schedule.id)),
+  ]);
+  const ambiguousScheduleCandidates = intervalSchedules.filter((schedule) => candidateScheduleIds.has(schedule.id) && !usedScheduleIds.has(schedule.id)).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
+  const unusedEligibleSchedules = intervalSchedules.filter((schedule) => !candidateScheduleIds.has(schedule.id)).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
   const corroborated = input.lower.guildId === input.upper.guildId && input.upper.syncNumber > input.lower.syncNumber && input.upper.syncTime.getTime() > input.lower.syncTime.getTime() &&
-    clustered.clusters.length === expectedMissingSyncCount && clustered.unclusteredHistoryWarIds.length === 0 && cycles.length === expectedMissingSyncCount &&
+    reasons.size === 0 && missingClusters.length === expectedMissingSyncCount && clustered.unclusteredHistoryWarIds.length === 0 && cycles.length === expectedMissingSyncCount &&
     cycles.every((cycle) => cycle.cluster.reasons.length === 0) &&
     cycles.every((cycle) => cycle.cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cycle.cluster.unanimousPersistedSyncNumber === cycle.expectedSyncNumber);
   if (!corroborated) reasons.add("realized_sequence_not_fully_corroborated");
@@ -359,10 +399,13 @@ export function corroborateRealizedFwaSequence(input: {
     lower: input.lower,
     upper: input.upper,
     expectedMissingSyncCount,
-    realizedClusterCount: clustered.clusters.length,
+    realizedClusterCount: missingClusters.length,
+    lowerAnchorContextClusters,
+    upperAnchorContextClusters,
     classification: corroborated ? "REALIZED_SEQUENCE_CORROBORATED" : "REALIZED_SEQUENCE_AMBIGUOUS",
     reasons: [...reasons].sort((left, right) => left.localeCompare(right)),
     cycles,
+    ambiguousScheduleCandidates,
     unusedEligibleSchedules,
   };
 }
@@ -378,9 +421,9 @@ export function classifyReconciliationHistoryScope(input: {
     .map((window) => ({ start: window.startTime.getTime(), end: window.endTime.getTime() }));
   if (windows.length === 0) {
     windows.push(...(input.intervals ?? [])
-      .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
+      .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
       .map((interval) => ({
-        start: interval.mappings[0].syncTime.getTime(),
+        start: interval.lower.syncTime.getTime(),
         end: interval.upper.syncTime.getTime(),
       })));
   }
