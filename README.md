@@ -42,6 +42,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 - Uses bounded feed-sync/watch loops for external data ingestion and update timing.
 - Established Home accounts can receive a randomized, persisted pre-sync return DM when authoritative Home state is AWAY; UNKNOWN is suppressed, linked accounts for one user are grouped, exact sync timing is deliberately hidden, and normal replay is restart-safe/idempotent.
 - Supports mirror-mode staging via guarded prod-to-staging runtime snapshot sync.
+- Includes `npm run diagnose:membership-history-backfill`, a one-time strictly read-only historical evidence audit. It classifies recoverable guild/sync boundaries from persisted canonical owners, reports ambiguity and missing mappings, and prints diagnostic-only player streak and potential Home-tenure impact without writing data or consulting current-state tables as historical evidence.
 - Exposes `/livez` and `/healthz` for liveness/readiness checks.
 
 ### Clan management tooling
