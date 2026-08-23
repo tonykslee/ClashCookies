@@ -50,7 +50,9 @@ export type MembershipStreakResult = {
 export type MembershipStreakBatchResult = {
   streaks: MembershipStreakResult[];
   boundaryTimes: Date[];
+  boundaryIdentities: Array<{ boundaryTime: Date; syncNumber: number }>;
   boundaryHistoryTruncated: boolean;
+  evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
 };
 
 export type MembershipBoundaryEvidenceByPlayer = Record<string, MembershipBoundaryEvidence[]>;
@@ -106,6 +108,7 @@ type IntervalRow = {
 type LoadedEvidence = {
   playerTags: string[];
   boundaries: Date[];
+  boundaryIdentities: Array<{ boundaryTime: Date; syncNumber: number }>;
   evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
   historyBoundReached: boolean;
   boundaryHistoryTruncated: boolean;
@@ -337,12 +340,15 @@ function buildAllianceEvidence(
 }
 
 /** Purpose: compute bounded physical-clan and alliance streaks from boundary evidence. */
-function computeStreaks(
+export function computeMembershipStreaksFromEvidence(
   playerTag: string,
   boundaries: Date[],
-  evidenceByKey: Map<string, MembershipBoundaryEvidence>,
+  evidenceRows: MembershipBoundaryEvidence[],
   historyBoundReached: boolean,
 ): MembershipStreakResult {
+  const evidenceByKey = new Map(
+    evidenceRows.map((row) => [evidenceKey(playerTag, row.boundaryTime), row]),
+  );
   const latestBoundaryTime = boundaries[0] ?? null;
   const latest = latestBoundaryTime ? evidenceByKey.get(evidenceKey(playerTag, latestBoundaryTime)) : undefined;
 
@@ -414,16 +420,10 @@ export class MembershipStreakService {
   /** Purpose: return streaks and the same canonical boundary window through one bulk evidence load. */
   async getMembershipStreakBatchForPlayers(input: MembershipStreakInput): Promise<MembershipStreakBatchResult> {
     const loaded = await this.loadEvidence(input);
-    const evidenceMaps = new Map(
-      loaded.playerTags.map((playerTag) => [
-        playerTag,
-        new Map(loaded.evidenceByPlayer[playerTag].map((row) => [evidenceKey(playerTag, row.boundaryTime), row])),
-      ]),
-    );
-    const results = loaded.playerTags.map((playerTag) => computeStreaks(
+    const results = loaded.playerTags.map((playerTag) => computeMembershipStreaksFromEvidence(
       playerTag,
       loaded.boundaries,
-      evidenceMaps.get(playerTag)!,
+      loaded.evidenceByPlayer[playerTag],
       loaded.historyBoundReached,
     ));
     console.debug(
@@ -432,7 +432,9 @@ export class MembershipStreakService {
     return {
       streaks: results,
       boundaryTimes: [...loaded.boundaries],
+      boundaryIdentities: [...loaded.boundaryIdentities],
       boundaryHistoryTruncated: loaded.boundaryHistoryTruncated,
+      evidenceByPlayer: loaded.evidenceByPlayer,
     };
   }
 
@@ -464,6 +466,7 @@ export class MembershipStreakService {
       return {
         playerTags,
         boundaries: [],
+        boundaryIdentities: [],
         evidenceByPlayer: {},
         historyBoundReached: false,
         boundaryHistoryTruncated: false,
@@ -532,6 +535,10 @@ export class MembershipStreakService {
 
     const cycles = normalizeCanonicalCycles(rawCycles);
     const boundedCycles = cycles.filter((cycle) => boundaryTimeSet.has(dateKey(cycle.syncTime)));
+    const boundaryIdentities = boundedCycles.map((cycle) => ({
+      boundaryTime: cycle.syncTime,
+      syncNumber: cycle.syncNumber,
+    }));
     const boundedCyclesBySyncNumber = new Map(boundedCycles.map((cycle) => [cycle.syncNumber, cycle]));
     const fallbackSyncNumbers = boundedCycles
       .filter((cycle) => !exactCaptureBoundarySet.has(dateKey(cycle.syncTime)))
@@ -663,6 +670,7 @@ export class MembershipStreakService {
     return {
       playerTags,
       boundaries,
+      boundaryIdentities,
       evidenceByPlayer,
       historyBoundReached: historyBoundReached || intervalHistoryBoundReached,
       boundaryHistoryTruncated,
