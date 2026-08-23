@@ -1,11 +1,11 @@
 import { prisma } from "../prisma";
 import {
   associateCanonicalHistories,
+  classifyReconciliationHistoryScope,
   classifyHistorySyncClaim,
   classifyPointsSyncClaim,
   HISTORICAL_SYNC_LOOKBACK_MS,
   planAnchoredSequenceIntervals,
-  schedulesForHistory,
   type ReconciliationAnchor,
   type ReconciliationCycle,
   type ReconciliationEvaluation,
@@ -257,8 +257,11 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     ...exactBoundaries.map((boundary) => boundary.syncNumber),
     ...intervals.flatMap((interval) => [interval.lower.syncNumber, interval.upper.syncNumber]),
   ])].sort((left, right) => left - right);
-  const evidenceStart = Math.min(...exactBoundaries.map((boundary) => boundary.syncTime.getTime()));
-  const evidenceEnd = Math.max(...exactBoundaries.map((boundary) => boundary.syncTime.getTime())) + HISTORICAL_SYNC_LOOKBACK_MS;
+  const examinedWindows = intervals
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
+    .map((interval) => ({ start: interval.lower.syncTime.getTime(), end: interval.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS }));
+  const evidenceStart = Math.min(...examinedWindows.map((window) => window.start));
+  const evidenceEnd = Math.max(...examinedWindows.map((window) => window.end));
   const evidenceTime = { gte: new Date(evidenceStart), lte: new Date(evidenceEnd) };
   const [rawPoints, rawEvaluations] = await Promise.all([
     db.clanPointsSync.findMany({
@@ -351,7 +354,9 @@ function unresolvedMissingBoundaryCount(
 }
 
 function buildBoundaryReport(boundary: ProposedSyncBoundary, reconciled: readonly ReconciledHistory[], participation: readonly ReconciliationParticipation[]): BoundaryReport {
-  const rows = reconciled.filter(({ row }) => relatedHistories(boundary, [row]).length > 0);
+  const rows = reconciled.filter(({ row, claim }) =>
+    relatedHistories(boundary, [row]).length > 0 ||
+    (claim.classification === "SYNC_AMBIGUOUS" && claim.candidates.length === 0));
   const histories = rows.map(({ row }) => row);
   let syncMatch = 0;
   let syncCorrectable = 0;
@@ -449,7 +454,11 @@ export async function runHistoricalSyncReconciliation(
   const intervals = inputs.intervals;
   const exactBoundaries = inputs.exactBoundaries;
   const associated = associateCanonicalHistories({ guildId: args.guildId, histories: inputs.histories, points: inputs.points, evaluations: inputs.evaluations });
-  const scopedAssociated = associated.filter((row) => schedulesForHistory(row.history, exactBoundaries).length > 0);
+  const scopedAssociated = associated.filter((row) => classifyReconciliationHistoryScope({
+    history: row.history,
+    boundaries: exactBoundaries,
+    intervals,
+  }) === "IN_SCOPE");
   const reconciled: ReconciledHistory[] = scopedAssociated.map((row) => {
     const claim = classifyHistorySyncClaim({ history: row.history, associated: row, boundaries: exactBoundaries });
     return { row, claim, pointsClaim: classifyPointsSyncClaim({ expectedSyncNumber: claim.expectedSyncNumber, associated: row }) };

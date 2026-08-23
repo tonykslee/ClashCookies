@@ -97,6 +97,8 @@ export type PointsClaimResult = {
   reasons: string[];
 };
 
+export type ReconciliationHistoryScope = "IN_SCOPE" | "OUT_OF_SCOPE";
+
 function comparable(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
@@ -111,6 +113,33 @@ function canonicalHistoryKey(history: ReconciliationHistory): string {
 
 function scheduleIsEligible(schedule: ReconciliationSchedule): boolean {
   return !["CANCELLED", "REPLACED"].includes(comparable(schedule.status));
+}
+
+/** Purpose: decide reconciliation scope from persisted war timing, independently of whether prep time yields a schedule candidate. */
+export function classifyReconciliationHistoryScope(input: {
+  history: ReconciliationHistory;
+  boundaries: readonly ProposedSyncBoundary[];
+  intervals?: readonly AnchorIntervalPlan[];
+}): ReconciliationHistoryScope {
+  const windows = (input.intervals ?? [])
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
+    .map((interval) => ({
+      start: interval.lower.syncTime.getTime(),
+      end: interval.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS,
+    }));
+  if (windows.length === 0 && input.boundaries.length > 0) {
+    const times = input.boundaries.map((boundary) => boundary.syncTime.getTime());
+    windows.push({
+      start: Math.min(...times),
+      end: Math.max(...times) + HISTORICAL_SYNC_LOOKBACK_MS,
+    });
+  }
+  if (windows.length === 0) return "OUT_OF_SCOPE";
+  const timing = [input.history.prepStartTime, input.history.warStartTime]
+    .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+  return timing.some((value) => windows.some((window) => value.getTime() >= window.start && value.getTime() <= window.end))
+    ? "IN_SCOPE"
+    : "OUT_OF_SCOPE";
 }
 
 /** Purpose: prove or reject a numbered interval using only canonical endpoints and persisted schedules. */
