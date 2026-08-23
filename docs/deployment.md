@@ -60,6 +60,7 @@ Mirror sync also carries the finalized war-plan history tables (`WarPlanComplian
 - The replacement container may be running while it is still building, but that does not count as ready.
 - Promotion is gated on app-level `/healthz`, not Docker status.
 - The final handoff still includes a brief restart window when the old app is stopped and the canonical app is started.
+- Historical SyncCycle replay is a one-time compiled repair utility. Dry-run is the default and only exact persisted `ScheduledSyncPost` boundaries can be written; prep-derived times are never promoted, and no membership snapshots or Home rows are synthesized. After the normal build, inspect with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range>` and apply explicitly with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range> --apply`.
 
 ## Health Endpoints
 
