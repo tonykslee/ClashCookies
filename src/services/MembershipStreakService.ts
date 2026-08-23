@@ -50,6 +50,7 @@ export type MembershipStreakResult = {
 export type MembershipStreakBatchResult = {
   streaks: MembershipStreakResult[];
   boundaryTimes: Date[];
+  boundaryIdentities: Array<{ boundaryTime: Date; syncNumber: number }>;
   boundaryHistoryTruncated: boolean;
   evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
 };
@@ -107,6 +108,7 @@ type IntervalRow = {
 type LoadedEvidence = {
   playerTags: string[];
   boundaries: Date[];
+  boundaryIdentities: Array<{ boundaryTime: Date; syncNumber: number }>;
   evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
   historyBoundReached: boolean;
   boundaryHistoryTruncated: boolean;
@@ -430,6 +432,7 @@ export class MembershipStreakService {
     return {
       streaks: results,
       boundaryTimes: [...loaded.boundaries],
+      boundaryIdentities: [...loaded.boundaryIdentities],
       boundaryHistoryTruncated: loaded.boundaryHistoryTruncated,
       evidenceByPlayer: loaded.evidenceByPlayer,
     };
@@ -463,6 +466,7 @@ export class MembershipStreakService {
       return {
         playerTags,
         boundaries: [],
+        boundaryIdentities: [],
         evidenceByPlayer: {},
         historyBoundReached: false,
         boundaryHistoryTruncated: false,
@@ -531,6 +535,10 @@ export class MembershipStreakService {
 
     const cycles = normalizeCanonicalCycles(rawCycles);
     const boundedCycles = cycles.filter((cycle) => boundaryTimeSet.has(dateKey(cycle.syncTime)));
+    const boundaryIdentities = boundedCycles.map((cycle) => ({
+      boundaryTime: cycle.syncTime,
+      syncNumber: cycle.syncNumber,
+    }));
     const boundedCyclesBySyncNumber = new Map(boundedCycles.map((cycle) => [cycle.syncNumber, cycle]));
     const fallbackSyncNumbers = boundedCycles
       .filter((cycle) => !exactCaptureBoundarySet.has(dateKey(cycle.syncTime)))
@@ -662,6 +670,7 @@ export class MembershipStreakService {
     return {
       playerTags,
       boundaries,
+      boundaryIdentities,
       evidenceByPlayer,
       historyBoundReached: historyBoundReached || intervalHistoryBoundReached,
       boundaryHistoryTruncated,

@@ -43,14 +43,25 @@ function boundaryEvidence(boundaryTime: Date, clanTag: string | null, status: "R
 }
 
 /** Purpose: build a candidate report with one optional historical player fact. */
-function candidateReport(syncNumber: number, candidateTime: Date, clanTag: string | null = "#HOME"): ReturnType<typeof classifyAuditCycle> {
+function candidateReport(syncNumber: number, candidateTime: Date, clanTag: string | null = "#HOME", syncCycleTime: Date | null = null): ReturnType<typeof classifyAuditCycle> {
   const historicalClanTag = clanTag ?? "#HOME";
   return classifyAuditCycle(input({
     syncNumber,
+    syncCycleTime,
     schedules: [],
     points: [point({ syncNumber, clanTag: historicalClanTag })],
     histories: [history({ syncNumber, clanTag: historicalClanTag, prepStartTime: candidateTime })],
     participation: clanTag ? [participation({ playerTag: "#PLAYER1", clanTag })] : [],
+  }));
+}
+
+/** Purpose: create an ambiguous historical report that retains a canonical candidate time. */
+function ambiguousReport(syncNumber: number, candidateTime: Date): ReturnType<typeof classifyAuditCycle> {
+  return classifyAuditCycle(input({
+    syncNumber,
+    schedules: [schedule({ syncTime: candidateTime })],
+    points: [point({ syncNumber }), point({ syncNumber, warId: 43 })],
+    histories: [history({ syncNumber }), history({ syncNumber, warId: 43 })],
   }));
 }
 
@@ -79,7 +90,20 @@ function history(overrides: Partial<AuditHistoryEvidence> = {}): AuditHistoryEvi
     warStartTime: warStart,
     prepStartTime: prep,
     warEndTime: new Date("2026-01-01T05:00:00.000Z"),
-    expectedTeamSize: 2,
+    ...overrides,
+  };
+}
+
+/** Purpose: build the real persisted WarLookup team-size and canonical participant shape. */
+function lookup(overrides: Partial<AuditLookupEvidence> = {}): AuditLookupEvidence {
+  return {
+    warId: 42,
+    clanTag: "#HOME",
+    startTime: warStart,
+    payload: {
+      warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" },
+      canonical: { participants: ["#PLAYER1", "#PLAYER2"] },
+    },
     ...overrides,
   };
 }
@@ -134,25 +158,25 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(classifyAuditCycle(input()).classification).toBe("SCHEDULED_SYNC_CANDIDATE");
     expect(classifyAuditCycle(input({ schedules: [] })).classification).toBe("PREP_CLUSTER_CANDIDATE");
     expect(classifyAuditCycle(input({
-      histories: [],
+      histories: [history({ prepStartTime: null })],
       participation: [],
       schedules: [],
       lookups: [{
         warId: 42,
         clanTag: "#HOME",
         startTime: warStart,
-        payload: { canonical: { participants: ["#PLAYER1", { tag: "#PLAYER2" }], teamSize: 2 } },
+        payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: ["#PLAYER1", { tag: "#PLAYER2" }] } },
       } satisfies AuditLookupEvidence],
     })).classification).toBe("LEGACY_WARLOOKUP_CANDIDATE");
     const summary = formatAuditSummary([classifyAuditCycle(input({
-      histories: [],
+      histories: [history({ prepStartTime: null })],
       participation: [],
       schedules: [],
       lookups: [{
         warId: 42,
         clanTag: "#HOME",
         startTime: warStart,
-        payload: { canonical: { participants: ["#PLAYER1"] } },
+        payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: ["#PLAYER1"] } },
       }],
     }))]);
     expect(summary).toContain("Potential additional canonical boundaries: 0");
@@ -186,6 +210,35 @@ describe("auditMembershipHistoryBackfill", () => {
     }));
     expect(conflictingSync.classification).toBe("AMBIGUOUS");
     expect(conflictingSync.conflicts).toContain("persisted_sync_number_disagreement");
+  });
+
+  it("merges a null ClanPointsSync warId with a matching compliance warId", () => {
+    const report = classifyAuditCycle(input({
+      points: [point({ warId: null })],
+      histories: [history()],
+      participation: [participation()],
+    }));
+    expect(report.classification).toBe("SCHEDULED_SYNC_CANDIDATE");
+    expect(report.conflicts).not.toContain("conflicting_war_identities");
+  });
+
+  it("fails closed for incompatible null-war tuples and conflicting persisted sizes", () => {
+    const nullTupleConflict = classifyAuditCycle(input({
+      points: [point({ warId: null }), point({ warId: null, opponentTag: "#OTHER" })],
+      histories: [history()],
+      participation: [participation()],
+    }));
+    expect(nullTupleConflict.classification).toBe("AMBIGUOUS");
+    expect(nullTupleConflict.conflicts).toContain("conflicting_war_identities");
+
+    const sizeConflict = classifyAuditCycle(input({
+      lookups: [
+        lookup({ payload: { warMeta: { teamSize: 50, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
+        lookup({ payload: { warMeta: { teamSize: 40, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
+      ],
+    }));
+    expect(sizeConflict.classification).toBe("AMBIGUOUS");
+    expect(sizeConflict.conflicts).toContain("conflicting_expected_team_sizes:#H0ME");
   });
 
   it("marks multiple schedules and excessive prep spread ambiguous", () => {
@@ -226,7 +279,7 @@ describe("auditMembershipHistoryBackfill", () => {
   });
 
   it("marks participation partial when persisted team-size evidence exceeds observed players", () => {
-    const report = classifyAuditCycle(input({ participation: [participation()] }));
+    const report = classifyAuditCycle(input({ participation: [participation()], lookups: [lookup()] }));
     expect(report.expectedTeamSize).toBe(2);
     expect(report.rosterCompleteness).toBe("PARTIAL");
     expect(report.participationDistinctPlayerCount).toBe(1);
@@ -234,7 +287,7 @@ describe("auditMembershipHistoryBackfill", () => {
 
   it("evaluates roster completeness independently for mixed historical team sizes", () => {
     const secondPoint = point({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" });
-    const secondHistory = history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2", expectedTeamSize: 40 });
+    const secondHistory = history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" });
     const firstRoster = Array.from({ length: 50 }, (_, index) => participation({ playerTag: `#A${String(index).padStart(3, "0")}` }));
     const secondRoster = Array.from({ length: 40 }, (_, index) => participation({
       playerTag: `#B${String(index).padStart(3, "0")}`,
@@ -243,13 +296,41 @@ describe("auditMembershipHistoryBackfill", () => {
     }));
     const report = classifyAuditCycle(input({
       points: [point(), secondPoint],
-      histories: [history({ expectedTeamSize: 50 }), secondHistory],
-      participation: [...firstRoster, ...secondRoster],
+      histories: [history(), secondHistory],
+      lookups: [
+        lookup({ payload: { warMeta: { teamSize: 50, teamSizeSource: "war_event_snapshot" }, canonical: { participants: firstRoster.map((row) => row.playerTag) } } }),
+        lookup({ warId: 43, clanTag: "#HOME2", payload: { warMeta: { teamSize: 40, teamSizeSource: "war_event_snapshot" }, canonical: { participants: secondRoster.map((row) => row.playerTag) } } }),
+      ],
+      participation: [],
     }));
     expect(report.expectedTeamSize).toBeNull();
     expect(report.expectedTeamSizesByClan).toEqual({ "#H0ME": 50, "#H0ME2": 40 });
     expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE", "#H0ME2": "COMPLETE" });
     expect(report.rosterCompleteness).toBe("COMPLETE");
+  });
+
+  it("keeps completeness UNKNOWN when WarLookup has no authoritative team size", () => {
+    const report = classifyAuditCycle(input({
+      participation: [participation(), participation({ playerTag: "#PLAYER2" })],
+      lookups: [lookup({ payload: { canonical: { participants: ["#PLAYER1", "#PLAYER2"] } } })],
+    }));
+    expect(report.expectedTeamSizesByClan).toEqual({ "#H0ME": null });
+    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "UNKNOWN" });
+  });
+
+  it("uses normalized participation for one clan and WarLookup fallback for another", () => {
+    const secondPoint = point({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" });
+    const report = classifyAuditCycle(input({
+      points: [point(), secondPoint],
+      histories: [history(), history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" })],
+      participation: [participation({ playerTag: "#PLAYER1" })],
+      lookups: [lookup({ warId: 43, clanTag: "#HOME2", payload: { canonical: { participants: ["#PLAYER2"] } } })],
+    }));
+    expect(report.playerClanFacts).toEqual([
+      { playerTag: "#PLAYER1", clanTag: "#H0ME", source: "ClanWarParticipation" },
+      { playerTag: "#PLAYER2", clanTag: "#H0ME2", source: "WarLookup.canonical.participants" },
+    ]);
+    expect(report.classification).toBe("SCHEDULED_SYNC_CANDIDATE");
   });
 
   it("does not treat an empty or malformed legacy payload as roster evidence", () => {
@@ -334,6 +415,7 @@ describe("auditMembershipHistoryBackfill", () => {
   it("replays candidate presence through contiguous shared streak semantics", () => {
     const projected = projectMembershipStreak("#PLAYER1", {
       boundaryTimes: [new Date("2026-03-03T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-03T00:00:00.000Z"), syncNumber: 12 }],
       evidenceRows: [boundaryEvidence(new Date("2026-03-03T00:00:00.000Z"), "#H0ME")],
       boundaryHistoryTruncated: false,
     }, [candidateReport(11, new Date("2026-03-02T00:00:00.000Z"))]);
@@ -343,6 +425,10 @@ describe("auditMembershipHistoryBackfill", () => {
   it("does not count candidate presence across unknown or authoritative absence", () => {
     const unknownGap = projectMembershipStreak("#PLAYER1", {
       boundaryTimes: [new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-02T00:00:00.000Z")],
+      boundaryIdentities: [
+        { boundaryTime: new Date("2026-03-03T00:00:00.000Z"), syncNumber: 12 },
+        { boundaryTime: new Date("2026-03-02T00:00:00.000Z"), syncNumber: 11 },
+      ],
       evidenceRows: [
         boundaryEvidence(new Date("2026-03-03T00:00:00.000Z"), "#H0ME"),
         boundaryEvidence(new Date("2026-03-02T00:00:00.000Z"), null),
@@ -352,6 +438,10 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(unknownGap.clanStreakSyncs).toBe(1);
     const absence = projectMembershipStreak("#PLAYER1", {
       boundaryTimes: [new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-02T00:00:00.000Z")],
+      boundaryIdentities: [
+        { boundaryTime: new Date("2026-03-03T00:00:00.000Z"), syncNumber: 12 },
+        { boundaryTime: new Date("2026-03-02T00:00:00.000Z"), syncNumber: 11 },
+      ],
       evidenceRows: [
         boundaryEvidence(new Date("2026-03-03T00:00:00.000Z"), "#H0ME"),
         boundaryEvidence(new Date("2026-03-02T00:00:00.000Z"), null, "ABSENT"),
@@ -364,6 +454,7 @@ describe("auditMembershipHistoryBackfill", () => {
   it("extends only the alliance streak when candidate presence is in another clan", () => {
     const projected = projectMembershipStreak("#PLAYER1", {
       boundaryTimes: [new Date("2026-03-03T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-03T00:00:00.000Z"), syncNumber: 12 }],
       evidenceRows: [boundaryEvidence(new Date("2026-03-03T00:00:00.000Z"), "#H0ME")],
       boundaryHistoryTruncated: false,
     }, [candidateReport(11, new Date("2026-03-02T00:00:00.000Z"), "#OTHER")]);
@@ -374,6 +465,7 @@ describe("auditMembershipHistoryBackfill", () => {
   it("does not inflate a projection across a noncontiguous candidate run", () => {
     const projected = projectMembershipStreak("#PLAYER1", {
       boundaryTimes: [new Date("2026-03-04T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-04T00:00:00.000Z"), syncNumber: 13 }],
       evidenceRows: [boundaryEvidence(new Date("2026-03-04T00:00:00.000Z"), "#H0ME")],
       boundaryHistoryTruncated: false,
     }, [
@@ -382,6 +474,45 @@ describe("auditMembershipHistoryBackfill", () => {
       candidateReport(10, new Date("2026-03-01T00:00:00.000Z")),
     ]);
     expect(projected.clanStreakSyncs).toBe(2);
+  });
+
+  it("does not bridge an ambiguous intervening sync", () => {
+    const projected = projectMembershipStreak("#PLAYER1", {
+      boundaryTimes: [new Date("2026-03-04T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-04T00:00:00.000Z"), syncNumber: 451 }],
+      evidenceRows: [boundaryEvidence(new Date("2026-03-04T00:00:00.000Z"), "#H0ME")],
+      boundaryHistoryTruncated: false,
+    }, [
+      ambiguousReport(450, new Date("2026-03-03T00:00:00.000Z")),
+      candidateReport(449, new Date("2026-03-02T00:00:00.000Z")),
+    ]);
+    expect(projected.clanStreakSyncs).toBe(1);
+    expect(projected.clanStreakIsLowerBound).toBe(true);
+  });
+
+  it("does not bridge a missing intervening sync number", () => {
+    const projected = projectMembershipStreak("#PLAYER1", {
+      boundaryTimes: [new Date("2026-03-04T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-04T00:00:00.000Z"), syncNumber: 451 }],
+      evidenceRows: [boundaryEvidence(new Date("2026-03-04T00:00:00.000Z"), "#H0ME")],
+      boundaryHistoryTruncated: false,
+    }, [candidateReport(449, new Date("2026-03-02T00:00:00.000Z"))]);
+    expect(projected.clanStreakSyncs).toBe(1);
+    expect(projected.clanStreakIsLowerBound).toBe(true);
+  });
+
+  it("extends normally when every intervening sync is safe", () => {
+    const projected = projectMembershipStreak("#PLAYER1", {
+      boundaryTimes: [new Date("2026-03-04T00:00:00.000Z")],
+      boundaryIdentities: [{ boundaryTime: new Date("2026-03-04T00:00:00.000Z"), syncNumber: 451 }],
+      evidenceRows: [boundaryEvidence(new Date("2026-03-04T00:00:00.000Z"), "#H0ME")],
+      boundaryHistoryTruncated: false,
+    }, [
+      candidateReport(450, new Date("2026-03-03T00:00:00.000Z")),
+      candidateReport(449, new Date("2026-03-02T00:00:00.000Z")),
+    ]);
+    expect(projected.clanStreakSyncs).toBe(3);
+    expect(projected.clanStreakIsLowerBound).toBe(false);
   });
 
   it("does not accept an unambiguously unmapped WarLookup clan identity", () => {
@@ -420,9 +551,10 @@ describe("auditMembershipHistoryBackfill", () => {
   });
 
   it("does not include post-Home-start evidence in theoretical backdate boundaries", () => {
-    const before = classifyAuditCycle(input({ syncNumber: 20, schedules: [], points: [point({ syncNumber: 20 })], histories: [history({ syncNumber: 20, prepStartTime: new Date("2026-01-01T00:00:00.000Z") })] }));
-    const after = classifyAuditCycle(input({ syncNumber: 21, schedules: [], points: [point({ syncNumber: 21 })], histories: [history({ syncNumber: 21, prepStartTime: new Date("2026-01-03T00:00:00.000Z") })] }));
-    const tenure = buildTenureDiagnostics([before, after], [{
+    const anchor = classifyAuditCycle(input({ syncNumber: 20, syncCycleTime: new Date("2026-01-02T00:00:00.000Z") }));
+    const before = classifyAuditCycle(input({ syncNumber: 19, schedules: [], points: [point({ syncNumber: 19 })], histories: [history({ syncNumber: 19, prepStartTime: new Date("2026-01-01T00:00:00.000Z") })] }));
+    const after = classifyAuditCycle(input({ syncNumber: 21, syncCycleTime: new Date("2026-01-03T00:00:00.000Z"), schedules: [], points: [point({ syncNumber: 21 })], histories: [history({ syncNumber: 21, prepStartTime: new Date("2026-01-03T00:00:00.000Z") })] }));
+    const tenure = buildTenureDiagnostics([anchor, before, after], [{
       guildId: "guild-1",
       playerTag: "#PLAYER1",
       clanTag: "#HOME",
@@ -430,6 +562,32 @@ describe("auditMembershipHistoryBackfill", () => {
     }]);
     expect(tenure.join("\n")).toContain("theoretical_extension_boundaries=1");
     expect(tenure.join("\n")).not.toContain("theoretical_extension_boundaries=2");
+  });
+
+  it("anchors theoretical Home backdate continuity to the persisted start sync", () => {
+    const startTime = new Date("2026-05-01T00:00:00.000Z");
+    const make = (syncNumber: number, candidateTime: Date, syncCycleTime: Date | null = null, clanTag: string | null = "#HOME") =>
+      candidateReport(syncNumber, candidateTime, clanTag, syncCycleTime);
+    const anchor = classifyAuditCycle(input({ syncNumber: 500, syncCycleTime: startTime }));
+    const sync499 = make(499, new Date("2026-04-30T00:00:00.000Z"));
+    const sync498 = make(498, new Date("2026-04-29T00:00:00.000Z"));
+    const home = { guildId: "guild-1", playerTag: "#PLAYER1", clanTag: "#HOME", startedAtSyncTime: startTime };
+
+    const two = buildTenureDiagnostics([anchor, sync499, sync498], [home]).join("\n");
+    expect(two).toContain("home_start_sync=500");
+    expect(two).toContain("theoretical_extension_boundaries=2");
+
+    const only498 = buildTenureDiagnostics([anchor, sync498], [home]).join("\n");
+    expect(only498).toContain("theoretical_extension_boundaries=0");
+    expect(only498).toContain("stop_reason=GAP");
+
+    const unresolved499 = buildTenureDiagnostics([anchor, ambiguousReport(499, new Date("2026-04-30T00:00:00.000Z")), sync498], [home]).join("\n");
+    expect(unresolved499).toContain("theoretical_extension_boundaries=0");
+    expect(unresolved499).toContain("stop_reason=CONFLICT");
+
+    const unknownAnchor = buildTenureDiagnostics([sync499], [home]).join("\n");
+    expect(unknownAnchor).toContain("home_start_sync=unknown");
+    expect(unknownAnchor).toContain("stop_reason=START_ANCHOR_UNKNOWN");
   });
 
   it("uses only read delegates when executing the audit", async () => {
