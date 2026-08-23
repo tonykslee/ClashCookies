@@ -464,6 +464,52 @@ describe("historical sync-number reconciliation", () => {
     expect(output).not.toContain("sync_match=0 sync_correctable=1");
   });
 
+  it("uses full proof context for bounded claims while keeping reports selected", async () => {
+    const cycles = [
+      { guildId, syncNumber: 528, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+      { guildId, syncNumber: 532, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+    ];
+    const schedules = [12, 20, 36].map((hours, index) => ({ id: `s-${529 + index}`, guildId, syncTime: new Date(base.getTime() + hours * 3600000), status: "PUBLISHED" }));
+    const ambiguousHistory = history({
+      warId: 301,
+      syncNumber: 530,
+      prepStartTime: new Date(base.getTime() + 20 * 3600000),
+      warStartTime: new Date(base.getTime() + 24 * 3600000),
+    });
+    const pointRow = { guildId, syncNum: 530, warId: "301", clanTag: ambiguousHistory.clanTag, warStartTime: ambiguousHistory.warStartTime, opponentTag: ambiguousHistory.opponentTag, isFwa: true };
+    const db = runDb({ cycles, schedules, points: [pointRow], histories: [ambiguousHistory], participation: [{ guildId, warId: "301", clanTag: ambiguousHistory.clanTag, playerTag: "#PLAYER_301", matchType: "FWA" }] });
+    const bounded = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 530 }, db);
+
+    expect(bounded).toContain("ClanWarHistory_SYNC_MATCH=0");
+    expect(bounded).toContain("ClanWarHistory_SYNC_CORRECTABLE=0");
+    expect(bounded).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
+    expect(bounded).toContain("ClanPointsSync_POINTS_AMBIGUOUS=1");
+    expect(bounded).toContain("#530 scheduledSyncPost=s-530");
+    expect(bounded).not.toContain("#529 scheduledSyncPost=s-529");
+    expect(bounded).toContain("ambiguous_war_ids=301 ambiguous_candidate_syncs=301=>#529,#530");
+    expect(bounded).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=0");
+    expect(bounded).toContain("player_boundary_membership_facts_potentially_unlocked=0");
+
+    const unbounded = await runHistoricalSyncReconciliation({ guildId }, runDb({ cycles, schedules, points: [pointRow], histories: [ambiguousHistory] }));
+    expect(unbounded).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
+    expect(unbounded).toContain("ambiguous_war_ids=301 ambiguous_candidate_syncs=301=>#529,#530");
+  });
+
+  it("keeps a history with one global candidate normally correctable", () => {
+    const associated = { history: history({ syncNumber: 529, prepStartTime: new Date(base.getTime() + 40 * 3600000) }), points: [], hasEvaluation: false, ambiguousReasons: [] };
+    const claim = classifyHistorySyncClaim({
+      history: associated.history,
+      associated,
+      boundaries: [
+        { guildId, syncNumber: 529, syncTime: new Date(base.getTime() + 12 * 3600000), scheduledSyncPostId: "s-529", lowerSyncNumber: 528, upperSyncNumber: 532 },
+        { guildId, syncNumber: 530, syncTime: new Date(base.getTime() + 20 * 3600000), scheduledSyncPostId: "s-530", lowerSyncNumber: 528, upperSyncNumber: 532 },
+        { guildId, syncNumber: 531, syncTime: new Date(base.getTime() + 60 * 3600000), scheduledSyncPostId: "s-531", lowerSyncNumber: 528, upperSyncNumber: 532 },
+      ],
+    });
+    expect(claim.classification).toBe("SYNC_CORRECTABLE");
+    expect(claim.expectedSyncNumber).toBe(530);
+  });
+
   it("proves the full #526 to #548 gap before displaying only #530 to #540", async () => {
     const { cycles, schedules } = longGapFixture();
     const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({ cycles, schedules }));

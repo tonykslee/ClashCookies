@@ -533,31 +533,32 @@ export async function runHistoricalSyncReconciliation(
 ): Promise<string> {
   const inputs = await readInputs(db, args);
   const intervals = inputs.intervals;
-  const exactBoundaries = selectedBoundaries(intervals, args);
+  const proofBoundaries = inputs.exactBoundaries;
+  const selectedAnalysisBoundaries = selectedBoundaries(intervals, args);
   const scopeWindows = selectedScopeWindows(intervals, args);
   const associated = associateCanonicalHistories({ guildId: args.guildId, histories: inputs.histories, points: inputs.points, evaluations: inputs.evaluations });
   const scopedAssociated = associated.filter((row) => classifyReconciliationHistoryScope({
     history: row.history,
-    boundaries: exactBoundaries,
+    boundaries: selectedAnalysisBoundaries,
     intervals,
     scopeWindows,
   }) === "IN_SCOPE");
   const reconciled: ReconciledHistory[] = scopedAssociated.map((row) => {
-    const claim = classifyHistorySyncClaim({ history: row.history, associated: row, boundaries: exactBoundaries });
+    const claim = classifyHistorySyncClaim({ history: row.history, associated: row, boundaries: proofBoundaries });
     return { row, claim, pointsClaim: classifyPointsSyncClaim({ expectedSyncNumber: claim.expectedSyncNumber, associated: row }) };
   });
   const uniqueMapped = reconciled.filter(({ claim }) => claim.classification !== "SYNC_AMBIGUOUS");
-  const reports = exactBoundaries.map((boundary) => buildBoundaryReport(boundary, reconciled, inputs.participation));
+  const reports = selectedAnalysisBoundaries.map((boundary) => buildBoundaryReport(boundary, reconciled, inputs.participation));
   const allSyncMatch = reconciled.filter(({ claim }) => claim.classification === "SYNC_MATCH").length;
   const allSyncCorrectable = reconciled.filter(({ claim }) => claim.classification === "SYNC_CORRECTABLE").length;
   const allSyncAmbiguous = reconciled.filter(({ claim }) => claim.classification === "SYNC_AMBIGUOUS").length;
   const allPointsMatch = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_MATCH").length;
   const allPointsCorrectable = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_CORRECTABLE").length;
   const allPointsAmbiguous = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_AMBIGUOUS").length;
-  const proposedNumbers = exactBoundaries.map((boundary) => boundary.syncNumber);
+  const proposedNumbers = selectedAnalysisBoundaries.map((boundary) => boundary.syncNumber);
   const existingNumbers = inputs.anchors.map((anchor) => anchor.syncNumber);
   const run = longestRun([...existingNumbers, ...proposedNumbers]);
-  const exactTimes = exactBoundaries.map((boundary) => boundary.syncTime.getTime()).sort((left, right) => left - right);
+  const exactTimes = selectedAnalysisBoundaries.map((boundary) => boundary.syncTime.getTime()).sort((left, right) => left - right);
   const participationBackedSyncNumbers = new Set<number>();
   const playerBoundaryFactsSet = new Set<string>();
   uniqueMapped.forEach(({ row, claim }) => {
@@ -570,7 +571,7 @@ export async function runHistoricalSyncReconciliation(
   });
   const additionalParticipationHistories = participationBackedSyncNumbers.size;
   const playerBoundaryFacts = playerBoundaryFactsSet.size;
-  const intervalLines = intervals.flatMap((interval) => formatInterval(interval, exactBoundaries));
+  const intervalLines = intervals.flatMap((interval) => formatInterval(interval, selectedAnalysisBoundaries));
   const unmappedLines = formatUnmappedAmbiguities(reconciled, inputs.participation);
   const boundaryLines = reports.flatMap((report) => [
     `#${report.boundary.syncNumber} scheduledSyncPost=${report.boundary.scheduledSyncPostId} time=${report.boundary.syncTime.toISOString()} canonical_fwa_histories=${report.histories.length} existing_persisted_buckets=${formatList(report.existingBuckets)} sync_match=${report.syncMatch} sync_correctable=${report.syncCorrectable} sync_ambiguous=${report.syncAmbiguous} points_match=${report.pointsMatch} points_correctable=${report.pointsCorrectable} points_ambiguous=${report.pointsAmbiguous} participation_rows=${report.participationRows}`,
@@ -614,7 +615,7 @@ export async function runHistoricalSyncReconciliation(
     "AGGREGATE",
     `existing_anchors=${inputs.anchors.length}`,
     `missing_numbers_examined=${proposedNumbers.length}`,
-    `ANCHORED_SEQUENCE_EXACT_boundaries=${exactBoundaries.length}`,
+    `ANCHORED_SEQUENCE_EXACT_boundaries=${selectedAnalysisBoundaries.length}`,
     `ambiguous_intervals=${intervals.filter((interval) => interval.classification === "AMBIGUOUS_SEQUENCE").length}`,
     `unresolved_missing_boundaries=${unresolvedMissingBoundaryCount(intervals, args)}`,
     `ClanWarHistory_SYNC_MATCH=${allSyncMatch}`,
@@ -628,7 +629,7 @@ export async function runHistoricalSyncReconciliation(
     ...patternLines(reports, reconciled),
     "",
     "MEMBERSHIP-HISTORY IMPACT SIMULATION (not safe/applied)",
-    `additional_exact_SyncCycle_boundaries_potentially_recoverable=${exactBoundaries.length}`,
+    `additional_exact_SyncCycle_boundaries_potentially_recoverable=${selectedAnalysisBoundaries.length}`,
     `additional_historical_FWA_cycles_with_uniquely_assignable_participation=${additionalParticipationHistories}`,
     `player_boundary_membership_facts_potentially_unlocked=${playerBoundaryFacts}`,
     `longest_newly_contiguous_canonical_sync_run=#${run.start ?? "none"}..#${run.end ?? "none"} length=${run.length}`,
