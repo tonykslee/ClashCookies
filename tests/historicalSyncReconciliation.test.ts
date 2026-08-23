@@ -1,0 +1,194 @@
+import { describe, expect, it } from "vitest";
+import {
+  associateCanonicalHistories,
+  classifyAnchoredSequenceInterval,
+  classifyHistorySyncClaim,
+  classifyPointsSyncClaim,
+  planAnchoredSequenceIntervals,
+  type ReconciliationAnchor,
+  type ReconciliationCycle,
+  type ReconciliationHistory,
+  type ReconciliationPoint,
+  type ReconciliationSchedule,
+} from "../src/services/historicalSyncReconciliation";
+import {
+  parseHistoricalSyncReconciliationArgs,
+  runHistoricalSyncReconciliation,
+} from "../src/scripts/auditHistoricalSyncReconciliation";
+
+const guildId = "guild-1";
+const otherGuildId = "guild-2";
+const base = new Date("2026-06-16T00:20:00.000Z");
+
+function anchor(syncNumber: number, offsetHours: number, guild = guildId): ReconciliationAnchor {
+  return { guildId: guild, syncNumber, syncTime: new Date(base.getTime() + offsetHours * 60 * 60 * 1000), source: "ENDED_WAR_CANONICAL" };
+}
+
+function schedule(id: string, offsetHours: number, guild = guildId, status = "PUBLISHED"): ReconciliationSchedule {
+  return { id, guildId: guild, syncTime: new Date(base.getTime() + offsetHours * 60 * 60 * 1000), status };
+}
+
+function history(overrides: Partial<ReconciliationHistory> = {}): ReconciliationHistory {
+  return {
+    warId: 100,
+    syncNumber: 521,
+    matchType: "FWA",
+    clanTag: "#HOME",
+    opponentTag: "#OPPONENT",
+    warStartTime: new Date("2026-06-17T04:00:00.000Z"),
+    prepStartTime: new Date("2026-06-17T01:00:00.000Z"),
+    warEndTime: new Date("2026-06-17T08:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function point(overrides: Partial<ReconciliationPoint> = {}): ReconciliationPoint {
+  return {
+    guildId,
+    syncNumber: 521,
+    warId: 100,
+    clanTag: "#HOME",
+    warStartTime: new Date("2026-06-17T04:00:00.000Z"),
+    opponentTag: "#OPPONENT",
+    isFwa: true,
+    ...overrides,
+  };
+}
+
+function exactInterval(overrides: Partial<Parameters<typeof classifyAnchoredSequenceInterval>[0]> = {}) {
+  return classifyAnchoredSequenceInterval({
+    lower: anchor(520, 0),
+    upper: anchor(522, 48),
+    schedules: [schedule("s-521", 24)],
+    existingCycles: [],
+    ...overrides,
+  });
+}
+
+describe("historical sync-number reconciliation", () => {
+  it("uniquely assigns #521 from #520/#522 and one valid schedule", () => {
+    const result = exactInterval();
+    expect(result.classification).toBe("ANCHORED_SEQUENCE_EXACT");
+    expect(result.mappings.map((row) => row.syncNumber)).toEqual([521]);
+  });
+
+  it("uniquely assigns #527..#547 from #526/#548 and exactly 21 schedules", () => {
+    const schedules = Array.from({ length: 21 }, (_unused, index) => schedule(`s-${index + 527}`, index + 1));
+    const result = classifyAnchoredSequenceInterval({ lower: anchor(526, 0), upper: anchor(548, 22 * 24), schedules, existingCycles: [] });
+    expect(result.classification).toBe("ANCHORED_SEQUENCE_EXACT");
+    expect(result.mappings.map((row) => row.syncNumber)).toEqual(Array.from({ length: 21 }, (_unused, index) => index + 527));
+  });
+
+  it("fails the whole interval closed for a missing schedule", () => {
+    const result = exactInterval({ schedules: [] });
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+    expect(result.reasons).toContain("schedule_count_does_not_match_numeric_gap");
+  });
+
+  it("fails the whole interval closed for an extra eligible schedule", () => {
+    const result = exactInterval({ schedules: [schedule("s-521", 24), schedule("s-extra", 36)] });
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+  });
+
+  it("fails for duplicate eligible schedule times", () => {
+    const result = exactInterval({ schedules: [schedule("s-1", 24), schedule("s-2", 24)] });
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+    expect(result.reasons).toContain("duplicate_eligible_schedule_time");
+  });
+
+  it("does not count CANCELLED or REPLACED schedules", () => {
+    const result = exactInterval({ schedules: [schedule("cancelled", 24, guildId, "CANCELLED"), schedule("replaced", 30, guildId, "REPLACED")] });
+    expect(result.eligibleScheduleCount).toBe(0);
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+  });
+
+  it("fails when a schedule collides with a contradictory SyncCycle", () => {
+    const cycles: ReconciliationCycle[] = [{ guildId, syncNumber: 999, syncTime: schedule("s-521", 24).syncTime }];
+    const result = exactInterval({ existingCycles: cycles });
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+    expect(result.reasons).toContain("schedule_collides_with_contradictory_sync_cycle");
+  });
+
+  it("classifies a wrong stored history number as SYNC_CORRECTABLE", () => {
+    const associated = { history: history({ syncNumber: 520 }), points: [point({ syncNumber: 520 })], hasEvaluation: false, ambiguousReasons: [] };
+    const result = classifyHistorySyncClaim({ history: associated.history, associated, boundaries: [{ guildId, syncNumber: 521, syncTime: schedule("s-521", 24).syncTime, scheduledSyncPostId: "s-521", lowerSyncNumber: 520, upperSyncNumber: 522 }] });
+    expect(result.classification).toBe("SYNC_CORRECTABLE");
+  });
+
+  it("classifies a null stored history number as SYNC_CORRECTABLE", () => {
+    const associated = { history: history({ syncNumber: null }), points: [], hasEvaluation: false, ambiguousReasons: [] };
+    const result = classifyHistorySyncClaim({ history: associated.history, associated, boundaries: [{ guildId, syncNumber: 521, syncTime: schedule("s-521", 24).syncTime, scheduledSyncPostId: "s-521", lowerSyncNumber: 520, upperSyncNumber: 522 }] });
+    expect(result.classification).toBe("SYNC_CORRECTABLE");
+  });
+
+  it("keeps ambiguous war timing fail-closed", () => {
+    const associated = { history: history(), points: [], hasEvaluation: false, ambiguousReasons: [] };
+    const boundaries = [20, 24].map((hours) => ({ guildId, syncNumber: hours === 20 ? 521 : 522, syncTime: schedule(`s-${hours}`, hours).syncTime, scheduledSyncPostId: `s-${hours}`, lowerSyncNumber: 520, upperSyncNumber: 523 }));
+    const result = classifyHistorySyncClaim({ history: associated.history, associated, boundaries });
+    expect(result.classification).toBe("SYNC_AMBIGUOUS");
+  });
+
+  it("does not let stale points claims override canonical schedule mapping", () => {
+    const associated = { history: history({ syncNumber: 521 }), points: [point({ syncNumber: 520 })], hasEvaluation: false, ambiguousReasons: [] };
+    const historyClaim = classifyHistorySyncClaim({ history: associated.history, associated, boundaries: [{ guildId, syncNumber: 521, syncTime: schedule("s-521", 24).syncTime, scheduledSyncPostId: "s-521", lowerSyncNumber: 520, upperSyncNumber: 522 }] });
+    const pointsClaim = classifyPointsSyncClaim({ expectedSyncNumber: historyClaim.expectedSyncNumber, associated });
+    expect(historyClaim.classification).toBe("SYNC_MATCH");
+    expect(pointsClaim.classification).toBe("POINTS_CORRECTABLE");
+  });
+
+  it("preserves raw war-id collision fail-closed behavior", () => {
+    const result = associateCanonicalHistories({
+      guildId,
+      histories: [history()],
+      points: [point(), point({ guildId: otherGuildId, syncNumber: 77 })],
+      evaluations: [],
+    });
+    expect(result[0].ambiguousReasons).toContain("raw_war_identity_claimed_by_multiple_sync_owners");
+  });
+
+  it("cannot establish a target-guild mapping from cross-guild schedules", () => {
+    const result = exactInterval({ schedules: [schedule("other", 24, otherGuildId)] });
+    expect(result.classification).toBe("AMBIGUOUS_SEQUENCE");
+    expect(result.eligibleScheduleCount).toBe(0);
+  });
+
+  it("plans intervals in canonical-number order", () => {
+    const result = planAnchoredSequenceIntervals({ guildId, anchors: [anchor(522, 48), anchor(520, 0)], schedules: [schedule("s-521", 24)], existingCycles: [] });
+    expect(result[0].mappings[0].syncNumber).toBe(521);
+  });
+
+  it("parses the bounded diagnostic command", () => {
+    expect(parseHistoricalSyncReconciliationArgs(["--guild", guildId, "--from-sync", "520", "--to-sync", "548"])).toEqual({ guildId, fromSync: 520, toSync: 548 });
+  });
+
+  it("executes without exposing or calling any mutation delegate", async () => {
+    const calls: string[] = [];
+    const read = (name: string, rows: any[]) => ({ findMany: async () => { calls.push(name); return rows; } });
+    const db = {
+      syncCycle: read("syncCycle", [{ guildId, syncNumber: 520, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" }, { guildId, syncNumber: 522, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" }]),
+      scheduledSyncPost: read("scheduledSyncPost", [{ id: "s-521", guildId, syncTime: new Date(base.getTime() + 24 * 3600000), status: "PUBLISHED" }]),
+      clanPointsSync: read("clanPointsSync", []),
+      clanWarHistory: read("clanWarHistory", []),
+      clanWarParticipation: read("clanWarParticipation", []),
+      warPlanComplianceEvaluation: read("warPlanComplianceEvaluation", []),
+    };
+    const output = await runHistoricalSyncReconciliation({ guildId }, db);
+    expect(output).toContain("READ ONLY — no database mutations will be performed.");
+    expect(calls).toHaveLength(6);
+    expect((db as any).create).toBeUndefined();
+    expect((db as any).update).toBeUndefined();
+    expect((db as any).delete).toBeUndefined();
+  });
+
+  it("produces identical output when database rows arrive in another order", async () => {
+    const rows = {
+      cycles: [{ guildId, syncNumber: 522, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" }, { guildId, syncNumber: 520, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" }],
+      schedules: [{ id: "s-521", guildId, syncTime: new Date(base.getTime() + 24 * 3600000), status: "PUBLISHED" }],
+    };
+    const makeDb = (reverse: boolean) => {
+      const read = (data: any[]) => ({ findMany: async () => reverse ? [...data].reverse() : data });
+      return { syncCycle: read(rows.cycles), scheduledSyncPost: read(rows.schedules), clanPointsSync: read([]), clanWarHistory: read([]), clanWarParticipation: read([]), warPlanComplianceEvaluation: read([]) };
+    };
+    expect(await runHistoricalSyncReconciliation({ guildId }, makeDb(false))).toBe(await runHistoricalSyncReconciliation({ guildId }, makeDb(true)));
+  });
+});
