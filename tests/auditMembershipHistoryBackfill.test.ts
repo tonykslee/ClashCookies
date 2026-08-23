@@ -304,6 +304,7 @@ describe("auditMembershipHistoryBackfill", () => {
     ));
     expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
     expect(report[0].conflicts).not.toContain("warlookup_clan_identity_mismatch");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
     expect(report[0].playerClanFacts).toEqual([
       { playerTag: "#PLAYER1", clanTag: "#H0ME", source: "WarLookup.canonical.participants" },
       { playerTag: "#PLAYER2", clanTag: "#H0ME", source: "WarLookup.canonical.participants" },
@@ -323,6 +324,47 @@ describe("auditMembershipHistoryBackfill", () => {
     ));
     expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
     expect(report[0].conflicts).not.toContain("warlookup_clan_identity_mismatch");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
+  });
+
+  it("preserves persisted sync disagreement before dropping the conflicting history", () => {
+    const conflictingHistory = history({
+      warId: 42,
+      syncNumber: 499,
+      prepStartTime: new Date("2026-01-01T10:00:00.000Z"),
+    });
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 42 })],
+      [conflictingHistory, canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("AMBIGUOUS");
+    expect(report[0].conflicts).toContain("persisted_sync_number_disagreement");
+    expect(report[0].canonicalHistoryCount).toBe(1);
+    expect(report[0].prepCluster.min?.getTime()).toBe(prep.getTime());
+    expect(report[0].prepCluster.max?.getTime()).toBe(prep.getTime());
+  });
+
+  it("does not treat a stale raw ID history owned by another clan as disagreement", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const unrelatedClanHistory = history({ warId: 900001, syncNumber: 499, clanTag: "#OTHER" });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 900001 })],
+      [canonical, unrelatedClanHistory],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
+    expect(report[0].canonicalHistoryCount).toBe(1);
   });
 
   it("fails closed when a canonical history lookup has the wrong clan", () => {

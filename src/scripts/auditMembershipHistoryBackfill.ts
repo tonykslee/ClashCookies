@@ -766,6 +766,8 @@ export function buildCycleInputs(
   return [...identities.values()].sort((left, right) =>
     left.guildId.localeCompare(right.guildId) || left.syncNumber - right.syncNumber,
   ).map((identity) => {
+    const persistedSyncNumberDisagreement = identity.points.some((point) =>
+      hasPersistedSyncNumberDisagreement(point, histories));
     const matchingHistories = histories.filter((history) => identity.points.some((point) => historyMatchesPoint(history, point)));
     const cycleParticipation = participation.filter((row) => row.guildId === identity.guildId && matchingHistories.some((history) =>
       history.warId === row.warId && normalizeClanTag(history.clanTag) === normalizeClanTag(row.clanTag)));
@@ -795,6 +797,7 @@ export function buildCycleInputs(
       ...(lookupOwnerKeys.size > 1 ? ["warlookup_maps_to_multiple_guild_sync_owners"] : []),
       ...(relevantLookups.length !== matchingLookups.length ? ["warlookup_clan_identity_mismatch"] : []),
       ...(historyOwnerKeys.size > 1 ? ["history_maps_to_multiple_guild_sync_owners"] : []),
+      ...(persistedSyncNumberDisagreement ? ["persisted_sync_number_disagreement"] : []),
       ...(partialIdentityConflictOwners.has(`${identity.guildId}|${identity.syncNumber}`)
         ? ["conflicting_partial_war_identity_across_sync_buckets"]
         : []),
