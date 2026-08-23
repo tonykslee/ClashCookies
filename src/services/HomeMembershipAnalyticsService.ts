@@ -78,15 +78,11 @@ function resolveClanTenure(input: {
   return { syncs: null, isLowerBound: false };
 }
 
-/** Purpose: adapt physical-clan streak semantics to the player's active Home clan. */
-function resolveHomeClanStreak(
-  home: ActiveHomeMembership,
+/** Purpose: expose the authoritative physical-clan streak without applying Home-specific interpretation. */
+function resolvePhysicalClanStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
   if (streak.latestFwaEvidenceStatus === "RESOLVED") {
-    if (streak.latestFwaClanTag !== normalizeClanTag(home.clanTag)) {
-      return { syncs: 0, isLowerBound: false };
-    }
     return {
       syncs: streak.clanStreakSyncs,
       isLowerBound: streak.clanStreakIsLowerBound,
@@ -144,7 +140,7 @@ export class HomeMembershipAnalyticsService {
     const results = playerTags.map((playerTag) => {
       const home = homeByPlayerTag.get(playerTag);
       const streak = streakByPlayerTag.get(playerTag);
-      if (!home || !streak) {
+      if (!streak) {
         return {
           playerTag,
           homeMembershipPeriodId: null,
@@ -158,13 +154,27 @@ export class HomeMembershipAnalyticsService {
         };
       }
 
+      const clanStreak = resolvePhysicalClanStreak(streak);
+      const allianceStreak = resolveAllianceStreak(streak);
+      if (!home) {
+        return {
+          playerTag,
+          homeMembershipPeriodId: null,
+          homeClanTag: null,
+          clanTenureSyncs: null,
+          clanTenureIsLowerBound: false,
+          clanStreakSyncs: clanStreak.syncs,
+          clanStreakIsLowerBound: clanStreak.isLowerBound,
+          allianceStreakSyncs: allianceStreak.syncs,
+          allianceStreakIsLowerBound: allianceStreak.isLowerBound,
+        };
+      }
+
       const tenure = resolveClanTenure({
         home,
         boundaryTimes: streakBatch.boundaryTimes,
         boundaryHistoryTruncated: streakBatch.boundaryHistoryTruncated,
       });
-      const clanStreak = resolveHomeClanStreak(home, streak);
-      const allianceStreak = resolveAllianceStreak(streak);
       return {
         playerTag,
         homeMembershipPeriodId: home.id,
