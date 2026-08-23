@@ -98,6 +98,7 @@ export type PointsClaimResult = {
 };
 
 export type ReconciliationHistoryScope = "IN_SCOPE" | "OUT_OF_SCOPE";
+export type ReconciliationHistoryScopeWindow = { startTime: Date; endTime: Date };
 
 function comparable(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
@@ -120,13 +121,18 @@ export function classifyReconciliationHistoryScope(input: {
   history: ReconciliationHistory;
   boundaries: readonly ProposedSyncBoundary[];
   intervals?: readonly AnchorIntervalPlan[];
+  scopeWindows?: readonly ReconciliationHistoryScopeWindow[];
 }): ReconciliationHistoryScope {
-  const windows = (input.intervals ?? [])
-    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
-    .map((interval) => ({
-      start: interval.mappings[0].syncTime.getTime(),
-      end: interval.upper.syncTime.getTime(),
-    }));
+  const windows = (input.scopeWindows ?? [])
+    .map((window) => ({ start: window.startTime.getTime(), end: window.endTime.getTime() }));
+  if (windows.length === 0) {
+    windows.push(...(input.intervals ?? [])
+      .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
+      .map((interval) => ({
+        start: interval.mappings[0].syncTime.getTime(),
+        end: interval.upper.syncTime.getTime(),
+      })));
+  }
   if (windows.length === 0 && input.boundaries.length > 0) {
     const times = input.boundaries.map((boundary) => boundary.syncTime.getTime());
     windows.push({
@@ -216,11 +222,8 @@ export function planAnchoredSequenceIntervals(input: {
   fromSync?: number;
   toSync?: number;
 }): AnchorIntervalPlan[] {
-  const lowerBound = input.fromSync === undefined ? Number.NEGATIVE_INFINITY : input.fromSync - 1;
-  const upperBound = input.toSync === undefined ? Number.POSITIVE_INFINITY : input.toSync + 1;
   const anchors = input.anchors
     .filter((anchor) => anchor.guildId === input.guildId)
-    .filter((anchor) => anchor.syncNumber >= lowerBound && anchor.syncNumber <= upperBound)
     .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
   const plans: AnchorIntervalPlan[] = [];
   for (let index = 1; index < anchors.length; index += 1) {
@@ -230,11 +233,6 @@ export function planAnchoredSequenceIntervals(input: {
       schedules: input.schedules,
       existingCycles: input.existingCycles,
     });
-    if (input.fromSync !== undefined || input.toSync !== undefined) {
-      plan.mappings = plan.mappings.filter((mapping) =>
-        (input.fromSync === undefined || mapping.syncNumber >= input.fromSync) &&
-        (input.toSync === undefined || mapping.syncNumber <= input.toSync));
-    }
     plans.push(plan);
   }
   return plans;

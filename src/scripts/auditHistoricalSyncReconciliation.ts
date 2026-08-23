@@ -16,6 +16,7 @@ import {
   type AnchorIntervalPlan,
   type AssociatedHistory,
   type ProposedSyncBoundary,
+  type ReconciliationHistoryScopeWindow,
 } from "../services/historicalSyncReconciliation";
 import { normalizeMembershipHistoryClanTag } from "../services/membershipHistoryIdentity";
 
@@ -196,20 +197,54 @@ function uniqueHistories(rows: ReconciliationHistory[]): ReconciliationHistory[]
 }
 
 async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSyncReconciliationArgs) {
-  const cycleWhere = {
-    guildId: args.guildId,
-    ...(args.fromSync !== undefined || args.toSync !== undefined ? {
+  const cycleSelect = { guildId: true, syncNumber: true, syncTime: true, resolutionSource: true };
+  let rawCycles: any[];
+  if (args.fromSync === undefined && args.toSync === undefined) {
+    rawCycles = await db.syncCycle.findMany({
+      where: { guildId: args.guildId },
+      orderBy: [{ syncNumber: "asc" }, { syncTime: "asc" }],
+      select: cycleSelect,
+    });
+  } else {
+    const lowerRows = args.fromSync !== undefined
+      ? await db.syncCycle.findMany({
+          where: { guildId: args.guildId, syncNumber: { lte: args.fromSync } },
+          orderBy: [{ syncNumber: "desc" }, { syncTime: "desc" }],
+          take: 1,
+          select: cycleSelect,
+        })
+      : [];
+    const upperRows = args.toSync !== undefined
+      ? await db.syncCycle.findMany({
+          where: { guildId: args.guildId, syncNumber: { gte: args.toSync } },
+          orderBy: [{ syncNumber: "asc" }, { syncTime: "asc" }],
+          take: 1,
+          select: cycleSelect,
+        })
+      : [];
+    const lower = lowerRows[0];
+    const upper = upperRows[0];
+    if ((args.fromSync !== undefined && !lower) || (args.toSync !== undefined && !upper)) {
+      return { anchors: [], cycles: [], schedules: [], points: [], histories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [] };
+    }
+    const rangeWhere = {
+      guildId: args.guildId,
       syncNumber: {
-        ...(args.fromSync !== undefined ? { gte: Math.max(1, args.fromSync - 1) } : {}),
-        ...(args.toSync !== undefined ? { lte: args.toSync + 1 } : {}),
+        ...(lower ? { gte: lower.syncNumber } : {}),
+        ...(upper ? { lte: upper.syncNumber } : {}),
       },
-    } : {}),
-  };
-  const rawCycles = await db.syncCycle.findMany({
-    where: cycleWhere,
-    orderBy: [{ syncNumber: "asc" }, { syncTime: "asc" }],
-    select: { guildId: true, syncNumber: true, syncTime: true, resolutionSource: true },
-  });
+    };
+    const rangeRows = await db.syncCycle.findMany({
+      where: rangeWhere,
+      orderBy: [{ syncNumber: "asc" }, { syncTime: "asc" }],
+      select: cycleSelect,
+    });
+    const byIdentity = new Map<string, any>();
+    for (const row of [...lowerRows, ...upperRows, ...rangeRows]) {
+      byIdentity.set(`${row.guildId}|${row.syncNumber}|${new Date(row.syncTime).getTime()}`, row);
+    }
+    rawCycles = [...byIdentity.values()];
+  }
   const cycles = rawCycles
     .map(normalizeCycle)
     .filter((row): row is ReconciliationCycle => Boolean(row))
@@ -225,12 +260,13 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
 
   const firstAnchorTime = anchors[0].syncTime.getTime();
   const lastAnchorTime = anchors[anchors.length - 1].syncTime.getTime();
+  const boundedAnchorRead = args.fromSync !== undefined || args.toSync !== undefined;
   const rawSchedules = await db.scheduledSyncPost.findMany({
     where: {
       guildId: args.guildId,
       syncTime: {
-        gte: new Date(firstAnchorTime - HISTORICAL_SYNC_LOOKBACK_MS),
-        lte: new Date(lastAnchorTime + HISTORICAL_SYNC_LOOKBACK_MS),
+        gte: new Date(boundedAnchorRead ? firstAnchorTime : firstAnchorTime - HISTORICAL_SYNC_LOOKBACK_MS),
+        lte: new Date(boundedAnchorRead ? lastAnchorTime : lastAnchorTime + HISTORICAL_SYNC_LOOKBACK_MS),
       },
     },
     orderBy: [{ syncTime: "asc" }, { id: "asc" }],
@@ -262,7 +298,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     .map((interval) => ({ start: interval.mappings[0].syncTime.getTime(), end: interval.upper.syncTime.getTime() }));
   const evidenceStart = Math.min(...examinedWindows.map((window) => window.start));
   const evidenceEnd = Math.max(...examinedWindows.map((window) => window.end));
-  const evidenceTime = { gte: new Date(evidenceStart), lte: new Date(evidenceEnd) };
+  const evidenceTime = { gte: new Date(evidenceStart), lt: new Date(evidenceEnd) };
   const [rawPoints, rawEvaluations] = await Promise.all([
     db.clanPointsSync.findMany({
       where: { guildId: args.guildId, OR: [{ syncNum: { in: targetSyncNumbers } }, { warStartTime: evidenceTime }] },
@@ -405,10 +441,37 @@ function formatList(values: readonly (number | string)[]): string {
   return values.length > 0 ? values.join(",") : "-";
 }
 
-function formatInterval(plan: AnchorIntervalPlan): string[] {
+function mappingIsRequested(mapping: ProposedSyncBoundary, args: HistoricalSyncReconciliationArgs): boolean {
+  return (args.fromSync === undefined || mapping.syncNumber >= args.fromSync) &&
+    (args.toSync === undefined || mapping.syncNumber <= args.toSync);
+}
+
+function selectedBoundaries(intervals: readonly AnchorIntervalPlan[], args: HistoricalSyncReconciliationArgs): ProposedSyncBoundary[] {
+  return intervals
+    .flatMap((interval) => interval.mappings.filter((mapping) => mappingIsRequested(mapping, args)))
+    .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
+}
+
+function selectedScopeWindows(intervals: readonly AnchorIntervalPlan[], args: HistoricalSyncReconciliationArgs): ReconciliationHistoryScopeWindow[] {
+  return intervals
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
+    .flatMap((interval) => {
+      const mappings = interval.mappings.filter((mapping) => mappingIsRequested(mapping, args));
+      if (mappings.length === 0) return [];
+      const first = mappings[0];
+      const last = mappings[mappings.length - 1];
+      const next = interval.mappings.find((mapping) => mapping.syncNumber > last.syncNumber);
+      return [{ startTime: first.syncTime, endTime: next?.syncTime ?? interval.upper.syncTime }];
+    });
+}
+
+function formatInterval(plan: AnchorIntervalPlan, displayedMappings: readonly ProposedSyncBoundary[] = plan.mappings): string[] {
+  const displayedIds = new Set(displayedMappings.map((mapping) => mapping.scheduledSyncPostId));
   return [
     `lower=#${plan.lower.syncNumber}@${plan.lower.syncTime.toISOString()} upper=#${plan.upper.syncNumber}@${plan.upper.syncTime.toISOString()} expected_missing=${plan.expectedMissingSyncCount} eligible_schedules=${plan.eligibleScheduleCount} classification=${plan.classification} reasons=${formatList(plan.reasons)}`,
-    ...plan.mappings.map((mapping) => `  #${mapping.syncNumber} -> ${mapping.syncTime.toISOString()} scheduled_sync_post_id=${mapping.scheduledSyncPostId}`),
+    ...plan.mappings
+      .filter((mapping) => displayedIds.has(mapping.scheduledSyncPostId))
+      .map((mapping) => `  #${mapping.syncNumber} -> ${mapping.syncTime.toISOString()} scheduled_sync_post_id=${mapping.scheduledSyncPostId}`),
   ];
 }
 
@@ -470,12 +533,14 @@ export async function runHistoricalSyncReconciliation(
 ): Promise<string> {
   const inputs = await readInputs(db, args);
   const intervals = inputs.intervals;
-  const exactBoundaries = inputs.exactBoundaries;
+  const exactBoundaries = selectedBoundaries(intervals, args);
+  const scopeWindows = selectedScopeWindows(intervals, args);
   const associated = associateCanonicalHistories({ guildId: args.guildId, histories: inputs.histories, points: inputs.points, evaluations: inputs.evaluations });
   const scopedAssociated = associated.filter((row) => classifyReconciliationHistoryScope({
     history: row.history,
     boundaries: exactBoundaries,
     intervals,
+    scopeWindows,
   }) === "IN_SCOPE");
   const reconciled: ReconciledHistory[] = scopedAssociated.map((row) => {
     const claim = classifyHistorySyncClaim({ history: row.history, associated: row, boundaries: exactBoundaries });
@@ -505,7 +570,7 @@ export async function runHistoricalSyncReconciliation(
   });
   const additionalParticipationHistories = participationBackedSyncNumbers.size;
   const playerBoundaryFacts = playerBoundaryFactsSet.size;
-  const intervalLines = intervals.flatMap(formatInterval);
+  const intervalLines = intervals.flatMap((interval) => formatInterval(interval, exactBoundaries));
   const unmappedLines = formatUnmappedAmbiguities(reconciled, inputs.participation);
   const boundaryLines = reports.flatMap((report) => [
     `#${report.boundary.syncNumber} scheduledSyncPost=${report.boundary.scheduledSyncPostId} time=${report.boundary.syncTime.toISOString()} canonical_fwa_histories=${report.histories.length} existing_persisted_buckets=${formatList(report.existingBuckets)} sync_match=${report.syncMatch} sync_correctable=${report.syncCorrectable} sync_ambiguous=${report.syncAmbiguous} points_match=${report.pointsMatch} points_correctable=${report.pointsCorrectable} points_ambiguous=${report.pointsAmbiguous} participation_rows=${report.participationRows}`,

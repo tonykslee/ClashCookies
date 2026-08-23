@@ -80,11 +80,24 @@ function runDb(overrides: {
       return rows;
     },
   });
+  const cycleRows = overrides.cycles ?? [
+    { guildId, syncNumber: 520, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+    { guildId, syncNumber: 522, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+  ];
+  const syncCycle = {
+    findMany: async (args: any) => {
+      overrides.capture?.("syncCycle", args);
+      const numberWhere = args?.where?.syncNumber ?? {};
+      let rows = cycleRows.filter((row) =>
+        (numberWhere.gte === undefined || row.syncNumber >= numberWhere.gte) &&
+        (numberWhere.lte === undefined || row.syncNumber <= numberWhere.lte));
+      if (args?.orderBy?.[0]?.syncNumber === "desc") rows = [...rows].sort((left, right) => right.syncNumber - left.syncNumber);
+      else rows = [...rows].sort((left, right) => left.syncNumber - right.syncNumber);
+      return args?.take ? rows.slice(0, args.take) : rows;
+    },
+  };
   return {
-    syncCycle: read("syncCycle", overrides.cycles ?? [
-      { guildId, syncNumber: 520, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
-      { guildId, syncNumber: 522, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
-    ]),
+    syncCycle,
     scheduledSyncPost: read("scheduledSyncPost", overrides.schedules ?? [{ id: "s-521", guildId, syncTime: new Date(base.getTime() + 24 * 3600000), status: "PUBLISHED" }]),
     clanPointsSync: read("clanPointsSync", overrides.points ?? []),
     clanWarHistory: read("clanWarHistory", overrides.histories ?? []),
@@ -97,6 +110,20 @@ function aggregateSection(output: string): string {
   const start = output.indexOf("AGGREGATE");
   const end = output.indexOf("ERROR PATTERNS");
   return output.slice(start, end);
+}
+
+function longGapFixture() {
+  const cycles = [
+    { guildId, syncNumber: 526, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+    { guildId, syncNumber: 548, syncTime: new Date(base.getTime() + 22 * 24 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+  ];
+  const schedules = Array.from({ length: 21 }, (_unused, index) => ({
+    id: `s-${index + 527}`,
+    guildId,
+    syncTime: new Date(base.getTime() + (index + 1) * 24 * 3600000),
+    status: "PUBLISHED",
+  }));
+  return { cycles, schedules };
 }
 
 describe("historical sync-number reconciliation", () => {
@@ -371,12 +398,16 @@ describe("historical sync-number reconciliation", () => {
       participation: [{ guildId, warId: "100", clanTag: "#HOME", playerTag: "#PLAYER", matchType: "FWA" }],
       capture: (name, args) => calls.push({ name, args }),
     }));
-    const cycleArgs = calls.find((call) => call.name === "syncCycle")?.args;
+    const cycleCalls = calls.filter((call) => call.name === "syncCycle");
+    const cycleArgs = cycleCalls[2]?.args;
     const scheduleArgs = calls.find((call) => call.name === "scheduledSyncPost")?.args;
     const pointsArgs = calls.find((call) => call.name === "clanPointsSync" && call.args.where?.guildId)?.args;
     const historyArgs = calls.find((call) => call.name === "clanWarHistory")?.args;
     const collisionArgs = calls.find((call) => call.name === "clanPointsSync" && !call.args.where?.guildId)?.args;
     const participationArgs = calls.find((call) => call.name === "clanWarParticipation")?.args;
+    expect(cycleCalls).toHaveLength(3);
+    expect(cycleCalls[0].args.where).toMatchObject({ guildId, syncNumber: { lte: 521 } });
+    expect(cycleCalls[1].args.where).toMatchObject({ guildId, syncNumber: { gte: 521 } });
     expect(cycleArgs.where).toMatchObject({ guildId, syncNumber: { gte: 520, lte: 522 } });
     expect(scheduleArgs.where.guildId).toBe(guildId);
     expect(scheduleArgs.where.syncTime).toEqual({ gte: expect.any(Date), lte: expect.any(Date) });
@@ -431,5 +462,80 @@ describe("historical sync-number reconciliation", () => {
     expect(output).toContain("ambiguous_war_ids=300 ambiguous_candidate_syncs=300=>#530,#531");
     expect(output).not.toContain("sync_match=1 sync_correctable=0");
     expect(output).not.toContain("sync_match=0 sync_correctable=1");
+  });
+
+  it("proves the full #526 to #548 gap before displaying only #530 to #540", async () => {
+    const { cycles, schedules } = longGapFixture();
+    const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({ cycles, schedules }));
+    expect(output).toContain("lower=#526@");
+    expect(output).toContain("upper=#548@");
+    expect(output).toContain("expected_missing=21 eligible_schedules=21 classification=ANCHORED_SEQUENCE_EXACT");
+    expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=11");
+    expect(output).toContain("#530 scheduledSyncPost=s-530");
+    expect(output).toContain("#540 scheduledSyncPost=s-540");
+    expect(output).not.toContain("#527 scheduledSyncPost=s-527");
+  });
+
+  it("fails the bounded #530 to #540 request when any full-gap schedule is missing", async () => {
+    const { cycles, schedules } = longGapFixture();
+    const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({
+      cycles,
+      schedules: schedules.filter((row) => row.id !== "s-535"),
+    }));
+    expect(output).toContain("classification=AMBIGUOUS_SEQUENCE");
+    expect(output).toContain("schedule_count_does_not_match_numeric_gap");
+    expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=0");
+  });
+
+  it("keeps full-gap proof context while excluding histories outside the requested display range", async () => {
+    const { cycles, schedules } = longGapFixture();
+    const included = history({
+      warId: 535,
+      syncNumber: 535,
+      clanTag: "#INCLUDED",
+      opponentTag: "#OPPONENT_535",
+      prepStartTime: new Date(base.getTime() + 9 * 24 * 3600000 + 3600000),
+      warStartTime: new Date(base.getTime() + 9 * 24 * 3600000 + 4 * 3600000),
+    });
+    const excluded = history({
+      warId: 541,
+      syncNumber: 541,
+      clanTag: "#EXCLUDED",
+      opponentTag: "#OPPONENT_541",
+      prepStartTime: new Date(base.getTime() + 15 * 24 * 3600000 + 3600000),
+      warStartTime: new Date(base.getTime() + 15 * 24 * 3600000 + 4 * 3600000),
+    });
+    const points = [included, excluded].map((row) => ({ guildId, syncNum: row.syncNumber, warId: String(row.warId), clanTag: row.clanTag, warStartTime: row.warStartTime, opponentTag: row.opponentTag, isFwa: true }));
+    const participation = [{ guildId, warId: "535", clanTag: "#INCLUDED", playerTag: "#PLAYER_535", matchType: "FWA" }];
+    const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({ cycles, schedules, points, histories: [included, excluded], participation }));
+    expect(output).toContain("ClanWarHistory_SYNC_MATCH=1");
+    expect(output).toContain("ClanWarHistory_SYNC_AMBIGUOUS=0");
+    expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=1");
+    expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=1");
+    expect(output).not.toContain("war_id=541");
+  });
+
+  it("preserves the surrounding proof anchors for one-sided bounded requests", async () => {
+    const { cycles, schedules } = longGapFixture();
+    const fromOnly = await runHistoricalSyncReconciliation({ guildId, fromSync: 530 }, runDb({ cycles, schedules }));
+    const toOnly = await runHistoricalSyncReconciliation({ guildId, toSync: 540 }, runDb({ cycles, schedules }));
+    for (const output of [fromOnly, toOnly]) {
+      expect(output).toContain("lower=#526@");
+      expect(output).toContain("upper=#548@");
+      expect(output).toContain("expected_missing=21 eligible_schedules=21 classification=ANCHORED_SEQUENCE_EXACT");
+    }
+    expect(fromOnly).toContain("#530 scheduledSyncPost=s-530");
+    expect(fromOnly).toContain("#547 scheduledSyncPost=s-547");
+    expect(toOnly).toContain("#527 scheduledSyncPost=s-527");
+    expect(toOnly).toContain("#540 scheduledSyncPost=s-540");
+  });
+
+  it("fails closed when a bounded request lacks a required surrounding anchor", async () => {
+    const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({
+      cycles: [{ guildId, syncNumber: 548, syncTime: new Date(base.getTime() + 22 * 24 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" }],
+      schedules: [],
+    }));
+    expect(output).toContain("PROPOSED BOUNDARIES\nnone");
+    expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=0");
   });
 });
