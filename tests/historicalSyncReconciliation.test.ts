@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   associateCanonicalHistories,
+  buildRealizedFwaClusters,
   classifyAnchoredSequenceInterval,
   classifyHistorySyncClaim,
   classifyPointsSyncClaim,
   classifyReconciliationHistoryScope,
   planAnchoredSequenceIntervals,
+  corroborateRealizedFwaSequence,
   type ReconciliationAnchor,
   type ReconciliationCycle,
   type ReconciliationHistory,
@@ -124,6 +126,45 @@ function longGapFixture() {
     status: "PUBLISHED",
   }));
   return { cycles, schedules };
+}
+
+function realizedFixture() {
+  const cycles = [
+    { guildId, syncNumber: 100, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+    { guildId, syncNumber: 104, syncTime: new Date(base.getTime() + 96 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+  ];
+  const schedules = [1, 10, 40].map((hours, index) => ({
+    id: `s-${101 + index}`,
+    guildId,
+    syncTime: new Date(base.getTime() + hours * 3600000),
+    status: "PUBLISHED",
+  }));
+  const histories = [13, 30, 60].map((hours, index) => history({
+    warId: 1000 + index,
+    syncNumber: 101 + index,
+    clanTag: `#REALIZED_${index}`,
+    opponentTag: `#OPPONENT_${index}`,
+    prepStartTime: new Date(base.getTime() + hours * 3600000),
+    warStartTime: new Date(base.getTime() + (hours + 4) * 3600000),
+    warEndTime: new Date(base.getTime() + (hours + 8) * 3600000),
+  }));
+  const points = histories.map((row) => ({
+    guildId,
+    syncNum: row.syncNumber,
+    warId: String(row.warId),
+    clanTag: row.clanTag,
+    warStartTime: row.warStartTime,
+    opponentTag: row.opponentTag,
+    isFwa: true,
+  }));
+  const participation = histories.map((row, index) => ({
+    guildId,
+    warId: String(row.warId),
+    clanTag: row.clanTag,
+    playerTag: `#REALIZED_PLAYER_${index}`,
+    matchType: "FWA",
+  }));
+  return { cycles, schedules, histories, points, participation };
 }
 
 describe("historical sync-number reconciliation", () => {
@@ -260,7 +301,7 @@ describe("historical sync-number reconciliation", () => {
     };
     const output = await runHistoricalSyncReconciliation({ guildId }, db);
     expect(output).toContain("READ ONLY — no database mutations will be performed.");
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     expect((db as any).create).toBeUndefined();
     expect((db as any).update).toBeUndefined();
     expect((db as any).delete).toBeUndefined();
@@ -457,11 +498,11 @@ describe("historical sync-number reconciliation", () => {
     expect(output).toContain("ClanPointsSync_POINTS_MATCH=0");
     expect(output).toContain("ClanPointsSync_POINTS_CORRECTABLE=0");
     expect(output).toContain("ClanPointsSync_POINTS_AMBIGUOUS=1");
-    expect(output).toContain("#530 scheduledSyncPost=s-530");
-    expect(output).toContain("#531 scheduledSyncPost=s-531");
-    expect(output).toContain("ambiguous_war_ids=300 ambiguous_candidate_syncs=300=>#530,#531");
-    expect(output).not.toContain("sync_match=1 sync_correctable=0");
-    expect(output).not.toContain("sync_match=0 sync_correctable=1");
+    expect(output).toContain("REALIZED FWA CYCLES");
+    expect(output).toContain("action=REALIZED_NUMBER_CONFLICT");
+    expect(output).toContain("schedule_candidates=s-530@");
+    expect(output).toContain("s-531@");
+    expect(output).toContain("UNMAPPED IN-SCOPE AMBIGUITIES");
   });
 
   it("uses full proof context for bounded claims while keeping reports selected", async () => {
@@ -484,15 +525,15 @@ describe("historical sync-number reconciliation", () => {
     expect(bounded).toContain("ClanWarHistory_SYNC_CORRECTABLE=0");
     expect(bounded).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
     expect(bounded).toContain("ClanPointsSync_POINTS_AMBIGUOUS=1");
-    expect(bounded).toContain("#530 scheduledSyncPost=s-530");
-    expect(bounded).not.toContain("#529 scheduledSyncPost=s-529");
-    expect(bounded).toContain("ambiguous_war_ids=301 ambiguous_candidate_syncs=301=>#529,#530");
+    expect(bounded).toContain("REALIZED FWA CYCLES");
+    expect(bounded).not.toContain("safe_realized_boundary=#529");
+    expect(bounded).toContain("number_classification=HISTORY_SYNC_MATCH");
     expect(bounded).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=0");
     expect(bounded).toContain("player_boundary_membership_facts_potentially_unlocked=0");
 
     const unbounded = await runHistoricalSyncReconciliation({ guildId }, runDb({ cycles, schedules, points: [pointRow], histories: [ambiguousHistory] }));
     expect(unbounded).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
-    expect(unbounded).toContain("ambiguous_war_ids=301 ambiguous_candidate_syncs=301=>#529,#530");
+    expect(unbounded).toContain("number_classification=HISTORY_SYNC_MATCH");
   });
 
   it("keeps a history with one global candidate normally correctable", () => {
@@ -516,10 +557,9 @@ describe("historical sync-number reconciliation", () => {
     expect(output).toContain("lower=#526@");
     expect(output).toContain("upper=#548@");
     expect(output).toContain("expected_missing=21 eligible_schedules=21 classification=ANCHORED_SEQUENCE_EXACT");
-    expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=11");
-    expect(output).toContain("#530 scheduledSyncPost=s-530");
-    expect(output).toContain("#540 scheduledSyncPost=s-540");
-    expect(output).not.toContain("#527 scheduledSyncPost=s-527");
+    expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=0");
+    expect(output).toContain("REALIZED_SEQUENCE_AMBIGUOUS=1");
+    expect(output).toContain("unresolved_sync_numbers=530,531,532,533,534,535,536,537,538,539,540");
   });
 
   it("fails the bounded #530 to #540 request when any full-gap schedule is missing", async () => {
@@ -556,8 +596,8 @@ describe("historical sync-number reconciliation", () => {
     const output = await runHistoricalSyncReconciliation({ guildId, fromSync: 530, toSync: 540 }, runDb({ cycles, schedules, points, histories: [included, excluded], participation }));
     expect(output).toContain("ClanWarHistory_SYNC_MATCH=1");
     expect(output).toContain("ClanWarHistory_SYNC_AMBIGUOUS=0");
-    expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=1");
-    expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=1");
+    expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=0");
+    expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=0");
     expect(output).not.toContain("war_id=541");
   });
 
@@ -570,10 +610,8 @@ describe("historical sync-number reconciliation", () => {
       expect(output).toContain("upper=#548@");
       expect(output).toContain("expected_missing=21 eligible_schedules=21 classification=ANCHORED_SEQUENCE_EXACT");
     }
-    expect(fromOnly).toContain("#530 scheduledSyncPost=s-530");
-    expect(fromOnly).toContain("#547 scheduledSyncPost=s-547");
-    expect(toOnly).toContain("#527 scheduledSyncPost=s-527");
-    expect(toOnly).toContain("#540 scheduledSyncPost=s-540");
+    expect(fromOnly).toContain("unresolved_sync_numbers=530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547");
+    expect(toOnly).toContain("unresolved_sync_numbers=527,528,529,530,531,532,533,534,535,536,537,538,539,540");
   });
 
   it("fails closed when a bounded request lacks a required surrounding anchor", async () => {
@@ -583,5 +621,80 @@ describe("historical sync-number reconciliation", () => {
     }));
     expect(output).toContain("PROPOSED BOUNDARIES\nnone");
     expect(output).toContain("ANCHORED_SEQUENCE_EXACT_boundaries=0");
+  });
+
+  it("clusters realized ended FWA histories with deterministic diagnostics", () => {
+    const first = history({ warId: 700, syncNumber: 11, clanTag: "#A", prepStartTime: new Date(base.getTime() + 12 * 3600000) });
+    const second = history({ warId: 701, syncNumber: 11, clanTag: "#B", prepStartTime: new Date(base.getTime() + 13 * 3600000) });
+    const third = history({ warId: 702, syncNumber: 12, clanTag: "#C", prepStartTime: new Date(base.getTime() + 40 * 3600000) });
+    const result = buildRealizedFwaClusters({ histories: [third, second, first], participation: [
+      { guildId, warId: 700, clanTag: "#A", playerTag: "#P1", matchType: "FWA" },
+      { guildId, warId: 701, clanTag: "#B", playerTag: "#P2", matchType: "FWA" },
+    ] });
+    expect(result.clusters).toHaveLength(2);
+    expect(result.clusters[0]).toMatchObject({ canonicalHistoryCount: 2, distinctClanCount: 2, participationRowCount: 2, distinctPlayerCount: 2, unanimousPersistedSyncNumber: 11, historySyncClassification: "HISTORY_SYNC_MATCH" });
+    expect(result.clusters[0].spreadMinutes).toBe(60);
+    expect(result.clusters[0].canonicalWarIds).toEqual([700, 701]);
+  });
+
+  it("corroborates realized cycles independently of points and keeps A ambiguous while B/C retain their numbers", () => {
+    const fixture = realizedFixture();
+    const sequence = corroborateRealizedFwaSequence({
+      lower: anchor(100, 0),
+      upper: anchor(104, 96),
+      histories: fixture.histories,
+      participation: fixture.participation.map((row) => ({ ...row, warId: Number(row.warId) })),
+      schedules: fixture.schedules.map((row) => ({ ...row, syncTime: new Date(row.syncTime) })),
+      existingCycles: [],
+    });
+    expect(sequence.classification).toBe("REALIZED_SEQUENCE_CORROBORATED");
+    expect(sequence.cycles.map((cycle) => [cycle.expectedSyncNumber, cycle.action])).toEqual([
+      [101, "REALIZED_AMBIGUOUS_SCHEDULE"],
+      [102, "EXACT_SYNC_CYCLE_CANDIDATE"],
+      [103, "EXACT_SYNC_CYCLE_CANDIDATE"],
+    ]);
+    expect(sequence.cycles[1].selectedSchedule?.id).toBe("s-102");
+    expect(sequence.cycles[2].selectedSchedule?.id).toBe("s-103");
+    expect(sequence.unusedEligibleSchedules.map((row) => row.id)).toEqual(["s-101"]);
+  });
+
+  it("reports direct realized history evidence even when points and evaluations do not discover it", async () => {
+    const fixture = realizedFixture();
+    const output = await runHistoricalSyncReconciliation({ guildId }, runDb({
+      cycles: fixture.cycles,
+      schedules: fixture.schedules,
+      histories: fixture.histories,
+      participation: fixture.participation,
+    }));
+    expect(output).toContain("REALIZED FWA SEQUENCES");
+    expect(output).toContain("REALIZED FWA CYCLES");
+    expect(output).toContain("history_count=1 distinct_clans=1");
+    expect(output).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
+    expect(output).toContain("ClanPointsSync_POINTS_AMBIGUOUS=3");
+    expect(output).toContain("EXACT_SYNC_CYCLE_CANDIDATE=2");
+    expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=2");
+    expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=2");
+    expect(output).toContain("ambiguous_war_ids=1000");
+  });
+
+  it("keeps a realized cluster unresolved when no exact persisted schedule satisfies the live relationship", () => {
+    const lower = anchor(10, 0);
+    const upper = anchor(13, 72);
+    const missingScheduleHistory = history({
+      warId: 800,
+      syncNumber: 12,
+      prepStartTime: new Date(base.getTime() + 60 * 3600000),
+      warStartTime: new Date(base.getTime() + 64 * 3600000),
+    });
+    const sequence = corroborateRealizedFwaSequence({
+      lower,
+      upper,
+      histories: [history({ warId: 799, syncNumber: 11, prepStartTime: new Date(base.getTime() + 12 * 3600000) }), missingScheduleHistory],
+      schedules: [schedule("s-11", 1)],
+      existingCycles: [],
+    });
+    expect(sequence.classification).toBe("REALIZED_SEQUENCE_CORROBORATED");
+    expect(sequence.cycles[1].action).toBe("REALIZED_MISSING_EXACT_SCHEDULE");
+    expect(sequence.cycles[1].reasons).toContain("no_exact_persisted_schedule");
   });
 });
