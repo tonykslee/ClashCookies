@@ -636,7 +636,7 @@ export function formatLinkListTenureLabel(input: {
   allianceStreakSyncs: number | null;
   allianceStreakIsLowerBound: boolean;
 } | null | undefined): string {
-  if (!input?.homeMembershipPeriodId) return WEIGHT_PLACEHOLDER;
+  if (!input) return WEIGHT_PLACEHOLDER;
   const formatMetric = (value: number | null, lowerBound: boolean): string => {
     if (value === null || !Number.isFinite(value)) return WEIGHT_PLACEHOLDER;
     return `${Math.max(0, Math.trunc(value))}${lowerBound ? "+" : ""}`;

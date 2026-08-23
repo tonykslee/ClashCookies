@@ -2067,10 +2067,28 @@ describe("/link run", () => {
       allianceStreakSyncs: 118,
       allianceStreakIsLowerBound: false,
     })).toBe("C63/S—/A118");
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: null,
+      clanTenureSyncs: null,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: 2,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: 2,
+      allianceStreakIsLowerBound: false,
+    })).toBe("C—/S2/A2");
+    expect(formatLinkListTenureLabel({
+      homeMembershipPeriodId: null,
+      clanTenureSyncs: null,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: 2,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 21,
+      allianceStreakIsLowerBound: true,
+    })).toBe("C—/S2+/A21+");
     expect(formatLinkListTenureLabel(null)).toBe("—");
   });
 
-  it("sorts Tenure by known minimum, then Home Clan and Alliance streaks", () => {
+  it("sorts Tenure by known minimum, then Clan and Alliance streaks", () => {
     const base = {
       isLinked: true,
       defaultIndex: 0,

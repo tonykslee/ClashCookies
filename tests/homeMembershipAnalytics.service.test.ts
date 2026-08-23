@@ -81,7 +81,7 @@ function byTag(results: HomeMembershipAnalyticsResult[], tag = playerTag): HomeM
 }
 
 describe("HomeMembershipAnalyticsService", () => {
-  it("returns unavailable Home analytics for a no-Home player without fabricating zeros", async () => {
+  it("exposes physical streaks for a no-Home player while tenure remains unavailable", async () => {
     const built = serviceFor({
       streaks: [streak()],
       boundaryTimes: [time(3), time(2), time(1)],
@@ -94,8 +94,8 @@ describe("HomeMembershipAnalyticsService", () => {
       homeMembershipPeriodId: null,
       homeClanTag: null,
       clanTenureSyncs: null,
-      clanStreakSyncs: null,
-      allianceStreakSyncs: null,
+      clanStreakSyncs: 3,
+      allianceStreakSyncs: 4,
     });
     expect(built.homeReader.getActiveHomeMembershipsForPlayers).toHaveBeenCalledTimes(1);
     expect(built.streakReader.getMembershipStreakBatchForPlayers).toHaveBeenCalledTimes(1);
@@ -122,7 +122,7 @@ describe("HomeMembershipAnalyticsService", () => {
 
     const [result] = await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
 
-    expect(result).toMatchObject({ clanTenureSyncs: 5, clanTenureIsLowerBound: false, clanStreakSyncs: 0 });
+    expect(result).toMatchObject({ clanTenureSyncs: 5, clanTenureIsLowerBound: false, clanStreakSyncs: 1, allianceStreakSyncs: 4 });
   });
 
   it("counts a successor Home from its own started boundary", async () => {
@@ -134,7 +134,7 @@ describe("HomeMembershipAnalyticsService", () => {
 
     const [result] = await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
 
-    expect(result).toMatchObject({ homeClanTag: otherClanTag, clanTenureSyncs: 2 });
+    expect(result).toMatchObject({ homeClanTag: otherClanTag, clanTenureSyncs: 2, clanStreakSyncs: 2 });
   });
 
   it("marks tenure as a lower bound when the bounded history ends after Home start", async () => {
@@ -148,6 +148,40 @@ describe("HomeMembershipAnalyticsService", () => {
     const [result] = await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
 
     expect(result).toMatchObject({ clanTenureSyncs: 3, clanTenureIsLowerBound: true });
+  });
+
+  it("preserves independent lower-bound streak flags without an active Home", async () => {
+    const built = serviceFor({
+      streaks: [streak({ clanStreakSyncs: 2, clanStreakIsLowerBound: true, allianceStreakSyncs: 2, allianceStreakIsLowerBound: true })],
+      boundaryTimes: [time(3), time(2), time(1)],
+    });
+
+    const [result] = await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
+
+    expect(result).toMatchObject({
+      clanTenureSyncs: null,
+      clanTenureIsLowerBound: false,
+      clanStreakSyncs: 2,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 2,
+      allianceStreakIsLowerBound: true,
+    });
+  });
+
+  it("keeps no-Home unknown and absent latest evidence fail-closed", async () => {
+    const unknownBuilt = serviceFor({
+      streaks: [streak({ latestFwaEvidenceStatus: "UNKNOWN", latestFwaClanTag: null, latestEvidenceAvailable: false })],
+      boundaryTimes: [time(3), time(2), time(1)],
+    });
+    const [unknown] = await unknownBuilt.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
+    expect(unknown).toMatchObject({ clanTenureSyncs: null, clanStreakSyncs: null, allianceStreakSyncs: null });
+
+    const absentBuilt = serviceFor({
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3), time(2), time(1)],
+    });
+    const [absent] = await absentBuilt.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] });
+    expect(absent).toMatchObject({ clanTenureSyncs: null, clanStreakSyncs: 0, allianceStreakSyncs: 0 });
   });
 
   it("returns unknown tenure when there is no canonical boundary coverage", async () => {
@@ -166,7 +200,7 @@ describe("HomeMembershipAnalyticsService", () => {
     ["ABSENT", 0],
     ["UNKNOWN", null],
     ["AMBIGUOUS", null],
-  ] as const)("maps latest %s physical evidence to Home Clan Streak %s", async (status, expected) => {
+  ] as const)("maps latest %s physical evidence to the physical-clan streak %s", async (status, expected) => {
     const built = serviceFor({
       homes: [home()],
       streaks: [streak({ latestFwaEvidenceStatus: status, latestFwaClanTag: null, latestEvidenceAvailable: status !== "UNKNOWN" })],
