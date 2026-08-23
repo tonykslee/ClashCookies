@@ -132,6 +132,7 @@ export type RealizedFwaSequencePlan = {
   realizedClusterCount: number;
   lowerAnchorContextClusters: RealizedFwaCluster[];
   upperAnchorContextClusters: RealizedFwaCluster[];
+  postUpperContextClusters: RealizedFwaCluster[];
   classification: "REALIZED_SEQUENCE_CORROBORATED" | "REALIZED_SEQUENCE_AMBIGUOUS";
   reasons: string[];
   cycles: RealizedFwaCyclePlan[];
@@ -322,6 +323,7 @@ export function corroborateRealizedFwaSequence(input: {
   upper: ReconciliationAnchor;
   histories: readonly ReconciliationHistory[];
   participation?: readonly ReconciliationParticipation[];
+  conflictingHistories?: readonly ReconciliationHistory[];
   schedules: readonly ReconciliationSchedule[];
   existingCycles: readonly ReconciliationCycle[];
 }): RealizedFwaSequencePlan {
@@ -350,7 +352,22 @@ export function corroborateRealizedFwaSequence(input: {
   }
   if (lowerAnchorContextClusters.some((cluster) => upperAnchorContextClusters.includes(cluster))) reasons.add("one_cluster_claims_both_anchor_contexts");
   const anchorContextClusters = new Set([...lowerAnchorContextClusters, ...upperAnchorContextClusters]);
-  const missingClusters = clustered.clusters.filter((cluster) => !anchorContextClusters.has(cluster));
+  const postUpperContextClusters = clustered.clusters.filter((cluster) =>
+    !anchorContextClusters.has(cluster) && cluster.prepMin !== null && cluster.prepMin.getTime() >= input.upper.syncTime.getTime());
+  for (const cluster of postUpperContextClusters) {
+    if (cluster.unanimousPersistedSyncNumber !== null && cluster.unanimousPersistedSyncNumber <= input.upper.syncNumber) {
+      reasons.add("post_upper_cluster_claims_non_future_sync");
+    }
+  }
+  const conflictingHistories = (input.conflictingHistories ?? []).filter((history) => {
+    const timing = validPrepTime(history)?.getTime() ?? history.warStartTime.getTime();
+    return timing >= input.lower.syncTime.getTime() && timing <= input.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+  if (conflictingHistories.length > 0) reasons.add("conflicting_direct_history_ownership");
+  const missingClusters = clustered.clusters.filter((cluster) => !anchorContextClusters.has(cluster) && cluster.histories.every((history) => {
+    const prep = validPrepTime(history)?.getTime();
+    return prep !== undefined && prep > input.lower.syncTime.getTime() && prep < input.upper.syncTime.getTime();
+  }));
   if (missingClusters.length !== expectedMissingSyncCount) {
     reasons.add("realized_cluster_count_does_not_match_numeric_gap");
     if (missingClusters.length < expectedMissingSyncCount) reasons.add("realized_cluster_missing");
@@ -417,6 +434,7 @@ export function corroborateRealizedFwaSequence(input: {
     realizedClusterCount: missingClusters.length,
     lowerAnchorContextClusters,
     upperAnchorContextClusters,
+    postUpperContextClusters,
     classification: corroborated ? "REALIZED_SEQUENCE_CORROBORATED" : "REALIZED_SEQUENCE_AMBIGUOUS",
     reasons: [...reasons].sort((left, right) => left.localeCompare(right)),
     cycles,
@@ -432,9 +450,9 @@ export function classifyReconciliationHistoryScope(input: {
   intervals?: readonly AnchorIntervalPlan[];
   scopeWindows?: readonly ReconciliationHistoryScopeWindow[];
 }): ReconciliationHistoryScope {
-  const windows = (input.scopeWindows ?? [])
+  const windows = (input.scopeWindows === undefined ? [] : input.scopeWindows)
     .map((window) => ({ start: window.startTime.getTime(), end: window.endTime.getTime() }));
-  if (windows.length === 0) {
+  if (input.scopeWindows === undefined && windows.length === 0) {
     windows.push(...(input.intervals ?? [])
       .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
       .map((interval) => ({

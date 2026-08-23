@@ -198,7 +198,7 @@ export function classifyDirectHistoryOwnership(input: {
     if (point.guildId && point.isFwa && historicalHistoryMatchesPointByExactTuple(input.history, point)) ownerGuilds.add(point.guildId);
   }
   for (const evaluation of input.evaluations) {
-    if (evaluation.guildId === input.targetGuildId && evaluation.warId === input.history.warId &&
+    if (evaluation.warId === input.history.warId &&
       (evaluation.clanTag === null || normalizeMembershipHistoryClanTag(evaluation.clanTag) === normalizeMembershipHistoryClanTag(input.history.clanTag)) &&
       comparable(evaluation.matchType) === "FWA") ownerGuilds.add(evaluation.guildId);
   }
@@ -277,7 +277,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     const lower = lowerRows[0];
     const upper = upperRows[0];
     if ((args.fromSync !== undefined && !lower) || (args.toSync !== undefined && !upper)) {
-      return { anchors: [], cycles: [], schedules: [], points: [], histories: [], unownedHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
+      return { anchors: [], cycles: [], schedules: [], points: [], histories: [], unownedHistories: [], conflictingHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
     }
     const rangeWhere = {
       guildId: args.guildId,
@@ -307,7 +307,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
 
   if (anchors.length < 2) {
-    return { anchors, cycles, schedules: [], points: [], histories: [], unownedHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
+    return { anchors, cycles, schedules: [], points: [], histories: [], unownedHistories: [], conflictingHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
   }
 
   const firstAnchorTime = anchors[0].syncTime.getTime();
@@ -373,6 +373,16 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     opponentTag: point.opponentTag,
   }));
   const candidateWarIds = [...new Set([...targetRawWarIds, ...evaluations.map((evaluation) => evaluation.warId)])];
+  const rawOwnershipEvaluations = candidateWarIds.length > 0
+    ? await db.warPlanComplianceEvaluation.findMany({
+        where: { warId: { in: candidateWarIds } },
+        orderBy: [{ warId: "asc" }, { guildId: "asc" }],
+        select: { guildId: true, warId: true, matchType: true, warHistory: { select: { clanTag: true, matchType: true } } },
+      })
+    : [];
+  const ownershipEvaluations = rawOwnershipEvaluations.map(normalizeEvaluation).filter((row): row is ReconciliationEvaluation => Boolean(row));
+  const allEvaluations = [...new Map([...evaluations, ...ownershipEvaluations]
+    .map((evaluation) => [`${evaluation.guildId}|${evaluation.warId}`, evaluation] as const)).values()];
   const historyWhere = [
     ...(candidateWarIds.length > 0 ? [{ warId: { in: candidateWarIds } }] : []),
     ...semanticTuples,
@@ -430,16 +440,20 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
   const ownershipPoints = rawOwnershipPoints.map(normalizePoint).filter((row): row is ReconciliationPoint => Boolean(row));
   const ownedHistories: ReconciliationHistory[] = [];
   const unownedHistories: Array<{ history: ReconciliationHistory; ownership: DirectHistoryOwnership }> = [];
+  const conflictingHistories: ReconciliationHistory[] = [];
   for (const history of discoveredHistories) {
     const ownership = classifyDirectHistoryOwnership({
       history,
       targetGuildId: args.guildId,
       participation: ownershipParticipation,
       points: [...points, ...ownershipPoints],
-      evaluations,
+      evaluations: allEvaluations,
     });
     if (ownership === "OWNED") ownedHistories.push(history);
-    else unownedHistories.push({ history, ownership });
+    else {
+      unownedHistories.push({ history, ownership });
+      if (ownership === "CONFLICTING_OWNERSHIP") conflictingHistories.push(history);
+    }
   }
   const snapshots = db.syncClanReadinessSnapshot
     ? [...new Map((await db.syncClanReadinessSnapshot.findMany({
@@ -449,7 +463,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
       })).map(normalizeSnapshot).filter((row): row is ExactSnapshotEvidence => Boolean(row))
         .map((snapshot) => [`${snapshot.guildId}|${snapshot.syncTime.getTime()}|${snapshot.scheduledSyncPostId ?? "null"}`, snapshot] as const)).values()]
     : [];
-  return { anchors, cycles, schedules, points, histories: ownedHistories, unownedHistories, evaluations, participation, intervals, exactBoundaries, snapshots };
+  return { anchors, cycles, schedules, points, histories: ownedHistories, unownedHistories, conflictingHistories, evaluations: allEvaluations, participation, intervals, exactBoundaries, snapshots };
 }
 
 function relatedHistories(boundary: ProposedSyncBoundary, associated: readonly AssociatedHistory[]): AssociatedHistory[] {
@@ -520,17 +534,7 @@ function selectedRealizedScopeWindows(
     if (firstRequested > lastRequested) return [];
 
     if (intervalSequence?.classification !== "REALIZED_SEQUENCE_CORROBORATED") {
-      const requestedProofMappings = interval.mappings
-        .filter((mapping) => mapping.syncNumber >= firstRequested && mapping.syncNumber <= lastRequested)
-        .sort((left, right) => left.syncNumber - right.syncNumber);
-      if (requestedProofMappings.length > 0) {
-        const firstMapping = requestedProofMappings[0];
-        const nextMapping = interval.mappings.find((mapping) => mapping.syncNumber > lastRequested);
-        const end = nextMapping?.syncTime.getTime() ?? interval.upper.syncTime.getTime();
-        return firstMapping.syncTime.getTime() < end
-          ? [{ startTime: firstMapping.syncTime, endTime: new Date(end) }]
-          : [];
-      }
+      if (args.fromSync !== undefined || args.toSync !== undefined) return [];
       const lowerContextEnd = intervalSequence?.lowerAnchorContextClusters
         .map((cluster) => cluster.prepMax?.getTime())
         .filter((value): value is number => value !== undefined)
@@ -617,9 +621,14 @@ function classifyRealizedHistoryClaim(
   };
 }
 
-function formatRealizedSequence(sequence: RealizedFwaSequencePlan): string[] {
+function formatRealizedSequence(sequence: RealizedFwaSequencePlan, args: HistoricalSyncReconciliationArgs): string[] {
+  const scope = sequence.classification === "REALIZED_SEQUENCE_CORROBORATED"
+    ? "REALIZED_CLUSTER_PREP_WINDOWS"
+    : args.fromSync === undefined && args.toSync === undefined
+      ? "BROAD_AMBIGUOUS_INTERVAL_SCOPE"
+      : "SUPPRESSED_AMBIGUOUS_INTERVAL_SCOPE";
   return [
-    `lower=#${sequence.lower.syncNumber}@${sequence.lower.syncTime.toISOString()} upper=#${sequence.upper.syncNumber}@${sequence.upper.syncTime.toISOString()} expected_cycles=${sequence.expectedMissingSyncCount} realized_clusters=${sequence.realizedClusterCount} classification=${sequence.classification} reasons=${formatList(sequence.reasons)}`,
+    `lower=#${sequence.lower.syncNumber}@${sequence.lower.syncTime.toISOString()} upper=#${sequence.upper.syncNumber}@${sequence.upper.syncTime.toISOString()} expected_cycles=${sequence.expectedMissingSyncCount} realized_clusters=${sequence.realizedClusterCount} post_upper_context_clusters=${sequence.postUpperContextClusters.length} analysis_scope=${scope} classification=${sequence.classification} reasons=${formatList(sequence.reasons)}`,
   ];
 }
 
@@ -631,8 +640,9 @@ function formatRealizedCycle(cycle: RealizedFwaCyclePlan, parentSequence: Realiz
     const maxDelta = cluster.prepMax === null ? null : Math.round((cluster.prepMax.getTime() - schedule.syncTime.getTime()) / 1000);
     return `${schedule.id}:${minDelta ?? "unknown"}..${maxDelta ?? "unknown"}`;
   });
+  const writerActionable = parentSequence === "REALIZED_SEQUENCE_CORROBORATED" && cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE";
   return [
-    `expected_sync=${cycle.expectedSyncNumber === null ? "unknown" : `#${cycle.expectedSyncNumber}`} prep_min=${cluster.prepMin?.toISOString() ?? "unknown"} prep_max=${cluster.prepMax?.toISOString() ?? "unknown"} prep_center=${cluster.prepCenter?.toISOString() ?? "unknown"} prep_spread_seconds=${cluster.spreadSeconds ?? "unknown"} prep_spread_minutes=${cluster.spreadMinutes ?? "unknown"} history_count=${cluster.canonicalHistoryCount} distinct_clans=${cluster.distinctClanCount} participation_rows=${cluster.participationRowCount} distinct_players=${cluster.distinctPlayerCount} stored_history_syncs=${formatList(cluster.persistedSyncNumbers)} number_classification=${cycle.numberClassification} schedule_candidates=${formatList(candidates)} schedule_candidate_delta_seconds=${formatList(candidateDeltas)} action=${cycle.action} parent_sequence=${parentSequence} safe_for_apply=${parentSequence === "REALIZED_SEQUENCE_CORROBORATED"} reasons=${formatList(cycle.reasons)}`,
+    `expected_sync=${cycle.expectedSyncNumber === null ? "unknown" : `#${cycle.expectedSyncNumber}`} prep_min=${cluster.prepMin?.toISOString() ?? "unknown"} prep_max=${cluster.prepMax?.toISOString() ?? "unknown"} prep_center=${cluster.prepCenter?.toISOString() ?? "unknown"} prep_spread_seconds=${cluster.spreadSeconds ?? "unknown"} prep_spread_minutes=${cluster.spreadMinutes ?? "unknown"} history_count=${cluster.canonicalHistoryCount} distinct_clans=${cluster.distinctClanCount} participation_rows=${cluster.participationRowCount} distinct_players=${cluster.distinctPlayerCount} stored_history_syncs=${formatList(cluster.persistedSyncNumbers)} number_classification=${cycle.numberClassification} schedule_candidates=${formatList(candidates)} schedule_candidate_delta_seconds=${formatList(candidateDeltas)} action=${cycle.action} parent_sequence=${parentSequence} safe_for_apply=${writerActionable} already_present=${cycle.action === "ALREADY_PRESENT"} writer_actionable=${writerActionable} reasons=${formatList(cycle.reasons)}`,
     `  canonical_war_ids=${formatList(cluster.canonicalWarIds)} selected_schedule=${cycle.selectedSchedule ? `${cycle.selectedSchedule.id}@${cycle.selectedSchedule.syncTime.toISOString()}` : "none"}`,
   ];
 }
@@ -813,6 +823,7 @@ export async function runHistoricalSyncReconciliation(
     lower: interval.lower,
     upper: interval.upper,
     histories: historiesForInterval(interval, inputs.histories),
+    conflictingHistories: historiesForInterval(interval, inputs.conflictingHistories),
     participation: inputs.participation,
     schedules: inputs.schedules,
     existingCycles: inputs.cycles,
@@ -882,7 +893,7 @@ export async function runHistoricalSyncReconciliation(
   const additionalParticipationHistories = participationBackedSyncNumbers.size;
   const playerBoundaryFacts = playerBoundaryFactsSet.size;
   const intervalLines = intervals.flatMap((interval) => formatInterval(interval, selectedAnalysisBoundaries));
-  const realizedSequenceLines = realizedSequences.flatMap(formatRealizedSequence);
+  const realizedSequenceLines = realizedSequences.flatMap((sequence) => formatRealizedSequence(sequence, args));
   const realizedCycleLines = realizedSequences.flatMap((sequence) => sequence.cycles.flatMap((cycle) => formatRealizedCycle(cycle, sequence.classification)));
   const safePlanLines = realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").flatMap((sequence) => sequence.cycles
     .filter((cycle) => cycle.expectedSyncNumber !== null && mappingIsRequested({
@@ -895,7 +906,7 @@ export async function runHistoricalSyncReconciliation(
     }, args))
     .map((cycle) => {
       const snapshotEvidence = exactSnapshotCandidates(cycle.cluster, inputs.snapshots);
-      return `#${cycle.expectedSyncNumber} action=${cycle.action} candidate_sync_time=${cycle.selectedSchedule?.syncTime.toISOString() ?? "none"} scheduled_sync_post_id=${cycle.selectedSchedule?.id ?? "none"} canonical_history_count=${cycle.cluster.canonicalHistoryCount} participation_rows=${cycle.cluster.participationRowCount} exact_source_candidates=${formatList(snapshotEvidence)} reasons=${formatList(cycle.reasons)}`;
+      return `#${cycle.expectedSyncNumber} action=${cycle.action} writer_actionable=${cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE"} candidate_sync_time=${cycle.selectedSchedule?.syncTime.toISOString() ?? "none"} scheduled_sync_post_id=${cycle.selectedSchedule?.id ?? "none"} canonical_history_count=${cycle.cluster.canonicalHistoryCount} participation_rows=${cycle.cluster.participationRowCount} exact_source_candidates=${formatList(snapshotEvidence)} reasons=${formatList(cycle.reasons)}`;
     }));
   const unusedScheduleLines = realizedSequences.flatMap((sequence) => sequence.unusedEligibleSchedules.map((schedule) =>
     `schedule_id=${schedule.id} sync_time=${schedule.syncTime.toISOString()} status=${schedule.status} reason=SCHEDULE_WITHOUT_REALIZED_FWA_CLUSTER`));
