@@ -12,6 +12,7 @@ export type BackfillMembershipHistorySyncCyclesArgs = {
   apply: boolean;
 };
 
+/** Purpose: parse and validate one positive historical sync number. */
 function parsePositiveSync(value: string): number {
   const syncNumber = Number(value.trim());
   if (!Number.isInteger(syncNumber) || syncNumber <= 0) {
@@ -20,6 +21,7 @@ function parsePositiveSync(value: string): number {
   return syncNumber;
 }
 
+/** Purpose: parse comma-separated sync numbers and inclusive ascending ranges. */
 export function parseSyncFilter(value: string): Set<number> {
   const syncNumbers = new Set<number>();
   for (const token of value.split(",")) {
@@ -40,6 +42,7 @@ export function parseSyncFilter(value: string): Set<number> {
   return syncNumbers;
 }
 
+/** Purpose: parse explicit guild, sync-filter, and apply-mode command-line arguments. */
 export function parseBackfillMembershipHistorySyncCyclesArgs(argv: string[]): BackfillMembershipHistorySyncCyclesArgs {
   let guildId = "";
   let syncFilter: Set<number> | null = null;
@@ -69,10 +72,12 @@ export function parseBackfillMembershipHistorySyncCyclesArgs(argv: string[]): Ba
   return { guildId, syncFilter, apply };
 }
 
+/** Purpose: format an optional plan timestamp deterministically for operator output. */
 function formatDate(value: Date | null): string {
   return value?.toISOString() ?? "-";
 }
 
+/** Purpose: render the complete deterministic dry-run or apply plan and summary. */
 export function formatBackfillPlan(plan: MembershipSyncCycleBackfillPlan, apply: boolean): string {
   const lines = [
     apply ? "APPLY MODE — only CREATE rows from this plan may be written" : "DRY RUN — no database mutations performed",
@@ -101,6 +106,7 @@ export function formatBackfillPlan(plan: MembershipSyncCycleBackfillPlan, apply:
   return lines.join("\n");
 }
 
+/** Purpose: plan the selected historical replay, print it, and apply only on explicit request. */
 export async function runBackfillMembershipHistorySyncCycles(
   args: BackfillMembershipHistorySyncCyclesArgs,
   db: MembershipHistorySyncCycleBackfillDb = prisma as unknown as MembershipHistorySyncCycleBackfillDb,
@@ -114,6 +120,7 @@ export async function runBackfillMembershipHistorySyncCycles(
   return plan;
 }
 
+/** Purpose: execute the compiled historical SyncCycle backfill command. */
 async function main(): Promise<void> {
   const args = parseBackfillMembershipHistorySyncCyclesArgs(process.argv.slice(2));
   await runBackfillMembershipHistorySyncCycles(args);

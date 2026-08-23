@@ -62,23 +62,28 @@ type HistoryIdentity = MembershipCanonicalHistoryIdentity & {
 type ScheduleIdentity = { id: string; guildId: string; syncTime: Date; status: string };
 type CycleIdentity = { guildId: string; syncNumber: number; syncTime: Date };
 
+/** Purpose: normalize a persisted value to a positive integer identity. */
 function normalizePositiveInteger(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+/** Purpose: normalize a persisted guild identifier for scoped ownership checks. */
 function normalizeGuildId(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+/** Purpose: normalize persisted comparison text for case-insensitive decisions. */
 function normalizeComparable(value: unknown): string {
   return String(value ?? "").trim().toUpperCase();
 }
 
+/** Purpose: accept only finite persisted dates for historical identity and boundary calculations. */
 function normalizeDate(value: unknown): Date | null {
   return value instanceof Date && Number.isFinite(value.getTime()) ? value : null;
 }
 
+/** Purpose: normalize a persisted ClanPointsSync-style row into the shared point identity. */
 function normalizePoint(row: any): PointIdentity | null {
   const guildId = normalizeGuildId(row?.guildId);
   const syncNumber = normalizePositiveInteger(row?.syncNum);
@@ -97,6 +102,7 @@ function normalizePoint(row: any): PointIdentity | null {
   };
 }
 
+/** Purpose: normalize an ended FWA ClanWarHistory row into canonical historical identity. */
 function normalizeHistory(row: any): HistoryIdentity | null {
   const warId = normalizePositiveInteger(row?.warId);
   const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
@@ -114,6 +120,7 @@ function normalizeHistory(row: any): HistoryIdentity | null {
   };
 }
 
+/** Purpose: normalize a persisted ScheduledSyncPost row for exact schedule matching. */
 function normalizeSchedule(row: any): ScheduleIdentity | null {
   const id = String(row?.id ?? "").trim();
   const guildId = normalizeGuildId(row?.guildId);
@@ -122,6 +129,7 @@ function normalizeSchedule(row: any): ScheduleIdentity | null {
   return { id, guildId, syncTime, status: normalizeComparable(row?.status) };
 }
 
+/** Purpose: normalize an existing SyncCycle row for uniqueness and idempotency checks. */
 function normalizeCycle(row: any): CycleIdentity | null {
   const guildId = normalizeGuildId(row?.guildId);
   const syncNumber = normalizePositiveInteger(row?.syncNumber);
@@ -130,6 +138,7 @@ function normalizeCycle(row: any): CycleIdentity | null {
   return { guildId, syncNumber, syncTime };
 }
 
+/** Purpose: remove duplicate persisted point identities before owner analysis. */
 function uniquePoints(points: PointIdentity[]): PointIdentity[] {
   const seen = new Set<string>();
   return points.filter((point) => {
@@ -140,6 +149,7 @@ function uniquePoints(points: PointIdentity[]): PointIdentity[] {
   });
 }
 
+/** Purpose: remove duplicate canonical history identities before schedule resolution. */
 function uniqueHistories(histories: HistoryIdentity[]): HistoryIdentity[] {
   const seen = new Set<string>();
   return histories.filter((history) => {
@@ -150,10 +160,12 @@ function uniqueHistories(histories: HistoryIdentity[]): HistoryIdentity[] {
   });
 }
 
+/** Purpose: derive the stable guild/sync owner key used throughout the planner. */
 function parseOwnerKey(point: PointIdentity): string {
   return `${point.guildId ?? ""}|${point.syncNumber}`;
 }
 
+/** Purpose: normalize a compliance evaluation and its persisted war history into a point identity. */
 function normalizeCompliancePoint(row: any): PointIdentity | null {
   const history = row?.warHistory;
   return normalizePoint({
@@ -167,6 +179,7 @@ function normalizeCompliancePoint(row: any): PointIdentity | null {
   });
 }
 
+/** Purpose: find eligible persisted schedules in the live SyncCycle lookback window. */
 function scheduleCandidates(guildId: string, history: HistoryIdentity, schedules: readonly ScheduleIdentity[]): ScheduleIdentity[] {
   if (!history.prepStartTime) return [];
   const lower = history.prepStartTime.getTime() - SCHEDULE_LOOKBACK_MS;
@@ -178,6 +191,7 @@ function scheduleCandidates(guildId: string, history: HistoryIdentity, schedules
     .sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
 }
 
+/** Purpose: collect fail-closed identity and ownership conflicts for each target guild/sync owner. */
 function historyOwnerConflictReasons(
   points: readonly PointIdentity[],
   allPoints: readonly PointIdentity[],
@@ -241,6 +255,7 @@ function historyOwnerConflictReasons(
   return reasonsByOwner;
 }
 
+/** Purpose: select canonical histories that match one target guild/sync owner. */
 function canonicalMatchesForOwner(
   points: readonly PointIdentity[],
   histories: readonly HistoryIdentity[],
@@ -250,6 +265,7 @@ function canonicalMatchesForOwner(
     parseOwnerKey(point) === owner && historicalHistoryMatchesPoint(history, point))));
 }
 
+/** Purpose: produce deterministic, de-duplicated conflict reason output. */
 function summarizeReasons(reasons: Iterable<string>): string[] {
   return [...new Set(reasons)].sort((left, right) => left.localeCompare(right));
 }
@@ -257,6 +273,7 @@ function summarizeReasons(reasons: Iterable<string>): string[] {
 export class MembershipHistorySyncCycleBackfillService {
   constructor(private readonly db: MembershipHistorySyncCycleBackfillDb) {}
 
+  /** Purpose: build a conservative dry-run plan from persisted historical ownership and schedules. */
   async plan(guildIdInput: string, syncFilter: MembershipSyncFilter = null): Promise<MembershipSyncCycleBackfillPlan> {
     const guildId = normalizeGuildId(guildIdInput);
     if (!guildId) throw new Error("guild ID is required");
@@ -424,6 +441,7 @@ export class MembershipHistorySyncCycleBackfillService {
     };
   }
 
+  /** Purpose: transactionally apply only CREATE rows from a previously validated plan. */
   async apply(plan: MembershipSyncCycleBackfillPlan): Promise<SyncCycleBindingResult[]> {
     if (plan.conflicts > 0) throw new Error("Apply aborted: the complete selected plan contains CONFLICT rows.");
     const createRows = plan.rows.filter((row) => row.action === "CREATE");

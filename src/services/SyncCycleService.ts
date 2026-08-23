@@ -169,6 +169,7 @@ export async function persistResolvedSyncCycle(
 export class SyncCycleService {
   constructor(private readonly db: SyncCycleDb = prisma as unknown as SyncCycleDb) {}
 
+  /** Purpose: persist a caller-resolved canonical boundary while preserving SyncCycle uniqueness semantics. */
   async bindResolvedCanonical(input: SyncCycleResolvedBindingInput): Promise<SyncCycleBindingResult> {
     if (!this.db.syncCycle?.findUnique || !this.db.syncCycle?.create) {
       return { status: "failed", reason: "sync_cycle_database_unavailable", error: new Error("SyncCycle database delegates unavailable") };
