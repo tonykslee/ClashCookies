@@ -92,6 +92,10 @@ function cycleRows(days: number[]) {
   return days.map((day, index) => ({ guildId, syncNumber: 540 + index, syncTime: time(day) }));
 }
 
+function numberedCycleRows(rows: Array<[number, number]>) {
+  return rows.map(([day, syncNumber]) => ({ guildId, syncNumber, syncTime: time(day) }));
+}
+
 function snapshot(day: number, clanTag: string, tag = playerTag) {
   return { guildId, syncTime: time(day), clanTag, playerTag: tag };
 }
@@ -166,6 +170,75 @@ describe("MembershipStreakService", () => {
       allianceStreakSyncs: 3,
       allianceStreakIsLowerBound: false,
       latestEvidenceAvailable: true,
+    });
+  });
+
+  it("does not bridge a sparse canonical sync-number gap", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[4, 550], [3, 549], [2, 548], [1, 526]]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr), snapshot(3, rr), snapshot(4, rr)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 3,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 3,
+      allianceStreakIsLowerBound: true,
+    });
+  });
+
+  it("counts a contiguous sparse historical sync-number sequence", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[5, 526], [4, 525], [3, 524], [2, 523], [1, 522]]),
+      snapshots: [snapshot(1, rr), snapshot(2, rr), snapshot(3, rr), snapshot(4, rr), snapshot(5, rr)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 5,
+      clanStreakIsLowerBound: false,
+      allianceStreakSyncs: 5,
+      allianceStreakIsLowerBound: false,
+    });
+  });
+
+  it("does not bridge a boundary that has no canonical SyncCycle identity", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[4, 550], [3, 549]]),
+      readiness: [{ guildId, syncTime: time(2) }],
+      snapshots: [snapshot(2, rr), snapshot(3, rr), snapshot(4, rr)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 2,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 2,
+      allianceStreakIsLowerBound: true,
+    });
+  });
+
+  it("does not bridge a boundary with contradictory canonical SyncCycle identities", async () => {
+    const db = makeDb({
+      cycles: [
+        { guildId, syncNumber: 550, syncTime: time(4) },
+        { guildId, syncNumber: 549, syncTime: time(3) },
+        { guildId, syncNumber: 548, syncTime: time(3) },
+      ],
+      snapshots: [snapshot(3, rr), snapshot(4, rr)],
+    });
+
+    const [result] = await new MembershipStreakService(db).getMembershipStreaksForPlayers(streakInput());
+
+    expect(result).toMatchObject({
+      clanStreakSyncs: 1,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 1,
+      allianceStreakIsLowerBound: true,
     });
   });
 
@@ -273,6 +346,114 @@ describe("MembershipStreakService", () => {
     expect(result[0]).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
     expect(evidence[playerTag][0].fwa.source).toBe("SYNC_SNAPSHOT");
     expect(evidence[playerTag][1].fwa.source).toBe("FWA_WAR_PARTICIPATION_FALLBACK");
+  });
+
+  it("resolves stale raw ClanPointsSync war IDs through canonical history", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[2, 2], [1, 1]]),
+      snapshots: [snapshot(2, rr)],
+      points: [{
+        guildId,
+        syncNum: 1,
+        warId: 900001,
+        clanTag: rr,
+        warStartTime: time(1),
+        opponentTag: "#0PP2",
+      }],
+      histories: [{
+        warId: 100123,
+        syncNumber: 1,
+        matchType: "FWA",
+        clanTag: rr,
+        warStartTime: time(1),
+        opponentTag: "#0PP2",
+      }],
+      participation: [{ guildId, warId: "100123", clanTag: rr, playerTag }],
+    });
+
+    const evidence = await new MembershipStreakService(db).getRecentFwaEvidenceForPlayers(streakInput());
+
+    expect(evidence[playerTag][1].fwa).toMatchObject({
+      status: "RESOLVED",
+      clanTag: rr,
+      source: "FWA_WAR_PARTICIPATION_FALLBACK",
+    });
+  });
+
+  it("ignores an unrelated raw-ID collision when tuple recovery is available", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[2, 2], [1, 1]]),
+      snapshots: [snapshot(2, rr)],
+      points: [{
+        guildId,
+        syncNum: 1,
+        warId: 900001,
+        clanTag: rr,
+        warStartTime: time(1),
+        opponentTag: "#0PP2",
+      }],
+      histories: [
+        {
+          warId: 900001,
+          syncNumber: 1,
+          matchType: "FWA",
+          clanTag: "#OTHER",
+          warStartTime: time(1),
+          opponentTag: "#0PP2",
+        },
+        {
+          warId: 100123,
+          syncNumber: 1,
+          matchType: "FWA",
+          clanTag: rr,
+          warStartTime: time(1),
+          opponentTag: "#0PP2",
+        },
+      ],
+      participation: [{ guildId, warId: "100123", clanTag: rr, playerTag }],
+    });
+
+    const evidence = await new MembershipStreakService(db).getRecentFwaEvidenceForPlayers(streakInput());
+
+    expect(evidence[playerTag][1].fwa).toMatchObject({ clanTag: rr, source: "FWA_WAR_PARTICIPATION_FALLBACK" });
+  });
+
+  it("fails closed when a persisted raw-ID sync disagreement accompanies tuple recovery", async () => {
+    const db = makeDb({
+      cycles: numberedCycleRows([[2, 2], [1, 1]]),
+      snapshots: [snapshot(2, rr)],
+      points: [{
+        guildId,
+        syncNum: 1,
+        warId: 900001,
+        clanTag: rr,
+        warStartTime: time(1),
+        opponentTag: "#0PP2",
+      }],
+      histories: [
+        {
+          warId: 900001,
+          syncNumber: 2,
+          matchType: "FWA",
+          clanTag: rr,
+          warStartTime: time(2),
+          opponentTag: "#0PP2",
+        },
+        {
+          warId: 100123,
+          syncNumber: 1,
+          matchType: "FWA",
+          clanTag: rr,
+          warStartTime: time(1),
+          opponentTag: "#0PP2",
+        },
+      ],
+      participation: [{ guildId, warId: "100123", clanTag: rr, playerTag }],
+    });
+
+    const evidence = await new MembershipStreakService(db).getRecentFwaEvidenceForPlayers(streakInput());
+
+    expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
   });
 
   it("lets exact snapshots win over conflicting historical fallback evidence", async () => {
