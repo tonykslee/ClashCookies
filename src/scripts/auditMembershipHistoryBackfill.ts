@@ -443,6 +443,7 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
   const legacyRosterAvailable = legacyRosterFacts.length > 0;
   const rosterEvidenceAvailable = normalizedRosterAvailable || legacyRosterAvailable;
   const exactCoverage = exactSnapshots.length > 0;
+  if (prepCluster.excessiveSpread) conflicts.push("excessive_prep_start_spread");
   let classification: AuditClassification;
   let candidateSyncTime: Date | null = null;
   let candidateSource: string | null = null;
@@ -450,8 +451,10 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     classification = "AMBIGUOUS";
   } else if (input.syncCycleTime && exactCoverage) {
     classification = "EXISTING_EXACT";
-  } else if (input.syncCycleTime && normalizedRosterAvailable) {
+  } else if (input.syncCycleTime && rosterEvidenceAvailable) {
     classification = "EXISTING_CYCLE_FALLBACK";
+  } else if (input.syncCycleTime) {
+    classification = "UNRECOVERABLE";
   } else if (scheduledCandidates.length > 1) {
     classification = "AMBIGUOUS";
     conflicts.push("multiple_plausible_scheduled_sync_times");
@@ -469,14 +472,9 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     classification = "LEGACY_WARLOOKUP_CANDIDATE";
     candidateSource = "WarLookup.canonical.participants";
   } else if (mappedHistories.length > 0 && prepCluster.center) {
-    if (prepCluster.excessiveSpread) {
-      classification = "AMBIGUOUS";
-      conflicts.push("excessive_prep_start_spread");
-    } else {
-      classification = "PREP_CLUSTER_CANDIDATE";
-      candidateSyncTime = prepCluster.center;
-      candidateSource = "ClanWarHistory.prepStartTime.median";
-    }
+    classification = "PREP_CLUSTER_CANDIDATE";
+    candidateSyncTime = prepCluster.center;
+    candidateSource = "ClanWarHistory.prepStartTime.median";
   } else {
     classification = "UNRECOVERABLE";
   }
@@ -689,7 +687,7 @@ function normalizeComplianceIdentities(rows: any[], histories: AuditHistoryEvide
 }
 
 /** Purpose: build candidate cycle inputs from all persisted read-only historical owners. */
-function buildCycleInputs(
+export function buildCycleInputs(
   points: AuditPointEvidence[],
   histories: AuditHistoryEvidence[],
   participation: AuditParticipationEvidence[],
@@ -716,6 +714,21 @@ function buildCycleInputs(
     for (const [key, owners] of ownersByWarClan) {
       if (owners.size > 1) conflictingWarClanKeys.add(key);
     }
+  }
+  const partialTupleOwners = new Map<string, Set<string>>();
+  const partialTupleHasNullOwner = new Set<string>();
+  for (const point of points) {
+    const tupleKey = `${normalizeClanTag(point.clanTag)}|start:${point.warStartTime.getTime()}|opponent:${normalizeClanTag(point.opponentTag)}`;
+    const owners = partialTupleOwners.get(tupleKey) ?? new Set<string>();
+    owners.add(`${point.guildId}|${point.syncNumber}`);
+    partialTupleOwners.set(tupleKey, owners);
+    if (point.warId === null) partialTupleHasNullOwner.add(tupleKey);
+  }
+  const partialIdentityConflictOwners = new Set<string>();
+  for (const tupleKey of partialTupleHasNullOwner) {
+    const owners = partialTupleOwners.get(tupleKey) ?? new Set<string>();
+    if (owners.size <= 1) continue;
+    for (const owner of owners) partialIdentityConflictOwners.add(owner);
   }
   for (const row of cycles) {
     const guildId = normalizeGuildId(row?.guildId);
@@ -770,6 +783,9 @@ function buildCycleInputs(
       ...(lookupOwnerKeys.size > 1 ? ["warlookup_maps_to_multiple_guild_sync_owners"] : []),
       ...(relevantLookups.length !== matchingLookups.length ? ["warlookup_clan_identity_mismatch"] : []),
       ...(historyOwnerKeys.size > 1 ? ["history_maps_to_multiple_guild_sync_owners"] : []),
+      ...(partialIdentityConflictOwners.has(`${identity.guildId}|${identity.syncNumber}`)
+        ? ["conflicting_partial_war_identity_across_sync_buckets"]
+        : []),
     ];
     const cycleLookups = lookupOwnerKeys.size === 1 && lookupOwnerKeys.has(`${identity.guildId}|${identity.syncNumber}`)
       ? matchingLookups
@@ -817,8 +833,23 @@ async function readAuditInputs(db: ReadOnlyAuditDb): Promise<AuditCycleInput[]> 
   );
 }
 
-/** Purpose: render one deterministic per-cycle table row with no timing hidden from the audit. */
-function formatCycleRow(report: AuditCycleReport): string {
+/** Purpose: format deterministic per-clan observed/expected roster coverage. */
+export function formatPerClanRosterCoverage(report: AuditCycleReport): string {
+  const clans = new Set([
+    ...Object.keys(report.perClanRosterCounts),
+    ...Object.keys(report.expectedTeamSizesByClan),
+    ...Object.keys(report.perClanRosterCompleteness),
+  ]);
+  return [...clans].sort((left, right) => left.localeCompare(right)).map((clanTag) => {
+    const observed = report.perClanRosterCounts[clanTag] ?? 0;
+    const expected = report.expectedTeamSizesByClan[clanTag] ?? null;
+    const state = report.perClanRosterCompleteness[clanTag] ?? "UNKNOWN";
+    return `${clanTag}=${observed}/${expected ?? "?"}:${state}`;
+  }).join(",") || "-";
+}
+
+/** Purpose: format one deterministic per-cycle audit table row with per-clan roster coverage. */
+export function formatCycleRow(report: AuditCycleReport): string {
   return [
     report.guildId,
     `#${report.syncNumber}`,
@@ -833,7 +864,7 @@ function formatCycleRow(report: AuditCycleReport): string {
     String(report.canonicalHistoryCount),
     String(report.participationDistinctClanCount),
     String(report.participationDistinctPlayerCount),
-    `${report.rosterCompleteness}/${report.expectedTeamSize ?? "-"}`,
+    formatPerClanRosterCoverage(report),
     report.missingParticipantWarMappings.join(",") || "-",
     report.conflicts.join(",") || "-",
     `${report.earliestSupportingEvidence?.toISOString() ?? "-"}..${report.latestSupportingEvidence?.toISOString() ?? "-"}`,
@@ -1117,12 +1148,26 @@ async function printAudit(
 ): Promise<void> {
   console.log(formatAuditSummary(reports));
   console.log("\nPer-cycle coverage");
-  console.log("guild | sync | classification | candidate_sync_time | candidate_source | cycle | exact_snapshot | schedules(statuses/delta_s) | prep(min..max/spread_s) | clans | histories | participation_clans | participation_players | roster(expected) | missing_mappings | conflicts | evidence(min..max)");
+  console.log("guild | sync | classification | candidate_sync_time | candidate_source | cycle | exact_snapshot | schedules(statuses/delta_s) | prep(min..max/spread_s) | clans | histories | participation_clans | participation_players | per_clan_roster | missing_mappings | conflicts | evidence(min..max)");
   for (const report of reports) console.log(formatCycleRow(report));
   console.log("\nAggregate per-clan coverage");
+  for (const line of formatAggregatePerClanCoverage(reports)) console.log(line);
+
+  console.log("\nCWL coverage limitation: this audit does not infer historical FWA absence or presence from current state; persisted CWL evidence was not used unless an unambiguous boundary owner is available.");
+  console.log((await buildPlayerDiagnostics(db, reports, activeHomes)).join("\n"));
+  console.log(buildTenureDiagnostics(reports, activeHomes).join("\n"));
+}
+
+/** Purpose: format deterministic per-clan candidate coverage without dropping unknown clans. */
+export function formatAggregatePerClanCoverage(reports: readonly AuditCycleReport[]): string[] {
+  const lines: string[] = [];
   const clans = new Map<string, AuditCycleReport[]>();
   for (const report of reports) {
-    for (const clanTag of Object.keys(report.perClanRosterCounts)) {
+    for (const clanTag of new Set([
+      ...Object.keys(report.perClanRosterCounts),
+      ...Object.keys(report.expectedTeamSizesByClan),
+      ...Object.keys(report.perClanRosterCompleteness),
+    ])) {
       const rows = clans.get(clanTag) ?? [];
       rows.push(report);
       clans.set(clanTag, rows);
@@ -1130,12 +1175,13 @@ async function printAudit(
   }
   for (const clanTag of [...clans.keys()].sort((a, b) => a.localeCompare(b))) {
     const rows = clans.get(clanTag)!;
-    const safe = rows.filter((row) => ["SCHEDULED_SYNC_CANDIDATE", "PREP_CLUSTER_CANDIDATE", "LEGACY_WARLOOKUP_CANDIDATE"].includes(row.classification));
-    console.log(`clan=${clanTag} first_recoverable_sync=${safe[0]?.syncNumber ?? "none"} last_recoverable_sync=${safe.at(-1)?.syncNumber ?? "none"} recoverable_cycles=${safe.length} complete_roster_cycles=${safe.filter((row) => row.rosterCompleteness === "COMPLETE").length} partial_or_missing_cycles=${safe.filter((row) => row.rosterCompleteness !== "COMPLETE").length}`);
+    const safe = rows
+      .filter((row) => ["SCHEDULED_SYNC_CANDIDATE", "PREP_CLUSTER_CANDIDATE", "LEGACY_WARLOOKUP_CANDIDATE"].includes(row.classification))
+      .sort((left, right) => left.syncNumber - right.syncNumber);
+    const statusForClan = (row: AuditCycleReport) => row.perClanRosterCompleteness[clanTag] ?? "UNKNOWN";
+    lines.push(`clan=${clanTag} first_recoverable_sync=${safe[0]?.syncNumber ?? "none"} last_recoverable_sync=${safe.at(-1)?.syncNumber ?? "none"} candidate_cycles=${safe.length} complete_roster_cycles=${safe.filter((row) => statusForClan(row) === "COMPLETE").length} partial_roster_cycles=${safe.filter((row) => statusForClan(row) === "PARTIAL").length} unknown_roster_cycles=${safe.filter((row) => statusForClan(row) === "UNKNOWN").length}`);
   }
-  console.log("\nCWL coverage limitation: this audit does not infer historical FWA absence or presence from current state; persisted CWL evidence was not used unless an unambiguous boundary owner is available.");
-  console.log((await buildPlayerDiagnostics(db, reports, activeHomes)).join("\n"));
-  console.log(buildTenureDiagnostics(reports, activeHomes).join("\n"));
+  return lines;
 }
 
 /** Purpose: execute the one-off read-only historical membership backfill audit. */

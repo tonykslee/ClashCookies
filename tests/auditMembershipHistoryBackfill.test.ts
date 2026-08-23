@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildPrepCluster,
+  buildCycleInputs,
   buildTenureDiagnostics,
   classifyAuditCycle,
   classifyAuditCycles,
+  formatAggregatePerClanCoverage,
   formatAuditSummary,
+  formatCycleRow,
   projectMembershipStreak,
   type AuditCycleInput,
   type AuditHistoryEvidence,
@@ -152,6 +155,12 @@ describe("auditMembershipHistoryBackfill", () => {
       { guildId: "guild-1", syncTime: sync, clanTag: "#HOME", playerTag: "#PLAYER1" },
     ] })).classification).toBe("EXISTING_EXACT");
     expect(classifyAuditCycle(input({ syncCycleTime: sync })).classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(classifyAuditCycle(input({ syncCycleTime: sync, participation: [], lookups: [lookup()] })).classification)
+      .toBe("EXISTING_CYCLE_FALLBACK");
+    expect(classifyAuditCycle(input({ syncCycleTime: sync, participation: [], lookups: [], schedules: [] })).classification)
+      .toBe("UNRECOVERABLE");
+    expect(formatAuditSummary([classifyAuditCycle(input({ syncCycleTime: sync, participation: [], lookups: [lookup()] }))]))
+      .toContain("Potential additional canonical boundaries: 0");
   });
 
   it("classifies scheduled, prep-cluster, and legacy candidates deterministically", () => {
@@ -241,6 +250,46 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(sizeConflict.conflicts).toContain("conflicting_expected_team_sizes:#H0ME");
   });
 
+  it("propagates partial war identity conflicts across sync buckets", () => {
+    const cycles = [
+      { guildId: "guild-1", syncNumber: 499, syncTime: new Date("2026-02-01T00:00:00.000Z") },
+      { guildId: "guild-1", syncNumber: 500, syncTime: new Date("2026-02-02T00:00:00.000Z") },
+    ];
+    const reports = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 499, warId: null }), point({ syncNumber: 500 })],
+      [history({ syncNumber: 500 })],
+      [],
+      [],
+      [],
+      [],
+      cycles,
+    ));
+    expect(reports.map((report) => report.classification)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
+    expect(reports.every((report) => report.conflicts.includes("conflicting_partial_war_identity_across_sync_buckets"))).toBe(true);
+
+    const sameSync = classifyAuditCycles(buildCycleInputs(
+      [point({ warId: null }), point()],
+      [history()],
+      [],
+      [],
+      [],
+      [],
+      [{ guildId: "guild-1", syncNumber: 12, syncTime: sync }],
+    ));
+    expect(sameSync[0].classification).not.toBe("AMBIGUOUS");
+
+    const twoNullOwners = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 499, warId: null }), point({ syncNumber: 500, warId: null })],
+      [],
+      [],
+      [],
+      [],
+      [],
+      cycles,
+    ));
+    expect(twoNullOwners.map((report) => report.classification)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
+  });
+
   it("marks multiple schedules and excessive prep spread ambiguous", () => {
     expect(classifyAuditCycle(input({ schedules: [schedule(), schedule({ id: "schedule-2", syncTime: new Date("2026-01-01T04:00:00.000Z") })] })).classification)
       .toBe("AMBIGUOUS");
@@ -255,6 +304,17 @@ describe("auditMembershipHistoryBackfill", () => {
       points: [point(), secondPoint],
       histories: [history(), history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2", prepStartTime: new Date("2026-01-01T04:00:01.000Z") })],
     })).conflicts).toContain("excessive_prep_start_spread");
+    const scheduledSpread = classifyAuditCycle(input({
+      points: [point(), secondPoint],
+      histories: [
+        history({ prepStartTime: new Date("2026-01-01T00:00:00.000Z") }),
+        history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2", prepStartTime: new Date("2026-01-01T05:00:00.000Z") }),
+      ],
+      participation: [participation(), participation({ clanTag: "#HOME2", warId: 43 })],
+      schedules: [schedule({ syncTime: new Date("2026-01-01T02:30:00.000Z") })],
+    }));
+    expect(scheduledSpread.classification).toBe("AMBIGUOUS");
+    expect(scheduledSpread.conflicts).toContain("excessive_prep_start_spread");
   });
 
   it("marks a player observed in incompatible clans for one boundary ambiguous", () => {
@@ -307,6 +367,38 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(report.expectedTeamSizesByClan).toEqual({ "#H0ME": 50, "#H0ME2": 40 });
     expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE", "#H0ME2": "COMPLETE" });
     expect(report.rosterCompleteness).toBe("COMPLETE");
+  });
+
+  it("reports per-clan completeness and retains zero-row unknown clans", () => {
+    const secondPoint = point({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" });
+    const report = classifyAuditCycle(input({
+      points: [point(), secondPoint],
+      histories: [history(), history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" })],
+      participation: [
+        participation({ playerTag: "#A1" }),
+        participation({ playerTag: "#A2" }),
+        participation({ playerTag: "#B1", clanTag: "#HOME2", warId: 43 }),
+      ],
+      lookups: [
+        lookup({ payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
+        lookup({ warId: 43, clanTag: "#HOME2", payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
+      ],
+    }));
+    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE", "#H0ME2": "PARTIAL" });
+    expect(formatCycleRow(report)).toContain("#H0ME=2/2:COMPLETE,#H0ME2=1/2:PARTIAL");
+
+    const unknownReport = classifyAuditCycle(input({
+      points: [point(), secondPoint],
+      histories: [history(), history({ clanTag: "#HOME2", warId: 43, opponentTag: "#OPPONENT2" })],
+      participation: [participation({ playerTag: "#A1" })],
+      lookups: [lookup({ payload: { warMeta: { teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } })],
+    }));
+    expect(unknownReport.perClanRosterCounts["#H0ME2"]).toBeUndefined();
+    expect(unknownReport.perClanRosterCompleteness["#H0ME2"]).toBe("UNKNOWN");
+    expect(formatAggregatePerClanCoverage([unknownReport])).toEqual([
+      "clan=#H0ME first_recoverable_sync=12 last_recoverable_sync=12 candidate_cycles=1 complete_roster_cycles=1 partial_roster_cycles=0 unknown_roster_cycles=0",
+      "clan=#H0ME2 first_recoverable_sync=12 last_recoverable_sync=12 candidate_cycles=1 complete_roster_cycles=0 partial_roster_cycles=0 unknown_roster_cycles=1",
+    ]);
   });
 
   it("keeps completeness UNKNOWN when WarLookup has no authoritative team size", () => {
