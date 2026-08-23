@@ -3,9 +3,16 @@ import { normalizeTag } from "../services/war-events/core";
 import {
   computeMembershipStreaksFromEvidence,
   MembershipStreakService,
+  type MembershipBoundaryIdentity,
   type MembershipBoundaryEvidence,
   type MembershipStreakResult,
 } from "../services/MembershipStreakService";
+import {
+  hasMembershipHistorySyncNumberDisagreement,
+  hasMembershipHistoryPartialIdentityConflict,
+  historicalHistoryMatchesPoint,
+  membershipHistoryPointIdentityKey,
+} from "../services/membershipHistoryIdentity";
 
 export const SCHEDULE_CORRELATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 export const MAX_PREP_CLUSTER_SPREAD_MS = 2 * 60 * 60 * 1000;
@@ -173,28 +180,25 @@ function isFwa(value: unknown): boolean {
   return comparable(value) === "FWA";
 }
 
-/** Purpose: scope a historical war identity to its clan so alliance rosters do not conflict. */
-function warIdentityKey(point: AuditPointEvidence): string {
-  const clanTag = normalizeClanTag(point.clanTag);
-  return point.warId !== null
-    ? `${clanTag}|war:${point.warId}`
-    : `${clanTag}|start:${point.warStartTime.getTime()}|opponent:${normalizeClanTag(point.opponentTag)}`;
-}
-
-/** Purpose: compare the persisted tuple that makes a null-warId identity safely mergeable. */
-function sameCanonicalWarTuple(left: AuditPointEvidence, right: AuditPointEvidence): boolean {
-  return normalizeClanTag(left.clanTag) === normalizeClanTag(right.clanTag) &&
-    left.syncNumber === right.syncNumber &&
-    left.warStartTime.getTime() === right.warStartTime.getTime() &&
-    normalizeClanTag(left.opponentTag) === normalizeClanTag(right.opponentTag);
-}
-
 /** Purpose: reconcile a partial null-warId point with an equivalent canonical non-null identity. */
 function reconciledWarIdentityKey(point: AuditPointEvidence, points: readonly AuditPointEvidence[]): string {
-  if (point.warId !== null) return warIdentityKey(point);
-  const matchingNonNull = points.find((candidate) =>
-    candidate.warId !== null && sameCanonicalWarTuple(point, candidate));
-  return matchingNonNull ? warIdentityKey(matchingNonNull) : warIdentityKey(point);
+  return membershipHistoryPointIdentityKey(point, points);
+}
+
+/** Purpose: apply the shared conservative identity rule only to FWA history rows. */
+function historyMatchesPoint(history: AuditHistoryEvidence, point: AuditPointEvidence): boolean {
+  return isFwa(history.matchType) && historicalHistoryMatchesPoint(history, point);
+}
+
+/** Purpose: preserve persisted disagreement evidence while keeping non-FWA rows out of identity checks. */
+function hasPersistedSyncNumberDisagreement(
+  point: AuditPointEvidence,
+  histories: readonly AuditHistoryEvidence[],
+): boolean {
+  return hasMembershipHistorySyncNumberDisagreement(
+    point,
+    histories.filter((history) => isFwa(history.matchType)),
+  );
 }
 
 /** Purpose: parse canonical participant tags from the supported archived WarLookup payload shape. */
@@ -280,33 +284,6 @@ function findScheduleCandidates(
 }
 
 /** Purpose: map canonical histories to a points identity without nearest-time guessing. */
-function historyMatchesPoint(history: AuditHistoryEvidence, point: AuditPointEvidence): boolean {
-  if (!isFwa(history.matchType)) return false;
-  if (history.warId === point.warId && point.warId !== null && normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag)) {
-    return history.syncNumber === null || history.syncNumber === point.syncNumber;
-  }
-  return (
-    history.syncNumber === point.syncNumber &&
-    normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag) &&
-    normalizeClanTag(history.opponentTag) === normalizeClanTag(point.opponentTag) &&
-    history.warStartTime.getTime() === point.warStartTime.getTime()
-  );
-}
-
-/** Purpose: identify persisted sync-number disagreement without allowing war identity to override it. */
-function hasPersistedSyncNumberDisagreement(
-  point: AuditPointEvidence,
-  histories: readonly AuditHistoryEvidence[],
-): boolean {
-  return point.warId !== null && histories.some((history) =>
-    isFwa(history.matchType) &&
-    history.warId === point.warId &&
-    normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag) &&
-    history.syncNumber !== null &&
-    history.syncNumber !== point.syncNumber,
-  );
-}
-
 /** Purpose: detect conflicting persisted owners for one historical war and clan. */
 function hasConflictingPersistedOwners(points: readonly AuditPointEvidence[]): boolean {
   const ownersByWarClan = new Map<string, Set<string>>();
@@ -726,20 +703,11 @@ export function buildCycleInputs(
       if (owners.size > 1) conflictingWarClanKeys.add(key);
     }
   }
-  const partialTupleOwners = new Map<string, Set<string>>();
-  const partialTupleHasNullOwner = new Set<string>();
-  for (const point of points) {
-    const tupleKey = `${normalizeClanTag(point.clanTag)}|start:${point.warStartTime.getTime()}|opponent:${normalizeClanTag(point.opponentTag)}`;
-    const owners = partialTupleOwners.get(tupleKey) ?? new Set<string>();
-    owners.add(`${point.guildId}|${point.syncNumber}`);
-    partialTupleOwners.set(tupleKey, owners);
-    if (point.warId === null) partialTupleHasNullOwner.add(tupleKey);
-  }
   const partialIdentityConflictOwners = new Set<string>();
-  for (const tupleKey of partialTupleHasNullOwner) {
-    const owners = partialTupleOwners.get(tupleKey) ?? new Set<string>();
-    if (owners.size <= 1) continue;
-    for (const owner of owners) partialIdentityConflictOwners.add(owner);
+  for (const point of points) {
+    if (hasMembershipHistoryPartialIdentityConflict(point, points)) {
+      partialIdentityConflictOwners.add(`${point.guildId}|${point.syncNumber}`);
+    }
   }
   for (const row of cycles) {
     const guildId = normalizeGuildId(row?.guildId);
@@ -949,6 +917,7 @@ export function formatCycleRow(report: AuditCycleReport): string {
 
 type ProjectedPlayerEvidence = {
   boundaries: Date[];
+  boundaryIdentities: MembershipBoundaryIdentity[];
   evidenceRows: MembershipBoundaryEvidence[];
   coverageLimited: boolean;
 };
@@ -992,19 +961,24 @@ function buildProjectedPlayerEvidence(
   playerTag: string,
   currentBoundaries: readonly Date[],
   currentRows: readonly MembershipBoundaryEvidence[],
-  currentIdentities: readonly { boundaryTime: Date; syncNumber: number }[],
+  currentIdentities: readonly MembershipBoundaryIdentity[],
   reports: readonly AuditCycleReport[],
 ): ProjectedPlayerEvidence {
   const currentByTime = new Map(currentRows.map((row) => [row.boundaryTime.getTime(), row]));
-  const currentTimeBySync = new Map(currentIdentities.map((identity) => [identity.syncNumber, identity.boundaryTime]));
+  const currentTimeBySync = new Map(
+    currentIdentities
+      .filter((identity): identity is MembershipBoundaryIdentity & { syncNumber: number } => identity.syncNumber !== null)
+      .map((identity) => [identity.syncNumber, identity.boundaryTime]),
+  );
   const candidateFactsByTime = new Map<number, Array<{ playerTag: string; clanTag: string; source: string }>>();
   const candidateReports = reports.filter(isTimestampedCandidate);
   const reportsBySync = new Map<number, AuditCycleReport>();
   for (const report of reports) {
     if (!reportsBySync.has(report.syncNumber)) reportsBySync.set(report.syncNumber, report);
   }
-  const latestCurrentSync = currentIdentities.length > 0
-    ? Math.max(...currentIdentities.map((identity) => identity.syncNumber))
+  const currentSyncNumbers = [...currentTimeBySync.keys()];
+  const latestCurrentSync = currentSyncNumbers.length > 0
+    ? Math.max(...currentSyncNumbers)
     : null;
   const candidateIsContiguous = (report: AuditCycleReport): boolean => {
     if (latestCurrentSync === null) return true;
@@ -1028,6 +1002,23 @@ function buildProjectedPlayerEvidence(
     ...currentBoundaries.map((boundaryTime) => [boundaryTime.getTime(), boundaryTime] as const),
     ...usableCandidateReports.map((report) => [report.candidateSyncTime!.getTime(), report.candidateSyncTime!] as const),
   ]).values()].sort((left, right) => right.getTime() - left.getTime());
+  const candidateSyncNumbersByTime = new Map<number, Set<number>>();
+  for (const report of usableCandidateReports) {
+    const syncNumbers = candidateSyncNumbersByTime.get(report.candidateSyncTime!.getTime()) ?? new Set<number>();
+    syncNumbers.add(report.syncNumber);
+    candidateSyncNumbersByTime.set(report.candidateSyncTime!.getTime(), syncNumbers);
+  }
+  const currentIdentityByTime = new Map(currentIdentities.map((identity) => [identity.boundaryTime.getTime(), identity.syncNumber]));
+  const boundaryIdentities = boundaryTimes.map((boundaryTime) => {
+    const currentSyncNumber = currentIdentityByTime.get(boundaryTime.getTime());
+    const candidateSyncNumbers = candidateSyncNumbersByTime.get(boundaryTime.getTime());
+    return {
+      boundaryTime,
+      syncNumber: currentSyncNumber !== undefined
+        ? currentSyncNumber
+        : candidateSyncNumbers?.size === 1 ? [...candidateSyncNumbers][0] : null,
+    };
+  });
   const evidenceRows = boundaryTimes.map((boundaryTime) => {
     const current = currentByTime.get(boundaryTime.getTime());
     if (current?.fwa.source === "SYNC_SNAPSHOT") return current;
@@ -1041,7 +1032,7 @@ function buildProjectedPlayerEvidence(
     if (["AMBIGUOUS", "UNRECOVERABLE"].includes(report.classification)) return true;
     return isTimestampedCandidate(report) && !usableCandidateReports.includes(report);
   });
-  return { boundaries: boundaryTimes, evidenceRows, coverageLimited };
+  return { boundaries: boundaryTimes, boundaryIdentities, evidenceRows, coverageLimited };
 }
 
 /** Purpose: format a streak value without presenting lower-bound evidence as exact. */
@@ -1054,7 +1045,7 @@ export function projectMembershipStreak(
   playerTag: string,
   current: {
     boundaryTimes: readonly Date[];
-    boundaryIdentities?: readonly { boundaryTime: Date; syncNumber: number }[];
+    boundaryIdentities?: readonly MembershipBoundaryIdentity[];
     evidenceRows: readonly MembershipBoundaryEvidence[];
     boundaryHistoryTruncated: boolean;
   },
@@ -1072,6 +1063,7 @@ export function projectMembershipStreak(
     projectedEvidence.boundaries,
     projectedEvidence.evidenceRows,
     current.boundaryHistoryTruncated || projectedEvidence.coverageLimited,
+    projectedEvidence.boundaryIdentities,
   );
 }
 
