@@ -1,5 +1,5 @@
 import {
-  historicalHistoryMatchesPoint,
+  historicalHistoryMatchesPointByExactTuple,
   membershipHistoryConflictingPersistedOwnerKeys,
   normalizeMembershipHistoryClanTag,
   type MembershipCanonicalHistoryIdentity,
@@ -222,10 +222,8 @@ export function associateCanonicalHistories(input: {
   for (const history of input.histories) {
     if (comparable(history.matchType) !== "FWA") continue;
     const matchingPoints = input.points.filter((point) => {
-      const sameClan = normalizeMembershipHistoryClanTag(point.clanTag) === normalizeMembershipHistoryClanTag(history.clanTag);
-      const rawWarMatch = point.warId !== null && point.warId === history.warId && sameClan;
-      const exactTupleMatch = historicalHistoryMatchesPoint(history, point);
-      return point.isFwa && point.guildId === input.guildId && (rawWarMatch || exactTupleMatch);
+      const exactTupleMatch = historicalHistoryMatchesPointByExactTuple(history, point);
+      return point.isFwa && point.guildId === input.guildId && exactTupleMatch;
     });
     const evaluations = input.evaluations.filter((evaluation) =>
       evaluation.guildId === input.guildId && evaluation.warId === history.warId &&

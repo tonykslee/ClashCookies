@@ -38,6 +38,17 @@ export function historicalHistoryMatchesPoint(
     normalizeMembershipHistoryClanTag(history.opponentTag) === normalizeMembershipHistoryClanTag(point.opponentTag);
 }
 
+/** Purpose: match a canonical history to a points row by exact semantic identity while intentionally ignoring sync number and raw war ID. */
+export function historicalHistoryMatchesPointByExactTuple(
+  history: MembershipCanonicalHistoryIdentity,
+  point: MembershipHistoryPointIdentity,
+): boolean {
+  return Boolean(history.warStartTime) &&
+    history.warStartTime!.getTime() === point.warStartTime.getTime() &&
+    normalizeMembershipHistoryClanTag(history.clanTag) === normalizeMembershipHistoryClanTag(point.clanTag) &&
+    normalizeMembershipHistoryClanTag(history.opponentTag) === normalizeMembershipHistoryClanTag(point.opponentTag);
+}
+
 /** Purpose: detect persisted same-war/same-clan sync disagreement before tuple recovery can hide it. */
 export function hasMembershipHistorySyncNumberDisagreement(
   point: MembershipHistoryPointIdentity,
