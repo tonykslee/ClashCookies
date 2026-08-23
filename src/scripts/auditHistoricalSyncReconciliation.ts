@@ -373,16 +373,6 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     opponentTag: point.opponentTag,
   }));
   const candidateWarIds = [...new Set([...targetRawWarIds, ...evaluations.map((evaluation) => evaluation.warId)])];
-  const rawOwnershipEvaluations = candidateWarIds.length > 0
-    ? await db.warPlanComplianceEvaluation.findMany({
-        where: { warId: { in: candidateWarIds } },
-        orderBy: [{ warId: "asc" }, { guildId: "asc" }],
-        select: { guildId: true, warId: true, matchType: true, warHistory: { select: { clanTag: true, matchType: true } } },
-      })
-    : [];
-  const ownershipEvaluations = rawOwnershipEvaluations.map(normalizeEvaluation).filter((row): row is ReconciliationEvaluation => Boolean(row));
-  const allEvaluations = [...new Map([...evaluations, ...ownershipEvaluations]
-    .map((evaluation) => [`${evaluation.guildId}|${evaluation.warId}`, evaluation] as const)).values()];
   const historyWhere = [
     ...(candidateWarIds.length > 0 ? [{ warId: { in: candidateWarIds } }] : []),
     ...semanticTuples,
@@ -420,6 +410,17 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
   const discoveredHistories = uniqueHistories([...rawDirectHistories, ...rawHistories]
     .map(normalizeHistory)
     .filter((row): row is ReconciliationHistory => Boolean(row)));
+  const discoveredCanonicalWarIds = [...new Set(discoveredHistories.map((history) => history.warId))].sort((left, right) => left - right);
+  const rawOwnershipEvaluations = discoveredCanonicalWarIds.length > 0
+    ? await db.warPlanComplianceEvaluation.findMany({
+        where: { warId: { in: discoveredCanonicalWarIds } },
+        orderBy: [{ warId: "asc" }, { guildId: "asc" }],
+        select: { guildId: true, warId: true, matchType: true, warHistory: { select: { clanTag: true, matchType: true } } },
+      })
+    : [];
+  const ownershipEvaluations = rawOwnershipEvaluations.map(normalizeEvaluation).filter((row): row is ReconciliationEvaluation => Boolean(row));
+  const allEvaluations = [...new Map([...evaluations, ...ownershipEvaluations]
+    .map((evaluation) => [`${evaluation.guildId}|${evaluation.warId}`, evaluation] as const)).values()];
   const participationWarIds = [...new Set(discoveredHistories.map((history) => history.warId))];
   const rawParticipation = participationWarIds.length > 0
     ? await db.clanWarParticipation.findMany({

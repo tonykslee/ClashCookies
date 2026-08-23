@@ -1016,16 +1016,31 @@ describe("historical sync-number reconciliation", () => {
     const missing = history({ warId: 971, syncNumber: 521, clanTag: "#MISSING971", prepStartTime: new Date(base.getTime() + 24 * 3600000) });
     const upper = history({ warId: 972, syncNumber: 522, clanTag: "#UPPER972", prepStartTime: new Date(base.getTime() + 60 * 3600000) });
     const evaluations = [guildId, otherGuildId].map((owner) => ({ guildId: owner, warId: 971, matchType: "FWA", warHistory: { clanTag: missing.clanTag, matchType: "FWA" } }));
+    const evaluationCalls: any[] = [];
     const output = await runHistoricalSyncReconciliation({ guildId }, runDb({
       cycles: [{ guildId, syncNumber: 520, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" }, { guildId, syncNumber: 522, syncTime: new Date(base.getTime() + 48 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" }],
       schedules: [schedule("s-521", 24)],
       histories: [lower, missing, upper],
-      points: [lower, missing, upper].map((row) => ({ guildId, syncNum: row.syncNumber, warId: String(row.warId), clanTag: row.clanTag, warStartTime: row.warStartTime, opponentTag: row.opponentTag, isFwa: true })),
+      points: [lower, upper].map((row) => ({ guildId, syncNum: row.syncNumber, warId: String(row.warId), clanTag: row.clanTag, warStartTime: row.warStartTime, opponentTag: row.opponentTag, isFwa: true }))
+        .concat([{ guildId, syncNum: missing.syncNumber, warId: "999999", clanTag: missing.clanTag, warStartTime: missing.warStartTime, opponentTag: missing.opponentTag, isFwa: true }]),
       evaluations,
+      capture: (name, args) => { if (name === "warPlanComplianceEvaluation") evaluationCalls.push(args); },
     }));
+    expect(evaluationCalls.at(-1)?.where).toEqual({ warId: { in: [970, 971, 972] } });
     expect(output).toContain("war_id=971 ownership=CONFLICTING_OWNERSHIP");
     expect(output).toContain("conflicting_direct_history_ownership");
     expect(output).toContain("selected_safe_realized_boundaries=0");
+  });
+
+  it("detects compliance conflict independently of raw points when participation owns the canonical history", () => {
+    const row = history({ warId: 974, clanTag: "#PARTICIPATION974" });
+    expect(classifyDirectHistoryOwnership({
+      history: row,
+      targetGuildId: guildId,
+      participation: [{ guildId, warId: 974, clanTag: row.clanTag, playerTag: "#PLAYER974", matchType: "FWA" }],
+      points: [],
+      evaluations: [{ guildId: otherGuildId, warId: 974, clanTag: row.clanTag, matchType: "FWA" }],
+    })).toBe("CONFLICTING_OWNERSHIP");
   });
 
   it("labels writer safety from the exact cycle action, not only the parent sequence", async () => {
