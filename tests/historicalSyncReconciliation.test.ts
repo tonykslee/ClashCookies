@@ -285,26 +285,65 @@ describe("historical sync-number reconciliation", () => {
     expect(output).toContain("ClanWarHistory_SYNC_MATCH=0");
     expect(output).toContain("ClanWarHistory_SYNC_CORRECTABLE=0");
     expect(output).toContain("ClanPointsSync_POINTS_AMBIGUOUS=1");
-    expect(output).toContain("ambiguous_war_ids=200");
+    expect(output).toContain("UNMAPPED IN-SCOPE AMBIGUITIES");
+    expect(output).toContain("war_id=200 reasons=missing_prep_start_time,no_unique_reconstructed_schedule stored_history_sync=521 points_sync_claims=521 participation_rows=1");
+    expect(output).not.toContain("ambiguous_war_ids=200");
     expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=0");
     expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=0");
-    expect(classifyReconciliationHistoryScope({ history: missingPrepHistory, boundaries: [{ guildId, syncNumber: 521, syncTime: schedule("s-521", 24).syncTime, scheduledSyncPostId: "s-521", lowerSyncNumber: 520, upperSyncNumber: 522 }] })).toBe("IN_SCOPE");
+    expect(classifyReconciliationHistoryScope({ history: missingPrepHistory, boundaries: [], intervals: [exactInterval()] })).toBe("IN_SCOPE");
   });
 
   it("keeps in-window prep timing with no safe schedule candidate visible as ambiguous", async () => {
+    const cycles = [
+      { guildId, syncNumber: 519, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+      { guildId, syncNumber: 523, syncTime: new Date(base.getTime() + 72 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+    ];
+    const schedules = [12, 24, 36].map((hours, index) => ({ id: `s-${520 + index}`, guildId, syncTime: new Date(base.getTime() + hours * 3600000), status: "PUBLISHED" }));
     const unmappableHistory = history({
       warId: 201,
       syncNumber: 521,
-      prepStartTime: new Date(base.getTime() + 50 * 3600000),
-      warStartTime: new Date(base.getTime() + 54 * 3600000),
+      prepStartTime: new Date(base.getTime() + 61 * 3600000),
+      warStartTime: new Date(base.getTime() + 65 * 3600000),
     });
     const points = [{ guildId, syncNum: 521, warId: "201", clanTag: "#HOME", warStartTime: unmappableHistory.warStartTime, opponentTag: "#OPPONENT", isFwa: true }];
-    const output = await runHistoricalSyncReconciliation({ guildId }, runDb({ points, histories: [unmappableHistory] }));
+    const output = await runHistoricalSyncReconciliation({ guildId }, runDb({ cycles, schedules, points, histories: [unmappableHistory] }));
     expect(output).toContain("ClanWarHistory_SYNC_AMBIGUOUS=1");
     expect(output).toContain("ClanPointsSync_POINTS_AMBIGUOUS=1");
-    expect(output).toContain("ambiguous_war_ids=201");
+    expect(output).toContain("war_id=201 reasons=no_unique_reconstructed_schedule stored_history_sync=521 points_sync_claims=521 participation_rows=0");
+    expect(output).not.toContain("ambiguous_war_ids=201");
     expect(output).toContain("additional_historical_FWA_cycles_with_uniquely_assignable_participation=0");
     expect(output).toContain("player_boundary_membership_facts_potentially_unlocked=0");
+  });
+
+  it("excludes lower and upper anchor histories from missing-cycle reconciliation scope", async () => {
+    const cycles = [
+      { guildId, syncNumber: 526, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
+      { guildId, syncNumber: 548, syncTime: new Date(base.getTime() + 22 * 24 * 3600000), resolutionSource: "ENDED_WAR_CANONICAL" },
+    ];
+    const schedules = Array.from({ length: 21 }, (_unused, index) => ({
+      id: `s-${index + 527}`,
+      guildId,
+      syncTime: new Date(base.getTime() + (index + 1) * 24 * 3600000),
+      status: "PUBLISHED",
+    }));
+    const lowerHistory = history({
+      warId: 526,
+      syncNumber: 527,
+      prepStartTime: new Date(base.getTime() + 12 * 3600000),
+      warStartTime: new Date(base.getTime() + 16 * 3600000),
+    });
+    const upperHistory = history({
+      warId: 548,
+      syncNumber: 547,
+      prepStartTime: new Date(base.getTime() + 22 * 24 * 3600000),
+      warStartTime: new Date(base.getTime() + 22 * 24 * 3600000 + 4 * 3600000),
+    });
+    const points = [lowerHistory, upperHistory].map((row) => ({ guildId, syncNum: row.syncNumber, warId: String(row.warId), clanTag: row.clanTag, warStartTime: row.warStartTime, opponentTag: row.opponentTag, isFwa: true }));
+    const output = await runHistoricalSyncReconciliation({ guildId }, runDb({ cycles, schedules, points, histories: [lowerHistory, upperHistory] }));
+    expect(output).toContain("ClanWarHistory_SYNC_AMBIGUOUS=0");
+    expect(output).toContain("ClanPointsSync_POINTS_AMBIGUOUS=0");
+    expect(classifyReconciliationHistoryScope({ history: lowerHistory, boundaries: [], intervals: [classifyAnchoredSequenceInterval({ lower: anchor(526, 0), upper: anchor(548, 22 * 24), schedules: schedules.map((row) => ({ id: row.id, guildId: row.guildId, syncTime: row.syncTime, status: row.status })), existingCycles: [] })] })).toBe("OUT_OF_SCOPE");
+    expect(classifyReconciliationHistoryScope({ history: upperHistory, boundaries: [], intervals: [classifyAnchoredSequenceInterval({ lower: anchor(526, 0), upper: anchor(548, 22 * 24), schedules: schedules.map((row) => ({ id: row.id, guildId: row.guildId, syncTime: row.syncTime, status: row.status })), existingCycles: [] })] })).toBe("OUT_OF_SCOPE");
   });
 
   it("counts eight histories at one reconstructed sync as one recoverable historical cycle", async () => {

@@ -258,8 +258,8 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     ...intervals.flatMap((interval) => [interval.lower.syncNumber, interval.upper.syncNumber]),
   ])].sort((left, right) => left - right);
   const examinedWindows = intervals
-    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
-    .map((interval) => ({ start: interval.lower.syncTime.getTime(), end: interval.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS }));
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
+    .map((interval) => ({ start: interval.mappings[0].syncTime.getTime(), end: interval.upper.syncTime.getTime() }));
   const evidenceStart = Math.min(...examinedWindows.map((window) => window.start));
   const evidenceEnd = Math.max(...examinedWindows.map((window) => window.end));
   const evidenceTime = { gte: new Date(evidenceStart), lte: new Date(evidenceEnd) };
@@ -354,9 +354,7 @@ function unresolvedMissingBoundaryCount(
 }
 
 function buildBoundaryReport(boundary: ProposedSyncBoundary, reconciled: readonly ReconciledHistory[], participation: readonly ReconciliationParticipation[]): BoundaryReport {
-  const rows = reconciled.filter(({ row, claim }) =>
-    relatedHistories(boundary, [row]).length > 0 ||
-    (claim.classification === "SYNC_AMBIGUOUS" && claim.candidates.length === 0));
+  const rows = reconciled.filter(({ row }) => relatedHistories(boundary, [row]).length > 0);
   const histories = rows.map(({ row }) => row);
   let syncMatch = 0;
   let syncCorrectable = 0;
@@ -445,6 +443,26 @@ function patternLines(reports: readonly BoundaryReport[], reconciled: readonly R
   return lines.length > 0 ? lines : ["none"];
 }
 
+function formatUnmappedAmbiguities(
+  reconciled: readonly ReconciledHistory[],
+  participation: readonly ReconciliationParticipation[],
+): string[] {
+  const rows = reconciled
+    .filter(({ claim }) => claim.classification === "SYNC_AMBIGUOUS" && claim.candidates.length === 0)
+    .sort((left, right) => left.row.history.warId - right.row.history.warId);
+  if (rows.length === 0) return ["UNMAPPED IN-SCOPE AMBIGUITIES", "none"];
+  return [
+    "UNMAPPED IN-SCOPE AMBIGUITIES",
+    ...rows.flatMap(({ row, claim }) => {
+      const points = [...new Set(row.points.map((point) => point.syncNumber))].sort((left, right) => left - right);
+      const participationRows = participationForHistory(row, participation).length;
+      return [
+        `war_id=${row.history.warId} reasons=${formatList(claim.reasons)} stored_history_sync=${row.history.syncNumber ?? "null"} points_sync_claims=${formatList(points)} participation_rows=${participationRows}`,
+      ];
+    }),
+  ];
+}
+
 /** Purpose: execute the complete read-only reconciliation and return deterministic operator text. */
 export async function runHistoricalSyncReconciliation(
   args: HistoricalSyncReconciliationArgs,
@@ -488,6 +506,7 @@ export async function runHistoricalSyncReconciliation(
   const additionalParticipationHistories = participationBackedSyncNumbers.size;
   const playerBoundaryFacts = playerBoundaryFactsSet.size;
   const intervalLines = intervals.flatMap(formatInterval);
+  const unmappedLines = formatUnmappedAmbiguities(reconciled, inputs.participation);
   const boundaryLines = reports.flatMap((report) => [
     `#${report.boundary.syncNumber} scheduledSyncPost=${report.boundary.scheduledSyncPostId} time=${report.boundary.syncTime.toISOString()} canonical_fwa_histories=${report.histories.length} existing_persisted_buckets=${formatList(report.existingBuckets)} sync_match=${report.syncMatch} sync_correctable=${report.syncCorrectable} sync_ambiguous=${report.syncAmbiguous} points_match=${report.pointsMatch} points_correctable=${report.pointsCorrectable} points_ambiguous=${report.pointsAmbiguous} participation_rows=${report.participationRows}`,
     `  correctable_history_war_ids=${formatList(report.correctableHistoryWarIds)} correctable_points_war_ids=${formatList(report.correctablePointWarIds)} ambiguous_war_ids=${formatList(report.ambiguousWarIds)} ambiguous_candidate_syncs=${formatList(report.ambiguousCandidateSyncs)}`,
@@ -519,6 +538,8 @@ export async function runHistoricalSyncReconciliation(
     "",
     "PROPOSED BOUNDARIES",
     ...(boundaryLines.length > 0 ? boundaryLines : ["none"]),
+    "",
+    ...unmappedLines,
     "",
     "SPECIAL WINDOWS",
     ...special.flatMap((interval, index) => interval ? [`#${index === 0 ? "520 -> 522" : "526 -> 548"}: ${interval.classification} expected=${interval.expectedMissingSyncCount} schedules=${interval.eligibleScheduleCount} reasons=${formatList(interval.reasons)}`] : [`#${index === 0 ? "520 -> 522" : "526 -> 548"}: not present in selected canonical anchors`]),

@@ -122,22 +122,23 @@ export function classifyReconciliationHistoryScope(input: {
   intervals?: readonly AnchorIntervalPlan[];
 }): ReconciliationHistoryScope {
   const windows = (input.intervals ?? [])
-    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
     .map((interval) => ({
-      start: interval.lower.syncTime.getTime(),
-      end: interval.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS,
+      start: interval.mappings[0].syncTime.getTime(),
+      end: interval.upper.syncTime.getTime(),
     }));
   if (windows.length === 0 && input.boundaries.length > 0) {
     const times = input.boundaries.map((boundary) => boundary.syncTime.getTime());
     windows.push({
       start: Math.min(...times),
-      end: Math.max(...times) + HISTORICAL_SYNC_LOOKBACK_MS,
+      end: Math.max(...times),
     });
   }
   if (windows.length === 0) return "OUT_OF_SCOPE";
-  const timing = [input.history.prepStartTime, input.history.warStartTime]
-    .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
-  return timing.some((value) => windows.some((window) => value.getTime() >= window.start && value.getTime() <= window.end))
+  const preferredTiming = input.history.prepStartTime instanceof Date && Number.isFinite(input.history.prepStartTime.getTime())
+    ? input.history.prepStartTime
+    : input.history.warStartTime;
+  return preferredTiming instanceof Date && Number.isFinite(preferredTiming.getTime()) && windows.some((window) => preferredTiming.getTime() >= window.start && preferredTiming.getTime() < window.end)
     ? "IN_SCOPE"
     : "OUT_OF_SCOPE";
 }
