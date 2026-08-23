@@ -28,7 +28,7 @@
     "seed:fwa-layouts": "ts-node src/scripts/seedFwaLayouts.ts",
     "seed:heatmap-ref": "ts-node src/scripts/seedHeatMapRef.ts",
     "repair:fwa-ended-war": "ts-node src/scripts/repairEndedWarState.ts",
-    "diagnose:membership-history-backfill": "ts-node src/scripts/auditMembershipHistoryBackfill.ts",
+    "diagnose:membership-history-backfill": "node dist/scripts/auditMembershipHistoryBackfill.js",
     "sync:mirror": "ts-node src/scripts/mirrorSync.ts",
     "sync:fwa-feeds": "ts-node src/scripts/fwaFeedSync.ts",
     "start": "npm run build && npm run start:runtime",

@@ -9,6 +9,7 @@ import {
 
 export const SCHEDULE_CORRELATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 export const MAX_PREP_CLUSTER_SPREAD_MS = 2 * 60 * 60 * 1000;
+export const AUDIT_WAR_ID_BATCH_SIZE = 500;
 
 export type AuditClassification =
   | "EXISTING_EXACT"
@@ -542,6 +543,13 @@ export function formatAuditSummary(reports: readonly AuditCycleReport[]): string
   ].includes(report.classification));
   const candidateBoundaryReports = candidateReports.filter((report) => isValidDate(report.candidateSyncTime));
   const candidateFacts = candidateReports.reduce((sum, report) => sum + report.playerClanFacts.length, 0);
+  const conflictCounts = new Map<string, number>();
+  for (const reason of reports.flatMap((report) => report.conflicts)) {
+    conflictCounts.set(reason, (conflictCounts.get(reason) ?? 0) + 1);
+  }
+  const conflictLines = [...conflictCounts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reason, count]) => `${reason}: ${count}`);
   const syncNumbers = reports.map((report) => report.syncNumber).sort((a, b) => a - b);
   const safeDates = candidateBoundaryReports.map((report) => report.candidateSyncTime).filter(isValidDate).sort((a, b) => a.getTime() - b.getTime());
   const sortedCandidateReports = [...candidateBoundaryReports].sort((a, b) => a.syncNumber - b.syncNumber || a.guildId.localeCompare(b.guildId));
@@ -561,6 +569,9 @@ export function formatAuditSummary(reports: readonly AuditCycleReport[]): string
     `Legacy WarLookup candidates: ${count("LEGACY_WARLOOKUP_CANDIDATE")}`,
     `Ambiguous: ${count("AMBIGUOUS")}`,
     `Unrecoverable: ${count("UNRECOVERABLE")}`,
+    "",
+    "Conflict reasons:",
+    ...(conflictLines.length > 0 ? conflictLines : ["none"]),
     "",
     `Potential additional canonical boundaries: ${candidateBoundaryReports.length}`,
     `Potential player-boundary membership facts: ${candidateFacts}`,
@@ -755,7 +766,6 @@ export function buildCycleInputs(
   return [...identities.values()].sort((left, right) =>
     left.guildId.localeCompare(right.guildId) || left.syncNumber - right.syncNumber,
   ).map((identity) => {
-    const pointWarIds = new Set(identity.points.map((point) => point.warId).filter((value): value is number => value !== null));
     const matchingHistories = histories.filter((history) => identity.points.some((point) => historyMatchesPoint(history, point)));
     const cycleParticipation = participation.filter((row) => row.guildId === identity.guildId && matchingHistories.some((history) =>
       history.warId === row.warId && normalizeClanTag(history.clanTag) === normalizeClanTag(row.clanTag)));
@@ -767,11 +777,13 @@ export function buildCycleInputs(
         missingMappings.push(`missing_participation:${history.clanTag}:${history.warId}`);
       }
     }
-    const relevantLookups = lookups.filter((lookup) => pointWarIds.has(lookup.warId));
-    const matchingLookups = relevantLookups.filter((lookup) => identity.points.some((point) =>
-      point.warId === lookup.warId && normalizeClanTag(point.clanTag) === normalizeClanTag(lookup.clanTag)));
+    const canonicalWarIds = new Set(matchingHistories.map((history) => history.warId));
+    const relevantLookups = lookups.filter((lookup) => canonicalWarIds.has(lookup.warId));
+    const matchingLookups = relevantLookups.filter((lookup) => matchingHistories.some((history) =>
+      history.warId === lookup.warId && normalizeClanTag(history.clanTag) === normalizeClanTag(lookup.clanTag)));
     const lookupOwnerKeys = new Set(relevantLookups.flatMap((lookup) =>
-      points.filter((point) => point.warId === lookup.warId && normalizeClanTag(point.clanTag) === normalizeClanTag(lookup.clanTag))
+      points.filter((point) => histories.some((history) =>
+        history.warId === lookup.warId && historyMatchesPoint(history, point)))
         .map((point) => `${point.guildId}|${point.syncNumber}`),
     ));
     const historyOwnerKeys = new Set(matchingHistories.flatMap((history) =>
@@ -806,28 +818,89 @@ export function buildCycleInputs(
   });
 }
 
+/** Purpose: split canonical war IDs into deterministic bounded Prisma IN batches. */
+function chunkWarIds(warIds: readonly number[]): number[][] {
+  const sorted = [...new Set(warIds)].sort((left, right) => left - right);
+  const chunks: number[][] = [];
+  for (let index = 0; index < sorted.length; index += AUDIT_WAR_ID_BATCH_SIZE) {
+    chunks.push(sorted.slice(index, index + AUDIT_WAR_ID_BATCH_SIZE));
+  }
+  return chunks;
+}
+
+/** Purpose: load only canonical-war-scoped evidence in bounded bulk batches. */
+async function readCanonicalWarRows(
+  warIds: readonly number[],
+  readChunk: (warIds: string[]) => Promise<any[]>,
+): Promise<any[]> {
+  const rows: any[] = [];
+  for (const chunk of chunkWarIds(warIds)) rows.push(...await readChunk(chunk.map(String)));
+  return rows;
+}
+
 /** Purpose: read every historical owner through an interface that exposes no mutation delegate. */
 async function readAuditInputs(db: ReadOnlyAuditDb): Promise<AuditCycleInput[]> {
-  const [cycles, rawSnapshots, rawSchedules, rawPoints, rawHistories, rawParticipation, rawLookups, rawEvaluations] = await Promise.all([
-    db.syncCycle.findMany({ orderBy: [{ guildId: "asc" }, { syncNumber: "asc" }] }),
-    db.syncClanMemberSnapshot.findMany({ orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }] }),
-    db.scheduledSyncPost.findMany({ orderBy: [{ guildId: "asc" }, { syncTime: "asc" }] }),
-    db.clanPointsSync.findMany({ orderBy: [{ guildId: "asc" }, { syncNum: "asc" }, { clanTag: "asc" }] }),
-    db.clanWarHistory.findMany({ orderBy: [{ syncNumber: "asc" }, { warId: "asc" }, { clanTag: "asc" }] }),
-    db.clanWarParticipation.findMany({ where: { matchType: "FWA" }, orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }] }),
-    db.warLookup.findMany({ orderBy: [{ startTime: "asc" }, { warId: "asc" }] }),
+  const [cycles, rawSnapshots, rawSchedules, rawPoints, rawHistories, rawEvaluations] = await Promise.all([
+    db.syncCycle.findMany({
+      orderBy: [{ guildId: "asc" }, { syncNumber: "asc" }],
+      select: { guildId: true, syncNumber: true, syncTime: true },
+    }),
+    db.syncClanMemberSnapshot.findMany({
+      orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+      select: { guildId: true, syncTime: true, clanTag: true, playerTag: true },
+    }),
+    db.scheduledSyncPost.findMany({
+      orderBy: [{ guildId: "asc" }, { syncTime: "asc" }],
+      select: { id: true, guildId: true, syncTime: true, status: true },
+    }),
+    db.clanPointsSync.findMany({
+      orderBy: [{ guildId: "asc" }, { syncNum: "asc" }, { clanTag: "asc" }],
+      select: { guildId: true, syncNum: true, clanTag: true, warId: true, warStartTime: true, opponentTag: true, isFwa: true },
+    }),
+    db.clanWarHistory.findMany({
+      orderBy: [{ syncNumber: "asc" }, { warId: "asc" }, { clanTag: "asc" }],
+      select: { warId: true, syncNumber: true, matchType: true, clanTag: true, opponentTag: true, warStartTime: true, prepStartTime: true, warEndTime: true },
+    }),
     db.warPlanComplianceEvaluation.findMany({
       orderBy: [{ guildId: "asc" }, { warId: "asc" }],
-      select: { guildId: true, warId: true, warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true } } },
+      select: { guildId: true, warId: true, warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true, prepStartTime: true, warEndTime: true } } },
     }),
   ]);
   const normalizedHistories = normalizeHistories(rawHistories);
+  const normalizedPoints = [
+    ...normalizePoints(rawPoints),
+    ...normalizeComplianceIdentities(rawEvaluations, normalizedHistories),
+  ];
+  const normalizedSchedules = normalizeSchedules(rawSchedules);
+  const normalizedSnapshots = normalizeSnapshots(rawSnapshots);
+  const stageOneInputs = buildCycleInputs(
+    normalizedPoints,
+    normalizedHistories,
+    [],
+    normalizedSchedules,
+    normalizedSnapshots,
+    [],
+    cycles,
+  );
+  const canonicalWarIds = [...new Set(stageOneInputs.flatMap((input) => input.histories.map((history) => history.warId)))];
+  const [rawParticipation, rawLookups] = await Promise.all([
+    readCanonicalWarRows(canonicalWarIds, (warIds) => db.clanWarParticipation.findMany({
+      where: { matchType: "FWA", warId: { in: warIds } },
+      orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
+      select: { guildId: true, warId: true, clanTag: true, playerTag: true, matchType: true },
+    })),
+    readCanonicalWarRows(canonicalWarIds, (warIds) => db.warLookup.findMany({
+      where: { warId: { in: warIds } },
+      orderBy: [{ startTime: "asc" }, { warId: "asc" }],
+      select: { warId: true, clanTag: true, startTime: true, payload: true },
+    })),
+  ]);
   return buildCycleInputs(
-    [...normalizePoints(rawPoints), ...normalizeComplianceIdentities(rawEvaluations, normalizedHistories)],
+    normalizedPoints,
     normalizedHistories,
     normalizeParticipation(rawParticipation),
-    normalizeSchedules(rawSchedules),
-    normalizeSnapshots(rawSnapshots),
+    normalizedSchedules,
+    normalizedSnapshots,
     normalizeLookups(rawLookups),
     cycles,
   );
