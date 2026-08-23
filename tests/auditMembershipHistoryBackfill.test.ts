@@ -290,6 +290,136 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(twoNullOwners.map((report) => report.classification)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
   });
 
+  it("recovers WarLookup through canonical history instead of raw point warId", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const cycles = [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }];
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 900001 })],
+      [canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      cycles,
+    ));
+    expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(report[0].conflicts).not.toContain("warlookup_clan_identity_mismatch");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
+    expect(report[0].playerClanFacts).toEqual([
+      { playerTag: "#PLAYER1", clanTag: "#H0ME", source: "WarLookup.canonical.participants" },
+      { playerTag: "#PLAYER2", clanTag: "#H0ME", source: "WarLookup.canonical.participants" },
+    ]);
+  });
+
+  it("ignores an unrelated lookup whose ID equals a stale raw point ID", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 900001 })],
+      [canonical],
+      [participation({ warId: 100123 })],
+      [schedule()],
+      [],
+      [lookup({ warId: 900001, clanTag: "#OTHER" })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(report[0].conflicts).not.toContain("warlookup_clan_identity_mismatch");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
+  });
+
+  it("preserves persisted sync disagreement before dropping the conflicting history", () => {
+    const conflictingHistory = history({
+      warId: 42,
+      syncNumber: 499,
+      prepStartTime: new Date("2026-01-01T10:00:00.000Z"),
+    });
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 42 })],
+      [conflictingHistory, canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("AMBIGUOUS");
+    expect(report[0].conflicts).toContain("persisted_sync_number_disagreement");
+    expect(report[0].canonicalHistoryCount).toBe(1);
+    expect(report[0].prepCluster.min?.getTime()).toBe(prep.getTime());
+    expect(report[0].prepCluster.max?.getTime()).toBe(prep.getTime());
+  });
+
+  it("does not treat a stale raw ID history owned by another clan as disagreement", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const unrelatedClanHistory = history({ warId: 900001, syncNumber: 499, clanTag: "#OTHER" });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 900001 })],
+      [canonical, unrelatedClanHistory],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(report[0].conflicts).not.toContain("persisted_sync_number_disagreement");
+    expect(report[0].canonicalHistoryCount).toBe(1);
+  });
+
+  it("fails closed when a canonical history lookup has the wrong clan", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: 900001 })],
+      [canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123, clanTag: "#OTHER" })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("AMBIGUOUS");
+    expect(report[0].conflicts).toContain("warlookup_clan_identity_mismatch");
+    expect(formatAuditSummary(report)).toContain("warlookup_clan_identity_mismatch: 1");
+  });
+
+  it("recovers a matching lookup from a tuple-resolved null raw point ID", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [point({ syncNumber: 500, warId: null })],
+      [canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [{ guildId: "guild-1", syncNumber: 500, syncTime: sync }],
+    ));
+    expect(report[0].classification).toBe("EXISTING_CYCLE_FALLBACK");
+    expect(report[0].conflicts).not.toContain("warlookup_clan_identity_mismatch");
+  });
+
+  it("preserves ambiguity when one canonical history maps to multiple owners", () => {
+    const canonical = history({ warId: 100123, syncNumber: 500 });
+    const report = classifyAuditCycles(buildCycleInputs(
+      [
+        point({ guildId: "guild-1", syncNumber: 500, warId: 900001 }),
+        point({ guildId: "guild-2", syncNumber: 500, warId: 900002 }),
+      ],
+      [canonical],
+      [],
+      [schedule()],
+      [],
+      [lookup({ warId: 100123 })],
+      [
+        { guildId: "guild-1", syncNumber: 500, syncTime: sync },
+        { guildId: "guild-2", syncNumber: 500, syncTime: sync },
+      ],
+    ));
+    expect(report).toHaveLength(2);
+    expect(report.every((row) => row.classification === "AMBIGUOUS")).toBe(true);
+    expect(report.every((row) => row.conflicts.includes("history_maps_to_multiple_guild_sync_owners"))).toBe(true);
+  });
+
   it("marks multiple schedules and excessive prep spread ambiguous", () => {
     expect(classifyAuditCycle(input({ schedules: [schedule(), schedule({ id: "schedule-2", syncTime: new Date("2026-01-01T04:00:00.000Z") })] })).classification)
       .toBe("AMBIGUOUS");
@@ -704,6 +834,56 @@ describe("auditMembershipHistoryBackfill", () => {
     expect((reads as unknown as Record<string, unknown>).update).toBeUndefined();
     expect((reads as unknown as Record<string, unknown>).delete).toBeUndefined();
     log.mockRestore();
+  });
+
+  it("stages participation and WarLookup reads by canonical history IDs", async () => {
+    const rawHistory = {
+      warId: 100123,
+      syncNumber: 77,
+      matchType: "FWA",
+      clanTag: "#HOME",
+      opponentTag: "#OPPONENT",
+      warStartTime: warStart,
+      prepStartTime: prep,
+      warEndTime: new Date("2026-01-01T05:00:00.000Z"),
+    };
+    const participationArgs: any[] = [];
+    const lookupArgs: any[] = [];
+    const reads = {
+      syncCycle: { findMany: vi.fn(async () => []), groupBy: vi.fn(async () => []) },
+      syncClanMemberSnapshot: { findMany: vi.fn(async () => []), groupBy: vi.fn(async () => []) },
+      scheduledSyncPost: { findMany: vi.fn(async () => [{ id: "schedule-1", guildId: "guild-1", syncTime: sync, status: "SCHEDULED" }]) },
+      clanPointsSync: { findMany: vi.fn(async () => [{ guildId: "guild-1", syncNum: 77, clanTag: "#HOME", warId: "900001", warStartTime: warStart, opponentTag: "#OPPONENT", isFwa: true }]) },
+      clanWarHistory: { findMany: vi.fn(async () => [rawHistory]) },
+      clanWarParticipation: { findMany: vi.fn(async (args) => {
+        participationArgs.push(args);
+        return [{ guildId: "guild-1", warId: "100123", clanTag: "#HOME", playerTag: "#PLAYER1", matchType: "FWA" }, { guildId: "guild-1", warId: "999999", clanTag: "#OTHER", playerTag: "#UNRELATED", matchType: "FWA" }];
+      }) },
+      warLookup: { findMany: vi.fn(async (args) => {
+        lookupArgs.push(args);
+        return [
+          { warId: "100123", clanTag: "#HOME", startTime: warStart, payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: ["#PLAYER1", "#PLAYER2"] } } },
+          { warId: "999999", clanTag: "#OTHER", startTime: warStart, payload: { canonical: { participants: ["#UNRELATED"] } } },
+        ];
+      }) },
+      clanHomeMembershipPeriod: { findMany: vi.fn(async () => []) },
+      syncClanReadinessSnapshot: { groupBy: vi.fn(async () => []) },
+      allianceClanMembershipInterval: { findMany: vi.fn(async () => []) },
+      warPlanComplianceEvaluation: { findMany: vi.fn(async () => []) },
+    } satisfies ReadOnlyAuditDb;
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const reports = await runMembershipHistoryBackfillAudit(reads);
+    log.mockRestore();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].classification).toBe("SCHEDULED_SYNC_CANDIDATE");
+    expect(participationArgs).toHaveLength(1);
+    expect(participationArgs[0].where.warId.in).toEqual(["100123"]);
+    expect(lookupArgs).toHaveLength(1);
+    expect(lookupArgs[0].where.warId.in).toEqual(["100123"]);
+    expect((reads as unknown as Record<string, unknown>).create).toBeUndefined();
+    expect((reads as unknown as Record<string, unknown>).update).toBeUndefined();
+    expect((reads as unknown as Record<string, unknown>).delete).toBeUndefined();
   });
 
   it("reports prep cluster spread in seconds and minutes", () => {
