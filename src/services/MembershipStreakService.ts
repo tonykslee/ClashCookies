@@ -51,6 +51,7 @@ export type MembershipStreakBatchResult = {
   streaks: MembershipStreakResult[];
   boundaryTimes: Date[];
   boundaryHistoryTruncated: boolean;
+  evidenceByPlayer: MembershipBoundaryEvidenceByPlayer;
 };
 
 export type MembershipBoundaryEvidenceByPlayer = Record<string, MembershipBoundaryEvidence[]>;
@@ -337,12 +338,15 @@ function buildAllianceEvidence(
 }
 
 /** Purpose: compute bounded physical-clan and alliance streaks from boundary evidence. */
-function computeStreaks(
+export function computeMembershipStreaksFromEvidence(
   playerTag: string,
   boundaries: Date[],
-  evidenceByKey: Map<string, MembershipBoundaryEvidence>,
+  evidenceRows: MembershipBoundaryEvidence[],
   historyBoundReached: boolean,
 ): MembershipStreakResult {
+  const evidenceByKey = new Map(
+    evidenceRows.map((row) => [evidenceKey(playerTag, row.boundaryTime), row]),
+  );
   const latestBoundaryTime = boundaries[0] ?? null;
   const latest = latestBoundaryTime ? evidenceByKey.get(evidenceKey(playerTag, latestBoundaryTime)) : undefined;
 
@@ -414,16 +418,10 @@ export class MembershipStreakService {
   /** Purpose: return streaks and the same canonical boundary window through one bulk evidence load. */
   async getMembershipStreakBatchForPlayers(input: MembershipStreakInput): Promise<MembershipStreakBatchResult> {
     const loaded = await this.loadEvidence(input);
-    const evidenceMaps = new Map(
-      loaded.playerTags.map((playerTag) => [
-        playerTag,
-        new Map(loaded.evidenceByPlayer[playerTag].map((row) => [evidenceKey(playerTag, row.boundaryTime), row])),
-      ]),
-    );
-    const results = loaded.playerTags.map((playerTag) => computeStreaks(
+    const results = loaded.playerTags.map((playerTag) => computeMembershipStreaksFromEvidence(
       playerTag,
       loaded.boundaries,
-      evidenceMaps.get(playerTag)!,
+      loaded.evidenceByPlayer[playerTag],
       loaded.historyBoundReached,
     ));
     console.debug(
@@ -433,6 +431,7 @@ export class MembershipStreakService {
       streaks: results,
       boundaryTimes: [...loaded.boundaries],
       boundaryHistoryTruncated: loaded.boundaryHistoryTruncated,
+      evidenceByPlayer: loaded.evidenceByPlayer,
     };
   }
 

@@ -1,6 +1,11 @@
 import { prisma } from "../prisma";
 import { normalizeTag } from "../services/war-events/core";
-import { MembershipStreakService } from "../services/MembershipStreakService";
+import {
+  computeMembershipStreaksFromEvidence,
+  MembershipStreakService,
+  type MembershipBoundaryEvidence,
+  type MembershipStreakResult,
+} from "../services/MembershipStreakService";
 
 export const SCHEDULE_CORRELATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 export const MAX_PREP_CLUSTER_SPREAD_MS = 2 * 60 * 60 * 1000;
@@ -22,6 +27,7 @@ export type AuditPointEvidence = {
   warStartTime: Date;
   opponentTag: string;
   isFwa: boolean;
+  identitySource?: "ClanPointsSync" | "WarPlanComplianceEvaluation";
 };
 
 export type AuditHistoryEvidence = {
@@ -112,6 +118,8 @@ export type AuditCycleReport = {
   latestSupportingEvidence: Date | null;
   rosterCompleteness: "COMPLETE" | "PARTIAL" | "UNKNOWN";
   expectedTeamSize: number | null;
+  expectedTeamSizesByClan: Record<string, number | null>;
+  perClanRosterCompleteness: Record<string, "COMPLETE" | "PARTIAL" | "UNKNOWN">;
   playerClanFacts: Array<{ playerTag: string; clanTag: string; source: string }>;
 };
 
@@ -165,11 +173,12 @@ function isFwa(value: unknown): boolean {
   return comparable(value) === "FWA";
 }
 
-/** Purpose: provide a stable key for one guild, sync number, and historical war identity. */
+/** Purpose: scope a historical war identity to its clan so alliance rosters do not conflict. */
 function warIdentityKey(point: AuditPointEvidence): string {
+  const clanTag = normalizeClanTag(point.clanTag);
   return point.warId !== null
-    ? `war:${point.warId}`
-    : `start:${point.warStartTime.getTime()}|opponent:${point.opponentTag}`;
+    ? `${clanTag}|war:${point.warId}`
+    : `${clanTag}|start:${point.warStartTime.getTime()}|opponent:${point.opponentTag}`;
 }
 
 /** Purpose: parse canonical participant tags from the supported archived WarLookup payload shape. */
@@ -256,13 +265,51 @@ function findScheduleCandidates(
 /** Purpose: map canonical histories to a points identity without nearest-time guessing. */
 function historyMatchesPoint(history: AuditHistoryEvidence, point: AuditPointEvidence): boolean {
   if (!isFwa(history.matchType)) return false;
-  if (history.warId === point.warId && point.warId !== null) return history.clanTag === point.clanTag;
+  if (history.warId === point.warId && point.warId !== null && normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag)) {
+    return history.syncNumber === null || history.syncNumber === point.syncNumber;
+  }
   return (
     history.syncNumber === point.syncNumber &&
-    history.clanTag === point.clanTag &&
-    history.opponentTag === point.opponentTag &&
+    normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag) &&
+    normalizeClanTag(history.opponentTag) === normalizeClanTag(point.opponentTag) &&
     history.warStartTime.getTime() === point.warStartTime.getTime()
   );
+}
+
+/** Purpose: identify persisted sync-number disagreement without allowing war identity to override it. */
+function hasPersistedSyncNumberDisagreement(
+  point: AuditPointEvidence,
+  histories: readonly AuditHistoryEvidence[],
+): boolean {
+  return point.warId !== null && histories.some((history) =>
+    isFwa(history.matchType) &&
+    history.warId === point.warId &&
+    normalizeClanTag(history.clanTag) === normalizeClanTag(point.clanTag) &&
+    history.syncNumber !== null &&
+    history.syncNumber !== point.syncNumber,
+  );
+}
+
+/** Purpose: detect conflicting persisted owners for one historical war and clan. */
+function hasConflictingPersistedOwners(points: readonly AuditPointEvidence[]): boolean {
+  const ownersByWarClan = new Map<string, Set<string>>();
+  for (const point of points) {
+    if (point.warId === null) continue;
+    const key = `${normalizeClanTag(point.clanTag)}|${point.warId}`;
+    const owners = ownersByWarClan.get(key) ?? new Set<string>();
+    owners.add(`${point.guildId}|${point.syncNumber}`);
+    ownersByWarClan.set(key, owners);
+  }
+  return [...ownersByWarClan.values()].some((owners) => owners.size > 1);
+}
+
+/** Purpose: apply persisted-owner conflict detection only to the current cycle identity. */
+function pointHasConflictingPersistedOwner(point: AuditPointEvidence, points: readonly AuditPointEvidence[]): boolean {
+  if (point.warId === null) return false;
+  const owners = new Set(points
+    .filter((candidate) => candidate.warId === point.warId && normalizeClanTag(candidate.clanTag) === normalizeClanTag(point.clanTag))
+    .map((candidate) => `${candidate.guildId}|${candidate.syncNumber}`));
+  return owners.size > 1;
 }
 
 /** Purpose: build one diagnostic report from already-normalized historical evidence. */
@@ -274,19 +321,20 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
   const mappedHistories = histories.filter((history) => points.some((point) => historyMatchesPoint(history, point)));
   const participation = input.participation.filter((row) =>
     row.guildId === guildId && mappedHistories.some((history) =>
-      history.warId === row.warId && history.clanTag === row.clanTag),
+      history.warId === row.warId && normalizeClanTag(history.clanTag) === normalizeClanTag(row.clanTag)),
   );
   const prepCluster = buildPrepCluster(mappedHistories.map((history) => history.prepStartTime).filter(isValidDate));
   const scheduledCandidates = findScheduleCandidates(guildId, prepCluster, input.schedules);
   const exactSnapshots = input.exactSnapshots.filter((row) =>
     row.guildId === guildId && input.syncCycleTime && row.syncTime.getTime() === input.syncCycleTime.getTime(),
   );
-  const historicalClanTags = new Set(points.map((point) => point.clanTag).filter(Boolean));
-  for (const history of mappedHistories) historicalClanTags.add(history.clanTag);
+  const historicalClanTags = new Set(points.map((point) => normalizeClanTag(point.clanTag)).filter(Boolean));
+  for (const history of mappedHistories) historicalClanTags.add(normalizeClanTag(history.clanTag));
   const perClanRosterPlayers = new Map<string, Set<string>>();
   const perClanRosterCounts: Record<string, number> = {};
   const playerClanFacts: Array<{ playerTag: string; clanTag: string; source: string }> = [];
   const playerClanSets = new Map<string, Set<string>>();
+  const participationFactKeys = new Set<string>();
   for (const row of participation) {
     const playerTag = normalizePlayerTag(row.playerTag);
     const clanTag = normalizeClanTag(row.clanTag);
@@ -298,14 +346,28 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     const clans = playerClanSets.get(playerTag) ?? new Set<string>();
     clans.add(clanTag);
     playerClanSets.set(playerTag, clans);
-    playerClanFacts.push({ playerTag, clanTag, source: "ClanWarParticipation" });
+    const factKey = `${playerTag}|${clanTag}|ClanWarParticipation`;
+    if (!participationFactKeys.has(factKey)) {
+      participationFactKeys.add(factKey);
+      playerClanFacts.push({ playerTag, clanTag, source: "ClanWarParticipation" });
+    }
   }
   const conflicts = [...(input.explicitConflicts ?? [])];
-  const identityKeys = new Set(points.map(warIdentityKey));
-  if (identityKeys.size > 1) conflicts.push("conflicting_war_identities");
+  const identityKeysByClan = new Map<string, Set<string>>();
+  for (const point of points) {
+    const identities = identityKeysByClan.get(normalizeClanTag(point.clanTag)) ?? new Set<string>();
+    identities.add(warIdentityKey(point));
+    identityKeysByClan.set(normalizeClanTag(point.clanTag), identities);
+    if (hasPersistedSyncNumberDisagreement(point, histories)) conflicts.push("persisted_sync_number_disagreement");
+    if (pointHasConflictingPersistedOwner(point, points)) conflicts.push("conflicting_persisted_identity_sources");
+  }
+  if ([...identityKeysByClan.values()].some((identities) => identities.size > 1)) {
+    conflicts.push("conflicting_war_identities");
+  }
   for (const [playerTag, clans] of playerClanSets) {
     if (clans.size > 1) conflicts.push(`player_in_multiple_clans:${playerTag}`);
   }
+  const legacyRosterFacts: Array<{ playerTag: string; clanTag: string }> = [];
   const legacyEvidenceAvailable = participation.length === 0 && input.lookups.length > 0 && pointWarIds.size > 0;
   if (legacyEvidenceAvailable) {
     const factKeys = new Set<string>();
@@ -320,27 +382,60 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
         perClanRosterPlayers.set(clanTag, rosterPlayers);
         perClanRosterCounts[clanTag] = rosterPlayers.size;
         playerClanFacts.push({ playerTag, clanTag, source: "WarLookup.canonical.participants" });
+        legacyRosterFacts.push({ playerTag, clanTag });
       }
     }
   }
-  const expectedTeamSizes = [
-    ...mappedHistories.map((history) => normalizePositiveInteger(history.expectedTeamSize)),
-    ...input.lookups.map((lookup) => normalizePositiveInteger(lookup.expectedTeamSize)),
-  ]
-    .filter((value): value is number => value !== null);
-  const expectedTeamSize = expectedTeamSizes.length > 0 ? Math.max(...expectedTeamSizes) : null;
-  const rosterCompleteness = expectedTeamSize === null
+  const expectedTeamSizesByClan = new Map<string, Set<number>>();
+  for (const history of mappedHistories) {
+    const expectedSize = normalizePositiveInteger(history.expectedTeamSize);
+    if (expectedSize === null) continue;
+    const clanTag = normalizeClanTag(history.clanTag);
+    const sizes = expectedTeamSizesByClan.get(clanTag) ?? new Set<number>();
+    sizes.add(expectedSize);
+    expectedTeamSizesByClan.set(clanTag, sizes);
+  }
+  for (const lookup of input.lookups) {
+    const expectedSize = normalizePositiveInteger(lookup.expectedTeamSize);
+    if (expectedSize === null) continue;
+    const clanTag = normalizeClanTag(lookup.clanTag);
+    const sizes = expectedTeamSizesByClan.get(clanTag) ?? new Set<number>();
+    sizes.add(expectedSize);
+    expectedTeamSizesByClan.set(clanTag, sizes);
+  }
+  const expectedTeamSizesByClanRecord = Object.fromEntries([...historicalClanTags].sort((a, b) => a.localeCompare(b)).map((clanTag) => {
+    const sizes = expectedTeamSizesByClan.get(clanTag) ?? new Set<number>();
+    return [clanTag, sizes.size === 1 ? [...sizes][0] : null];
+  }));
+  for (const [clanTag, sizes] of expectedTeamSizesByClan) {
+    if (sizes.size > 1) conflicts.push(`conflicting_expected_team_sizes:${clanTag}`);
+  }
+  const perClanRosterCompleteness = Object.fromEntries([...historicalClanTags].sort((a, b) => a.localeCompare(b)).map((clanTag) => {
+    const expectedSize = expectedTeamSizesByClanRecord[clanTag];
+    const observedSize = perClanRosterCounts[clanTag] ?? 0;
+    const completeness = expectedSize === null
+      ? "UNKNOWN"
+      : observedSize === expectedSize ? "COMPLETE" : "PARTIAL";
+    return [clanTag, completeness];
+  })) as Record<string, "COMPLETE" | "PARTIAL" | "UNKNOWN">;
+  const expectedTeamSizes = Object.values(expectedTeamSizesByClanRecord).filter((value): value is number => value !== null);
+  const expectedTeamSize = expectedTeamSizes.length > 0 && new Set(expectedTeamSizes).size === 1
+    ? expectedTeamSizes[0]
+    : null;
+  const rosterCompleteness = Object.values(perClanRosterCompleteness).length === 0 || Object.values(perClanRosterCompleteness).every((value) => value === "UNKNOWN")
     ? "UNKNOWN"
-    : [...historicalClanTags].every((clanTag) => (perClanRosterCounts[clanTag] ?? 0) === expectedTeamSize)
+    : Object.values(perClanRosterCompleteness).every((value) => value === "COMPLETE")
       ? "COMPLETE"
       : "PARTIAL";
   const missingMappings = [...(input.missingParticipantWarMappings ?? [])];
   const normalizedRosterAvailable = participation.length > 0 && mappedHistories.length > 0;
+  const legacyRosterAvailable = legacyRosterFacts.length > 0;
+  const rosterEvidenceAvailable = normalizedRosterAvailable || legacyRosterAvailable;
   const exactCoverage = exactSnapshots.length > 0;
   let classification: AuditClassification;
   let candidateSyncTime: Date | null = null;
   let candidateSource: string | null = null;
-  if (conflicts.length > 0 && !input.syncCycleTime && !exactCoverage) {
+  if (conflicts.length > 0) {
     classification = "AMBIGUOUS";
   } else if (input.syncCycleTime && exactCoverage) {
     classification = "EXISTING_EXACT";
@@ -349,11 +444,17 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
   } else if (scheduledCandidates.length > 1) {
     classification = "AMBIGUOUS";
     conflicts.push("multiple_plausible_scheduled_sync_times");
-  } else if (scheduledCandidates.length === 1 && normalizedRosterAvailable && mappedHistories.length > 0) {
+  } else if (scheduledCandidates.length === 1 && rosterEvidenceAvailable && mappedHistories.length > 0) {
     classification = "SCHEDULED_SYNC_CANDIDATE";
     candidateSyncTime = scheduledCandidates[0].syncTime;
-    candidateSource = "ScheduledSyncPost.syncTime";
-  } else if (legacyEvidenceAvailable) {
+    candidateSource = legacyRosterAvailable && !normalizedRosterAvailable
+      ? "ScheduledSyncPost.syncTime+WarLookup.canonical.participants"
+      : "ScheduledSyncPost.syncTime";
+  } else if (legacyRosterAvailable && mappedHistories.length > 0 && prepCluster.center && !prepCluster.excessiveSpread) {
+    classification = "PREP_CLUSTER_CANDIDATE";
+    candidateSyncTime = prepCluster.center;
+    candidateSource = "ClanWarHistory.prepStartTime.median+WarLookup.canonical.participants";
+  } else if (legacyRosterAvailable) {
     classification = "LEGACY_WARLOOKUP_CANDIDATE";
     candidateSource = "WarLookup.canonical.participants";
   } else if (mappedHistories.length > 0 && prepCluster.center) {
@@ -406,6 +507,8 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     latestSupportingEvidence,
     rosterCompleteness,
     expectedTeamSize,
+    expectedTeamSizesByClan: Object.fromEntries(Object.entries(expectedTeamSizesByClanRecord).sort(([a], [b]) => a.localeCompare(b))),
+    perClanRosterCompleteness: Object.fromEntries(Object.entries(perClanRosterCompleteness).sort(([a], [b]) => a.localeCompare(b))),
     playerClanFacts: playerClanFacts.sort((left, right) =>
       left.playerTag.localeCompare(right.playerTag) || left.clanTag.localeCompare(right.clanTag)),
   };
@@ -427,10 +530,11 @@ export function formatAuditSummary(reports: readonly AuditCycleReport[]): string
     "PREP_CLUSTER_CANDIDATE",
     "LEGACY_WARLOOKUP_CANDIDATE",
   ].includes(report.classification));
+  const candidateBoundaryReports = candidateReports.filter((report) => isValidDate(report.candidateSyncTime));
   const candidateFacts = candidateReports.reduce((sum, report) => sum + report.playerClanFacts.length, 0);
   const syncNumbers = reports.map((report) => report.syncNumber).sort((a, b) => a - b);
-  const safeDates = candidateReports.map((report) => report.candidateSyncTime).filter(isValidDate).sort((a, b) => a.getTime() - b.getTime());
-  const sortedCandidateReports = [...candidateReports].sort((a, b) => a.syncNumber - b.syncNumber || a.guildId.localeCompare(b.guildId));
+  const safeDates = candidateBoundaryReports.map((report) => report.candidateSyncTime).filter(isValidDate).sort((a, b) => a.getTime() - b.getTime());
+  const sortedCandidateReports = [...candidateBoundaryReports].sort((a, b) => a.syncNumber - b.syncNumber || a.guildId.localeCompare(b.guildId));
   const guilds = [...new Set(reports.map((report) => report.guildId))].sort((a, b) => a.localeCompare(b));
   const syncRange = syncNumbers.length > 0 ? `#${syncNumbers[0]} -> #${syncNumbers[syncNumbers.length - 1]}` : "none";
   return [
@@ -448,7 +552,7 @@ export function formatAuditSummary(reports: readonly AuditCycleReport[]): string
     `Ambiguous: ${count("AMBIGUOUS")}`,
     `Unrecoverable: ${count("UNRECOVERABLE")}`,
     "",
-    `Potential additional canonical boundaries: ${candidateReports.length}`,
+    `Potential additional canonical boundaries: ${candidateBoundaryReports.length}`,
     `Potential player-boundary membership facts: ${candidateFacts}`,
     `Earliest safely recoverable date: ${safeDates[0]?.toISOString() ?? "none"}`,
     `Earliest safely recoverable sync: ${sortedCandidateReports[0]?.syncNumber ? `#${sortedCandidateReports[0].syncNumber}` : "none"}`,
@@ -472,6 +576,7 @@ function normalizePoints(rows: any[]): AuditPointEvidence[] {
       warStartTime,
       opponentTag,
       isFwa: Boolean(row?.isFwa),
+      identitySource: "ClanPointsSync",
     }];
   });
 }
@@ -546,6 +651,33 @@ function normalizeLookups(rows: any[]): AuditLookupEvidence[] {
   });
 }
 
+/** Purpose: map compliance evaluations to canonical FWA histories as a secondary identity source. */
+function normalizeComplianceIdentities(rows: any[], histories: AuditHistoryEvidence[]): AuditPointEvidence[] {
+  return rows.flatMap((row) => {
+    const guildId = normalizeGuildId(row?.guildId);
+    const warId = normalizePositiveInteger(row?.warId);
+    if (!guildId || warId === null) return [];
+    const matchingHistories = histories.filter((history) =>
+      history.warId === warId &&
+      isFwa(history.matchType) &&
+      history.syncNumber !== null &&
+      isValidDate(history.warStartTime),
+    );
+    if (matchingHistories.length !== 1) return [];
+    const history = matchingHistories[0];
+    return [{
+      guildId,
+      syncNumber: history.syncNumber!,
+      clanTag: history.clanTag,
+      warId,
+      warStartTime: history.warStartTime,
+      opponentTag: history.opponentTag ?? "",
+      isFwa: true,
+      identitySource: "WarPlanComplianceEvaluation" as const,
+    }].filter((point) => Boolean(point.opponentTag));
+  });
+}
+
 /** Purpose: build candidate cycle inputs from all persisted read-only historical owners. */
 function buildCycleInputs(
   points: AuditPointEvidence[],
@@ -557,6 +689,24 @@ function buildCycleInputs(
   cycles: any[],
 ): AuditCycleInput[] {
   const identities = new Map<string, { guildId: string; syncNumber: number; points: AuditPointEvidence[]; syncCycleTime: Date | null }>();
+  const conflictingWarClanKeys = new Set<string>();
+  const ownersByWarClan = new Map<string, Set<string>>();
+  for (const point of points) {
+    if (point.warId === null) continue;
+    const key = `${normalizeClanTag(point.clanTag)}|${point.warId}`;
+    const owners = ownersByWarClan.get(key) ?? new Set<string>();
+    owners.add(`${point.guildId}|${point.syncNumber}`);
+    ownersByWarClan.set(key, owners);
+  }
+  for (const [key, owners] of ownersByWarClan) {
+    if (owners.size > 1) conflictingWarClanKeys.add(key);
+  }
+  // Keep this helper in the normalization path so future callers cannot accidentally drop owner conflicts.
+  if (hasConflictingPersistedOwners(points)) {
+    for (const [key, owners] of ownersByWarClan) {
+      if (owners.size > 1) conflictingWarClanKeys.add(key);
+    }
+  }
   for (const row of cycles) {
     const guildId = normalizeGuildId(row?.guildId);
     const syncNumber = normalizePositiveInteger(row?.syncNumber);
@@ -585,25 +735,28 @@ function buildCycleInputs(
     const pointWarIds = new Set(identity.points.map((point) => point.warId).filter((value): value is number => value !== null));
     const matchingHistories = histories.filter((history) => identity.points.some((point) => historyMatchesPoint(history, point)));
     const cycleParticipation = participation.filter((row) => row.guildId === identity.guildId && matchingHistories.some((history) =>
-      history.warId === row.warId && history.clanTag === row.clanTag));
+      history.warId === row.warId && normalizeClanTag(history.clanTag) === normalizeClanTag(row.clanTag)));
     const missingMappings = identity.points
       .filter((point) => !matchingHistories.some((history) => historyMatchesPoint(history, point)))
       .map((point) => `missing_history:${point.clanTag}`);
     for (const history of matchingHistories) {
-      if (!cycleParticipation.some((row) => row.warId === history.warId && row.clanTag === history.clanTag)) {
+      if (!cycleParticipation.some((row) => row.warId === history.warId && normalizeClanTag(row.clanTag) === normalizeClanTag(history.clanTag))) {
         missingMappings.push(`missing_participation:${history.clanTag}:${history.warId}`);
       }
     }
     const relevantLookups = lookups.filter((lookup) => pointWarIds.has(lookup.warId));
     const matchingLookups = relevantLookups.filter((lookup) => identity.points.some((point) =>
-      point.warId === lookup.warId && point.clanTag === lookup.clanTag));
+      point.warId === lookup.warId && normalizeClanTag(point.clanTag) === normalizeClanTag(lookup.clanTag)));
     const lookupOwnerKeys = new Set(relevantLookups.flatMap((lookup) =>
-      points.filter((point) => point.warId === lookup.warId && point.clanTag === lookup.clanTag)
+      points.filter((point) => point.warId === lookup.warId && normalizeClanTag(point.clanTag) === normalizeClanTag(lookup.clanTag))
         .map((point) => `${point.guildId}|${point.syncNumber}`),
     ));
     const historyOwnerKeys = new Set(matchingHistories.flatMap((history) =>
       points.filter((point) => historyMatchesPoint(history, point)).map((point) => `${point.guildId}|${point.syncNumber}`)));
     const explicitConflicts = [
+      ...(identity.points.some((point) => point.warId !== null && conflictingWarClanKeys.has(`${normalizeClanTag(point.clanTag)}|${point.warId}`))
+        ? ["conflicting_persisted_identity_sources"]
+        : []),
       ...(lookupOwnerKeys.size > 1 ? ["warlookup_maps_to_multiple_guild_sync_owners"] : []),
       ...(relevantLookups.length !== matchingLookups.length ? ["warlookup_clan_identity_mismatch"] : []),
       ...(historyOwnerKeys.size > 1 ? ["history_maps_to_multiple_guild_sync_owners"] : []),
@@ -629,7 +782,7 @@ function buildCycleInputs(
 
 /** Purpose: read every historical owner through an interface that exposes no mutation delegate. */
 async function readAuditInputs(db: ReadOnlyAuditDb): Promise<AuditCycleInput[]> {
-  const [cycles, rawSnapshots, rawSchedules, rawPoints, rawHistories, rawParticipation, rawLookups] = await Promise.all([
+  const [cycles, rawSnapshots, rawSchedules, rawPoints, rawHistories, rawParticipation, rawLookups, rawEvaluations] = await Promise.all([
     db.syncCycle.findMany({ orderBy: [{ guildId: "asc" }, { syncNumber: "asc" }] }),
     db.syncClanMemberSnapshot.findMany({ orderBy: [{ guildId: "asc" }, { syncTime: "asc" }, { clanTag: "asc" }, { playerTag: "asc" }] }),
     db.scheduledSyncPost.findMany({ orderBy: [{ guildId: "asc" }, { syncTime: "asc" }] }),
@@ -637,10 +790,15 @@ async function readAuditInputs(db: ReadOnlyAuditDb): Promise<AuditCycleInput[]> 
     db.clanWarHistory.findMany({ orderBy: [{ syncNumber: "asc" }, { warId: "asc" }, { clanTag: "asc" }] }),
     db.clanWarParticipation.findMany({ where: { matchType: "FWA" }, orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }] }),
     db.warLookup.findMany({ orderBy: [{ startTime: "asc" }, { warId: "asc" }] }),
+    db.warPlanComplianceEvaluation.findMany({
+      orderBy: [{ guildId: "asc" }, { warId: "asc" }],
+      select: { guildId: true, warId: true, warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true } } },
+    }),
   ]);
+  const normalizedHistories = normalizeHistories(rawHistories);
   return buildCycleInputs(
-    normalizePoints(rawPoints),
-    normalizeHistories(rawHistories),
+    [...normalizePoints(rawPoints), ...normalizeComplianceIdentities(rawEvaluations, normalizedHistories)],
+    normalizedHistories,
     normalizeParticipation(rawParticipation),
     normalizeSchedules(rawSchedules),
     normalizeSnapshots(rawSnapshots),
@@ -672,7 +830,112 @@ function formatCycleRow(report: AuditCycleReport): string {
   ].join(" | ");
 }
 
-/** Purpose: compute read-only player streak and tenure diagnostics from current and candidate evidence. */
+type ProjectedPlayerEvidence = {
+  boundaries: Date[];
+  evidenceRows: MembershipBoundaryEvidence[];
+  coverageLimited: boolean;
+};
+
+/** Purpose: identify report classes that can contribute safe, timestamped candidate evidence. */
+function isTimestampedCandidate(report: AuditCycleReport): boolean {
+  return ["SCHEDULED_SYNC_CANDIDATE", "PREP_CLUSTER_CANDIDATE", "LEGACY_WARLOOKUP_CANDIDATE"].includes(report.classification) &&
+    isValidDate(report.candidateSyncTime);
+}
+
+/** Purpose: construct one fallback membership evidence row from candidate roster facts. */
+function buildCandidateEvidenceRow(
+  playerTag: string,
+  boundaryTime: Date,
+  facts: Array<{ playerTag: string; clanTag: string; source: string }>,
+): MembershipBoundaryEvidence {
+  const clanTags = [...new Set(facts.map((fact) => normalizeClanTag(fact.clanTag)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const fwa = clanTags.length === 0
+    ? { status: "UNKNOWN" as const, clanTag: null, clanTags: [], source: null }
+    : {
+        status: clanTags.length === 1 ? "RESOLVED" as const : "AMBIGUOUS" as const,
+        clanTag: clanTags.length === 1 ? clanTags[0] : null,
+        clanTags,
+        source: "FWA_WAR_PARTICIPATION_FALLBACK" as const,
+      };
+  return {
+    playerTag,
+    boundaryTime,
+    fwa,
+    alliance: {
+      positive: clanTags.length > 0,
+      clanTags,
+      ambiguous: clanTags.length > 1,
+      sources: clanTags.length > 0 ? ["FWA_EVIDENCE"] : [],
+    },
+  };
+}
+
+/** Purpose: merge candidate boundaries with service evidence while preserving exact snapshot precedence. */
+function buildProjectedPlayerEvidence(
+  playerTag: string,
+  currentBoundaries: readonly Date[],
+  currentRows: readonly MembershipBoundaryEvidence[],
+  reports: readonly AuditCycleReport[],
+): ProjectedPlayerEvidence {
+  const currentByTime = new Map(currentRows.map((row) => [row.boundaryTime.getTime(), row]));
+  const candidateFactsByTime = new Map<number, Array<{ playerTag: string; clanTag: string; source: string }>>();
+  const candidateReports = reports.filter(isTimestampedCandidate);
+  for (const report of candidateReports) {
+    const boundaryTime = report.candidateSyncTime!.getTime();
+    const facts = report.playerClanFacts.filter((fact) => fact.playerTag === playerTag);
+    const rows = candidateFactsByTime.get(boundaryTime) ?? [];
+    rows.push(...facts);
+    candidateFactsByTime.set(boundaryTime, rows);
+  }
+  const boundaryTimes = [...new Map([
+    ...currentBoundaries.map((boundaryTime) => [boundaryTime.getTime(), boundaryTime] as const),
+    ...candidateReports.map((report) => [report.candidateSyncTime!.getTime(), report.candidateSyncTime!] as const),
+  ]).values()].sort((left, right) => right.getTime() - left.getTime());
+  const evidenceRows = boundaryTimes.map((boundaryTime) => {
+    const current = currentByTime.get(boundaryTime.getTime());
+    if (current?.fwa.source === "SYNC_SNAPSHOT") return current;
+    const candidateFacts = candidateFactsByTime.get(boundaryTime.getTime()) ?? [];
+    if (candidateFacts.length > 0) return buildCandidateEvidenceRow(playerTag, boundaryTime, candidateFacts);
+    return current ?? buildCandidateEvidenceRow(playerTag, boundaryTime, []);
+  });
+  const coverageLimited = reports.some((report) =>
+    ["SCHEDULED_SYNC_CANDIDATE", "PREP_CLUSTER_CANDIDATE", "LEGACY_WARLOOKUP_CANDIDATE"].includes(report.classification) &&
+    report.playerClanFacts.some((fact) => fact.playerTag === playerTag) &&
+    !isValidDate(report.candidateSyncTime),
+  );
+  return { boundaries: boundaryTimes, evidenceRows, coverageLimited };
+}
+
+/** Purpose: format a streak value without presenting lower-bound evidence as exact. */
+function formatProjectedStreak(value: number, lowerBound: boolean): string {
+  return `${value}${lowerBound ? "+" : ""}`;
+}
+
+/** Purpose: replay one player's current and candidate evidence through the shared streak algorithm. */
+export function projectMembershipStreak(
+  playerTag: string,
+  current: {
+    boundaryTimes: readonly Date[];
+    evidenceRows: readonly MembershipBoundaryEvidence[];
+    boundaryHistoryTruncated: boolean;
+  },
+  reports: readonly AuditCycleReport[],
+): MembershipStreakResult {
+  const projectedEvidence = buildProjectedPlayerEvidence(
+    playerTag,
+    current.boundaryTimes,
+    current.evidenceRows,
+    reports,
+  );
+  return computeMembershipStreaksFromEvidence(
+    playerTag,
+    projectedEvidence.boundaries,
+    projectedEvidence.evidenceRows,
+    current.boundaryHistoryTruncated || projectedEvidence.coverageLimited,
+  );
+}
+
+/** Purpose: compute read-only player streak and tenure diagnostics from shared boundary semantics. */
 async function buildPlayerDiagnostics(
   db: ReadOnlyAuditDb,
   reports: readonly AuditCycleReport[],
@@ -703,11 +966,15 @@ async function buildPlayerDiagnostics(
     ].includes(report.classification));
     for (const result of current.streaks) {
       const home = homes.find((row) => normalizePlayerTag(row.playerTag) === result.playerTag);
-      const homeClanTag = normalizeClanTag(home?.clanTag);
-      const candidateFacts = candidateReports.flatMap((report) => report.playerClanFacts)
-        .filter((fact) => fact.playerTag === result.playerTag);
-      const sameHomeFacts = candidateFacts.filter((fact) => fact.clanTag === homeClanTag).length;
-      const allianceFacts = candidateFacts.length;
+      const projected = projectMembershipStreak(
+        result.playerTag,
+        {
+          boundaryTimes: current.boundaryTimes,
+          evidenceRows: current.evidenceByPlayer[result.playerTag] ?? [],
+          boundaryHistoryTruncated: current.boundaryHistoryTruncated,
+        },
+        candidateReports,
+      );
       const earliest = candidateReports
         .filter((report) => report.playerClanFacts.some((fact) => fact.playerTag === result.playerTag))
         .map((report) => report.candidateSyncTime)
@@ -716,17 +983,58 @@ async function buildPlayerDiagnostics(
       lines.push([
         `guild=${guildId}`,
         `player=${result.playerTag}`,
-        `current_clan_streak=${result.clanStreakSyncs}${result.clanStreakIsLowerBound ? "+" : ""}`,
-        `projected_clan_streak=${result.clanStreakSyncs + sameHomeFacts}`,
-        `current_alliance_streak=${result.allianceStreakSyncs}${result.allianceStreakIsLowerBound ? "+" : ""}`,
-        `projected_alliance_streak=${result.allianceStreakSyncs + allianceFacts}`,
-        `delta_clan=${sameHomeFacts}`,
-        `delta_alliance=${allianceFacts}`,
+        `current_clan_streak=${formatProjectedStreak(result.clanStreakSyncs, result.clanStreakIsLowerBound)}`,
+        `projected_clan_streak=${formatProjectedStreak(projected.clanStreakSyncs, projected.clanStreakIsLowerBound)}`,
+        `current_alliance_streak=${formatProjectedStreak(result.allianceStreakSyncs, result.allianceStreakIsLowerBound)}`,
+        `projected_alliance_streak_lower_bound=${formatProjectedStreak(projected.allianceStreakSyncs, true)}`,
+        `alliance_projection_coverage=LIMITED`,
+        `delta_clan=${projected.clanStreakSyncs - result.clanStreakSyncs}`,
+        `delta_alliance_lower_bound=${projected.allianceStreakSyncs - result.allianceStreakSyncs}`,
+        `prestart_home_contiguous_boundaries=${home ? buildHomeContinuity(candidateReports, home).reports.length : 0}`,
         `earliest_candidate_support=${earliest?.toISOString() ?? "none"}`,
       ].join(" "));
     }
   }
   return lines;
+}
+
+type HomeContinuity = {
+  reports: AuditCycleReport[];
+  stopReason: "NONE" | "GAP" | "ABSENT" | "UNKNOWN" | "CONFLICT";
+};
+
+/** Purpose: walk only safe pre-start candidate evidence backward for one active Home player. */
+function buildHomeContinuity(reports: readonly AuditCycleReport[], home: any): HomeContinuity {
+  const guildId = normalizeGuildId(home.guildId);
+  const playerTag = normalizePlayerTag(home.playerTag);
+  const clanTag = normalizeClanTag(home.clanTag);
+  const startedAt = new Date(home.startedAtSyncTime);
+  const candidateRows = reports
+    .filter((report) => report.guildId === guildId && isTimestampedCandidate(report))
+    .filter((report) => report.candidateSyncTime!.getTime() < startedAt.getTime())
+    .sort((left, right) => left.syncNumber - right.syncNumber);
+  const continuousRows: AuditCycleReport[] = [];
+  let stopReason: HomeContinuity["stopReason"] = "NONE";
+  for (let index = candidateRows.length - 1; index >= 0; index -= 1) {
+    const report = candidateRows[index];
+    if (report.conflicts.length > 0) {
+      stopReason = "CONFLICT";
+      break;
+    }
+    const followsContinuousRow = continuousRows.length === 0 || candidateRows[index + 1].syncNumber === report.syncNumber + 1;
+    if (!followsContinuousRow) {
+      stopReason = "GAP";
+      break;
+    }
+    const hasSameHomeFact = report.playerClanFacts.some((fact) => fact.playerTag === playerTag && fact.clanTag === clanTag);
+    if (hasSameHomeFact) {
+      continuousRows.unshift(report);
+      continue;
+    }
+    stopReason = report.perClanRosterCompleteness[clanTag] === "COMPLETE" ? "ABSENT" : "UNKNOWN";
+    break;
+  }
+  return { reports: continuousRows, stopReason };
 }
 
 /** Purpose: report theoretical Home tenure extension without mutating Home periods or asserting historical filler truth. */
@@ -737,38 +1045,20 @@ export function buildTenureDiagnostics(reports: readonly AuditCycleReport[], act
     `active Home player count: ${activeHomes.length}`,
   ];
   let sameHomeCount = 0;
+  let theoreticalBoundaryCount = 0;
   for (const home of [...activeHomes].sort((left, right) =>
     String(left.guildId).localeCompare(String(right.guildId)) || String(left.playerTag).localeCompare(String(right.playerTag)),
   )) {
     const guildId = normalizeGuildId(home.guildId);
     const playerTag = normalizePlayerTag(home.playerTag);
     const clanTag = normalizeClanTag(home.clanTag);
-    const candidateRows = reports
-      .filter((report) => report.guildId === guildId && [
-        "SCHEDULED_SYNC_CANDIDATE",
-        "PREP_CLUSTER_CANDIDATE",
-        "LEGACY_WARLOOKUP_CANDIDATE",
-      ].includes(report.classification))
-      .filter((report) => isValidDate(report.candidateSyncTime) && report.candidateSyncTime.getTime() < new Date(home.startedAtSyncTime).getTime())
-      .sort((left, right) => left.syncNumber - right.syncNumber);
-    let continuousRows: AuditCycleReport[] = [];
-    for (let index = candidateRows.length - 1; index >= 0; index -= 1) {
-      const report = candidateRows[index];
-      const hasSameHomeFact = report.playerClanFacts.some((fact) => fact.playerTag === playerTag && fact.clanTag === clanTag);
-      const followsContinuousRow = continuousRows.length === 0 || candidateRows[index + 1].syncNumber === report.syncNumber + 1;
-      if (!hasSameHomeFact || !followsContinuousRow) break;
-      continuousRows = [report, ...continuousRows];
-    }
-    if (continuousRows.length > 0) sameHomeCount += 1;
-    lines.push(`guild=${guildId} player=${playerTag} home=${clanTag} earliest_continuous_same_clan=${continuousRows[0]?.candidateSyncTime?.toISOString() ?? "none"} theoretical_extension_boundaries=${continuousRows.length}`);
+    const continuity = buildHomeContinuity(reports, home);
+    if (continuity.reports.length > 0) sameHomeCount += 1;
+    theoreticalBoundaryCount += continuity.reports.length;
+    lines.push(`guild=${guildId} player=${playerTag} home=${clanTag} earliest_continuous_same_clan=${continuity.reports[0]?.candidateSyncTime?.toISOString() ?? "none"} theoretical_extension_boundaries=${continuity.reports.length} stop_reason=${continuity.stopReason}`);
   }
   lines.splice(3, 0, `historical evidence shows same current Home before startedAtSyncTime: ${sameHomeCount}`);
-  lines.push(`boundaries by which Clan Tenure could theoretically extend: ${activeHomes.reduce((sum, home) => {
-    const guildId = normalizeGuildId(home.guildId);
-    const playerTag = normalizePlayerTag(home.playerTag);
-    const clanTag = normalizeClanTag(home.clanTag);
-    return sum + reports.filter((report) => report.guildId === guildId && report.playerClanFacts.some((fact) => fact.playerTag === playerTag && fact.clanTag === clanTag)).length;
-  }, 0)}`);
+  lines.push(`boundaries by which Clan Tenure could theoretically extend: ${theoreticalBoundaryCount}`);
   lines.push("Historical filler truth is incomplete before immutable SyncClanReadinessSnapshot capture; current filler registries were not consulted.");
   return lines;
 }
