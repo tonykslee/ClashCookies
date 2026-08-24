@@ -93,6 +93,24 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     });
   });
 
+  it("does not treat a legacy materialized CurrentWar sync as active evidence", () => {
+    const resolution = resolveActiveWarSyncNumberReadOnly({
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4007",
+      }),
+      latestPersistedSyncNumber: 552,
+      sameWarPersistedSyncNumber: null,
+      currentWarSyncNumber: 553,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: null,
+      source: "none",
+      isDerived: false,
+    });
+  });
+
   it("prefers same-war persisted sync over every fallback", () => {
     const resolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({

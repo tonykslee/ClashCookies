@@ -303,7 +303,7 @@ describe("fwa points sync numbering regression", () => {
     ).toBe(545);
   });
 
-  it("prefers the canonical CurrentWar sync over an active-cycle conflict", () => {
+  it("does not let a materialized CurrentWar sync override an active-cycle conflict", () => {
     expect(
       resolveFwaPointsCurrentSyncForTest({
         identity: activeIdentity,
@@ -311,7 +311,7 @@ describe("fwa points sync numbering regression", () => {
         currentWarSyncNumber: 545,
         activeCycleConflict: true,
       }),
-    ).toBe(545);
+    ).toBeNull();
   });
 
   it("lets exact same-war points evidence supersede stale canonical CurrentWar sync", () => {
@@ -345,6 +345,26 @@ describe("fwa points sync numbering regression", () => {
 
     expect(unresolvedSync).toBeNull();
     expect(formatFwaPointsSyncDisplayForTest(unresolvedSync)).toBe("unknown");
+  });
+
+  it("does not use a stale materialized CurrentWar parity value for outcomes", () => {
+    const unresolvedSync = resolveFwaPointsCurrentSyncForTest({
+      identity: activeIdentity,
+      sourceSync: 552,
+      sameWarPersistedSyncNumber: null,
+      currentWarSyncNumber: 553,
+    });
+
+    expect(unresolvedSync).toBeNull();
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1000, 1000, unresolvedSync),
+    ).toBeNull();
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1200, 980, unresolvedSync),
+    ).toBe("WIN");
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 980, 1200, unresolvedSync),
+    ).toBe("LOSE");
   });
 
   it("keeps unequal-point outcomes available while sync parity is unresolved", () => {

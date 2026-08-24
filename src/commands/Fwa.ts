@@ -4466,7 +4466,6 @@ function mailStatusTitleForState(state: WarStateForSync): string {
 
 const warMailCurrentWarRenderSelect = Prisma.validator<Prisma.CurrentWarSelect>()({
   warId: true,
-  syncNumber: true,
   matchType: true,
   inferredMatchType: true,
   outcome: true,
@@ -5432,14 +5431,6 @@ async function buildWarMailEmbedForTag(
     identity: syncIdentityForRender,
     latestPersistedSyncNumber: sourceSync,
     sameWarPersistedSyncNumber: syncRow?.syncNum ?? null,
-    currentWarSyncNumber: isFwaPointsCurrentWarSyncEligible({
-      liveWarStartTime: war?.startTime ?? null,
-      liveOpponentTag: opponentTag || null,
-      currentWarStartTime: currentWarForRender?.startTime ?? null,
-      currentWarOpponentTag: currentWarForRender?.opponentTag ?? null,
-    })
-      ? currentWarForRender?.syncNumber ?? null
-      : null,
   });
   const resolvedCurrentSyncNum = syncResolution.syncNumber;
   const lifecycle =
@@ -13559,7 +13550,6 @@ async function buildTrackedMatchOverview(
     select: {
       clanTag: true,
       warId: true,
-      syncNumber: true,
       startTime: true,
       opponentTag: true,
       state: true,
@@ -14058,14 +14048,6 @@ async function buildTrackedMatchOverview(
       identity: syncIdentity,
       latestPersistedSyncNumber: sourceSync,
       sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
-      currentWarSyncNumber: isFwaPointsCurrentWarSyncEligible({
-        liveWarStartTime: war?.startTime ?? null,
-        liveOpponentTag: opponentTag || null,
-        currentWarStartTime: sub?.startTime ?? null,
-        currentWarOpponentTag: sub?.opponentTag ?? null,
-      })
-        ? sub?.syncNumber ?? null
-        : null,
     });
     const resolvedCurrentSyncNum = syncResolution.syncNumber;
     const trackedFreshSourceSync = resolveManualMatchupFreshnessSourceSync({
@@ -17843,7 +17825,6 @@ export const Fwa: Command = {
               select: {
                 state: true,
                 warId: true,
-                syncNumber: true,
                 startTime: true,
                 opponentTag: true,
                 matchType: true,
@@ -17919,14 +17900,6 @@ export const Fwa: Command = {
           identity: syncIdentity,
           latestPersistedSyncNumber: sourceSync,
           sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
-          currentWarSyncNumber: isFwaPointsCurrentWarSyncEligible({
-            liveWarStartTime: war?.startTime ?? null,
-            liveOpponentTag: opponentTag || null,
-            currentWarStartTime: subscription?.startTime ?? null,
-            currentWarOpponentTag: subscription?.opponentTag ?? null,
-          })
-            ? subscription?.syncNumber ?? null
-            : null,
         });
         const resolvedCurrentSyncNum = syncResolution.syncNumber;
         logActiveWarSyncResolution({
