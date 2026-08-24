@@ -5,7 +5,7 @@
 - Administrator users can always use commands regardless of role whitelist.
 - `/fwa compliance` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/fwa police` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
-- `/fwa weight-age`, `/fwa weight-link`, and `/fwa weight-health` default to FWA leader-role + Administrator when no explicit whitelist is set.
+- `/fwa weight-link`, `/fwa weight-health`, and `/fwa weight-alert` default to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/sync retrospective` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/repwork` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/defer` defaults to FWA leader-role + Administrator when no explicit whitelist is set.

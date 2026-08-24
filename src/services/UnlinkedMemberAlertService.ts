@@ -268,6 +268,15 @@ function normalizeDisplayText(input: string | null | undefined, fallback: string
   return normalized || fallback;
 }
 
+/** Purpose: determine whether a ban's optional clan scope applies to an observed clan. */
+function isBanApplicableToObservedClan(
+  ban: Pick<BanRecord, "clanTag">,
+  observedClanTag: string,
+): boolean {
+  const banClanTag = normalizeClanTag(ban.clanTag ?? "");
+  return !banClanTag || banClanTag === normalizeClanTag(observedClanTag);
+}
+
 function buildBannedJoinAlertKey(input: { playerTag: string; clanTag: string }): string {
   return `${normalizePlayerTag(input.playerTag)}::${normalizeClanTag(input.clanTag)}`;
 }
@@ -1054,23 +1063,23 @@ export class UnlinkedMemberAlertService {
       }),
     ]);
 
-    const activePlayerBanByTag = new Map<string, BanRecord>();
+    const activePlayerBansByTag = new Map<string, BanRecord[]>();
     for (const row of directBanRows) {
       if (!row.playerTag) continue;
       const playerTag = normalizePlayerTag(row.playerTag);
       if (!playerTag) continue;
-      if (!activePlayerBanByTag.has(playerTag)) {
-        activePlayerBanByTag.set(playerTag, row);
-      }
+      const bans = activePlayerBansByTag.get(playerTag) ?? [];
+      bans.push(row);
+      activePlayerBansByTag.set(playerTag, bans);
     }
 
-    const activeUserBanByDiscordUserId = new Map<string, BanRecord>();
+    const activeUserBansByDiscordUserId = new Map<string, BanRecord[]>();
     for (const row of userBanRows) {
       const discordUserId = normalizeDiscordUserId(row.discordUserId);
       if (!discordUserId) continue;
-      if (!activeUserBanByDiscordUserId.has(discordUserId)) {
-        activeUserBanByDiscordUserId.set(discordUserId, row);
-      }
+      const bans = activeUserBansByDiscordUserId.get(discordUserId) ?? [];
+      bans.push(row);
+      activeUserBansByDiscordUserId.set(discordUserId, bans);
     }
 
     const existingByKey = new Map(
@@ -1078,17 +1087,16 @@ export class UnlinkedMemberAlertService {
     );
 
     const currentBannedMembers = input.currentMembers.flatMap((member) => {
-      const directBan = activePlayerBanByTag.get(member.playerTag) ?? null;
-      const directBanClanTag = normalizeClanTag(directBan?.clanTag ?? "");
-      const currentClanTag = normalizeClanTag(member.clanTag);
       const applicableDirectBan =
-        directBan && directBanClanTag && directBanClanTag === currentClanTag
-          ? directBan
-          : null;
+        (activePlayerBansByTag.get(member.playerTag) ?? []).find((ban) =>
+          isBanApplicableToObservedClan(ban, member.clanTag),
+        ) ?? null;
       const linkedDiscordUserId = linkedDiscordUserByPlayerTag.get(member.playerTag) ?? null;
       const userBan =
         linkedDiscordUserId !== null
-          ? activeUserBanByDiscordUserId.get(linkedDiscordUserId) ?? null
+          ? (activeUserBansByDiscordUserId.get(linkedDiscordUserId) ?? []).find((ban) =>
+              isBanApplicableToObservedClan(ban, member.clanTag),
+            ) ?? null
           : null;
       const activeBan = applicableDirectBan ?? userBan;
       if (!activeBan) return [];

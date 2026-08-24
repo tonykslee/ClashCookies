@@ -142,6 +142,8 @@ Each domain concept must have exactly one authoritative owner.
 | CWL clan-to-current-event pointer | CwlEventClan |
 | CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
+| Per-clan FWA weight-alert policy (enablement and stale-age threshold) | FwaWeightAlertConfig |
+| Durable per-clan/date FWA weight-alert delivery claims and outcomes | FwaWeightAlertDelivery |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Tracked FWA clan rep user profile metadata | TrackedClanRepUserProfile |
 | Current player state | PlayerCurrent |
@@ -195,6 +197,8 @@ Each domain concept must have exactly one authoritative owner.
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
+
+`FwaWeightAlertConfig` is the authoritative owner of per-clan FWA weight-alert enablement and stale-age threshold configuration. `FwaWeightAlertDelivery` is the authoritative owner of the durable per-clan/per-`weightSubmitDate` claim, retry, and Discord delivery outcome; it does not own policy or routing. `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId` remain the authoritative routing fields and must not be duplicated in either alert table. `FwaClanCatalog.weightSubmitDate` remains the authoritative persisted weight-submission date used for stale-age evaluation. The delivery evaluator runs only after a fresh Clans.json catalog sync reports `SUCCESS` or `NOOP`; there is no separate alert poller. Active runtime may send after a successful claim, while mirror/staging runtime must not send.
 
 `AllianceClanMembershipInterval` is the sole owner of historical observed alliance clan-membership intervals intended for camping analytics and future read-only reporting. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals. No manual/frozen CWL alliance baseline owner remains.
 
@@ -306,6 +310,8 @@ Rules:
 ## 8) Notification routing
 
 - `TrackedClan` owns default clan metadata plus default mail/log/notify destinations.
+- `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId` remain the routing owner for the FWA weight-alert policy in `FwaWeightAlertConfig`; the policy table owns only enablement and threshold.
+- `FwaWeightAlertDelivery` owns only durable per-clan/per-weight-submission-date claim and delivery state; it does not duplicate alert policy or routing fields.
 - `ClanNotifyConfig` owns per-guild notify overrides.
 - `CurrentWar` may materialize per-war runtime notify flags derived from those persisted configs.
 - Do not add new notification ownership fields without explicit approval.
