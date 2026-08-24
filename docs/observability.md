@@ -60,6 +60,12 @@ Representative examples:
 
 Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
 
+### FWA weight-alert delivery
+
+The existing FWA Clans.json scheduler invokes weight-alert evaluation only after a fresh catalog sync reports `SUCCESS` or `NOOP`. Delivery is failure-isolated from feed synchronization and uses the durable `FwaWeightAlertDelivery` row keyed by clan and persisted `weightSubmitDate` for claims, retries, and terminal `SENT` state. Bounded lines use the `[fwa-weight-alert]` prefix, including `cycle_complete`, `cycle_skipped`, and `delivery_failed` with counts, clan/channel identifiers, and bounded failure reasons. The evaluator bulk-reads enabled `FwaWeightAlertConfig` rows, `FwaClanCatalog.weightSubmitDate`, and `TrackedClan` routing; it does not perform FWAStats HTTP work.
+
+Only an active runtime may send to the configured `TrackedClan.leaderChannelId` and mention its configured `TrackedClan.leadRoleId`. Mirror and staging runtimes skip delivery, and there is no separate alert timer, scheduler, or `BotPollJobStatus` entry.
+
 ## Home Away sync alerts
 
 The existing scheduled-sync scheduler runs the Home Away alert lifecycle as a failure-isolated sibling. Useful bounded lifecycle events include:

@@ -89,7 +89,7 @@ Notes:
 ## FWA Stats Weight Health and Alerts
 - `/fwa weight-health` is the canonical read path for persisted `FwaClanCatalog.weightSubmitDate` populated by the active Clans.json feed owner.
 - Commands remain DB-backed and do not scrape or authenticate to FWAStats; mirror runtimes consume the mirrored catalog state.
-- `/fwa weight-alert` stores optional per-tracked-clan thresholds in `FwaWeightAlertConfig` and reuses `TrackedClan.leaderChannelId` / `TrackedClan.leadRoleId` for routing readiness. No configuration row is created by deployment, and this command does not deliver alerts.
+- `/fwa weight-alert` stores optional per-tracked-clan thresholds in `FwaWeightAlertConfig` and reuses `TrackedClan.leaderChannelId` / `TrackedClan.leadRoleId` for routing readiness. `FwaWeightAlertDelivery` stores one durable claim/outcome per clan and persisted `weightSubmitDate`; enabled policies are evaluated after fresh Clans.json syncs. No configuration row is created by deployment, and mirror/staging runtimes never send.
 
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.

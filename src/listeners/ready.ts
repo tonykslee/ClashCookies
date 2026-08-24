@@ -49,6 +49,7 @@ import {
   setNextWarMailRefreshAtMs,
 } from "../services/refreshSchedule";
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
+import { FwaWeightAlertDeliveryService } from "../services/FwaWeightAlertDeliveryService";
 import {
   DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
   FwaBaseSwapDmReminderSchedulerService,
@@ -1575,7 +1576,19 @@ export default (client: Client, cocService: CoCService): void => {
         `War event poll + refresh loop enabled (every ${warEventPollMinutes} minute(s)).`
       );
 
-      const fwaFeedScheduler = new FwaFeedSchedulerService();
+      const fwaWeightAlertDeliveryService =
+        runtimeEnvironment === "staging" ? null : new FwaWeightAlertDeliveryService();
+      const fwaFeedScheduler = new FwaFeedSchedulerService({
+        onFreshClansCatalogSync: fwaWeightAlertDeliveryService
+          ? ({ now }) =>
+              fwaWeightAlertDeliveryService.evaluateAndDeliver({
+                client,
+                now,
+                pollingMode,
+                runtimeEnvironment,
+              }).then(() => undefined)
+          : undefined,
+      });
       startupPhase = "fwa_feed_scheduler";
       await markStartupPhase(startupPhase, { pollingMode });
       await markPollJobStarted({
