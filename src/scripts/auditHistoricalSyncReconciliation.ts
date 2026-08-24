@@ -813,11 +813,19 @@ function formatUnmappedAmbiguities(
   ];
 }
 
-/** Purpose: execute the complete read-only reconciliation and return deterministic operator text. */
-export async function runHistoricalSyncReconciliation(
+export type HistoricalSyncReconciliationPlan = {
+  args: HistoricalSyncReconciliationArgs;
+  inputs: Awaited<ReturnType<typeof readInputs>>;
+  intervals: AnchorIntervalPlan[];
+  realizedSequences: RealizedFwaSequencePlan[];
+  requestedMissingNumbers: number[];
+};
+
+/** Purpose: build the one structured realized-history plan shared by audit and the explicit writer. */
+export async function buildHistoricalSyncReconciliationPlan(
   args: HistoricalSyncReconciliationArgs,
   db: HistoricalSyncReconciliationDb = prisma as unknown as HistoricalSyncReconciliationDb,
-): Promise<string> {
+): Promise<HistoricalSyncReconciliationPlan> {
   const inputs = await readInputs(db, args);
   const intervals = inputs.intervals;
   const realizedSequences = intervals.map((interval) => corroborateRealizedFwaSequence({
@@ -829,6 +837,22 @@ export async function runHistoricalSyncReconciliation(
     schedules: inputs.schedules,
     existingCycles: inputs.cycles,
   }));
+  const requestedMissingNumbers = realizedSequences.flatMap((sequence) =>
+    Array.from({ length: sequence.expectedMissingSyncCount }, (_unused, index) => sequence.lower.syncNumber + index + 1),
+  )
+    .filter((syncNumber) => args.fromSync === undefined || syncNumber >= args.fromSync)
+    .filter((syncNumber) => args.toSync === undefined || syncNumber <= args.toSync)
+    .sort((left, right) => left - right);
+  return { args, inputs, intervals, realizedSequences, requestedMissingNumbers };
+}
+
+/** Purpose: execute the complete read-only reconciliation and return deterministic operator text. */
+export async function runHistoricalSyncReconciliation(
+  args: HistoricalSyncReconciliationArgs,
+  db: HistoricalSyncReconciliationDb = prisma as unknown as HistoricalSyncReconciliationDb,
+): Promise<string> {
+  const plan = await buildHistoricalSyncReconciliationPlan(args, db);
+  const { inputs, intervals, realizedSequences, requestedMissingNumbers } = plan;
   const realizedBoundaries = safeBoundariesFromSequences(realizedSequences);
   const realizedIdentities = realizedHistoryIdentities(realizedSequences);
   const diagnosticBoundaries = intervals
@@ -863,12 +887,6 @@ export async function runHistoricalSyncReconciliation(
   const allPointsCorrectable = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_CORRECTABLE").length;
   const allPointsAmbiguous = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_AMBIGUOUS").length;
   const realizedHistoryCounts = realizedHistoryClassificationCounts(realizedSequences);
-  const requestedMissingNumbers = realizedSequences.flatMap((sequence) =>
-    Array.from({ length: sequence.expectedMissingSyncCount }, (_unused, index) => sequence.lower.syncNumber + index + 1),
-  )
-    .filter((syncNumber) => args.fromSync === undefined || syncNumber >= args.fromSync)
-    .filter((syncNumber) => args.toSync === undefined || syncNumber <= args.toSync)
-    .sort((left, right) => left - right);
   const existingNumbers = inputs.anchors.map((anchor) => anchor.syncNumber);
   const exactCandidateSyncNumbers = new Set(realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").flatMap((sequence) => sequence.cycles
     .filter((cycle) => cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE" && cycle.expectedSyncNumber !== null)
