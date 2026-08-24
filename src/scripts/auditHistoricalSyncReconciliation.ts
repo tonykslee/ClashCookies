@@ -2,10 +2,12 @@ import { prisma } from "../prisma";
 import {
   associateCanonicalHistories,
   classifyReconciliationHistoryScope,
-  classifyHistorySyncClaim,
   classifyPointsSyncClaim,
   HISTORICAL_SYNC_LOOKBACK_MS,
   planAnchoredSequenceIntervals,
+  corroborateRealizedFwaSequence,
+  type RealizedFwaSequencePlan,
+  type RealizedFwaCyclePlan,
   type ReconciliationAnchor,
   type ReconciliationCycle,
   type ReconciliationEvaluation,
@@ -17,8 +19,9 @@ import {
   type AssociatedHistory,
   type ProposedSyncBoundary,
   type ReconciliationHistoryScopeWindow,
+  type HistoryClaimResult,
 } from "../services/historicalSyncReconciliation";
-import { normalizeMembershipHistoryClanTag } from "../services/membershipHistoryIdentity";
+import { historicalHistoryMatchesPointByExactTuple, normalizeMembershipHistoryClanTag } from "../services/membershipHistoryIdentity";
 
 export type HistoricalSyncReconciliationArgs = {
   guildId: string;
@@ -33,6 +36,7 @@ export type HistoricalSyncReconciliationDb = {
   clanWarHistory: { findMany: (args?: any) => Promise<any[]> };
   clanWarParticipation: { findMany: (args?: any) => Promise<any[]> };
   warPlanComplianceEvaluation: { findMany: (args?: any) => Promise<any[]> };
+  syncClanReadinessSnapshot?: { findMany: (args?: any) => Promise<any[]> };
 };
 
 type BoundaryReport = {
@@ -54,9 +58,22 @@ type BoundaryReport = {
 
 type ReconciledHistory = {
   row: AssociatedHistory;
-  claim: ReturnType<typeof classifyHistorySyncClaim>;
+  claim: HistoryClaimResult;
   pointsClaim: ReturnType<typeof classifyPointsSyncClaim>;
 };
+
+type RealizedHistoryIdentity = {
+  expectedSyncNumber: number;
+  classification: "HISTORY_SYNC_MATCH";
+};
+
+type ExactSnapshotEvidence = {
+  guildId: string;
+  syncTime: Date;
+  scheduledSyncPostId: string | null;
+};
+
+export type DirectHistoryOwnership = "OWNED" | "UNOWNED_DIRECT_HISTORY" | "CONFLICTING_OWNERSHIP";
 
 function parsePositive(value: string, flag: string): number {
   const parsed = Number(value);
@@ -126,8 +143,9 @@ function normalizePoint(row: any): ReconciliationPoint | null {
 function normalizeHistory(row: any): ReconciliationHistory | null {
   const warId = positive(row?.warId);
   const warStartTime = date(row?.warStartTime);
+  const warEndTime = date(row?.warEndTime);
   const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
-  if (!warId || !warStartTime || !clanTag || comparable(row?.matchType) !== "FWA") return null;
+  if (!warId || !warStartTime || !warEndTime || !clanTag || comparable(row?.matchType) !== "FWA") return null;
   return {
     warId,
     syncNumber: positive(row?.syncNumber),
@@ -136,7 +154,7 @@ function normalizeHistory(row: any): ReconciliationHistory | null {
     opponentTag: row?.opponentTag == null ? null : normalizeMembershipHistoryClanTag(row.opponentTag),
     warStartTime,
     prepStartTime: date(row?.prepStartTime),
-    warEndTime: date(row?.warEndTime),
+    warEndTime,
   };
 }
 
@@ -162,6 +180,33 @@ function normalizeParticipation(row: any): ReconciliationParticipation | null {
   return { guildId, warId, clanTag, playerTag, matchType: comparable(row?.matchType) };
 }
 
+/** Purpose: establish target-guild ownership after direct history discovery using persisted semantic evidence. */
+export function classifyDirectHistoryOwnership(input: {
+  history: ReconciliationHistory;
+  targetGuildId: string;
+  participation: readonly ReconciliationParticipation[];
+  points: readonly ReconciliationPoint[];
+  evaluations: readonly ReconciliationEvaluation[];
+}): DirectHistoryOwnership {
+  const ownerGuilds = new Set<string>();
+  for (const row of input.participation) {
+    if (row.warId === input.history.warId && normalizeMembershipHistoryClanTag(row.clanTag) === normalizeMembershipHistoryClanTag(input.history.clanTag)) {
+      ownerGuilds.add(row.guildId);
+    }
+  }
+  for (const point of input.points) {
+    if (point.guildId && point.isFwa && historicalHistoryMatchesPointByExactTuple(input.history, point)) ownerGuilds.add(point.guildId);
+  }
+  for (const evaluation of input.evaluations) {
+    if (evaluation.warId === input.history.warId &&
+      (evaluation.clanTag === null || normalizeMembershipHistoryClanTag(evaluation.clanTag) === normalizeMembershipHistoryClanTag(input.history.clanTag)) &&
+      comparable(evaluation.matchType) === "FWA") ownerGuilds.add(evaluation.guildId);
+  }
+  if (ownerGuilds.size > 1) return "CONFLICTING_OWNERSHIP";
+  if (ownerGuilds.has(input.targetGuildId)) return "OWNED";
+  return "UNOWNED_DIRECT_HISTORY";
+}
+
 function normalizeAnchor(row: any): ReconciliationAnchor | null {
   const guildId = text(row?.guildId);
   const syncNumber = positive(row?.syncNumber);
@@ -183,7 +228,14 @@ function normalizeCycle(row: any): ReconciliationCycle | null {
   const syncNumber = positive(row?.syncNumber);
   const syncTime = date(row?.syncTime);
   if (!guildId || !syncNumber || !syncTime) return null;
-  return { guildId, syncNumber, syncTime };
+  return { guildId, syncNumber, syncTime, scheduledSyncPostId: row?.scheduledSyncPostId == null ? null : text(row.scheduledSyncPostId) || null };
+}
+
+function normalizeSnapshot(row: any): ExactSnapshotEvidence | null {
+  const guildId = text(row?.guildId);
+  const syncTime = date(row?.syncTime);
+  if (!guildId || !syncTime) return null;
+  return { guildId, syncTime, scheduledSyncPostId: row?.scheduledSyncPostId == null ? null : text(row.scheduledSyncPostId) || null };
 }
 
 function uniqueHistories(rows: ReconciliationHistory[]): ReconciliationHistory[] {
@@ -197,7 +249,7 @@ function uniqueHistories(rows: ReconciliationHistory[]): ReconciliationHistory[]
 }
 
 async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSyncReconciliationArgs) {
-  const cycleSelect = { guildId: true, syncNumber: true, syncTime: true, resolutionSource: true };
+  const cycleSelect = { guildId: true, syncNumber: true, syncTime: true, scheduledSyncPostId: true, resolutionSource: true };
   let rawCycles: any[];
   if (args.fromSync === undefined && args.toSync === undefined) {
     rawCycles = await db.syncCycle.findMany({
@@ -225,7 +277,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     const lower = lowerRows[0];
     const upper = upperRows[0];
     if ((args.fromSync !== undefined && !lower) || (args.toSync !== undefined && !upper)) {
-      return { anchors: [], cycles: [], schedules: [], points: [], histories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [] };
+      return { anchors: [], cycles: [], schedules: [], points: [], histories: [], unownedHistories: [], conflictingHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
     }
     const rangeWhere = {
       guildId: args.guildId,
@@ -255,7 +307,7 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
 
   if (anchors.length < 2) {
-    return { anchors, cycles, schedules: [], points: [], histories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [] };
+    return { anchors, cycles, schedules: [], points: [], histories: [], unownedHistories: [], conflictingHistories: [], evaluations: [], participation: [], intervals: [], exactBoundaries: [], snapshots: [] };
   }
 
   const firstAnchorTime = anchors[0].syncTime.getTime();
@@ -285,20 +337,15 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     toSync: args.toSync,
   });
   const exactBoundaries = intervals.flatMap((interval) => interval.mappings);
-  if (exactBoundaries.length === 0) {
-    return { anchors, cycles, schedules, points: [], histories: [], evaluations: [], participation: [], intervals, exactBoundaries };
-  }
 
   const targetSyncNumbers = [...new Set([
     ...exactBoundaries.map((boundary) => boundary.syncNumber),
     ...intervals.flatMap((interval) => [interval.lower.syncNumber, interval.upper.syncNumber]),
   ])].sort((left, right) => left - right);
-  const examinedWindows = intervals
-    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
-    .map((interval) => ({ start: interval.mappings[0].syncTime.getTime(), end: interval.upper.syncTime.getTime() }));
-  const evidenceStart = Math.min(...examinedWindows.map((window) => window.start));
-  const evidenceEnd = Math.max(...examinedWindows.map((window) => window.end));
+  const evidenceStart = firstAnchorTime;
+  const evidenceEnd = lastAnchorTime;
   const evidenceTime = { gte: new Date(evidenceStart), lt: new Date(evidenceEnd) };
+  const historyEvidenceTime = { gte: new Date(evidenceStart), lt: new Date(evidenceEnd + HISTORICAL_SYNC_LOOKBACK_MS) };
   const [rawPoints, rawEvaluations] = await Promise.all([
     db.clanPointsSync.findMany({
       where: { guildId: args.guildId, OR: [{ syncNum: { in: targetSyncNumbers } }, { warStartTime: evidenceTime }] },
@@ -330,11 +377,18 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
     ...(candidateWarIds.length > 0 ? [{ warId: { in: candidateWarIds } }] : []),
     ...semanticTuples,
   ];
-  const [rawCrossGuildPoints, rawHistories] = await Promise.all([
+  const [rawCrossGuildPoints, rawOwnershipPoints, rawHistories, rawDirectHistories] = await Promise.all([
     targetRawWarIds.length > 0
       ? db.clanPointsSync.findMany({
           where: { warId: { in: targetRawWarIds.map(String) } },
           orderBy: [{ warId: "asc" }, { guildId: "asc" }, { syncNum: "asc" }],
+          select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
+        })
+      : Promise.resolve([]),
+    semanticTuples.length > 0
+      ? db.clanPointsSync.findMany({
+          where: { OR: semanticTuples },
+          orderBy: [{ warStartTime: "asc" }, { guildId: "asc" }, { syncNum: "asc" }],
           select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
         })
       : Promise.resolve([]),
@@ -345,11 +399,29 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
           select: { warId: true, syncNumber: true, matchType: true, clanTag: true, opponentTag: true, prepStartTime: true, warStartTime: true, warEndTime: true },
         })
       : Promise.resolve([]),
+    db.clanWarHistory.findMany({
+      where: { matchType: "FWA", warEndTime: { not: null }, OR: [{ prepStartTime: historyEvidenceTime }, { warStartTime: historyEvidenceTime }] },
+      orderBy: [{ prepStartTime: "asc" }, { warId: "asc" }],
+      select: { warId: true, syncNumber: true, matchType: true, clanTag: true, opponentTag: true, prepStartTime: true, warStartTime: true, warEndTime: true },
+    }),
   ]);
   const points = [...new Map([...targetPoints, ...rawCrossGuildPoints.map(normalizePoint).filter((row): row is ReconciliationPoint => Boolean(row))]
     .map((point) => [`${point.guildId}|${point.syncNumber}|${point.warId ?? "null"}|${point.clanTag}|${point.warStartTime.getTime()}|${point.opponentTag}`, point])).values()];
-  const histories = uniqueHistories(rawHistories.map(normalizeHistory).filter((row): row is ReconciliationHistory => Boolean(row)));
-  const participationWarIds = [...new Set(histories.map((history) => history.warId))];
+  const discoveredHistories = uniqueHistories([...rawDirectHistories, ...rawHistories]
+    .map(normalizeHistory)
+    .filter((row): row is ReconciliationHistory => Boolean(row)));
+  const discoveredCanonicalWarIds = [...new Set(discoveredHistories.map((history) => history.warId))].sort((left, right) => left - right);
+  const rawOwnershipEvaluations = discoveredCanonicalWarIds.length > 0
+    ? await db.warPlanComplianceEvaluation.findMany({
+        where: { warId: { in: discoveredCanonicalWarIds } },
+        orderBy: [{ warId: "asc" }, { guildId: "asc" }],
+        select: { guildId: true, warId: true, matchType: true, warHistory: { select: { clanTag: true, matchType: true } } },
+      })
+    : [];
+  const ownershipEvaluations = rawOwnershipEvaluations.map(normalizeEvaluation).filter((row): row is ReconciliationEvaluation => Boolean(row));
+  const allEvaluations = [...new Map([...evaluations, ...ownershipEvaluations]
+    .map((evaluation) => [`${evaluation.guildId}|${evaluation.warId}`, evaluation] as const)).values()];
+  const participationWarIds = [...new Set(discoveredHistories.map((history) => history.warId))];
   const rawParticipation = participationWarIds.length > 0
     ? await db.clanWarParticipation.findMany({
         where: { guildId: args.guildId, warId: { in: participationWarIds.map(String) } },
@@ -358,7 +430,41 @@ async function readInputs(db: HistoricalSyncReconciliationDb, args: HistoricalSy
       })
     : [];
   const participation = rawParticipation.map(normalizeParticipation).filter((row): row is ReconciliationParticipation => Boolean(row));
-  return { anchors, cycles, schedules, points, histories, evaluations, participation, intervals, exactBoundaries };
+  const rawOwnershipParticipation = participationWarIds.length > 0
+    ? await db.clanWarParticipation.findMany({
+        where: { warId: { in: participationWarIds.map(String) } },
+        orderBy: [{ warId: "asc" }, { guildId: "asc" }, { playerTag: "asc" }],
+        select: { guildId: true, warId: true, clanTag: true, playerTag: true, matchType: true },
+      })
+    : [];
+  const ownershipParticipation = rawOwnershipParticipation.map(normalizeParticipation).filter((row): row is ReconciliationParticipation => Boolean(row));
+  const ownershipPoints = rawOwnershipPoints.map(normalizePoint).filter((row): row is ReconciliationPoint => Boolean(row));
+  const ownedHistories: ReconciliationHistory[] = [];
+  const unownedHistories: Array<{ history: ReconciliationHistory; ownership: DirectHistoryOwnership }> = [];
+  const conflictingHistories: ReconciliationHistory[] = [];
+  for (const history of discoveredHistories) {
+    const ownership = classifyDirectHistoryOwnership({
+      history,
+      targetGuildId: args.guildId,
+      participation: ownershipParticipation,
+      points: [...points, ...ownershipPoints],
+      evaluations: allEvaluations,
+    });
+    if (ownership === "OWNED") ownedHistories.push(history);
+    else {
+      unownedHistories.push({ history, ownership });
+      if (ownership === "CONFLICTING_OWNERSHIP") conflictingHistories.push(history);
+    }
+  }
+  const snapshots = db.syncClanReadinessSnapshot
+    ? [...new Map((await db.syncClanReadinessSnapshot.findMany({
+        where: { guildId: args.guildId, syncTime: historyEvidenceTime },
+        orderBy: [{ syncTime: "asc" }, { clanTag: "asc" }],
+        select: { guildId: true, syncTime: true, scheduledSyncPostId: true },
+      })).map(normalizeSnapshot).filter((row): row is ExactSnapshotEvidence => Boolean(row))
+        .map((snapshot) => [`${snapshot.guildId}|${snapshot.syncTime.getTime()}|${snapshot.scheduledSyncPostId ?? "null"}`, snapshot] as const)).values()]
+    : [];
+  return { anchors, cycles, schedules, points, histories: ownedHistories, unownedHistories, conflictingHistories, evaluations: allEvaluations, participation, intervals, exactBoundaries, snapshots };
 }
 
 function relatedHistories(boundary: ProposedSyncBoundary, associated: readonly AssociatedHistory[]): AssociatedHistory[] {
@@ -376,17 +482,217 @@ function participationForHistory(row: AssociatedHistory, participation: readonly
     normalizeMembershipHistoryClanTag(entry.clanTag) === normalizeMembershipHistoryClanTag(row.history.clanTag));
 }
 
-function unresolvedMissingBoundaryCount(
+function historyIdentityKey(history: ReconciliationHistory): string {
+  return `${history.warId}|${normalizeMembershipHistoryClanTag(history.clanTag)}|${history.warStartTime.getTime()}`;
+}
+
+function allCanonicalAssociatedHistories(
+  histories: readonly ReconciliationHistory[],
+  associated: readonly AssociatedHistory[],
+): AssociatedHistory[] {
+  const byIdentity = new Map(associated.map((row) => [historyIdentityKey(row.history), row]));
+  return histories
+    .filter((history) => comparable(history.matchType) === "FWA")
+    .map((history) => byIdentity.get(historyIdentityKey(history)) ?? ({
+      history,
+      points: [],
+      hasEvaluation: false,
+      ambiguousReasons: [],
+    }))
+    .sort((left, right) => left.history.warId - right.history.warId || historyIdentityKey(left.history).localeCompare(historyIdentityKey(right.history)));
+}
+
+function historiesForInterval(interval: AnchorIntervalPlan, histories: readonly ReconciliationHistory[]): ReconciliationHistory[] {
+  return histories.filter((history) => {
+    const timing = history.prepStartTime?.getTime() ?? history.warStartTime.getTime();
+    return timing >= interval.lower.syncTime.getTime() && timing <= interval.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+}
+
+function safeBoundariesFromSequences(sequences: readonly RealizedFwaSequencePlan[]): ProposedSyncBoundary[] {
+  return sequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").flatMap((sequence) => sequence.cycles
+    .filter((cycle) => cycle.expectedSyncNumber !== null && cycle.selectedSchedule !== null && ["EXACT_SYNC_CYCLE_CANDIDATE", "ALREADY_PRESENT"].includes(cycle.action))
+    .map((cycle) => ({
+      guildId: sequence.lower.guildId,
+      syncNumber: cycle.expectedSyncNumber!,
+      syncTime: cycle.selectedSchedule!.syncTime,
+      scheduledSyncPostId: cycle.selectedSchedule!.id,
+      lowerSyncNumber: sequence.lower.syncNumber,
+      upperSyncNumber: sequence.upper.syncNumber,
+    })));
+}
+
+function selectedRealizedScopeWindows(
+  sequences: readonly RealizedFwaSequencePlan[],
   intervals: readonly AnchorIntervalPlan[],
   args: HistoricalSyncReconciliationArgs,
-): number {
-  return intervals
-    .filter((interval) => interval.classification === "AMBIGUOUS_SEQUENCE")
-    .reduce((total, interval) => {
-      const first = Math.max(interval.lower.syncNumber + 1, args.fromSync ?? Number.NEGATIVE_INFINITY);
-      const last = Math.min(interval.upper.syncNumber - 1, args.toSync ?? Number.POSITIVE_INFINITY);
-      return total + Math.max(0, last - first + 1);
-    }, 0);
+): ReconciliationHistoryScopeWindow[] {
+  return intervals.flatMap((interval) => {
+    const intervalSequence = sequences.find((sequence) =>
+      sequence.lower.syncNumber === interval.lower.syncNumber && sequence.upper.syncNumber === interval.upper.syncNumber);
+    const firstRequested = Math.max(interval.lower.syncNumber + 1, args.fromSync ?? interval.lower.syncNumber + 1);
+    const lastRequested = Math.min(interval.upper.syncNumber - 1, args.toSync ?? interval.upper.syncNumber - 1);
+    if (firstRequested > lastRequested) return [];
+
+    if (intervalSequence?.classification !== "REALIZED_SEQUENCE_CORROBORATED") {
+      if (args.fromSync !== undefined || args.toSync !== undefined) return [];
+      const lowerContextEnd = intervalSequence?.lowerAnchorContextClusters
+        .map((cluster) => cluster.prepMax?.getTime())
+        .filter((value): value is number => value !== undefined)
+        .sort((left, right) => right - left)[0];
+      const upperContextStart = intervalSequence?.upperAnchorContextClusters
+        .map((cluster) => cluster.prepMin?.getTime())
+        .filter((value): value is number => value !== undefined)
+        .sort((left, right) => left - right)[0];
+      const start = lowerContextEnd === undefined ? interval.lower.syncTime.getTime() : lowerContextEnd + 1;
+      const end = upperContextStart ?? interval.upper.syncTime.getTime();
+      return start < end ? [{ startTime: new Date(start), endTime: new Date(end) }] : [];
+    }
+
+    const selectedCycles = intervalSequence.cycles
+      .filter((cycle) => cycle.expectedSyncNumber !== null && cycle.expectedSyncNumber >= firstRequested && cycle.expectedSyncNumber <= lastRequested);
+    if (selectedCycles.length === 0) return [];
+    const firstCycle = selectedCycles[0];
+    const lastCycle = selectedCycles[selectedCycles.length - 1];
+    const nextCycle = intervalSequence.cycles.find((cycle) => cycle.expectedSyncNumber !== null && cycle.expectedSyncNumber > lastCycle.expectedSyncNumber!);
+    const upperContextPrep = intervalSequence.upperAnchorContextClusters
+      .map((cluster) => cluster.prepMin?.getTime())
+      .filter((value): value is number => value !== undefined)
+      .sort((left, right) => left - right)[0];
+    const start = firstCycle.cluster.prepMin?.getTime() ?? interval.lower.syncTime.getTime();
+    const end = nextCycle?.cluster.prepMin?.getTime() ?? upperContextPrep ?? interval.upper.syncTime.getTime();
+    return [{ startTime: new Date(start), endTime: new Date(end) }];
+  });
+}
+
+/** Purpose: use realized ended-history clusters as the sole authoritative history-to-sync identity map. */
+function realizedHistoryIdentities(sequences: readonly RealizedFwaSequencePlan[]): Map<string, RealizedHistoryIdentity> {
+  const identities = new Map<string, RealizedHistoryIdentity>();
+  for (const sequence of sequences) {
+    if (sequence.classification !== "REALIZED_SEQUENCE_CORROBORATED") continue;
+    for (const cycle of sequence.cycles) {
+      if (cycle.expectedSyncNumber === null || cycle.numberClassification !== "HISTORY_SYNC_MATCH" || cycle.cluster.reasons.length > 0) continue;
+      for (const history of cycle.cluster.histories) {
+        const key = historyIdentityKey(history);
+        const previous = identities.get(key);
+        if (previous && previous.expectedSyncNumber !== cycle.expectedSyncNumber) {
+          identities.delete(key);
+          continue;
+        }
+        if (!previous) identities.set(key, { expectedSyncNumber: cycle.expectedSyncNumber, classification: "HISTORY_SYNC_MATCH" });
+      }
+    }
+  }
+  return identities;
+}
+
+/** Purpose: classify canonical history and points claims from realized-cycle identity, never schedule ordinal mappings. */
+function diagnosticBoundaryCandidates(history: ReconciliationHistory, boundaries: readonly ProposedSyncBoundary[]): ProposedSyncBoundary[] {
+  const prep = history.prepStartTime?.getTime();
+  if (prep === undefined || !Number.isFinite(prep)) return [];
+  return boundaries.filter((boundary) => {
+    const delta = prep - boundary.syncTime.getTime();
+    return delta >= 0 && delta <= HISTORICAL_SYNC_LOOKBACK_MS;
+  }).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.syncNumber - right.syncNumber);
+}
+
+function classifyRealizedHistoryClaim(
+  row: AssociatedHistory,
+  identity: RealizedHistoryIdentity | undefined,
+  diagnosticBoundaries: readonly ProposedSyncBoundary[],
+): HistoryClaimResult {
+  const reasons = new Set(row.ambiguousReasons);
+  const candidates = diagnosticBoundaryCandidates(row.history, diagnosticBoundaries);
+  if (!row.history.prepStartTime) reasons.add("missing_prep_start_time");
+  if (!identity) reasons.add("no_unique_reconstructed_schedule");
+  if (!identity || row.ambiguousReasons.length > 0) {
+    if (!identity && candidates.length === 1) reasons.add("no_corroborated_realized_cycle_identity");
+    return {
+      classification: "SYNC_AMBIGUOUS",
+      expectedSyncNumber: null,
+      candidates,
+      reasons: [...reasons].sort((left, right) => left.localeCompare(right)),
+    };
+  }
+  return {
+    classification: row.history.syncNumber === identity.expectedSyncNumber ? "SYNC_MATCH" : "SYNC_CORRECTABLE",
+    expectedSyncNumber: identity.expectedSyncNumber,
+    candidates,
+    reasons: row.history.syncNumber === identity.expectedSyncNumber ? [] : ["stored_history_sync_number_differs_from_realized_cycle"],
+  };
+}
+
+function formatRealizedSequence(sequence: RealizedFwaSequencePlan, args: HistoricalSyncReconciliationArgs): string[] {
+  const scope = sequence.classification === "REALIZED_SEQUENCE_CORROBORATED"
+    ? "REALIZED_CLUSTER_PREP_WINDOWS"
+    : args.fromSync === undefined && args.toSync === undefined
+      ? "BROAD_AMBIGUOUS_INTERVAL_SCOPE"
+      : "SUPPRESSED_AMBIGUOUS_INTERVAL_SCOPE";
+  return [
+    `lower=#${sequence.lower.syncNumber}@${sequence.lower.syncTime.toISOString()} upper=#${sequence.upper.syncNumber}@${sequence.upper.syncTime.toISOString()} expected_cycles=${sequence.expectedMissingSyncCount} realized_clusters=${sequence.realizedClusterCount} post_upper_context_clusters=${sequence.postUpperContextClusters.length} analysis_scope=${scope} classification=${sequence.classification} reasons=${formatList(sequence.reasons)}`,
+  ];
+}
+
+function formatRealizedCycle(cycle: RealizedFwaCyclePlan, parentSequence: RealizedFwaSequencePlan["classification"]): string[] {
+  const cluster = cycle.cluster;
+  const candidates = cycle.scheduleCandidates.map((schedule) => `${schedule.id}@${schedule.syncTime.toISOString()}`);
+  const candidateDeltas = cycle.scheduleCandidates.map((schedule) => {
+    const minDelta = cluster.prepMin === null ? null : Math.round((cluster.prepMin.getTime() - schedule.syncTime.getTime()) / 1000);
+    const maxDelta = cluster.prepMax === null ? null : Math.round((cluster.prepMax.getTime() - schedule.syncTime.getTime()) / 1000);
+    return `${schedule.id}:${minDelta ?? "unknown"}..${maxDelta ?? "unknown"}`;
+  });
+  const writerActionable = parentSequence === "REALIZED_SEQUENCE_CORROBORATED" && cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE";
+  return [
+    `expected_sync=${cycle.expectedSyncNumber === null ? "unknown" : `#${cycle.expectedSyncNumber}`} prep_min=${cluster.prepMin?.toISOString() ?? "unknown"} prep_max=${cluster.prepMax?.toISOString() ?? "unknown"} prep_center=${cluster.prepCenter?.toISOString() ?? "unknown"} prep_spread_seconds=${cluster.spreadSeconds ?? "unknown"} prep_spread_minutes=${cluster.spreadMinutes ?? "unknown"} history_count=${cluster.canonicalHistoryCount} distinct_clans=${cluster.distinctClanCount} participation_rows=${cluster.participationRowCount} distinct_players=${cluster.distinctPlayerCount} stored_history_syncs=${formatList(cluster.persistedSyncNumbers)} number_classification=${cycle.numberClassification} schedule_candidates=${formatList(candidates)} schedule_candidate_delta_seconds=${formatList(candidateDeltas)} action=${cycle.action} parent_sequence=${parentSequence} safe_for_apply=${writerActionable} already_present=${cycle.action === "ALREADY_PRESENT"} writer_actionable=${writerActionable} reasons=${formatList(cycle.reasons)}`,
+    `  canonical_war_ids=${formatList(cluster.canonicalWarIds)} selected_schedule=${cycle.selectedSchedule ? `${cycle.selectedSchedule.id}@${cycle.selectedSchedule.syncTime.toISOString()}` : "none"}`,
+  ];
+}
+
+function exactSnapshotCandidates(cluster: RealizedFwaCyclePlan["cluster"], snapshots: readonly ExactSnapshotEvidence[]): string[] {
+  const seen = new Set<string>();
+  return snapshots
+    .filter((snapshot) => cluster.histories.length > 0 && cluster.histories.every((history) => {
+      const prep = history.prepStartTime?.getTime();
+      if (prep === undefined || !Number.isFinite(prep)) return false;
+      const delta = prep - snapshot.syncTime.getTime();
+      return delta >= 0 && delta <= HISTORICAL_SYNC_LOOKBACK_MS;
+    }))
+    .sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || (left.scheduledSyncPostId ?? "").localeCompare(right.scheduledSyncPostId ?? ""))
+    .map((snapshot) => `SYNC_CLAN_READINESS_SNAPSHOT: time=${snapshot.syncTime.toISOString()} scheduledSyncPostId=${snapshot.scheduledSyncPostId ?? "none"}`)
+    .filter((candidate) => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      return true;
+    });
+}
+
+function unresolvedExpectedNumbers(
+  sequences: readonly RealizedFwaSequencePlan[],
+  args: HistoricalSyncReconciliationArgs,
+): number[] {
+  return sequences.flatMap((sequence) => {
+    const expected = Array.from({ length: sequence.expectedMissingSyncCount }, (_unused, index) => sequence.lower.syncNumber + index + 1);
+    const resolved = new Set((sequence.classification === "REALIZED_SEQUENCE_CORROBORATED" ? sequence.cycles : [])
+      .filter((cycle) => cycle.expectedSyncNumber !== null && ["EXACT_SYNC_CYCLE_CANDIDATE", "ALREADY_PRESENT"].includes(cycle.action))
+      .map((cycle) => cycle.expectedSyncNumber!));
+    return expected.filter((syncNumber) => !resolved.has(syncNumber));
+  })
+    .filter((syncNumber) => args.fromSync === undefined || syncNumber >= args.fromSync)
+    .filter((syncNumber) => args.toSync === undefined || syncNumber <= args.toSync)
+    .sort((left, right) => left - right);
+}
+
+function realizedHistoryClassificationCounts(sequences: readonly RealizedFwaSequencePlan[]): Record<string, number> {
+  const counts: Record<string, number> = {
+    HISTORY_SYNC_MATCH: 0,
+    HISTORY_SYNC_DISAGREEMENT: 0,
+    HISTORY_SYNC_NULL: 0,
+    HISTORY_SYNC_MIXED: 0,
+  };
+  for (const sequence of sequences) {
+    for (const cycle of sequence.cycles) counts[cycle.numberClassification] += 1;
+  }
+  return counts;
 }
 
 function buildBoundaryReport(boundary: ProposedSyncBoundary, reconciled: readonly ReconciledHistory[], participation: readonly ReconciliationParticipation[]): BoundaryReport {
@@ -446,32 +752,13 @@ function mappingIsRequested(mapping: ProposedSyncBoundary, args: HistoricalSyncR
     (args.toSync === undefined || mapping.syncNumber <= args.toSync);
 }
 
-function selectedBoundaries(intervals: readonly AnchorIntervalPlan[], args: HistoricalSyncReconciliationArgs): ProposedSyncBoundary[] {
-  return intervals
-    .flatMap((interval) => interval.mappings.filter((mapping) => mappingIsRequested(mapping, args)))
-    .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
-}
-
-function selectedScopeWindows(intervals: readonly AnchorIntervalPlan[], args: HistoricalSyncReconciliationArgs): ReconciliationHistoryScopeWindow[] {
-  return intervals
-    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
-    .flatMap((interval) => {
-      const mappings = interval.mappings.filter((mapping) => mappingIsRequested(mapping, args));
-      if (mappings.length === 0) return [];
-      const first = mappings[0];
-      const last = mappings[mappings.length - 1];
-      const next = interval.mappings.find((mapping) => mapping.syncNumber > last.syncNumber);
-      return [{ startTime: first.syncTime, endTime: next?.syncTime ?? interval.upper.syncTime }];
-    });
-}
-
 function formatInterval(plan: AnchorIntervalPlan, displayedMappings: readonly ProposedSyncBoundary[] = plan.mappings): string[] {
-  const displayedIds = new Set(displayedMappings.map((mapping) => mapping.scheduledSyncPostId));
   return [
-    `lower=#${plan.lower.syncNumber}@${plan.lower.syncTime.toISOString()} upper=#${plan.upper.syncNumber}@${plan.upper.syncTime.toISOString()} expected_missing=${plan.expectedMissingSyncCount} eligible_schedules=${plan.eligibleScheduleCount} classification=${plan.classification} reasons=${formatList(plan.reasons)}`,
-    ...plan.mappings
-      .filter((mapping) => displayedIds.has(mapping.scheduledSyncPostId))
-      .map((mapping) => `  #${mapping.syncNumber} -> ${mapping.syncTime.toISOString()} scheduled_sync_post_id=${mapping.scheduledSyncPostId}`),
+    `DIAGNOSTIC ONLY — NOT SAFE IDENTITY | lower=#${plan.lower.syncNumber}@${plan.lower.syncTime.toISOString()} upper=#${plan.upper.syncNumber}@${plan.upper.syncTime.toISOString()} expected_missing=${plan.expectedMissingSyncCount} eligible_schedules=${plan.eligibleScheduleCount} classification=${plan.classification} schedule_count_classification=${plan.classification} reasons=${formatList(plan.reasons)}`,
+    `  proof_context_schedule_ids=${formatList(plan.eligibleSchedules.map((schedule) => schedule.id))}`,
+    ...displayedMappings
+      .filter((mapping) => mapping.lowerSyncNumber === plan.lower.syncNumber && mapping.upperSyncNumber === plan.upper.syncNumber)
+      .map((mapping) => `  safe_realized_boundary=#${mapping.syncNumber} -> ${mapping.syncTime.toISOString()} scheduled_sync_post_id=${mapping.scheduledSyncPostId}`),
   ];
 }
 
@@ -533,10 +820,30 @@ export async function runHistoricalSyncReconciliation(
 ): Promise<string> {
   const inputs = await readInputs(db, args);
   const intervals = inputs.intervals;
-  const proofBoundaries = inputs.exactBoundaries;
-  const selectedAnalysisBoundaries = selectedBoundaries(intervals, args);
-  const scopeWindows = selectedScopeWindows(intervals, args);
-  const associated = associateCanonicalHistories({ guildId: args.guildId, histories: inputs.histories, points: inputs.points, evaluations: inputs.evaluations });
+  const realizedSequences = intervals.map((interval) => corroborateRealizedFwaSequence({
+    lower: interval.lower,
+    upper: interval.upper,
+    histories: historiesForInterval(interval, inputs.histories),
+    conflictingHistories: historiesForInterval(interval, inputs.conflictingHistories),
+    participation: inputs.participation,
+    schedules: inputs.schedules,
+    existingCycles: inputs.cycles,
+  }));
+  const realizedBoundaries = safeBoundariesFromSequences(realizedSequences);
+  const realizedIdentities = realizedHistoryIdentities(realizedSequences);
+  const diagnosticBoundaries = intervals
+    .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
+    .flatMap((interval) => interval.mappings);
+  const selectedAnalysisBoundaries = realizedBoundaries
+    .filter((mapping) => mappingIsRequested(mapping, args))
+    .sort((left, right) => left.syncNumber - right.syncNumber || left.syncTime.getTime() - right.syncTime.getTime());
+  const scopeWindows = selectedRealizedScopeWindows(realizedSequences, intervals, args);
+  const associated = allCanonicalAssociatedHistories(inputs.histories, associateCanonicalHistories({
+    guildId: args.guildId,
+    histories: inputs.histories,
+    points: inputs.points,
+    evaluations: inputs.evaluations,
+  }));
   const scopedAssociated = associated.filter((row) => classifyReconciliationHistoryScope({
     history: row.history,
     boundaries: selectedAnalysisBoundaries,
@@ -544,7 +851,7 @@ export async function runHistoricalSyncReconciliation(
     scopeWindows,
   }) === "IN_SCOPE");
   const reconciled: ReconciledHistory[] = scopedAssociated.map((row) => {
-    const claim = classifyHistorySyncClaim({ history: row.history, associated: row, boundaries: proofBoundaries });
+    const claim = classifyRealizedHistoryClaim(row, realizedIdentities.get(historyIdentityKey(row.history)), diagnosticBoundaries);
     return { row, claim, pointsClaim: classifyPointsSyncClaim({ expectedSyncNumber: claim.expectedSyncNumber, associated: row }) };
   });
   const uniqueMapped = reconciled.filter(({ claim }) => claim.classification !== "SYNC_AMBIGUOUS");
@@ -555,13 +862,28 @@ export async function runHistoricalSyncReconciliation(
   const allPointsMatch = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_MATCH").length;
   const allPointsCorrectable = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_CORRECTABLE").length;
   const allPointsAmbiguous = reconciled.filter(({ pointsClaim }) => pointsClaim.classification === "POINTS_AMBIGUOUS").length;
-  const proposedNumbers = selectedAnalysisBoundaries.map((boundary) => boundary.syncNumber);
+  const realizedHistoryCounts = realizedHistoryClassificationCounts(realizedSequences);
+  const requestedMissingNumbers = realizedSequences.flatMap((sequence) =>
+    Array.from({ length: sequence.expectedMissingSyncCount }, (_unused, index) => sequence.lower.syncNumber + index + 1),
+  )
+    .filter((syncNumber) => args.fromSync === undefined || syncNumber >= args.fromSync)
+    .filter((syncNumber) => args.toSync === undefined || syncNumber <= args.toSync)
+    .sort((left, right) => left - right);
   const existingNumbers = inputs.anchors.map((anchor) => anchor.syncNumber);
-  const run = longestRun([...existingNumbers, ...proposedNumbers]);
-  const exactTimes = selectedAnalysisBoundaries.map((boundary) => boundary.syncTime.getTime()).sort((left, right) => left - right);
+  const exactCandidateSyncNumbers = new Set(realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").flatMap((sequence) => sequence.cycles
+    .filter((cycle) => cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE" && cycle.expectedSyncNumber !== null)
+    .map((cycle) => cycle.expectedSyncNumber!)));
+  const selectedExactCandidateNumbers = selectedAnalysisBoundaries
+    .map((boundary) => boundary.syncNumber)
+    .filter((syncNumber) => exactCandidateSyncNumbers.has(syncNumber));
+  const run = longestRun([...existingNumbers, ...selectedExactCandidateNumbers]);
+  const exactTimes = selectedAnalysisBoundaries
+    .filter((boundary) => exactCandidateSyncNumbers.has(boundary.syncNumber))
+    .map((boundary) => boundary.syncTime.getTime())
+    .sort((left, right) => left - right);
   const participationBackedSyncNumbers = new Set<number>();
   const playerBoundaryFactsSet = new Set<string>();
-  uniqueMapped.forEach(({ row, claim }) => {
+  uniqueMapped.filter(({ claim }) => claim.expectedSyncNumber !== null && exactCandidateSyncNumbers.has(claim.expectedSyncNumber)).forEach(({ row, claim }) => {
     const expectedSyncNumber = claim.expectedSyncNumber;
     if (expectedSyncNumber === null || expectedSyncNumber === undefined) return;
     for (const entry of participationForHistory(row, inputs.participation)) {
@@ -572,6 +894,26 @@ export async function runHistoricalSyncReconciliation(
   const additionalParticipationHistories = participationBackedSyncNumbers.size;
   const playerBoundaryFacts = playerBoundaryFactsSet.size;
   const intervalLines = intervals.flatMap((interval) => formatInterval(interval, selectedAnalysisBoundaries));
+  const realizedSequenceLines = realizedSequences.flatMap((sequence) => formatRealizedSequence(sequence, args));
+  const realizedCycleLines = realizedSequences.flatMap((sequence) => sequence.cycles.flatMap((cycle) => formatRealizedCycle(cycle, sequence.classification)));
+  const safePlanLines = realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").flatMap((sequence) => sequence.cycles
+    .filter((cycle) => cycle.expectedSyncNumber !== null && mappingIsRequested({
+      guildId: sequence.lower.guildId,
+      syncNumber: cycle.expectedSyncNumber,
+      syncTime: cycle.selectedSchedule?.syncTime ?? sequence.lower.syncTime,
+      scheduledSyncPostId: cycle.selectedSchedule?.id ?? "",
+      lowerSyncNumber: sequence.lower.syncNumber,
+      upperSyncNumber: sequence.upper.syncNumber,
+    }, args))
+    .map((cycle) => {
+      const snapshotEvidence = exactSnapshotCandidates(cycle.cluster, inputs.snapshots);
+      return `#${cycle.expectedSyncNumber} action=${cycle.action} writer_actionable=${cycle.action === "EXACT_SYNC_CYCLE_CANDIDATE"} candidate_sync_time=${cycle.selectedSchedule?.syncTime.toISOString() ?? "none"} scheduled_sync_post_id=${cycle.selectedSchedule?.id ?? "none"} canonical_history_count=${cycle.cluster.canonicalHistoryCount} participation_rows=${cycle.cluster.participationRowCount} exact_source_candidates=${formatList(snapshotEvidence)} reasons=${formatList(cycle.reasons)}`;
+    }));
+  const unusedScheduleLines = realizedSequences.flatMap((sequence) => sequence.unusedEligibleSchedules.map((schedule) =>
+    `schedule_id=${schedule.id} sync_time=${schedule.syncTime.toISOString()} status=${schedule.status} reason=SCHEDULE_WITHOUT_REALIZED_FWA_CLUSTER`));
+  const ambiguousScheduleLines = realizedSequences.flatMap((sequence) => sequence.ambiguousScheduleCandidates.map((schedule) =>
+    `schedule_id=${schedule.id} sync_time=${schedule.syncTime.toISOString()} status=${schedule.status} reason=AMBIGUOUS_REALIZED_SCHEDULE_CANDIDATE`));
+  const unresolvedRealizedNumbers = unresolvedExpectedNumbers(realizedSequences, args);
   const unmappedLines = formatUnmappedAmbiguities(reconciled, inputs.participation);
   const boundaryLines = reports.flatMap((report) => [
     `#${report.boundary.syncNumber} scheduledSyncPost=${report.boundary.scheduledSyncPostId} time=${report.boundary.syncTime.toISOString()} canonical_fwa_histories=${report.histories.length} existing_persisted_buckets=${formatList(report.existingBuckets)} sync_match=${report.syncMatch} sync_correctable=${report.syncCorrectable} sync_ambiguous=${report.syncAmbiguous} points_match=${report.pointsMatch} points_correctable=${report.pointsCorrectable} points_ambiguous=${report.pointsAmbiguous} participation_rows=${report.participationRows}`,
@@ -602,10 +944,31 @@ export async function runHistoricalSyncReconciliation(
     "ANCHOR INTERVALS",
     ...(intervalLines.length > 0 ? intervalLines : ["none"]),
     "",
+    "REALIZED FWA SEQUENCES",
+    ...(realizedSequenceLines.length > 0 ? realizedSequenceLines : ["none"]),
+    "",
+    "REALIZED FWA CYCLES",
+    ...(realizedCycleLines.length > 0 ? realizedCycleLines : ["none"]),
+    "",
+    "UNREALIZED / UNASSIGNED SCHEDULES",
+    ...(unusedScheduleLines.length > 0 ? unusedScheduleLines : ["none"]),
+    "",
+    "AMBIGUOUS REALIZED SCHEDULE CANDIDATES",
+    ...(ambiguousScheduleLines.length > 0 ? ambiguousScheduleLines : ["none"]),
+    "",
+    "SAFE SYNC-CYCLE PLAN",
+    ...(safePlanLines.length > 0 ? safePlanLines : ["none"]),
+    `unresolved_missing_sync_numbers=${formatList(unresolvedRealizedNumbers)}`,
+    "",
     "PROPOSED BOUNDARIES",
     ...(boundaryLines.length > 0 ? boundaryLines : ["none"]),
     "",
     ...unmappedLines,
+    "",
+    "UNOWNED / CONFLICTING DIRECT HISTORIES",
+    ...(inputs.unownedHistories.length > 0
+      ? inputs.unownedHistories.map(({ history, ownership }) => `war_id=${history.warId} ownership=${ownership} war_start=${history.warStartTime.toISOString()}`)
+      : ["none"]),
     "",
     "SPECIAL WINDOWS",
     ...special.flatMap((interval, index) => interval ? [`#${index === 0 ? "520 -> 522" : "526 -> 548"}: ${interval.classification} expected=${interval.expectedMissingSyncCount} schedules=${interval.eligibleScheduleCount} reasons=${formatList(interval.reasons)}`] : [`#${index === 0 ? "520 -> 522" : "526 -> 548"}: not present in selected canonical anchors`]),
@@ -614,22 +977,41 @@ export async function runHistoricalSyncReconciliation(
     "",
     "AGGREGATE",
     `existing_anchors=${inputs.anchors.length}`,
-    `missing_numbers_examined=${proposedNumbers.length}`,
-    `ANCHORED_SEQUENCE_EXACT_boundaries=${selectedAnalysisBoundaries.length}`,
+    `missing_numbers_examined=${requestedMissingNumbers.length}`,
+    `requested_missing_sync_numbers=${formatList(requestedMissingNumbers)}`,
+    `schedule_ordinal_diagnostic_boundaries=${diagnosticBoundaries.filter((mapping) => mappingIsRequested(mapping, args)).length}`,
+    `selected_safe_realized_boundaries=${selectedAnalysisBoundaries.length}`,
+    `REALIZED_SEQUENCE_CORROBORATED=${realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_CORROBORATED").length}`,
+    `REALIZED_SEQUENCE_AMBIGUOUS=${realizedSequences.filter((sequence) => sequence.classification === "REALIZED_SEQUENCE_AMBIGUOUS").length}`,
+    `EXACT_SYNC_CYCLE_CANDIDATE=${selectedExactCandidateNumbers.length}`,
+    `ALREADY_PRESENT_REALIZED_CYCLES=${selectedAnalysisBoundaries.filter((boundary) => !exactCandidateSyncNumbers.has(boundary.syncNumber)).length}`,
+    `REALIZED_MISSING_EXACT_SCHEDULE=${unresolvedRealizedNumbers.filter((syncNumber) => realizedSequences.some((sequence) => sequence.cycles.some((cycle) => cycle.expectedSyncNumber === syncNumber && cycle.action === "REALIZED_MISSING_EXACT_SCHEDULE"))).length}`,
+    `REALIZED_AMBIGUOUS_SCHEDULE=${unresolvedRealizedNumbers.filter((syncNumber) => realizedSequences.some((sequence) => sequence.cycles.some((cycle) => cycle.expectedSyncNumber === syncNumber && cycle.action === "REALIZED_AMBIGUOUS_SCHEDULE"))).length}`,
+    `REALIZED_NUMBER_CONFLICT=${realizedSequences.flatMap((sequence) => sequence.cycles).filter((cycle) => cycle.action === "REALIZED_NUMBER_CONFLICT").length}`,
+    `SYNC_CYCLE_CONFLICT=${realizedSequences.flatMap((sequence) => sequence.cycles).filter((cycle) => cycle.action === "CONFLICT").length}`,
+    `SCHEDULE_WITHOUT_REALIZED_FWA_CLUSTER=${unusedScheduleLines.length}`,
+    `AMBIGUOUS_REALIZED_SCHEDULE_CANDIDATE=${ambiguousScheduleLines.length}`,
     `ambiguous_intervals=${intervals.filter((interval) => interval.classification === "AMBIGUOUS_SEQUENCE").length}`,
-    `unresolved_missing_boundaries=${unresolvedMissingBoundaryCount(intervals, args)}`,
+    `unresolved_missing_boundaries=${unresolvedRealizedNumbers.length}`,
     `ClanWarHistory_SYNC_MATCH=${allSyncMatch}`,
     `ClanWarHistory_SYNC_CORRECTABLE=${allSyncCorrectable}`,
     `ClanWarHistory_SYNC_AMBIGUOUS=${allSyncAmbiguous}`,
+    `HISTORY_SYNC_MATCH=${realizedHistoryCounts.HISTORY_SYNC_MATCH}`,
+    `HISTORY_SYNC_DISAGREEMENT=${realizedHistoryCounts.HISTORY_SYNC_DISAGREEMENT}`,
+    `HISTORY_SYNC_NULL=${realizedHistoryCounts.HISTORY_SYNC_NULL}`,
+    `HISTORY_SYNC_MIXED=${realizedHistoryCounts.HISTORY_SYNC_MIXED}`,
     `ClanPointsSync_POINTS_MATCH=${allPointsMatch}`,
     `ClanPointsSync_POINTS_CORRECTABLE=${allPointsCorrectable}`,
     `ClanPointsSync_POINTS_AMBIGUOUS=${allPointsAmbiguous}`,
+    `POINTS_SYNC_MATCH=${allPointsMatch}`,
+    `POINTS_SYNC_DISAGREEMENT=${allPointsCorrectable}`,
+    `POINTS_SYNC_AMBIGUOUS=${allPointsAmbiguous}`,
     "",
     "ERROR PATTERNS (diagnostics only)",
     ...patternLines(reports, reconciled),
     "",
     "MEMBERSHIP-HISTORY IMPACT SIMULATION (not safe/applied)",
-    `additional_exact_SyncCycle_boundaries_potentially_recoverable=${selectedAnalysisBoundaries.length}`,
+    `additional_exact_SyncCycle_boundaries_potentially_recoverable=${selectedExactCandidateNumbers.length}`,
     `additional_historical_FWA_cycles_with_uniquely_assignable_participation=${additionalParticipationHistories}`,
     `player_boundary_membership_facts_potentially_unlocked=${playerBoundaryFacts}`,
     `longest_newly_contiguous_canonical_sync_run=#${run.start ?? "none"}..#${run.end ?? "none"} length=${run.length}`,

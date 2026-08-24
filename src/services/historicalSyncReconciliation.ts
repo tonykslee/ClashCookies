@@ -7,6 +7,7 @@ import {
 } from "./membershipHistoryIdentity";
 
 export const HISTORICAL_SYNC_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+export const MAX_PREP_CLUSTER_SPREAD_MS = 2 * 60 * 60 * 1000;
 
 export type ReconciliationAnchor = {
   guildId: string;
@@ -26,6 +27,7 @@ export type ReconciliationCycle = {
   guildId: string;
   syncNumber: number;
   syncTime: Date;
+  scheduledSyncPostId?: string | null;
 };
 
 export type ReconciliationHistory = MembershipCanonicalHistoryIdentity & {
@@ -75,6 +77,69 @@ export type AnchorIntervalPlan = {
   mappings: ProposedSyncBoundary[];
 };
 
+export type RealizedHistorySyncClassification = "HISTORY_SYNC_MATCH" | "HISTORY_SYNC_DISAGREEMENT" | "HISTORY_SYNC_NULL" | "HISTORY_SYNC_MIXED";
+
+export type RealizedFwaCluster = {
+  histories: ReconciliationHistory[];
+  prepMin: Date | null;
+  prepMax: Date | null;
+  prepCenter: Date | null;
+  spreadSeconds: number | null;
+  spreadMinutes: number | null;
+  excessiveSpread: boolean;
+  canonicalHistoryCount: number;
+  distinctClanCount: number;
+  canonicalWarIds: number[];
+  participationRowCount: number;
+  distinctPlayerCount: number;
+  persistedSyncNumbers: number[];
+  unanimousPersistedSyncNumber: number | null;
+  historySyncClassification: RealizedHistorySyncClassification;
+  reasons: string[];
+};
+
+export type PrepClusterSummary = {
+  min: Date | null;
+  max: Date | null;
+  center: Date | null;
+  spreadSeconds: number | null;
+  spreadMinutes: number | null;
+  excessiveSpread: boolean;
+};
+
+export type RealizedCycleScheduleAction =
+  | "EXACT_SYNC_CYCLE_CANDIDATE"
+  | "ALREADY_PRESENT"
+  | "REALIZED_MISSING_EXACT_SCHEDULE"
+  | "REALIZED_AMBIGUOUS_SCHEDULE"
+  | "REALIZED_NUMBER_CONFLICT"
+  | "CONFLICT";
+
+export type RealizedFwaCyclePlan = {
+  cluster: RealizedFwaCluster;
+  expectedSyncNumber: number | null;
+  numberClassification: RealizedHistorySyncClassification;
+  scheduleCandidates: ReconciliationSchedule[];
+  selectedSchedule: ReconciliationSchedule | null;
+  action: RealizedCycleScheduleAction;
+  reasons: string[];
+};
+
+export type RealizedFwaSequencePlan = {
+  lower: ReconciliationAnchor;
+  upper: ReconciliationAnchor;
+  expectedMissingSyncCount: number;
+  realizedClusterCount: number;
+  lowerAnchorContextClusters: RealizedFwaCluster[];
+  upperAnchorContextClusters: RealizedFwaCluster[];
+  postUpperContextClusters: RealizedFwaCluster[];
+  classification: "REALIZED_SEQUENCE_CORROBORATED" | "REALIZED_SEQUENCE_AMBIGUOUS";
+  reasons: string[];
+  cycles: RealizedFwaCyclePlan[];
+  ambiguousScheduleCandidates: ReconciliationSchedule[];
+  unusedEligibleSchedules: ReconciliationSchedule[];
+};
+
 export type AssociatedHistory = {
   history: ReconciliationHistory;
   points: ReconciliationPoint[];
@@ -116,6 +181,268 @@ function scheduleIsEligible(schedule: ReconciliationSchedule): boolean {
   return !["CANCELLED", "REPLACED"].includes(comparable(schedule.status));
 }
 
+function validPrepTime(history: ReconciliationHistory): Date | null {
+  return history.prepStartTime instanceof Date && Number.isFinite(history.prepStartTime.getTime())
+    ? history.prepStartTime
+    : null;
+}
+
+/** Purpose: summarize a conservative prep-time cluster without assigning an exact sync boundary. */
+export function summarizePrepTimes(prepTimes: readonly Date[]): PrepClusterSummary {
+  const times = prepTimes.map((value) => value.getTime()).filter(Number.isFinite).sort((left, right) => left - right);
+  if (times.length === 0) return { min: null, max: null, center: null, spreadSeconds: null, spreadMinutes: null, excessiveSpread: false };
+  const min = times[0];
+  const max = times[times.length - 1];
+  const middle = Math.floor(times.length / 2);
+  const center = times.length % 2 === 0 ? Math.round((times[middle - 1] + times[middle]) / 2) : times[middle];
+  const spread = max - min;
+  return {
+    min: new Date(min),
+    max: new Date(max),
+    center: new Date(center),
+    spreadSeconds: Math.round(spread / 1000),
+    spreadMinutes: Math.round(spread / 60000),
+    excessiveSpread: spread > MAX_PREP_CLUSTER_SPREAD_MS,
+  };
+}
+
+function prepClusterSummary(histories: readonly ReconciliationHistory[]): Pick<RealizedFwaCluster, "prepMin" | "prepMax" | "prepCenter" | "spreadSeconds" | "spreadMinutes" | "excessiveSpread"> {
+  const summary = summarizePrepTimes(histories.map(validPrepTime).filter((value): value is Date => value !== null));
+  return {
+    prepMin: summary.min,
+    prepMax: summary.max,
+    prepCenter: summary.center,
+    spreadSeconds: summary.spreadSeconds,
+    spreadMinutes: summary.spreadMinutes,
+    excessiveSpread: summary.excessiveSpread,
+  };
+}
+
+function clusterHistorySyncClassification(syncNumbers: readonly number[], hasMissing: boolean): RealizedHistorySyncClassification {
+  if (syncNumbers.length === 0 || hasMissing) return "HISTORY_SYNC_NULL";
+  if (syncNumbers.length > 1) return "HISTORY_SYNC_MIXED";
+  return "HISTORY_SYNC_MATCH";
+}
+
+/** Purpose: cluster canonical ended FWA histories chronologically without using persisted sync numbers. */
+export function buildRealizedFwaClusters(input: {
+  histories: readonly ReconciliationHistory[];
+  participation?: readonly ReconciliationParticipation[];
+}): { clusters: RealizedFwaCluster[]; unclusteredHistoryWarIds: number[]; reasons: string[] } {
+  const histories = input.histories
+    .filter((history) => comparable(history.matchType) === "FWA" && history.warEndTime instanceof Date && Number.isFinite(history.warEndTime.getTime()))
+    .sort((left, right) => {
+      const leftPrep = validPrepTime(left)?.getTime() ?? Number.POSITIVE_INFINITY;
+      const rightPrep = validPrepTime(right)?.getTime() ?? Number.POSITIVE_INFINITY;
+      return leftPrep - rightPrep || left.warId - right.warId || normalizeMembershipHistoryClanTag(left.clanTag).localeCompare(normalizeMembershipHistoryClanTag(right.clanTag));
+    });
+  const unclusteredHistoryWarIds = histories.filter((history) => validPrepTime(history) === null).map((history) => history.warId);
+  const reasons = new Set<string>();
+  if (unclusteredHistoryWarIds.length > 0) reasons.add("realized_history_missing_prep_start_time");
+  const clusters: ReconciliationHistory[][] = [];
+  for (const history of histories.filter((candidate) => validPrepTime(candidate) !== null)) {
+    const prep = validPrepTime(history)!.getTime();
+    const current = clusters[clusters.length - 1];
+    const currentMin = current?.map(validPrepTime).filter((value): value is Date => value !== null).reduce((min, value) => Math.min(min, value.getTime()), Number.POSITIVE_INFINITY);
+    if (!current || prep - currentMin > MAX_PREP_CLUSTER_SPREAD_MS) clusters.push([history]);
+    else current.push(history);
+  }
+  const realized = clusters.map((clusterHistories) => {
+    const summary = prepClusterSummary(clusterHistories);
+    const canonicalWarIds = [...new Set(clusterHistories.map((history) => history.warId))].sort((left, right) => left - right);
+    const distinctClans = new Set(clusterHistories.map((history) => normalizeMembershipHistoryClanTag(history.clanTag)).filter(Boolean));
+    const clusterParticipation = (input.participation ?? []).filter((entry) => clusterHistories.some((history) =>
+      history.warId === entry.warId && normalizeMembershipHistoryClanTag(history.clanTag) === normalizeMembershipHistoryClanTag(entry.clanTag)));
+    const distinctPlayers = new Set(clusterParticipation.map((entry) => normalizeMembershipHistoryClanTag(entry.playerTag)));
+    const persistedSyncNumbers = [...new Set(clusterHistories.map((history) => history.syncNumber).filter((value): value is number => value !== null))].sort((left, right) => left - right);
+    const hasMissing = clusterHistories.some((history) => history.syncNumber === null);
+    const clusterReasons = new Set<string>();
+    if (summary.excessiveSpread) clusterReasons.add("realized_cluster_prep_spread_exceeds_limit");
+    if (new Set(clusterHistories.map((history) => history.warId)).size !== clusterHistories.length) clusterReasons.add("duplicate_realized_history_identity");
+    const identitiesByClan = new Map<string, Set<string>>();
+    for (const history of clusterHistories) {
+      const clan = normalizeMembershipHistoryClanTag(history.clanTag);
+      const identities = identitiesByClan.get(clan) ?? new Set<string>();
+      identities.add(`${history.warId}|${history.warStartTime.getTime()}|${normalizeMembershipHistoryClanTag(history.opponentTag)}`);
+      identitiesByClan.set(clan, identities);
+    }
+    if ([...identitiesByClan.values()].some((identities) => identities.size > 1)) {
+      clusterReasons.add("multiple_wars_for_clan_in_realized_cluster");
+    }
+    const clansByPlayer = new Map<string, Set<string>>();
+    for (const entry of clusterParticipation) {
+      const player = normalizeMembershipHistoryClanTag(entry.playerTag);
+      const clans = clansByPlayer.get(player) ?? new Set<string>();
+      clans.add(normalizeMembershipHistoryClanTag(entry.clanTag));
+      clansByPlayer.set(player, clans);
+    }
+    for (const [player, clans] of clansByPlayer) {
+      if (clans.size > 1) clusterReasons.add(`player_in_multiple_clans_in_realized_cluster:${player}`);
+    }
+    return {
+      histories: [...clusterHistories].sort((left, right) => left.warId - right.warId || normalizeMembershipHistoryClanTag(left.clanTag).localeCompare(normalizeMembershipHistoryClanTag(right.clanTag))),
+      ...summary,
+      canonicalHistoryCount: clusterHistories.length,
+      distinctClanCount: distinctClans.size,
+      canonicalWarIds,
+      participationRowCount: clusterParticipation.length,
+      distinctPlayerCount: distinctPlayers.size,
+      persistedSyncNumbers,
+      unanimousPersistedSyncNumber: persistedSyncNumbers.length === 1 && !hasMissing ? persistedSyncNumbers[0] : null,
+      historySyncClassification: clusterHistorySyncClassification(persistedSyncNumbers, hasMissing),
+      reasons: [...clusterReasons].sort((left, right) => left.localeCompare(right)),
+    };
+  });
+  return { clusters: realized, unclusteredHistoryWarIds: [...new Set(unclusteredHistoryWarIds)].sort((left, right) => left - right), reasons: [...reasons].sort((left, right) => left.localeCompare(right)) };
+}
+
+function schedulesForRealizedCluster(cluster: RealizedFwaCluster, schedules: readonly ReconciliationSchedule[]): ReconciliationSchedule[] {
+  const histories = cluster.histories;
+  return schedules
+    .filter((schedule) => scheduleIsEligible(schedule) && histories.every((history) => {
+      const prep = validPrepTime(history)?.getTime();
+      if (prep === undefined) return false;
+      const delta = prep - schedule.syncTime.getTime();
+      return delta >= 0 && delta <= HISTORICAL_SYNC_LOOKBACK_MS;
+    }))
+    .sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
+}
+
+function clusterCompatibleWithAnchor(cluster: RealizedFwaCluster, anchor: ReconciliationAnchor): boolean {
+  return cluster.histories.length > 0 && cluster.histories.every((history) => {
+    const prep = validPrepTime(history)?.getTime();
+    if (prep === undefined) return false;
+    const delta = prep - anchor.syncTime.getTime();
+    return delta >= 0 && delta <= HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+}
+
+/** Purpose: corroborate chronological realized FWA numbering, then correlate each realized cycle to exact persisted schedules. */
+export function corroborateRealizedFwaSequence(input: {
+  lower: ReconciliationAnchor;
+  upper: ReconciliationAnchor;
+  histories: readonly ReconciliationHistory[];
+  participation?: readonly ReconciliationParticipation[];
+  conflictingHistories?: readonly ReconciliationHistory[];
+  schedules: readonly ReconciliationSchedule[];
+  existingCycles: readonly ReconciliationCycle[];
+}): RealizedFwaSequencePlan {
+  const expectedMissingSyncCount = Math.max(0, input.upper.syncNumber - input.lower.syncNumber - 1);
+  const inInterval = input.histories.filter((history) => {
+    const timing = validPrepTime(history)?.getTime() ?? history.warStartTime.getTime();
+    return timing >= input.lower.syncTime.getTime() && timing <= input.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+  const clustered = buildRealizedFwaClusters({ histories: inInterval, participation: input.participation });
+  const reasons = new Set<string>(clustered.reasons);
+  for (const cluster of clustered.clusters) {
+    for (const reason of cluster.reasons) reasons.add(reason);
+  }
+  if (clustered.unclusteredHistoryWarIds.length > 0) reasons.add("realized_history_missing_prep_start_time");
+  const lowerCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.lower));
+  const upperCandidates = clustered.clusters.filter((cluster) => clusterCompatibleWithAnchor(cluster, input.upper));
+  const lowerAnchorContextClusters = lowerCandidates.filter((cluster) =>
+    cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.lower.syncNumber && cluster.reasons.length === 0);
+  const upperAnchorContextClusters = upperCandidates.filter((cluster) =>
+    cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cluster.unanimousPersistedSyncNumber === input.upper.syncNumber && cluster.reasons.length === 0);
+  if (lowerAnchorContextClusters.length > 1 || (lowerCandidates.length > 0 && lowerAnchorContextClusters.length === 0)) {
+    reasons.add("lower_anchor_context_ambiguous");
+  }
+  if (upperAnchorContextClusters.length > 1 || (upperCandidates.length > 0 && upperAnchorContextClusters.length === 0)) {
+    reasons.add("upper_anchor_context_ambiguous");
+  }
+  if (lowerAnchorContextClusters.some((cluster) => upperAnchorContextClusters.includes(cluster))) reasons.add("one_cluster_claims_both_anchor_contexts");
+  const anchorContextClusters = new Set([...lowerAnchorContextClusters, ...upperAnchorContextClusters]);
+  const postUpperContextClusters = clustered.clusters.filter((cluster) =>
+    !anchorContextClusters.has(cluster) && cluster.prepMin !== null && cluster.prepMin.getTime() >= input.upper.syncTime.getTime());
+  for (const cluster of postUpperContextClusters) {
+    if (cluster.unanimousPersistedSyncNumber !== null && cluster.unanimousPersistedSyncNumber <= input.upper.syncNumber) {
+      reasons.add("post_upper_cluster_claims_non_future_sync");
+    }
+  }
+  const conflictingHistories = (input.conflictingHistories ?? []).filter((history) => {
+    const timing = validPrepTime(history)?.getTime() ?? history.warStartTime.getTime();
+    return timing >= input.lower.syncTime.getTime() && timing <= input.upper.syncTime.getTime() + HISTORICAL_SYNC_LOOKBACK_MS;
+  });
+  if (conflictingHistories.length > 0) reasons.add("conflicting_direct_history_ownership");
+  const missingClusters = clustered.clusters.filter((cluster) => !anchorContextClusters.has(cluster) && cluster.histories.every((history) => {
+    const prep = validPrepTime(history)?.getTime();
+    return prep !== undefined && prep > input.lower.syncTime.getTime() && prep < input.upper.syncTime.getTime();
+  }));
+  if (missingClusters.length !== expectedMissingSyncCount) {
+    reasons.add("realized_cluster_count_does_not_match_numeric_gap");
+    if (missingClusters.length < expectedMissingSyncCount) reasons.add("realized_cluster_missing");
+    if (missingClusters.length > expectedMissingSyncCount) reasons.add("realized_cluster_extra");
+  }
+  const cycles = missingClusters.map((cluster, index) => {
+    const expectedSyncNumber = missingClusters.length === expectedMissingSyncCount ? input.lower.syncNumber + index + 1 : null;
+    const candidates = schedulesForRealizedCluster(cluster, input.schedules.filter((schedule) =>
+      schedule.syncTime.getTime() > input.lower.syncTime.getTime() && schedule.syncTime.getTime() < input.upper.syncTime.getTime()));
+    const cycleReasons = new Set(cluster.reasons);
+    let action: RealizedCycleScheduleAction;
+    let selectedSchedule: ReconciliationSchedule | null = null;
+    const numberClassification: RealizedHistorySyncClassification = cluster.historySyncClassification === "HISTORY_SYNC_MATCH" &&
+      expectedSyncNumber !== null && cluster.unanimousPersistedSyncNumber !== expectedSyncNumber
+      ? "HISTORY_SYNC_DISAGREEMENT"
+      : cluster.historySyncClassification;
+    if (expectedSyncNumber === null || cluster.unanimousPersistedSyncNumber === null || cluster.unanimousPersistedSyncNumber !== expectedSyncNumber || cluster.historySyncClassification !== "HISTORY_SYNC_MATCH") {
+      cycleReasons.add(cluster.historySyncClassification === "HISTORY_SYNC_MIXED" ? "history_sync_number_mixed" : cluster.historySyncClassification === "HISTORY_SYNC_NULL" ? "history_sync_number_null" : "history_sync_number_disagrees_with_chronological_sequence");
+      action = "REALIZED_NUMBER_CONFLICT";
+    } else if (candidates.length > 1) {
+      cycleReasons.add("multiple_exact_schedule_candidates");
+      action = "REALIZED_AMBIGUOUS_SCHEDULE";
+    } else if (candidates.length === 0) {
+      const existing = input.existingCycles.find((cycle) => cycle.guildId === input.lower.guildId && cycle.syncNumber === expectedSyncNumber);
+      if (existing) {
+        action = "ALREADY_PRESENT";
+        selectedSchedule = input.schedules.find((schedule) => schedule.id === existing.scheduledSyncPostId) ?? null;
+      } else {
+        cycleReasons.add("no_exact_persisted_schedule");
+        action = "REALIZED_MISSING_EXACT_SCHEDULE";
+      }
+    } else {
+      selectedSchedule = candidates[0];
+      const existingByNumber = input.existingCycles.find((cycle) => cycle.guildId === input.lower.guildId && cycle.syncNumber === expectedSyncNumber);
+      const existingByTime = input.existingCycles.find((cycle) => cycle.guildId === input.lower.guildId && cycle.syncTime.getTime() === selectedSchedule!.syncTime.getTime());
+      if (existingByNumber && existingByNumber.syncTime.getTime() !== selectedSchedule.syncTime.getTime()) {
+        cycleReasons.add("sync_number_already_mapped");
+        action = "CONFLICT";
+      } else if (existingByTime && existingByTime.syncNumber !== expectedSyncNumber) {
+        cycleReasons.add("sync_time_already_mapped");
+        action = "CONFLICT";
+      } else if (existingByNumber || existingByTime) action = "ALREADY_PRESENT";
+      else action = "EXACT_SYNC_CYCLE_CANDIDATE";
+    }
+    return { cluster, expectedSyncNumber, numberClassification, scheduleCandidates: candidates, selectedSchedule, action, reasons: [...cycleReasons].sort((left, right) => left.localeCompare(right)) };
+  });
+  const usedScheduleIds = new Set(cycles.filter((cycle) => cycle.selectedSchedule && ["EXACT_SYNC_CYCLE_CANDIDATE", "ALREADY_PRESENT"].includes(cycle.action)).map((cycle) => cycle.selectedSchedule!.id));
+  const intervalSchedules = input.schedules.filter((schedule) => scheduleIsEligible(schedule) && schedule.syncTime.getTime() > input.lower.syncTime.getTime() && schedule.syncTime.getTime() < input.upper.syncTime.getTime());
+  const candidateScheduleIds = new Set([
+    ...cycles.flatMap((cycle) => cycle.scheduleCandidates.map((schedule) => schedule.id)),
+    ...[...anchorContextClusters].flatMap((cluster) => schedulesForRealizedCluster(cluster, intervalSchedules).map((schedule) => schedule.id)),
+  ]);
+  const ambiguousScheduleCandidates = intervalSchedules.filter((schedule) => candidateScheduleIds.has(schedule.id) && !usedScheduleIds.has(schedule.id)).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
+  const unusedEligibleSchedules = intervalSchedules.filter((schedule) => !candidateScheduleIds.has(schedule.id)).sort((left, right) => left.syncTime.getTime() - right.syncTime.getTime() || left.id.localeCompare(right.id));
+  const corroborated = input.lower.guildId === input.upper.guildId && input.upper.syncNumber > input.lower.syncNumber && input.upper.syncTime.getTime() > input.lower.syncTime.getTime() &&
+    reasons.size === 0 && missingClusters.length === expectedMissingSyncCount && clustered.unclusteredHistoryWarIds.length === 0 && cycles.length === expectedMissingSyncCount &&
+    cycles.every((cycle) => cycle.cluster.reasons.length === 0) &&
+    cycles.every((cycle) => cycle.cluster.historySyncClassification === "HISTORY_SYNC_MATCH" && cycle.cluster.unanimousPersistedSyncNumber === cycle.expectedSyncNumber);
+  if (!corroborated) reasons.add("realized_sequence_not_fully_corroborated");
+  return {
+    lower: input.lower,
+    upper: input.upper,
+    expectedMissingSyncCount,
+    realizedClusterCount: missingClusters.length,
+    lowerAnchorContextClusters,
+    upperAnchorContextClusters,
+    postUpperContextClusters,
+    classification: corroborated ? "REALIZED_SEQUENCE_CORROBORATED" : "REALIZED_SEQUENCE_AMBIGUOUS",
+    reasons: [...reasons].sort((left, right) => left.localeCompare(right)),
+    cycles,
+    ambiguousScheduleCandidates,
+    unusedEligibleSchedules,
+  };
+}
+
 /** Purpose: decide reconciliation scope from persisted war timing, independently of whether prep time yields a schedule candidate. */
 export function classifyReconciliationHistoryScope(input: {
   history: ReconciliationHistory;
@@ -123,13 +450,13 @@ export function classifyReconciliationHistoryScope(input: {
   intervals?: readonly AnchorIntervalPlan[];
   scopeWindows?: readonly ReconciliationHistoryScopeWindow[];
 }): ReconciliationHistoryScope {
-  const windows = (input.scopeWindows ?? [])
+  const windows = (input.scopeWindows === undefined ? [] : input.scopeWindows)
     .map((window) => ({ start: window.startTime.getTime(), end: window.endTime.getTime() }));
-  if (windows.length === 0) {
+  if (input.scopeWindows === undefined && windows.length === 0) {
     windows.push(...(input.intervals ?? [])
-      .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT" && interval.mappings.length > 0)
+      .filter((interval) => interval.classification === "ANCHORED_SEQUENCE_EXACT")
       .map((interval) => ({
-        start: interval.mappings[0].syncTime.getTime(),
+        start: interval.lower.syncTime.getTime(),
         end: interval.upper.syncTime.getTime(),
       })));
   }

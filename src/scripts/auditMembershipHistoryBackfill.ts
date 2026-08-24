@@ -7,6 +7,7 @@ import {
   type MembershipBoundaryEvidence,
   type MembershipStreakResult,
 } from "../services/MembershipStreakService";
+import { summarizePrepTimes } from "../services/historicalSyncReconciliation";
 import {
   hasMembershipHistorySyncNumberDisagreement,
   hasMembershipHistoryPartialIdentityConflict,
@@ -17,7 +18,6 @@ import {
 } from "../services/membershipHistoryIdentity";
 
 export const SCHEDULE_CORRELATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
-export const MAX_PREP_CLUSTER_SPREAD_MS = 2 * 60 * 60 * 1000;
 export const AUDIT_WAR_ID_BATCH_SIZE = 500;
 
 export type AuditClassification =
@@ -237,34 +237,14 @@ function parseCanonicalTeamSize(payload: unknown): number | null {
 
 /** Purpose: derive a deterministic median-centered prep-time cluster and its spread. */
 export function buildPrepCluster(prepTimes: readonly Date[]): AuditPrepCluster {
-  const sorted = prepTimes
-    .filter(isValidDate)
-    .map((value) => value.getTime())
-    .sort((a, b) => a - b);
-  if (sorted.length === 0) {
-    return {
-      min: null,
-      max: null,
-      center: null,
-      spreadSeconds: null,
-      spreadMinutes: null,
-      excessiveSpread: false,
-    };
-  }
-  const min = sorted[0];
-  const max = sorted[sorted.length - 1];
-  const middle = Math.floor(sorted.length / 2);
-  const center = sorted.length % 2 === 0
-    ? Math.round((sorted[middle - 1] + sorted[middle]) / 2)
-    : sorted[middle];
-  const spreadMs = max - min;
+  const summary = summarizePrepTimes(prepTimes.filter(isValidDate));
   return {
-    min: new Date(min),
-    max: new Date(max),
-    center: new Date(center),
-    spreadSeconds: Math.round(spreadMs / 1000),
-    spreadMinutes: Math.round(spreadMs / 60_000),
-    excessiveSpread: spreadMs > MAX_PREP_CLUSTER_SPREAD_MS,
+    min: summary.min,
+    max: summary.max,
+    center: summary.center,
+    spreadSeconds: summary.spreadSeconds,
+    spreadMinutes: summary.spreadMinutes,
+    excessiveSpread: summary.excessiveSpread,
   };
 }
 
