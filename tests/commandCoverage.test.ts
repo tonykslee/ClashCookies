@@ -223,6 +223,10 @@ describe("command coverage", () => {
     expect(botLogsHelpText).toContain("type:ban-log");
     expect(botLogsHelpText).toContain("type:ban-join-alert");
     expect(botLogsHelpText).toContain("type:clan-goals");
+    expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|clan-chat channel|bot-log channel|custom|false>");
+    expect(normalized).toContain("/bot-logs type:clan-goals enable:clan-chat channel");
+    expect(normalized).toContain("configured `/clan configure chat-channel`");
+    expect(normalized).toContain("without a configured chat channel are skipped with no fallback");
     expect(botLogsHelpText).toContain("type:sync-retrospective");
     expect(normalized).toContain("does not backfill syncs completed before enablement");
     expect(normalized).toContain("same summary/dropdowns as manual `/sync retrospective`");
@@ -253,6 +257,7 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("/clan configure");
     expect(clanHelpText.toLowerCase()).toContain("rep assignments");
     expect(clanHelpText).toContain("leader channel");
+    expect(clanHelpText).toContain("chat-channel");
     expect(clanHelpText).toContain("lead-role");
     expect(clanHelpText).toContain("rep player tags");
     expect(clanHelpText).toContain("reps:[#2RVGJYLC0,#PYLQ0289]");
@@ -266,8 +271,10 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status");
     expect(clanHelpText).toContain("use the bot application's `unranked` emoji");
     expect(clanHelpText).toContain(
-      "detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
+      "detailed FWA shows the persisted channel destinations including `chatChannel`, still shows `leadRole`, and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
     );
+    expect(clanHelpText).toContain("tag:<tracked-clan>");
+    expect(clanHelpText).toContain("/clan list tag:#2QG2C08UP");
     expect(clanHelpText).toContain("/clan rep timezone user:111111111111111111 timezone:PST");
     expect(clanHelpText).toContain("/clan rep time clan:#2QG2C08UP visibility:public");
     expect(clanHelpText).toContain("`rep timezone` stores a rep user timezone");

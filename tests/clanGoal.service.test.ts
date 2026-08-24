@@ -453,6 +453,14 @@ describe("ClanGoalService foundation", () => {
       channelId: "222222222222222222",
       source: "clan_lead",
     });
+    expect(resolveClanGoalDestination({
+      routingConfig: { routingMode: "CLAN_CHAT" },
+      ...base,
+      clanChatChannelId: "555555555555555555",
+    })).toEqual({
+      channelId: "555555555555555555",
+      source: "clan_chat",
+    });
     expect(resolveClanGoalDestination({ routingConfig: { routingMode: "BOT_LOG" }, ...base })).toEqual({
       channelId: "333333333333333333",
       source: "bot_log",
@@ -474,6 +482,25 @@ describe("ClanGoalService foundation", () => {
       channelId: null,
       source: null,
       skipReason: "missing_clan_log_channel",
+    });
+    expect(resolveClanGoalDestination({
+      routingConfig: { routingMode: "CLAN_CHAT" },
+      ...base,
+      clanChatChannelId: null,
+    })).toEqual({
+      channelId: null,
+      source: null,
+      skipReason: "missing_clan_chat_channel",
+    });
+    expect(resolveClanGoalDestination({
+      routingConfig: { routingMode: "CLAN_CHAT" },
+      ...base,
+      clanChatChannelId: "not-a-channel",
+      clanLogChannelId: "111111111111111111",
+    })).toEqual({
+      channelId: null,
+      source: null,
+      skipReason: "missing_clan_chat_channel",
     });
   });
 

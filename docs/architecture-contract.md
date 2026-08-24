@@ -309,7 +309,7 @@ Rules:
 
 ## 8) Notification routing
 
-- `TrackedClan` owns default clan metadata plus default mail/log/notify destinations.
+- `TrackedClan` owns default clan metadata plus default mail/log/notify destinations and the optional clan-owned designated chat destination (`chatChannelId`).
 - `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId` remain the routing owner for the FWA weight-alert policy in `FwaWeightAlertConfig`; the policy table owns only enablement and threshold.
 - `FwaWeightAlertDelivery` owns only durable per-clan/per-weight-submission-date claim and delivery state; it does not duplicate alert policy or routing fields.
 - `ClanNotifyConfig` owns per-guild notify overrides.

@@ -13,6 +13,7 @@ import {
   BotLogChannelService,
   type BaseSwapBotLogRoutingMode,
   type BotLogChannelType,
+  type RoutedBotLogRoutingMode,
   type RoutedBotLogChannelType,
   type SimpleBotLogChannelType,
 } from "../services/BotLogChannelService";
@@ -32,6 +33,7 @@ const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
   "clan-lead channel",
+  "clan-chat channel",
   "bot-log channel",
   "custom",
   "false",
@@ -90,9 +92,10 @@ function formatRoutedBotLogCommandHint(type: RoutedBotLogChannelType): string {
   return `/bot-logs type:${type} channel:<channel>`;
 }
 
-function formatRoutedBotLogModeLabel(mode: BaseSwapBotLogRoutingMode): string {
+function formatRoutedBotLogModeLabel(mode: RoutedBotLogRoutingMode): string {
   if (mode === "CLAN_LOG") return "clan-log channel";
   if (mode === "CLAN_LEAD") return "clan-lead channel";
+  if (mode === "CLAN_CHAT") return "clan-chat channel";
   if (mode === "BOT_LOG") return "bot-log channel";
   if (mode === "CUSTOM") return "custom";
   return "disabled";
@@ -101,7 +104,7 @@ function formatRoutedBotLogModeLabel(mode: BaseSwapBotLogRoutingMode): string {
 function parseRoutedBotLogRoutingMode(
   type: RoutedBotLogChannelType,
   value: string | null,
-): BaseSwapBotLogRoutingMode | null {
+): RoutedBotLogRoutingMode | null {
   if (value === "bot-log channel") return "BOT_LOG";
   if (value === "custom") return "CUSTOM";
   if (value === "false") return "DISABLED";
@@ -112,6 +115,9 @@ function parseRoutedBotLogRoutingMode(
     if (value === "clan-log channel") return "CLAN_LOG";
     if (value === "clan-lead channel") return "CLAN_LEAD";
   }
+  if (type === BOT_LOGS_CLAN_GOALS_TYPE && value === "clan-chat channel") {
+    return "CLAN_CHAT";
+  }
   return null;
 }
 
@@ -119,7 +125,7 @@ function formatRoutedBotLogSummary(
   type: RoutedBotLogChannelType,
   config: {
     configured: boolean;
-    routingMode: BaseSwapBotLogRoutingMode;
+    routingMode: RoutedBotLogRoutingMode;
     channelId: string | null;
   },
 ): string {
@@ -138,6 +144,9 @@ function formatRoutedBotLogSummary(
   }
   if (config.routingMode === "CLAN_LEAD") {
     return `${label}: clan-lead channel`;
+  }
+  if (config.routingMode === "CLAN_CHAT") {
+    return `${label}: clan-chat channel`;
   }
   if (config.routingMode === "BOT_LOG") {
     return `${label}: bot-log channel`;
@@ -337,6 +346,9 @@ async function renderRoutedBotLogRow(
   if (routingConfig.routingMode === "CLAN_LEAD") {
     return `${label}: clan-lead channel`;
   }
+  if (routingConfig.routingMode === "CLAN_CHAT") {
+    return `${label}: clan-chat channel`;
+  }
   if (routingConfig.routingMode === "BOT_LOG") {
     const configuredChannelId = await botLogChannelService.getChannelId(
       guildId,
@@ -408,6 +420,9 @@ async function formatRoutedBotLogInspectResponse(
   }
   if (routingConfig.routingMode === "CLAN_LEAD") {
     return `Current ${label.toLowerCase()} routing: clan-lead channel.`;
+  }
+  if (routingConfig.routingMode === "CLAN_CHAT") {
+    return `Current ${label.toLowerCase()} routing: clan-chat channel.`;
   }
   if (routingConfig.routingMode === "BOT_LOG") {
     const configuredChannelId = await botLogChannelService.getChannelId(
@@ -638,7 +653,7 @@ export const BotLogs: Command = {
               : requestedType === BOT_LOGS_BAN_JOIN_ALERT_TYPE
                 ? "Invalid ban-join alert routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
                 : requestedType === BOT_LOGS_CLAN_GOALS_TYPE
-                  ? "Invalid clan-goals routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false."
+                  ? "Invalid clan-goals routing mode. Use clan-log channel, clan-lead channel, clan-chat channel, bot-log channel, custom, or false."
                   : requestedType === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE
                     ? "Invalid sync-retrospective routing mode. Use bot-log channel, custom, or false."
                 : "Invalid base-swap routing mode.",
@@ -693,7 +708,7 @@ export const BotLogs: Command = {
       } else {
         await botLogChannelService.setBaseSwapRoutingConfig({
           guildId: interaction.guildId,
-          routingMode,
+          routingMode: routingMode as BaseSwapBotLogRoutingMode,
           channelId: routingMode === "CUSTOM" ? requestedChannel?.id : null,
         });
       }
@@ -707,7 +722,7 @@ export const BotLogs: Command = {
             }.`
           : routingMode === "CUSTOM"
             ? `Base-swap audit-log routing saved: custom <#${requestedChannel?.id}>.`
-            : `Base-swap audit-log routing saved: ${formatBaseSwapRoutingMode(routingMode)}.`,
+            : `Base-swap audit-log routing saved: ${formatBaseSwapRoutingMode(routingMode as BaseSwapBotLogRoutingMode)}.`,
       });
       return;
     }

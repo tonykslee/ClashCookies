@@ -139,6 +139,7 @@ function buildTrackedClanBlock(clan: {
   mailChannelId: string | null;
   logChannelId: string | null;
   leaderChannelId: string | null;
+  chatChannelId?: string | null;
   clanRoleId: string | null;
   leadRoleId: string | null;
   clanBadge: string | null;
@@ -151,6 +152,7 @@ function buildTrackedClanBlock(clan: {
   const mailChannel = clan.mailChannelId ? `<#${clan.mailChannelId}>` : "not set";
   const logChannel = clan.logChannelId ? `<#${clan.logChannelId}>` : "not set";
   const leaderChannel = clan.leaderChannelId ? `<#${clan.leaderChannelId}>` : "not set";
+  const chatChannel = clan.chatChannelId ? `<#${clan.chatChannelId}>` : "not set";
   const clanRole = clan.clanRoleId ? `<@&${clan.clanRoleId}>` : "not set";
   const leadRole = clan.leadRoleId ? `<@&${clan.leadRoleId}>` : "not set";
   const clanBadge = clan.clanBadge ?? "not set";
@@ -164,6 +166,7 @@ function buildTrackedClanBlock(clan: {
     `mailChannel: ${mailChannel}`,
     `logChannel: ${logChannel}`,
     `leaderChannel: ${leaderChannel}`,
+    `chatChannel: ${chatChannel}`,
     `clanRole: ${clanRole}`,
     `leadRole: ${leadRole}`,
     `clanBadge: ${clanBadge}`,
@@ -1285,6 +1288,12 @@ export const TrackedClan: Command = {
           required: false,
         },
         {
+          name: "chat-channel",
+          description: "Designated Discord chat channel for this tracked clan",
+          type: ApplicationCommandOptionType.Channel,
+          required: false,
+        },
+        {
           name: "clan-role",
           description: "Discord role associated with this tracked clan",
           type: ApplicationCommandOptionType.Role,
@@ -1475,6 +1484,13 @@ export const TrackedClan: Command = {
             { name: "Minimal", value: "minimal" },
             { name: "Detailed", value: "detailed" },
           ],
+        },
+        {
+          name: "tag",
+          description: "One tracked FWA clan tag to inspect",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          autocomplete: true,
         },
       ],
     },
@@ -2116,6 +2132,40 @@ export const TrackedClan: Command = {
           | "minimal"
           | "detailed"
           | null;
+        const tagInput = interaction.options.getString("tag", false);
+        if (tagInput !== null) {
+          if (listType !== null || requestedDisplay !== null) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "`tag` cannot be combined with `type` or `display`.",
+            });
+            return;
+          }
+
+          const tag = normalizeClanTag(tagInput);
+          if (!tag) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: "Invalid clan tag format. Use a valid clan tag with or without `#`.",
+            });
+            return;
+          }
+
+          const tracked = await listFwaTrackedClansForDisplay({ tag });
+          if (tracked.length === 0) {
+            await safeReply(interaction, {
+              ephemeral: true,
+              content: `Tracked clan not found: ${tag}.`,
+            });
+            return;
+          }
+
+          await interaction.editReply({
+            embeds: [buildTrackedClanListEmbed(1, buildTrackedClanBlock(tracked[0]), 0, 1)],
+            components: [],
+          });
+          return;
+        }
         const displayMode = listType === null ? null : requestedDisplay ?? "minimal";
         if (listType === null) {
           const season = resolveCurrentCwlSeasonKey();
@@ -3194,6 +3244,7 @@ export const TrackedClan: Command = {
         const mailChannel = interaction.options.getChannel("mail-channel", false);
         const logChannel = interaction.options.getChannel("log-channel", false);
         const leaderChannel = interaction.options.getChannel("leader-channel", false);
+        const chatChannel = interaction.options.getChannel("chat-channel", false);
         const clanRole = interaction.options.getRole("clan-role", false);
         const leadRole = interaction.options.getRole("lead-role", false);
         const clanBadgeInput = interaction.options.getString("clan-badge", false);
@@ -3220,6 +3271,13 @@ export const TrackedClan: Command = {
           await safeReply(interaction, {
             ephemeral: true,
             content: "Leader channel must be a text-based channel.",
+          });
+          return;
+        }
+        if (chatChannel && (!("isTextBased" in chatChannel) || !(chatChannel as any).isTextBased())) {
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Chat channel must be a text-based channel.",
           });
           return;
         }
@@ -3278,6 +3336,7 @@ export const TrackedClan: Command = {
               mailChannelId: mailChannel?.id ?? null,
               logChannelId: logChannel?.id ?? null,
               leaderChannelId: leaderChannel?.id ?? null,
+              chatChannelId: chatChannel?.id ?? null,
               clanRoleId: clanRole?.id ?? null,
               leadRoleId: leadRole?.id ?? null,
               clanBadge,
@@ -3289,6 +3348,7 @@ export const TrackedClan: Command = {
               ...(mailChannel ? { mailChannelId: mailChannel.id } : {}),
               ...(logChannel ? { logChannelId: logChannel.id } : {}),
               ...(leaderChannel ? { leaderChannelId: leaderChannel.id } : {}),
+              ...(chatChannel ? { chatChannelId: chatChannel.id } : {}),
               ...(clanRole ? { clanRoleId: clanRole.id } : {}),
               ...(leadRole ? { leadRoleId: leadRole.id } : {}),
               ...(clanBadge ? { clanBadge } : {}),
@@ -3411,6 +3471,7 @@ export const TrackedClan: Command = {
           `mailChannel: ${saved.mailChannelId ? `<#${saved.mailChannelId}>` : "not set"}`,
           `logChannel: ${saved.logChannelId ? `<#${saved.logChannelId}>` : "not set"}`,
           `leaderChannel: ${saved.leaderChannelId ? `<#${saved.leaderChannelId}>` : "not set"}`,
+          `chatChannel: ${saved.chatChannelId ? `<#${saved.chatChannelId}>` : "not set"}`,
           `clanRole: ${saved.clanRoleId ? `<@&${saved.clanRoleId}>` : "not set"}`,
           `leadRole: ${saved.leadRoleId ? `<@&${saved.leadRoleId}>` : "not set"}`,
           `clanBadge: ${saved.clanBadge ?? "not set"}`,
@@ -3550,6 +3611,16 @@ export const TrackedClan: Command = {
 
     if (focused.name !== "tag") {
       await interaction.respond([]);
+      return;
+    }
+
+    if (subcommand === "list") {
+      await interaction.respond(
+        await getTrackedClanAutocompleteChoices({
+          focusedText: String(focused.value ?? ""),
+          limit: 25,
+        }),
+      );
       return;
     }
 

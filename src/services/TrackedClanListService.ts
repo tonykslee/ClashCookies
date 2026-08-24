@@ -28,6 +28,7 @@ export type FwaTrackedClanDisplayRow = {
   mailChannelId: string | null;
   logChannelId: string | null;
   leaderChannelId: string | null;
+  chatChannelId?: string | null;
   clanRoleId: string | null;
   leadRoleId: string | null;
   clanBadge: string | null;
@@ -653,9 +654,13 @@ function normalizeCwlLeagueGroupWarTags(group: unknown): string[] {
   return [...new Set(warTags)];
 }
 
-/** Purpose: list tracked FWA clans in deterministic creation order for command rendering. */
-export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDisplayRow[]> {
+/** Purpose: list tracked FWA clans in deterministic creation order, optionally filtered to one tag. */
+export async function listFwaTrackedClansForDisplay(input?: {
+  tag?: string | null;
+}): Promise<FwaTrackedClanDisplayRow[]> {
+  const normalizedTag = input?.tag ? normalizeClanTag(input.tag) : null;
   const rows = await prisma.trackedClan.findMany({
+    ...(normalizedTag ? { where: { tag: normalizedTag } } : {}),
     orderBy: { createdAt: "asc" },
     select: {
       tag: true,
@@ -664,6 +669,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
       mailChannelId: true,
       logChannelId: true,
       leaderChannelId: true,
+      chatChannelId: true,
       clanRoleId: true,
       leadRoleId: true,
       clanBadge: true,
@@ -680,6 +686,7 @@ export async function listFwaTrackedClansForDisplay(): Promise<FwaTrackedClanDis
     mailChannelId: row.mailChannelId,
     logChannelId: row.logChannelId,
     leaderChannelId: row.leaderChannelId,
+    chatChannelId: row.chatChannelId,
     clanRoleId: row.clanRoleId,
     leadRoleId: row.leadRoleId,
     clanBadge: row.clanBadge,

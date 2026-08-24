@@ -230,6 +230,37 @@ describe("TrackedClanListService FWA minimal helpers", () => {
     });
   });
 
+  it("loads chatChannelId through the filtered persisted FWA display path", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: "mail-channel-1",
+        logChannelId: "log-channel-1",
+        leaderChannelId: "leader-channel-1",
+        chatChannelId: "chat-channel-1",
+        clanRoleId: "clan-role-1",
+        leadRoleId: "lead-role-1",
+        clanBadge: "🏰",
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const rows = await listFwaTrackedClansForDisplay({ tag: "2QG2C08UP" });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        tag: "#2QG2C08UP",
+        chatChannelId: "chat-channel-1",
+      }),
+    );
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tag: "#2QG2C08UP" } }),
+    );
+  });
+
   it("renders the exact minimal FWA list embed and refresh button", () => {
     const render = buildFwaTrackedClanMinimalListRender({
       refreshPrefix: "tracked-clan-list:fwa-summary:test",
