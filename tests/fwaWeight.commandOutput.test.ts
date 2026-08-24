@@ -25,7 +25,8 @@ vi.mock("../src/prisma", () => ({
   hasInitializedPrismaClient: () => false,
 }));
 
-import { Fwa } from "../src/commands/Fwa";
+import { Fwa, handleFwaWeightViewButton } from "../src/commands/Fwa";
+import { buildFwaWeightViewCustomId } from "../src/commands/fwa/customIds";
 import { PointsSyncService } from "../src/services/PointsSyncService";
 
 type WeightSubcommand = "weight-health" | "weight-alert";
@@ -64,6 +65,25 @@ function makeInteraction(params: {
   return { interaction, editReply };
 }
 
+function makeWeightViewButtonInteraction(params: {
+  customId: string;
+  userId?: string;
+}) {
+  const update = vi.fn().mockResolvedValue(undefined);
+  const reply = vi.fn().mockResolvedValue(undefined);
+  return {
+    interaction: {
+      customId: params.customId,
+      guildId: "guild-1",
+      user: { id: params.userId ?? "user-1" },
+      update,
+      reply,
+    },
+    update,
+    reply,
+  };
+}
+
 describe("/fwa persisted weight command output", () => {
   const now = new Date("2026-08-09T12:00:00.000Z");
 
@@ -100,6 +120,47 @@ describe("/fwa persisted weight command output", () => {
       select: { clanTag: true, weightSubmitDate: true },
     });
     expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain("2d 0h ago ✅");
+    const button = editReply.mock.calls[0]?.[0]?.components?.[0]?.components?.[0];
+    expect(button?.data.label).toBe("Weight Submission Zones");
+    expect(button?.data.custom_id).toContain("fwa-weight-view:user-1:zones:ABC123");
+  });
+
+  it("toggles to zones with the same single-clan scope and rejects another user", async () => {
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#ABC123", weightSubmitDate: new Date("2026-06-28T12:00:00.000Z") },
+    ]);
+    const button = makeWeightViewButtonInteraction({
+      customId: buildFwaWeightViewCustomId({
+        userId: "user-1",
+        view: "zones",
+        scope: "ABC123",
+      }),
+    });
+
+    await handleFwaWeightViewButton(button.interaction as any);
+
+    expect(button.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("FWA Weight Submission Zones (1)"),
+      }),
+    );
+    expect(button.update.mock.calls[0]?.[0]?.content).toContain("🔴 Red Zone");
+    expect(button.update.mock.calls[0]?.[0]?.components?.[0]?.components?.[0]?.data.label).toBe("Weight Health");
+
+    const otherUser = makeWeightViewButtonInteraction({
+      customId: buildFwaWeightViewCustomId({
+        userId: "user-1",
+        view: "zones",
+        scope: "ABC123",
+      }),
+      userId: "user-2",
+    });
+    await handleFwaWeightViewButton(otherUser.interaction as any);
+    expect(otherUser.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    expect(otherUser.update).not.toHaveBeenCalled();
   });
 
   it("bulk-reads all tracked clans and classifies missing/null catalog data safely", async () => {

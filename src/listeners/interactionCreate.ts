@@ -40,6 +40,7 @@ import {
   handleFwaMatchSkipSyncConfirmButton,
   handleFwaMatchSkipSyncUndoButton,
   handleFwaComplianceViewButton,
+  handleFwaWeightViewButton,
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
   handleFwaMailBackButton,
@@ -67,6 +68,7 @@ import {
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
   isFwaComplianceViewButtonCustomId,
+  isFwaWeightViewButtonCustomId,
   isFwaBaseSwapSplitPostButtonCustomId,
   handlePointsPostButton,
   isFwaMatchCopyButtonCustomId,
@@ -1572,6 +1574,21 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to update compliance view.",
+        });
+      }
+    }
+    return;
+  }
+
+  if (isFwaWeightViewButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaWeightViewButton(interaction);
+    } catch (err) {
+      console.error(`FWA weight view button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update weight view.",
         });
       }
     }

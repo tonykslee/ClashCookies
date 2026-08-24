@@ -97,7 +97,10 @@ import {
   autocompleteFwaViolationsCommand,
   runFwaViolationsCommand,
 } from "./fwa/violationsCommand";
-import { fwaWeightCatalogService } from "../services/FwaWeightCatalogService";
+import {
+  fwaWeightCatalogService,
+  type FwaCatalogWeightAge,
+} from "../services/FwaWeightCatalogService";
 import { getNextWarMailRefreshAtMs } from "../services/refreshSchedule";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { WarEventHistoryService } from "../services/war-events/history";
@@ -177,6 +180,7 @@ import {
   buildFwaMatchSelectCustomId,
   buildFwaMatchSendMailCustomId,
   buildFwaMatchTieBreakerCustomId,
+  buildFwaWeightViewCustomId,
   buildMatchSkipSyncActionCustomId,
   buildMatchSkipSyncConfirmCustomId,
   buildMatchSkipSyncUndoCustomId,
@@ -197,6 +201,7 @@ import {
   parseFwaMatchSelectCustomId,
   parseFwaMatchSendMailCustomId,
   parseFwaMatchTieBreakerCustomId,
+  parseFwaWeightViewCustomId,
   parseMatchSkipSyncActionCustomId,
   parseMatchSkipSyncConfirmCustomId,
   parseMatchSkipSyncUndoCustomId,
@@ -205,6 +210,7 @@ import {
   parseMatchTypeEditCustomId,
   parseOutcomeActionCustomId,
   parsePointsPostButtonCustomId,
+  type FwaWeightViewScope,
 } from "./fwa/customIds";
 import {
   classifyPointsLookupState,
@@ -243,7 +249,9 @@ import {
 import {
   WEIGHT_SEVERE_STALE_DAYS,
   WEIGHT_STALE_DAYS,
+  formatWeightSubmissionZoneLine,
   formatWeightHealthLine,
+  getWeightSubmissionZone,
   getWeightHealthState,
 } from "./fwa/weightView";
 import { fwaWeightAlertConfigService } from "../services/FwaWeightAlertConfigService";
@@ -260,6 +268,7 @@ import {
 export { isMissedSyncClanForTest } from "./fwa/matchState";
 export {
   isFwaComplianceViewButtonCustomId,
+  isFwaWeightViewButtonCustomId,
   isFwaBaseSwapSplitPostButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailGateResumeButtonCustomId,
@@ -294,6 +303,157 @@ const activeWarSyncResolutionService = new ActiveWarSyncResolutionService(
 );
 const warComplianceService = new WarComplianceService();
 const pointsDirectFetchGate = new PointsDirectFetchGateService();
+
+type FwaWeightTarget = { tag: string; clanName: string };
+
+/** Purpose: resolve the same tracked-clan ordering and single-tag scope for weight views. */
+async function resolveFwaWeightTargetsForScope(
+  scope: FwaWeightViewScope,
+  guildId: string | null,
+): Promise<FwaWeightTarget[]> {
+  if (scope !== "all") {
+    const trackedRow = guildId
+      ? await prisma.trackedClan.findFirst({
+          where: {
+            OR: [
+              { tag: { equals: `#${scope}`, mode: "insensitive" } },
+              { tag: { equals: scope, mode: "insensitive" } },
+            ],
+          },
+          select: { name: true },
+        })
+      : null;
+    return [
+      {
+        tag: scope,
+        clanName: sanitizeClanName(trackedRow?.name) ?? `#${scope}`,
+      },
+    ];
+  }
+
+  if (!guildId) return [];
+  const tracked = await prisma.trackedClan.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { tag: true, name: true },
+  });
+  return tracked.map((row) => {
+    const normalizedTag = normalizeTag(row.tag);
+    return {
+      tag: normalizedTag,
+      clanName: sanitizeClanName(row.name) ?? `#${normalizedTag}`,
+    };
+  });
+}
+
+/** Purpose: render the DB-backed health or rules-derived zones view without external requests. */
+function renderFwaWeightViewContent(
+  view: "health" | "zones",
+  targets: FwaWeightTarget[],
+  results: Map<string, FwaCatalogWeightAge>,
+): string {
+  const resultRows = targets
+    .map((target) => results.get(target.tag))
+    .filter((result): result is NonNullable<typeof result> => Boolean(result));
+
+  if (view === "health") {
+    const lines = targets.map((target) => {
+      const result = results.get(target.tag);
+      if (!result) return `${target.clanName} (#${target.tag}) — unavailable ❓`;
+      return formatWeightHealthLine({
+        clanName: target.clanName,
+        clanTag: target.tag,
+        result,
+        staleThresholdDays: WEIGHT_STALE_DAYS,
+        severeThresholdDays: WEIGHT_SEVERE_STALE_DAYS,
+      });
+    });
+    const recentCount = resultRows.filter(
+      (row) =>
+        getWeightHealthState(
+          row.ageDays,
+          WEIGHT_STALE_DAYS,
+          WEIGHT_SEVERE_STALE_DAYS,
+        ) === "recent",
+    ).length;
+    const outdatedCount = resultRows.filter(
+      (row) =>
+        getWeightHealthState(
+          row.ageDays,
+          WEIGHT_STALE_DAYS,
+          WEIGHT_SEVERE_STALE_DAYS,
+        ) === "outdated",
+    ).length;
+    const severeCount = resultRows.filter(
+      (row) =>
+        getWeightHealthState(
+          row.ageDays,
+          WEIGHT_STALE_DAYS,
+          WEIGHT_SEVERE_STALE_DAYS,
+        ) === "severely_outdated",
+    ).length;
+    const unknownCount = targets.length - (recentCount + outdatedCount + severeCount);
+    return buildLimitedMessage(
+      `FWA Weight Health (${targets.length})`,
+      lines,
+      [
+        "",
+        "Legend:",
+        "✅ recent",
+        "⚠️ outdated",
+        "❌ severely outdated",
+        "❓ unavailable/unknown",
+        `Thresholds: outdated > ${WEIGHT_STALE_DAYS}d, severe >= ${WEIGHT_SEVERE_STALE_DAYS}d`,
+        `Summary: recent=${recentCount}, outdated=${outdatedCount}, severe=${severeCount}, unknown=${unknownCount}`,
+        "Source: persisted FwaClanCatalog.weightSubmitDate",
+      ].join("\n"),
+    );
+  }
+
+  const lines = targets.map((target) => {
+    const result = results.get(target.tag);
+    if (!result) return `${target.clanName} (#${target.tag}) — unavailable ❓ Unknown`;
+    return formatWeightSubmissionZoneLine({
+      clanName: target.clanName,
+      clanTag: target.tag,
+      result,
+    });
+  });
+  const currentCount = resultRows.filter((row) => getWeightSubmissionZone(row.ageDays) === "current").length;
+  const yellowCount = resultRows.filter((row) => getWeightSubmissionZone(row.ageDays) === "yellow").length;
+  const redCount = resultRows.filter((row) => getWeightSubmissionZone(row.ageDays) === "red").length;
+  const unknownCount = targets.length - (currentCount + yellowCount + redCount);
+  return buildLimitedMessage(
+    `FWA Weight Submission Zones (${targets.length})`,
+    lines,
+    [
+      "",
+      `Summary: current=${currentCount}, yellow=${yellowCount}, red=${redCount}, unknown=${unknownCount}`,
+      "",
+      "Official FWA weight rules:",
+      "🟢 Current: submit within 4 weeks.",
+      "🟡 Yellow: 4+ weeks old, up to 2 weeks before red.",
+      "🔴 Red: overdue beyond yellow; update before the next sync or potential wins may be forfeited until updated.",
+      "Sanctions: -1 on entering red; -1 for each additional sync while red. CWL has no exemption; admin discretion applies.",
+      "Source: official FWA rules and sanctions; this view uses persisted FwaClanCatalog.weightSubmitDate.",
+      "Disclaimer: zones are derived from the persisted date and these rules; actual admin assignment may differ.",
+    ].join("\n"),
+  );
+}
+
+/** Purpose: build the single toggle control while keeping the caller's clan scope. */
+function buildFwaWeightViewToggleRow(
+  userId: string,
+  view: "health" | "zones",
+  scope: FwaWeightViewScope,
+): ActionRowBuilder<ButtonBuilder> {
+  const nextView = view === "health" ? "zones" : "health";
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildFwaWeightViewCustomId({ userId, view: nextView, scope }))
+      .setLabel(view === "health" ? "Weight Submission Zones" : "Weight Health")
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
 
 type FwaBaseSwapSection = "war_bases" | "base_errors" | "fwa_bases";
 type FwaBaseSwapClanKind = BaseSwapClanKind;
@@ -8484,6 +8644,51 @@ export async function handleFwaComplianceViewButton(
     embeds: rendered.embeds,
     components: rendered.components,
   });
+}
+
+export async function handleFwaWeightViewButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaWeightViewCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  const startedAtMs = Date.now();
+  const targets = await resolveFwaWeightTargetsForScope(
+    parsed.scope,
+    interaction.guildId ?? null,
+  );
+  if (targets.length === 0) {
+    await interaction.update({
+      content: "No tracked clans configured. Please configure tracked clans first.",
+      components: [],
+    });
+    return;
+  }
+
+  const results = await fwaWeightCatalogService.getWeightAges(
+    targets.map((target) => target.tag),
+  );
+  const content = renderFwaWeightViewContent(parsed.view, targets, results);
+  await interaction.update({
+    content: truncateDiscordContent(content),
+    components: [
+      buildFwaWeightViewToggleRow(
+        interaction.user.id,
+        parsed.view,
+        parsed.scope,
+      ),
+    ],
+  });
+  console.info(
+    `[fwa-weight] event=view_switch view=${parsed.view} guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} scope=${parsed.scope === "all" ? "all" : `#${parsed.scope}`} clans=${targets.length} duration_ms=${Date.now() - startedAtMs}`,
+  );
 }
 
 export async function handleFwaMatchCopyButton(
@@ -17416,65 +17621,27 @@ export const Fwa: Command = {
       const results = await fwaWeightCatalogService.getWeightAges(
         targets.map((target) => target.tag),
       );
+      const healthContent = renderFwaWeightViewContent("health", targets, results);
       const resultRows = targets
         .map((target) => results.get(target.tag))
         .filter((result): result is NonNullable<typeof result> => Boolean(result));
-
-      const lines = targets.map((target) => {
-        const result = results.get(target.tag);
-        if (!result) {
-          return `${target.clanName} (#${target.tag}) — unavailable ❓`;
-        }
-        return formatWeightHealthLine({
-          clanName: target.clanName,
-          clanTag: target.tag,
-          result,
-          staleThresholdDays: WEIGHT_STALE_DAYS,
-          severeThresholdDays: WEIGHT_SEVERE_STALE_DAYS,
-        });
-      });
       const recentCount = resultRows.filter(
-        (row) =>
-          getWeightHealthState(
-            row.ageDays,
-            WEIGHT_STALE_DAYS,
-            WEIGHT_SEVERE_STALE_DAYS,
-          ) === "recent",
+        (row) => getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) === "recent",
       ).length;
       const outdatedCount = resultRows.filter(
-        (row) =>
-          getWeightHealthState(
-            row.ageDays,
-            WEIGHT_STALE_DAYS,
-            WEIGHT_SEVERE_STALE_DAYS,
-          ) === "outdated",
+        (row) => getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) === "outdated",
       ).length;
       const severeCount = resultRows.filter(
-        (row) =>
-          getWeightHealthState(
-            row.ageDays,
-            WEIGHT_STALE_DAYS,
-            WEIGHT_SEVERE_STALE_DAYS,
-          ) === "severely_outdated",
+        (row) => getWeightHealthState(row.ageDays, WEIGHT_STALE_DAYS, WEIGHT_SEVERE_STALE_DAYS) === "severely_outdated",
       ).length;
-      const unknownCount =
-        targets.length - (recentCount + outdatedCount + severeCount);
+      const unknownCount = targets.length - (recentCount + outdatedCount + severeCount);
       await editReplySafe(
-        buildLimitedMessage(
-          `FWA Weight Health (${targets.length})`,
-          lines,
-          [
-            "",
-            "Legend:",
-            "✅ recent",
-            "⚠️ outdated",
-            "❌ severely outdated",
-            "❓ unavailable/unknown",
-            `Thresholds: outdated > ${WEIGHT_STALE_DAYS}d, severe >= ${WEIGHT_SEVERE_STALE_DAYS}d`,
-            `Summary: recent=${recentCount}, outdated=${outdatedCount}, severe=${severeCount}, unknown=${unknownCount}`,
-            "Source: persisted FwaClanCatalog.weightSubmitDate",
-          ].join("\n"),
-        ),
+        healthContent,
+        undefined,
+        [
+          buildFwaWeightViewToggleRow(interaction.user.id, "health", tag || "all"),
+          ...defaultComponents,
+        ],
       );
       console.info(
         `[fwa-weight] event=command_complete cmd=weight-health guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length} recent=${recentCount} outdated=${outdatedCount} severe=${severeCount} unknown=${unknownCount} duration_ms=${Date.now() - startedAtMs}`,

@@ -19,6 +19,7 @@ const FWA_MAIL_GATE_RESUME_PREFIX = "fwa-mail-gate-resume";
 const FWA_MATCH_TIEBREAKER_PREFIX = "fwa-match-tiebreaker";
 const FWA_COMPLIANCE_VIEW_PREFIX = "fwa-compliance-view";
 const FWA_BASE_SWAP_SPLIT_POST_PREFIX = "fwa-base-swap-split-post";
+const FWA_WEIGHT_VIEW_PREFIX = "fwa-weight-view";
 
 export type MatchTypeActionParams = {
   userId: string;
@@ -77,6 +78,14 @@ export type FwaBaseSwapSplitPostParams = {
   action: FwaBaseSwapSplitPostAction;
 };
 
+export type FwaWeightView = "health" | "zones";
+export type FwaWeightViewScope = "all" | string;
+export type FwaWeightViewParams = {
+  userId: string;
+  view: FwaWeightView;
+  scope: FwaWeightViewScope;
+};
+
 /** Purpose: normalize incoming clan tags to the internal uppercase/hashless form. */
 function normalizeTag(input: string): string {
   return input.trim().toUpperCase().replace(/^#/, "");
@@ -115,6 +124,30 @@ export function parsePointsPostButtonCustomId(customId: string): { userId: strin
 /** Purpose: detect points-post button custom-id prefix. */
 export function isPointsPostButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${POINTS_POST_BUTTON_PREFIX}:`);
+}
+
+/** Purpose: build the restart-safe custom-id for toggling persisted FWA weight views. */
+export function buildFwaWeightViewCustomId(params: FwaWeightViewParams): string {
+  const scope = params.scope === "all" ? "all" : normalizeTag(params.scope);
+  return `${FWA_WEIGHT_VIEW_PREFIX}:${params.userId}:${params.view}:${scope}`;
+}
+
+/** Purpose: parse the requester, view, and clan scope from a weight-view custom-id. */
+export function parseFwaWeightViewCustomId(
+  customId: string,
+): FwaWeightViewParams | null {
+  const values = parseCustomIdParts(customId, FWA_WEIGHT_VIEW_PREFIX, 4);
+  if (!values) return null;
+  const [userId, rawView, rawScope] = values;
+  const view = rawView === "health" || rawView === "zones" ? rawView : null;
+  const scope = rawScope === "all" ? "all" : normalizeTag(rawScope);
+  if (!view || !scope) return null;
+  return { userId, view, scope };
+}
+
+/** Purpose: detect a restart-safe FWA weight-view button custom-id. */
+export function isFwaWeightViewButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_WEIGHT_VIEW_PREFIX}:`);
 }
 
 /** Purpose: build custom-id for copy/embed toggle button in fwa match results. */
