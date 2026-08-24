@@ -2679,11 +2679,14 @@ export class WarEventLogService {
     params: { eventType: EventType; source: TestSource },
   ): Promise<EventEmitPayload> {
     const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
-    const activeSync = previousSync === null ? null : previousSync + 1;
 
     const currentWar =
       params.source === "current"
         ? await this.coc.getCurrentWar(sub.clanTag).catch(() => null)
+        : null;
+    const activeSync =
+      params.source === "current"
+        ? sub.pointsSyncNum ?? null
         : null;
     const lastWarLogEntry =
       params.source === "last"
@@ -5088,31 +5091,23 @@ export class WarEventLogService {
       (async (
         input: ActiveWarSyncResolutionInput,
       ): Promise<ActiveWarSyncAssignmentResult> => {
-        const isNonFwaMatchType = toSyncIsFwa(
-          input.matchType as MatchType | null,
-        ) === false;
         const proposedSyncNumber =
           input.currentWarCanonicalSyncNumber ??
           input.currentWarLegacySyncNumber ??
           input.sameWarPointsSyncNumber ??
           null;
         const fallbackSyncNumber =
-          input.currentWarCanonicalSyncNumber ??
-          (isNonFwaMatchType ? null : input.currentWarLegacySyncNumber) ??
-          input.sameWarPointsSyncNumber ??
-          null;
+          input.sameWarPointsSyncNumber ?? syncContext.activeSync ?? null;
         return {
           syncNumber: fallbackSyncNumber,
           proposedSyncNumber,
           usable: fallbackSyncNumber !== null,
           source:
-            input.currentWarCanonicalSyncNumber !== null
-              ? "existing_current_war"
-              : input.currentWarLegacySyncNumber !== null
-                ? "existing_current_war"
-                : input.sameWarPointsSyncNumber !== null
-                  ? "same_war_points_recovery"
-                  : "unavailable",
+            input.sameWarPointsSyncNumber !== null
+              ? "same_war_points_recovery"
+              : fallbackSyncNumber !== null
+                ? "active_cycle_reuse"
+                : "unavailable",
           shouldPersist: false,
           persistence: "not_needed",
           validation: null,
@@ -5163,7 +5158,7 @@ export class WarEventLogService {
         ? currentWarCanonicalSyncNumber
         : syncAssignment?.usable && syncAssignment.syncNumber !== null
           ? syncAssignment.syncNumber
-          : currentWarCanonicalSyncNumber;
+          : null;
     const syncNumberForEvent =
       currentState === "notInWar"
         ? await this.resolveNotifyEventSyncNumber({

@@ -1521,6 +1521,41 @@ describe("fwa mail confirm button", () => {
     );
   });
 
+  it("fails closed during final confirmation when FWA expected outcome is unresolved", async () => {
+    const previewKey = await seedConfirmPayloadAndRenderer({
+      rendered: buildRenderedMail({
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        mailBlockedReason:
+          "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+      }),
+    });
+    const send = vi.fn();
+    const interaction = createInteraction({
+      customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+      send,
+    });
+
+    await handleFwaMailConfirmButton(interaction as any);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(lifecycleMock.acquireSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.finalizeSendClaim).not.toHaveBeenCalled();
+    expect(lifecycleMock.releaseSendClaim).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.update).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.upsert).not.toHaveBeenCalled();
+    expect(pointsSyncMock.markConfirmedByClanMail).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.update).not.toHaveBeenCalled();
+    expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenLastCalledWith({
+      content:
+        "Cannot send mail: :warning: FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+      embeds: [],
+      components: expect.any(Array),
+    });
+  });
+
   it("uses bare opponent tags in the guarded update and posts the pinging confirmation", async () => {
     const previewKey = await seedConfirmPayloadAndRenderer({
       currentWarRow: buildCurrentWarRow({ opponentTag: "2LYPLQQUC" }),

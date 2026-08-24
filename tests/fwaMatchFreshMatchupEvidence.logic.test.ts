@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFwaPointsStrictLiveSyncIdentityForTest,
+  deriveProjectedOutcomeForTest,
   formatFwaPointsSyncDisplayForTest,
   formatFwaPointsSyncFooterForTest,
   isFwaPointsCurrentWarSyncEligibleForTest,
@@ -302,7 +303,7 @@ describe("fwa points sync numbering regression", () => {
     ).toBe(545);
   });
 
-  it("prefers the canonical CurrentWar sync over an active-cycle conflict", () => {
+  it("does not let a materialized CurrentWar sync override an active-cycle conflict", () => {
     expect(
       resolveFwaPointsCurrentSyncForTest({
         identity: activeIdentity,
@@ -310,7 +311,7 @@ describe("fwa points sync numbering regression", () => {
         currentWarSyncNumber: 545,
         activeCycleConflict: true,
       }),
-    ).toBe(545);
+    ).toBeNull();
   });
 
   it("lets exact same-war points evidence supersede stale canonical CurrentWar sync", () => {
@@ -325,14 +326,73 @@ describe("fwa points sync numbering regression", () => {
     ).toBe(545);
   });
 
-  it("preserves the guarded latest-plus-one derivation for a genuinely new active war", () => {
+  it("fails closed for a genuinely new active war without sync evidence", () => {
     expect(
       resolveFwaPointsCurrentSyncForTest({
         identity: activeIdentity,
         sourceSync: 545,
         sameWarPersistedSyncNumber: null,
       }),
-    ).toBe(546);
+    ).toBeNull();
+  });
+
+  it("does not invent parity from an already-current latest baseline", () => {
+    const unresolvedSync = resolveFwaPointsCurrentSyncForTest({
+      identity: activeIdentity,
+      sourceSync: 552,
+      sameWarPersistedSyncNumber: null,
+    });
+
+    expect(unresolvedSync).toBeNull();
+    expect(formatFwaPointsSyncDisplayForTest(unresolvedSync)).toBe("unknown");
+  });
+
+  it("does not use a stale materialized CurrentWar parity value for outcomes", () => {
+    const unresolvedSync = resolveFwaPointsCurrentSyncForTest({
+      identity: activeIdentity,
+      sourceSync: 552,
+      sameWarPersistedSyncNumber: null,
+      currentWarSyncNumber: 553,
+    });
+
+    expect(unresolvedSync).toBeNull();
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1000, 1000, unresolvedSync),
+    ).toBeNull();
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1200, 980, unresolvedSync),
+    ).toBe("WIN");
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 980, 1200, unresolvedSync),
+    ).toBe("LOSE");
+  });
+
+  it("uses an evidence-backed active cycle despite stale CurrentWar sync", () => {
+    const resolvedSync = resolveFwaPointsCurrentSyncForTest({
+      identity: activeIdentity,
+      sourceSync: 552,
+      sameWarPersistedSyncNumber: null,
+      currentWarSyncNumber: 553,
+      activeCycleSyncNumber: 552,
+      activeCycleConflict: false,
+    });
+
+    expect(resolvedSync).toBe(552);
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1000, 1000, resolvedSync),
+    ).toBe("WIN");
+  });
+
+  it("keeps unequal-point outcomes available while sync parity is unresolved", () => {
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1200, 980, null),
+    ).toBe("WIN");
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 980, 1200, null),
+    ).toBe("LOSE");
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1000, 1000, null),
+    ).toBeNull();
   });
 
   it("fails closed on an active-cycle conflict instead of deriving latest plus one", () => {
