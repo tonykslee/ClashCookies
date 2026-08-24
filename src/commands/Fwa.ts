@@ -210,6 +210,7 @@ import {
   parseMatchTypeEditCustomId,
   parseOutcomeActionCustomId,
   parsePointsPostButtonCustomId,
+  isPointsPostButtonCustomId,
   type FwaWeightViewScope,
 } from "./fwa/customIds";
 import {
@@ -432,10 +433,11 @@ function renderFwaWeightViewContent(
       "Official FWA weight rules:",
       "🟢 Current: submit within 4 weeks.",
       "🟡 Yellow: 4+ weeks old, up to 2 weeks before red.",
-      "🔴 Red: overdue beyond yellow; update before the next sync or potential wins may be forfeited until updated.",
-      "Sanctions: -1 on entering red; -1 for each additional sync while red. CWL has no exemption; admin discretion applies.",
+      "🔴 Red: overdue beyond Yellow; update before the next sync or potential wins are forfeited until weights are submitted.",
+      "Sanctions: -1 on entering Red; -1 for each additional sync while Red. CWL has no excuse or exemption; admin discretion applies.",
+      "Assessment timing: sanctions are assessed and updated daily at 10pm CST/CDT regardless of sync time; the recurring sanction is per additional sync while Red, not a daily point drain.",
       "Source: official FWA rules and sanctions; this view uses persisted FwaClanCatalog.weightSubmitDate.",
-      "Disclaimer: zones are derived from the persisted date and these rules; actual admin assignment may differ.",
+      "Disclaimer: zones are derived from the persisted date and these rules; they are not an authoritative admin assignment and actual admin assignment may differ.",
     ].join("\n"),
   );
 }
@@ -453,6 +455,39 @@ function buildFwaWeightViewToggleRow(
       .setLabel(view === "health" ? "Weight Submission Zones" : "Weight Health")
       .setStyle(ButtonStyle.Secondary),
   );
+}
+
+/** Purpose: preserve the existing private-message posting control across stateless weight-view toggles. */
+function hasPostToChannelControl(interaction: ButtonInteraction): boolean {
+  return interaction.message.components.some((row) => {
+    if (!("components" in row)) return false;
+    return row.components.some((component) => {
+      const customId = "customId" in component ? component.customId : null;
+      return typeof customId === "string" && isPointsPostButtonCustomId(customId);
+    });
+  });
+}
+
+/** Purpose: rebuild weight-view controls from durable Discord message state without adding controls to public posts. */
+function buildFwaWeightViewComponents(
+  interaction: ButtonInteraction,
+  view: "health" | "zones",
+  scope: FwaWeightViewScope,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const components = [
+    buildFwaWeightViewToggleRow(interaction.user.id, view, scope),
+  ];
+  if (hasPostToChannelControl(interaction)) {
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildPointsPostButtonCustomId(interaction.user.id))
+          .setLabel("Post to Channel")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    );
+  }
+  return components;
 }
 
 type FwaBaseSwapSection = "war_bases" | "base_errors" | "fwa_bases";
@@ -8650,7 +8685,13 @@ export async function handleFwaWeightViewButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
   const parsed = parseFwaWeightViewCustomId(interaction.customId);
-  if (!parsed) return;
+  if (!parsed) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This weight view interaction is invalid or expired. Please run /fwa weight-health again.",
+    });
+    return;
+  }
   if (interaction.user.id !== parsed.userId) {
     await interaction.reply({
       ephemeral: true,
@@ -8678,13 +8719,11 @@ export async function handleFwaWeightViewButton(
   const content = renderFwaWeightViewContent(parsed.view, targets, results);
   await interaction.update({
     content: truncateDiscordContent(content),
-    components: [
-      buildFwaWeightViewToggleRow(
-        interaction.user.id,
-        parsed.view,
-        parsed.scope,
-      ),
-    ],
+    components: buildFwaWeightViewComponents(
+      interaction,
+      parsed.view,
+      parsed.scope,
+    ),
   });
   console.info(
     `[fwa-weight] event=view_switch view=${parsed.view} guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} scope=${parsed.scope === "all" ? "all" : `#${parsed.scope}`} clans=${targets.length} duration_ms=${Date.now() - startedAtMs}`,
