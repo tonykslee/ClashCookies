@@ -47,6 +47,7 @@ Core subsystems:
 - Pre-sync Home return alerts: `ScheduledSyncPost -> HomeAwaySyncAlertService -> HomeAwaySyncAlertSchedule / HomeAwaySyncAlertDelivery`; the service persists one randomized five-to-seven-hour fire window per upcoming sync, evaluates only authoritative `HomeRosterService` Away rows when due, bulk-routes linked accounts through `PlayerLink`, stores immutable per-user content, and claims/retries Discord delivery in active mode. Mirror mode copies the durable alert rows but never evaluates or sends them.
 - Points sync: `points.fwafarm -> PointsSyncService -> ClanPointsSync`
 - Feed-backed current state: `FWAStats JSON feeds -> FwaFeedSchedulerService -> FwaClanCatalog / FwaPlayerCatalog / FwaClanMemberCurrent / FwaWarMemberCurrent / FwaTrackedClanWarRosterCurrent / FwaTrackedClanWarRosterMemberCurrent / FwaClanWarLogCurrent / FwaClanMatchStatsCurrent / HeatMapRef`
+- FWA weight-alert policy: `TrackedClan + FwaWeightAlertConfig -> FwaWeightAlertConfigService -> /fwa weight-alert`; `FwaWeightAlertConfig` owns per-clan enablement and stale-age threshold, `TrackedClan.leaderChannelId` / `TrackedClan.leadRoleId` own routing, and `FwaClanCatalog.weightSubmitDate` remains the authoritative persisted submission date used for alert evaluation. Automatic delivery is not implemented yet, so there is no scheduler or delivery-state owner for this feature.
 - Historical observed alliance membership: `production activity observation -> AllianceClanMembershipInterval`; this table owns historical observed alliance clan-membership intervals for later camping analytics and future read-only reporting, while `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners. `/cwl activity` does not read this table.
 - Read-only membership streak analytics: `SyncCycle + SyncClanReadinessSnapshot / SyncClanMemberSnapshot + guild-scoped canonical FWA history/participation fallback + AllianceClanMembershipInterval -> MembershipStreakService`; this is a bounded bulk DB-first reader for physical FWA clan streaks and monitored-alliance streaks. Exact snapshots win over fallback, adjacent streak boundaries require consecutive canonical `SyncCycle.syncNumber` values, and sparse, missing, or contradictory canonical boundaries are never bridged. Historical participation fallback resolves through canonical `ClanWarHistory`, not raw `ClanPointsSync.warId`; no derived streak counters are persisted, and `ClanWarParticipation` is never written into `SyncClanMemberSnapshot`.
 - Read-only Home membership analytics: `ClanHomeMembershipPeriod + MembershipStreakService batch -> HomeMembershipAnalyticsService -> /link list Tenure`; C counts canonical boundaries from the current active Home start, S is the authoritative consecutive streak in the current physical clan, and A is the authoritative monitored-alliance streak. C requires an active Home, while S/A remain independently available when physical evidence is safely resolved. Counters are derived only, temporary Away/physical moves do not reset C, and lower bounds use `+`.
@@ -76,6 +77,7 @@ Important owners:
 | CWL clan-to-current-event pointer | CwlEventClan |
 | CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
+| Per-clan FWA weight-alert policy (enablement and stale-age threshold) | FwaWeightAlertConfig |
 | Tracked FWA clan rep accounts | TrackedClanRep |
 | Tracked FWA clan rep user profile metadata | TrackedClanRepUserProfile |
 | Seasonal CWL tracked clans | CwlTrackedClan |
@@ -119,6 +121,8 @@ Important owners:
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
 | FWA compo reference bands | HeatMapRef |
 | Telemetry rollups and report schedules | Telemetry* tables |
+
+`FwaWeightAlertConfig` is a policy owner only. Routing continues to be read from `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId`, while `FwaClanCatalog.weightSubmitDate` remains the source-of-truth submission date for stale-age evaluation. Automatic alert delivery and delivery-state persistence are intentionally not part of the current runtime model.
 
 Do not duplicate ownership across tables.
 
