@@ -243,10 +243,10 @@ import {
 import {
   WEIGHT_SEVERE_STALE_DAYS,
   WEIGHT_STALE_DAYS,
-  formatWeightAgeLine,
   formatWeightHealthLine,
   getWeightHealthState,
 } from "./fwa/weightView";
+import { fwaWeightAlertConfigService } from "../services/FwaWeightAlertConfigService";
 import {
   deriveSyncActionSiteOutcome,
   evaluatePostSyncValidation,
@@ -16181,31 +16181,6 @@ export const Fwa: Command = {
       ],
     },
     {
-      name: "weight-age",
-      description: "Check last submitted FWA Stats weight age",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "visibility",
-          description: "Response visibility",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          choices: [
-            { name: "private", value: "private" },
-            { name: "public", value: "public" },
-          ],
-        },
-        {
-          name: "tag",
-          description:
-            "Clan tag (with or without #). Leave blank for all tracked clans.",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-          autocomplete: true,
-        },
-      ],
-    },
-    {
       name: "weight-link",
       description: "Return FWA Stats weight page links",
       type: ApplicationCommandOptionType.Subcommand,
@@ -16252,6 +16227,34 @@ export const Fwa: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
           autocomplete: true,
+        },
+      ],
+    },
+    {
+      name: "weight-alert",
+      description: "Configure persisted FWA weight alert settings",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "tag",
+          description: "Tracked FWA clan tag (with or without #)",
+          type: ApplicationCommandOptionType.String,
+          required: true,
+          autocomplete: true,
+        },
+        {
+          name: "after-days",
+          description: "Alert threshold in days (1-365); enables unless enabled:false",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+          min_value: 1,
+          max_value: 365,
+        },
+        {
+          name: "enabled",
+          description: "Explicitly enable or disable this alert configuration",
+          type: ApplicationCommandOptionType.Boolean,
+          required: false,
         },
       ],
     },
@@ -17397,7 +17400,7 @@ export const Fwa: Command = {
       return;
     }
 
-    if (subcommand === "weight-age" || subcommand === "weight-health") {
+    if (subcommand === "weight-health") {
       const targets = await resolveWeightTargets();
       if (targets.length === 0) {
         await editReplySafe(
@@ -17416,36 +17419,6 @@ export const Fwa: Command = {
       const resultRows = targets
         .map((target) => results.get(target.tag))
         .filter((result): result is NonNullable<typeof result> => Boolean(result));
-
-      if (subcommand === "weight-age") {
-        const lines = targets.map((target) => {
-          const result = results.get(target.tag);
-          if (!result) {
-            return `${target.clanName} (#${target.tag}) — unavailable (missing result)`;
-          }
-          return formatWeightAgeLine({
-            clanName: target.clanName,
-            clanTag: target.tag,
-            result,
-          });
-        });
-        const knownCount = resultRows.filter((row) => row.ageDays !== null).length;
-        await editReplySafe(
-          buildLimitedMessage(
-            `FWA Weight Age (${targets.length})`,
-            lines,
-            [
-              "",
-              `Known: ${knownCount}/${targets.length}`,
-              "Source: persisted FwaClanCatalog.weightSubmitDate",
-            ].join("\n"),
-          ),
-        );
-        console.info(
-          `[fwa-weight] event=command_complete cmd=weight-age guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length} known=${knownCount} duration_ms=${Date.now() - startedAtMs}`,
-        );
-        return;
-      }
 
       const lines = targets.map((target) => {
         const result = results.get(target.tag);
@@ -17506,6 +17479,64 @@ export const Fwa: Command = {
       console.info(
         `[fwa-weight] event=command_complete cmd=weight-health guild=${interaction.guildId ?? "dm"} user=${interaction.user.id} clans=${targets.length} recent=${recentCount} outdated=${outdatedCount} severe=${severeCount} unknown=${unknownCount} duration_ms=${Date.now() - startedAtMs}`,
       );
+      return;
+    }
+
+    if (subcommand === "weight-alert") {
+      const rawAlertTag = interaction.options.getString("tag", true);
+      const afterDays = interaction.options.getInteger("after-days", false);
+      const enabled = interaction.options.getBoolean("enabled", false);
+      const hasMutation = afterDays !== null || enabled !== null;
+
+      try {
+        const status = hasMutation
+          ? await fwaWeightAlertConfigService.update(
+              rawAlertTag,
+              interaction.user.id,
+              {
+                ...(afterDays !== null ? { thresholdDays: afterDays } : {}),
+                ...(enabled !== null ? { enabled } : {}),
+              },
+            )
+          : await fwaWeightAlertConfigService.getStatus(rawAlertTag);
+
+        if (!status) {
+          await editReplySafe(`Clan ${rawAlertTag} is not in tracked clans.`);
+          return;
+        }
+
+        const configState = status.config
+          ? status.config.enabled
+            ? "enabled"
+            : "disabled"
+          : "not configured (disabled)";
+        const threshold = status.config
+          ? `${status.config.thresholdDays} day(s)`
+          : "not configured";
+        const leaderChannel = status.leaderChannelId
+          ? `<#${status.leaderChannelId}> (configured)`
+          : "not configured";
+        const leadRole = status.leadRoleId
+          ? `<@&${status.leadRoleId}> (configured)`
+          : "not configured";
+        await editReplySafe(
+          [
+            `FWA weight alert for **${sanitizeClanName(status.clanName) ?? status.clanTag}** (${status.clanTag})`,
+            `State: **${configState}**`,
+            `Threshold: **${threshold}**`,
+            `Leader channel: ${leaderChannel}`,
+            `Lead role: ${leadRole}`,
+            `Routing readiness: **${status.routingReady ? "READY" : "NOT READY"}**${status.routingReady ? "" : " (leader channel and lead role are both required)"}`,
+            "Automatic alert delivery is not enabled by this command yet.",
+          ].join("\n"),
+        );
+      } catch (error) {
+        await editReplySafe(
+          error instanceof Error
+            ? error.message
+            : "Unable to update FWA weight alert configuration.",
+        );
+      }
       return;
     }
 

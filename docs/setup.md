@@ -86,9 +86,10 @@ npm run sync:mirror
 Notes:
 - The FWA-vs-FWA auto-adjust timing is still treated as unverified; the default policy keeps conservative periodic validation checks.
 
-## FWA Stats Weight Age
-- `/fwa weight-age` and `/fwa weight-health` read persisted `FwaClanCatalog.weightSubmitDate` populated by the active Clans.json feed owner.
+## FWA Stats Weight Health and Alerts
+- `/fwa weight-health` is the canonical read path for persisted `FwaClanCatalog.weightSubmitDate` populated by the active Clans.json feed owner.
 - Commands remain DB-backed and do not scrape or authenticate to FWAStats; mirror runtimes consume the mirrored catalog state.
+- `/fwa weight-alert` stores optional per-tracked-clan thresholds in `FwaWeightAlertConfig` and reuses `TrackedClan.leaderChannelId` / `TrackedClan.leadRoleId` for routing readiness. No configuration row is created by deployment, and this command does not deliver alerts.
 
 ## Google Sheets (OAuth)
 This project is currently set up to use OAuth refresh token auth.

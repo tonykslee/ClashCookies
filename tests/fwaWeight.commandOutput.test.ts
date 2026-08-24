@@ -8,6 +8,10 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanCatalog: {
     findMany: vi.fn(),
   },
+  fwaWeightAlertConfig: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
   clanWarHistory: {
     findFirst: vi.fn(),
   },
@@ -24,12 +28,14 @@ vi.mock("../src/prisma", () => ({
 import { Fwa } from "../src/commands/Fwa";
 import { PointsSyncService } from "../src/services/PointsSyncService";
 
-type WeightSubcommand = "weight-age" | "weight-health";
+type WeightSubcommand = "weight-health" | "weight-alert";
 
 function makeInteraction(params: {
   subcommand: WeightSubcommand;
   tag: string | null;
   visibility?: "private" | "public";
+  afterDays?: number | null;
+  enabled?: boolean | null;
   guildId?: string;
 }) {
   const deferReply = vi.fn().mockResolvedValue(undefined);
@@ -47,8 +53,12 @@ function makeInteraction(params: {
       getString: vi.fn((name: string) => {
         if (name === "tag") return params.tag;
         if (name === "visibility") return params.visibility ?? "private";
+        if (name === "after-days") return params.afterDays ?? null;
+        if (name === "enabled") return params.enabled ?? null;
         return null;
       }),
+      getInteger: vi.fn((name: string) => name === "after-days" ? params.afterDays ?? null : null),
+      getBoolean: vi.fn((name: string) => name === "enabled" ? params.enabled ?? null : null),
     },
   };
   return { interaction, editReply };
@@ -73,12 +83,12 @@ describe("/fwa persisted weight command output", () => {
     vi.restoreAllMocks();
   });
 
-  it("reads one explicit clan from persisted FwaClanCatalog data", async () => {
+  it("reads one explicit clan from persisted FwaClanCatalog data through weight-health", async () => {
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
       { clanTag: "#ABC123", weightSubmitDate: new Date("2026-08-07T12:00:00.000Z") },
     ]);
     const { interaction, editReply } = makeInteraction({
-      subcommand: "weight-age",
+      subcommand: "weight-health",
       tag: "abc123",
     });
 
@@ -89,7 +99,7 @@ describe("/fwa persisted weight command output", () => {
       where: { clanTag: { in: ["#ABC123"] } },
       select: { clanTag: true, weightSubmitDate: true },
     });
-    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain("2d 0h ago");
+    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain("2d 0h ago ✅");
   });
 
   it("bulk-reads all tracked clans and classifies missing/null catalog data safely", async () => {
@@ -131,5 +141,115 @@ describe("/fwa persisted weight command output", () => {
     expect(content).toContain("\u26a0\ufe0f");
     expect(content).toContain("\u274c");
     expect(content).toContain("\u2753");
+  });
+
+  it("shows missing alert routing without making an external request", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      name: "Alpha",
+      tag: "#ABC123",
+      leaderChannelId: null,
+      leadRoleId: "role-1",
+    });
+    prismaMock.fwaWeightAlertConfig.findUnique.mockResolvedValue(null);
+    const { interaction, editReply } = makeInteraction({
+      subcommand: "weight-alert",
+      tag: "#ABC123",
+    });
+
+    await Fwa.run({} as any, interaction as any, {} as any);
+
+    const content = String(editReply.mock.calls[0]?.[0]?.content ?? "");
+    expect(content).toContain("not configured (disabled)");
+    expect(content).toContain("Threshold: **not configured**");
+    expect(content).toContain("Leader channel: not configured");
+    expect(content).toContain("Lead role: <@&role-1> (configured)");
+    expect(content).toContain("Routing readiness: **NOT READY**");
+  });
+
+  it("sets a threshold and enables the alert by default", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      name: "Alpha",
+      tag: "#ABC123",
+      leaderChannelId: "channel-1",
+      leadRoleId: "role-1",
+    });
+    prismaMock.fwaWeightAlertConfig.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        enabled: true,
+        thresholdDays: 10,
+        updatedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-08-09T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-09T00:00:00.000Z"),
+      });
+    const { interaction, editReply } = makeInteraction({
+      subcommand: "weight-alert",
+      tag: "ABC123",
+      afterDays: 10,
+    });
+
+    await Fwa.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaWeightAlertConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ enabled: true, thresholdDays: 10 }),
+      }),
+    );
+    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "State: **enabled**",
+    );
+    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Threshold: **10 day(s)**",
+    );
+  });
+
+  it("honors an explicit disable mutation", async () => {
+    prismaMock.trackedClan.findFirst.mockResolvedValue({
+      name: "Alpha",
+      tag: "#ABC123",
+      leaderChannelId: "channel-1",
+      leadRoleId: "role-1",
+    });
+    prismaMock.fwaWeightAlertConfig.findUnique
+      .mockResolvedValueOnce({ thresholdDays: 10, enabled: true })
+      .mockResolvedValueOnce({
+        enabled: false,
+        thresholdDays: 10,
+        updatedByDiscordUserId: "user-1",
+        createdAt: new Date("2026-08-09T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-09T00:00:00.000Z"),
+      });
+    const { interaction, editReply } = makeInteraction({
+      subcommand: "weight-alert",
+      tag: "ABC123",
+      enabled: false,
+    });
+
+    await Fwa.run({} as any, interaction as any, {} as any);
+
+    expect(prismaMock.fwaWeightAlertConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ enabled: false, thresholdDays: 10 }),
+      }),
+    );
+    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "State: **disabled**",
+    );
+  });
+
+  it("shows deterministic validation for an out-of-range threshold", async () => {
+    const { interaction, editReply } = makeInteraction({
+      subcommand: "weight-alert",
+      tag: "ABC123",
+      afterDays: 366,
+    });
+
+    await Fwa.run({} as any, interaction as any, {} as any);
+
+    expect(String(editReply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "after-days must be an integer from 1 to 365",
+    );
+    expect(prismaMock.trackedClan.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.fwaWeightAlertConfig.upsert).not.toHaveBeenCalled();
   });
 });

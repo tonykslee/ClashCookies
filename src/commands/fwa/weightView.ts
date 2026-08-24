@@ -17,15 +17,6 @@ export function getWeightHealthState(
   return "recent";
 }
 
-/** Purpose: render one persisted-catalog row for `/fwa weight-age` list output. */
-export function formatWeightAgeLine(input: {
-  clanName: string;
-  clanTag: string;
-  result: FwaCatalogWeightAge;
-}): string {
-  return `${input.clanName} (#${input.clanTag}) \u2014 ${input.result.ageText ?? "unavailable (unknown)"}`;
-}
-
 /** Purpose: render one persisted-catalog row for `/fwa weight-health` output. */
 export function formatWeightHealthLine(input: {
   clanName: string;

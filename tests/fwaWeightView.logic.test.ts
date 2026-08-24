@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatWeightAgeLine,
   formatWeightHealthLine,
   getWeightHealthState,
 } from "../src/commands/fwa/weightView";
@@ -42,9 +41,6 @@ describe("weight view helpers", () => {
       ageDays,
       ageText: ageDays === null ? null : `${ageDays}d 0h ago`,
     });
-    expect(
-      formatWeightAgeLine({ clanName: "Alpha", clanTag: "ABC123", result: make(2) }),
-    ).toContain("Alpha (#ABC123) \u2014 2d 0h ago");
     expect(
       formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(2) }),
     ).toContain("\u2705");
