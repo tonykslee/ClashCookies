@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  FWA_WEIGHT_RED_DAYS,
+  FWA_WEIGHT_YELLOW_DAYS,
   formatWeightHealthLine,
+  formatWeightSubmissionZoneLine,
+  getWeightSubmissionZone,
   getWeightHealthState,
 } from "../src/commands/fwa/weightView";
 import {
@@ -53,5 +57,29 @@ describe("weight view helpers", () => {
     expect(
       formatWeightHealthLine({ clanName: "Alpha", clanTag: "ABC123", result: make(null) }),
     ).toContain("\u2753");
+  });
+
+  it("keeps submission-zone boundaries separate from health boundaries", () => {
+    expect(getWeightSubmissionZone(FWA_WEIGHT_YELLOW_DAYS - 0.001)).toBe("current");
+    expect(getWeightSubmissionZone(FWA_WEIGHT_YELLOW_DAYS)).toBe("yellow");
+    expect(getWeightSubmissionZone(FWA_WEIGHT_RED_DAYS - 0.001)).toBe("yellow");
+    expect(getWeightSubmissionZone(FWA_WEIGHT_RED_DAYS)).toBe("red");
+    expect(getWeightSubmissionZone(null)).toBe("unknown");
+  });
+
+  it("renders the zone label from the persisted age", () => {
+    const result = {
+      clanTag: "ABC123",
+      weightSubmitDate: NOW,
+      ageDays: 42,
+      ageText: "42d 0h ago",
+    };
+    expect(
+      formatWeightSubmissionZoneLine({
+        clanName: "Alpha",
+        clanTag: "ABC123",
+        result,
+      }),
+    ).toContain("🔴 Red Zone");
   });
 });

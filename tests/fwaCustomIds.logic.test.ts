@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFwaBaseSwapSplitPostCustomId,
   buildFwaComplianceViewCustomId,
+  buildFwaWeightViewCustomId,
   buildFwaMailGateResumeCustomId,
   buildFwaMatchSendMailCustomId,
   buildFwaMatchTieBreakerCustomId,
@@ -10,12 +11,14 @@ import {
   createTransientFwaKey,
   isFwaBaseSwapSplitPostButtonCustomId,
   isFwaComplianceViewButtonCustomId,
+  isFwaWeightViewButtonCustomId,
   isFwaMailGateResumeButtonCustomId,
   isFwaMatchSendMailButtonCustomId,
   isFwaMatchTieBreakerButtonCustomId,
   isPointsPostButtonCustomId,
   parseFwaBaseSwapSplitPostCustomId,
   parseFwaComplianceViewCustomId,
+  parseFwaWeightViewCustomId,
   parseFwaMailGateResumeCustomId,
   parseFwaMatchSendMailCustomId,
   parseFwaMatchTieBreakerCustomId,
@@ -131,5 +134,30 @@ describe("fwa custom-id helpers", () => {
       action: "yes",
     });
     expect(parseFwaBaseSwapSplitPostCustomId("fwa-base-swap-split-post:999:key:nope")).toBeNull();
+  });
+  it("round-trips stateless weight view ids for all and single-clan scopes", () => {
+    const allId = buildFwaWeightViewCustomId({
+      userId: "999",
+      view: "zones",
+      scope: "all",
+    });
+    const singleId = buildFwaWeightViewCustomId({
+      userId: "999",
+      view: "health",
+      scope: "#abc123",
+    });
+
+    expect(isFwaWeightViewButtonCustomId(allId)).toBe(true);
+    expect(parseFwaWeightViewCustomId(allId)).toEqual({
+      userId: "999",
+      view: "zones",
+      scope: "all",
+    });
+    expect(parseFwaWeightViewCustomId(singleId)).toEqual({
+      userId: "999",
+      view: "health",
+      scope: "ABC123",
+    });
+    expect(parseFwaWeightViewCustomId("fwa-weight-view:999:bad:all")).toBeNull();
   });
 });
