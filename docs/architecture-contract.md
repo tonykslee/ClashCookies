@@ -230,7 +230,7 @@ Rules:
 ## 3) War history ownership
 
 - `ClanWarHistory` is the canonical ended-war record.
-- `SyncCycle` is the canonical guild-scoped mapping from a positive canonical sync number to the exact scheduled sync time selected from the bounded prior schedule window. It is resolved only from the canonical ended-war lifecycle and does not own war, readiness, filler, or message lifecycle state.
+- `SyncCycle` is the canonical guild-scoped mapping from a positive canonical sync number to the exact persisted scheduled sync time selected from the bounded prior schedule window. Ended FWA history can corroborate chronological realized sync numbering, but `ClanWarHistory.prepStartTime` is not an exact SyncCycle time and a ScheduledSyncPost alone is not proof that a realized FWA cycle occurred. SyncCycle does not own war, readiness, filler, or message lifecycle state.
 - `ClanWarParticipation` is the canonical per-player ended-war participation record.
 - `WarPlanComplianceEvaluation` is the canonical finalized ended-war compliance record for one guild and one war.
 - `ClanWarHistory` upsert and conditional `WarPlanComplianceEvaluation` enrollment for ended FWA wars happen in one transaction once the authoritative guild scope is known.
