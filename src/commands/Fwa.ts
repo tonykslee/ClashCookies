@@ -3001,6 +3001,8 @@ function buildFwaMatchCompactCopyLine(params: {
 
 const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
   "Match type is inferred. Confirm match type before sending mail.";
+const UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON =
+  "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.";
 const MATCHTYPE_WARNING_LEGEND =
   `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
@@ -3573,12 +3575,21 @@ function getMailBlockedReasonFromRevisionState(params: {
   appliedDraft: MatchRevisionFields | null;
   draftDiffersFromBaseline: boolean;
   hasConfirmedBaseline: boolean;
+  effectiveMatchType: MatchRevisionFields["matchType"];
+  effectiveExpectedOutcome: MatchRevisionFields["expectedOutcome"];
 }): string | null {
   if (!params.hasMailChannel) {
     return "Mail channel is not configured. Use /clan configure with a mail channel.";
   }
   if (params.inferredMatchType) {
     return INFERRED_MATCHTYPE_MAIL_BLOCK_REASON;
+  }
+  if (
+    params.effectiveMatchType === "FWA" &&
+    params.effectiveExpectedOutcome !== "WIN" &&
+    params.effectiveExpectedOutcome !== "LOSE"
+  ) {
+    return UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON;
   }
   if (params.mailStatus === "posted") {
     if (!params.hasConfirmedBaseline) return null;
@@ -4371,19 +4382,22 @@ function buildMatchStatusHeader(params: {
   mailStatusEmoji?: string;
 }): string {
   let mailbox = params.mailStatusEmoji ?? MAILBOX_NOT_SENT_EMOJI;
-  let status = ":white_circle:";
-  if (params.matchType === "BL") {
-    status = ":pirate_flag:";
-  } else if (params.matchType === "MM") {
-    status = ":white_circle:";
-  } else if (params.matchType === "SKIP") {
-    status = ":white_circle:";
-  } else if (params.outcome === "LOSE") {
-    status = ":red_circle:";
-  } else {
-    status = ":green_circle:";
-  }
+  const status = resolveMatchStatusHeaderEmoji({
+    matchType: params.matchType,
+    outcome: params.outcome,
+  });
   return `${mailbox} | ${params.clanName} (#${params.clanTag}) vs ${params.opponentName} (#${params.opponentTag}) ${status}`;
+}
+
+function resolveMatchStatusHeaderEmoji(params: {
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+}): string {
+  if (params.matchType === "BL") return ":pirate_flag:";
+  if (params.matchType !== "FWA") return ":white_circle:";
+  if (params.outcome === "WIN") return ":green_circle:";
+  if (params.outcome === "LOSE") return ":red_circle:";
+  return ":white_circle:";
 }
 
 function mailStatusLabelForState(state: WarStateForSync): string {
@@ -6595,6 +6609,8 @@ function getMailBlockedReasonFromStatus(params: {
     appliedDraft: null,
     draftDiffersFromBaseline: false,
     hasConfirmedBaseline: false,
+    effectiveMatchType: "UNKNOWN",
+    effectiveExpectedOutcome: null,
   });
 }
 
@@ -6960,6 +6976,10 @@ async function resolveMailRevisionDecisionForRenderedState(params: {
     appliedDraft: effectiveRevisionState.appliedDraft,
     draftDiffersFromBaseline,
     hasConfirmedBaseline: Boolean(confirmedRevisionBaseline),
+    effectiveMatchType:
+      effectiveRevisionState.effective?.matchType ?? "UNKNOWN",
+    effectiveExpectedOutcome:
+      effectiveRevisionState.effective?.expectedOutcome ?? null,
   });
   return {
     mailStatus,
@@ -12253,6 +12273,8 @@ export const renderFwaBaseSwapAnnouncementForTest =
   renderFwaBaseSwapAnnouncement;
 export const getMailBlockedReasonFromRevisionStateForTest =
   getMailBlockedReasonFromRevisionState;
+export const resolveMatchStatusHeaderEmojiForTest =
+  resolveMatchStatusHeaderEmoji;
 export const resolveWarMailFreshnessStatusForTest =
   resolveWarMailFreshnessStatus;
 export const formatMailLifecycleStatusLineForTest =
