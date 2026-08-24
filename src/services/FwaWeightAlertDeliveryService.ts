@@ -249,6 +249,12 @@ export class FwaWeightAlertDeliveryService {
       const tracked = trackedByTag.get(tag);
       if (!tracked?.leaderChannelId || !tracked.leadRoleId) {
         counts.missingRoutingCount += 1;
+        const missing: string[] = [];
+        if (!tracked?.leaderChannelId) missing.push("leader_channel");
+        if (!tracked?.leadRoleId) missing.push("lead_role");
+        dozzleLog.warn(
+          `[fwa-weight-alert] routing_missing clan=#${tag} missing=${missing.join(",")}`,
+        );
         continue;
       }
       counts.eligibleCount += 1;
@@ -314,7 +320,7 @@ export class FwaWeightAlertDeliveryService {
         }
 
         const claimToken = this.randomUUID();
-        const wasFailed = existing?.status === "FAILED";
+        const hadExistingEpisode = Boolean(existing);
         if (!existing) {
           const created = await tx.fwaWeightAlertDelivery.create({
             data: {
@@ -350,7 +356,7 @@ export class FwaWeightAlertDeliveryService {
           },
         });
         return update.count === 1
-          ? { kind: "claimed", id: existing.id, claimToken, retry: wasFailed }
+          ? { kind: "claimed", id: existing.id, claimToken, retry: hadExistingEpisode }
           : { kind: "contended" };
       });
     } catch (error) {
@@ -402,6 +408,9 @@ export class FwaWeightAlertDeliveryService {
         throw new Error("Alert was sent but its delivery claim could not be finalized.");
       }
       input.counts.sentCount += 1;
+      dozzleLog.info(
+        `[fwa-weight-alert] delivery_sent clan=#${canonicalTag(input.clanTag)} channel=${input.channelId} message_id=${message?.id ?? "none"}`,
+      );
     } catch (error) {
       input.counts.failedCount += 1;
       await this.db.fwaWeightAlertDelivery.updateMany({
