@@ -76,7 +76,7 @@ Important owners:
 | CWL event identity | CwlEventInstance |
 | CWL clan-to-current-event pointer | CwlEventClan |
 | CWL war-tag-to-event mapping | CwlEventWarTag |
-| Tracked FWA clans | TrackedClan |
+| Tracked FWA clans and clan-owned Discord destinations | TrackedClan |
 | Per-clan FWA weight-alert policy (enablement and stale-age threshold) | FwaWeightAlertConfig |
 | Durable per-clan/date FWA weight-alert delivery claims and outcomes | FwaWeightAlertDelivery |
 | Tracked FWA clan rep accounts | TrackedClanRep |
