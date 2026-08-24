@@ -253,6 +253,7 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("/clan configure");
     expect(clanHelpText.toLowerCase()).toContain("rep assignments");
     expect(clanHelpText).toContain("leader channel");
+    expect(clanHelpText).toContain("chat-channel");
     expect(clanHelpText).toContain("lead-role");
     expect(clanHelpText).toContain("rep player tags");
     expect(clanHelpText).toContain("reps:[#2RVGJYLC0,#PYLQ0289]");
@@ -266,8 +267,10 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status");
     expect(clanHelpText).toContain("use the bot application's `unranked` emoji");
     expect(clanHelpText).toContain(
-      "detailed FWA still shows `leadRole` and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
+      "detailed FWA shows the persisted channel destinations including `chatChannel`, still shows `leadRole`, and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste",
     );
+    expect(clanHelpText).toContain("tag:<tracked-clan>");
+    expect(clanHelpText).toContain("/clan list tag:#2QG2C08UP");
     expect(clanHelpText).toContain("/clan rep timezone user:111111111111111111 timezone:PST");
     expect(clanHelpText).toContain("/clan rep time clan:#2QG2C08UP visibility:public");
     expect(clanHelpText).toContain("`rep timezone` stores a rep user timezone");

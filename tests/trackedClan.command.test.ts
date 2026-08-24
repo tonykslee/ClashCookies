@@ -3067,6 +3067,174 @@ describe("/clan command behavior", () => {
     expect(getReplyContent(interaction)).toContain("leadRole: not set");
   });
 
+  it("persists chatChannelId when /clan configure receives chat-channel", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      chatChannelId: "chat-channel-1",
+      clanRoleId: null,
+      leadRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+      channels: {
+        "chat-channel": {
+          id: "chat-channel-1",
+          isTextBased: () => true,
+        },
+      },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    expect(prismaMock.trackedClan.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ chatChannelId: "chat-channel-1" }),
+        update: expect.objectContaining({ chatChannelId: "chat-channel-1" }),
+      }),
+    );
+    expect(getReplyContent(interaction)).toContain("chatChannel: <#chat-channel-1>");
+  });
+
+  it("preserves an existing chatChannelId when /clan configure omits chat-channel", async () => {
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      chatChannelId: "chat-channel-1",
+    });
+    prismaMock.trackedClan.upsert.mockResolvedValueOnce({
+      tag: "#2QG2C08UP",
+      name: "Alpha Clan",
+      loseStyle: "TRIPLE_TOP_30",
+      mailChannelId: null,
+      logChannelId: null,
+      leaderChannelId: null,
+      chatChannelId: "chat-channel-1",
+      clanRoleId: null,
+      leadRoleId: null,
+      clanBadge: null,
+      shortName: null,
+    });
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+    });
+    const cocService = {
+      getClan: vi.fn().mockResolvedValue({ name: "Alpha Clan" }),
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const update = (prismaMock.trackedClan.upsert.mock.calls[0]?.[0] as any)?.update ?? {};
+    expect(Object.prototype.hasOwnProperty.call(update, "chatChannelId")).toBe(false);
+    expect(getReplyContent(interaction)).toContain("chatChannel: <#chat-channel-1>");
+  });
+
+  it("rejects a non-text chat-channel before changing clan config", async () => {
+    const interaction = createInteraction({
+      subcommand: "configure",
+      strings: { tag: "#2QG2C08UP" },
+      channels: {
+        "chat-channel": {
+          id: "voice-channel-1",
+          isTextBased: () => false,
+        },
+      },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, { getClan: vi.fn() } as any);
+
+    expect(getReplyContent(interaction)).toBe("Chat channel must be a text-based channel.");
+    expect(prismaMock.trackedClan.upsert).not.toHaveBeenCalled();
+  });
+
+  it("renders one tracked FWA clan's complete persisted configuration for /clan list tag", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([
+      {
+        tag: "#2QG2C08UP",
+        name: "Alpha Clan",
+        loseStyle: "TRADITIONAL",
+        mailChannelId: "mail-channel-1",
+        logChannelId: "log-channel-1",
+        leaderChannelId: "leader-channel-1",
+        chatChannelId: "chat-channel-1",
+        clanRoleId: "clan-role-1",
+        leadRoleId: "lead-role-1",
+        clanBadge: "🏰",
+        shortName: "AC",
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClanRep.findMany.mockResolvedValueOnce([
+      { clanTag: "#2QG2C08UP", playerTag: "#PYLQ0289" },
+    ]);
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { tag: "2QG2C08UP" },
+    });
+    const cocService = {
+      getClan: vi.fn(),
+      getCurrentWar: vi.fn(),
+    };
+
+    await TrackedClan.run({} as any, interaction as any, cocService as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description).toContain("shortName: AC");
+    expect(description).toContain("lose-style: TRADITIONAL");
+    expect(description).toContain("mailChannel: <#mail-channel-1>");
+    expect(description).toContain("logChannel: <#log-channel-1>");
+    expect(description).toContain("leaderChannel: <#leader-channel-1>");
+    expect(description).toContain("chatChannel: <#chat-channel-1>");
+    expect(description).toContain("clanRole: <@&clan-role-1>");
+    expect(description).toContain("leadRole: <@&lead-role-1>");
+    expect(description).toContain("clanBadge: 🏰");
+    expect(description).toContain("reps: `#PYLQ0289`");
+    expect(cocService.getClan).not.toHaveBeenCalled();
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tag: "#2QG2C08UP" } }),
+    );
+  });
+
+  it("rejects incompatible /clan list tag options clearly", async () => {
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { tag: "#2QG2C08UP", type: "FWA" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(getReplyContent(interaction)).toBe("`tag` cannot be combined with `type` or `display`.");
+    expect(prismaMock.trackedClan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear response for an untracked /clan list tag", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValueOnce([]);
+    const interaction = createInteraction({
+      subcommand: "list",
+      strings: { tag: "#2QG2C08UP" },
+    });
+
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    expect(getReplyContent(interaction)).toBe("Tracked clan not found: #2QG2C08UP.");
+  });
+
   it("persists rep player tags when /clan configure receives reps", async () => {
     prismaMock.trackedClan.findUnique.mockResolvedValueOnce(null);
     prismaMock.trackedClan.upsert.mockResolvedValueOnce({
@@ -3420,6 +3588,35 @@ describe("/clan command behavior", () => {
     expect(
       trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices,
     ).toHaveBeenCalledWith({
+      focusedText: "alpha",
+      limit: 25,
+    });
+    expect(interaction.respond).toHaveBeenCalledWith([
+      { name: "Alpha Clan (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+  });
+
+  it("uses the shared tracked-clan autocomplete service for /clan list tag", async () => {
+    trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices.mockResolvedValueOnce([
+      { name: "Alpha Clan (#2QG2C08UP)", value: "#2QG2C08UP" },
+    ]);
+    const interaction: any = {
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue(null),
+        getSubcommand: vi.fn().mockReturnValue("list"),
+        getFocused: vi.fn().mockReturnValue({
+          name: "tag",
+          value: "alpha",
+        }),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await TrackedClan.autocomplete(interaction);
+
+    expect(trackedClanAutocompleteServiceMock.getTrackedClanAutocompleteChoices).toHaveBeenCalledWith({
       focusedText: "alpha",
       limit: 25,
     });

@@ -39,6 +39,7 @@ model TrackedClan {
   mailChannelId       String?
   logChannelId        String?
   leaderChannelId     String?
+  chatChannelId       String?
   clanRoleId          String?
   leadRoleId          String?
   clanBadge           String?

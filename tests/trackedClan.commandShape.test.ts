@@ -49,6 +49,10 @@ describe("/clan command shape", () => {
     expect(configure?.options?.find((o: any) => o.name === "leader-channel")?.required).toBe(
       false,
     );
+    expect(configure?.options?.find((o: any) => o.name === "chat-channel")?.type).toBe(
+      ApplicationCommandOptionType.Channel,
+    );
+    expect(configure?.options?.find((o: any) => o.name === "chat-channel")?.required).toBe(false);
     expect(configure?.options?.find((o: any) => o.name === "lead-role")?.type).toBe(
       ApplicationCommandOptionType.Role,
     );
@@ -133,6 +137,11 @@ describe("/clan command shape", () => {
     expect(
       list?.options?.find((o: any) => o.name === "display")?.choices?.map((choice: any) => choice.value)
     ).toEqual(expect.arrayContaining(["minimal", "detailed"]));
+    expect(list?.options?.find((o: any) => o.name === "tag")?.type).toBe(
+      ApplicationCommandOptionType.String,
+    );
+    expect(list?.options?.find((o: any) => o.name === "tag")?.required).toBe(false);
+    expect(list?.options?.find((o: any) => o.name === "tag")?.autocomplete).toBe(true);
     expect(cwlTags?.options?.find((o: any) => o.name === "cwl-tags")?.type).toBe(
       ApplicationCommandOptionType.String,
     );
