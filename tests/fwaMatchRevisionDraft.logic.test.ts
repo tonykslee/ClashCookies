@@ -24,6 +24,8 @@ import {
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
+  resolveFwaOutcomeFromCurrentWarStateForTest,
+  resolveMatchStatusHeaderEmojiForTest,
   resolveConfirmedRevisionBaselineForTest,
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
@@ -362,6 +364,8 @@ describe("fwa match posted mail gating with revisions", () => {
       appliedDraft: null,
       draftDiffersFromBaseline: false,
       hasConfirmedBaseline: true,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "WIN",
     });
 
     expect(reason).toBe(
@@ -382,6 +386,8 @@ describe("fwa match posted mail gating with revisions", () => {
       },
       draftDiffersFromBaseline: true,
       hasConfirmedBaseline: true,
+      effectiveMatchType: "BL",
+      effectiveExpectedOutcome: null,
     });
 
     expect(reason).toBeNull();
@@ -395,6 +401,8 @@ describe("fwa match posted mail gating with revisions", () => {
       appliedDraft: null,
       draftDiffersFromBaseline: false,
       hasConfirmedBaseline: false,
+      effectiveMatchType: "BL",
+      effectiveExpectedOutcome: null,
     });
 
     expect(reason).toBeNull();
@@ -431,6 +439,8 @@ describe("fwa match posted mail gating with revisions", () => {
       appliedDraft: null,
       draftDiffersFromBaseline: false,
       hasConfirmedBaseline: Boolean(baseline),
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "WIN",
     });
 
     expect(baseline).toBeNull();
@@ -450,6 +460,8 @@ describe("fwa match posted mail gating with revisions", () => {
       },
       draftDiffersFromBaseline: true,
       hasConfirmedBaseline: false,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "LOSE",
     });
 
     expect(reason).toBe(
@@ -465,10 +477,98 @@ describe("fwa match posted mail gating with revisions", () => {
       appliedDraft: null,
       draftDiffersFromBaseline: false,
       hasConfirmedBaseline: false,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "WIN",
     });
 
     expect(reason).toBeNull();
   });
+});
+
+describe("fwa unresolved outcome mail gate", () => {
+  const base = {
+    inferredMatchType: false,
+    hasMailChannel: true,
+    mailStatus: "not_posted" as const,
+    appliedDraft: null,
+    draftDiffersFromBaseline: false,
+    hasConfirmedBaseline: true,
+  };
+
+  it("blocks confirmed FWA with an unresolved expected outcome", () => {
+    expect(
+      getMailBlockedReasonFromRevisionStateForTest({
+        ...base,
+        effectiveMatchType: "FWA",
+        effectiveExpectedOutcome: "UNKNOWN",
+      }),
+    ).toBe(
+      "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+    );
+  });
+
+  it.each(["WIN", "LOSE"] as const)(
+    "allows confirmed FWA with expected outcome %s",
+    (expectedOutcome) => {
+      expect(
+        getMailBlockedReasonFromRevisionStateForTest({
+          ...base,
+          effectiveMatchType: "FWA",
+          effectiveExpectedOutcome: expectedOutcome,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it.each(["BL", "MM"] as const)("does not add an FWA gate to %s", (matchType) => {
+    expect(
+      getMailBlockedReasonFromRevisionStateForTest({
+        ...base,
+        effectiveMatchType: matchType,
+        effectiveExpectedOutcome: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("allows a valid WIN draft over an unresolved live FWA projection", () => {
+    expect(
+      getMailBlockedReasonFromRevisionStateForTest({
+        ...base,
+        appliedDraft: {
+          warId: "1001",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "WIN",
+        },
+        draftDiffersFromBaseline: true,
+        effectiveMatchType: "FWA",
+        effectiveExpectedOutcome: "WIN",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("fwa match status header mapping", () => {
+  it.each([
+    ["FWA", "WIN", ":green_circle:"],
+    ["FWA", "LOSE", ":red_circle:"],
+    ["FWA", "UNKNOWN", ":white_circle:"],
+    ["FWA", null, ":white_circle:"],
+    ["BL", null, ":pirate_flag:"],
+    ["MM", null, ":white_circle:"],
+    ["SKIP", null, ":white_circle:"],
+    ["UNKNOWN", null, ":white_circle:"],
+  ] as const)(
+    "maps %s/%s to %s",
+    (matchType, outcome, expected) => {
+      expect(
+        resolveMatchStatusHeaderEmojiForTest({
+          matchType,
+          outcome,
+        }),
+      ).toBe(expected);
+    },
+  );
 });
 
 describe("fwa mail freshness status mapping", () => {
@@ -1004,6 +1104,50 @@ describe("fwa explicit match-type confirmation", () => {
 });
 
 describe("fwa effective outcome resolution for FWA drafts", () => {
+  it("replaces a stale inferred outcome with the fresh parity-backed projection", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: "WIN",
+      }),
+    ).toBe("WIN");
+  });
+
+  it("does not preserve a stale inferred outcome when parity is unresolved", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps unequal-point projection available without parity", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "WIN",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: "LOSE",
+      }),
+    ).toBe("LOSE");
+  });
+
+  it("preserves a confirmed same-war current outcome over a changed projection", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: true,
+        projectedOutcome: "WIN",
+      }),
+    ).toBe("LOSE");
+  });
+
   it("keeps explicit draft WIN/LOSE over projected fallback", () => {
     const resolved = resolveEffectiveFwaOutcomeForTest({
       matchType: "FWA",

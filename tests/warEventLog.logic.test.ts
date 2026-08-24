@@ -440,10 +440,10 @@ describe("WarEventLogService resolved notify sync fallback", () => {
         postedSyncNumber: 482,
         latestPersistedSyncNumber: 480,
       }),
-    ).toBe(481);
+    ).toBeNull();
   });
 
-  it("derives active-war sync as latest persisted + 1 for preparation/inWar", () => {
+  it("leaves active-war sync unknown without current-war evidence", () => {
     expect(
       resolveEventRenderSyncNumberForTest({
         identity: buildActiveWarSyncIdentity({
@@ -454,7 +454,7 @@ describe("WarEventLogService resolved notify sync fallback", () => {
         postedSyncNumber: null,
         latestPersistedSyncNumber: 481,
       })
-    ).toBe(482);
+    ).toBeNull();
     expect(
       resolveEventRenderSyncNumberForTest({
         identity: buildActiveWarSyncIdentity({
@@ -465,7 +465,7 @@ describe("WarEventLogService resolved notify sync fallback", () => {
         postedSyncNumber: null,
         latestPersistedSyncNumber: 481,
       })
-    ).toBe(482);
+    ).toBeNull();
   });
 
   it("falls back to latest persisted sync when war is not active", () => {

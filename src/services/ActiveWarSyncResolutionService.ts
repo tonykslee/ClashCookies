@@ -2,16 +2,15 @@ import { prisma } from "../prisma";
 import { PointsSyncService } from "./PointsSyncService";
 import { isMirrorPollingMode } from "./PollingModeService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
+import type { Prisma } from "@prisma/client";
 
 export type ActiveWarSyncState = "preparation" | "inWar" | "notInWar";
 
 export type ActiveWarSyncResolutionSource =
   | "same_war_persisted"
   | "refresh_posted_sync"
-  | "current_war_canonical"
   | "active_cycle_reuse"
   | "active_cycle_conflict"
-  | "derived_latest_plus_one"
   | "historical_latest_persisted"
   | "none";
 
@@ -38,7 +37,6 @@ export type ActiveWarSyncAssignmentSource =
   | "exact_same_war_reconcile"
   | "active_cycle_reuse"
   | "active_cycle_conflict"
-  | "allocated_latest_plus_one"
   | "same_war_points_recovery"
   | "not_fwa"
   | "identity_incomplete"
@@ -61,6 +59,10 @@ export type ActiveWarSyncPersistenceState =
 
 export type ActiveWarSyncPollCycle = {
   activeSyncNumber: number | null;
+  /** Ephemeral per-poll marker: the bounded active-cycle evidence read ran. */
+  activeSyncEvidenceChecked?: boolean;
+  /** Ephemeral per-poll marker preserving a bounded evidence conflict after cache invalidation. */
+  activeSyncEvidenceConflict?: boolean;
   recordActiveSyncNumber: (syncNumber: number) => void;
   clearActiveSyncNumber: () => void;
 };
@@ -195,13 +197,28 @@ type ActiveCycleSyncDiscovery = {
   candidates: ActiveCycleSyncCandidate[];
 };
 
-/** Purpose: keep only active canonical rows that can legitimately seed the current FWA cycle. */
-function isEligibleActiveCycleSyncCandidate(candidate: ActiveCycleSyncCandidate): boolean {
-  const evidence = classifyFwaEvidence({
-    matchType: candidate.matchType,
-    inferredMatchType: candidate.inferredMatchType,
-  });
-  return evidence === "confirmed_fwa" || evidence === "strongly_inferred_fwa";
+type ActiveCycleCurrentWarIdentity = {
+  guildId: string;
+  clanTag: string;
+  warId: number | null;
+  startTime: Date;
+  opponentTag: string;
+  matchType: string | null;
+  inferredMatchType: boolean | null;
+};
+
+function buildActiveWarEvidenceKey(input: {
+  guildId: string;
+  clanTag: string;
+  startTime: Date;
+  opponentTag: string;
+}): string {
+  return [
+    input.guildId,
+    normalizeBareTag(input.clanTag) ?? "",
+    String(input.startTime.getTime()),
+    normalizeBareTag(input.opponentTag) ?? "",
+  ].join("\u0000");
 }
 
 /** Purpose: describe an already-resolved war identity with the minimum fields needed for safe sync fallback. */
@@ -364,17 +381,6 @@ export function resolveActiveWarSyncNumber(input: {
         postedSyncNumber,
       };
     }
-    if (input.identity.positivelyResolved && latestPersistedSyncNumber !== null) {
-      return {
-        syncNumber: latestPersistedSyncNumber + 1,
-        source: "derived_latest_plus_one",
-        isDerived: true,
-        identity: input.identity,
-        latestPersistedSyncNumber,
-        sameWarPersistedSyncNumber,
-        postedSyncNumber,
-      };
-    }
     return {
       syncNumber: null,
       source: "none",
@@ -418,33 +424,12 @@ export function resolveActiveWarSyncNumberReadOnly(input: {
   activeCycleSyncNumber?: number | null;
   activeCycleConflict?: boolean;
 }): ActiveWarSyncResolutionResult {
-  const currentWarSyncNumber = normalizeSyncNumber(
-    input.currentWarSyncNumber ?? null,
-  );
-  const isActiveWar =
-    input.identity.warState === "preparation" || input.identity.warState === "inWar";
+  // CurrentWar.syncNumber is materialized runtime state. Older releases could
+  // have filled it from latest+1, so identity matching alone is not evidence.
+  // Keep the input for compatibility with callers while deliberately ignoring it.
   const sameWarPersistedSyncNumber = normalizeSyncNumber(
     input.sameWarPersistedSyncNumber,
   );
-  if (
-    sameWarPersistedSyncNumber === null &&
-    isActiveWar &&
-    input.identity.positivelyResolved &&
-    currentWarSyncNumber !== null
-  ) {
-    const latestPersistedSyncNumber = normalizeSyncNumber(
-      input.latestPersistedSyncNumber,
-    );
-    return {
-      syncNumber: currentWarSyncNumber,
-      source: "current_war_canonical",
-      isDerived: false,
-      identity: input.identity,
-      latestPersistedSyncNumber,
-      sameWarPersistedSyncNumber,
-      postedSyncNumber: null,
-    };
-  }
   return resolveActiveWarSyncNumber({
     identity: input.identity,
     latestPersistedSyncNumber: input.latestPersistedSyncNumber,
@@ -477,7 +462,7 @@ export function logActiveWarSyncResolution(input: {
     ` resolved_sync=${input.resolution.syncNumber ?? "none"}` +
     ` derived=${input.resolution.isDerived ? "1" : "0"}` +
     ` points_lock_prevented_live_validation=${input.pointsLockPreventedLiveValidation ? "1" : "0"}`;
-  if (input.resolution.source === "derived_latest_plus_one" || input.resolution.source === "none") {
+  if (input.resolution.source === "none") {
     console.info(line);
     return;
   }
@@ -574,14 +559,46 @@ export class ActiveWarSyncResolutionService {
     const cachedActiveSyncNumber = normalizeAssignmentSyncNumber(
       input.pollCycle?.activeSyncNumber ?? null,
     );
+    const shouldReadActiveCycleEvidence =
+      !input.pollCycle || input.pollCycle.activeSyncEvidenceChecked !== true;
+    const persistedActiveCycleDiscovery = shouldReadActiveCycleEvidence
+      ? await this.findPersistedActiveSyncNumber()
+      : null;
+    if (input.pollCycle) {
+      input.pollCycle.activeSyncEvidenceChecked = true;
+    }
     const activeCycleDiscovery =
-      cachedActiveSyncNumber !== null
-        ? {
-            syncNumber: cachedActiveSyncNumber,
-            conflict: false,
+      persistedActiveCycleDiscovery !== null
+        ? cachedActiveSyncNumber === null ||
+          persistedActiveCycleDiscovery.conflict ||
+          persistedActiveCycleDiscovery.syncNumber === cachedActiveSyncNumber
+          ? persistedActiveCycleDiscovery
+          : {
+              syncNumber: null,
+              conflict: persistedActiveCycleDiscovery.syncNumber !== null,
+              candidates: persistedActiveCycleDiscovery.candidates,
+            }
+        : cachedActiveSyncNumber !== null
+          ? {
+              syncNumber: cachedActiveSyncNumber,
+              conflict: input.pollCycle?.activeSyncEvidenceConflict === true,
+              candidates: [] as ActiveCycleSyncCandidate[],
+            }
+        : {
+            syncNumber: null,
+            conflict: input.pollCycle?.activeSyncEvidenceConflict === true,
             candidates: [] as ActiveCycleSyncCandidate[],
-          }
-        : await this.findPersistedActiveSyncNumber();
+          };
+    if (input.pollCycle) {
+      input.pollCycle.activeSyncEvidenceConflict = activeCycleDiscovery.conflict;
+      if (
+        !activeCycleDiscovery.conflict &&
+        activeCycleDiscovery.syncNumber !== null &&
+        input.pollCycle.activeSyncNumber !== activeCycleDiscovery.syncNumber
+      ) {
+        input.pollCycle.recordActiveSyncNumber(activeCycleDiscovery.syncNumber);
+      }
+    }
     const activeSyncNumber = activeCycleDiscovery.syncNumber;
     const baseResult = {
       latestPersistedSyncNumber: await this.getLatestPersistedSyncBaseline({
@@ -606,14 +623,14 @@ export class ActiveWarSyncResolutionService {
 
     if (isMirrorPollingMode()) {
       return finish("mirror_mode", {
-        syncNumber: currentWarSyncNumber,
+        syncNumber: null,
         proposedSyncNumber: null,
-        usable: currentWarSyncNumber !== null,
+        usable: false,
         source: "mirror_mode",
         shouldPersist: false,
         persistence: "not_needed",
         ...baseResult,
-        persistedSyncNumber: currentWarSyncNumber,
+        persistedSyncNumber: null,
         persistedRevisionAt: null,
       });
     }
@@ -646,98 +663,6 @@ export class ActiveWarSyncResolutionService {
       });
     }
 
-    if (
-      currentWarCanonicalSyncNumber !== null &&
-      sameWarPointsSyncNumber !== null &&
-      currentWarCanonicalSyncNumber !== sameWarPointsSyncNumber &&
-      allowAllocation
-    ) {
-      const persistence =
-        await this.reconcileCurrentWarSyncNumberFromExactEvidence({
-          guildId,
-          clanTag,
-          identity: input.identity,
-          expectedRevisionAt: expectedCurrentWarRevisionAt,
-          expectedSyncNumber: currentWarCanonicalSyncNumber,
-          resolvedSyncNumber: sameWarPointsSyncNumber,
-        });
-      const usable =
-        persistence.state === "saved" || persistence.state === "idempotent";
-      if (usable) {
-        await this.reconcilePollCycleAfterExactEvidence({
-          pollCycle: input.pollCycle,
-          resolvedSyncNumber: sameWarPointsSyncNumber,
-        });
-      }
-      return finish("exact_same_war_reconcile", {
-        syncNumber: usable ? sameWarPointsSyncNumber : null,
-        proposedSyncNumber: sameWarPointsSyncNumber,
-        usable,
-        source: "exact_same_war_reconcile",
-        shouldPersist: persistence.state === "saved",
-        persistence: persistence.state,
-        ...baseResult,
-        persistedSyncNumber: usable ? sameWarPointsSyncNumber : null,
-        persistedRevisionAt: usable ? persistence.persistedRevisionAt : null,
-      });
-    }
-
-    if (currentWarCanonicalSyncNumber !== null) {
-      if (!activeCycleDiscovery.conflict) {
-        input.pollCycle?.recordActiveSyncNumber(currentWarCanonicalSyncNumber);
-      }
-      return finish("existing_current_war", {
-        syncNumber: currentWarCanonicalSyncNumber,
-        proposedSyncNumber: currentWarCanonicalSyncNumber,
-        usable: true,
-        source: "existing_current_war",
-        shouldPersist: false,
-        persistence: "not_needed",
-        ...baseResult,
-        persistedSyncNumber: currentWarCanonicalSyncNumber,
-        persistedRevisionAt: null,
-      });
-    }
-
-    if (currentWarLegacySyncNumber !== null) {
-      if (!allowAllocation) {
-        return finish("existing_current_war_legacy", {
-          syncNumber: null,
-          proposedSyncNumber: currentWarLegacySyncNumber,
-          usable: false,
-          source: "existing_current_war",
-          shouldPersist: false,
-          persistence: "not_needed",
-          ...baseResult,
-          persistedSyncNumber: null,
-          persistedRevisionAt: null,
-        });
-      }
-      const persistence = await this.persistCurrentWarSyncNumber({
-        guildId,
-        clanTag,
-        identity: input.identity,
-        expectedRevisionAt: expectedCurrentWarRevisionAt,
-        syncNumber: currentWarLegacySyncNumber,
-      });
-      const usable =
-        persistence.state === "saved" || persistence.state === "idempotent";
-      if (usable) {
-        input.pollCycle?.recordActiveSyncNumber(currentWarLegacySyncNumber);
-      }
-      return finish("existing_current_war_legacy", {
-        syncNumber: usable ? currentWarLegacySyncNumber : null,
-        proposedSyncNumber: currentWarLegacySyncNumber,
-        usable,
-        source: "existing_current_war",
-        shouldPersist: persistence.state === "saved",
-        persistence: persistence.state,
-        ...baseResult,
-        persistedSyncNumber: usable ? currentWarLegacySyncNumber : null,
-        persistedRevisionAt: usable ? persistence.persistedRevisionAt : null,
-      });
-    }
-
     if (!allowAllocation) {
       return finish("not_fwa", {
         syncNumber: null,
@@ -753,6 +678,56 @@ export class ActiveWarSyncResolutionService {
     }
 
     if (sameWarPointsSyncNumber !== null) {
+      if (
+        currentWarCanonicalSyncNumber !== null &&
+        currentWarCanonicalSyncNumber !== sameWarPointsSyncNumber
+      ) {
+        const persistence =
+          await this.reconcileCurrentWarSyncNumberFromExactEvidence({
+            guildId,
+            clanTag,
+            identity: input.identity,
+            expectedRevisionAt: expectedCurrentWarRevisionAt,
+            expectedSyncNumber: currentWarCanonicalSyncNumber,
+            resolvedSyncNumber: sameWarPointsSyncNumber,
+          });
+        const usable =
+          persistence.state === "saved" || persistence.state === "idempotent";
+        if (usable) {
+          this.recordExactEvidenceForPollCycle(
+            input.pollCycle,
+            sameWarPointsSyncNumber,
+          );
+        }
+        return finish("exact_same_war_reconcile", {
+          syncNumber: usable ? sameWarPointsSyncNumber : null,
+          proposedSyncNumber: sameWarPointsSyncNumber,
+          usable,
+          source: "exact_same_war_reconcile",
+          shouldPersist: persistence.state === "saved",
+          persistence: persistence.state,
+          ...baseResult,
+          persistedSyncNumber: usable ? sameWarPointsSyncNumber : null,
+          persistedRevisionAt: usable ? persistence.persistedRevisionAt : null,
+        });
+      }
+      if (currentWarCanonicalSyncNumber === sameWarPointsSyncNumber) {
+        this.recordExactEvidenceForPollCycle(
+          input.pollCycle,
+          sameWarPointsSyncNumber,
+        );
+        return finish("existing_current_war", {
+          syncNumber: sameWarPointsSyncNumber,
+          proposedSyncNumber: sameWarPointsSyncNumber,
+          usable: true,
+          source: "existing_current_war",
+          shouldPersist: false,
+          persistence: "not_needed",
+          ...baseResult,
+          persistedSyncNumber: sameWarPointsSyncNumber,
+          persistedRevisionAt: null,
+        });
+      }
       const persistence = await this.persistCurrentWarSyncNumber({
         guildId,
         clanTag,
@@ -762,8 +737,11 @@ export class ActiveWarSyncResolutionService {
       });
       const usable =
         persistence.state === "saved" || persistence.state === "idempotent";
-      if (usable && input.pollCycle && input.pollCycle.activeSyncNumber === null) {
-        input.pollCycle.recordActiveSyncNumber(sameWarPointsSyncNumber);
+      if (usable) {
+        this.recordExactEvidenceForPollCycle(
+          input.pollCycle,
+          sameWarPointsSyncNumber,
+        );
       }
       return finish("same_war_points_recovery", {
         syncNumber: usable ? sameWarPointsSyncNumber : null,
@@ -793,6 +771,37 @@ export class ActiveWarSyncResolutionService {
     }
 
     if (activeSyncNumber !== null) {
+      const currentMaterializedSyncNumber =
+        currentWarCanonicalSyncNumber ?? currentWarLegacySyncNumber;
+      if (
+        currentMaterializedSyncNumber !== null &&
+        currentMaterializedSyncNumber !== activeSyncNumber
+      ) {
+        return finish("active_cycle_conflict", {
+          syncNumber: null,
+          proposedSyncNumber: activeSyncNumber,
+          usable: false,
+          source: "active_cycle_conflict",
+          shouldPersist: false,
+          persistence: "not_needed",
+          ...baseResult,
+          persistedSyncNumber: null,
+          persistedRevisionAt: null,
+        });
+      }
+      if (currentMaterializedSyncNumber === activeSyncNumber) {
+        return finish("active_cycle_reuse", {
+          syncNumber: activeSyncNumber,
+          proposedSyncNumber: activeSyncNumber,
+          usable: true,
+          source: "active_cycle_reuse",
+          shouldPersist: false,
+          persistence: "idempotent",
+          ...baseResult,
+          persistedSyncNumber: activeSyncNumber,
+          persistedRevisionAt: null,
+        });
+      }
       const persistence = await this.persistCurrentWarSyncNumber({
         guildId,
         clanTag,
@@ -818,44 +827,16 @@ export class ActiveWarSyncResolutionService {
       });
     }
 
-    const latestPersistedSyncNumber = baseResult.latestPersistedSyncNumber;
-    if (latestPersistedSyncNumber === null) {
-      return finish("unavailable", {
-        syncNumber: null,
-        proposedSyncNumber: null,
-        usable: false,
-        source: "unavailable",
-        shouldPersist: false,
-        persistence: "not_needed",
-        ...baseResult,
-        persistedSyncNumber: null,
-        persistedRevisionAt: null,
-      });
-    }
-
-    const allocatedSyncNumber = latestPersistedSyncNumber + 1;
-    const persistence = await this.persistCurrentWarSyncNumber({
-      guildId,
-      clanTag,
-      identity: input.identity,
-      expectedRevisionAt: expectedCurrentWarRevisionAt,
-      syncNumber: allocatedSyncNumber,
-    });
-    const usable =
-      persistence.state === "saved" || persistence.state === "idempotent";
-    if (usable) {
-      input.pollCycle?.recordActiveSyncNumber(allocatedSyncNumber);
-    }
-    return finish("allocated_latest_plus_one", {
-      syncNumber: usable ? allocatedSyncNumber : null,
-      proposedSyncNumber: allocatedSyncNumber,
-      usable,
-      source: "allocated_latest_plus_one",
-      shouldPersist: persistence.state === "saved",
-      persistence: persistence.state,
+    return finish("unavailable", {
+      syncNumber: null,
+      proposedSyncNumber: null,
+      usable: false,
+      source: "unavailable",
+      shouldPersist: false,
+      persistence: "not_needed",
       ...baseResult,
-      persistedSyncNumber: usable ? allocatedSyncNumber : null,
-      persistedRevisionAt: usable ? persistence.persistedRevisionAt : null,
+      persistedSyncNumber: null,
+      persistedRevisionAt: null,
     });
   }
 
@@ -872,34 +853,114 @@ export class ActiveWarSyncResolutionService {
     const rows = await prisma.currentWar.findMany({
       where: {
         state: { in: ["preparation", "inWar"] },
-        syncNumber: { not: null },
       },
       select: {
         guildId: true,
         clanTag: true,
         warId: true,
-        syncNumber: true,
         startTime: true,
         opponentTag: true,
         matchType: true,
         inferredMatchType: true,
       },
     });
-    const candidates = rows
+    const eligibleCurrentWarRows = rows
       .map((row) => ({
         guildId: row.guildId,
-        clanTag: row.clanTag,
+        clanTag: normalizeBareTag(row.clanTag),
         warId:
           row.warId !== null && row.warId !== undefined
             ? Math.trunc(Number(row.warId))
             : null,
         startTime: row.startTime ?? null,
         opponentTag: normalizeBareTag(row.opponentTag ?? null),
-        syncNumber: normalizeAssignmentSyncNumber(row.syncNumber ?? null),
-        matchType: row.matchType ?? null,
-        inferredMatchType: row.inferredMatchType ?? null,
+        matchType: row.matchType !== null ? String(row.matchType) : null,
+        inferredMatchType: row.inferredMatchType === true ? true : null,
       }))
-      .filter((row) => row.syncNumber !== null && isEligibleActiveCycleSyncCandidate(row));
+      .filter(
+        (row): row is ActiveCycleCurrentWarIdentity =>
+          row.clanTag !== null &&
+          row.startTime !== null &&
+          row.opponentTag !== null &&
+          (classifyFwaEvidence({
+            matchType: row.matchType,
+            inferredMatchType: row.inferredMatchType,
+          }) === "confirmed_fwa" ||
+            classifyFwaEvidence({
+              matchType: row.matchType,
+              inferredMatchType: row.inferredMatchType,
+            }) === "strongly_inferred_fwa"),
+      );
+
+    const pointsSyncWhere: Prisma.ClanPointsSyncWhereInput[] =
+      eligibleCurrentWarRows.map((row) => ({
+        guildId: row.guildId,
+        clanTag: normalizeTag(row.clanTag),
+        warStartTime: row.startTime as Date,
+        opponentTag: normalizeTag(row.opponentTag),
+        needsValidation: false,
+      }));
+    const pointsRows =
+      pointsSyncWhere.length > 0
+        ? await prisma.clanPointsSync.findMany({
+            where: { OR: pointsSyncWhere },
+            select: {
+              guildId: true,
+              clanTag: true,
+              warId: true,
+              warStartTime: true,
+              opponentTag: true,
+              syncNum: true,
+            },
+          })
+        : [];
+    const pointsByIdentity = new Map<
+      string,
+      Array<{ warId: string | null; syncNumber: number }>
+    >();
+    for (const row of pointsRows) {
+      const syncNumber = normalizeAssignmentSyncNumber(row.syncNum);
+      const startTime = row.warStartTime;
+      const opponentTag = normalizeBareTag(row.opponentTag);
+      const clanTag = normalizeBareTag(row.clanTag);
+      if (
+        syncNumber === null ||
+        !(startTime instanceof Date) ||
+        clanTag === null ||
+        opponentTag === null
+      ) {
+        continue;
+      }
+      const identityKey = buildActiveWarEvidenceKey({
+        guildId: row.guildId,
+        clanTag,
+        startTime,
+        opponentTag,
+      });
+      const identityEvidence = pointsByIdentity.get(identityKey) ?? [];
+      identityEvidence.push({
+        warId: row.warId !== null ? String(row.warId) : null,
+        syncNumber,
+      });
+      pointsByIdentity.set(identityKey, identityEvidence);
+    }
+    const candidates = eligibleCurrentWarRows
+      .flatMap((row) => {
+        const pointsEvidence = pointsByIdentity.get(
+          buildActiveWarEvidenceKey(row),
+        ) ?? [];
+        return pointsEvidence
+          .filter(
+            (evidence) =>
+              row.warId === null ||
+              evidence.warId === null ||
+              String(row.warId) === evidence.warId,
+          )
+          .map((evidence) => ({
+            ...row,
+            syncNumber: evidence.syncNumber,
+          }));
+      });
     const distinctSyncNumbers = Array.from(
       new Set(
         candidates.map((row) => normalizeAssignmentSyncNumber(row.syncNumber)).filter(
@@ -935,25 +996,17 @@ export class ActiveWarSyncResolutionService {
     };
   }
 
-  /** Purpose: revalidate global active-cycle ownership after an exact row repair before trusting the poll cache. */
-  private async reconcilePollCycleAfterExactEvidence(input: {
-    pollCycle: ActiveWarSyncPollCycle | null | undefined;
-    resolvedSyncNumber: number;
-  }): Promise<void> {
-    if (!input.pollCycle) return;
-    input.pollCycle.clearActiveSyncNumber();
-    try {
-      const postRepairDiscovery = await this.findPersistedActiveSyncNumber();
-      if (
-        !postRepairDiscovery.conflict &&
-        postRepairDiscovery.syncNumber === input.resolvedSyncNumber
-      ) {
-        input.pollCycle.recordActiveSyncNumber(input.resolvedSyncNumber);
-      }
-    } catch (error) {
-      console.warn(
-        `[sync-assignment] stage=exact_same_war_reconcile outcome=cache_invalidated reason=post_repair_discovery_failed error=${error instanceof Error ? error.message : String(error)}`,
-      );
+  /** Purpose: add exact points evidence to an existing poll snapshot without rediscovering unchanged evidence. */
+  private recordExactEvidenceForPollCycle(
+    pollCycle: ActiveWarSyncPollCycle | null | undefined,
+    resolvedSyncNumber: number,
+  ): void {
+    if (!pollCycle || pollCycle.activeSyncEvidenceConflict === true) return;
+    const cachedSyncNumber = normalizeAssignmentSyncNumber(
+      pollCycle.activeSyncNumber,
+    );
+    if (cachedSyncNumber === null) {
+      pollCycle.recordActiveSyncNumber(resolvedSyncNumber);
     }
   }
 

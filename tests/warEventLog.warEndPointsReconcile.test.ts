@@ -1620,6 +1620,11 @@ describe("Match-type confirmation rollover via processSubscription", () => {
       matchType: "FWA",
       inferredMatchType: false,
       outcome: "LOSE",
+      // The shorthand processSubscription context below represents an
+      // already-established active-cycle sync. Keep the materialized row in
+      // agreement so this test does not model a stale speculative value.
+      syncNumber: 11,
+      syncNum: 11,
       state: "inWar",
       startTime: new Date("2026-03-12T00:00:00.000Z"),
       opponentTag: "#OPP999",
@@ -1853,6 +1858,8 @@ describe("War outage recovery reconciliation", () => {
         subOverrides: {
           state: "preparation",
           warId: 1001,
+          syncNumber: 11,
+          syncNum: 11,
           startTime: new Date("2026-03-12T00:00:00.000Z"),
           endTime: new Date("2026-03-13T00:00:00.000Z"),
           prepStartTime: new Date("2026-03-11T00:00:00.000Z"),
@@ -1866,11 +1873,11 @@ describe("War outage recovery reconciliation", () => {
     });
     await (service as any).processSubscription("guild-1", "#AAA111", {
       previousSync: 11,
-      activeSync: 12,
+      activeSync: 11,
     });
     await (service as any).processSubscription("guild-1", "#AAA111", {
       previousSync: 12,
-      activeSync: 13,
+      activeSync: 11,
     });
 
     expect(dispatchSpy).not.toHaveBeenCalled();
@@ -2332,6 +2339,8 @@ describe("FWA police poll-time enforcement", () => {
       guildId: "guild-1",
       clanTag: "#AAA111",
       state: "inWar",
+      syncNumber: 11,
+      syncNum: 11,
       startTime: new Date("2026-03-12T00:00:00.000Z"),
       endTime: new Date("2026-03-13T00:00:00.000Z"),
       opponentTag: "#OPP123",

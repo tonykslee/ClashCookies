@@ -643,7 +643,7 @@ describe("exact same-war points identity validation", () => {
 });
 
 describe("WarEventLogService sync-number lifecycle", () => {
-  it("succeeds on the first-poll FWA war_started path and clears the pending marker", async () => {
+  it("fails closed on the first-poll FWA war_started path and clears the pending marker", async () => {
     const clanTag = "#1AAAA";
     const opponentTag = "#2AAAA";
     const currentWarStore = createCurrentWarStore({
@@ -728,10 +728,10 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(4);
-    const [rolloverCall, assignmentCall, finalizationCall, cleanupCall] =
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(3);
+    const [rolloverCall, finalizationCall, cleanupCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
-    expect(getCurrentWarUpdateManyCallsWithNullMatchState()).toHaveLength(1);
+    expect(getCurrentWarUpdateManyCallsWithNullMatchState()).toHaveLength(2);
     expect(rolloverCall.data).toMatchObject({
       outcome: null,
       matchType: null,
@@ -747,11 +747,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(rolloverCall.data.updatedAt.getTime()).toBeGreaterThan(
       initialRevision.getTime(),
     );
-    expect(assignmentCall.data.updatedAt.getTime()).toBeGreaterThan(
-      rolloverCall.data.updatedAt.getTime(),
-    );
     expect(finalizationCall.data.updatedAt.getTime()).toBeGreaterThan(
-      assignmentCall.data.updatedAt.getTime(),
+      rolloverCall.data.updatedAt.getTime(),
     );
     expect(getCurrentWarUpdateManyCallsByKind("cleanup")).toHaveLength(1);
     expect(cleanupCall.data).toMatchObject({
@@ -762,7 +759,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect((service as any).dispatchDetectedEvent).toHaveBeenCalledTimes(1);
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
+      syncNumber: null,
       state: "preparation",
       opponentTag,
       pendingEventType: null,
@@ -852,7 +849,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(getCurrentWarUpdateManyCallsByKind("cleanup")).toHaveLength(0);
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
+      syncNumber: null,
       state: "inWar",
       opponentTag,
       pendingEventType: "battle_day",
@@ -1049,8 +1046,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
       resolveActiveSyncNumber,
     });
 
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(4);
-    const [rolloverCall, assignmentCall, finalizationCall, cleanupCall] =
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(3);
+    const [rolloverCall, finalizationCall, cleanupCall] =
       prismaMock.currentWar.updateMany.mock.calls.map(([args]) => args as any);
     expect(resolveActiveSyncNumber).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1063,11 +1060,8 @@ describe("WarEventLogService sync-number lifecycle", () => {
     expect(rolloverCall.data.updatedAt.getTime()).toBeGreaterThan(
       initialRevision.getTime(),
     );
-    expect(assignmentCall.data.updatedAt.getTime()).toBeGreaterThan(
-      rolloverCall.data.updatedAt.getTime(),
-    );
     expect(finalizationCall.data.updatedAt.getTime()).toBeGreaterThan(
-      assignmentCall.data.updatedAt.getTime(),
+      rolloverCall.data.updatedAt.getTime(),
     );
     expect(cleanupCall.data).toMatchObject({
       pendingEventType: null,
@@ -1078,13 +1072,13 @@ describe("WarEventLogService sync-number lifecycle", () => {
       expect.objectContaining({
         payload: expect.objectContaining({
           eventType: "battle_day",
-          syncNumber: 535,
+          syncNumber: null,
         }),
       }),
     );
     expect(currentWarStore.state).toMatchObject({
       warId: 5002,
-      syncNumber: 535,
+      syncNumber: null,
       state: "inWar",
       opponentTag,
       pendingEventType: null,
