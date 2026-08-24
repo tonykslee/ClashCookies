@@ -24,6 +24,7 @@ import {
   shouldDisplayInferredMatchTypeForTest,
   shouldHydrateAlliancePayloadForTest,
   resolveEffectiveFwaOutcomeForTest,
+  resolveFwaOutcomeFromCurrentWarStateForTest,
   resolveConfirmedRevisionBaselineForTest,
   resolveEffectiveRevisionStateForTest,
   resolveScopedDraftRevisionForTest,
@@ -1004,6 +1005,50 @@ describe("fwa explicit match-type confirmation", () => {
 });
 
 describe("fwa effective outcome resolution for FWA drafts", () => {
+  it("replaces a stale inferred outcome with the fresh parity-backed projection", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: "WIN",
+      }),
+    ).toBe("WIN");
+  });
+
+  it("does not preserve a stale inferred outcome when parity is unresolved", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps unequal-point projection available without parity", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "WIN",
+        currentWarOutcomeConfirmed: false,
+        projectedOutcome: "LOSE",
+      }),
+    ).toBe("LOSE");
+  });
+
+  it("preserves a confirmed same-war current outcome over a changed projection", () => {
+    expect(
+      resolveFwaOutcomeFromCurrentWarStateForTest({
+        matchType: "FWA",
+        currentWarOutcome: "LOSE",
+        currentWarOutcomeConfirmed: true,
+        projectedOutcome: "WIN",
+      }),
+    ).toBe("LOSE");
+  });
+
   it("keeps explicit draft WIN/LOSE over projected fallback", () => {
     const resolved = resolveEffectiveFwaOutcomeForTest({
       matchType: "FWA",

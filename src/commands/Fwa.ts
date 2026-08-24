@@ -3657,6 +3657,23 @@ function resolveEffectiveFwaOutcome(params: {
   );
 }
 
+/** Purpose: discard inferred/materialized CurrentWar outcomes before applying fresh FWA projection evidence. */
+function resolveFwaOutcomeFromCurrentWarState(params: {
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
+  currentWarOutcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
+  currentWarOutcomeConfirmed: boolean;
+  projectedOutcome: "WIN" | "LOSE" | null | undefined;
+}): "WIN" | "LOSE" | null {
+  if (params.matchType !== "FWA") return null;
+  if (params.currentWarOutcomeConfirmed) {
+    return (
+      toWinLoseOutcome(params.currentWarOutcome) ??
+      toWinLoseOutcome(params.projectedOutcome)
+    );
+  }
+  return toWinLoseOutcome(params.projectedOutcome);
+}
+
 /** Purpose: keep single-clan `/fwa match` color aligned to the exact effective state shown in the card. */
 function resolveSingleClanMatchEmbedColor(params: {
   effectiveMatchType: WarMailMatchType;
@@ -5406,7 +5423,12 @@ async function buildWarMailEmbedForTag(
     appliedResolution?.matchType === "SKIP"
       ? "UNKNOWN"
       : (appliedResolution?.matchType ?? "UNKNOWN");
-  let outcome = currentWarRenderState.outcome;
+  let outcome = resolveFwaOutcomeFromCurrentWarState({
+    matchType,
+    currentWarOutcome: currentWarRenderState.outcome,
+    currentWarOutcomeConfirmed: appliedResolution?.confirmed === true,
+    projectedOutcome: null,
+  });
   const fallbackOpponentTag = currentWarRenderState.opponentTag ?? null;
   const effectiveOpponentTag = opponentTag || fallbackOpponentTag;
   const effectiveOpponentName = opponentTag
@@ -5631,15 +5653,19 @@ async function buildWarMailEmbedForTag(
         `[fwa-matchtype] stage=mail_embed_active_fwa clan=#${normalizedTag} opponent=#${opponentTag} parsed_active_fwa=${opponentSnapshot.activeFwa === null ? "unknown" : opponentSnapshot.activeFwa ? "yes" : "no"} not_found=${opponentSnapshot.notFound ? "1" : "0"} source=${appliedResolution?.source ?? "none"} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`,
       );
     }
-    if (matchType === "FWA" && !outcome) {
-      outcome = deriveProjectedOutcome(
-        normalizedTag,
-        opponentTag,
-        primaryBalance,
-        opponentBalance,
-        resolvedCurrentSyncNum,
-      );
-    }
+    const derivedOutcome = deriveProjectedOutcome(
+      normalizedTag,
+      opponentTag,
+      primaryBalance,
+      opponentBalance,
+      resolvedCurrentSyncNum,
+    );
+    outcome = resolveFwaOutcomeFromCurrentWarState({
+      matchType,
+      currentWarOutcome: currentWarRenderState.outcome,
+      currentWarOutcomeConfirmed: appliedResolution?.confirmed === true,
+      projectedOutcome: derivedOutcome,
+    });
     const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
       primarySnapshot,
       opponentSnapshot,
@@ -12254,6 +12280,8 @@ export const buildDraftFromMatchTypeSelectionForTest =
 export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
+export const resolveFwaOutcomeFromCurrentWarStateForTest =
+  resolveFwaOutcomeFromCurrentWarState;
 export const buildEffectiveMatchMismatchWarningsForTest =
   buildEffectiveMatchMismatchWarnings;
 export const resolveOpponentActiveFwaEvidenceForTest =
@@ -14253,9 +14281,16 @@ async function buildTrackedMatchOverview(
       opponentPoints?.balance ?? null,
       resolvedCurrentSyncNum,
     );
-    const liveExpectedOutcome =
-      (sub?.outcome as "WIN" | "LOSE" | null | undefined) ??
-      (matchType === "FWA" ? derivedOutcome : null);
+    const liveExpectedOutcome = resolveFwaOutcomeFromCurrentWarState({
+      matchType,
+      currentWarOutcome: sub?.outcome as
+        | "WIN"
+        | "LOSE"
+        | null
+        | undefined,
+      currentWarOutcomeConfirmed: appliedResolution.confirmed === true,
+      projectedOutcome: derivedOutcome,
+    });
     if (guildId) {
       await prisma.currentWar.upsert({
         where: {
@@ -18318,9 +18353,16 @@ export const Fwa: Command = {
           resolvedCurrentSyncNum,
         );
         const inferredMatchType = appliedResolution.inferred;
-        const effectiveOutcome =
-          (subscription?.outcome as "WIN" | "LOSE" | null | undefined) ??
-          (matchType === "FWA" ? derivedOutcome : null);
+        const effectiveOutcome = resolveFwaOutcomeFromCurrentWarState({
+          matchType,
+          currentWarOutcome: subscription?.outcome as
+            | "WIN"
+            | "LOSE"
+            | null
+            | undefined,
+          currentWarOutcomeConfirmed: appliedResolution.confirmed === true,
+          projectedOutcome: derivedOutcome,
+        });
         const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
           matchType,
           explicitOutcome: effectiveOutcome,
