@@ -367,6 +367,22 @@ describe("fwa points sync numbering regression", () => {
     ).toBe("LOSE");
   });
 
+  it("uses an evidence-backed active cycle despite stale CurrentWar sync", () => {
+    const resolvedSync = resolveFwaPointsCurrentSyncForTest({
+      identity: activeIdentity,
+      sourceSync: 552,
+      sameWarPersistedSyncNumber: null,
+      currentWarSyncNumber: 553,
+      activeCycleSyncNumber: 552,
+      activeCycleConflict: false,
+    });
+
+    expect(resolvedSync).toBe(552);
+    expect(
+      deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1000, 1000, resolvedSync),
+    ).toBe("WIN");
+  });
+
   it("keeps unequal-point outcomes available while sync parity is unresolved", () => {
     expect(
       deriveProjectedOutcomeForTest("2TRACK", "2OPP", 1200, 980, null),

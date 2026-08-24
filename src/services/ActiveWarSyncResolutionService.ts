@@ -581,7 +581,7 @@ export class ActiveWarSyncResolutionService {
         : cachedActiveSyncNumber !== null
           ? {
               syncNumber: cachedActiveSyncNumber,
-              conflict: false,
+              conflict: input.pollCycle?.activeSyncEvidenceConflict === true,
               candidates: [] as ActiveCycleSyncCandidate[],
             }
         : {
@@ -694,10 +694,10 @@ export class ActiveWarSyncResolutionService {
         const usable =
           persistence.state === "saved" || persistence.state === "idempotent";
         if (usable) {
-          await this.reconcilePollCycleAfterExactEvidence({
-            pollCycle: input.pollCycle,
-            resolvedSyncNumber: sameWarPointsSyncNumber,
-          });
+          this.recordExactEvidenceForPollCycle(
+            input.pollCycle,
+            sameWarPointsSyncNumber,
+          );
         }
         return finish("exact_same_war_reconcile", {
           syncNumber: usable ? sameWarPointsSyncNumber : null,
@@ -712,10 +712,10 @@ export class ActiveWarSyncResolutionService {
         });
       }
       if (currentWarCanonicalSyncNumber === sameWarPointsSyncNumber) {
-        await this.reconcilePollCycleAfterExactEvidence({
-          pollCycle: input.pollCycle,
-          resolvedSyncNumber: sameWarPointsSyncNumber,
-        });
+        this.recordExactEvidenceForPollCycle(
+          input.pollCycle,
+          sameWarPointsSyncNumber,
+        );
         return finish("existing_current_war", {
           syncNumber: sameWarPointsSyncNumber,
           proposedSyncNumber: sameWarPointsSyncNumber,
@@ -738,10 +738,10 @@ export class ActiveWarSyncResolutionService {
       const usable =
         persistence.state === "saved" || persistence.state === "idempotent";
       if (usable) {
-        await this.reconcilePollCycleAfterExactEvidence({
-          pollCycle: input.pollCycle,
-          resolvedSyncNumber: sameWarPointsSyncNumber,
-        });
+        this.recordExactEvidenceForPollCycle(
+          input.pollCycle,
+          sameWarPointsSyncNumber,
+        );
       }
       return finish("same_war_points_recovery", {
         syncNumber: usable ? sameWarPointsSyncNumber : null,
@@ -996,32 +996,17 @@ export class ActiveWarSyncResolutionService {
     };
   }
 
-  /** Purpose: revalidate global active-cycle ownership after an exact row repair before trusting the poll cache. */
-  private async reconcilePollCycleAfterExactEvidence(input: {
-    pollCycle: ActiveWarSyncPollCycle | null | undefined;
-    resolvedSyncNumber: number;
-  }): Promise<void> {
-    if (!input.pollCycle) return;
-    input.pollCycle.activeSyncEvidenceChecked = false;
-    input.pollCycle.activeSyncEvidenceConflict = false;
-    input.pollCycle.clearActiveSyncNumber();
-    try {
-      const postRepairDiscovery = await this.findPersistedActiveSyncNumber();
-      input.pollCycle.activeSyncEvidenceChecked = true;
-      input.pollCycle.activeSyncEvidenceConflict =
-        postRepairDiscovery.conflict ||
-        (postRepairDiscovery.syncNumber !== null &&
-          postRepairDiscovery.syncNumber !== input.resolvedSyncNumber);
-      if (
-        !postRepairDiscovery.conflict &&
-        postRepairDiscovery.syncNumber === input.resolvedSyncNumber
-      ) {
-      input.pollCycle.recordActiveSyncNumber(input.resolvedSyncNumber);
-      }
-    } catch (error) {
-      console.warn(
-        `[sync-assignment] stage=exact_same_war_reconcile outcome=cache_invalidated reason=post_repair_discovery_failed error=${error instanceof Error ? error.message : String(error)}`,
-      );
+  /** Purpose: add exact points evidence to an existing poll snapshot without rediscovering unchanged evidence. */
+  private recordExactEvidenceForPollCycle(
+    pollCycle: ActiveWarSyncPollCycle | null | undefined,
+    resolvedSyncNumber: number,
+  ): void {
+    if (!pollCycle || pollCycle.activeSyncEvidenceConflict === true) return;
+    const cachedSyncNumber = normalizeAssignmentSyncNumber(
+      pollCycle.activeSyncNumber,
+    );
+    if (cachedSyncNumber === null) {
+      pollCycle.recordActiveSyncNumber(resolvedSyncNumber);
     }
   }
 

@@ -369,7 +369,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(currentWarStore.state.syncNumber).toBe(544);
     expect(pollCycle.activeSyncNumber).toBe(544);
     expect(pollCycle.recordActiveSyncNumber).toHaveBeenCalledWith(544);
-    expect(pollCycle.clearActiveSyncNumber).toHaveBeenCalledTimes(1);
+    expect(pollCycle.clearActiveSyncNumber).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -436,7 +436,65 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(pollCycle.recordActiveSyncNumber).toHaveBeenCalledWith(544);
   });
 
-  it("invalidates a cached old sync when an unresolved stale peer remains", async () => {
+  it("bounds active-cycle evidence discovery to one read per poll snapshot", async () => {
+    const warStartTime = new Date("2026-03-20T09:00:00.000Z");
+    const rows = [
+      makeActiveFwaRow({
+        clanTag: "#FIRST",
+        warId: 4050,
+        syncNumber: 552,
+        startTime: warStartTime,
+        opponentTag: "#OPP-FIRST",
+      }),
+      makeActiveFwaRow({
+        clanTag: "#SECOND",
+        warId: 4051,
+        syncNumber: 552,
+        startTime: warStartTime,
+        opponentTag: "#OPP-SECOND",
+      }),
+    ];
+    prismaMock.currentWar.findMany.mockResolvedValue(rows);
+    setPointsEvidence(rows, { "#FIRST": 552, "#SECOND": 552 });
+    const pollCycle = {
+      activeSyncNumber: null,
+      activeSyncEvidenceChecked: false,
+      activeSyncEvidenceConflict: false,
+      recordActiveSyncNumber: vi.fn((syncNumber: number) => {
+        pollCycle.activeSyncNumber = syncNumber;
+      }),
+      clearActiveSyncNumber: vi.fn(),
+    };
+    const service = makeService();
+    const resolve = (clanTag: string, warId: number, opponentTag: string) =>
+      service.resolveOrAllocateActiveSyncNumber({
+        guildId: testGuildId,
+        clanTag,
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: String(warId),
+          warStartTime,
+          opponentTag,
+        }),
+        currentWarSyncNumber: 552,
+        sameWarPointsSyncNumber: 552,
+        matchType: "FWA",
+        inferredMatchType: true,
+        pollCycle,
+      });
+
+    const first = await resolve("#FIRST", 4050, "#OPP-FIRST");
+    const second = await resolve("#SECOND", 4051, "#OPP-SECOND");
+
+    expect(first.syncNumber).toBe(552);
+    expect(second.syncNumber).toBe(552);
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.findMany).toHaveBeenCalledTimes(1);
+    expect(pollCycle.activeSyncNumber).toBe(552);
+    expect(pollCycle.clearActiveSyncNumber).not.toHaveBeenCalled();
+  });
+
+  it("does not rediscover active-cycle evidence after exact repair", async () => {
     const rows = [
       makeActiveFwaRow({
         clanTag: "#PEER",
@@ -512,8 +570,8 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       source: "exact_same_war_reconcile",
     });
     expect(rows.map((row) => row.syncNumber)).toEqual([534, 544]);
-    expect(pollCycle.clearActiveSyncNumber).toHaveBeenCalledTimes(1);
-    expect(pollCycle.activeSyncNumber).toBeNull();
+    expect(pollCycle.clearActiveSyncNumber).not.toHaveBeenCalled();
+    expect(pollCycle.activeSyncNumber).toBe(534);
     expect(subsequent).toMatchObject({
       syncNumber: null,
       source: "active_cycle_conflict",
@@ -613,8 +671,8 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       usable: true,
       source: "exact_same_war_reconcile",
     });
-    expect(pollCycle.activeSyncNumber).toBeNull();
-    expect(pollCycle.clearActiveSyncNumber).toHaveBeenCalledTimes(2);
+    expect(pollCycle.activeSyncNumber).toBe(534);
+    expect(pollCycle.clearActiveSyncNumber).not.toHaveBeenCalled();
     expect(discovery).toMatchObject({
       syncNumber: null,
       conflict: true,
@@ -626,7 +684,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     });
   });
 
-  it("caches the corrected sync only after post-repair persisted convergence", async () => {
+  it("does not replace a conflicting poll snapshot after exact repair", async () => {
     const rows = [
       makeActiveFwaRow({
         clanTag: "#C0NVERGED",
@@ -684,8 +742,8 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     const discovery = await service.findPersistedActiveSyncNumber();
 
     expect(repaired.syncNumber).toBe(544);
-    expect(pollCycle.activeSyncNumber).toBe(544);
-    expect(pollCycle.recordActiveSyncNumber).toHaveBeenCalledWith(544);
+    expect(pollCycle.activeSyncNumber).toBe(534);
+    expect(pollCycle.recordActiveSyncNumber).not.toHaveBeenCalledWith(544);
     expect(discovery).toMatchObject({
       syncNumber: 544,
       conflict: false,
@@ -758,12 +816,12 @@ describe("ActiveWarSyncResolutionService allocation", () => {
 
     const firstRepair = await repair("#STALE0NE", 4017, "#0PPE");
     expect(firstRepair.syncNumber).toBe(544);
-    expect(pollCycle.activeSyncNumber).toBe(544);
+    expect(pollCycle.activeSyncNumber).toBe(534);
     expect((await service.findPersistedActiveSyncNumber()).conflict).toBe(false);
 
     const secondRepair = await repair("#STALETW0", 4018, "#0PPF");
     expect(secondRepair.syncNumber).toBe(544);
-    expect(pollCycle.activeSyncNumber).toBe(544);
+    expect(pollCycle.activeSyncNumber).toBe(534);
     expect(await service.findPersistedActiveSyncNumber()).toMatchObject({
       syncNumber: 544,
       conflict: false,

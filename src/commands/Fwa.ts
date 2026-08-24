@@ -5297,6 +5297,8 @@ async function buildWarMailEmbedForTag(
     routine?: boolean;
     revisionOverride?: MatchRevisionFields | null;
     targetedWarReconcileClient?: Client | null;
+    activeCycleSyncNumber?: number | null;
+    activeCycleConflict?: boolean;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -5422,15 +5424,25 @@ async function buildWarMailEmbedForTag(
   const syncRow = await pointsSyncService
     .getCurrentSyncForClan({
       guildId,
-        clanTag: normalizedTag,
-        warId: warIdForSync,
-        warStartTime: warStartTimeForSync,
-      })
+      clanTag: normalizedTag,
+      warId: warIdForSync,
+      warStartTime: warStartTimeForSync,
+    })
     .catch(() => null);
+  const activeCycleDiscovery =
+    options?.activeCycleSyncNumber !== undefined ||
+    options?.activeCycleConflict !== undefined
+      ? {
+          syncNumber: options?.activeCycleSyncNumber ?? null,
+          conflict: options?.activeCycleConflict === true,
+        }
+      : await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
   const syncResolution = resolveActiveWarSyncNumberReadOnly({
     identity: syncIdentityForRender,
     latestPersistedSyncNumber: sourceSync,
     sameWarPersistedSyncNumber: syncRow?.syncNum ?? null,
+    activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+    activeCycleConflict: activeCycleDiscovery.conflict,
   });
   const resolvedCurrentSyncNum = syncResolution.syncNumber;
   const lifecycle =
@@ -5898,6 +5910,8 @@ type FwaMailRefreshRenderer = (
   options?: {
     fetchReason?: PointsApiFetchReason;
     routine?: boolean;
+    activeCycleSyncNumber?: number | null;
+    activeCycleConflict?: boolean;
   },
 ) => ReturnType<typeof buildWarMailEmbedForTag>;
 
@@ -13677,6 +13691,9 @@ async function buildTrackedMatchOverview(
       : [];
   const warScopedSyncRowsByClanTag =
     groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
+  const activeCycleDiscovery = guildId
+    ? await activeWarSyncResolutionService.findPersistedActiveSyncNumber()
+    : { syncNumber: null, conflict: false };
 
   const baselineWarStartMs =
     activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
@@ -14048,6 +14065,8 @@ async function buildTrackedMatchOverview(
       identity: syncIdentity,
       latestPersistedSyncNumber: sourceSync,
       sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
+      activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+      activeCycleConflict: activeCycleDiscovery.conflict,
     });
     const resolvedCurrentSyncNum = syncResolution.syncNumber;
     const trackedFreshSourceSync = resolveManualMatchupFreshnessSourceSync({
@@ -17896,10 +17915,14 @@ export const Fwa: Command = {
           warStartTime: warStartTimeForReuse,
           opponentTag: opponentTag || syncIdentity.opponentTag,
         });
+        const activeCycleDiscovery =
+          await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
         const syncResolution = resolveActiveWarSyncNumberReadOnly({
           identity: syncIdentity,
           latestPersistedSyncNumber: sourceSync,
           sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
+          activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
+          activeCycleConflict: activeCycleDiscovery.conflict,
         });
         const resolvedCurrentSyncNum = syncResolution.syncNumber;
         logActiveWarSyncResolution({
@@ -18779,14 +18802,6 @@ export const Fwa: Command = {
         identity: syncIdentity,
         sourceSync,
         sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
-        currentWarSyncNumber: isFwaPointsCurrentWarSyncEligible({
-          liveWarStartTime: war?.startTime ?? null,
-          liveOpponentTag: war?.opponent?.tag ?? null,
-          currentWarStartTime: subscription?.startTime ?? null,
-          currentWarOpponentTag: subscription?.opponentTag ?? null,
-        })
-          ? subscription?.syncNumber ?? null
-          : null,
         activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
         activeCycleConflict: activeCycleDiscovery.conflict,
       });
