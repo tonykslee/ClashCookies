@@ -188,15 +188,11 @@ function rowForNumber(plan: HistoricalSyncReconciliationPlan, syncNumber: number
 export function buildHistoricalSyncReconciliationWriterPlan(
   plan: HistoricalSyncReconciliationPlan,
 ): HistoricalSyncReconciliationWriterPlan {
-  const boundedRequested = plan.args.fromSync !== undefined && plan.args.toSync !== undefined
-    ? Array.from({ length: plan.args.toSync - plan.args.fromSync + 1 }, (_unused, index) => plan.args.fromSync! + index)
-    : plan.requestedMissingNumbers;
-  const requested = [...new Set(boundedRequested)].sort((left, right) => left - right);
+  const requested = [...new Set(plan.requestedMissingNumbers)].sort((left, right) => left - right);
   const rows = requested.map((syncNumber) => rowForNumber(plan, syncNumber));
-  const proofAvailable = plan.args.fromSync !== undefined && plan.args.toSync !== undefined && plan.realizedSequences.some((sequence) =>
-    sequence.classification === "REALIZED_SEQUENCE_CORROBORATED" &&
-    sequence.lower.syncNumber <= plan.args.fromSync! && sequence.upper.syncNumber >= plan.args.toSync!,
-  );
+  const proofAvailable = rows
+    .filter((row) => row.action === "CREATE")
+    .every((row) => row.reason === "exact_sync_cycle_candidate" && row.candidateSyncTime !== null && row.scheduledSyncPostId !== null);
   return {
     guildId: plan.args.guildId,
     fromSync: plan.args.fromSync,
@@ -245,7 +241,7 @@ function ensureApplyReady(args: HistoricalSyncReconciliationWriterArgs, plan: Hi
   if (args.expectedCreateCount !== plan.create) {
     throw new Error(`Apply aborted before writes: expected_create_count=${args.expectedCreateCount} actual_create_count=${plan.create}`);
   }
-  if (plan.create > 0 && !plan.proofAvailable) throw new Error("Apply aborted before writes: the requested range lacks an exact anchored proof interval.");
+  if (!plan.proofAvailable) throw new Error("Apply aborted before writes: the writer plan contains an unproven CREATE row.");
   if (plan.conflict > 0) throw new Error("Apply aborted before writes: the selected plan contains CONFLICT rows.");
 }
 
@@ -276,6 +272,7 @@ export async function applyHistoricalSyncReconciliationPlan(
   db: HistoricalSyncReconciliationWriterDb,
 ): Promise<ApplyCounts> {
   if (plan.conflict > 0) throw new Error("Apply aborted before writes: the selected plan contains CONFLICT rows.");
+  if (!plan.proofAvailable) throw new Error("Apply aborted before writes: the writer plan contains an unproven CREATE row.");
   const createRows = plan.rows.filter((row) => row.action === "CREATE");
   if (createRows.length === 0) return { created: 0, idempotent: 0 };
   if (!db.$transaction) throw new Error("Apply requires a transactional database delegate.");

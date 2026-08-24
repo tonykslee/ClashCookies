@@ -10,23 +10,47 @@ const guildId = "guild-writer";
 const base = new Date("2026-08-05T12:00:00.000Z");
 const at = (days: number, hours = 0) => new Date(base.getTime() + (days * 24 + hours) * 3600000);
 
-function makeDb(options: { missingScheduleId?: string; cancelledScheduleId?: string } = {}) {
-  const cycles: any[] = [
-    { guildId, syncNumber: 543, syncTime: base, resolutionSource: "ENDED_WAR_CANONICAL" },
-    { guildId, syncNumber: 548, syncTime: at(10), resolutionSource: "ENDED_WAR_CANONICAL" },
-  ];
-  const schedules: any[] = [
-    { id: "s-545", guildId, syncTime: at(4, 2), status: "PUBLISHED" },
-    { id: "s-546", guildId, syncTime: at(6, 4), status: "PUBLISHED" },
-    { id: "s-547", guildId, syncTime: at(8, 6), status: "PUBLISHED" },
-  ].filter((row) => row.id !== options.missingScheduleId)
+function makeDb(options: { missingScheduleId?: string; cancelledScheduleId?: string; fullRange?: boolean } = {}) {
+  const fullRange = options.fullRange === true;
+  const cycles: any[] = (fullRange
+    ? [520, 522, 523, 524, 525, 526, 548]
+    : [543, 548]
+  ).map((syncNumber) => ({
+    guildId,
+    syncNumber,
+    syncTime: fullRange
+      ? at(syncNumber === 548 ? 28 : syncNumber - 520)
+      : syncNumber === 543 ? base : at(10),
+    resolutionSource: "ENDED_WAR_CANONICAL",
+  }));
+  const scheduleNumbers = fullRange
+    ? [521, ...Array.from({ length: 17 }, (_unused, index) => index + 527), 545, 546, 547]
+    : [545, 546, 547];
+  const schedules: any[] = scheduleNumbers.map((syncNumber) => ({
+    id: `s-${syncNumber}`,
+    guildId,
+    syncTime: fullRange
+      ? at(syncNumber - 520, 2)
+      : at(syncNumber === 545 ? 4 : syncNumber === 546 ? 6 : 8, syncNumber === 545 ? 2 : syncNumber === 546 ? 4 : 6),
+    status: "PUBLISHED",
+  })).filter((row) => row.id !== options.missingScheduleId)
     .map((row) => row.id === options.cancelledScheduleId ? { ...row, status: "CANCELLED" } : row);
-  const histories = [
+  const simpleHistories = [
     { warId: 5440, syncNumber: 544, clanTag: "#C544", opponentTag: "#O544", prepStartTime: at(2), warStartTime: at(2, 4), warEndTime: at(2, 8) },
     { warId: 5450, syncNumber: 545, clanTag: "#C545", opponentTag: "#O545", prepStartTime: at(4, 4), warStartTime: at(4, 8), warEndTime: at(4, 12) },
     { warId: 5460, syncNumber: 546, clanTag: "#C546", opponentTag: "#O546", prepStartTime: at(6, 6), warStartTime: at(6, 10), warEndTime: at(6, 14) },
     { warId: 5470, syncNumber: 547, clanTag: "#C547", opponentTag: "#O547", prepStartTime: at(8, 8), warStartTime: at(8, 12), warEndTime: at(8, 16) },
-  ].map((row) => ({ ...row, matchType: "FWA" }));
+  ];
+  const fullHistories = [521, ...Array.from({ length: 21 }, (_unused, index) => index + 527)].map((syncNumber) => ({
+    warId: syncNumber * 10,
+    syncNumber,
+    clanTag: `#C${syncNumber}`,
+    opponentTag: `#O${syncNumber}`,
+    prepStartTime: at(syncNumber - 520, 4),
+    warStartTime: at(syncNumber - 520, 8),
+    warEndTime: at(syncNumber - 520, 12),
+  }));
+  const histories = (fullRange ? fullHistories : simpleHistories).map((row) => ({ ...row, matchType: "FWA" }));
   const points = histories.map((row) => ({
     guildId,
     syncNum: row.syncNumber,
@@ -87,6 +111,28 @@ describe("historical SyncCycle reconciliation writer", () => {
     expect(db.syncCycle.create).not.toHaveBeenCalled();
   });
 
+  it("uses shared targets across multiple corroborated intervals for the full production range", async () => {
+    const dryDb = makeDb({ fullRange: true });
+    const dry = await runHistoricalSyncReconciliationWriter({ guildId, fromSync: 520, toSync: 548, apply: false }, dryDb.db);
+    expect(dry.considered).toBe(22);
+    expect(dry.create).toBe(21);
+    expect(dry.alreadyPresent).toBe(0);
+    expect(dry.skip).toBe(1);
+    expect(dry.conflict).toBe(0);
+    expect(dry.rows.map((row) => row.syncNumber)).not.toEqual(expect.arrayContaining([520, 522, 523, 524, 525, 526, 548]));
+    expect(dry.rows.find((row) => row.syncNumber === 544)?.action).toBe("SKIP");
+
+    const applyDb = makeDb({ fullRange: true });
+    const applied = await runHistoricalSyncReconciliationWriter({ guildId, fromSync: 520, toSync: 548, apply: true, expectedCreateCount: 21 }, applyDb.db);
+    expect(applied.create).toBe(21);
+    expect(applied.rows.find((row) => row.syncNumber === 544)?.action).toBe("SKIP");
+    expect(applyDb.cycles.some((row) => row.syncNumber === 544)).toBe(false);
+    expect(applyDb.db.syncCycle.create).toHaveBeenCalledTimes(21);
+    const rerun = await runHistoricalSyncReconciliationWriter({ guildId, fromSync: 520, toSync: 548, apply: true, expectedCreateCount: 0 }, applyDb.db);
+    expect(rerun.rows).toEqual([expect.objectContaining({ syncNumber: 544, action: "SKIP" })]);
+    expect(applyDb.db.syncCycle.create).toHaveBeenCalledTimes(21);
+  });
+
   it("applies only exact candidates, revalidates schedules, and reruns idempotently", async () => {
     const { db, cycles } = makeDb();
     const first = await runHistoricalSyncReconciliationWriter({ guildId, fromSync: 544, toSync: 547, apply: true, expectedCreateCount: 3 }, db);
@@ -94,7 +140,7 @@ describe("historical SyncCycle reconciliation writer", () => {
     expect(cycles.filter((row) => row.syncNumber >= 544 && row.syncNumber <= 547).map((row) => row.syncNumber)).toEqual([545, 546, 547]);
     const second = await runHistoricalSyncReconciliationWriter({ guildId, fromSync: 544, toSync: 547, apply: true, expectedCreateCount: 0 }, db);
     expect(second.rows.map((row) => [row.syncNumber, row.action])).toEqual([
-      [544, "SKIP"], [545, "ALREADY_PRESENT"], [546, "ALREADY_PRESENT"], [547, "ALREADY_PRESENT"],
+      [544, "SKIP"],
     ]);
     expect(db.syncCycle.create).toHaveBeenCalledTimes(3);
   });
