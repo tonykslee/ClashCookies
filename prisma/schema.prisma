@@ -51,6 +51,17 @@ model TrackedClan {
   fwaPoliceLogEnabled Boolean          @default(false)
   createdAt           DateTime         @default(now())
   repPlayerTags       TrackedClanRep[]
+  weightAlertConfig   FwaWeightAlertConfig?
+}
+
+model FwaWeightAlertConfig {
+  clanTag                 String      @id
+  clan                    TrackedClan @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
+  enabled                 Boolean     @default(false)
+  thresholdDays           Int         @default(7)
+  updatedByDiscordUserId  String?
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
 }
 
 model TrackedClanRep {

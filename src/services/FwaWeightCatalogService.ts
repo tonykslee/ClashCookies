@@ -53,7 +53,7 @@ export function deriveFwaCatalogWeightAge(
   };
 }
 
-/** Purpose: bulk-read persisted FwaClanCatalog dates for weight-age/health commands. */
+/** Purpose: bulk-read persisted FwaClanCatalog dates for the canonical weight-health command. */
 export class FwaWeightCatalogService {
   async getWeightAges(clanTags: string[], now: Date = new Date()): Promise<Map<string, FwaCatalogWeightAge>> {
     const normalizedTags = [
