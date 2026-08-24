@@ -2,24 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
   buildActiveWarSyncIdentity,
   resolveActiveWarSyncNumber,
+  resolveActiveWarSyncNumberReadOnly,
   resolveCurrentWarSyncIdentity,
 } from "../src/services/ActiveWarSyncResolutionService";
 
 describe("ActiveWarSyncResolutionService resolver", () => {
-  it("derives latest persisted + 1 for positively resolved preparation wars", () => {
+  it("fails closed for positively resolved preparation wars without sync evidence", () => {
     const resolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "preparation",
         warId: "4001",
       }),
-      latestPersistedSyncNumber: 500,
+      latestPersistedSyncNumber: 552,
       sameWarPersistedSyncNumber: null,
     });
 
     expect(resolution).toMatchObject({
-      syncNumber: 501,
-      source: "derived_latest_plus_one",
-      isDerived: true,
+      syncNumber: null,
+      source: "none",
+      isDerived: false,
     });
   });
 
@@ -40,21 +41,21 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     expect(identity.positivelyResolved).toBe(true);
   });
 
-  it("derives latest persisted + 1 for positively resolved in-war identities", () => {
+  it("fails closed for positively resolved in-war identities without sync evidence", () => {
     const resolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "inWar",
         warStartTime: new Date("2026-04-13T08:00:00.000Z"),
         opponentTag: "#OPP123",
       }),
-      latestPersistedSyncNumber: 500,
+      latestPersistedSyncNumber: 552,
       sameWarPersistedSyncNumber: null,
     });
 
     expect(resolution).toMatchObject({
-      syncNumber: 501,
-      source: "derived_latest_plus_one",
-      isDerived: true,
+      syncNumber: null,
+      source: "none",
+      isDerived: false,
     });
   });
 
@@ -70,6 +71,24 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     expect(resolution).toMatchObject({
       syncNumber: 500,
       source: "historical_latest_persisted",
+      isDerived: false,
+    });
+  });
+
+  it("lets exact same-war evidence supersede a stale materialized CurrentWar sync", () => {
+    const resolution = resolveActiveWarSyncNumberReadOnly({
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4006",
+      }),
+      latestPersistedSyncNumber: 552,
+      sameWarPersistedSyncNumber: 552,
+      currentWarSyncNumber: 553,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 552,
+      source: "same_war_persisted",
       isDerived: false,
     });
   });
@@ -121,9 +140,9 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       isDerived: false,
     });
     expect(freshResolution).toMatchObject({
-      syncNumber: 501,
-      source: "derived_latest_plus_one",
-      isDerived: true,
+      syncNumber: null,
+      source: "none",
+      isDerived: false,
     });
   });
 
@@ -143,8 +162,8 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     });
   });
 
-  it("switches from derived to same-war persisted once points persistence catches up", () => {
-    const derivedResolution = resolveActiveWarSyncNumber({
+  it("switches from unavailable to same-war persisted once points persistence catches up", () => {
+    const unavailableResolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "inWar",
         warId: "4004",
@@ -161,8 +180,8 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       sameWarPersistedSyncNumber: 501,
     });
 
-    expect(derivedResolution.syncNumber).toBe(501);
-    expect(derivedResolution.source).toBe("derived_latest_plus_one");
+    expect(unavailableResolution.syncNumber).toBeNull();
+    expect(unavailableResolution.source).toBe("none");
     expect(persistedResolution.syncNumber).toBe(501);
     expect(persistedResolution.source).toBe("same_war_persisted");
   });

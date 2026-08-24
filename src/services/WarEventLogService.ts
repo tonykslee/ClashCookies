@@ -2679,11 +2679,14 @@ export class WarEventLogService {
     params: { eventType: EventType; source: TestSource },
   ): Promise<EventEmitPayload> {
     const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
-    const activeSync = previousSync === null ? null : previousSync + 1;
 
     const currentWar =
       params.source === "current"
         ? await this.coc.getCurrentWar(sub.clanTag).catch(() => null)
+        : null;
+    const activeSync =
+      params.source === "current"
+        ? (sub.pointsSyncNum ?? sub.syncNumber ?? null)
         : null;
     const lastWarLogEntry =
       params.source === "last"

@@ -1061,7 +1061,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
 
-  it("allocates the next global sync number and reuses it for the same poll cycle", async () => {
+  it("does not allocate a guessed sync number for multiple new active FWA clans", async () => {
     const pointsSync = {
       findLatestSyncNum: vi
         .fn()
@@ -1115,10 +1115,22 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       pollCycle,
     });
 
-    expect(first.syncNumber).toBe(501);
-    expect(second.syncNumber).toBe(501);
-    expect(pollCycle.activeSyncNumber).toBe(501);
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(2);
+    expect(first).toMatchObject({
+      syncNumber: null,
+      proposedSyncNumber: null,
+      source: "unavailable",
+      usable: false,
+      shouldPersist: false,
+    });
+    expect(second).toMatchObject({
+      syncNumber: null,
+      proposedSyncNumber: null,
+      source: "unavailable",
+      usable: false,
+      shouldPersist: false,
+    });
+    expect(pollCycle.activeSyncNumber).toBeNull();
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
 
   it("reports idempotent persistence when the canonical sync already exists", async () => {
@@ -1254,7 +1266,7 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     });
   });
 
-  it("does not seed FWA allocation from active BL/MM/SKIP rows", async () => {
+  it("does not allocate from latest baseline when only non-FWA active rows exist", async () => {
     const service = makeService(500);
     prismaMock.currentWar.findMany.mockResolvedValueOnce([
       {
@@ -1303,11 +1315,13 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     });
 
     expect(result).toMatchObject({
-      syncNumber: 501,
-      source: "allocated_latest_plus_one",
-      usable: true,
+      syncNumber: null,
+      proposedSyncNumber: null,
+      source: "unavailable",
+      usable: false,
+      shouldPersist: false,
     });
-    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
 
   it("fails closed when multiple active FWA rows disagree on the sync number", async () => {

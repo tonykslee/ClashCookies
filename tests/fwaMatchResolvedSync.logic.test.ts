@@ -11,7 +11,7 @@ import {
 } from "../src/services/ActiveWarSyncResolutionService";
 
 describe("fwa match resolved current sync", () => {
-  it("derives current sync as latest persisted + 1 for active wars when same-war sync is not persisted", () => {
+  it("leaves current sync unknown for active wars when same-war sync is not persisted", () => {
     const resolved = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "inWar",
@@ -22,13 +22,13 @@ describe("fwa match resolved current sync", () => {
     });
 
     expect(resolved).toMatchObject({
-      syncNumber: 476,
-      source: "derived_latest_plus_one",
-      isDerived: true,
+      syncNumber: null,
+      source: "none",
+      isDerived: false,
     });
   });
 
-  it("prefers same-war persisted sync over derived latest + 1", () => {
+  it("prefers same-war persisted sync over an unavailable fallback", () => {
     const resolved = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "preparation",
@@ -61,7 +61,7 @@ describe("fwa match resolved current sync", () => {
     expect(identity.positivelyResolved).toBe(true);
   });
 
-  it("uses resolved current sync parity for tie-break projections instead of stale persisted sync", () => {
+  it("leaves equal-point tie-break projection unresolved without sync evidence", () => {
     const resolved = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "inWar",
@@ -78,7 +78,7 @@ describe("fwa match resolved current sync", () => {
       1000,
       resolved.syncNumber,
     );
-    const staleOutcome = deriveProjectedOutcomeForTest(
+    const latestBaselineOutcome = deriveProjectedOutcomeForTest(
       "B000",
       "A000",
       1000,
@@ -86,8 +86,8 @@ describe("fwa match resolved current sync", () => {
       475,
     );
 
-    expect(resolvedOutcome).toBe("WIN");
-    expect(staleOutcome).toBe("LOSE");
+    expect(resolvedOutcome).toBeNull();
+    expect(latestBaselineOutcome).toBe("LOSE");
   });
 
   it("prefers warStartTime over a stale same-warId sync row when both are available", () => {
@@ -118,7 +118,7 @@ describe("fwa match resolved current sync", () => {
     expect(resolved?.warStartTime?.toISOString()).toBe("2026-03-12T09:00:00.000Z");
   });
 
-  it("renders resolved fallback sync for active war when no same-war persisted row exists", () => {
+  it("renders unknown sync for active war when no same-war persisted row exists", () => {
     const resolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "inWar",
@@ -141,10 +141,10 @@ describe("fwa match resolved current sync", () => {
       },
     });
 
-    expect(renderedSync).toBe(476);
+    expect(renderedSync).toBeNull();
   });
 
-  it("uses the same derived sync value for display and tie-break parity when same-war sync is missing", () => {
+  it("keeps equal-point display and tie-break unresolved when same-war sync is missing", () => {
     const resolution = resolveActiveWarSyncNumber({
       identity: buildActiveWarSyncIdentity({
         warState: "preparation",
@@ -167,7 +167,7 @@ describe("fwa match resolved current sync", () => {
       },
     });
 
-    expect(renderedSync).toBe(482);
+    expect(renderedSync).toBeNull();
     expect(renderedSync).toBe(resolution.syncNumber);
 
     const outcomeFromResolved = deriveProjectedOutcomeForTest(
@@ -185,7 +185,7 @@ describe("fwa match resolved current sync", () => {
       renderedSync,
     );
 
-    expect(outcomeFromResolved).toBe("WIN");
+    expect(outcomeFromResolved).toBeNull();
     expect(outcomeFromRendered).toBe(outcomeFromResolved);
   });
 
