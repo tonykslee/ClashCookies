@@ -24,6 +24,19 @@ type SchedulerConfig = {
   jitterMs: number;
 };
 
+export type FreshFwaClansCatalogSyncHookInput = {
+  now: Date;
+  status: "SUCCESS" | "NOOP";
+  rowCount: number;
+  changedRowCount: number;
+};
+
+export type FwaFeedSchedulerOptions = {
+  onFreshClansCatalogSync?: (
+    input: FreshFwaClansCatalogSyncHookInput,
+  ) => Promise<void> | void;
+};
+
 type TrackedClanWarsWatchSummary = {
   trackedClanCount: number;
   activeClanCount: number;
@@ -86,6 +99,7 @@ export const resolveTrackedClanWarsWatchSummaryLogLevelForTest =
 /** Purpose: orchestrate bounded fwastats feed scheduler jobs with explicit cadence and cost controls. */
 export class FwaFeedSchedulerService {
   private readonly config: SchedulerConfig;
+  private readonly onFreshClansCatalogSync?: FwaFeedSchedulerOptions["onFreshClansCatalogSync"];
   private readonly syncState = new FwaFeedSyncStateService();
   private readonly clansSync = new FwaClansCatalogSyncService();
   private readonly membersSync = new FwaClanMembersSyncService();
@@ -104,7 +118,8 @@ export class FwaFeedSchedulerService {
   private readonly trackedClanWarsWatchSummaryLogGate = new SteadyStateLogGate();
 
   /** Purpose: initialize scheduler config from env with safe minimum intervals and bounded defaults. */
-  constructor() {
+  constructor(options: FwaFeedSchedulerOptions = {}) {
+    this.onFreshClansCatalogSync = options.onFreshClansCatalogSync;
     const clansMinutesRaw = toInt(process.env.FWA_CLANS_SYNC_CRON_OR_MINUTES, 360);
     const clanMembersMinutesRaw = toInt(process.env.FWA_CLAN_MEMBERS_SYNC_MINUTES, 15);
     const sweepTickMinutesRaw = toInt(process.env.FWA_SWEEP_TICK_MINUTES, 15);
@@ -215,6 +230,23 @@ export class FwaFeedSchedulerService {
           status: "success",
           detail: `rows=${result.rowCount} changed=${result.changedRowCount} status=${result.status}`,
         });
+        if (
+          this.onFreshClansCatalogSync &&
+          (result.status === "SUCCESS" || result.status === "NOOP")
+        ) {
+          try {
+            await this.onFreshClansCatalogSync({
+              now,
+              status: result.status,
+              rowCount: result.rowCount,
+              changedRowCount: result.changedRowCount,
+            });
+          } catch (error) {
+            console.error(
+              `[fwa-weight-alert] evaluation_failed sync_status=${result.status} error=${formatError(error)}`,
+            );
+          }
+        }
       });
     } catch (error) {
       const nextEligibleAt = new Date(now.getTime() + this.config.clansIntervalMs);

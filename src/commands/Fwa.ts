@@ -17527,7 +17527,7 @@ export const Fwa: Command = {
             `Leader channel: ${leaderChannel}`,
             `Lead role: ${leadRole}`,
             `Routing readiness: **${status.routingReady ? "READY" : "NOT READY"}**${status.routingReady ? "" : " (leader channel and lead role are both required)"}`,
-            "Automatic alert delivery is not enabled by this command yet.",
+            "Automatic delivery is evaluated after successful fresh Clans.json catalog syncs.",
           ].join("\n"),
         );
       } catch (error) {

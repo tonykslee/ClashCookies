@@ -164,6 +164,8 @@ describe("/fwa persisted weight command output", () => {
     expect(content).toContain("Leader channel: not configured");
     expect(content).toContain("Lead role: <@&role-1> (configured)");
     expect(content).toContain("Routing readiness: **NOT READY**");
+    expect(content).toContain("Automatic delivery is evaluated after successful fresh Clans.json catalog syncs.");
+    expect(content).not.toContain("not enabled by this command yet");
   });
 
   it("sets a threshold and enables the alert by default", async () => {

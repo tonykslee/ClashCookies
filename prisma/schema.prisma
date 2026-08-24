@@ -52,6 +52,7 @@ model TrackedClan {
   createdAt           DateTime         @default(now())
   repPlayerTags       TrackedClanRep[]
   weightAlertConfig   FwaWeightAlertConfig?
+  weightAlertDeliveries FwaWeightAlertDelivery[]
 }
 
 model FwaWeightAlertConfig {
@@ -62,6 +63,35 @@ model FwaWeightAlertConfig {
   updatedByDiscordUserId  String?
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
+}
+
+enum FwaWeightAlertDeliveryStatus {
+  CLAIMED
+  SENT
+  FAILED
+}
+
+model FwaWeightAlertDelivery {
+  id                 String                         @id @default(cuid())
+  clanTag            String
+  weightSubmitDate   DateTime
+  status             FwaWeightAlertDeliveryStatus @default(CLAIMED)
+  claimToken         String?
+  claimedAt          DateTime?
+  attemptCount       Int                            @default(0)
+  lastAttemptAt      DateTime?
+  sentAt             DateTime?
+  discordMessageId   String?
+  failureCode        String?
+  failureReason      String?
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+
+  clan               TrackedClan                    @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
+
+  @@unique([clanTag, weightSubmitDate])
+  @@index([status, claimedAt])
+  @@index([clanTag, createdAt])
 }
 
 model TrackedClanRep {
