@@ -134,7 +134,8 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     summary: "Maintain persisted player and Discord-user ban records.",
     details: [
       "Use `/ban add player:<player tag> ...` or `/ban add user:<discord user> ...` to create or update one active ban record.",
-      "Optional `clan:<tracked clan>` stores ban-context metadata for list output and banned-player join alerts, and it autocompletes from tracked clans.",
+      "`clan:<tracked clan>` is optional: when supplied, a PLAYER or USER ban applies to banned-player join alerts only when the exact player or a linked account is observed joining that clan; when omitted, the ban is global across tracked clans. The option autocompletes from tracked clans.",
+      "PLAYER bans apply only to the exact player tag, while USER bans apply to any PlayerLink associated with that Discord user.",
       "Ban action logs route through `/bot-logs type:ban-log`, while banned-player join alerts route through `/bot-logs type:ban-join-alert`.",
       "`player` and `user` are mutually exclusive; runtime validation rejects requests that provide neither or both.",
       "The `reason` field is optional and `duration` accepts `mo`, `w`, `d`, or `h` suffixes like `3mo`, `2w`, `10d`, and `12h`.",
