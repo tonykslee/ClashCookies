@@ -137,7 +137,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
     prismaMock.syncEvent.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.syncEvent.deleteMany.mockResolvedValue({ count: 1 });
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#CLAN", logChannelId: "123", leaderChannelId: null },
+      { tag: "#CLAN", logChannelId: "123", leaderChannelId: null, chatChannelId: null },
     ]);
   });
 
@@ -576,6 +576,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
   it.each([
     ["CLAN_LOG", "missing_clan_log_channel"],
     ["CLAN_LEAD", "missing_clan_lead_channel"],
+    ["CLAN_CHAT", "missing_clan_chat_channel"],
     ["BOT_LOG", "missing_bot_log_channel"],
     ["CUSTOM", "missing_custom_channel"],
   ] as const)(
@@ -606,6 +607,7 @@ describe("SYNC_ZERO_DEVIATION", () => {
           tag: "#CLAN",
           logChannelId: destinationRepaired ? "123" : null,
           leaderChannelId: destinationRepaired ? "123" : null,
+          chatChannelId: destinationRepaired ? "123" : null,
         },
       ]));
       prismaMock.syncEvent.findMany.mockImplementation(async () => (
@@ -772,8 +774,8 @@ describe("SYNC_ZERO_DEVIATION", () => {
       { ...makeSnapshot(), id: "snapshot-2", clanTag: "#SECOND", clanName: "Second" },
     ]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#CLAN", logChannelId: "123", leaderChannelId: null },
-      { tag: "#SECOND", logChannelId: "456", leaderChannelId: null },
+      { tag: "#CLAN", logChannelId: "123", leaderChannelId: null, chatChannelId: "789" },
+      { tag: "#SECOND", logChannelId: "456", leaderChannelId: null, chatChannelId: null },
     ]);
     const channelFetch = vi.fn().mockImplementation(async (id: string) => ({
       ...makeChannel(),
@@ -792,6 +794,14 @@ describe("SYNC_ZERO_DEVIATION", () => {
     const result = await service.runCycle(NOW);
 
     expect(result.delivered).toBe(2);
+    expect(prismaMock.trackedClan.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        tag: true,
+        logChannelId: true,
+        leaderChannelId: true,
+        chatChannelId: true,
+      }),
+    }));
     expect(prismaMock.syncClanReadinessSnapshot.createMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.arrayContaining([
         expect.objectContaining({ clanTag: "#CLAN" }),

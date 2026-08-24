@@ -623,6 +623,7 @@ type SubscriptionRow = {
   loseStyle: string | null;
   trackedLogChannelId: string | null;
   trackedLeaderChannelId: string | null;
+  trackedChatChannelId: string | null;
   clanRoleId: string | null;
   pointsConfirmedByClanMail: boolean | null;
   pointsNeedsValidation: boolean | null;
@@ -646,6 +647,7 @@ type ClanGoalDeliveryContext = Pick<
   | "loseStyle"
   | "trackedLogChannelId"
   | "trackedLeaderChannelId"
+  | "trackedChatChannelId"
 >;
 
 type ClanGoalDeliveryResult = "delivered" | "skipped" | "failed";
@@ -2562,6 +2564,7 @@ export class WarEventLogService {
         mailChannelId: true,
         logChannelId: true,
         leaderChannelId: true,
+        chatChannelId: true,
         loseStyle: true,
       },
     });
@@ -2628,6 +2631,7 @@ export class WarEventLogService {
       loseStyle: tracked?.loseStyle ?? null,
       trackedLogChannelId: tracked?.logChannelId ?? null,
       trackedLeaderChannelId: tracked?.leaderChannelId ?? null,
+      trackedChatChannelId: tracked?.chatChannelId ?? null,
       clanRoleId: null,
       pointsConfirmedByClanMail: null,
       pointsNeedsValidation: null,
@@ -3646,6 +3650,7 @@ export class WarEventLogService {
           tc."loseStyle" AS "loseStyle",
           tc."logChannelId" AS "trackedLogChannelId",
           tc."leaderChannelId" AS "trackedLeaderChannelId",
+          tc."chatChannelId" AS "trackedChatChannelId",
           tc."clanRoleId" AS "clanRoleId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
@@ -4224,6 +4229,9 @@ export class WarEventLogService {
           cw."clanStars",cw."opponentStars",cw."pendingEventType",cw."pendingEventTargetState",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
           cw."opponentTag",cw."opponentName",cw."clanName",
           tc."clanRoleId" AS "clanRoleId",
+          tc."logChannelId" AS "trackedLogChannelId",
+          tc."leaderChannelId" AS "trackedLeaderChannelId",
+          tc."chatChannelId" AS "trackedChatChannelId",
           cps."confirmedByClanMail" AS "pointsConfirmedByClanMail",
           cps."needsValidation" AS "pointsNeedsValidation",
           cps."lastSuccessfulPointsApiFetchAt" AS "pointsLastSuccessfulFetchAt",
@@ -5873,6 +5881,7 @@ export class WarEventLogService {
       routingConfig,
       clanLogChannelId: input.sub.trackedLogChannelId,
       clanLeaderChannelId: input.sub.trackedLeaderChannelId,
+      clanChatChannelId: input.sub.trackedChatChannelId,
       botLogChannelId,
     });
     if (destination.channelId === null) {
@@ -6154,6 +6163,7 @@ export class WarEventLogService {
           loseStyle: true,
           logChannelId: true,
           leaderChannelId: true,
+          chatChannelId: true,
         },
       });
       const sub: ClanGoalDeliveryContext = {
@@ -6163,6 +6173,7 @@ export class WarEventLogService {
         loseStyle: tracked?.loseStyle ?? null,
         trackedLogChannelId: tracked?.logChannelId ?? null,
         trackedLeaderChannelId: tracked?.leaderChannelId ?? null,
+        trackedChatChannelId: tracked?.chatChannelId ?? null,
       };
 
       for (const result of [fwaEvaluation, noMissedEvaluation]) {
@@ -6314,6 +6325,7 @@ export class WarEventLogService {
             loseStyle: true,
             logChannelId: true,
             leaderChannelId: true,
+            chatChannelId: true,
           },
         }),
       ]);
@@ -6430,6 +6442,7 @@ export class WarEventLogService {
           loseStyle: tracked?.loseStyle ?? null,
           trackedLogChannelId: tracked?.logChannelId ?? null,
           trackedLeaderChannelId: tracked?.leaderChannelId ?? null,
+          trackedChatChannelId: tracked?.chatChannelId ?? null,
         };
         for (const result of [fwaEvaluation, noMissedEvaluation]) {
           evaluatedCount += 1;

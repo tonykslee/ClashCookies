@@ -37,13 +37,14 @@ export type BaseSwapBotLogRoutingMode =
   | "BOT_LOG"
   | "CUSTOM"
   | "DISABLED";
+export type RoutedBotLogRoutingMode = BaseSwapBotLogRoutingMode | "CLAN_CHAT";
 export type BaseSwapBotLogRoutingConfig = {
   routingMode: BaseSwapBotLogRoutingMode;
   channelId: string | null;
   legacy: boolean;
 };
 export type RoutedBotLogRoutingConfig = {
-  routingMode: BaseSwapBotLogRoutingMode;
+  routingMode: RoutedBotLogRoutingMode;
   channelId: string | null;
   legacy: boolean;
   configured: boolean;
@@ -95,28 +96,38 @@ function normalizeBaseSwapRoutingMode(
   return null;
 }
 
+function normalizeRoutedBotLogRoutingMode(
+  input: string | null | undefined,
+): RoutedBotLogRoutingMode | null {
+  const value = String(input ?? "").trim().toUpperCase();
+  if (value === "CLAN_CHAT") return "CLAN_CHAT";
+  return normalizeBaseSwapRoutingMode(value);
+}
+
 function getAllowedRoutingModes(
   type: RoutedBotLogChannelType,
-): ReadonlySet<BaseSwapBotLogRoutingMode> {
+): ReadonlySet<RoutedBotLogRoutingMode> {
   if (type === "ban-log" || type === "sync-retrospective") {
-    return new Set<BaseSwapBotLogRoutingMode>([
+    return new Set<RoutedBotLogRoutingMode>([
       "BOT_LOG",
       "CUSTOM",
       "DISABLED",
     ]);
   }
-  return new Set<BaseSwapBotLogRoutingMode>([
+  const modes = new Set<RoutedBotLogRoutingMode>([
     "CLAN_LOG",
     "CLAN_LEAD",
     "BOT_LOG",
     "CUSTOM",
     "DISABLED",
   ]);
+  if (type === "clan-goals") modes.add("CLAN_CHAT");
+  return modes;
 }
 
 function getDefaultRoutingMode(
   type: RoutedBotLogChannelType,
-): BaseSwapBotLogRoutingMode {
+): RoutedBotLogRoutingMode {
   return type === "ban-join-alert" ? "CLAN_LEAD" : "DISABLED";
 }
 
@@ -144,7 +155,7 @@ function parseRoutedBotLogRoutingConfig(
       routingMode?: string | null;
       channelId?: string | null;
     };
-    const routingMode = normalizeBaseSwapRoutingMode(parsed.routingMode);
+    const routingMode = normalizeRoutedBotLogRoutingMode(parsed.routingMode);
     const allowedModes = getAllowedRoutingModes(type);
     if (!routingMode || !allowedModes.has(routingMode)) {
       return buildDefaultRoutedBotLogRoutingConfig(type);
@@ -268,14 +279,14 @@ export class BotLogChannelService {
   async setRoutingConfigForType(input: {
     guildId: string;
     type: RoutedBotLogChannelType;
-    routingMode: BaseSwapBotLogRoutingMode;
+    routingMode: RoutedBotLogRoutingMode;
     channelId?: string | null;
   }): Promise<void> {
     const existingEnabledAt = input.type === "sync-retrospective"
       ? await this.getSyncRetrospectiveEnabledAt(input.guildId)
       : null;
     const allowedModes = getAllowedRoutingModes(input.type);
-    const routingMode = normalizeBaseSwapRoutingMode(input.routingMode);
+    const routingMode = normalizeRoutedBotLogRoutingMode(input.routingMode);
     if (!routingMode || !allowedModes.has(routingMode)) {
       throw new Error("INVALID_ROUTED_BOT_LOG_ROUTING");
     }

@@ -223,6 +223,10 @@ describe("command coverage", () => {
     expect(botLogsHelpText).toContain("type:ban-log");
     expect(botLogsHelpText).toContain("type:ban-join-alert");
     expect(botLogsHelpText).toContain("type:clan-goals");
+    expect(normalized).toContain("enable:<clan-log channel|clan-lead channel|clan-chat channel|bot-log channel|custom|false>");
+    expect(normalized).toContain("/bot-logs type:clan-goals enable:clan-chat channel");
+    expect(normalized).toContain("configured `/clan configure chat-channel`");
+    expect(normalized).toContain("without a configured chat channel are skipped with no fallback");
     expect(botLogsHelpText).toContain("type:sync-retrospective");
     expect(normalized).toContain("does not backfill syncs completed before enablement");
     expect(normalized).toContain("same summary/dropdowns as manual `/sync retrospective`");

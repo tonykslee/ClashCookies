@@ -488,8 +488,13 @@ export class SyncClanGoalService {
     const clanTags = [...new Set(undispatched.map((snapshot) => normalizeTag(snapshot.clanTag)))];
     const trackedClans = (await (prisma as any).trackedClan.findMany({
       where: { tag: { in: clanTags } },
-      select: { tag: true, logChannelId: true, leaderChannelId: true },
-    })) as Array<{ tag: string; logChannelId: string | null; leaderChannelId: string | null }>;
+      select: { tag: true, logChannelId: true, leaderChannelId: true, chatChannelId: true },
+    })) as Array<{
+      tag: string;
+      logChannelId: string | null;
+      leaderChannelId: string | null;
+      chatChannelId: string | null;
+    }>;
     const trackedByTag = new Map(trackedClans.map((clan) => [normalizeTag(clan.tag), clan]));
     const routingByGuild = new Map<string, Promise<any>>();
     const botChannelByGuild = new Map<string, Promise<string | null>>();
@@ -512,6 +517,7 @@ export class SyncClanGoalService {
           routingConfig,
           clanLogChannelId: tracked?.logChannelId,
           clanLeaderChannelId: tracked?.leaderChannelId,
+          clanChatChannelId: tracked?.chatChannelId,
           botLogChannelId,
         });
         if (destination.channelId === null) {
