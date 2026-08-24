@@ -263,13 +263,54 @@ function configureCommonMocks(input: {
   prismaMock.playerLink.findMany.mockResolvedValue([
     {
       playerTag: "#PYLQ0289",
-      discordUserId: input.currentDiscordUserId ?? "222222222222222222",
+      discordUserId:
+        input.currentDiscordUserId === undefined
+          ? "222222222222222222"
+          : input.currentDiscordUserId,
     },
   ]);
   prismaMock.unlinkedPlayer.findMany.mockResolvedValue([]);
   prismaMock.unlinkedPlayer.deleteMany.mockResolvedValue({ count: 0 });
   prismaMock.unlinkedPlayer.upsert.mockResolvedValue(undefined);
   prismaMock.unlinkedPlayer.update.mockResolvedValue(undefined);
+}
+
+async function reconcileBannedJoinAlerts(input: {
+  bans: BanRow[];
+  links: Array<{ playerTag: string; discordUserId: string | null }>;
+  observedMembers: Array<{
+    playerTag: string;
+    playerName: string;
+    clanTag: string;
+    clanName: string;
+  }>;
+  alertRows?: AlertRow[];
+}) {
+  const service = new UnlinkedMemberAlertService();
+  const alertStore = createAlertStore(input.alertRows);
+  createBanStore(input.bans);
+  configureCommonMocks({ routingMode: "CLAN_LOG", currentDiscordUserId: null });
+  prismaMock.playerLink.findMany.mockResolvedValue(input.links);
+  const client = createClient();
+
+  await service.reconcileGuildAlerts({
+    client,
+    guildId: "guild-1",
+    cocService: {} as any,
+    observedFwaClans: [
+      {
+        clanTag: input.observedMembers[0]?.clanTag ?? "#2QG2C08UP",
+        clanName: input.observedMembers[0]?.clanName ?? "Alpha Clan",
+        logChannelId: "111111111111111111",
+        members: input.observedMembers.map(({ playerTag, playerName }) => ({
+          playerTag,
+          playerName,
+        })),
+      },
+    ],
+  });
+
+  return { client, alertStore };
 }
 
 describe("banned join alerts", () => {
@@ -386,61 +427,160 @@ describe("banned join alerts", () => {
     expect(alertStore.rows[0]?.alertedAt).toBeInstanceOf(Date);
   });
 
-  it("includes ban clan context in user-ban alerts and keeps the joined clan distinct", async () => {
-    const service = new UnlinkedMemberAlertService();
-    createBanStore([
-      makeBanRow({
-        id: "ban-player-other-clan",
-        targetKind: "PLAYER",
-        playerTag: "#PYLQ0289",
-        clanTag: "#QGRJ0289",
-        clanName: "Gamma Clan",
-        reason: "direct abuse",
-      }),
-      makeBanRow({
-        id: "ban-user",
-        targetKind: "USER",
-        playerTag: null,
-        discordUserId: "222222222222222222",
-        clanTag: "#QGRJ0289",
-        clanName: "Gamma Clan",
-        reason: "user abuse",
-        expiresAt: new Date("2026-07-08T12:00:00.000Z"),
-      }),
-    ]);
-    createAlertStore();
-    configureCommonMocks({
-      routingMode: "CLAN_LEAD",
-      trackedClanLeaderChannelId: "222222222222222222",
-      currentDiscordUserId: "222222222222222222",
-    });
-    const client = createClient();
-
-    await service.reconcileGuildAlerts({
-      client,
-      guildId: "guild-1",
-      cocService: {} as any,
-      observedFwaClans: [
+  it("does not alert for a scoped user ban in a different clan", async () => {
+    const { client, alertStore } = await reconcileBannedJoinAlerts({
+      bans: [
+        makeBanRow({
+          id: "ban-user",
+          targetKind: "USER",
+          playerTag: null,
+          discordUserId: "222222222222222222",
+          clanTag: "#QGRJ0289",
+          clanName: "Gamma Clan",
+          reason: "user abuse",
+          expiresAt: new Date("2026-07-08T12:00:00.000Z"),
+        }),
+      ],
+      links: [{ playerTag: "#PYLQ0289", discordUserId: "222222222222222222" }],
+      observedMembers: [
         {
+          playerTag: "#PYLQ0289",
+          playerName: "Player One",
           clanTag: "#2QG2C08UP",
           clanName: "Alpha Clan",
-          logChannelId: "111111111111111111",
-          members: [{ playerTag: "#PYLQ0289", playerName: "Player One" }],
         },
       ],
     });
 
-    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("222222222222222222").send;
-    expect(send).toHaveBeenCalledWith({
-      content: [
-        "A banned player, Player One (`#PYLQ0289`), has joined **Alpha Clan**.",
-        "Ban target: Discord user ban <@222222222222222222>",
-        "Ban clan: Gamma Clan (`#QGRJ0289`)",
-        "Reason: user abuse",
-        "Expires: <t:1783512000:R>",
-      ].join("\n"),
-      allowedMentions: { parse: [] },
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).not.toHaveBeenCalled();
+    expect(alertStore.rows).toHaveLength(0);
+  });
+
+  it("alerts for a clanless direct player ban in any tracked clan", async () => {
+    const { client, alertStore } = await reconcileBannedJoinAlerts({
+      bans: [
+        makeBanRow({
+          id: "ban-global-player",
+          targetKind: "PLAYER",
+          playerTag: "#PYLQ0289",
+          clanTag: "",
+        }),
+      ],
+      links: [{ playerTag: "#PYLQ0289", discordUserId: "222222222222222222" }],
+      observedMembers: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Player One",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+      ],
     });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(alertStore.rows).toHaveLength(1);
+  });
+
+  it("alerts for a scoped user ban when the linked player joins the matching clan", async () => {
+    const { client, alertStore } = await reconcileBannedJoinAlerts({
+      bans: [
+        makeBanRow({
+          id: "ban-user",
+          targetKind: "USER",
+          playerTag: null,
+          discordUserId: "222222222222222222",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        }),
+      ],
+      links: [{ playerTag: "#PYLQ0289", discordUserId: "222222222222222222" }],
+      observedMembers: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Player One",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+      ],
+    });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(alertStore.rows).toHaveLength(1);
+  });
+
+  it("alerts for every linked player on a clanless user ban", async () => {
+    const { client, alertStore } = await reconcileBannedJoinAlerts({
+      bans: [
+        makeBanRow({
+          id: "ban-global-user",
+          targetKind: "USER",
+          playerTag: null,
+          discordUserId: "222222222222222222",
+          clanTag: "",
+        }),
+      ],
+      links: [
+        { playerTag: "#PYLQ0289", discordUserId: "222222222222222222" },
+        { playerTag: "#PYLQ0202", discordUserId: "222222222222222222" },
+      ],
+      observedMembers: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Player One",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+        {
+          playerTag: "#PYLQ0202",
+          playerName: "Player Two",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+      ],
+    });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(alertStore.rows).toHaveLength(2);
+  });
+
+  it("does not apply a direct player ban to another linked account", async () => {
+    const { client, alertStore } = await reconcileBannedJoinAlerts({
+      bans: [
+        makeBanRow({
+          id: "ban-player",
+          targetKind: "PLAYER",
+          playerTag: "#PYLQ0289",
+          clanTag: "",
+        }),
+      ],
+      links: [
+        { playerTag: "#PYLQ0289", discordUserId: "222222222222222222" },
+        { playerTag: "#PYLQ0202", discordUserId: "222222222222222222" },
+      ],
+      observedMembers: [
+        {
+          playerTag: "#PYLQ0289",
+          playerName: "Player One",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+        {
+          playerTag: "#PYLQ0202",
+          playerName: "Player Two",
+          clanTag: "#2QG2C08UP",
+          clanName: "Alpha Clan",
+        },
+      ],
+    });
+
+    const send = (client.guilds.cache.get("guild-1") as any).channels.cache.get("111111111111111111").send;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].content).toContain("#PYLQ0289");
+    expect(alertStore.rows.map((row) => row.playerTag)).toEqual(["#PYLQ0289"]);
   });
 
   it.each([
