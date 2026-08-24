@@ -4424,6 +4424,43 @@ describe("WarEventLogService war-event poll targets", () => {
     );
   });
 
+  it("routes live clan goals through the tracked clan chat channel", async () => {
+    const send = vi.fn().mockResolvedValue({ id: "clan-chat-goal-message" });
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn().mockResolvedValue(makeTextChannel(send)) } } as any,
+      {} as any,
+    );
+    vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
+      routingMode: "CLAN_CHAT",
+      channelId: null,
+      legacy: false,
+      configured: true,
+    });
+    prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
+    prismaMock.warEvent.updateMany.mockResolvedValue({ count: 1 });
+
+    await (service as any).evaluateAndDeliverLiveWarClanGoals({
+      sub: {
+        guildId: testGuildId,
+        clanTag: testClanTag,
+        clanName: "Goal Clan",
+        loseStyle: "TRADITIONAL",
+        trackedLogChannelId: null,
+        trackedLeaderChannelId: null,
+        trackedChatChannelId: "888888888888888888",
+      },
+      currentState: "inWar",
+      matchType: "FWA",
+      inferredMatchType: false,
+      authoritativeMatchType: "FWA",
+      outcome: "LOSE",
+      clanStars: 103,
+      resolvedWarId: 778,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("matches exact physical-war identity while treating war IDs as supplemental", () => {
     const startTime = new Date("2026-08-06T11:34:09.000Z");
     const base = {
@@ -4818,6 +4855,7 @@ describe("WarEventLogService war-event poll targets", () => {
       loseStyle: "TRADITIONAL",
       logChannelId: null,
       leaderChannelId: null,
+      chatChannelId: "888888888888888888",
     });
     prismaMock.warEvent.findUnique.mockResolvedValue(null);
     prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
@@ -4847,8 +4885,8 @@ describe("WarEventLogService war-event poll targets", () => {
     const fetch = vi.fn().mockResolvedValue(makeTextChannel(send));
     const service = new WarEventLogService({ channels: { fetch } } as any, {} as any);
     vi.spyOn((service as any).botLogChannels, "getRoutingConfigForType").mockResolvedValue({
-      routingMode: "CUSTOM",
-      channelId: "999999999999999991",
+      routingMode: "CLAN_CHAT",
+      channelId: null,
       legacy: false,
       configured: true,
     });
@@ -4897,6 +4935,7 @@ describe("WarEventLogService war-event poll targets", () => {
         loseStyle: "TRADITIONAL",
         logChannelId: null,
         leaderChannelId: null,
+        chatChannelId: "888888888888888888",
       },
     ]);
     prismaMock.warEvent.create.mockResolvedValue({ createdAt: new Date() });
@@ -5018,6 +5057,7 @@ describe("WarEventLogService war-event poll targets", () => {
     expect(result).toBe(false);
     const queryArg = prismaMock.$queryRaw.mock.calls[0]?.[0] as { strings?: string[] };
     expect(queryArg?.strings?.join("")).toContain('tc."clanRoleId" AS "clanRoleId"');
+    expect(queryArg?.strings?.join("")).toContain('tc."chatChannelId" AS "trackedChatChannelId"');
   });
 
   it("includes a tracked clan with ClanNotifyConfig even when no CurrentWar row exists", async () => {

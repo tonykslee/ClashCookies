@@ -34,6 +34,7 @@ export type ClanGoalDefinition = {
 export type ClanGoalRoutingSource =
   | "clan_log"
   | "clan_lead"
+  | "clan_chat"
   | "bot_log"
   | "custom";
 
@@ -51,6 +52,7 @@ export type ClanGoalDestinationResolution =
         | "disabled"
         | "missing_clan_log_channel"
         | "missing_clan_lead_channel"
+        | "missing_clan_chat_channel"
         | "missing_bot_log_channel"
         | "missing_custom_channel";
     };
@@ -628,6 +630,7 @@ export function resolveClanGoalDestination(input: {
   };
   clanLogChannelId?: string | null;
   clanLeaderChannelId?: string | null;
+  clanChatChannelId?: string | null;
   botLogChannelId?: string | null;
 }): ClanGoalDestinationResolution {
   const mode = input.routingConfig.routingMode;
@@ -638,6 +641,7 @@ export function resolveClanGoalDestination(input: {
   const candidates: Record<Exclude<ClanGoalRoutingSource, "custom">, string | null> = {
     clan_log: normalizeChannelId(input.clanLogChannelId),
     clan_lead: normalizeChannelId(input.clanLeaderChannelId),
+    clan_chat: normalizeChannelId(input.clanChatChannelId),
     bot_log: normalizeChannelId(input.botLogChannelId),
   };
   if (mode === "CLAN_LOG") {
@@ -649,6 +653,11 @@ export function resolveClanGoalDestination(input: {
     return candidates.clan_lead
       ? { channelId: candidates.clan_lead, source: "clan_lead" }
       : { channelId: null, source: null, skipReason: "missing_clan_lead_channel" };
+  }
+  if (mode === "CLAN_CHAT") {
+    return candidates.clan_chat
+      ? { channelId: candidates.clan_chat, source: "clan_chat" }
+      : { channelId: null, source: null, skipReason: "missing_clan_chat_channel" };
   }
   if (mode === "BOT_LOG") {
     return candidates.bot_log
@@ -698,6 +707,7 @@ export function logClanGoalOutcome(input: {
     "disabled",
     "missing_clan_log_channel",
     "missing_clan_lead_channel",
+    "missing_clan_chat_channel",
     "missing_bot_log_channel",
     "missing_custom_channel",
     "already_delivered",

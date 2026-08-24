@@ -232,6 +232,7 @@ describe("BotLogChannelService typed routing", () => {
     const modes = [
       ["CLAN_LOG", null],
       ["CLAN_LEAD", null],
+      ["CLAN_CHAT", null],
       ["BOT_LOG", null],
       ["CUSTOM", "666666666666666666"],
       ["DISABLED", null],
@@ -250,6 +251,43 @@ describe("BotLogChannelService typed routing", () => {
         configured: true,
       });
     }
+  });
+
+  it("allows clan-chat only for clan-goals and keeps base-swap and other routed types closed", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "clan-goals",
+      routingMode: "CLAN_CHAT",
+    });
+    await expect(service.getRoutingConfigForType("guild-1", "clan-goals")).resolves.toEqual({
+      routingMode: "CLAN_CHAT",
+      channelId: null,
+      legacy: false,
+      configured: true,
+    });
+
+    await expect(service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "ban-log",
+      routingMode: "CLAN_CHAT",
+    } as any)).rejects.toThrow("INVALID_ROUTED_BOT_LOG_ROUTING");
+    await expect(service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "ban-join-alert",
+      routingMode: "CLAN_CHAT",
+    } as any)).rejects.toThrow("INVALID_ROUTED_BOT_LOG_ROUTING");
+    await expect(service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "sync-retrospective",
+      routingMode: "CLAN_CHAT",
+    } as any)).rejects.toThrow("INVALID_ROUTED_BOT_LOG_ROUTING");
+    await expect(service.setBaseSwapRoutingConfig({
+      guildId: "guild-1",
+      routingMode: "CLAN_CHAT",
+    } as any)).rejects.toThrow("INVALID_BASE_SWAP_BOT_LOG_ROUTING");
   });
 
   it("persists base-swap routing config separately from legacy typed channels", async () => {

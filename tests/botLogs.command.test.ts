@@ -81,6 +81,7 @@ describe("/bot-logs command shape", () => {
     expect(enableOption?.choices).toEqual([
       { name: "clan-log channel", value: "clan-log channel" },
       { name: "clan-lead channel", value: "clan-lead channel" },
+      { name: "clan-chat channel", value: "clan-chat channel" },
       { name: "bot-log channel", value: "bot-log channel" },
       { name: "custom", value: "custom" },
       { name: "false", value: "false" },
@@ -403,6 +404,7 @@ describe("/bot-logs behavior", () => {
   it.each([
     ["clan-log channel", "CLAN_LOG", "clan-log channel"],
     ["clan-lead channel", "CLAN_LEAD", "clan-lead channel"],
+    ["clan-chat channel", "CLAN_CHAT", "clan-chat channel"],
     ["bot-log channel", "BOT_LOG", "bot-log channel"],
     ["false", "DISABLED", "disabled"],
   ] as const)("saves clan-goals %s routing", async (enable, routingMode, label) => {
@@ -427,6 +429,29 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content: `Clan goals routing saved: ${label}.`,
     });
+  });
+
+  it("rejects clan-chat for unsupported routed types and base-swap", async () => {
+    const setRoutingConfigForType = vi.mocked(
+      BotLogChannelService.prototype.setRoutingConfigForType,
+    );
+    const setBaseSwapRoutingConfig = vi.mocked(
+      BotLogChannelService.prototype.setBaseSwapRoutingConfig,
+    );
+
+    const banLog = createInteraction({ type: "ban-log", enable: "clan-chat channel" });
+    await BotLogs.run({} as any, banLog as any, {} as any);
+    expect(setRoutingConfigForType).not.toHaveBeenCalled();
+    expect(banLog.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Invalid ban-log routing mode. Use bot-log channel, custom, or false.",
+    }));
+
+    const baseSwap = createInteraction({ type: "base-swap", enable: "clan-chat channel" });
+    await BotLogs.run({} as any, baseSwap as any, {} as any);
+    expect(setBaseSwapRoutingConfig).not.toHaveBeenCalled();
+    expect(baseSwap.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Invalid base-swap routing mode.",
+    }));
   });
 
   it("saves clan-goals custom routing when a channel is provided", async () => {
@@ -474,6 +499,50 @@ describe("/bot-logs behavior", () => {
       ephemeral: true,
       content: "`enable:custom` requires `channel`.",
     });
+  });
+
+  it("does not accept a channel argument with clan-chat routing", async () => {
+    const setRoutingConfigForType = vi.mocked(
+      BotLogChannelService.prototype.setRoutingConfigForType,
+    );
+    const interaction = createInteraction({
+      type: "clan-goals",
+      enable: "clan-chat channel",
+      channel: {
+        id: "999999999999999999",
+        guildId: "100",
+        type: ChannelType.GuildText,
+      },
+    });
+
+    await BotLogs.run({} as any, interaction as any, {} as any);
+
+    expect(setRoutingConfigForType).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "`channel` is only valid with `type:clan-goals enable:custom`.",
+    });
+  });
+
+  it("inspects and lists clan-chat routing without resolving a channel id", async () => {
+    vi.mocked(BotLogChannelService.prototype.getRoutingConfigForType).mockResolvedValue({
+      routingMode: "CLAN_CHAT",
+      channelId: null,
+      legacy: false,
+      configured: true,
+    });
+    const inspect = createInteraction({ type: "clan-goals" });
+    await BotLogs.run({} as any, inspect as any, {} as any);
+    expect(inspect.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Current clan goals routing: clan-chat channel.",
+    });
+
+    const summary = createInteraction();
+    await BotLogs.run({} as any, summary as any, {} as any);
+    expect(summary.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("Clan goals: clan-chat channel"),
+    }));
   });
 
   it("shows clan-goals disabled by default when inspected", async () => {
