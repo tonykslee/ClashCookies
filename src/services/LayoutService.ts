@@ -1,5 +1,6 @@
-import { LayoutRecord, Prisma, PrismaClient } from "@prisma/client";
+import { LayoutRecord, PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
+import { parseClashLayoutLink } from "./ClashLayoutLinkService";
 
 export type CreateLayoutRecordInput = {
   layoutLink: string;
@@ -47,7 +48,7 @@ export class LayoutService {
 
   /** Purpose: create a new layout lifecycle with an explicit submission timestamp. */
   async create(input: CreateLayoutRecordInput): Promise<LayoutRecord> {
-    const layoutLink = input.layoutLink.trim();
+    const { layoutLink } = parseClashLayoutLink(input.layoutLink);
     const existing = await this.findByLayoutLink(layoutLink);
     if (existing) {
       throw new DuplicateLayoutLinkError(layoutLink);
@@ -70,8 +71,17 @@ export class LayoutService {
         },
       });
     } catch (error) {
-      if (isLayoutLinkUniqueViolation(error)) {
-        throw new DuplicateLayoutLinkError(layoutLink);
+      if (isPrismaUniqueConstraintError(error)) {
+        try {
+          const racedRecord = await this.findByLayoutLink(layoutLink);
+          if (racedRecord) {
+            throw new DuplicateLayoutLinkError(layoutLink);
+          }
+        } catch (rereadError) {
+          if (rereadError instanceof DuplicateLayoutLinkError) {
+            throw rereadError;
+          }
+        }
       }
       throw error;
     }
@@ -109,21 +119,13 @@ export class LayoutService {
   }
 }
 
-/** Purpose: classify Prisma unique-link conflicts while preserving unrelated database errors. */
-function isLayoutLinkUniqueViolation(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) && !isKnownRequestErrorShape(error)) {
-    return false;
-  }
-
-  const target = (error as { meta?: { target?: unknown } }).meta?.target;
-  if (Array.isArray(target)) return target.includes("layoutLink");
-  if (typeof target === "string") return target.includes("layoutLink");
-  return true;
-}
-
-/** Purpose: support deterministic unique-conflict handling in tests and adapter implementations. */
-function isKnownRequestErrorShape(error: unknown): error is { code: string; meta?: unknown } {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002";
+/** Purpose: identify Prisma unique conflicts without assuming which unique constraint lost the race. */
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "P2002"
+  );
 }
 
 export const layoutService = new LayoutService();

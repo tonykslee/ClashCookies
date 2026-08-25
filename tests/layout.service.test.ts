@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LayoutRecord } from "@prisma/client";
+import { InvalidClashLayoutLinkError } from "../src/services/ClashLayoutLinkService";
 import {
   DuplicateLayoutLinkError,
   LayoutService,
@@ -11,12 +12,14 @@ const layoutRecordMock = {
   update: vi.fn(),
 };
 
+const VALID_LAYOUT_LINK =
+  "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD";
+
 function buildRecord(overrides: Partial<LayoutRecord> = {}): LayoutRecord {
   const createdAt = new Date("2026-08-24T00:00:00.000Z");
   return {
     id: "layout-1",
-    layoutLink:
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD",
+    layoutLink: VALID_LAYOUT_LINK,
     title: null,
     description: null,
     imageUrl: null,
@@ -136,15 +139,52 @@ describe("LayoutService", () => {
     expect(layoutRecordMock.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "not-a-layout-link",
+    "https://example.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD",
+    "",
+    " ",
+  ])("rejects %j before persistence", async (layoutLink) => {
+    await expect(service.create({ layoutLink })).rejects.toBeInstanceOf(
+      InvalidClashLayoutLinkError
+    );
+
+    expect(layoutRecordMock.findUnique).not.toHaveBeenCalled();
+    expect(layoutRecordMock.create).not.toHaveBeenCalled();
+  });
+
   it("turns a raced layout-link unique conflict into the same deterministic error", async () => {
-    layoutRecordMock.findUnique.mockResolvedValue(null);
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(buildRecord());
     layoutRecordMock.create.mockRejectedValue({
       code: "P2002",
-      meta: { target: ["layoutLink"] },
     });
 
-    await expect(
-      service.create({ layoutLink: "https://link.clashofclans.com/layout" })
-    ).rejects.toBeInstanceOf(DuplicateLayoutLinkError);
+    await expect(service.create({ layoutLink: VALID_LAYOUT_LINK })).rejects.toBeInstanceOf(
+      DuplicateLayoutLinkError
+    );
+    expect(layoutRecordMock.findUnique).toHaveBeenNthCalledWith(2, {
+      where: { layoutLink: VALID_LAYOUT_LINK },
+    });
+  });
+
+  it("rethrows an unrelated P2002 when the attempted layout link still does not exist", async () => {
+    const uniqueError = {
+      code: "P2002",
+      meta: {
+        target: [
+          "discordGuildId",
+          "discordChannelId",
+          "discordMessageId",
+        ],
+      },
+    };
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    layoutRecordMock.create.mockRejectedValue(uniqueError);
+
+    await expect(service.create({ layoutLink: VALID_LAYOUT_LINK })).rejects.toBe(uniqueError);
   });
 });
