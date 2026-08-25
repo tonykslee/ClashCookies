@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "../prisma";
 import { parseClashLayoutLink } from "./ClashLayoutLinkService";
+import { LayoutService } from "./LayoutService";
 
 export const FWA_LAYOUT_TYPES = [
   "RISINGDAWN",
@@ -75,16 +76,17 @@ type FwaLayoutRootDb = FwaLayoutDb & {
 export type FwaLayoutServiceOptions = {
   db?: FwaLayoutDb;
   now?: () => Date;
+  layoutService?: LayoutService;
 };
 
 /** Purpose: provide one transactional owner for canonical FWA layout designation and compatibility copies. */
 export class FwaLayoutService {
   private readonly db: FwaLayoutDb;
-  private readonly now: () => Date;
+  private readonly layoutService: LayoutService;
 
   constructor(options: FwaLayoutServiceOptions = {}) {
     this.db = options.db ?? (prisma as unknown as FwaLayoutDb);
-    this.now = options.now ?? (() => new Date());
+    this.layoutService = options.layoutService ?? new LayoutService({ now: options.now });
   }
 
   /** Purpose: read one canonical FWA designation together with its shared lifecycle record. */
@@ -131,53 +133,23 @@ export class FwaLayoutService {
     }
 
     const layoutLink = parsed.layoutLink;
-    const presentationData: Prisma.LayoutRecordUpdateInput = {};
-    if (input.title !== undefined) presentationData.title = normalizeNullableText(input.title);
-    if (input.description !== undefined) {
-      presentationData.description = normalizeNullableText(input.description);
-    }
-    if (input.imageUrl !== undefined) {
-      presentationData.imageUrl = normalizeNullableText(input.imageUrl);
-    }
-
     const operation = async (transaction: Prisma.TransactionClient) => {
-      const existingFwaLayout = await transaction.fwaLayouts.findUnique({
-        where: {
-          Townhall_Type: {
-            Townhall: parsed.townHall,
-            Type: input.type,
-          },
+      const layoutRecord = await this.layoutService.getOrCreate(
+        {
+          layoutLink,
+          ...(input.title !== undefined
+            ? { title: normalizeNullableText(input.title) }
+            : {}),
+          ...(input.description !== undefined
+            ? { description: normalizeNullableText(input.description) }
+            : {}),
+          ...(input.imageUrl !== undefined
+            ? { imageUrl: normalizeNullableText(input.imageUrl) }
+            : {}),
+          postedByDiscordUserId: input.postedByDiscordUserId,
         },
-      });
-      let layoutRecord = await transaction.layoutRecord.findUnique({
-        where: { layoutLink },
-      });
-
-      if (!layoutRecord) {
-        layoutRecord = await transaction.layoutRecord.create({
-          data: {
-            layoutLink,
-            title: input.title === undefined ? null : normalizeNullableText(input.title),
-            description:
-              input.description === undefined
-                ? null
-                : normalizeNullableText(input.description),
-            imageUrl:
-              input.imageUrl === undefined
-                ? existingFwaLayout?.ImageUrl ?? null
-                : normalizeNullableText(input.imageUrl),
-            postedByDiscordUserId: input.postedByDiscordUserId ?? null,
-            submittedAt: new Date(this.now().getTime()),
-            lastConfirmedAt: null,
-            lastConfirmedByDiscordUserId: null,
-          },
-        });
-      } else if (Object.keys(presentationData).length > 0) {
-        layoutRecord = await transaction.layoutRecord.update({
-          where: { id: layoutRecord.id },
-          data: presentationData,
-        });
-      }
+        transaction.layoutRecord,
+      );
 
       const fwaLayout = await transaction.fwaLayouts.upsert({
         where: {
@@ -201,7 +173,20 @@ export class FwaLayoutService {
         include: { layoutRecord: true },
       });
 
-      return fwaLayout as FwaCanonicalLayout;
+      await transaction.fwaLayouts.updateMany({
+        where: { layoutId: layoutRecord.id },
+        data: {
+          LayoutLink: layoutRecord.layoutLink,
+          ImageUrl: layoutRecord.imageUrl,
+        },
+      });
+
+      return {
+        ...(fwaLayout as FwaCanonicalLayout),
+        LayoutLink: layoutRecord.layoutLink,
+        ImageUrl: layoutRecord.imageUrl,
+        layoutRecord,
+      };
     };
 
     const rootDb = this.db as FwaLayoutRootDb;
@@ -222,44 +207,59 @@ export class FwaLayoutService {
           },
         });
 
-        if (existing?.layoutId) return;
+        if (existing?.layoutId) {
+          const existingRecord = await transaction.layoutRecord.findUnique({
+            where: { id: existing.layoutId },
+          });
+          if (existingRecord) {
+            await transaction.fwaLayouts.updateMany({
+              where: { layoutId: existingRecord.id },
+              data: {
+                LayoutLink: existingRecord.layoutLink,
+                ImageUrl: existingRecord.imageUrl,
+              },
+            });
+            return;
+          }
+        }
 
         const currentLink = existing?.LayoutLink ?? row.LayoutLink;
         const currentImage = existing?.ImageUrl ?? row.ImageUrl;
-        const layoutRecord = await transaction.layoutRecord.upsert({
-          where: { layoutLink: currentLink },
-          update: {},
-          create: {
-            layoutLink: currentLink,
-            imageUrl: currentImage,
-            submittedAt: null,
-            lastConfirmedAt: null,
-            lastConfirmedByDiscordUserId: null,
-          },
-        });
+        const normalizedCurrentImage = normalizeNullableText(currentImage);
+        let layoutRecord = await this.layoutService.getOrCreate(
+          { layoutLink: currentLink },
+          transaction.layoutRecord,
+          { submittedAt: null },
+        );
+        if (!layoutRecord.imageUrl && normalizedCurrentImage) {
+          layoutRecord = await this.layoutService.updatePresentation(
+            layoutRecord.id,
+            { imageUrl: normalizedCurrentImage },
+            transaction.layoutRecord,
+          );
+        }
 
-        const saved = await transaction.fwaLayouts.upsert({
+        await transaction.fwaLayouts.upsert({
           where: {
             Townhall_Type: { Townhall: row.Townhall, Type: row.Type },
           },
           create: {
             Townhall: row.Townhall,
             Type: row.Type,
-            LayoutLink: row.LayoutLink,
-            ImageUrl: row.ImageUrl,
+            LayoutLink: layoutRecord.layoutLink,
+            ImageUrl: layoutRecord.imageUrl,
             layoutId: layoutRecord.id,
           },
           update: { layoutId: layoutRecord.id },
         });
 
-        if (saved.layoutId !== layoutRecord.id) {
-          await transaction.fwaLayouts.update({
-            where: {
-              Townhall_Type: { Townhall: row.Townhall, Type: row.Type },
-            },
-            data: { layoutId: layoutRecord.id },
-          });
-        }
+        await transaction.fwaLayouts.updateMany({
+          where: { layoutId: layoutRecord.id },
+          data: {
+            LayoutLink: layoutRecord.layoutLink,
+            ImageUrl: layoutRecord.imageUrl,
+          },
+        });
       };
 
       if (typeof rootDb.$transaction === "function") {

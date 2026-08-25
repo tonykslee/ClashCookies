@@ -7,6 +7,7 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
   layoutRecord: {
     findUnique: vi.fn(),
@@ -141,6 +142,13 @@ describe("/layout command behavior", () => {
       callback(prismaMock),
     );
     prismaMock.layoutRecord.findUnique.mockResolvedValue(null);
+    prismaMock.layoutRecord.upsert.mockImplementation(async ({ create }: any) => ({
+      id: "layout-1",
+      ...create,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    }));
+    prismaMock.fwaLayouts.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.layoutRecord.create.mockImplementation(async ({ data }: any) => ({
       id: "layout-1",
       ...data,
@@ -306,7 +314,7 @@ describe("/layout command behavior", () => {
     expect(String(payload.content)).toContain(`Image: ${updatedImage}`);
   });
 
-  it("admin edit without img-url preserves existing image by omitting ImageUrl update", async () => {
+  it("admin edit without img-url clears an obsolete image for the new link", async () => {
     const updatedLink =
       "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED";
     prismaMock.fwaLayouts.upsert.mockResolvedValue(
@@ -317,16 +325,6 @@ describe("/layout command behavior", () => {
         ImageUrl: "https://i.imgur.com/existing.png",
       })
     );
-    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
-      buildRow({
-        Townhall: 11,
-        Type: "RISINGDAWN",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AOLD",
-        ImageUrl: "https://i.imgur.com/existing.png",
-      }),
-    );
-
     const { interaction } = makeInteraction({ th: 11, edit: updatedLink, isAdmin: true });
     await Layout.run({} as any, interaction as any, {} as any);
 
@@ -334,7 +332,7 @@ describe("/layout command behavior", () => {
       expect.objectContaining({
         update: {
           LayoutLink: updatedLink,
-          ImageUrl: "https://i.imgur.com/existing.png",
+          ImageUrl: null,
           layoutId: expect.any(String),
         },
       })

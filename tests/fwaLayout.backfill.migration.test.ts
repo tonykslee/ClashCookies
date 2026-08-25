@@ -18,6 +18,10 @@ describe("FWA layout LayoutRecord backfill migration", () => {
     expect(migration).toContain("ON CONFLICT (\"layoutLink\") DO NOTHING");
     expect(migration).toContain('MAX("ImageUrl") FILTER (WHERE "ImageUrl" IS NOT NULL)');
     expect(migration).toContain('SET "layoutId" = layout."id"');
+    expect(migration).toContain('SET "imageUrl" = source."ImageUrl"');
+    expect(migration).toContain('"LayoutLink" = layout."layoutLink"');
+    expect(migration).toContain('"ImageUrl" = layout."imageUrl"');
+    expect(migration).toContain('WHERE fwa."layoutId" = layout."id"');
     expect(migration).toContain('"submittedAt"');
     expect(migration).toContain('"lastConfirmedAt"');
     expect(migration).toContain('"lastConfirmedByDiscordUserId"');

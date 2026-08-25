@@ -33,8 +33,30 @@ WHERE NOT EXISTS (
 )
 ON CONFLICT ("layoutLink") DO NOTHING;
 
+-- A pre-existing shared record wins, except that a missing presentation image may
+-- be recovered from the legacy rows without changing lifecycle timestamps.
+UPDATE "LayoutRecord" AS layout
+SET "imageUrl" = source."ImageUrl"
+FROM (
+    SELECT
+        "LayoutLink",
+        MAX("ImageUrl") FILTER (WHERE "ImageUrl" IS NOT NULL) AS "ImageUrl"
+    FROM "FwaLayouts"
+    GROUP BY "LayoutLink"
+) AS source
+WHERE layout."layoutLink" = source."LayoutLink"
+  AND layout."imageUrl" IS NULL
+  AND source."ImageUrl" IS NOT NULL;
+
 UPDATE "FwaLayouts" AS fwa
 SET "layoutId" = layout."id"
 FROM "LayoutRecord" AS layout
 WHERE fwa."layoutId" IS NULL
   AND layout."layoutLink" = fwa."LayoutLink";
+
+UPDATE "FwaLayouts" AS fwa
+SET
+    "LayoutLink" = layout."layoutLink",
+    "ImageUrl" = layout."imageUrl"
+FROM "LayoutRecord" AS layout
+WHERE fwa."layoutId" = layout."id";

@@ -19,7 +19,9 @@ import { InvalidClashLayoutLinkError } from "../../services/ClashLayoutLinkServi
 import {
   LayoutPostPublicationService,
   LayoutPostChannel,
+  LayoutPostMessageResolver,
   buildDiscordJumpUrl,
+  createDiscordLayoutPostResolver,
   layoutPostPublicationService,
 } from "../../services/LayoutPostPublicationService";
 
@@ -73,6 +75,7 @@ export const FWA_LAYOUT_SUBCOMMAND = {
 export type FwaLayoutCommandDeps = {
   layoutService?: FwaLayoutService;
   publicationService?: LayoutPostPublicationService;
+  messageResolver?: LayoutPostMessageResolver;
 };
 
 /** Purpose: execute the modular canonical FWA layout command without putting layout policy in Fwa.ts. */
@@ -83,6 +86,11 @@ export async function runFwaLayoutCommand(
   const layoutService = deps.layoutService ?? fwaLayoutService;
   const publicationService =
     deps.publicationService ?? layoutPostPublicationService;
+  const messageResolver =
+    deps.messageResolver ??
+    (interaction.client
+      ? createDiscordLayoutPostResolver(interaction.client)
+      : undefined);
   const townhall = interaction.options.getInteger("th", false);
   const typeInput = interaction.options.getString("type", false);
   const type = normalizeLayoutType(typeInput);
@@ -103,6 +111,7 @@ export async function runFwaLayoutCommand(
         title,
         description,
         imageUrlInput,
+        messageResolver,
       });
       return;
     }
@@ -114,6 +123,7 @@ export async function runFwaLayoutCommand(
         publicationService,
         townhall,
         type,
+        messageResolver,
       });
       return;
     }
@@ -164,6 +174,7 @@ async function runUpdateMode(input: {
   title: string | null;
   description: string | null;
   imageUrlInput: string | null;
+  messageResolver?: LayoutPostMessageResolver;
 }): Promise<void> {
   if (!input.interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     await replyPrivate(input.interaction, "Only administrators can update FWA layouts.");
@@ -189,6 +200,7 @@ async function runUpdateMode(input: {
     interaction: input.interaction,
     canonical,
     publicationService: input.publicationService,
+    messageResolver: input.messageResolver,
   });
   await replyPrivate(
     input.interaction,
@@ -202,6 +214,7 @@ async function runLookupMode(input: {
   publicationService: LayoutPostPublicationService;
   townhall: number;
   type: ReturnType<typeof normalizeLayoutType>;
+  messageResolver?: LayoutPostMessageResolver;
 }): Promise<void> {
   if (!isSupportedTownhall(input.townhall)) {
     throw new UnsupportedFwaLayoutTownhallError(input.townhall);
@@ -221,6 +234,7 @@ async function runLookupMode(input: {
     interaction: input.interaction,
     canonical,
     publicationService: input.publicationService,
+    messageResolver: input.messageResolver,
   });
   await replyPrivate(
     input.interaction,
@@ -269,6 +283,7 @@ async function publishCanonicalLayout(input: {
   interaction: ChatInputCommandInteraction;
   canonical: FwaCanonicalLayout;
   publicationService: LayoutPostPublicationService;
+  messageResolver?: LayoutPostMessageResolver;
 }) {
   if (!input.interaction.guildId || !input.interaction.channelId) {
     throw new Error("FWA layout posts require a guild text channel.");
@@ -284,6 +299,7 @@ async function publishCanonicalLayout(input: {
     layout: input.canonical.layoutRecord,
     guildId: input.interaction.guildId,
     channel: channel as unknown as LayoutPostChannel,
+    messageResolver: input.messageResolver,
   });
 }
 

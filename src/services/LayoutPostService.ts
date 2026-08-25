@@ -376,11 +376,13 @@ function resolveImageUrl(
   record: LayoutRecord,
   imageSource: LayoutPostImageSource,
 ): string | null {
+  const persistedImageUrl = record.imageUrl?.trim();
+  if (persistedImageUrl) return persistedImageUrl;
   const attachmentName = imageSource.attachmentName?.trim();
   if (attachmentName) return `attachment://${attachmentName}`;
   const attachmentUrl = imageSource.attachmentUrl?.trim();
   if (attachmentUrl) return attachmentUrl;
-  return record.imageUrl?.trim() || null;
+  return null;
 }
 
 /** Purpose: extract the current canonical message attachment so button edits preserve it. */

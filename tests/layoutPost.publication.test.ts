@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createDiscordLayoutPostResolver,
   LayoutPostPublicationService,
 } from "../src/services/LayoutPostPublicationService";
 import { LayoutDiscordPostAlreadyBoundError } from "../src/services/LayoutService";
@@ -40,6 +41,27 @@ describe("LayoutPostPublicationService", () => {
     service = new LayoutPostPublicationService({ layoutService });
   });
 
+  it("resolves an existing Discord message through the focused resolver", async () => {
+    const message = {
+      id: "message-1",
+      delete: vi.fn(),
+      edit: vi.fn(),
+    };
+    const fetch = vi.fn().mockResolvedValue(message);
+    const resolver = createDiscordLayoutPostResolver({
+      channels: { fetch: vi.fn().mockResolvedValue({ messages: { fetch } }) },
+    });
+
+    await expect(
+      resolver.resolve({
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+      }),
+    ).resolves.toBe(message);
+    expect(fetch).toHaveBeenCalledWith("message-1");
+  });
+
   it("reuses an existing canonical provenance without sending another post", async () => {
     const layout = buildLayout({
       discordGuildId: "guild-1",
@@ -47,16 +69,102 @@ describe("LayoutPostPublicationService", () => {
       discordMessageId: "message-1",
     });
 
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn().mockResolvedValue(undefined),
+        edit,
+        attachments: { first: vi.fn(() => undefined) },
+      }),
+    };
     const result = await service.publish({
       layout: layout as any,
       guildId: "guild-1",
       channel: { id: "channel-1", send },
+      messageResolver: resolver,
     });
 
     expect(send).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(layoutService.attachDiscordPost).not.toHaveBeenCalled();
     expect(result.jumpUrl).toBe(
       "https://discord.com/channels/guild-1/channel-1/message-1",
     );
+  });
+
+  it("edits the existing canonical message when title presentation changes", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn().mockResolvedValue(undefined),
+        edit,
+        attachments: { first: vi.fn(() => undefined) },
+      }),
+    };
+
+    await service.publish({
+      layout: buildLayout({
+        title: "Updated title",
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }) as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().title).toBe("Updated title");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("edits the existing canonical message when external image presentation changes", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn().mockResolvedValue(undefined),
+        edit,
+        attachments: { first: vi.fn(() => ({ name: "old.png", url: "https://cdn.example/old.png" })) },
+      }),
+    };
+
+    await service.publish({
+      layout: buildLayout({
+        imageUrl: "https://example.com/new.png",
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }) as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().image?.url).toBe("https://example.com/new.png");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("fails instead of returning a dead jump link when the canonical message cannot be resolved", async () => {
+    const resolver = { resolve: vi.fn().mockResolvedValue(null) };
+
+    await expect(
+      service.publish({
+        layout: buildLayout({
+          discordGuildId: "guild-1",
+          discordChannelId: "channel-1",
+          discordMessageId: "deleted-message",
+        }) as any,
+        guildId: "guild-1",
+        channel: { id: "channel-1", send },
+        messageResolver: resolver,
+      }),
+    ).rejects.toThrow("could not be resolved");
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("sends and binds an unposted record without changing lifecycle state", async () => {
