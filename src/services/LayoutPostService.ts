@@ -128,7 +128,7 @@ export function buildLayoutPostPayload(
 
   const hasVisibleEmbedContent = Boolean(title || imageUrl || mode === "expanded");
   return {
-    ...(hasVisibleEmbedContent ? { embeds: [embed] } : {}),
+    embeds: hasVisibleEmbedContent ? [embed] : [],
     components: [buildLayoutPostButtonRow(record.id, mode)],
     allowedMentions: { parse: [], repliedUser: false },
   };

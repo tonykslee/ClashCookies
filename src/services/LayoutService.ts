@@ -161,8 +161,25 @@ export class LayoutService {
       return layout;
     }
 
-    return this.db.layoutRecord.update({
-      where: { id: input.id },
+    if (isSamePost) {
+      return this.db.layoutRecord.update({
+        where: { id: input.id },
+        data: {
+          discordGuildId: target.discordGuildId,
+          discordChannelId: target.discordChannelId,
+          discordMessageId: target.discordMessageId,
+          ...(normalizedImageUrl !== undefined ? { imageUrl: normalizedImageUrl } : {}),
+        },
+      });
+    }
+
+    const firstBinding = await this.db.layoutRecord.updateMany({
+      where: {
+        id: input.id,
+        discordGuildId: null,
+        discordChannelId: null,
+        discordMessageId: null,
+      },
       data: {
         discordGuildId: target.discordGuildId,
         discordChannelId: target.discordChannelId,
@@ -170,6 +187,22 @@ export class LayoutService {
         ...(normalizedImageUrl !== undefined ? { imageUrl: normalizedImageUrl } : {}),
       },
     });
+    if (firstBinding.count === 1) {
+      const boundLayout = await this.findById(input.id);
+      if (boundLayout) return boundLayout;
+      throw new LayoutRecordNotFoundError(input.id);
+    }
+
+    const winningLayout = await this.findById(input.id);
+    if (!winningLayout) {
+      throw new LayoutRecordNotFoundError(input.id);
+    }
+    const winningPostMatches =
+      winningLayout.discordGuildId === target.discordGuildId &&
+      winningLayout.discordChannelId === target.discordChannelId &&
+      winningLayout.discordMessageId === target.discordMessageId;
+    if (winningPostMatches) return winningLayout;
+    throw new LayoutDiscordPostAlreadyBoundError(input.id);
   }
 
   /** Purpose: record a successful layout opening without changing submission or presentation provenance. */

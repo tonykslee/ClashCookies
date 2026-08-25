@@ -84,7 +84,8 @@ describe("layout post rendering", () => {
       buildRecord({ title: null, imageUrl: null }),
     );
 
-    expect(payload.embeds).toBeUndefined();
+    expect(payload.embeds).toEqual([]);
+    expect(JSON.stringify(payload)).not.toContain(LAYOUT_LINK);
     expect(payload.components[0]?.toJSON().components.map((button) => button.label)).toEqual([
       "Layout Link",
       "Info",
@@ -106,6 +107,7 @@ describe("layout post rendering", () => {
     const embed = payload.embeds?.[0]?.toJSON();
     const buttons = payload.components[0]?.toJSON().components;
 
+    expect(payload.embeds).toHaveLength(1);
     expect(embed?.title).toBe(record.title);
     expect(embed?.image?.url).toBe(record.imageUrl);
     expect(embed?.description).toContain(`[Open Layout](<${record.layoutLink}>)`);
@@ -213,40 +215,58 @@ describe("layout post persistent interactions", () => {
   });
 
   it("closes the expanded view without writing lifecycle state", async () => {
-    const record = buildRecord();
+    const record = buildRecord({ title: null, imageUrl: null });
     layoutRecordService.findById.mockResolvedValue(record);
-    const { interaction } = makeInteraction({
+    const expanded = makeInteraction({
+      customId: buildLayoutPostCustomId("link", record.id),
+    });
+    const collapsed = makeInteraction({
       customId: buildLayoutPostCustomId("close", record.id),
     });
+    collapsed.interaction.message = expanded.interaction.message;
 
-    await postService.handleButtonInteraction(interaction);
+    await postService.handleButtonInteraction(expanded.interaction);
+    await postService.handleButtonInteraction(collapsed.interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
-    expect(interaction.update).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    expect(collapsed.interaction.update).toHaveBeenCalledTimes(1);
+    expect(collapsed.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
+    expect(JSON.stringify(collapsed.interaction.update.mock.calls[0]?.[0])).not.toContain(
+      record.layoutLink,
+    );
   });
 
   it("confirms for the clicking user and collapses the public post", async () => {
-    const record = buildRecord({ lastConfirmedAt: null });
+    const record = buildRecord({ lastConfirmedAt: null, title: null, imageUrl: null });
     const confirmed = buildRecord({
+      title: null,
+      imageUrl: null,
       lastConfirmedAt: new Date("2026-08-25T00:00:00.000Z"),
       lastConfirmedByDiscordUserId: "clicker-1",
     });
     layoutRecordService.findById.mockResolvedValue(record);
     layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(confirmed);
-    const { interaction } = makeInteraction({
+    const expanded = makeInteraction({
+      customId: buildLayoutPostCustomId("link", record.id),
+    });
+    const interaction = makeInteraction({
       customId: buildLayoutPostCustomId("confirm", record.id),
     });
+    interaction.interaction.message = expanded.interaction.message;
 
-    await postService.handleButtonInteraction(interaction);
+    await postService.handleButtonInteraction(expanded.interaction);
+    await postService.handleButtonInteraction(interaction.interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledTimes(1);
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledWith({
       id: record.id,
       discordUserId: "clicker-1",
     });
-    expect(interaction.update).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    expect(interaction.interaction.update).toHaveBeenCalledTimes(1);
+    expect(interaction.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
+    expect(JSON.stringify(interaction.interaction.update.mock.calls[0]?.[0])).not.toContain(
+      record.layoutLink,
+    );
   });
 
   it.each([
@@ -287,7 +307,7 @@ describe("layout post persistent interactions", () => {
   it("auto-collapses an expanded post after the presentation timeout", async () => {
     vi.useFakeTimers();
     try {
-      const record = buildRecord();
+      const record = buildRecord({ title: null, imageUrl: null });
       layoutRecordService.findById.mockResolvedValue(record);
       const { interaction, message } = makeInteraction({
         customId: buildLayoutPostCustomId("link", record.id),
@@ -301,6 +321,7 @@ describe("layout post persistent interactions", () => {
       await vi.advanceTimersByTimeAsync(100);
 
       expect(message.edit).toHaveBeenCalledTimes(1);
+      expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
       expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
     } finally {
       vi.useRealTimers();

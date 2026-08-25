@@ -10,6 +10,7 @@ import {
 const layoutRecordMock = {
   create: vi.fn(),
   findUnique: vi.fn(),
+  updateMany: vi.fn(),
   update: vi.fn(),
 };
 
@@ -202,8 +203,10 @@ describe("LayoutService", () => {
       discordMessageId: "message-1",
       imageUrl: "https://example.com/layout.png",
     });
-    layoutRecordMock.findUnique.mockResolvedValue(existing);
-    layoutRecordMock.update.mockResolvedValue(attached);
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(attached);
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 1 });
 
     await expect(
       service.attachDiscordPost({
@@ -215,8 +218,13 @@ describe("LayoutService", () => {
       }),
     ).resolves.toBe(attached);
 
-    expect(layoutRecordMock.update).toHaveBeenCalledWith({
-      where: { id: existing.id },
+    expect(layoutRecordMock.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: existing.id,
+        discordGuildId: null,
+        discordChannelId: null,
+        discordMessageId: null,
+      },
       data: {
         discordGuildId: "guild-1",
         discordChannelId: "channel-1",
@@ -224,8 +232,8 @@ describe("LayoutService", () => {
         imageUrl: "https://example.com/layout.png",
       },
     });
-    expect(layoutRecordMock.update.mock.calls[0]?.[0].data).not.toHaveProperty("submittedAt");
-    expect(layoutRecordMock.update.mock.calls[0]?.[0].data).not.toHaveProperty("lastConfirmedAt");
+    expect(layoutRecordMock.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("submittedAt");
+    expect(layoutRecordMock.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("lastConfirmedAt");
   });
 
   it("treats an exact canonical post assignment as idempotent", async () => {
@@ -263,6 +271,64 @@ describe("LayoutService", () => {
         messageId: "message-2",
       }),
     ).rejects.toBeInstanceOf(LayoutDiscordPostAlreadyBoundError);
+    expect(layoutRecordMock.updateMany).not.toHaveBeenCalled();
     expect(layoutRecordMock.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a concurrent bind when another post wins the conditional assignment", async () => {
+    const unbound = buildRecord();
+    const winner = buildRecord({
+      discordGuildId: "guild-2",
+      discordChannelId: "channel-2",
+      discordMessageId: "message-2",
+    });
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(unbound)
+      .mockResolvedValueOnce(winner);
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.attachDiscordPost({
+        id: unbound.id,
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+      }),
+    ).rejects.toBeInstanceOf(LayoutDiscordPostAlreadyBoundError);
+    expect(layoutRecordMock.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: unbound.id,
+        discordGuildId: null,
+        discordChannelId: null,
+        discordMessageId: null,
+      },
+      data: {
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      },
+    });
+  });
+
+  it("treats a concurrent bind to the same post as idempotent", async () => {
+    const unbound = buildRecord();
+    const winner = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(unbound)
+      .mockResolvedValueOnce(winner);
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.attachDiscordPost({
+        id: unbound.id,
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+      }),
+    ).resolves.toBe(winner);
   });
 });
