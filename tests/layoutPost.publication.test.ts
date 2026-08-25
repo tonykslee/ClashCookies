@@ -3,7 +3,7 @@ import {
   createDiscordLayoutPostResolver,
   LayoutPostPublicationService,
 } from "../src/services/LayoutPostPublicationService";
-import { LayoutDiscordPostAlreadyBoundError } from "../src/services/LayoutService";
+import { LayoutDiscordPostAlreadyBoundError, LayoutService } from "../src/services/LayoutService";
 
 const LINK =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD18";
@@ -196,6 +196,66 @@ describe("LayoutPostPublicationService", () => {
     expect(events).toEqual(["edit", "persist"]);
     expect(result.layout.imageUrl).toBeNull();
     expect(layoutService.attachDiscordPost).not.toHaveBeenCalled();
+  });
+
+  it("projects native ownership clearing to shared FWA rows after the Discord edit", async () => {
+    const events: string[] = [];
+    const layout = buildLayout({
+      imageUrl: "https://example.com/old.png",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    const edit = vi.fn().mockImplementation(async () => { events.push("edit"); });
+    const rootDb = {
+      layoutRecord: {
+        update: vi.fn().mockImplementation(async ({ data }: any) => {
+          events.push("persist-record");
+          return { ...layout, ...data };
+        }),
+      },
+      fwaLayouts: {
+        updateMany: vi.fn().mockImplementation(async () => {
+          events.push("persist-projection");
+          return { count: 2 };
+        }),
+      },
+      $transaction: vi.fn().mockImplementation(async (callback: (transaction: typeof rootDb) => unknown) =>
+        callback(rootDb),
+      ),
+    };
+    const canonicalLayoutService = new LayoutService({ db: rootDb as any });
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn(),
+        edit,
+        attachments: { first: vi.fn(() => ({ name: "old.png", url: "https://cdn.example/old.png" })) },
+      }),
+    };
+    const nativeService = new LayoutPostPublicationService({
+      layoutService: canonicalLayoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    const result = await nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    });
+
+    expect(result.layout.imageUrl).toBeNull();
+    expect(events).toEqual(["edit", "persist-record", "persist-projection"]);
+    expect(rootDb.fwaLayouts.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: layout.id },
+      data: { LayoutLink: layout.layoutLink, ImageUrl: null },
+    });
   });
 
   it("leaves external image ownership untouched when native preparation fails", async () => {

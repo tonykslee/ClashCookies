@@ -15,6 +15,16 @@ const layoutRecordMock = {
   upsert: vi.fn(),
 };
 
+const fwaLayoutsMock = {
+  updateMany: vi.fn(),
+};
+
+const projectionDb = {
+  layoutRecord: layoutRecordMock,
+  fwaLayouts: fwaLayoutsMock,
+  $transaction: vi.fn(),
+};
+
 const VALID_LAYOUT_LINK =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD";
 
@@ -45,6 +55,10 @@ describe("LayoutService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    projectionDb.$transaction.mockImplementation(async (callback: (transaction: typeof projectionDb) => unknown) =>
+      callback(projectionDb),
+    );
+    fwaLayoutsMock.updateMany.mockResolvedValue({ count: 2 });
     service = new LayoutService({
       db: { layoutRecord: layoutRecordMock } as any,
       now: () => now,
@@ -209,6 +223,100 @@ describe("LayoutService", () => {
     expect(layoutRecordMock.findUnique).toHaveBeenCalledWith({
       where: { layoutLink: VALID_LAYOUT_LINK },
     });
+  });
+
+  it("projects a root get-or-create presentation change to every shared FWA row", async () => {
+    const projected = buildRecord({ imageUrl: "https://example.com/new.png" });
+    layoutRecordMock.upsert.mockResolvedValue(projected);
+    const projectedService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await expect(projectedService.getOrCreate({
+      layoutLink: VALID_LAYOUT_LINK,
+      imageUrl: projected.imageUrl,
+    })).resolves.toBe(projected);
+
+    expect(projectionDb.$transaction).toHaveBeenCalledTimes(1);
+    expect(fwaLayoutsMock.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: projected.id },
+      data: { LayoutLink: projected.layoutLink, ImageUrl: projected.imageUrl },
+    });
+  });
+
+  it("projects a root create presentation to shared FWA rows", async () => {
+    const created = buildRecord({ imageUrl: "https://example.com/created.png" });
+    layoutRecordMock.findUnique.mockResolvedValue(null);
+    layoutRecordMock.create.mockResolvedValue(created);
+    const projectedService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await expect(projectedService.create({
+      layoutLink: VALID_LAYOUT_LINK,
+      imageUrl: created.imageUrl,
+    })).resolves.toBe(created);
+
+    expect(fwaLayoutsMock.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: created.id },
+      data: { LayoutLink: created.layoutLink, ImageUrl: created.imageUrl },
+    });
+  });
+
+  it("projects a root presentation update without changing FWA designation fields", async () => {
+    const existing = buildRecord({ imageUrl: "https://example.com/old.png" });
+    const updated = buildRecord({ imageUrl: "https://example.com/new.png" });
+    layoutRecordMock.update.mockResolvedValue(updated);
+    const projectedService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await expect(projectedService.updatePresentation(existing.id, {
+      imageUrl: updated.imageUrl,
+    })).resolves.toBe(updated);
+
+    expect(fwaLayoutsMock.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: existing.id },
+      data: { LayoutLink: updated.layoutLink, ImageUrl: updated.imageUrl },
+    });
+    expect(fwaLayoutsMock.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("layoutId");
+    expect(fwaLayoutsMock.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("Townhall");
+    expect(fwaLayoutsMock.updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("Type");
+  });
+
+  it("keeps title and description-only projection writes designation-neutral", async () => {
+    const existing = buildRecord();
+    const updated = buildRecord({ title: "Title", description: "Description" });
+    layoutRecordMock.update.mockResolvedValue(updated);
+    const projectedService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await projectedService.updatePresentation(existing.id, {
+      title: updated.title,
+      description: updated.description,
+    });
+
+    expect(fwaLayoutsMock.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: existing.id },
+      data: { LayoutLink: existing.layoutLink, ImageUrl: existing.imageUrl },
+    });
+  });
+
+  it("rolls back a root presentation mutation when compatibility projection fails", async () => {
+    let persisted = buildRecord({ imageUrl: "https://example.com/old.png" });
+    layoutRecordMock.update.mockImplementation(async ({ data }: any) => {
+      persisted = { ...persisted, ...data };
+      return persisted;
+    });
+    fwaLayoutsMock.updateMany.mockRejectedValue(new Error("projection failed"));
+    projectionDb.$transaction.mockImplementation(async (callback: (transaction: typeof projectionDb) => unknown) => {
+      const before = persisted;
+      try {
+        return await callback(projectionDb);
+      } catch (error) {
+        persisted = before;
+        throw error;
+      }
+    });
+    const projectedService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await expect(projectedService.updatePresentation(persisted.id, {
+      imageUrl: "https://example.com/new.png",
+    })).rejects.toThrow("projection failed");
+    expect(persisted.imageUrl).toBe("https://example.com/old.png");
   });
 
   it("rethrows an unrelated P2002 when the attempted layout link still does not exist", async () => {
