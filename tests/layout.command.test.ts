@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationCommandOptionType } from "discord.js";
 import { Layout, LAYOUT_COMMAND_OPTIONS, runLayoutCommand } from "../src/commands/Layout";
 import { injectVisibilityOptionsForTest } from "../src/listeners/ready";
+import { MAX_LAYOUT_ATTACHMENT_BYTES } from "../src/services/LayoutPostPublicationService";
 
 const LINK =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD18";
@@ -231,20 +232,46 @@ describe("/layout command behavior", () => {
   it("passes native image uploads to the publication layer without persisting the source URL", async () => {
     const { interaction } = makeInteraction({
       link: LINK,
-      attachment: { url: "https://cdn.discord.test/base.png", name: "folder/base image.png", contentType: "image/png" },
+      attachment: {
+        url: "https://cdn.discord.test/base.png",
+        name: "folder/base image.png",
+        contentType: "image/png",
+        size: 4,
+      },
     });
     const deps = makeDeps();
 
     await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
 
-    expect(deps.getOrCreate).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: null }));
-    expect(deps.getOrCreate.mock.calls[0][0]).not.toHaveProperty("imageUrl", "https://cdn.discord.test/base.png");
+    expect(deps.getOrCreate.mock.calls[0][0]).not.toHaveProperty("imageUrl");
     expect(deps.publish).toHaveBeenCalledWith(expect.objectContaining({
       attachment: {
         url: "https://cdn.discord.test/base.png",
         filename: "folder/base image.png",
         contentType: "image/png",
+        size: 4,
       },
+    }));
+  });
+
+  it("rejects an oversized image attachment before persistence or publication", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      attachment: {
+        url: "https://cdn.discord.test/large.png",
+        name: "large.png",
+        contentType: "image/png",
+        size: MAX_LAYOUT_ATTACHMENT_BYTES + 1,
+      },
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(deps.publish).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "The `image` attachment is too large.",
     }));
   });
 });

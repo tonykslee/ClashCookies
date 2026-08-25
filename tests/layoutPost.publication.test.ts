@@ -151,9 +151,117 @@ describe("LayoutPostPublicationService", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("clears external image ownership only after an existing native replacement succeeds", async () => {
+    const events: string[] = [];
+    const layout = buildLayout({
+      imageUrl: "https://example.com/old.png",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    const edit = vi.fn().mockImplementation(async () => { events.push("edit"); });
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn(),
+        edit,
+        attachments: { first: vi.fn(() => ({ name: "old.png", url: "https://cdn.example/old.png" })) },
+      }),
+    };
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: vi.fn(() => "4") },
+      arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+    });
+    const updated = { ...layout, imageUrl: null };
+    layoutService.updatePresentation.mockImplementation(async () => {
+      events.push("persist");
+      return updated;
+    });
+    const nativeService = new LayoutPostPublicationService({ layoutService, fetch });
+
+    const result = await nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+      attachment: {
+        url: "https://cdn.discord.test/new.png?sig=secret",
+        filename: "new.png",
+        contentType: "image/png",
+        size: 4,
+      },
+    });
+
+    expect(events).toEqual(["edit", "persist"]);
+    expect(result.layout.imageUrl).toBeNull();
+    expect(layoutService.attachDiscordPost).not.toHaveBeenCalled();
+  });
+
+  it("leaves external image ownership untouched when native preparation fails", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png", discordGuildId: "guild-1", discordChannelId: "channel-1", discordMessageId: "message-1" });
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockRejectedValue(new Error("network down")),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: { url: "https://cdn.discord.test/fails", filename: "bad.png", contentType: "image/png", size: 4 },
+      messageResolver: { resolve: vi.fn() },
+    })).rejects.toThrow("could not be fetched");
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("leaves external image ownership untouched when the canonical message cannot be resolved", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png", discordGuildId: "guild-1", discordChannelId: "channel-1", discordMessageId: "message-1" });
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: { resolve: vi.fn().mockResolvedValue(null) },
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    })).rejects.toThrow("could not be resolved");
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("leaves external image ownership untouched when the canonical edit fails", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png", discordGuildId: "guild-1", discordChannelId: "channel-1", discordMessageId: "message-1" });
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: {
+        resolve: vi.fn().mockResolvedValue({ id: "message-1", delete: vi.fn(), edit: vi.fn().mockRejectedValue(new Error("edit failed")) }),
+      },
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    })).rejects.toThrow("edit failed");
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
+  });
+
   it("uploads a native image into a new canonical message without persisting its source URL", async () => {
     const layout = buildLayout();
-    const message = { id: "message-1", delete: vi.fn().mockResolvedValue(undefined) };
+    const message = { id: "message-1", delete: vi.fn().mockResolvedValue(undefined), edit: vi.fn() };
     const attached = buildLayout({
       discordGuildId: "guild-1",
       discordChannelId: "channel-1",
@@ -165,7 +273,6 @@ describe("LayoutPostPublicationService", () => {
       headers: { get: vi.fn(() => "4") },
       arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
     });
-    layoutService.updatePresentation.mockResolvedValue({ ...layout, imageUrl: null });
     layoutService.attachDiscordPost.mockResolvedValue(attached);
     send.mockResolvedValue(message);
     const nativeService = new LayoutPostPublicationService({ layoutService, fetch });
@@ -178,6 +285,7 @@ describe("LayoutPostPublicationService", () => {
         url: "https://cdn.discord.test/temporary-source.png?sig=secret",
         filename: "folder/base image.png",
         contentType: "image/png",
+        size: 4,
       },
     });
 
@@ -185,7 +293,7 @@ describe("LayoutPostPublicationService", () => {
     expect(payload.files).toHaveLength(1);
     expect(payload.files[0].name).toBe("base_image.png");
     expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://base_image.png");
-    expect(layoutService.updatePresentation).toHaveBeenCalledWith("layout-1", { imageUrl: null });
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
     expect(layoutService.attachDiscordPost).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: null }));
     expect(JSON.stringify(payload)).not.toContain("temporary-source");
   });
@@ -197,13 +305,11 @@ describe("LayoutPostPublicationService", () => {
       discordChannelId: "channel-1",
       discordMessageId: "message-1",
     });
-    const updated = { ...existing, imageUrl: null };
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: { get: vi.fn(() => "3") },
       arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3]).buffer),
     });
-    layoutService.updatePresentation.mockResolvedValue(updated);
     const resolver = {
       resolve: vi.fn().mockResolvedValue({
         id: "message-1",
@@ -226,6 +332,7 @@ describe("LayoutPostPublicationService", () => {
     expect(payload.files[0].name).toBe("new.webp");
     expect(payload.attachments).toEqual([]);
     expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://new.webp");
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -241,6 +348,61 @@ describe("LayoutPostPublicationService", () => {
     })).rejects.toThrow("could not be fetched");
     expect(send).not.toHaveBeenCalled();
     expect(layoutService.attachDiscordPost).not.toHaveBeenCalled();
+  });
+
+  it("leaves external image ownership untouched when a new native post cannot be sent", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png" });
+    send.mockRejectedValue(new Error("send failed"));
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    })).rejects.toThrow("send failed");
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("compensates a newly bound native post when ownership persistence fails", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png" });
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = { id: "message-1", delete: vi.fn().mockResolvedValue(undefined), edit };
+    const attached = buildLayout({
+      imageUrl: "https://example.com/old.png",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    send.mockResolvedValue(message);
+    layoutService.attachDiscordPost.mockResolvedValue(attached);
+    layoutService.updatePresentation.mockRejectedValue(new Error("database unavailable"));
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    })).rejects.toThrow("durable image ownership could not be saved");
+    expect(message.delete).not.toHaveBeenCalled();
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls[0][0].attachments).toEqual([]);
+    expect(edit.mock.calls[0][0].embeds[0].toJSON().image?.url).toBe("https://example.com/old.png");
   });
 
   it("fails instead of returning a dead jump link when the canonical message cannot be resolved", async () => {
@@ -314,5 +476,31 @@ describe("LayoutPostPublicationService", () => {
     expect(message.delete).toHaveBeenCalledTimes(1);
     expect(result.messageId).toBe("winning-message");
     expect(result.jumpUrl).toContain("winning-message");
+  });
+
+  it("deletes a losing native publication without clearing durable image ownership", async () => {
+    const layout = buildLayout({ imageUrl: "https://example.com/old.png" });
+    const message = { id: "losing-message", delete: vi.fn().mockResolvedValue(undefined) };
+    send.mockResolvedValue(message);
+    layoutService.attachDiscordPost.mockRejectedValue(
+      new LayoutDiscordPostAlreadyBoundError(layout.id),
+    );
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+
+    await expect(nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.png", contentType: "image/png", size: 4 },
+    })).rejects.toThrow("won this native image update");
+    expect(message.delete).toHaveBeenCalledTimes(1);
+    expect(layoutService.updatePresentation).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ import {
   LayoutPostAttachmentSource,
   LayoutPostChannel,
   LayoutPostPublicationService,
+  isLayoutAttachmentSizeSupported,
   createDiscordLayoutPostResolver,
   layoutPostPublicationService,
 } from "../services/LayoutPostPublicationService";
@@ -95,6 +96,10 @@ export async function runLayoutCommand(
       await replyPrivate(interaction, "The `image` attachment must be an image file.");
       return;
     }
+    if (upload && !isLayoutAttachmentSizeSupported(upload.size)) {
+      await replyPrivate(interaction, "The `image` attachment is too large.");
+      return;
+    }
     if (!interaction.guildId || !interaction.channelId) {
       await replyPrivate(interaction, "Tracked layout posts require a guild text channel.");
       return;
@@ -110,7 +115,6 @@ export async function runLayoutCommand(
       ...(title !== null ? { title } : {}),
       ...(description !== null ? { description } : {}),
       ...(imageUrl !== null ? { imageUrl } : {}),
-      ...(upload ? { imageUrl: null } : {}),
       postedByDiscordUserId: interaction.user.id,
     });
     const published = await publication.publish({
@@ -137,6 +141,7 @@ function validateImageAttachment(attachment: {
   url?: string | null;
   name?: string | null;
   contentType?: string | null;
+  size?: number | null;
 }): LayoutPostAttachmentSource | null {
   const contentType = attachment.contentType?.trim().toLowerCase() ?? "";
   const filename = attachment.name?.trim() ?? "";
@@ -150,6 +155,7 @@ function validateImageAttachment(attachment: {
     url: attachment.url,
     filename,
     contentType: contentType || null,
+    size: attachment.size,
   };
 }
 
