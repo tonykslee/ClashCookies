@@ -1200,6 +1200,13 @@ enum FwaLayoutType {
   ICE
 }
 
+enum LayoutAlertMode {
+  DM
+  DEFAULT_CHANNEL
+  BOTH
+  CUSTOM_CHANNEL
+}
+
 enum FwaFeedType {
   CLANS
   CLAN_MEMBERS
@@ -2047,9 +2054,20 @@ model LayoutRecord {
   createdAt                    DateTime     @default(now())
   updatedAt                    DateTime     @updatedAt
   fwaLayouts                   FwaLayouts[]
+  alertConfig                  LayoutAlertConfig?
 
   @@unique([discordGuildId, discordChannelId, discordMessageId])
   @@index([discordMessageId])
+}
+
+model LayoutAlertConfig {
+  layoutId        String          @id
+  mode            LayoutAlertMode
+  customChannelId String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  layout          LayoutRecord    @relation(fields: [layoutId], references: [id], onDelete: Cascade)
 }
 
 model FwaClanCatalog {

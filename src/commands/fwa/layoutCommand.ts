@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  ChannelType,
   ChatInputCommandInteraction,
   PermissionFlagsBits,
 } from "discord.js";
@@ -15,7 +16,22 @@ import {
   UnsupportedFwaLayoutTownhallError,
   fwaLayoutService,
 } from "../../services/FwaLayoutService";
-import { InvalidClashLayoutLinkError } from "../../services/ClashLayoutLinkService";
+import {
+  InvalidClashLayoutLinkError,
+  parseClashLayoutLink,
+} from "../../services/ClashLayoutLinkService";
+import {
+  LAYOUT_ALERT_TYPE_CHOICES,
+  LayoutAlertConfigService,
+  LayoutAlertPolicyValidationError,
+  layoutAlertConfigService,
+  layoutAlertModeForType,
+  parseLayoutAlertType,
+  getCompleteLayoutDiscordGuildId,
+  resolveLayoutAlertGuildId,
+  validateLayoutAlertCommandOptions,
+} from "../../services/LayoutAlertConfigService";
+import { BotLogChannelService, botLogChannelService } from "../../services/BotLogChannelService";
 import {
   LayoutPostPublicationService,
   LayoutPostChannel,
@@ -69,6 +85,25 @@ export const FWA_LAYOUT_SUBCOMMAND = {
       type: ApplicationCommandOptionType.String,
       required: false,
     },
+    {
+      name: "alert-type",
+      description: "Expiration alert policy",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: LAYOUT_ALERT_TYPE_CHOICES.map((choice) => ({ ...choice })),
+    },
+    {
+      name: "alert-channel",
+      description: "Custom expiration alert channel",
+      type: ApplicationCommandOptionType.Channel,
+      required: false,
+      channel_types: [
+        ChannelType.GuildText,
+        ChannelType.GuildAnnouncement,
+        ChannelType.PublicThread,
+        ChannelType.PrivateThread,
+      ],
+    },
   ],
 } as const;
 
@@ -76,6 +111,8 @@ export type FwaLayoutCommandDeps = {
   layoutService?: FwaLayoutService;
   publicationService?: LayoutPostPublicationService;
   messageResolver?: LayoutPostMessageResolver;
+  alertConfigService?: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
+  botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
 };
 
 /** Purpose: execute the modular canonical FWA layout command without putting layout policy in Fwa.ts. */
@@ -98,9 +135,24 @@ export async function runFwaLayoutCommand(
   const imageUrlInput = interaction.options.getString("img-url", false);
   const title = interaction.options.getString("title", false);
   const description = interaction.options.getString("description", false);
+  const alertTypeInput = interaction.options.getString("alert-type", false);
+  const alertChannel = interaction.options.getChannel("alert-channel", false) as {
+    id: string;
+    guildId?: string | null;
+    type?: number;
+  } | null;
 
   try {
     if (link) {
+      const alertType = parseLayoutAlertType(alertTypeInput);
+      const parsedLink = parseClashLayoutLink(link);
+      const existingLayout = alertType
+        ? await layoutService.findByLayoutLink(parsedLink.layoutLink)
+        : null;
+      const targetAlertGuildId = resolveLayoutAlertGuildId(
+        existingLayout,
+        interaction.guildId ?? "",
+      );
       await runUpdateMode({
         interaction,
         layoutService,
@@ -112,7 +164,26 @@ export async function runFwaLayoutCommand(
         description,
         imageUrlInput,
         messageResolver,
+        alertType,
+        alertChannel,
+        targetAlertGuildId,
+        alertConfigService: deps.alertConfigService ?? layoutAlertConfigService,
+        botLogChannelService: deps.botLogChannelService ?? botLogChannelService,
       });
+      return;
+    }
+
+    if (
+      title !== null ||
+      description !== null ||
+      imageUrlInput !== null ||
+      alertTypeInput !== null ||
+      alertChannel
+    ) {
+      await replyPrivate(
+        interaction,
+        "`title`, `description`, `img-url`, `alert-type`, and `alert-channel` require `link`.",
+      );
       return;
     }
 
@@ -125,14 +196,6 @@ export async function runFwaLayoutCommand(
         type,
         messageResolver,
       });
-      return;
-    }
-
-    if (title !== null || description !== null || imageUrlInput !== null) {
-      await replyPrivate(
-        interaction,
-        "`title`, `description`, and `img-url` require `link`.",
-      );
       return;
     }
 
@@ -157,6 +220,10 @@ export async function runFwaLayoutCommand(
       await replyPrivate(interaction, "Invalid Clash layout link.");
       return;
     }
+    if (error instanceof LayoutAlertPolicyValidationError) {
+      await replyPrivate(interaction, error.message);
+      return;
+    }
     await replyPrivate(
       interaction,
       "Failed to process `/fwa layout`. Please try again shortly.",
@@ -175,6 +242,11 @@ async function runUpdateMode(input: {
   description: string | null;
   imageUrlInput: string | null;
   messageResolver?: LayoutPostMessageResolver;
+  alertType: ReturnType<typeof parseLayoutAlertType>;
+  alertChannel: { id: string; guildId?: string | null; type?: number } | null;
+  targetAlertGuildId: string;
+  alertConfigService: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
+  botLogChannelService: Pick<BotLogChannelService, "getChannelIdForType">;
 }): Promise<void> {
   if (!input.interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     await replyPrivate(input.interaction, "Only administrators can update FWA layouts.");
@@ -187,6 +259,19 @@ async function runUpdateMode(input: {
     );
     return;
   }
+  const defaultChannelId =
+    input.alertType === "default-channel" || input.alertType === "both"
+      ? await input.botLogChannelService.getChannelIdForType(
+          input.targetAlertGuildId,
+          "layout-alerts",
+        )
+      : null;
+  validateLayoutAlertCommandOptions({
+    type: input.alertType,
+    channel: input.alertChannel,
+    guildId: input.targetAlertGuildId,
+    defaultChannelId,
+  });
   const canonical = await input.layoutService.setCanonicalLayout({
     townhall: input.townhall,
     type: input.type,
@@ -202,6 +287,48 @@ async function runUpdateMode(input: {
     publicationService: input.publicationService,
     messageResolver: input.messageResolver,
   });
+  if (input.alertType) {
+    try {
+      const finalAlertGuildId = getCompleteLayoutDiscordGuildId(published.layout);
+      if (!finalAlertGuildId) {
+        throw new LayoutAlertPolicyValidationError(
+          "A canonical Discord layout post is required before enabling expiration alerts.",
+        );
+      }
+      const finalDefaultChannelId =
+        input.alertType === "default-channel" || input.alertType === "both"
+          ? await input.botLogChannelService.getChannelIdForType(
+              finalAlertGuildId,
+              "layout-alerts",
+            )
+          : null;
+      validateLayoutAlertCommandOptions({
+        type: input.alertType,
+        channel: input.alertChannel,
+        guildId: finalAlertGuildId,
+        defaultChannelId: finalDefaultChannelId,
+      });
+      if (input.alertType === "none") {
+        await input.alertConfigService.disablePolicy(published.layout.id);
+      } else {
+        await input.alertConfigService.setPolicy({
+          layoutId: published.layout.id,
+          mode: layoutAlertModeForType(input.alertType),
+          customChannelId:
+            input.alertType === "custom-channel" ? input.alertChannel?.id : null,
+        });
+      }
+    } catch (error) {
+      console.error(
+        `[fwa-layout] event=alert_policy_failed guild_id=${input.interaction.guildId ?? "dm"} layout_id=${published.layout.id} error=${formatError(error)}`,
+      );
+      await replyPrivate(
+        input.interaction,
+        `Saved canonical TH${canonical.Townhall} ${canonical.Type} layout. [View post](${published.jumpUrl}) Alert configuration failed; the layout was saved, but the alert policy could not be updated.`,
+      );
+      return;
+    }
+  }
   await replyPrivate(
     input.interaction,
     `Saved canonical TH${canonical.Townhall} ${canonical.Type} layout. [View post](${published.jumpUrl})`,

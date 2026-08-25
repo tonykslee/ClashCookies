@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LayoutRecord } from "@prisma/client";
+import { LayoutAlertMode, LayoutRecord } from "@prisma/client";
 import {
   buildLayoutInfoPayload,
   buildLayoutPostCustomId,
@@ -212,6 +212,33 @@ describe("layout post persistent interactions", () => {
       expect.objectContaining({ ephemeral: true }),
     );
     expect(JSON.stringify(interaction.reply.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+  });
+
+  it("shows the current durable alert policy and resolves the default channel dynamically", async () => {
+    const record = buildRecord();
+    layoutRecordService.findById.mockResolvedValue(record);
+    const getPolicy = vi.fn().mockResolvedValue({
+      layoutId: record.id,
+      mode: LayoutAlertMode.DEFAULT_CHANNEL,
+      customChannelId: null,
+    });
+    const getChannelIdForType = vi.fn().mockResolvedValue("alerts-1");
+    postService = new LayoutPostService({
+      layoutService: layoutRecordService,
+      alertConfigService: { getPolicy },
+      botLogChannelService: { getChannelIdForType },
+    });
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId("info", record.id),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    const description = interaction.reply.mock.calls[0]?.[0]?.embeds?.[0]
+      ?.toJSON().description;
+    expect(description).toContain("Expiration alert: <#alerts-1>");
+    expect(getPolicy).toHaveBeenCalledWith(record.id);
+    expect(getChannelIdForType).toHaveBeenCalledWith("guild-1", "layout-alerts");
   });
 
   it("closes the expanded view without writing lifecycle state", async () => {

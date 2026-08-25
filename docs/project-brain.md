@@ -78,6 +78,7 @@ Important owners:
 | CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans and clan-owned Discord destinations | TrackedClan |
 | Generic Clash layout link lifecycle, freshness, and post provenance | LayoutRecord |
+| Per-layout expiration-alert policy | LayoutAlertConfig |
 | Canonical FWA `(Townhall, Type)` layout designation | FwaLayouts |
 | Per-clan FWA weight-alert policy (enablement and stale-age threshold) | FwaWeightAlertConfig |
 | Durable per-clan/date FWA weight-alert delivery claims and outcomes | FwaWeightAlertDelivery |
@@ -130,6 +131,8 @@ Important owners:
 Do not duplicate ownership across tables.
 
 `LayoutRecord` owns tracked Clash layout links, explicit submission/confirmation freshness, and Discord post provenance. `FwaLayouts` owns the canonical FWA `(Townhall, Type)` designation through `layoutId`; its `LayoutLink` and `ImageUrl` remain transitional compatibility copies for legacy consumers and are written transactionally from the selected `LayoutRecord`. `LastUpdated` is non-semantic and never supplies freshness. Backfill assigns legacy rows to shared records with unknown historical freshness, and seed/bootstrap repairs missing associations without overwriting customized rows or creating lifecycle dates. Layout freshness is `lastConfirmedAt ?? submittedAt`; Prisma `updatedAt`, `LastUpdated`, Discord message time, clicks, reads, and merely revealing the link are not freshness sources. Only explicit “Yes, It Opened” confirmation advances `lastConfirmedAt`.
+
+`LayoutAlertConfig` owns only per-layout expiration-alert mode and optional custom channel. The typed `/bot-logs type:layout-alerts` setting remains the guild default-channel owner and is resolved dynamically; alert delivery, scheduling, eligibility, claims, idempotency, and fallback behavior do not belong to this config and are not implemented here. The shared 28-day stale-age value is a conservative internal reminder threshold, not a guaranteed expiration date.
 
 `AllianceClanMembershipInterval` remains the owner of observation-based, continuously observed alliance/CWL clan-membership intervals. `SyncClanMemberSnapshot` owns the separate immutable scheduled-sync FWA physical-membership fact for each normalized clan/player roster entry. They are different concepts, not competing owners: the former describes observed residence over time, while the latter describes exact membership available at one scheduled boundary. The sync snapshot deliberately contains no filler status; `SyncClanReadinessSnapshot` owns filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's ACTUAL roster.
 

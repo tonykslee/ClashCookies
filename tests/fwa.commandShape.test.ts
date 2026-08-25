@@ -18,6 +18,8 @@ describe("/fwa base-swap command shape", () => {
       "title",
       "description",
       "img-url",
+      "alert-type",
+      "alert-channel",
     ]);
     expect(hasPermissionTargetForCommand("fwa:layout")).toBe(true);
   });

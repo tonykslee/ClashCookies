@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ChannelType } from "discord.js";
 import {
   FWA_LAYOUT_SUBCOMMAND,
   runFwaLayoutCommand,
@@ -50,6 +51,8 @@ function makeInteraction(input: {
   imageUrl?: string | null;
   admin?: boolean;
   channel?: unknown;
+  alertType?: string | null;
+  alertChannel?: Record<string, unknown> | null;
 }) {
   const reply = vi.fn().mockResolvedValue(undefined);
   const interaction: any = {
@@ -67,8 +70,10 @@ function makeInteraction(input: {
         if (name === "title") return input.title ?? null;
         if (name === "description") return input.description ?? null;
         if (name === "img-url") return input.imageUrl ?? null;
+        if (name === "alert-type") return input.alertType ?? null;
         return null;
       }),
+      getChannel: vi.fn(() => input.alertChannel ?? null),
     },
   };
   return { interaction, reply };
@@ -84,6 +89,8 @@ describe("/fwa layout", () => {
       "title",
       "description",
       "img-url",
+      "alert-type",
+      "alert-channel",
     ]);
   });
 
@@ -99,6 +106,8 @@ describe("/fwa layout", () => {
     await runFwaLayoutCommand(interaction, {
       layoutService: { setCanonicalLayout } as any,
       publicationService: { publish } as any,
+      alertConfigService: { setPolicy: vi.fn(), disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
     });
 
     expect(setCanonicalLayout).toHaveBeenCalledWith(
@@ -122,6 +131,196 @@ describe("/fwa layout", () => {
     expect(reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: "Only administrators can update FWA layouts." }),
     );
+  });
+
+  it("persists explicit alert policy only after the canonical post is published", async () => {
+    const setCanonicalLayout = vi.fn().mockResolvedValue(buildCanonical());
+    const publish = vi.fn().mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+    const setPolicy = vi.fn().mockResolvedValue(undefined);
+    const { interaction } = makeInteraction({ link: LINK, alertType: "dm" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: {
+        setCanonicalLayout,
+        findByLayoutLink: vi.fn().mockResolvedValue(null),
+      } as any,
+      publicationService: { publish } as any,
+      alertConfigService: { setPolicy, disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
+    });
+
+    expect(setCanonicalLayout).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(setPolicy).toHaveBeenCalledWith({
+      layoutId: "layout-1",
+      mode: "DM",
+      customChannelId: null,
+    });
+  });
+
+  it("does not mutate list mode when alert options are supplied without a link", async () => {
+    const listCanonical = vi.fn().mockResolvedValue([]);
+    const { interaction, reply } = makeInteraction({ alertType: "dm" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { listCanonical } as any,
+      publicationService: { publish: vi.fn() } as any,
+    });
+
+    expect(listCanonical).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("alert-type"),
+    }));
+  });
+
+  it.each([
+    { label: "alert-type", alertType: "dm" },
+    {
+      label: "alert-channel",
+      alertChannel: { id: "channel-1", guildId: "guild-1", type: ChannelType.GuildText },
+    },
+    { label: "title", title: "TH18" },
+    { label: "img-url", imageUrl: "https://example.com/layout.png" },
+  ])("rejects th plus $label before lookup", async (input) => {
+    const findCanonical = vi.fn().mockResolvedValue(buildCanonical());
+    const { interaction, reply } = makeInteraction({ th: 18, ...input });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { findCanonical } as any,
+      publicationService: { publish: vi.fn() } as any,
+    });
+
+    expect(findCanonical).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining(`\`${input.label}\``),
+    }));
+  });
+
+  it("resolves FWA default routing from the canonical existing guild", async () => {
+    const setCanonicalLayout = vi.fn();
+    const findByLayoutLink = vi.fn().mockResolvedValue(buildRecord({
+      discordGuildId: "guild-B",
+      discordChannelId: "channel-B",
+      discordMessageId: "message-B",
+    }));
+    const getChannelIdForType = vi.fn().mockResolvedValue(null);
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "default-channel" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { setCanonicalLayout, findByLayoutLink } as any,
+      publicationService: { publish: vi.fn() } as any,
+      alertConfigService: { setPolicy: vi.fn(), disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType } as any,
+    });
+
+    expect(getChannelIdForType).toHaveBeenCalledWith("guild-B", "layout-alerts");
+    expect(getChannelIdForType).not.toHaveBeenCalledWith("guild-1", "layout-alerts");
+    expect(setCanonicalLayout).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("No layout-alerts channel is configured"),
+    }));
+  });
+
+  it("rejects a custom FWA alert channel outside the canonical guild", async () => {
+    const setCanonicalLayout = vi.fn();
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      alertType: "custom-channel",
+      alertChannel: { id: "channel-A", guildId: "guild-1", type: ChannelType.GuildText },
+    });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: {
+        setCanonicalLayout,
+        findByLayoutLink: vi.fn().mockResolvedValue(buildRecord({
+          discordGuildId: "guild-B",
+          discordChannelId: "channel-B",
+          discordMessageId: "message-B",
+        })),
+      } as any,
+      publicationService: { publish: vi.fn() } as any,
+      alertConfigService: { setPolicy: vi.fn(), disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
+    });
+
+    expect(setCanonicalLayout).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("same server"),
+    }));
+  });
+
+  it("uses the published layout guild as final policy-routing authority", async () => {
+    const setCanonicalLayout = vi.fn().mockResolvedValue(buildCanonical());
+    const publish = vi.fn().mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-C",
+        discordChannelId: "channel-C",
+        discordMessageId: "message-C",
+      }),
+      messageId: "message-C",
+      jumpUrl: "https://discord.com/channels/guild-C/channel-C/message-C",
+    });
+    const getChannelIdForType = vi.fn().mockImplementation(async (guildId: string) =>
+      guildId === "guild-B" || guildId === "guild-C" ? `alerts-${guildId}` : null,
+    );
+    const setPolicy = vi.fn().mockResolvedValue(undefined);
+    const { interaction } = makeInteraction({ link: LINK, alertType: "default-channel" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: {
+        setCanonicalLayout,
+        findByLayoutLink: vi.fn().mockResolvedValue(buildRecord({
+          discordGuildId: "guild-B",
+          discordChannelId: "channel-B",
+          discordMessageId: "message-B",
+        })),
+      } as any,
+      publicationService: { publish } as any,
+      alertConfigService: { setPolicy, disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType } as any,
+    });
+
+    expect(getChannelIdForType).toHaveBeenCalledWith("guild-B", "layout-alerts");
+    expect(getChannelIdForType).toHaveBeenCalledWith("guild-C", "layout-alerts");
+    expect(setPolicy).toHaveBeenCalled();
+  });
+
+  it("uses state-neutral wording when FWA alert policy persistence fails", async () => {
+    const setPolicy = vi.fn().mockRejectedValue(new Error("config unavailable"));
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "dm" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: {
+        setCanonicalLayout: vi.fn().mockResolvedValue(buildCanonical()),
+        findByLayoutLink: vi.fn().mockResolvedValue(null),
+      } as any,
+      publicationService: {
+        publish: vi.fn().mockResolvedValue({
+          layout: buildRecord({
+            discordGuildId: "guild-1",
+            discordChannelId: "channel-1",
+            discordMessageId: "message-1",
+          }),
+          messageId: "message-1",
+          jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        }),
+      } as any,
+      alertConfigService: { setPolicy, disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("the layout was saved, but the alert policy could not be updated"),
+    }));
+    expect(reply.mock.calls[0][0].content).not.toContain("expiration alerts are not enabled");
   });
 
   it("returns a jump link for a legacy lookup and does not echo the Clash link", async () => {
