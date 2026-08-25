@@ -4,6 +4,26 @@ import { Fwa } from "../src/commands/Fwa";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
 describe("/fwa base-swap command shape", () => {
+  it("registers /fwa layout with optional lookup, canonical link, and presentation options", () => {
+    const layout = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "layout",
+    );
+    expect(layout).toBeTruthy();
+    expect(layout?.options?.map((option: { name: string }) => option.name)).toEqual([
+      "th",
+      "type",
+      "link",
+      "title",
+      "description",
+      "img-url",
+      "alert-type",
+      "alert-channel",
+    ]);
+    expect(hasPermissionTargetForCommand("fwa:layout")).toBe(true);
+  });
+
   it("registers war-bases, base-errors, and fwa-bases with a FWA battle-day swap-reminder option", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>

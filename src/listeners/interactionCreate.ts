@@ -230,6 +230,10 @@ import {
   handleClanHealthNavigationButtonInteraction,
   isClanHealthNavigationButtonCustomId,
 } from "../commands/ClanHealthNavigation";
+import {
+  handleLayoutButtonInteraction,
+  isLayoutPostCustomId,
+} from "../services/LayoutPostService";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -993,6 +997,11 @@ const handleButtonInteraction = async (
   cocService: CoCService
 ): Promise<void> => {
   if (!interaction.isButton()) return;
+
+  if (isLayoutPostCustomId(interaction.customId)) {
+    await handleLayoutButtonInteraction(interaction);
+    return;
+  }
 
   if (isClanHealthNavigationButtonCustomId(interaction.customId)) {
     await handleClanHealthNavigationButtonInteraction(interaction);

@@ -1,472 +1,456 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FwaLayouts, FwaLayoutType } from "@prisma/client";
+import { ApplicationCommandOptionType } from "discord.js";
+import { ChannelType } from "discord.js";
+import { Layout, LAYOUT_COMMAND_OPTIONS, runLayoutCommand } from "../src/commands/Layout";
+import { injectVisibilityOptionsForTest } from "../src/listeners/ready";
+import { MAX_LAYOUT_ATTACHMENT_BYTES } from "../src/services/LayoutPostPublicationService";
 
-const prismaMock = vi.hoisted(() => ({
-  fwaLayouts: {
-    findMany: vi.fn(),
-    findUnique: vi.fn(),
-    upsert: vi.fn(),
-  },
-}));
+const LINK =
+  "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD18";
 
-vi.mock("../src/prisma", () => ({
-  prisma: prismaMock,
-}));
-
-import { Layout, buildLayoutListEmbedsForTest } from "../src/commands/Layout";
-import {
-  isSupportedTownhall,
-  isValidFwaLayoutLink,
-  isValidImageUrl,
-  normalizeLayoutType,
-  wrapDiscordLink,
-} from "../src/services/FwaLayoutService";
-
-/** Purpose: build a deterministic FwaLayouts row for command and embed tests. */
-function buildRow(input: {
-  Townhall: number;
-  Type: FwaLayoutType;
-  LayoutLink: string;
-  ImageUrl: string | null;
-}): FwaLayouts {
+function buildRecord(overrides: Record<string, unknown> = {}) {
   return {
-    ...input,
-    LastUpdated: new Date("2026-03-19T00:00:00.000Z"),
+    id: "layout-1",
+    layoutLink: LINK,
+    title: null,
+    description: null,
+    imageUrl: null,
+    postedByDiscordUserId: "user-1",
+    discordGuildId: null,
+    discordChannelId: null,
+    discordMessageId: null,
+    submittedAt: new Date("2026-08-25T00:00:00.000Z"),
+    lastConfirmedAt: null,
+    lastConfirmedByDiscordUserId: null,
+    createdAt: new Date("2026-08-25T00:00:00.000Z"),
+    updatedAt: new Date("2026-08-25T00:00:00.000Z"),
+    ...overrides,
   };
 }
 
-/** Purpose: create a minimal slash interaction mock for /layout run-path tests. */
-function makeInteraction(params: {
-  th?: number | null;
-  type?: string | null;
-  edit?: string | null;
-  imgUrl?: string | null;
-  visibility?: "private" | "public";
+function makeInteraction(input: {
+  link?: string | null;
+  title?: string | null;
+  description?: string | null;
+  imageUrl?: string | null;
+  attachment?: Record<string, unknown> | null;
+  alertType?: string | null;
+  alertChannel?: Record<string, unknown> | null;
   isAdmin?: boolean;
 }) {
   const reply = vi.fn().mockResolvedValue(undefined);
-  const editReply = vi.fn().mockResolvedValue(undefined);
-  const collector = {
-    on: vi.fn().mockReturnThis(),
-  };
-  const fetchReply = vi.fn().mockResolvedValue({
-    createMessageComponentCollector: vi.fn(() => collector),
-  });
-
-  const interaction = {
-    id: "interaction-1",
+  const interaction: any = {
     user: { id: "user-1" },
-    replied: false,
-    deferred: false,
-    memberPermissions: {
-      has: vi.fn(() => params.isAdmin ?? true),
-    },
+    client: { channels: { fetch: vi.fn() } },
+    guildId: "guild-1",
+    channelId: "channel-1",
+    channel: { id: "channel-1", send: vi.fn() },
+    memberPermissions: { has: vi.fn(() => input.isAdmin ?? true) },
     reply,
-    editReply,
-    fetchReply,
     options: {
-      getInteger: vi.fn((name: string) => {
-        if (name === "th") return params.th ?? null;
-        return null;
-      }),
       getString: vi.fn((name: string) => {
-        if (name === "type") return params.type ?? null;
-        if (name === "edit") return params.edit ?? null;
-        if (name === "img-url") return params.imgUrl ?? null;
-        if (name === "visibility") return params.visibility ?? "private";
+        if (name === "link") return input.link ?? null;
+        if (name === "title") return input.title ?? null;
+        if (name === "description") return input.description ?? null;
+        if (name === "img-url") return input.imageUrl ?? null;
+        if (name === "alert-type") return input.alertType ?? null;
         return null;
       }),
+      getAttachment: vi.fn(() => input.attachment ?? null),
+      getChannel: vi.fn(() => input.alertChannel ?? null),
     },
   };
-
-  return { interaction, reply, editReply, fetchReply, collector };
+  return { interaction, reply };
 }
 
-describe("/layout helper logic", () => {
-  it("validates layout links using the Clash layout prefix", () => {
-    expect(
-      isValidFwaLayoutLink(
-        "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAAL2WyTYmDxC5gKRGZcTtH3d"
-      )
-    ).toBe(true);
-    expect(
-      isValidFwaLayoutLink(
-        " https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AAAAAUAAAAAH2lvxn0AFoRDXqRUyoDxWd "
-      )
-    ).toBe(true);
-    expect(isValidFwaLayoutLink("https://example.com/not-layout")).toBe(false);
-  });
+function makeDeps() {
+  return {
+    getOrCreate: vi.fn().mockResolvedValue(buildRecord()),
+    findByLayoutLink: vi.fn().mockResolvedValue(null),
+    publish: vi.fn().mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    }),
+    setPolicy: vi.fn().mockResolvedValue(undefined),
+    disablePolicy: vi.fn().mockResolvedValue(undefined),
+    getChannelIdForType: vi.fn().mockResolvedValue("alerts-1"),
+  };
+}
 
-  it("validates image URLs with http/https only", () => {
-    expect(isValidImageUrl("https://i.imgur.com/bCISCn1.png")).toBe(true);
-    expect(isValidImageUrl(" http://example.com/test.jpg ")).toBe(true);
-    expect(isValidImageUrl("ftp://example.com/test.jpg")).toBe(false);
-    expect(isValidImageUrl("not-a-url")).toBe(false);
-  });
-
-  it("enforces TH8-TH18 support range", () => {
-    expect(isSupportedTownhall(7)).toBe(false);
-    expect(isSupportedTownhall(8)).toBe(true);
-    expect(isSupportedTownhall(18)).toBe(true);
-    expect(isSupportedTownhall(19)).toBe(false);
-  });
-
-  it("defaults missing type input to RISINGDAWN", () => {
-    expect(normalizeLayoutType(undefined)).toBe("RISINGDAWN");
-    expect(normalizeLayoutType(null)).toBe("RISINGDAWN");
-    expect(normalizeLayoutType("basic")).toBe("BASIC");
-  });
-
-  it("wraps links in angle brackets for Discord-safe posting", () => {
-    expect(wrapDiscordLink("https://link.clashofclans.com/en?action=OpenLayout&id=TH12")).toBe(
-      "<https://link.clashofclans.com/en?action=OpenLayout&id=TH12>"
-    );
+describe("/layout command shape", () => {
+  it("exposes only the generic tracked-layout options", () => {
+    const registered = injectVisibilityOptionsForTest(Layout) as any;
+    expect(registered.options.map((option: any) => option.name)).toEqual([
+      "link",
+      "title",
+      "description",
+      "image",
+      "img-url",
+      "alert-type",
+      "alert-channel",
+    ]);
+    expect(LAYOUT_COMMAND_OPTIONS[0]).toEqual(expect.objectContaining({
+      name: "link",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+    }));
+    expect(LAYOUT_COMMAND_OPTIONS[3]).toEqual(expect.objectContaining({
+      name: "image",
+      type: ApplicationCommandOptionType.Attachment,
+      required: false,
+    }));
+    expect(Layout.options?.some((option) => option.name === "visibility")).toBe(false);
+    expect(Layout.suppressVisibilityOption).toBe(true);
   });
 });
 
 describe("/layout command behavior", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  beforeEach(() => vi.clearAllMocks());
 
-  it("/layout with no args renders paginated embeds in fixed type order", async () => {
-    prismaMock.fwaLayouts.findMany.mockResolvedValue([
-      buildRow({
-        Townhall: 10,
-        Type: "RISINGDAWN",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH10%3AWB%3AAAAAOgAAAAJh_-F870fFMcVCr_wSnsEY",
-        ImageUrl: "https://i.imgur.com/4g893Yt.jpeg",
-      }),
-      buildRow({
-        Townhall: 8,
-        Type: "BASIC",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH8%3AWB%3AAAAAKgAAAAKANkTLQf__hePWp7JBwmVc",
-        ImageUrl: null,
-      }),
-      buildRow({
-        Townhall: 9,
-        Type: "ICE",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH9%3AWB%3AAAAAGAAAAAKguigWRLLurILLBvVA5rQE",
-        ImageUrl: null,
-      }),
-    ]);
+  it("requires Administrator before any persistence", async () => {
+    const { interaction, reply } = makeInteraction({ isAdmin: false, link: LINK });
+    const deps = makeDeps();
 
-    const { interaction, reply, fetchReply } = makeInteraction({});
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.findMany).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(fetchReply).toHaveBeenCalledTimes(1);
-
-    const payload = reply.mock.calls[0]?.[0];
-    const firstEmbed = payload.embeds[0].toJSON();
-    expect(firstEmbed.title).toBe("FWA Layouts - RISINGDAWN");
-    expect(firstEmbed.footer?.text).toBe("Page 1/3");
-    expect(payload.components.length).toBe(1);
-  });
-
-  it("/layout th:11 defaults type to RISINGDAWN", async () => {
-    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
-      buildRow({
-        Townhall: 11,
-        Type: "RISINGDAWN",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AAAAAUAAAAAH2lvxn0AFoRDXqRUyoDxWd",
-        ImageUrl: "https://i.imgur.com/APZjSyh.png",
-      })
-    );
-
-    const { interaction, reply } = makeInteraction({ th: 11 });
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.findUnique).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          Townhall_Type: {
-            Townhall: 11,
-            Type: "RISINGDAWN",
-          },
-        },
-      })
-    );
-
-    const payload = reply.mock.calls[0]?.[0];
-    expect(String(payload.content)).toContain("TH11 RISINGDAWN layout:");
-    expect(String(payload.content)).toContain(
-      "<https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AAAAAUAAAAAH2lvxn0AFoRDXqRUyoDxWd>"
-    );
-    expect(String(payload.content)).toContain("Image: https://i.imgur.com/APZjSyh.png");
-  });
-
-  it("/layout th:12 type:BASIC fetches the requested type row", async () => {
-    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
-      buildRow({
-        Townhall: 12,
-        Type: "BASIC",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAALxrYMCIguGWafzazqpHIsi",
-        ImageUrl: null,
-      })
-    );
-
-    const { interaction, reply } = makeInteraction({ th: 12, type: "BASIC" });
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.findUnique).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          Townhall_Type: {
-            Townhall: 12,
-            Type: "BASIC",
-          },
-        },
-      })
-    );
-
-    const payload = reply.mock.calls[0]?.[0];
-    expect(String(payload.content)).toContain("TH12 BASIC layout:");
-    expect(String(payload.content)).not.toContain("Image:");
-  });
-
-  it("returns ephemeral missing-row error when no saved layout exists", async () => {
-    prismaMock.fwaLayouts.findUnique.mockResolvedValue(null);
-
-    const { interaction, reply } = makeInteraction({ th: 12, type: "ICE" });
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-        content: "No layout saved for TH12 (ICE).",
-      })
-    );
-  });
-
-  it("admin edit with img-url updates both LayoutLink and ImageUrl", async () => {
-    const updatedLink =
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED";
-    const updatedImage = "https://i.imgur.com/new-image.png";
-    prismaMock.fwaLayouts.upsert.mockResolvedValue(
-      buildRow({
-        Townhall: 11,
-        Type: "RISINGDAWN",
-        LayoutLink: updatedLink,
-        ImageUrl: updatedImage,
-      })
-    );
-
-    const { interaction, reply } = makeInteraction({
-      th: 11,
-      type: "RISINGDAWN",
-      edit: updatedLink,
-      imgUrl: updatedImage,
-      isAdmin: true,
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
     });
-    await Layout.run({} as any, interaction as any, {} as any);
 
-    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          LayoutLink: updatedLink,
-          ImageUrl: updatedImage,
-        }),
-        update: expect.objectContaining({
-          LayoutLink: updatedLink,
-          ImageUrl: updatedImage,
-        }),
-      })
-    );
-
-    const payload = reply.mock.calls[0]?.[0];
-    expect(String(payload.content)).toContain("Saved TH11 RISINGDAWN layout:");
-    expect(String(payload.content)).toContain(`<${updatedLink}>`);
-    expect(String(payload.content)).toContain(`Image: ${updatedImage}`);
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: expect.stringContaining("Only administrators"),
+    }));
   });
 
-  it("admin edit without img-url preserves existing image by omitting ImageUrl update", async () => {
-    const updatedLink =
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED";
-    prismaMock.fwaLayouts.upsert.mockResolvedValue(
-      buildRow({
-        Townhall: 11,
-        Type: "RISINGDAWN",
-        LayoutLink: updatedLink,
-        ImageUrl: "https://i.imgur.com/existing.png",
-      })
-    );
+  it.each([
+    ["malformed link", "https://example.com/not-a-layout"],
+    ["empty link", ""],
+    ["whitespace link", "   "],
+  ])("rejects %s before persistence", async (_label, link) => {
+    const { interaction, reply } = makeInteraction({ link });
+    const deps = makeDeps();
 
-    const { interaction } = makeInteraction({ th: 11, edit: updatedLink, isAdmin: true });
-    await Layout.run({} as any, interaction as any, {} as any);
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+    });
 
-    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: {
-          LayoutLink: updatedLink,
-        },
-      })
-    );
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(deps.publish).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: "Invalid Clash layout link.",
+    }));
   });
 
-  it("create payload stores img-url when provided", async () => {
-    const updatedLink =
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH13%3AWB%3AEDITED";
-    const updatedImage = "https://i.imgur.com/create-image.jpg";
-    prismaMock.fwaLayouts.upsert.mockResolvedValue(
-      buildRow({
-        Townhall: 13,
-        Type: "RISINGDAWN",
-        LayoutLink: updatedLink,
-        ImageUrl: updatedImage,
-      })
+  it("creates a generic record, publishes publicly, and acknowledges privately", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: `  ${LINK}  `,
+      title: "TH18 War Base",
+      description: "CC troops",
+      imageUrl: "https://example.com/base.png",
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+    });
+
+    expect(deps.getOrCreate).toHaveBeenCalledWith({
+      layoutLink: LINK,
+      title: "TH18 War Base",
+      description: "CC troops",
+      imageUrl: "https://example.com/base.png",
+      postedByDiscordUserId: "user-1",
+    });
+    expect(deps.publish).toHaveBeenCalledWith(expect.objectContaining({
+      layout: expect.anything(),
+      guildId: "guild-1",
+      channel: interaction.channel,
+    }));
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: "Layout posted: [View post](https://discord.com/channels/guild-1/channel-1/message-1)",
+    }));
+    expect(reply.mock.calls[0][0].content).not.toContain(LINK);
+  });
+
+  it("rejects invalid external image URLs before persistence", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, imageUrl: "notaurl" });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Invalid image URL. Expected a valid http(s) URL.",
+    }));
+  });
+
+  it("rejects image and img-url together before persistence", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      imageUrl: "https://example.com/base.png",
+      attachment: { url: "https://cdn.discord.test/base.png", name: "base.png", contentType: "image/png" },
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Choose either `image` or `img-url`, not both.",
+    }));
+  });
+
+  it("rejects a clearly non-image attachment before persistence", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      attachment: { url: "https://cdn.discord.test/base.pdf", name: "base.pdf", contentType: "application/pdf" },
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "The `image` attachment must be an image file.",
+    }));
+  });
+
+  it("reuses exact-link lifecycle without resetting omitted presentation", async () => {
+    const { interaction } = makeInteraction({ link: LINK });
+    const deps = makeDeps();
+    deps.getOrCreate.mockResolvedValue(buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "existing-message",
+      submittedAt: new Date("2026-08-01T00:00:00.000Z"),
+    }));
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate).toHaveBeenCalledWith({
+      layoutLink: LINK,
+      postedByDiscordUserId: "user-1",
+    });
+    expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(deps.setPolicy).not.toHaveBeenCalled();
+    expect(deps.disablePolicy).not.toHaveBeenCalled();
+  });
+
+  it("persists an explicit alert policy only after publication", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "dm" });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(deps.setPolicy).toHaveBeenCalledWith({
+      layoutId: "layout-1",
+      mode: "DM",
+      customChannelId: null,
+    });
+  });
+
+  it("disables an explicit none policy after publication", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "none" });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.disablePolicy).toHaveBeenCalledWith("layout-1");
+    expect(deps.setPolicy).not.toHaveBeenCalled();
+  });
+
+  it("requires the configured default channel before persistence", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      alertType: "default-channel",
+    });
+    const deps = makeDeps();
+    deps.getChannelIdForType.mockResolvedValue(null);
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("No layout-alerts channel is configured"),
+    }));
+  });
+
+  it("reports policy failure after publication without claiming alerts are enabled", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "dm" });
+    const deps = makeDeps();
+    deps.setPolicy.mockRejectedValue(new Error("config unavailable"));
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("Alert configuration failed; the layout was saved, but the alert policy could not be updated."),
+    }));
+    expect(reply.mock.calls[0][0].content).not.toContain("expiration alerts are not enabled");
+  });
+
+  it("resolves default routing from an exact-link record's canonical guild", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "default-channel" });
+    const deps = makeDeps();
+    deps.findByLayoutLink.mockResolvedValue(buildRecord({
+      discordGuildId: "guild-B",
+      discordChannelId: "channel-B",
+      discordMessageId: "message-B",
+    }));
+    deps.publish.mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-B",
+        discordChannelId: "channel-B",
+        discordMessageId: "message-B",
+      }),
+      messageId: "message-B",
+      jumpUrl: "https://discord.com/channels/guild-B/channel-B/message-B",
+    });
+    deps.getChannelIdForType.mockImplementation(async (guildId: string) =>
+      guildId === "guild-1" ? "alerts-A" : null,
     );
 
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getChannelIdForType).toHaveBeenCalledWith("guild-B", "layout-alerts");
+    expect(deps.getChannelIdForType).not.toHaveBeenCalledWith("guild-1", "layout-alerts");
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("No layout-alerts channel is configured"),
+    }));
+  });
+
+  it("rejects a custom channel from the invoking guild when the canonical post is elsewhere", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      alertType: "custom-channel",
+      alertChannel: { id: "channel-A", guildId: "guild-1", type: ChannelType.GuildText },
+    });
+    const deps = makeDeps();
+    deps.findByLayoutLink.mockResolvedValue(buildRecord({
+      discordGuildId: "guild-B",
+      discordChannelId: "channel-B",
+      discordMessageId: "message-B",
+    }));
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("same server"),
+    }));
+  });
+
+  it("uses the invoking guild for a new unposted layout", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "default-channel" });
+    const deps = makeDeps();
+    deps.getChannelIdForType.mockResolvedValue("alerts-A");
+    deps.publish.mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.findByLayoutLink).toHaveBeenCalledWith(LINK);
+    expect(deps.getChannelIdForType).toHaveBeenCalledWith("guild-1", "layout-alerts");
+    expect(deps.setPolicy).toHaveBeenCalled();
+  });
+
+  it("passes native image uploads to the publication layer without persisting the source URL", async () => {
     const { interaction } = makeInteraction({
-      th: 13,
-      edit: updatedLink,
-      imgUrl: updatedImage,
-      isAdmin: true,
+      link: LINK,
+      attachment: {
+        url: "https://cdn.discord.test/base.png",
+        name: "folder/base image.png",
+        contentType: "image/png",
+        size: 4,
+      },
     });
-    await Layout.run({} as any, interaction as any, {} as any);
+    const deps = makeDeps();
 
-    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          ImageUrl: updatedImage,
-        }),
-      })
-    );
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.getOrCreate.mock.calls[0][0]).not.toHaveProperty("imageUrl");
+    expect(deps.publish).toHaveBeenCalledWith(expect.objectContaining({
+      attachment: {
+        url: "https://cdn.discord.test/base.png",
+        filename: "folder/base image.png",
+        contentType: "image/png",
+        size: 4,
+      },
+    }));
   });
 
-  it("create payload defaults ImageUrl to null when img-url is omitted", async () => {
-    const updatedLink =
-      "https://link.clashofclans.com/en?action=OpenLayout&id=TH14%3AWB%3AEDITED";
-    prismaMock.fwaLayouts.upsert.mockResolvedValue(
-      buildRow({
-        Townhall: 14,
-        Type: "RISINGDAWN",
-        LayoutLink: updatedLink,
-        ImageUrl: null,
-      })
-    );
-
-    const { interaction } = makeInteraction({
-      th: 14,
-      edit: updatedLink,
-      isAdmin: true,
-    });
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          ImageUrl: null,
-        }),
-      })
-    );
-  });
-
-  it("img-url without edit is rejected", async () => {
+  it("rejects an oversized image attachment before persistence or publication", async () => {
     const { interaction, reply } = makeInteraction({
-      th: 12,
-      imgUrl: "https://i.imgur.com/test.png",
-      isAdmin: true,
+      link: LINK,
+      attachment: {
+        url: "https://cdn.discord.test/large.png",
+        name: "large.png",
+        contentType: "image/png",
+        size: MAX_LAYOUT_ATTACHMENT_BYTES + 1,
+      },
     });
+    const deps = makeDeps();
 
-    await Layout.run({} as any, interaction as any, {} as any);
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
 
-    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-        content: "You must provide `edit` when using `img-url`.",
-      })
-    );
-  });
-
-  it("invalid img-url is rejected", async () => {
-    const { interaction, reply } = makeInteraction({
-      th: 11,
-      edit: "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED",
-      imgUrl: "notaurl",
-      isAdmin: true,
-    });
-
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-        content: "Invalid image URL. Expected a valid http(s) URL.",
-      })
-    );
-  });
-
-  it("non-admin edit with img-url is denied", async () => {
-    const { interaction, reply } = makeInteraction({
-      th: 11,
-      edit: "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AEDITED",
-      imgUrl: "https://i.imgur.com/example.png",
-      isAdmin: false,
-    });
-
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    expect(prismaMock.fwaLayouts.upsert).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ephemeral: true,
-        content: "You do not have permission to edit layouts.",
-      })
-    );
-  });
-
-  it("fetch mode shows updated image URL when present", async () => {
-    const updatedImage = "https://i.imgur.com/updated-fetch.png";
-    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
-      buildRow({
-        Townhall: 12,
-        Type: "RISINGDAWN",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AUPDATED",
-        ImageUrl: updatedImage,
-      })
-    );
-
-    const { interaction, reply } = makeInteraction({ th: 12, type: "RISINGDAWN" });
-    await Layout.run({} as any, interaction as any, {} as any);
-
-    const payload = reply.mock.calls[0]?.[0];
-    expect(String(payload.content)).toContain(`Image: ${updatedImage}`);
-  });
-
-  it("list mode shows updated image URL when stored", () => {
-    const updatedImage = "https://i.imgur.com/updated-list.webp";
-    const embeds = buildLayoutListEmbedsForTest([
-      buildRow({
-        Townhall: 12,
-        Type: "RISINGDAWN",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAAL2WyTYmDxC5gKRGZcTtH3d",
-        ImageUrl: updatedImage,
-      }),
-      buildRow({
-        Townhall: 12,
-        Type: "BASIC",
-        LayoutLink:
-          "https://link.clashofclans.com/en?action=OpenLayout&id=TH12%3AHV%3AAAAABgAAAALxrYMCIguGWafzazqpHIsi",
-        ImageUrl: null,
-      }),
-    ]);
-
-    expect(embeds).toHaveLength(3);
-    const rising = embeds[0].toJSON();
-    const basic = embeds[1].toJSON();
-
-    expect(String(rising.description ?? "")).toContain(`Image: ${updatedImage}`);
-    expect(String(basic.description ?? "")).not.toContain("Image:");
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(deps.publish).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "The `image` attachment is too large.",
+    }));
   });
 });

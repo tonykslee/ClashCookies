@@ -66,6 +66,12 @@ The existing FWA Clans.json scheduler invokes weight-alert evaluation only after
 
 Only an active runtime may send to the configured `TrackedClan.leaderChannelId` and mention its configured `TrackedClan.leadRoleId`. Mirror and staging runtimes skip delivery, and there is no separate alert timer, scheduler, or `BotPollJobStatus` entry.
 
+### Layout expiration-alert delivery
+
+`LayoutAlertSchedulerService` runs an immediate startup cycle and then one active-production cycle per hour. Mirror, staging, development, and unknown runtimes skip the timer and send path. `LayoutAlertDeliveryService` evaluates `LayoutRecord.lastConfirmedAt ?? submittedAt`, requires complete canonical Discord provenance, and claims independent DM and CHANNEL rows keyed by the immutable freshness anchor. Default-channel routing is resolved at send time from the canonical post guild's typed `layout-alerts` setting; missing routing has no generic fallback. A final layout/config re-read can supersede a stale episode or leave a policy-changed delivery retryable.
+
+Bounded `[layout-alert]` events include `cycle_complete` aggregate counters (`configs`, `eligibleLayouts`, `eligibleTargets`, `claimed`, `sent`, `failed`, `deduped`, `retryDeferred`, `recentClaims`, `superseded`, `unknownFreshness`, `notDue`, `missingRouting`, `skipped`), `delivery_sent` identifiers, `delivery_failed` with target/attempt/failure code, `routing_missing`, `episode_superseded`, and `cycle_skipped`. Logs do not include raw Clash links, full message bodies, temporary image data, or unbounded exception text. The five-minute claim lease and six-hour failed retry delay prevent normal replay, while the unavoidable Discord-accepted-before-`SENT` commit window remains bounded by the retry policy.
+
 ## Home Away sync alerts
 
 The existing scheduled-sync scheduler runs the Home Away alert lifecycle as a failure-isolated sibling. Useful bounded lifecycle events include:

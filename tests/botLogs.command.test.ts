@@ -70,6 +70,7 @@ describe("/bot-logs command shape", () => {
       { name: "maintenance", value: "maintenance" },
       { name: "sync", value: "sync" },
       { name: "checklist", value: "checklist" },
+      { name: "layout-alerts", value: "layout-alerts" },
       { name: "ban-log", value: "ban-log" },
       { name: "ban-join-alert", value: "ban-join-alert" },
       { name: "clan-goals", value: "clan-goals" },
@@ -800,6 +801,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: <#444444444444444444>",
         "Sync: <#555555555555555555>",
         "Checklist: <#666666666666666666>",
+        "Layout alerts: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
@@ -896,6 +898,43 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it("sets and inspects the typed layout-alerts destination without generic fallback", async () => {
+    const setChannelIdForType = vi.spyOn(
+      BotLogChannelService.prototype,
+      "setChannelIdForType",
+    ).mockResolvedValue(undefined);
+    const setChannelId = vi.spyOn(
+      BotLogChannelService.prototype,
+      "setChannelId",
+    ).mockResolvedValue(undefined);
+    const configured = createInteraction({
+      guildId: "100",
+      type: "layout-alerts",
+      channel: { id: "777777777777777777", guildId: "100", type: ChannelType.GuildText },
+    });
+
+    await BotLogs.run({} as any, configured as any, {} as any);
+
+    expect(setChannelIdForType).toHaveBeenCalledWith(
+      "100",
+      "layout-alerts",
+      "777777777777777777",
+    );
+    expect(configured.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Layout alerts bot-log channel saved: <#777777777777777777>.",
+    }));
+
+    vi.mocked(BotLogChannelService.prototype.getChannelIdForType).mockResolvedValue(
+      "777777777777777777",
+    );
+    const inspect = createInteraction({ type: "layout-alerts", cacheChannelId: "777777777777777777" });
+    await BotLogs.run({} as any, inspect as any, {} as any);
+    expect(inspect.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "Current layout alerts bot-log channel: <#777777777777777777>.",
+    }));
+    expect(setChannelId).not.toHaveBeenCalled();
+  });
+
   it("shows unset bot-log rows when no args are provided", async () => {
     const interaction = createInteraction();
 
@@ -910,6 +949,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Not configured",
         "Sync: Not configured",
         "Checklist: Not configured",
+        "Layout alerts: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
@@ -937,6 +977,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Not configured",
         "Sync: Not configured",
         "Checklist: Not configured",
+        "Layout alerts: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
@@ -985,6 +1026,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Inaccessible <#444444444444444444>",
         "Sync: Inaccessible <#555555555555555555>",
         "Checklist: Inaccessible <#666666666666666666>",
+        "Layout alerts: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
@@ -1024,6 +1066,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Stale <#444444444444444444> (cleared)",
         "Sync: Not configured",
         "Checklist: Not configured",
+        "Layout alerts: Not configured",
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled\n" +
@@ -1112,6 +1155,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Not configured\n" +
         "Sync: Not configured\n" +
         "Checklist: Not configured\n" +
+        "Layout alerts: Not configured\n" +
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
         "Clan goals: Disabled\n" +
@@ -1246,6 +1290,7 @@ describe("/bot-logs behavior", () => {
         "Maintenance: Not configured\n" +
         "Sync: Not configured\n" +
         "Checklist: Not configured\n" +
+        "Layout alerts: Not configured\n" +
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
         "Clan goals: Disabled\n" +
