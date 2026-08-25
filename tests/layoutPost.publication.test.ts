@@ -32,6 +32,7 @@ describe("LayoutPostPublicationService", () => {
   const layoutService = {
     attachDiscordPost: vi.fn(),
     findById: vi.fn(),
+    updatePresentation: vi.fn(),
   };
   const send = vi.fn();
   let service: LayoutPostPublicationService;
@@ -146,7 +147,100 @@ describe("LayoutPostPublicationService", () => {
 
     const payload = edit.mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().image?.url).toBe("https://example.com/new.png");
+    expect(payload.attachments).toEqual([]);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("uploads a native image into a new canonical message without persisting its source URL", async () => {
+    const layout = buildLayout();
+    const message = { id: "message-1", delete: vi.fn().mockResolvedValue(undefined) };
+    const attached = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+      imageUrl: null,
+    });
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: vi.fn(() => "4") },
+      arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+    });
+    layoutService.updatePresentation.mockResolvedValue({ ...layout, imageUrl: null });
+    layoutService.attachDiscordPost.mockResolvedValue(attached);
+    send.mockResolvedValue(message);
+    const nativeService = new LayoutPostPublicationService({ layoutService, fetch });
+
+    await nativeService.publish({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: {
+        url: "https://cdn.discord.test/temporary-source.png?sig=secret",
+        filename: "folder/base image.png",
+        contentType: "image/png",
+      },
+    });
+
+    const payload = send.mock.calls[0]?.[0];
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0].name).toBe("base_image.png");
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://base_image.png");
+    expect(layoutService.updatePresentation).toHaveBeenCalledWith("layout-1", { imageUrl: null });
+    expect(layoutService.attachDiscordPost).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: null }));
+    expect(JSON.stringify(payload)).not.toContain("temporary-source");
+  });
+
+  it("replaces an existing native attachment and removes the old attachment explicitly", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const existing = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    const updated = { ...existing, imageUrl: null };
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: vi.fn(() => "3") },
+      arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3]).buffer),
+    });
+    layoutService.updatePresentation.mockResolvedValue(updated);
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn(),
+        edit,
+        attachments: { first: vi.fn(() => ({ name: "old.png", url: "https://cdn.example/old.png" })) },
+      }),
+    };
+    const nativeService = new LayoutPostPublicationService({ layoutService, fetch });
+
+    await nativeService.publish({
+      layout: existing as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+      attachment: { url: "https://cdn.discord.test/new", filename: "new.webp", contentType: "image/webp" },
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.files[0].name).toBe("new.webp");
+    expect(payload.attachments).toEqual([]);
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://new.webp");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not send or bind when native attachment transfer fails", async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error("network down"));
+    const nativeService = new LayoutPostPublicationService({ layoutService, fetch });
+
+    await expect(nativeService.publish({
+      layout: buildLayout() as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      attachment: { url: "https://cdn.discord.test/fails", filename: "bad.png", contentType: "image/png" },
+    })).rejects.toThrow("could not be fetched");
+    expect(send).not.toHaveBeenCalled();
+    expect(layoutService.attachDiscordPost).not.toHaveBeenCalled();
   });
 
   it("fails instead of returning a dead jump link when the canonical message cannot be resolved", async () => {
