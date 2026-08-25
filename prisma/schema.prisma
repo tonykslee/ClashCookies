@@ -1207,6 +1207,18 @@ enum LayoutAlertMode {
   CUSTOM_CHANNEL
 }
 
+enum LayoutAlertDeliveryStatus {
+  CLAIMED
+  SENT
+  FAILED
+  SUPERSEDED
+}
+
+enum LayoutAlertDeliveryTarget {
+  DM
+  CHANNEL
+}
+
 enum FwaFeedType {
   CLANS
   CLAN_MEMBERS
@@ -2055,6 +2067,7 @@ model LayoutRecord {
   updatedAt                    DateTime     @updatedAt
   fwaLayouts                   FwaLayouts[]
   alertConfig                  LayoutAlertConfig?
+  alertDeliveries              LayoutAlertDelivery[]
 
   @@unique([discordGuildId, discordChannelId, discordMessageId])
   @@index([discordMessageId])
@@ -2068,6 +2081,31 @@ model LayoutAlertConfig {
   updatedAt       DateTime        @updatedAt
 
   layout          LayoutRecord    @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+}
+
+model LayoutAlertDelivery {
+  id                 String                    @id @default(cuid())
+  layoutId           String
+  freshnessAnchorAt  DateTime
+  target             LayoutAlertDeliveryTarget
+  status             LayoutAlertDeliveryStatus
+  claimToken         String?
+  claimedAt          DateTime?
+  lastAttemptAt      DateTime?
+  attemptCount       Int                       @default(0)
+  sentAt             DateTime?
+  destinationId      String?
+  discordMessageId   String?
+  failureCode        String?
+  failureReason      String?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  layout             LayoutRecord              @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+
+  @@unique([layoutId, freshnessAnchorAt, target])
+  @@index([status, claimedAt])
+  @@index([status, lastAttemptAt])
 }
 
 model FwaClanCatalog {
