@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  ChannelType,
   ChatInputCommandInteraction,
   Client,
   PermissionFlagsBits,
@@ -21,6 +22,16 @@ import {
 } from "../services/LayoutPostPublicationService";
 import { LayoutService, layoutService } from "../services/LayoutService";
 import { isValidImageUrl } from "../services/FwaLayoutService";
+import {
+  LAYOUT_ALERT_TYPE_CHOICES,
+  LayoutAlertConfigService,
+  LayoutAlertPolicyValidationError,
+  layoutAlertConfigService,
+  layoutAlertModeForType,
+  parseLayoutAlertType,
+  validateLayoutAlertCommandOptions,
+} from "../services/LayoutAlertConfigService";
+import { BotLogChannelService, botLogChannelService } from "../services/BotLogChannelService";
 
 const IMAGE_EXTENSIONS = new Set([".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 
@@ -55,11 +66,32 @@ export const LAYOUT_COMMAND_OPTIONS = [
     type: ApplicationCommandOptionType.String,
     required: false,
   },
+  {
+    name: "alert-type",
+    description: "Expiration alert policy",
+    type: ApplicationCommandOptionType.String,
+    required: false,
+    choices: LAYOUT_ALERT_TYPE_CHOICES.map((choice) => ({ ...choice })),
+  },
+  {
+    name: "alert-channel",
+    description: "Custom expiration alert channel",
+    type: ApplicationCommandOptionType.Channel,
+    required: false,
+    channel_types: [
+      ChannelType.GuildText,
+      ChannelType.GuildAnnouncement,
+      ChannelType.PublicThread,
+      ChannelType.PrivateThread,
+    ],
+  },
 ] as const;
 
 export type LayoutCommandDeps = {
   layoutService?: Pick<LayoutService, "getOrCreate">;
   publicationService?: LayoutPostPublicationService;
+  alertConfigService?: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
+  botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
 };
 
 /** Purpose: create or reuse one generic tracked layout and publish its canonical public post. */
@@ -69,6 +101,8 @@ export async function runLayoutCommand(
 ): Promise<void> {
   const service = deps.layoutService ?? layoutService;
   const publication = deps.publicationService ?? layoutPostPublicationService;
+  const alertService = deps.alertConfigService ?? layoutAlertConfigService;
+  const routingService = deps.botLogChannelService ?? botLogChannelService;
 
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     await replyPrivate(interaction, "Only administrators can create or update tracked layouts.");
@@ -80,9 +114,26 @@ export async function runLayoutCommand(
   const description = interaction.options.getString("description", false);
   const imageUrl = interaction.options.getString("img-url", false);
   const attachment = interaction.options.getAttachment("image", false);
+  const alertTypeInput = interaction.options.getString("alert-type", false);
+  const alertChannel = interaction.options.getChannel("alert-channel", false) as {
+    id: string;
+    guildId?: string | null;
+    type?: number;
+  } | null;
 
   try {
+    const alertType = parseLayoutAlertType(alertTypeInput);
     const parsedLink = parseClashLayoutLink(link);
+    const defaultChannelId =
+      alertType === "default-channel" || alertType === "both"
+        ? await routingService.getChannelIdForType(interaction.guildId ?? "", "layout-alerts")
+        : null;
+    validateLayoutAlertCommandOptions({
+      type: alertType,
+      channel: alertChannel,
+      guildId: interaction.guildId ?? "",
+      defaultChannelId,
+    });
     if (attachment && imageUrl !== null) {
       await replyPrivate(interaction, "Choose either `image` or `img-url`, not both.");
       return;
@@ -124,6 +175,28 @@ export async function runLayoutCommand(
       messageResolver: createDiscordLayoutPostResolver(interaction.client),
       ...(upload ? { attachment: upload } : {}),
     });
+    if (alertType) {
+      try {
+        if (alertType === "none") {
+          await alertService.disablePolicy(published.layout.id);
+        } else {
+          await alertService.setPolicy({
+            layoutId: published.layout.id,
+            mode: layoutAlertModeForType(alertType),
+            customChannelId: alertType === "custom-channel" ? alertChannel?.id : null,
+          });
+        }
+      } catch (error) {
+        console.error(
+          `[layout] event=alert_policy_failed guild_id=${interaction.guildId ?? "dm"} layout_id=${published.layout.id} error=${formatError(error)}`,
+        );
+        await replyPrivate(
+          interaction,
+          `Layout posted: [View post](${published.jumpUrl}) Alert configuration failed; expiration alerts are not enabled.`,
+        );
+        return;
+      }
+    }
     await replyPrivate(interaction, `Layout posted: [View post](${published.jumpUrl})`);
   } catch (error) {
     console.error(
@@ -131,6 +204,10 @@ export async function runLayoutCommand(
     );
     if (error instanceof InvalidClashLayoutLinkError) {
       await replyPrivate(interaction, "Invalid Clash layout link.");
+      return;
+    }
+    if (error instanceof LayoutAlertPolicyValidationError) {
+      await replyPrivate(interaction, error.message);
       return;
     }
     await replyPrivate(interaction, "Failed to process `/layout`. Please try again shortly.");

@@ -33,6 +33,8 @@ function makeInteraction(input: {
   description?: string | null;
   imageUrl?: string | null;
   attachment?: Record<string, unknown> | null;
+  alertType?: string | null;
+  alertChannel?: Record<string, unknown> | null;
   isAdmin?: boolean;
 }) {
   const reply = vi.fn().mockResolvedValue(undefined);
@@ -50,9 +52,11 @@ function makeInteraction(input: {
         if (name === "title") return input.title ?? null;
         if (name === "description") return input.description ?? null;
         if (name === "img-url") return input.imageUrl ?? null;
+        if (name === "alert-type") return input.alertType ?? null;
         return null;
       }),
       getAttachment: vi.fn(() => input.attachment ?? null),
+      getChannel: vi.fn(() => input.alertChannel ?? null),
     },
   };
   return { interaction, reply };
@@ -66,6 +70,9 @@ function makeDeps() {
       messageId: "message-1",
       jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
     }),
+    setPolicy: vi.fn().mockResolvedValue(undefined),
+    disablePolicy: vi.fn().mockResolvedValue(undefined),
+    getChannelIdForType: vi.fn().mockResolvedValue("alerts-1"),
   };
 }
 
@@ -78,6 +85,8 @@ describe("/layout command shape", () => {
       "description",
       "image",
       "img-url",
+      "alert-type",
+      "alert-channel",
     ]);
     expect(LAYOUT_COMMAND_OPTIONS[0]).toEqual(expect.objectContaining({
       name: "link",
@@ -227,6 +236,81 @@ describe("/layout command behavior", () => {
       postedByDiscordUserId: "user-1",
     });
     expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(deps.setPolicy).not.toHaveBeenCalled();
+    expect(deps.disablePolicy).not.toHaveBeenCalled();
+  });
+
+  it("persists an explicit alert policy only after publication", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "dm" });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(deps.setPolicy).toHaveBeenCalledWith({
+      layoutId: "layout-1",
+      mode: "DM",
+      customChannelId: null,
+    });
+  });
+
+  it("disables an explicit none policy after publication", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "none" });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.disablePolicy).toHaveBeenCalledWith("layout-1");
+    expect(deps.setPolicy).not.toHaveBeenCalled();
+  });
+
+  it("requires the configured default channel before persistence", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      alertType: "default-channel",
+    });
+    const deps = makeDeps();
+    deps.getChannelIdForType.mockResolvedValue(null);
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("No layout-alerts channel is configured"),
+    }));
+  });
+
+  it("reports policy failure after publication without claiming alerts are enabled", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "dm" });
+    const deps = makeDeps();
+    deps.setPolicy.mockRejectedValue(new Error("config unavailable"));
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.publish).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("Alert configuration failed; expiration alerts are not enabled."),
+    }));
   });
 
   it("passes native image uploads to the publication layer without persisting the source URL", async () => {

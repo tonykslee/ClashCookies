@@ -6,6 +6,7 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import type { LayoutRecord } from "@prisma/client";
+import { LayoutAlertMode } from "@prisma/client";
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { parseClashLayoutLink } from "./ClashLayoutLinkService";
@@ -14,6 +15,12 @@ import {
   LayoutService,
   layoutService,
 } from "./LayoutService";
+import {
+  formatLayoutAlertPolicyLine,
+  LayoutAlertConfigService,
+  layoutAlertConfigService,
+} from "./LayoutAlertConfigService";
+import { BotLogChannelService, botLogChannelService } from "./BotLogChannelService";
 
 const LAYOUT_POST_PREFIX = "layout";
 const LAYOUT_POST_CUSTOM_ID_MAX_LENGTH = 100;
@@ -43,6 +50,8 @@ export type LayoutPostServiceOptions = {
     "findById" | "confirmSuccessfulOpening"
   >;
   autoCollapseDelayMs?: number;
+  alertConfigService?: Pick<LayoutAlertConfigService, "getPolicy">;
+  botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
 };
 
 export type ParsedLayoutPostCustomId = {
@@ -135,13 +144,13 @@ export function buildLayoutPostPayload(
 }
 
 /** Purpose: render ephemeral layout metadata without exposing the layout URL. */
-export function buildLayoutInfoPayload(record: LayoutRecord): {
+export function buildLayoutInfoPayload(record: LayoutRecord, alertLine?: string): {
   embeds?: EmbedBuilder[];
   content?: string;
   ephemeral: true;
   allowedMentions: { parse: []; repliedUser: false };
 } {
-  const embed = buildLayoutInfoEmbed(record);
+  const embed = buildLayoutInfoEmbed(record, alertLine);
   return {
     embeds: [embed],
     ephemeral: true,
@@ -150,7 +159,7 @@ export function buildLayoutInfoPayload(record: LayoutRecord): {
 }
 
 /** Purpose: build the metadata view while deliberately omitting the public title and layout URL. */
-export function buildLayoutInfoEmbed(record: LayoutRecord): EmbedBuilder {
+export function buildLayoutInfoEmbed(record: LayoutRecord, alertLine?: string): EmbedBuilder {
   const embed = new EmbedBuilder();
   const parsed = tryParseLayoutLink(record.layoutLink);
   const lines: string[] = [];
@@ -177,6 +186,7 @@ export function buildLayoutInfoEmbed(record: LayoutRecord): EmbedBuilder {
   if (record.lastConfirmedByDiscordUserId?.trim()) {
     lines.push(`Confirmed by: <@${record.lastConfirmedByDiscordUserId.trim()}>`);
   }
+  if (alertLine) lines.push(alertLine);
 
   embed.setDescription(lines.join("\n\n") || "No additional layout information is available.");
   return embed;
@@ -194,11 +204,15 @@ export class LayoutPostService {
     "findById" | "confirmSuccessfulOpening"
   >;
   private readonly autoCollapseDelayMs: number;
+  private readonly alertConfigService?: Pick<LayoutAlertConfigService, "getPolicy">;
+  private readonly botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
   private readonly autoCollapseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(options: LayoutPostServiceOptions = {}) {
     this.layoutService = options.layoutService ?? layoutService;
     this.autoCollapseDelayMs = options.autoCollapseDelayMs ?? DEFAULT_AUTO_COLLAPSE_DELAY_MS;
+    this.alertConfigService = options.alertConfigService;
+    this.botLogChannelService = options.botLogChannelService;
   }
 
   /** Purpose: handle one persistent layout button after loading and validating canonical post scope. */
@@ -222,7 +236,26 @@ export class LayoutPostService {
 
       const imageSource = getCurrentMessageImageSource(interaction);
       if (parsed.action === "info") {
-        await interaction.reply(buildLayoutInfoPayload(record));
+        const alertPolicy = this.alertConfigService
+          ? await this.alertConfigService.getPolicy(record.id)
+          : null;
+        const defaultChannelId =
+          alertPolicy &&
+          (alertPolicy.mode === LayoutAlertMode.DEFAULT_CHANNEL ||
+            alertPolicy.mode === LayoutAlertMode.BOTH) &&
+          this.botLogChannelService &&
+          record.discordGuildId
+            ? await this.botLogChannelService.getChannelIdForType(
+                record.discordGuildId,
+                "layout-alerts",
+              )
+            : null;
+        await interaction.reply(
+          buildLayoutInfoPayload(
+            record,
+            formatLayoutAlertPolicyLine(alertPolicy, defaultChannelId) ?? undefined,
+          ),
+        );
         return;
       }
 
@@ -418,4 +451,7 @@ async function replyLayoutPostError(
   });
 }
 
-export const layoutPostService = new LayoutPostService();
+export const layoutPostService = new LayoutPostService({
+  alertConfigService: layoutAlertConfigService,
+  botLogChannelService,
+});

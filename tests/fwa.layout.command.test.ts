@@ -50,6 +50,8 @@ function makeInteraction(input: {
   imageUrl?: string | null;
   admin?: boolean;
   channel?: unknown;
+  alertType?: string | null;
+  alertChannel?: Record<string, unknown> | null;
 }) {
   const reply = vi.fn().mockResolvedValue(undefined);
   const interaction: any = {
@@ -67,8 +69,10 @@ function makeInteraction(input: {
         if (name === "title") return input.title ?? null;
         if (name === "description") return input.description ?? null;
         if (name === "img-url") return input.imageUrl ?? null;
+        if (name === "alert-type") return input.alertType ?? null;
         return null;
       }),
+      getChannel: vi.fn(() => input.alertChannel ?? null),
     },
   };
   return { interaction, reply };
@@ -84,6 +88,8 @@ describe("/fwa layout", () => {
       "title",
       "description",
       "img-url",
+      "alert-type",
+      "alert-channel",
     ]);
   });
 
@@ -99,6 +105,8 @@ describe("/fwa layout", () => {
     await runFwaLayoutCommand(interaction, {
       layoutService: { setCanonicalLayout } as any,
       publicationService: { publish } as any,
+      alertConfigService: { setPolicy: vi.fn(), disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
     });
 
     expect(setCanonicalLayout).toHaveBeenCalledWith(
@@ -122,6 +130,47 @@ describe("/fwa layout", () => {
     expect(reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: "Only administrators can update FWA layouts." }),
     );
+  });
+
+  it("persists explicit alert policy only after the canonical post is published", async () => {
+    const setCanonicalLayout = vi.fn().mockResolvedValue(buildCanonical());
+    const publish = vi.fn().mockResolvedValue({
+      layout: buildRecord({ discordMessageId: "message-1" }),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+    const setPolicy = vi.fn().mockResolvedValue(undefined);
+    const { interaction } = makeInteraction({ link: LINK, alertType: "dm" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { setCanonicalLayout } as any,
+      publicationService: { publish } as any,
+      alertConfigService: { setPolicy, disablePolicy: vi.fn() } as any,
+      botLogChannelService: { getChannelIdForType: vi.fn() } as any,
+    });
+
+    expect(setCanonicalLayout).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(setPolicy).toHaveBeenCalledWith({
+      layoutId: "layout-1",
+      mode: "DM",
+      customChannelId: null,
+    });
+  });
+
+  it("does not mutate list mode when alert options are supplied without a link", async () => {
+    const listCanonical = vi.fn().mockResolvedValue([]);
+    const { interaction, reply } = makeInteraction({ alertType: "dm" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { listCanonical } as any,
+      publicationService: { publish: vi.fn() } as any,
+    });
+
+    expect(listCanonical).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("alert-type"),
+    }));
   });
 
   it("returns a jump link for a legacy lookup and does not echo the Clash link", async () => {

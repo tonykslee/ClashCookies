@@ -9,6 +9,7 @@ export const BOT_LOG_CHANNEL_TYPES = [
   "maintenance",
   "sync",
   "checklist",
+  "layout-alerts",
   "ban-log",
   "ban-join-alert",
   "clan-goals",
@@ -20,6 +21,7 @@ export const SIMPLE_BOT_LOG_CHANNEL_TYPES = [
   "maintenance",
   "sync",
   "checklist",
+  "layout-alerts",
 ] as const;
 export type SimpleBotLogChannelType =
   (typeof SIMPLE_BOT_LOG_CHANNEL_TYPES)[number];

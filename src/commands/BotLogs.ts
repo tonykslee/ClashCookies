@@ -25,6 +25,7 @@ const BOT_LOGS_BASE_SWAP_TYPE: SimpleBotLogChannelType = "base-swap";
 const BOT_LOGS_MAINTENANCE_TYPE: SimpleBotLogChannelType = "maintenance";
 const BOT_LOGS_SYNC_TYPE: SimpleBotLogChannelType = "sync";
 const BOT_LOGS_CHECKLIST_TYPE: SimpleBotLogChannelType = "checklist";
+const BOT_LOGS_LAYOUT_ALERTS_TYPE: SimpleBotLogChannelType = "layout-alerts";
 const BOT_LOGS_BAN_LOG_TYPE: RoutedBotLogChannelType = "ban-log";
 const BOT_LOGS_BAN_JOIN_ALERT_TYPE: RoutedBotLogChannelType = "ban-join-alert";
 const BOT_LOGS_CLAN_GOALS_TYPE: RoutedBotLogChannelType = "clan-goals";
@@ -192,13 +193,15 @@ function isSimpleTypedDestination(type: BotLogChannelType | null): type is Simpl
   return (
     type === BOT_LOGS_MAINTENANCE_TYPE ||
     type === BOT_LOGS_SYNC_TYPE ||
-    type === BOT_LOGS_CHECKLIST_TYPE
+    type === BOT_LOGS_CHECKLIST_TYPE ||
+    type === BOT_LOGS_LAYOUT_ALERTS_TYPE
   );
 }
 
 function formatSimpleTypedDestinationLabel(type: SimpleBotLogChannelType): string {
   if (type === BOT_LOGS_SYNC_TYPE) return "Sync";
   if (type === BOT_LOGS_CHECKLIST_TYPE) return "Checklist";
+  if (type === BOT_LOGS_LAYOUT_ALERTS_TYPE) return "Layout alerts";
   return "Maintenance";
 }
 
@@ -206,6 +209,9 @@ function formatSimpleTypedCommandHint(type: SimpleBotLogChannelType): string {
   if (type === BOT_LOGS_SYNC_TYPE) return "/bot-logs type:sync channel:<channel>";
   if (type === BOT_LOGS_CHECKLIST_TYPE) {
     return "/bot-logs type:checklist channel:<channel>";
+  }
+  if (type === BOT_LOGS_LAYOUT_ALERTS_TYPE) {
+    return "/bot-logs type:layout-alerts channel:<channel>";
   }
   return "/bot-logs type:maintenance channel:<channel>";
 }
@@ -226,7 +232,7 @@ async function renderSimpleTypedBotLogRow(
   interaction: ChatInputCommandInteraction,
   botLogChannelService: BotLogChannelService,
   guildId: string,
-  type: "maintenance" | "sync" | "checklist",
+  type: SimpleBotLogChannelType,
 ): Promise<string> {
   const label = formatSimpleTypedDestinationLabel(type);
   const configuredChannelId = await botLogChannelService.getChannelIdForType(
@@ -495,6 +501,12 @@ async function renderBotLogConfigurationSummary(
       guildId,
       "checklist",
     ),
+    await renderSimpleTypedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      "layout-alerts",
+    ),
     await renderRoutedBotLogRow(
       interaction,
       botLogChannelService,
@@ -626,6 +638,7 @@ export const BotLogs: Command = {
       requestedType !== BOT_LOGS_SYNC_TYPE &&
       requestedType !== BOT_LOGS_MAINTENANCE_TYPE &&
       requestedType !== BOT_LOGS_CHECKLIST_TYPE &&
+      requestedType !== BOT_LOGS_LAYOUT_ALERTS_TYPE &&
       requestedType !== BOT_LOGS_BAN_LOG_TYPE &&
       requestedType !== BOT_LOGS_BAN_JOIN_ALERT_TYPE &&
       requestedType !== BOT_LOGS_CLAN_GOALS_TYPE &&
@@ -635,7 +648,7 @@ export const BotLogs: Command = {
       await interaction.reply({
         ephemeral: true,
         content:
-          "`channel` is only supported for generic, maintenance, sync, checklist, base-swap custom routing, or ban-log/ban-join-alert/clan-goals/sync-retrospective custom routing.",
+          "`channel` is only supported for generic, maintenance, sync, checklist, layout-alerts, base-swap custom routing, or ban-log/ban-join-alert/clan-goals/sync-retrospective custom routing.",
       });
       return;
     }
@@ -786,6 +799,7 @@ export const BotLogs: Command = {
         requestedType === BOT_LOGS_SYNC_TYPE ||
         requestedType === BOT_LOGS_MAINTENANCE_TYPE ||
         requestedType === BOT_LOGS_CHECKLIST_TYPE ||
+        requestedType === BOT_LOGS_LAYOUT_ALERTS_TYPE ||
         requestedType === null
           ? isSupportedSyncBotLogsChannel(requestedChannel)
           : isSupportedBotLogsChannel(requestedChannel);
@@ -796,6 +810,7 @@ export const BotLogs: Command = {
           requestedType === BOT_LOGS_SYNC_TYPE
           || requestedType === BOT_LOGS_MAINTENANCE_TYPE
           || requestedType === BOT_LOGS_CHECKLIST_TYPE
+          || requestedType === BOT_LOGS_LAYOUT_ALERTS_TYPE
           || requestedType === null
             ? "Selected channel must be a server text or announcement channel."
               : "Selected channel must be a server text, announcement, or thread channel.",
@@ -921,6 +936,8 @@ export const BotLogs: Command = {
             ? "No sync bot-log channel is configured yet."
             : requestedType === BOT_LOGS_CHECKLIST_TYPE
               ? "No checklist bot-log channel is configured yet."
+              : requestedType === BOT_LOGS_LAYOUT_ALERTS_TYPE
+                ? "No layout-alerts bot-log channel is configured yet."
               : "No maintenance bot-log channel is configured yet.",
         });
         return;
