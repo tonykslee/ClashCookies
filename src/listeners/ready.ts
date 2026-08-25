@@ -385,6 +385,7 @@ function toRegistrationCommand(command: any): any {
 
 function injectVisibilityOptions(command: any): any {
   const registration = toRegistrationCommand(command);
+  if (command?.suppressVisibilityOption === true) return registration;
   const options = Array.isArray(registration.options) ? [...registration.options] : [];
   if (options.length === 0) {
     return { ...registration, options: [createVisibilityOption()] };
@@ -423,6 +424,8 @@ function injectVisibilityOptions(command: any): any {
 
   return { ...registration, options: nextOptions };
 }
+
+export const injectVisibilityOptionsForTest = injectVisibilityOptions;
 
 export default (client: Client, cocService: CoCService): void => {
   client.once("ready", async () => {

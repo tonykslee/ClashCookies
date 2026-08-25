@@ -1,326 +1,182 @@
 import {
-  ActionRowBuilder,
   ApplicationCommandOptionType,
-  ButtonBuilder,
-  ButtonInteraction,
-  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
-  ComponentType,
-  EmbedBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import { FwaLayoutType, FwaLayouts } from "@prisma/client";
 import { Command } from "../Command";
-import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
+import { formatError } from "../helper/formatError";
 import {
-  FWA_LAYOUT_LINK_PREFIX,
-  FWA_LAYOUT_TYPES,
-  FwaLayoutTownhallMismatchError,
-  getAllFwaLayouts,
-  getFwaLayout,
-  isSupportedTownhall,
-  isValidFwaLayoutLink,
-  isValidImageUrl,
-  normalizeLayoutType,
-  upsertFwaLayout,
-  wrapDiscordLink,
-} from "../services/FwaLayoutService";
+  InvalidClashLayoutLinkError,
+  parseClashLayoutLink,
+} from "../services/ClashLayoutLinkService";
+import {
+  LayoutPostAttachmentSource,
+  LayoutPostChannel,
+  LayoutPostPublicationService,
+  isLayoutAttachmentSizeSupported,
+  createDiscordLayoutPostResolver,
+  layoutPostPublicationService,
+} from "../services/LayoutPostPublicationService";
+import { LayoutService, layoutService } from "../services/LayoutService";
+import { isValidImageUrl } from "../services/FwaLayoutService";
 
-const PAGINATION_TIMEOUT_MS = 10 * 60 * 1000;
+const IMAGE_EXTENSIONS = new Set([".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 
-/** Purpose: render one layout row with wrapped link and optional image line. */
-function renderLayoutRow(row: FwaLayouts): string {
-  const base = `TH${row.Townhall} - ${wrapDiscordLink(row.LayoutLink)}`;
-  if (!row.ImageUrl) return base;
-  return `${base}\nImage: ${row.ImageUrl}`;
-}
+export const LAYOUT_COMMAND_OPTIONS = [
+  {
+    name: "link",
+    description: "Clash layout link",
+    type: ApplicationCommandOptionType.String,
+    required: true,
+  },
+  {
+    name: "title",
+    description: "Optional public layout title",
+    type: ApplicationCommandOptionType.String,
+    required: false,
+  },
+  {
+    name: "description",
+    description: "Optional description shown through Info",
+    type: ApplicationCommandOptionType.String,
+    required: false,
+  },
+  {
+    name: "image",
+    description: "Optional image attachment",
+    type: ApplicationCommandOptionType.Attachment,
+    required: false,
+  },
+  {
+    name: "img-url",
+    description: "Optional public image URL",
+    type: ApplicationCommandOptionType.String,
+    required: false,
+  },
+] as const;
 
-/** Purpose: build fixed-order paginated embeds for RISINGDAWN, BASIC, and ICE layout views. */
-export function buildLayoutListEmbeds(rows: FwaLayouts[]): EmbedBuilder[] {
-  return FWA_LAYOUT_TYPES.map((type, index) => {
-    const typeRows = rows
-      .filter((row) => row.Type === type)
-      .sort((left, right) => left.Townhall - right.Townhall);
+export type LayoutCommandDeps = {
+  layoutService?: Pick<LayoutService, "getOrCreate">;
+  publicationService?: LayoutPostPublicationService;
+};
 
-    const description =
-      typeRows.length === 0
-        ? "No layouts saved for this type yet."
-        : typeRows.map((row) => renderLayoutRow(row)).join("\n\n");
-
-    return new EmbedBuilder()
-      .setTitle(`FWA Layouts - ${type}`)
-      .setDescription(description)
-      .setColor(0x5865f2)
-      .setFooter({ text: `Page ${index + 1}/${FWA_LAYOUT_TYPES.length}` });
-  });
-}
-
-/** Purpose: build Prev/Next controls for layout page navigation. */
-function buildLayoutPaginationRow(customIdPrefix: string, page: number, pageCount: number) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${customIdPrefix}:prev`)
-      .setLabel("Prev")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page <= 0),
-    new ButtonBuilder()
-      .setCustomId(`${customIdPrefix}:next`)
-      .setLabel("Next")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= pageCount - 1)
-  );
-}
-
-/** Purpose: reply with a deterministic ephemeral validation/permission error payload. */
-async function replyLayoutError(
+/** Purpose: create or reuse one generic tracked layout and publish its canonical public post. */
+export async function runLayoutCommand(
   interaction: ChatInputCommandInteraction,
-  message: string
+  deps: LayoutCommandDeps = {},
 ): Promise<void> {
-  await interaction.reply({
-    content: message,
-    ephemeral: true,
-  });
-}
+  const service = deps.layoutService ?? layoutService;
+  const publication = deps.publicationService ?? layoutPostPublicationService;
 
-/** Purpose: enforce runtime admin gating for edit flows on an otherwise public command. */
-function canEditLayouts(interaction: ChatInputCommandInteraction): boolean {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
-}
-
-/** Purpose: build one fetch/edit success response with optional preview image line. */
-function buildSingleLayoutMessage(input: {
-  townhall: number;
-  type: FwaLayoutType;
-  layoutLink: string;
-  imageUrl: string | null;
-  action: "fetch" | "save";
-}): string {
-  const header =
-    input.action === "save"
-      ? `Saved TH${input.townhall} ${input.type} layout:`
-      : `TH${input.townhall} ${input.type} layout:`;
-  const lines = [header, wrapDiscordLink(input.layoutLink)];
-  if (input.imageUrl) {
-    lines.push(`Image: ${input.imageUrl}`);
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await replyPrivate(interaction, "Only administrators can create or update tracked layouts.");
+    return;
   }
-  return lines.join("\n");
+
+  const link = interaction.options.getString("link", false)?.trim() ?? "";
+  const title = interaction.options.getString("title", false);
+  const description = interaction.options.getString("description", false);
+  const imageUrl = interaction.options.getString("img-url", false);
+  const attachment = interaction.options.getAttachment("image", false);
+
+  try {
+    const parsedLink = parseClashLayoutLink(link);
+    if (attachment && imageUrl !== null) {
+      await replyPrivate(interaction, "Choose either `image` or `img-url`, not both.");
+      return;
+    }
+    if (imageUrl !== null && !isValidImageUrl(imageUrl)) {
+      await replyPrivate(interaction, "Invalid image URL. Expected a valid http(s) URL.");
+      return;
+    }
+    const upload = attachment ? validateImageAttachment(attachment) : null;
+    if (attachment && !upload) {
+      await replyPrivate(interaction, "The `image` attachment must be an image file.");
+      return;
+    }
+    if (upload && !isLayoutAttachmentSizeSupported(upload.size)) {
+      await replyPrivate(interaction, "The `image` attachment is too large.");
+      return;
+    }
+    if (!interaction.guildId || !interaction.channelId) {
+      await replyPrivate(interaction, "Tracked layout posts require a guild text channel.");
+      return;
+    }
+    const channel = interaction.channel;
+    if (!channel || !("send" in channel) || typeof channel.send !== "function") {
+      await replyPrivate(interaction, "The invoking channel cannot publish a layout post.");
+      return;
+    }
+
+    const layout = await service.getOrCreate({
+      layoutLink: parsedLink.layoutLink,
+      ...(title !== null ? { title } : {}),
+      ...(description !== null ? { description } : {}),
+      ...(imageUrl !== null ? { imageUrl } : {}),
+      postedByDiscordUserId: interaction.user.id,
+    });
+    const published = await publication.publish({
+      layout,
+      guildId: interaction.guildId,
+      channel: channel as unknown as LayoutPostChannel,
+      messageResolver: createDiscordLayoutPostResolver(interaction.client),
+      ...(upload ? { attachment: upload } : {}),
+    });
+    await replyPrivate(interaction, `Layout posted: [View post](${published.jumpUrl})`);
+  } catch (error) {
+    console.error(
+      `[layout] event=command_failed guild_id=${interaction.guildId ?? "dm"} user_id=${interaction.user.id} error=${formatError(error)}`,
+    );
+    if (error instanceof InvalidClashLayoutLinkError) {
+      await replyPrivate(interaction, "Invalid Clash layout link.");
+      return;
+    }
+    await replyPrivate(interaction, "Failed to process `/layout`. Please try again shortly.");
+  }
 }
 
-/** Purpose: send paginated list response and wire button handlers for command requester only. */
-async function handleListMode(
+function validateImageAttachment(attachment: {
+  url?: string | null;
+  name?: string | null;
+  contentType?: string | null;
+  size?: number | null;
+}): LayoutPostAttachmentSource | null {
+  const contentType = attachment.contentType?.trim().toLowerCase() ?? "";
+  const filename = attachment.name?.trim() ?? "";
+  const extension = filename.includes(".")
+    ? `.${filename.split(".").pop()!.toLowerCase()}`
+    : "";
+  if (contentType && !contentType.startsWith("image/")) return null;
+  if (!contentType && !IMAGE_EXTENSIONS.has(extension)) return null;
+  if (!attachment.url?.trim()) return null;
+  return {
+    url: attachment.url,
+    filename,
+    contentType: contentType || null,
+    size: attachment.size,
+  };
+}
+
+/** Purpose: keep every command acknowledgement private and suppress raw layout-link output. */
+async function replyPrivate(
   interaction: ChatInputCommandInteraction,
-  isPublic: boolean,
-  rows: FwaLayouts[]
+  content: string,
 ): Promise<void> {
-  const embeds = buildLayoutListEmbeds(rows);
-  const customIdPrefix = `layout:${interaction.id}`;
-  let page = 0;
-
-  await interaction.reply({
-    embeds: [embeds[page]],
-    components:
-      embeds.length > 1 ? [buildLayoutPaginationRow(customIdPrefix, page, embeds.length)] : [],
-    ephemeral: !isPublic,
-  });
-
-  if (embeds.length <= 1) return;
-
-  const message = await interaction.fetchReply();
-  if (!("createMessageComponentCollector" in message)) return;
-
-  const collector = message.createMessageComponentCollector({
-    componentType: ComponentType.Button,
-    time: PAGINATION_TIMEOUT_MS,
-  });
-
-  collector.on("collect", async (button: ButtonInteraction) => {
-    try {
-      if (button.user.id !== interaction.user.id) {
-        await button.reply({
-          ephemeral: true,
-          content: "Only the command requester can use this button.",
-        });
-        return;
-      }
-
-      if (button.customId === `${customIdPrefix}:prev`) {
-        page = Math.max(0, page - 1);
-      } else if (button.customId === `${customIdPrefix}:next`) {
-        page = Math.min(embeds.length - 1, page + 1);
-      }
-
-      await button.update({
-        embeds: [embeds[page]],
-        components: [buildLayoutPaginationRow(customIdPrefix, page, embeds.length)],
-      });
-    } catch (error) {
-      console.error(`layout paginator failed: ${formatError(error)}`);
-      if (!button.replied && !button.deferred) {
-        await button.reply({
-          ephemeral: true,
-          content: "Failed to update layout page.",
-        });
-      }
-    }
-  });
-
-  collector.on("end", async () => {
-    try {
-      await interaction.editReply({ components: [] });
-    } catch {
-      // no-op
-    }
-  });
+  await interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } });
 }
 
 export const Layout: Command = {
   name: "layout",
-  description: "Get or update FWA base layouts by Town Hall",
-  options: [
-    {
-      name: "th",
-      description: "Town Hall level (TH8-TH18)",
-      type: ApplicationCommandOptionType.Integer,
-      required: false,
-    },
-    {
-      name: "type",
-      description: "Layout type",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-      choices: FWA_LAYOUT_TYPES.map((type) => ({ name: type, value: type })),
-    },
-    {
-      name: "edit",
-      description: "New Clash layout link (admin only)",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-    },
-    {
-      name: "img-url",
-      description: "Optional preview image URL to save for this layout",
-      type: ApplicationCommandOptionType.String,
-      required: false,
-    },
-  ],
+  description: "Create or reuse a tracked Clash layout post",
+  options: [...LAYOUT_COMMAND_OPTIONS],
+  suppressVisibilityOption: true,
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
-    _cocService: CoCService
-  ) => {
-    const isPublic = interaction.options.getString("visibility", false) === "public";
-    const townhall = interaction.options.getInteger("th", false);
-    const typeInput = interaction.options.getString("type", false);
-    const editInput = interaction.options.getString("edit", false);
-    const imageUrlInput = interaction.options.getString("img-url", false);
-    const type = normalizeLayoutType(typeInput);
-
-    try {
-      if (imageUrlInput !== null && !editInput) {
-        await replyLayoutError(interaction, "You must provide `edit` when using `img-url`.");
-        return;
-      }
-
-      if (editInput) {
-        if (!canEditLayouts(interaction)) {
-          await replyLayoutError(interaction, "You do not have permission to edit layouts.");
-          return;
-        }
-
-        if (townhall === null) {
-          await replyLayoutError(interaction, "You must provide `th` when using `edit`.");
-          return;
-        }
-
-        if (!isSupportedTownhall(townhall)) {
-          await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8-TH18.");
-          return;
-        }
-
-        if (!isValidFwaLayoutLink(editInput)) {
-          await replyLayoutError(
-            interaction,
-            `Invalid layout link. Expected a Clash of Clans layout URL starting with ${FWA_LAYOUT_LINK_PREFIX}`
-          );
-          return;
-        }
-
-        if (imageUrlInput !== null && !isValidImageUrl(imageUrlInput)) {
-          await replyLayoutError(
-            interaction,
-            "Invalid image URL. Expected a valid http(s) URL."
-          );
-          return;
-        }
-
-        const saved = await upsertFwaLayout({
-          townhall,
-          type,
-          layoutLink: editInput,
-          ...(imageUrlInput !== null ? { imageUrl: imageUrlInput } : {}),
-          postedByDiscordUserId: interaction.user.id,
-        });
-
-        await interaction.reply({
-          content: buildSingleLayoutMessage({
-            townhall,
-            type,
-            layoutLink: saved.LayoutLink,
-            imageUrl: saved.ImageUrl,
-            action: "save",
-          }),
-          ephemeral: !isPublic,
-        });
-        return;
-      }
-
-      if (townhall === null) {
-        if (typeInput) {
-          await replyLayoutError(interaction, "You must provide `th` when using `type`.");
-          return;
-        }
-
-        const rows = await getAllFwaLayouts();
-        await handleListMode(interaction, isPublic, rows);
-        return;
-      }
-
-      if (!isSupportedTownhall(townhall)) {
-        await replyLayoutError(interaction, "Unsupported Town Hall. Allowed values: TH8-TH18.");
-        return;
-      }
-
-      const row = await getFwaLayout(townhall, type);
-      if (!row) {
-        await replyLayoutError(interaction, `No layout saved for TH${townhall} (${type}).`);
-        return;
-      }
-
-      await interaction.reply({
-        content: buildSingleLayoutMessage({
-          townhall,
-          type,
-          layoutLink: row.LayoutLink,
-          imageUrl: row.ImageUrl,
-          action: "fetch",
-        }),
-        ephemeral: !isPublic,
-      });
-    } catch (error) {
-      console.error(`layout command failed: ${formatError(error)}`);
-      if (error instanceof FwaLayoutTownhallMismatchError) {
-        await replyLayoutError(interaction, error.message);
-        return;
-      }
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply("Failed to process `/layout`. Try again shortly.");
-        return;
-      }
-      await replyLayoutError(interaction, "Failed to process `/layout`. Try again shortly.");
-    }
-  },
+    _cocService: CoCService,
+  ) => runLayoutCommand(interaction),
 };
 
-export const buildLayoutListEmbedsForTest = buildLayoutListEmbeds;
+export const validateLayoutImageAttachmentForTest = validateImageAttachment;

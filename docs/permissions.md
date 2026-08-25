@@ -13,7 +13,7 @@
 - `/autorole refresh` defaults to FWA leader-role + Administrator when no explicit whitelist is set.
 - `/link create` self-links are public; selecting another Discord user uses the same FWA leader-role + Administrator override policy when no explicit whitelist is set.
 - `/cwl members` and `/cwl rotations show` are public by default; `/cwl rotations create`, `/cwl rotations import`, and `/cwl rotations export` default to Administrator.
-- `/layout` is public by default; runtime `edit` (and optional `img-url` edit flow) still requires Administrator.
+- `/layout` is an Administrator-only creation/presentation mutation; its canonical post buttons remain public under their existing scope rules.
 
 ## Default Administrator-Only Targets
 - `/clan configure`, `/clan cwl-tags`, `/clan remove`

@@ -13,8 +13,15 @@ export type CreateLayoutRecordInput = {
   discordMessageId?: string | null;
 };
 
+type LayoutServiceRootDb = Pick<PrismaClient, "layoutRecord"> &
+  Partial<Pick<PrismaClient, "fwaLayouts">> & {
+    $transaction?: <T>(
+      callback: (transaction: Prisma.TransactionClient) => Promise<T>,
+    ) => Promise<T>;
+  };
+
 export type LayoutServiceOptions = {
-  db?: Pick<PrismaClient, "layoutRecord">;
+  db?: LayoutServiceRootDb;
   now?: () => Date;
 };
 
@@ -75,7 +82,7 @@ export function deriveLayoutFreshnessTimestamp(
 
 /** Purpose: provide DB-first lifecycle operations for shared persisted Clash layout records. */
 export class LayoutService {
-  private readonly db: Pick<PrismaClient, "layoutRecord">;
+  private readonly db: LayoutServiceRootDb;
   private readonly now: () => Date;
 
   constructor(options: LayoutServiceOptions = {}) {
@@ -83,44 +90,71 @@ export class LayoutService {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** Purpose: create a new layout lifecycle with an explicit submission timestamp. */
+  /** Purpose: create a new layout lifecycle and, for root calls, project presentation atomically to FWA compatibility rows. */
   async create(input: CreateLayoutRecordInput): Promise<LayoutRecord> {
     const { layoutLink } = parseClashLayoutLink(input.layoutLink);
-    const existing = await this.findByLayoutLink(layoutLink);
-    if (existing) {
-      throw new DuplicateLayoutLinkError(layoutLink);
-    }
+    return this.runRootOperation(async (transaction) => {
+      const existing = await transaction.layoutRecord.findUnique({ where: { layoutLink } });
+      if (existing) {
+        throw new DuplicateLayoutLinkError(layoutLink);
+      }
 
-    try {
-      return await this.createRecord(input, layoutLink, this.db.layoutRecord);
-    } catch (error) {
-      if (isPrismaUniqueConstraintError(error)) {
-        try {
-          const racedRecord = await this.findByLayoutLink(layoutLink);
+      let created: LayoutRecord;
+      try {
+        created = await this.createRecord(input, layoutLink, transaction.layoutRecord);
+      } catch (error) {
+        if (isPrismaUniqueConstraintError(error)) {
+          const racedRecord = await transaction.layoutRecord.findUnique({ where: { layoutLink } });
           if (racedRecord) {
             throw new DuplicateLayoutLinkError(layoutLink);
           }
-        } catch (rereadError) {
-          if (rereadError instanceof DuplicateLayoutLinkError) {
-            throw rereadError;
-          }
         }
+        throw error;
       }
-      throw error;
-    }
+      await synchronizeFwaLayoutProjection(transaction.fwaLayouts, created);
+      return created;
+    });
   }
 
-  /** Purpose: atomically get or create one exact normalized link for canonical FWA association. */
+  /**
+   * Purpose: atomically get or create one exact normalized link for canonical FWA association.
+   * Root calls own the transaction and compatibility projection; explicitly delegated calls remain record-only because their caller owns the surrounding transaction.
+   */
   async getOrCreate(
     input: CreateLayoutRecordInput,
-    delegate: LayoutRecordDelegate = this.db.layoutRecord,
+    delegate?: LayoutRecordDelegate,
     options: LayoutCreationOptions = {},
   ): Promise<LayoutRecord> {
     const { layoutLink } = parseClashLayoutLink(input.layoutLink);
     const presentationData = buildPresentationUpdateData(input);
+    if (delegate) {
+      return this.getOrCreateWithDelegate(input, layoutLink, presentationData, delegate, options);
+    }
 
+    return this.runRootOperation((transaction) =>
+      this.getOrCreateWithDelegate(
+        input,
+        layoutLink,
+        presentationData,
+        transaction.layoutRecord,
+        options,
+        transaction.fwaLayouts,
+      ),
+    );
+  }
+
+  /** Purpose: keep explicitly delegated FWA transactions record-only because their caller owns projection writes. */
+  private async getOrCreateWithDelegate(
+    input: CreateLayoutRecordInput,
+    layoutLink: string,
+    presentationData: Prisma.LayoutRecordUpdateInput,
+    delegate: LayoutRecordDelegate,
+    options: LayoutCreationOptions,
+    fwaLayouts?: Prisma.TransactionClient["fwaLayouts"],
+  ): Promise<LayoutRecord> {
+    let record: LayoutRecord;
     try {
-      return await delegate.upsert({
+      record = await delegate.upsert({
         where: { layoutLink },
         update: presentationData,
         create: {
@@ -140,21 +174,53 @@ export class LayoutService {
       }
       throw error;
     }
+    await synchronizeFwaLayoutProjection(fwaLayouts, record);
+    return record;
   }
 
-  /** Purpose: update presentation-only fields without touching lifecycle or Discord provenance state. */
+  /**
+   * Purpose: update presentation-only fields without touching lifecycle or Discord provenance state.
+   * Root calls atomically maintain transitional FWA compatibility copies; explicitly delegated calls leave that projection to the transaction owner.
+   */
   async updatePresentation(
     id: string,
     input: LayoutPresentationInput,
-    delegate: LayoutRecordDelegate = this.db.layoutRecord,
+    delegate?: LayoutRecordDelegate,
   ): Promise<LayoutRecord> {
     const data = buildPresentationUpdateData(input);
+    if (delegate) {
+      return this.updatePresentationWithDelegate(id, data, delegate);
+    }
+    return this.runRootOperation((transaction) =>
+      this.updatePresentationWithDelegate(id, data, transaction.layoutRecord, transaction.fwaLayouts),
+    );
+  }
+
+  /** Purpose: apply presentation-only data and its compatibility projection through one caller-owned transaction. */
+  private async updatePresentationWithDelegate(
+    id: string,
+    data: Prisma.LayoutRecordUpdateInput,
+    delegate: LayoutRecordDelegate,
+    fwaLayouts?: Prisma.TransactionClient["fwaLayouts"],
+  ): Promise<LayoutRecord> {
     if (Object.keys(data).length === 0) {
       const existing = await delegate.findUnique({ where: { id } });
       if (!existing) throw new LayoutRecordNotFoundError(id);
       return existing;
     }
-    return delegate.update({ where: { id }, data });
+    const updated = await delegate.update({ where: { id }, data });
+    await synchronizeFwaLayoutProjection(fwaLayouts, updated);
+    return updated;
+  }
+
+  /** Purpose: let root presentation writes atomically maintain transitional FWA compatibility copies. */
+  private async runRootOperation<T>(
+    operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (this.db.$transaction) {
+      return this.db.$transaction(operation);
+    }
+    return operation(this.db as unknown as Prisma.TransactionClient);
   }
 
   /** Purpose: find one layout lifecycle by its stable identifier. */
@@ -283,6 +349,21 @@ export class LayoutService {
       data: buildCreateData(input, layoutLink, new Date(this.now().getTime())),
     });
   }
+}
+
+/** Purpose: project authoritative LayoutRecord presentation into every transitional FwaLayouts reference. */
+async function synchronizeFwaLayoutProjection(
+  fwaLayouts: Prisma.TransactionClient["fwaLayouts"] | undefined,
+  layout: Pick<LayoutRecord, "id" | "layoutLink" | "imageUrl">,
+): Promise<void> {
+  if (!fwaLayouts) return;
+  await fwaLayouts.updateMany({
+    where: { layoutId: layout.id },
+    data: {
+      LayoutLink: layout.layoutLink,
+      ImageUrl: layout.imageUrl,
+    },
+  });
 }
 
 function buildCreateData(

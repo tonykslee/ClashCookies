@@ -86,7 +86,7 @@ export function parseLayoutPostCustomId(
   return { action, layoutId };
 }
 
-/** Purpose: route layout-prefixed IDs for safe rejection while preserving the existing /layout paginator IDs. */
+/** Purpose: route persistent layout IDs while safely ignoring obsolete paginator IDs from the removed legacy command. */
 export function isLayoutPostCustomId(customId: string): boolean {
   const normalized = String(customId ?? "");
   if (parseLayoutPostCustomId(normalized)) return true;
