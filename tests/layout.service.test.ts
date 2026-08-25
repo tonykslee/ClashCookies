@@ -3,6 +3,7 @@ import { LayoutRecord } from "@prisma/client";
 import { InvalidClashLayoutLinkError } from "../src/services/ClashLayoutLinkService";
 import {
   DuplicateLayoutLinkError,
+  LayoutDiscordPostAlreadyBoundError,
   LayoutService,
 } from "../src/services/LayoutService";
 
@@ -186,5 +187,82 @@ describe("LayoutService", () => {
     layoutRecordMock.create.mockRejectedValue(uniqueError);
 
     await expect(service.create({ layoutLink: VALID_LAYOUT_LINK })).rejects.toBe(uniqueError);
+  });
+
+  it("attaches canonical Discord provenance without changing lifecycle fields", async () => {
+    const existing = buildRecord({
+      submittedAt: new Date("2026-08-20T00:00:00.000Z"),
+      lastConfirmedAt: new Date("2026-08-23T00:00:00.000Z"),
+      lastConfirmedByDiscordUserId: "old-user",
+    });
+    const attached = buildRecord({
+      ...existing,
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+      imageUrl: "https://example.com/layout.png",
+    });
+    layoutRecordMock.findUnique.mockResolvedValue(existing);
+    layoutRecordMock.update.mockResolvedValue(attached);
+
+    await expect(
+      service.attachDiscordPost({
+        id: existing.id,
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+        imageUrl: " https://example.com/layout.png ",
+      }),
+    ).resolves.toBe(attached);
+
+    expect(layoutRecordMock.update).toHaveBeenCalledWith({
+      where: { id: existing.id },
+      data: {
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+        imageUrl: "https://example.com/layout.png",
+      },
+    });
+    expect(layoutRecordMock.update.mock.calls[0]?.[0].data).not.toHaveProperty("submittedAt");
+    expect(layoutRecordMock.update.mock.calls[0]?.[0].data).not.toHaveProperty("lastConfirmedAt");
+  });
+
+  it("treats an exact canonical post assignment as idempotent", async () => {
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    layoutRecordMock.findUnique.mockResolvedValue(existing);
+
+    await expect(
+      service.attachDiscordPost({
+        id: existing.id,
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: "message-1",
+      }),
+    ).resolves.toBe(existing);
+    expect(layoutRecordMock.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects repointing an already-bound canonical layout post", async () => {
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    layoutRecordMock.findUnique.mockResolvedValue(existing);
+
+    await expect(
+      service.attachDiscordPost({
+        id: existing.id,
+        guildId: "guild-2",
+        channelId: "channel-2",
+        messageId: "message-2",
+      }),
+    ).rejects.toBeInstanceOf(LayoutDiscordPostAlreadyBoundError);
+    expect(layoutRecordMock.update).not.toHaveBeenCalled();
   });
 });

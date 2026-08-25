@@ -29,6 +29,28 @@ export class DuplicateLayoutLinkError extends Error {
   }
 }
 
+/** Purpose: report that a requested layout record does not exist. */
+export class LayoutRecordNotFoundError extends Error {
+  readonly layoutId: string;
+
+  constructor(layoutId: string) {
+    super(`Layout record was not found: ${layoutId}`);
+    this.name = "LayoutRecordNotFoundError";
+    this.layoutId = layoutId;
+  }
+}
+
+/** Purpose: prevent a layout record from being silently repointed to another canonical Discord message. */
+export class LayoutDiscordPostAlreadyBoundError extends Error {
+  readonly layoutId: string;
+
+  constructor(layoutId: string) {
+    super(`Layout record is already bound to a different Discord post: ${layoutId}`);
+    this.name = "LayoutDiscordPostAlreadyBoundError";
+    this.layoutId = layoutId;
+  }
+}
+
 /** Purpose: expose the semantic freshness timestamp without coupling callers to database update metadata. */
 export function deriveLayoutFreshnessTimestamp(
   layout: Pick<LayoutRecord, "lastConfirmedAt" | "submittedAt">
@@ -95,6 +117,59 @@ export class LayoutService {
   /** Purpose: find one layout lifecycle by the exact normalized link. */
   async findByLayoutLink(layoutLink: string): Promise<LayoutRecord | null> {
     return this.db.layoutRecord.findUnique({ where: { layoutLink: layoutLink.trim() } });
+  }
+
+  /** Purpose: bind one layout to its canonical Discord post without changing lifecycle timestamps. */
+  async attachDiscordPost(input: {
+    id: string;
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    imageUrl?: string | null;
+  }): Promise<LayoutRecord> {
+    const layout = await this.findById(input.id);
+    if (!layout) {
+      throw new LayoutRecordNotFoundError(input.id);
+    }
+
+    const target = {
+      discordGuildId: input.guildId.trim(),
+      discordChannelId: input.channelId.trim(),
+      discordMessageId: input.messageId.trim(),
+    };
+    if (!target.discordGuildId || !target.discordChannelId || !target.discordMessageId) {
+      throw new Error("Discord post provenance must include guild, channel, and message IDs.");
+    }
+
+    const hasExistingProvenance = Boolean(
+      layout.discordGuildId || layout.discordChannelId || layout.discordMessageId
+    );
+    const isSamePost =
+      layout.discordGuildId === target.discordGuildId &&
+      layout.discordChannelId === target.discordChannelId &&
+      layout.discordMessageId === target.discordMessageId;
+
+    if (hasExistingProvenance && !isSamePost) {
+      throw new LayoutDiscordPostAlreadyBoundError(input.id);
+    }
+
+    const normalizedImageUrl = input.imageUrl === undefined ? undefined : input.imageUrl?.trim() || null;
+    if (
+      isSamePost &&
+      (normalizedImageUrl === undefined || normalizedImageUrl === layout.imageUrl)
+    ) {
+      return layout;
+    }
+
+    return this.db.layoutRecord.update({
+      where: { id: input.id },
+      data: {
+        discordGuildId: target.discordGuildId,
+        discordChannelId: target.discordChannelId,
+        discordMessageId: target.discordMessageId,
+        ...(normalizedImageUrl !== undefined ? { imageUrl: normalizedImageUrl } : {}),
+      },
+    });
   }
 
   /** Purpose: record a successful layout opening without changing submission or presentation provenance. */
