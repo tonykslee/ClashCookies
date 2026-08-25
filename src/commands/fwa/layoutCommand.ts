@@ -16,7 +16,10 @@ import {
   UnsupportedFwaLayoutTownhallError,
   fwaLayoutService,
 } from "../../services/FwaLayoutService";
-import { InvalidClashLayoutLinkError } from "../../services/ClashLayoutLinkService";
+import {
+  InvalidClashLayoutLinkError,
+  parseClashLayoutLink,
+} from "../../services/ClashLayoutLinkService";
 import {
   LAYOUT_ALERT_TYPE_CHOICES,
   LayoutAlertConfigService,
@@ -24,6 +27,8 @@ import {
   layoutAlertConfigService,
   layoutAlertModeForType,
   parseLayoutAlertType,
+  getCompleteLayoutDiscordGuildId,
+  resolveLayoutAlertGuildId,
   validateLayoutAlertCommandOptions,
 } from "../../services/LayoutAlertConfigService";
 import { BotLogChannelService, botLogChannelService } from "../../services/BotLogChannelService";
@@ -140,6 +145,14 @@ export async function runFwaLayoutCommand(
   try {
     if (link) {
       const alertType = parseLayoutAlertType(alertTypeInput);
+      const parsedLink = parseClashLayoutLink(link);
+      const existingLayout = alertType
+        ? await layoutService.findByLayoutLink(parsedLink.layoutLink)
+        : null;
+      const targetAlertGuildId = resolveLayoutAlertGuildId(
+        existingLayout,
+        interaction.guildId ?? "",
+      );
       await runUpdateMode({
         interaction,
         layoutService,
@@ -153,20 +166,9 @@ export async function runFwaLayoutCommand(
         messageResolver,
         alertType,
         alertChannel,
+        targetAlertGuildId,
         alertConfigService: deps.alertConfigService ?? layoutAlertConfigService,
         botLogChannelService: deps.botLogChannelService ?? botLogChannelService,
-      });
-      return;
-    }
-
-    if (townhall !== null) {
-      await runLookupMode({
-        interaction,
-        layoutService,
-        publicationService,
-        townhall,
-        type,
-        messageResolver,
       });
       return;
     }
@@ -182,6 +184,18 @@ export async function runFwaLayoutCommand(
         interaction,
         "`title`, `description`, `img-url`, `alert-type`, and `alert-channel` require `link`.",
       );
+      return;
+    }
+
+    if (townhall !== null) {
+      await runLookupMode({
+        interaction,
+        layoutService,
+        publicationService,
+        townhall,
+        type,
+        messageResolver,
+      });
       return;
     }
 
@@ -230,6 +244,7 @@ async function runUpdateMode(input: {
   messageResolver?: LayoutPostMessageResolver;
   alertType: ReturnType<typeof parseLayoutAlertType>;
   alertChannel: { id: string; guildId?: string | null; type?: number } | null;
+  targetAlertGuildId: string;
   alertConfigService: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
   botLogChannelService: Pick<BotLogChannelService, "getChannelIdForType">;
 }): Promise<void> {
@@ -247,14 +262,14 @@ async function runUpdateMode(input: {
   const defaultChannelId =
     input.alertType === "default-channel" || input.alertType === "both"
       ? await input.botLogChannelService.getChannelIdForType(
-          input.interaction.guildId ?? "",
+          input.targetAlertGuildId,
           "layout-alerts",
         )
       : null;
   validateLayoutAlertCommandOptions({
     type: input.alertType,
     channel: input.alertChannel,
-    guildId: input.interaction.guildId ?? "",
+    guildId: input.targetAlertGuildId,
     defaultChannelId,
   });
   const canonical = await input.layoutService.setCanonicalLayout({
@@ -274,6 +289,25 @@ async function runUpdateMode(input: {
   });
   if (input.alertType) {
     try {
+      const finalAlertGuildId = getCompleteLayoutDiscordGuildId(published.layout);
+      if (!finalAlertGuildId) {
+        throw new LayoutAlertPolicyValidationError(
+          "A canonical Discord layout post is required before enabling expiration alerts.",
+        );
+      }
+      const finalDefaultChannelId =
+        input.alertType === "default-channel" || input.alertType === "both"
+          ? await input.botLogChannelService.getChannelIdForType(
+              finalAlertGuildId,
+              "layout-alerts",
+            )
+          : null;
+      validateLayoutAlertCommandOptions({
+        type: input.alertType,
+        channel: input.alertChannel,
+        guildId: finalAlertGuildId,
+        defaultChannelId: finalDefaultChannelId,
+      });
       if (input.alertType === "none") {
         await input.alertConfigService.disablePolicy(published.layout.id);
       } else {
@@ -290,7 +324,7 @@ async function runUpdateMode(input: {
       );
       await replyPrivate(
         input.interaction,
-        `Saved canonical TH${canonical.Townhall} ${canonical.Type} layout. [View post](${published.jumpUrl}) Alert configuration failed; expiration alerts are not enabled.`,
+        `Saved canonical TH${canonical.Townhall} ${canonical.Type} layout. [View post](${published.jumpUrl}) Alert configuration failed; the layout was saved, but the alert policy could not be updated.`,
       );
       return;
     }

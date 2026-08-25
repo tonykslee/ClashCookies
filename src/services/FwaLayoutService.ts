@@ -116,6 +116,11 @@ export class FwaLayoutService {
     }) as Promise<FwaCanonicalLayout[]>;
   }
 
+  /** Purpose: delegate exact-link lookup to the shared LayoutService without duplicating persistence queries. */
+  async findByLayoutLink(layoutLink: string): Promise<LayoutRecord | null> {
+    return this.layoutService.findByLayoutLink(layoutLink);
+  }
+
   /** Purpose: assign one shared LayoutRecord as the canonical FWA layout and synchronize legacy copies atomically. */
   async setCanonicalLayout(
     input: SetCanonicalFwaLayoutInput,

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationCommandOptionType } from "discord.js";
+import { ChannelType } from "discord.js";
 import { Layout, LAYOUT_COMMAND_OPTIONS, runLayoutCommand } from "../src/commands/Layout";
 import { injectVisibilityOptionsForTest } from "../src/listeners/ready";
 import { MAX_LAYOUT_ATTACHMENT_BYTES } from "../src/services/LayoutPostPublicationService";
@@ -65,8 +66,13 @@ function makeInteraction(input: {
 function makeDeps() {
   return {
     getOrCreate: vi.fn().mockResolvedValue(buildRecord()),
+    findByLayoutLink: vi.fn().mockResolvedValue(null),
     publish: vi.fn().mockResolvedValue({
-      layout: buildRecord({ discordMessageId: "message-1" }),
+      layout: buildRecord({
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }),
       messageId: "message-1",
       jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
     }),
@@ -309,8 +315,97 @@ describe("/layout command behavior", () => {
 
     expect(deps.publish).toHaveBeenCalledTimes(1);
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
-      content: expect.stringContaining("Alert configuration failed; expiration alerts are not enabled."),
+      content: expect.stringContaining("Alert configuration failed; the layout was saved, but the alert policy could not be updated."),
     }));
+    expect(reply.mock.calls[0][0].content).not.toContain("expiration alerts are not enabled");
+  });
+
+  it("resolves default routing from an exact-link record's canonical guild", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, alertType: "default-channel" });
+    const deps = makeDeps();
+    deps.findByLayoutLink.mockResolvedValue(buildRecord({
+      discordGuildId: "guild-B",
+      discordChannelId: "channel-B",
+      discordMessageId: "message-B",
+    }));
+    deps.publish.mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-B",
+        discordChannelId: "channel-B",
+        discordMessageId: "message-B",
+      }),
+      messageId: "message-B",
+      jumpUrl: "https://discord.com/channels/guild-B/channel-B/message-B",
+    });
+    deps.getChannelIdForType.mockImplementation(async (guildId: string) =>
+      guildId === "guild-1" ? "alerts-A" : null,
+    );
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getChannelIdForType).toHaveBeenCalledWith("guild-B", "layout-alerts");
+    expect(deps.getChannelIdForType).not.toHaveBeenCalledWith("guild-1", "layout-alerts");
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("No layout-alerts channel is configured"),
+    }));
+  });
+
+  it("rejects a custom channel from the invoking guild when the canonical post is elsewhere", async () => {
+    const { interaction, reply } = makeInteraction({
+      link: LINK,
+      alertType: "custom-channel",
+      alertChannel: { id: "channel-A", guildId: "guild-1", type: ChannelType.GuildText },
+    });
+    const deps = makeDeps();
+    deps.findByLayoutLink.mockResolvedValue(buildRecord({
+      discordGuildId: "guild-B",
+      discordChannelId: "channel-B",
+      discordMessageId: "message-B",
+    }));
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.getOrCreate).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("same server"),
+    }));
+  });
+
+  it("uses the invoking guild for a new unposted layout", async () => {
+    const { interaction } = makeInteraction({ link: LINK, alertType: "default-channel" });
+    const deps = makeDeps();
+    deps.getChannelIdForType.mockResolvedValue("alerts-A");
+    deps.publish.mockResolvedValue({
+      layout: buildRecord({
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+
+    await runLayoutCommand(interaction, {
+      layoutService: deps,
+      publicationService: deps as any,
+      alertConfigService: deps as any,
+      botLogChannelService: deps as any,
+    });
+
+    expect(deps.findByLayoutLink).toHaveBeenCalledWith(LINK);
+    expect(deps.getChannelIdForType).toHaveBeenCalledWith("guild-1", "layout-alerts");
+    expect(deps.setPolicy).toHaveBeenCalled();
   });
 
   it("passes native image uploads to the publication layer without persisting the source URL", async () => {

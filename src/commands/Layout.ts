@@ -29,6 +29,8 @@ import {
   layoutAlertConfigService,
   layoutAlertModeForType,
   parseLayoutAlertType,
+  getCompleteLayoutDiscordGuildId,
+  resolveLayoutAlertGuildId,
   validateLayoutAlertCommandOptions,
 } from "../services/LayoutAlertConfigService";
 import { BotLogChannelService, botLogChannelService } from "../services/BotLogChannelService";
@@ -88,7 +90,7 @@ export const LAYOUT_COMMAND_OPTIONS = [
 ] as const;
 
 export type LayoutCommandDeps = {
-  layoutService?: Pick<LayoutService, "getOrCreate">;
+  layoutService?: Pick<LayoutService, "getOrCreate" | "findByLayoutLink">;
   publicationService?: LayoutPostPublicationService;
   alertConfigService?: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
   botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
@@ -124,14 +126,21 @@ export async function runLayoutCommand(
   try {
     const alertType = parseLayoutAlertType(alertTypeInput);
     const parsedLink = parseClashLayoutLink(link);
+    const existingLayout = alertType
+      ? await service.findByLayoutLink(parsedLink.layoutLink)
+      : null;
+    const targetAlertGuildId = resolveLayoutAlertGuildId(
+      existingLayout,
+      interaction.guildId ?? "",
+    );
     const defaultChannelId =
       alertType === "default-channel" || alertType === "both"
-        ? await routingService.getChannelIdForType(interaction.guildId ?? "", "layout-alerts")
+        ? await routingService.getChannelIdForType(targetAlertGuildId, "layout-alerts")
         : null;
     validateLayoutAlertCommandOptions({
       type: alertType,
       channel: alertChannel,
-      guildId: interaction.guildId ?? "",
+      guildId: targetAlertGuildId,
       defaultChannelId,
     });
     if (attachment && imageUrl !== null) {
@@ -177,6 +186,22 @@ export async function runLayoutCommand(
     });
     if (alertType) {
       try {
+        const finalAlertGuildId = getCompleteLayoutDiscordGuildId(published.layout);
+        if (!finalAlertGuildId) {
+          throw new LayoutAlertPolicyValidationError(
+            "A canonical Discord layout post is required before enabling expiration alerts.",
+          );
+        }
+        const finalDefaultChannelId =
+          alertType === "default-channel" || alertType === "both"
+            ? await routingService.getChannelIdForType(finalAlertGuildId, "layout-alerts")
+            : null;
+        validateLayoutAlertCommandOptions({
+          type: alertType,
+          channel: alertChannel,
+          guildId: finalAlertGuildId,
+          defaultChannelId: finalDefaultChannelId,
+        });
         if (alertType === "none") {
           await alertService.disablePolicy(published.layout.id);
         } else {
@@ -192,7 +217,7 @@ export async function runLayoutCommand(
         );
         await replyPrivate(
           interaction,
-          `Layout posted: [View post](${published.jumpUrl}) Alert configuration failed; expiration alerts are not enabled.`,
+          `Layout posted: [View post](${published.jumpUrl}) Alert configuration failed; the layout was saved, but the alert policy could not be updated.`,
         );
         return;
       }

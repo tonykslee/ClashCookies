@@ -14,6 +14,11 @@ export const LAYOUT_ALERT_TYPE_CHOICES = [
 export type LayoutAlertType = (typeof LAYOUT_ALERT_TYPE_CHOICES)[number]["value"];
 export type LayoutAlertPolicy = LayoutAlertConfig;
 
+export type LayoutAlertGuildSource = Pick<
+  LayoutRecord,
+  "discordGuildId" | "discordChannelId" | "discordMessageId"
+> | null | undefined;
+
 type LayoutAlertDb = Pick<PrismaClient, "layoutRecord" | "layoutAlertConfig">;
 
 export type LayoutAlertConfigServiceOptions = {
@@ -45,6 +50,32 @@ export function layoutAlertModeForType(type: Exclude<LayoutAlertType, "none">): 
   if (type === "default-channel") return LayoutAlertMode.DEFAULT_CHANNEL;
   if (type === "both") return LayoutAlertMode.BOTH;
   return LayoutAlertMode.CUSTOM_CHANNEL;
+}
+
+/** Purpose: resolve alert routing to complete canonical post provenance, falling back only before first publication. */
+export function resolveLayoutAlertGuildId(
+  record: LayoutAlertGuildSource,
+  invokingGuildId: string,
+): string {
+  if (
+    record?.discordGuildId?.trim() &&
+    record.discordChannelId?.trim() &&
+    record.discordMessageId?.trim()
+  ) {
+    return record.discordGuildId.trim();
+  }
+  return invokingGuildId;
+}
+
+/** Purpose: expose the final canonical guild authority for post-publication policy checks. */
+export function getCompleteLayoutDiscordGuildId(
+  record: LayoutAlertGuildSource,
+): string | null {
+  return record?.discordGuildId?.trim() &&
+    record.discordChannelId?.trim() &&
+    record.discordMessageId?.trim()
+    ? record.discordGuildId.trim()
+    : null;
 }
 
 /** Purpose: validate command routing inputs before layout persistence or publication work begins. */
