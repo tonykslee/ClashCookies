@@ -12,6 +12,7 @@ const layoutRecordMock = {
   findUnique: vi.fn(),
   updateMany: vi.fn(),
   update: vi.fn(),
+  upsert: vi.fn(),
 };
 
 const VALID_LAYOUT_LINK =
@@ -167,6 +168,45 @@ describe("LayoutService", () => {
       DuplicateLayoutLinkError
     );
     expect(layoutRecordMock.findUnique).toHaveBeenNthCalledWith(2, {
+      where: { layoutLink: VALID_LAYOUT_LINK },
+    });
+  });
+
+  it("atomically reuses an exact link without refreshing lifecycle or poster fields", async () => {
+    const existing = buildRecord({
+      submittedAt: new Date("2026-08-20T00:00:00.000Z"),
+      lastConfirmedAt: new Date("2026-08-23T00:00:00.000Z"),
+      lastConfirmedByDiscordUserId: "confirmer-1",
+      postedByDiscordUserId: "original-poster",
+    });
+    layoutRecordMock.upsert.mockResolvedValue(existing);
+
+    await expect(
+      service.getOrCreate({
+        layoutLink: VALID_LAYOUT_LINK,
+        postedByDiscordUserId: "different-poster",
+      }),
+    ).resolves.toBe(existing);
+
+    expect(layoutRecordMock.upsert).toHaveBeenCalledWith({
+      where: { layoutLink: VALID_LAYOUT_LINK },
+      update: {},
+      create: expect.objectContaining({
+        submittedAt: now,
+        postedByDiscordUserId: "different-poster",
+        lastConfirmedAt: null,
+      }),
+    });
+  });
+
+  it("resolves a concurrent exact-link get-or-create race to the one persisted record", async () => {
+    const existing = buildRecord();
+    const uniqueError = { code: "P2002" };
+    layoutRecordMock.upsert.mockRejectedValue(uniqueError);
+    layoutRecordMock.findUnique.mockResolvedValue(existing);
+
+    await expect(service.getOrCreate({ layoutLink: VALID_LAYOUT_LINK })).resolves.toBe(existing);
+    expect(layoutRecordMock.findUnique).toHaveBeenCalledWith({
       where: { layoutLink: VALID_LAYOUT_LINK },
     });
   });

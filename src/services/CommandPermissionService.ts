@@ -75,6 +75,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "fwa:match",
   "fwa:match-checklist",
   "fwa:violations",
+  "fwa:layout",
   "fwa:blacklist-import",
   "fwa:blacklist-samples:rebuild",
   "fwa:blacklist-profile:rebuild",

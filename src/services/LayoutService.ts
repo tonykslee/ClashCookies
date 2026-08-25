@@ -1,4 +1,4 @@
-import { LayoutRecord, PrismaClient } from "@prisma/client";
+import { LayoutRecord, Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import { parseClashLayoutLink } from "./ClashLayoutLinkService";
 
@@ -16,6 +16,21 @@ export type CreateLayoutRecordInput = {
 export type LayoutServiceOptions = {
   db?: Pick<PrismaClient, "layoutRecord">;
   now?: () => Date;
+};
+
+export type LayoutRecordDelegate = Pick<
+  PrismaClient["layoutRecord"],
+  "findUnique" | "create" | "update" | "upsert"
+>;
+
+export type LayoutPresentationInput = {
+  title?: string | null;
+  description?: string | null;
+  imageUrl?: string | null;
+};
+
+export type LayoutCreationOptions = {
+  submittedAt?: Date | null;
 };
 
 /** Purpose: report that a normalized layout link already owns a lifecycle record. */
@@ -77,21 +92,7 @@ export class LayoutService {
     }
 
     try {
-      return await this.db.layoutRecord.create({
-        data: {
-          layoutLink,
-          title: input.title ?? null,
-          description: input.description ?? null,
-          imageUrl: input.imageUrl ?? null,
-          postedByDiscordUserId: input.postedByDiscordUserId ?? null,
-          discordGuildId: input.discordGuildId ?? null,
-          discordChannelId: input.discordChannelId ?? null,
-          discordMessageId: input.discordMessageId ?? null,
-          submittedAt: new Date(this.now().getTime()),
-          lastConfirmedAt: null,
-          lastConfirmedByDiscordUserId: null,
-        },
-      });
+      return await this.createRecord(input, layoutLink, this.db.layoutRecord);
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
         try {
@@ -107,6 +108,53 @@ export class LayoutService {
       }
       throw error;
     }
+  }
+
+  /** Purpose: atomically get or create one exact normalized link for canonical FWA association. */
+  async getOrCreate(
+    input: CreateLayoutRecordInput,
+    delegate: LayoutRecordDelegate = this.db.layoutRecord,
+    options: LayoutCreationOptions = {},
+  ): Promise<LayoutRecord> {
+    const { layoutLink } = parseClashLayoutLink(input.layoutLink);
+    const presentationData = buildPresentationUpdateData(input);
+
+    try {
+      return await delegate.upsert({
+        where: { layoutLink },
+        update: presentationData,
+        create: {
+          ...buildCreateData(
+            input,
+            layoutLink,
+            options.submittedAt === undefined
+              ? new Date(this.now().getTime())
+              : options.submittedAt,
+          ),
+        },
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        const racedRecord = await delegate.findUnique({ where: { layoutLink } });
+        if (racedRecord) return racedRecord;
+      }
+      throw error;
+    }
+  }
+
+  /** Purpose: update presentation-only fields without touching lifecycle or Discord provenance state. */
+  async updatePresentation(
+    id: string,
+    input: LayoutPresentationInput,
+    delegate: LayoutRecordDelegate = this.db.layoutRecord,
+  ): Promise<LayoutRecord> {
+    const data = buildPresentationUpdateData(input);
+    if (Object.keys(data).length === 0) {
+      const existing = await delegate.findUnique({ where: { id } });
+      if (!existing) throw new LayoutRecordNotFoundError(id);
+      return existing;
+    }
+    return delegate.update({ where: { id }, data });
   }
 
   /** Purpose: find one layout lifecycle by its stable identifier. */
@@ -225,6 +273,46 @@ export class LayoutService {
   ): Date | null {
     return deriveLayoutFreshnessTimestamp(layout);
   }
+
+  private async createRecord(
+    input: CreateLayoutRecordInput,
+    layoutLink: string,
+    delegate: LayoutRecordDelegate,
+  ): Promise<LayoutRecord> {
+    return delegate.create({
+      data: buildCreateData(input, layoutLink, new Date(this.now().getTime())),
+    });
+  }
+}
+
+function buildCreateData(
+  input: CreateLayoutRecordInput,
+  layoutLink: string,
+  submittedAt: Date | null,
+): Prisma.LayoutRecordCreateInput {
+  return {
+    layoutLink,
+    title: input.title ?? null,
+    description: input.description ?? null,
+    imageUrl: input.imageUrl ?? null,
+    postedByDiscordUserId: input.postedByDiscordUserId ?? null,
+    discordGuildId: input.discordGuildId ?? null,
+    discordChannelId: input.discordChannelId ?? null,
+    discordMessageId: input.discordMessageId ?? null,
+    submittedAt,
+    lastConfirmedAt: null,
+    lastConfirmedByDiscordUserId: null,
+  };
+}
+
+function buildPresentationUpdateData(
+  input: LayoutPresentationInput,
+): Prisma.LayoutRecordUpdateInput {
+  const data: Prisma.LayoutRecordUpdateInput = {};
+  if (input.title !== undefined) data.title = input.title;
+  if (input.description !== undefined) data.description = input.description;
+  if (input.imageUrl !== undefined) data.imageUrl = input.imageUrl;
+  return data;
 }
 
 /** Purpose: identify Prisma unique conflicts without assuming which unique constraint lost the race. */

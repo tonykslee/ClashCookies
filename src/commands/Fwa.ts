@@ -98,6 +98,10 @@ import {
   runFwaViolationsCommand,
 } from "./fwa/violationsCommand";
 import {
+  FWA_LAYOUT_SUBCOMMAND,
+  runFwaLayoutCommand,
+} from "./fwa/layoutCommand";
+import {
   fwaWeightCatalogService,
   type FwaCatalogWeightAge,
 } from "../services/FwaWeightCatalogService";
@@ -16345,6 +16349,9 @@ export const Fwa: Command = {
       ...FWA_VIOLATIONS_SUBCOMMAND,
     },
     {
+      ...FWA_LAYOUT_SUBCOMMAND,
+    },
+    {
       name: "police",
       description: "Manage FWA police automation, status, and preview delivery",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -16525,6 +16532,10 @@ export const Fwa: Command = {
     const subcommand = interaction.options.getSubcommand(true);
     if (subcommand === "violations") {
       await runFwaViolationsCommand(interaction, cocService);
+      return;
+    }
+    if (subcommand === "layout") {
+      await runFwaLayoutCommand(interaction);
       return;
     }
     const requestedVisibility =

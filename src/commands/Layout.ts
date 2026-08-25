@@ -17,6 +17,7 @@ import { CoCService } from "../services/CoCService";
 import {
   FWA_LAYOUT_LINK_PREFIX,
   FWA_LAYOUT_TYPES,
+  FwaLayoutTownhallMismatchError,
   getAllFwaLayouts,
   getFwaLayout,
   isSupportedTownhall,
@@ -259,6 +260,7 @@ export const Layout: Command = {
           type,
           layoutLink: editInput,
           ...(imageUrlInput !== null ? { imageUrl: imageUrlInput } : {}),
+          postedByDiscordUserId: interaction.user.id,
         });
 
         await interaction.reply({
@@ -308,6 +310,10 @@ export const Layout: Command = {
       });
     } catch (error) {
       console.error(`layout command failed: ${formatError(error)}`);
+      if (error instanceof FwaLayoutTownhallMismatchError) {
+        await replyLayoutError(interaction, error.message);
+        return;
+      }
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply("Failed to process `/layout`. Try again shortly.");
         return;
