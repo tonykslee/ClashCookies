@@ -13,6 +13,7 @@ const userActivityReminderStart = vi.hoisted(() => vi.fn(() => ({ started: true 
 const fwaFeedStart = vi.hoisted(() => vi.fn());
 const fwaBaseSwapDmReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaBasesChecklistReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
+const layoutAlertSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const statusServiceMock = vi.hoisted(() => ({
   markStarted: vi.fn(),
   markSucceeded: vi.fn(),
@@ -68,6 +69,7 @@ const prismaMock = vi.hoisted(() => ({
 const isActivePollingModeMock = vi.hoisted(() => vi.fn(() => true));
 const isMirrorPollingModeMock = vi.hoisted(() => vi.fn(() => false));
 const resolvePollingModeMock = vi.hoisted(() => vi.fn(() => "active"));
+const resolveRuntimeEnvironmentMock = vi.hoisted(() => vi.fn(() => "test"));
 const activityObserveClanDetailedMock = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     clanTag: "#CLAN",
@@ -314,7 +316,7 @@ vi.mock("../src/services/PollingModeService", () => ({
   isActivePollingMode: isActivePollingModeMock,
   isMirrorPollingMode: isMirrorPollingModeMock,
   resolveMirrorSyncIntervalMsFromEnv: vi.fn(() => 60_000),
-  resolveRuntimeEnvironment: vi.fn(() => "test"),
+  resolveRuntimeEnvironment: resolveRuntimeEnvironmentMock,
   resolvePollingMode: resolvePollingModeMock,
 }));
 
@@ -332,6 +334,15 @@ vi.mock("../src/services/fwa/baseSwapDmReminderSchedulerService", () => ({
   DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS: 60_000,
   FwaBaseSwapDmReminderSchedulerService: vi.fn().mockImplementation(() => ({
     start: fwaBaseSwapDmReminderSchedulerStart,
+  })),
+}));
+
+vi.mock("../src/services/LayoutAlertSchedulerService", () => ({
+  DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS: 60_000,
+  LAYOUT_ALERT_SCHEDULER_JOB_KEY: "layout_alert_scheduler",
+  LAYOUT_ALERT_SCHEDULER_DISPLAY_NAME: "Layout expiration-alert scheduler",
+  LayoutAlertSchedulerService: vi.fn().mockImplementation(() => ({
+    start: layoutAlertSchedulerStart,
   })),
 }));
 
@@ -412,6 +423,7 @@ describe("ready listener startup", () => {
     });
     isActivePollingModeMock.mockReturnValue(true);
     resolvePollingModeMock.mockReturnValue("active");
+    resolveRuntimeEnvironmentMock.mockReturnValue("test");
     statusServiceMock.markStarted.mockResolvedValue({});
     statusServiceMock.markSucceeded.mockResolvedValue({});
     statusServiceMock.markFailed.mockResolvedValue({});
@@ -526,6 +538,13 @@ describe("ready listener startup", () => {
     );
     expect(fwaBaseSwapDmReminderSchedulerStart).toHaveBeenCalledTimes(1);
     expect(fwaBasesChecklistReminderSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(layoutAlertSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
+      "layout_alert_scheduler",
+      expect.objectContaining({
+        displayName: "Layout expiration-alert scheduler",
+      }),
+    );
     expect(warEventPollMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sendBattleDaySwapReminders: true,
@@ -799,6 +818,7 @@ describe("ready listener startup", () => {
         "fwa_match_checklist_auto_post_scheduler",
         "fwa_bases_checklist_reminder_scheduler",
         "user_activity_reminder_scheduler",
+        "layout_alert_scheduler",
       ]),
     );
     expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
@@ -838,6 +858,31 @@ describe("ready listener startup", () => {
       }),
     );
     expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).not.toHaveBeenCalled();
+    expect(layoutAlertSchedulerStart).not.toHaveBeenCalled();
+  });
+
+  it("starts the layout alert scheduler in active production", async () => {
+    resolveRuntimeEnvironmentMock.mockReturnValue("prod");
+
+    await runStartup();
+
+    expect(layoutAlertSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
+      "layout_alert_scheduler",
+      expect.objectContaining({ metadata: { started: true } }),
+    );
+  });
+
+  it("disables the layout alert scheduler in staging", async () => {
+    resolveRuntimeEnvironmentMock.mockReturnValue("staging");
+
+    await runStartup();
+
+    expect(layoutAlertSchedulerStart).not.toHaveBeenCalled();
+    expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
+      "layout_alert_scheduler",
+      expect.objectContaining({ metadata: { reason: "staging" } }),
+    );
   });
 
   it("keeps startup working when a poll-status write fails", async () => {

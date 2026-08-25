@@ -51,6 +51,12 @@ import {
 import { FwaFeedSchedulerService } from "../services/fwa-feeds/FwaFeedSchedulerService";
 import { FwaWeightAlertDeliveryService } from "../services/FwaWeightAlertDeliveryService";
 import {
+  DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+  LAYOUT_ALERT_SCHEDULER_DISPLAY_NAME,
+  LAYOUT_ALERT_SCHEDULER_JOB_KEY,
+  LayoutAlertSchedulerService,
+} from "../services/LayoutAlertSchedulerService";
+import {
   DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
   FwaBaseSwapDmReminderSchedulerService,
 } from "../services/fwa/baseSwapDmReminderSchedulerService";
@@ -122,6 +128,7 @@ const BOT_POLL_STATUS_JOB_KEYS = {
   warEventPollCycle: "war_event_poll_cycle",
   fwaFeedScheduler: "fwa_feed_scheduler",
   fwaBaseSwapDmReminderScheduler: "fwa_base_swap_dm_reminder_scheduler",
+  layoutAlertScheduler: LAYOUT_ALERT_SCHEDULER_JOB_KEY,
   fwaBasesChecklistReminderScheduler: "fwa_bases_checklist_reminder_scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
   scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY,
@@ -137,6 +144,7 @@ const BOT_POLL_STATUS_DISPLAY_NAMES = {
   warEventPollCycle: "War event poll",
   fwaFeedScheduler: "FWA feed scheduler",
   fwaBaseSwapDmReminderScheduler: "FWA base-swap DM reminder scheduler",
+  layoutAlertScheduler: LAYOUT_ALERT_SCHEDULER_DISPLAY_NAME,
   fwaBasesChecklistReminderScheduler: "FWA bases checklist reminder scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME,
   scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
@@ -1679,6 +1687,47 @@ export default (client: Client, cocService: CoCService): void => {
           });
           throw err;
         }
+
+        const layoutAlertScheduler = new LayoutAlertSchedulerService(client);
+        startupPhase = "layout_alert_scheduler";
+        await markStartupPhase(startupPhase, { pollingMode });
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+          intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS),
+          metadata: { started: true },
+        });
+        try {
+          const startResult = layoutAlertScheduler.start();
+          if (startResult.started) {
+            await markPollJobSucceeded({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+              intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS),
+              metadata: { started: true },
+            });
+          } else {
+            await markPollJobSkipped({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+              intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS),
+              metadata: { started: false, reason: startResult.reason },
+            });
+          }
+        } catch (err) {
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+            error: err,
+            intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+            nextDueAt: new Date(Date.now() + DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS),
+            metadata: { started: true },
+          });
+          throw err;
+        }
       } else {
         await markPollJobDisabled({
           jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
@@ -1688,6 +1737,15 @@ export default (client: Client, cocService: CoCService): void => {
         });
         dozzleLog.info(
           "[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=staging",
+        );
+        await markPollJobDisabled({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+          intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+          metadata: { reason: "staging" },
+        });
+        dozzleLog.info(
+          "[polling-mode] event=poller_skipped job=layout_alert_scheduler mode=staging",
         );
       }
 
@@ -1769,6 +1827,12 @@ export default (client: Client, cocService: CoCService): void => {
         jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaBaseSwapDmReminderScheduler,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaBaseSwapDmReminderScheduler,
         intervalMs: DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
+        metadata: { reason: "mirror" },
+      });
+      await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
+        intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
         metadata: { reason: "mirror" },
       });
       await markPollJobDisabled({
