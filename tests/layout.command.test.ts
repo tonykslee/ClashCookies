@@ -6,7 +6,15 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
     upsert: vi.fn(),
+    update: vi.fn(),
   },
+  layoutRecord: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    upsert: vi.fn(),
+  },
+  $transaction: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -127,6 +135,18 @@ describe("/layout helper logic", () => {
 describe("/layout command behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.fwaLayouts.findUnique.mockReset();
+    prismaMock.layoutRecord.findUnique.mockReset();
+    prismaMock.$transaction.mockImplementation(async (callback: (db: typeof prismaMock) => unknown) =>
+      callback(prismaMock),
+    );
+    prismaMock.layoutRecord.findUnique.mockResolvedValue(null);
+    prismaMock.layoutRecord.create.mockImplementation(async ({ data }: any) => ({
+      id: "layout-1",
+      ...data,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    }));
   });
 
   it("/layout with no args renders paginated embeds in fixed type order", async () => {
@@ -297,6 +317,15 @@ describe("/layout command behavior", () => {
         ImageUrl: "https://i.imgur.com/existing.png",
       })
     );
+    prismaMock.fwaLayouts.findUnique.mockResolvedValue(
+      buildRow({
+        Townhall: 11,
+        Type: "RISINGDAWN",
+        LayoutLink:
+          "https://link.clashofclans.com/en?action=OpenLayout&id=TH11%3AWB%3AOLD",
+        ImageUrl: "https://i.imgur.com/existing.png",
+      }),
+    );
 
     const { interaction } = makeInteraction({ th: 11, edit: updatedLink, isAdmin: true });
     await Layout.run({} as any, interaction as any, {} as any);
@@ -305,6 +334,8 @@ describe("/layout command behavior", () => {
       expect.objectContaining({
         update: {
           LayoutLink: updatedLink,
+          ImageUrl: "https://i.imgur.com/existing.png",
+          layoutId: expect.any(String),
         },
       })
     );
