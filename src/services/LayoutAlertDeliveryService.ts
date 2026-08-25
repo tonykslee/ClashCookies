@@ -9,7 +9,12 @@ import { deriveLayoutFreshnessTimestamp } from "./LayoutService";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { LAYOUT_ALERT_STALE_AFTER_DAYS } from "./LayoutAlertConfigService";
 import { parseClashLayoutLink } from "./ClashLayoutLinkService";
-import { isMirrorPollingMode, resolveRuntimeEnvironment } from "./PollingModeService";
+import {
+  resolvePollingMode,
+  resolveRuntimeEnvironment,
+  type PollingMode,
+  type RuntimeEnvironment,
+} from "./PollingModeService";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STALE_CLAIM_MS = 5 * 60 * 1000;
@@ -22,7 +27,7 @@ type LayoutAlertRecord = {
   layoutLink: string;
   title: string | null;
   lastConfirmedAt: Date | null;
-  submittedAt: Date;
+  submittedAt: Date | null;
   postedByDiscordUserId: string | null;
   discordGuildId: string | null;
   discordChannelId: string | null;
@@ -99,7 +104,7 @@ export type LayoutAlertDeliveryCounts = {
 export type LayoutAlertDeliveryResult = {
   counts: LayoutAlertDeliveryCounts;
   durationMs: number;
-  skippedReason?: "mirror" | "staging";
+  skippedReason?: "mirror" | "staging" | "non_production";
 };
 
 type LayoutAlertDeliveryDependencies = {
@@ -155,6 +160,11 @@ function boundedFailureReason(error: unknown): string {
 function failureCode(error: unknown): string {
   const code = String((error as { code?: unknown } | null | undefined)?.code ?? "").trim();
   return (code || "DELIVERY_FAILED").slice(0, 100);
+}
+
+function destinationIdFromError(error: unknown): string | null {
+  const value = (error as { destinationId?: unknown } | null | undefined)?.destinationId;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function completeProvenance(layout: LayoutAlertRecord): boolean {
@@ -220,22 +230,29 @@ export class LayoutAlertDeliveryService {
   async evaluateAndDeliver(input: {
     client: LayoutAlertDeliveryClient;
     now?: Date;
-    pollingMode?: "active" | "mirror";
-    runtimeEnvironment?: string;
+    pollingMode?: PollingMode;
+    runtimeEnvironment?: RuntimeEnvironment;
   }): Promise<LayoutAlertDeliveryResult> {
     const startedAt = Date.now();
     const counts = emptyCounts();
     const now = input.now ?? this.clock();
-    const mirror = input.pollingMode === "mirror" || isMirrorPollingMode();
-    const staging = String(input.runtimeEnvironment ?? resolveRuntimeEnvironment()).trim().toLowerCase() === "staging";
-    if (mirror || staging) {
+    const pollingMode = input.pollingMode ?? resolvePollingMode();
+    const runtimeEnvironment = input.runtimeEnvironment ?? resolveRuntimeEnvironment();
+    const configuredPollingMode = resolvePollingMode();
+    if (pollingMode !== "active" || configuredPollingMode !== "active") {
       counts.skipped = 1;
-      dozzleLog.warn(`[layout-alert] cycle_skipped reason=${mirror ? "mirror" : "staging"}`);
+      dozzleLog.debug("[layout-alert] cycle_skipped reason=mirror");
       return {
         counts,
         durationMs: Date.now() - startedAt,
-        skippedReason: mirror ? "mirror" : "staging",
+        skippedReason: "mirror",
       };
+    }
+    if (runtimeEnvironment !== "prod") {
+      counts.skipped = 1;
+      const skippedReason = runtimeEnvironment === "staging" ? "staging" : "non_production";
+      dozzleLog.debug(`[layout-alert] cycle_skipped reason=${skippedReason}`);
+      return { counts, durationMs: Date.now() - startedAt, skippedReason };
     }
     if (!isValidDate(now)) {
       counts.skipped = 1;
@@ -493,6 +510,7 @@ export class LayoutAlertDeliveryService {
       );
     } catch (error) {
       input.counts.failed += 1;
+      destinationId = destinationId ?? destinationIdFromError(error);
       const code = failureCode(error);
       if (["MISSING_DEFAULT_CHANNEL", "MISSING_CUSTOM_CHANNEL", "INVALID_ALERT_CHANNEL"].includes(code)) {
         input.counts.missingRouting += 1;
@@ -551,7 +569,10 @@ export class LayoutAlertDeliveryService {
       if (!userId) throw Object.assign(new Error("No poster is recorded for this layout."), { code: "MISSING_POSTER" });
       const user = await input.client.users.fetch(userId).catch(() => null) as SendableUser | null;
       if (!user || typeof user.send !== "function") {
-        throw Object.assign(new Error("The recorded poster cannot receive direct messages."), { code: "DM_UNAVAILABLE" });
+        throw Object.assign(new Error("The recorded poster cannot receive direct messages."), {
+          code: "DM_UNAVAILABLE",
+          destinationId: userId,
+        });
       }
       const sendDm = user.send;
       return {
@@ -570,8 +591,11 @@ export class LayoutAlertDeliveryService {
       });
     }
     const channel = await input.client.channels.fetch(channelId).catch(() => null) as SendableChannel | null;
-    if (!channel || channel.guildId && channel.guildId !== guildId || channel.isTextBased?.() !== true || typeof channel.send !== "function") {
-      throw Object.assign(new Error("The configured alert channel is not text-sendable in the canonical guild."), { code: "INVALID_ALERT_CHANNEL" });
+    if (!channel || channel.guildId !== guildId || channel.isTextBased?.() !== true || typeof channel.send !== "function") {
+      throw Object.assign(new Error("The configured alert channel is not text-sendable in the canonical guild."), {
+        code: "INVALID_ALERT_CHANNEL",
+        destinationId: channelId,
+      });
     }
     return {
       destinationId: channelId,

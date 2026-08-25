@@ -13,7 +13,7 @@ export const LAYOUT_ALERT_SCHEDULER_DISPLAY_NAME = "Layout expiration-alert sche
 
 export type LayoutAlertSchedulerStartResult =
   | { started: true }
-  | { started: false; reason: "already_started" | "mirror" | "staging" };
+  | { started: false; reason: "already_started" | "mirror" | "staging" | "non_production" };
 
 function zeroCounts(): LayoutAlertDeliveryCounts {
   return {
@@ -53,9 +53,10 @@ export class LayoutAlertSchedulerService {
       dozzleLog.info(`[polling-mode] event=poller_skipped job=${LAYOUT_ALERT_SCHEDULER_JOB_KEY} mode=mirror`);
       return { started: false, reason: "mirror" };
     }
-    if (runtimeEnvironment === "staging") {
-      dozzleLog.info(`[polling-mode] event=poller_skipped job=${LAYOUT_ALERT_SCHEDULER_JOB_KEY} mode=staging`);
-      return { started: false, reason: "staging" };
+    if (runtimeEnvironment !== "prod") {
+      const reason = runtimeEnvironment === "staging" ? "staging" : "non_production";
+      dozzleLog.info(`[polling-mode] event=poller_skipped job=${LAYOUT_ALERT_SCHEDULER_JOB_KEY} mode=${reason}`);
+      return { started: false, reason };
     }
     if (this.timer) return { started: false, reason: "already_started" };
 
@@ -84,9 +85,10 @@ export class LayoutAlertSchedulerService {
       dozzleLog.debug("[layout-alert] cycle_skipped reason=in_flight");
       return zeroCounts();
     }
-    if (!isActivePollingMode(this.env) || resolveRuntimeEnvironment(this.env) === "staging") {
+    if (!isActivePollingMode(this.env) || resolveRuntimeEnvironment(this.env) !== "prod") {
+      const runtimeEnvironment = resolveRuntimeEnvironment(this.env);
       dozzleLog.debug(
-        `[layout-alert] cycle_skipped reason=${resolveRuntimeEnvironment(this.env) === "staging" ? "staging" : "mirror"}`,
+        `[layout-alert] cycle_skipped reason=${!isActivePollingMode(this.env) ? "mirror" : runtimeEnvironment === "staging" ? "staging" : "non_production"}`,
       );
       return zeroCounts();
     }

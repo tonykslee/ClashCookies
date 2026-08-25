@@ -48,10 +48,34 @@ describe("LayoutAlertSchedulerService", () => {
     const delivery = { evaluateAndDeliver: vi.fn() };
     const mirror = new LayoutAlertSchedulerService({} as any, delivery, 100, { POLLING_MODE: "mirror" });
     const staging = new LayoutAlertSchedulerService({} as any, delivery, 100, { POLLING_MODE: "active", NODE_ENV: "staging" });
+    const development = new LayoutAlertSchedulerService({} as any, delivery, 100, { POLLING_MODE: "active", NODE_ENV: "development" });
+    const unknown = new LayoutAlertSchedulerService({} as any, delivery, 100, { POLLING_MODE: "active" });
 
     expect(mirror.start()).toEqual({ started: false, reason: "mirror" });
     expect(staging.start()).toEqual({ started: false, reason: "staging" });
+    expect(development.start()).toEqual({ started: false, reason: "non_production" });
+    expect(unknown.start()).toEqual({ started: false, reason: "non_production" });
     expect(delivery.evaluateAndDeliver).not.toHaveBeenCalled();
+  });
+
+  it("runs an hourly follow-up cycle and stop prevents future cycles", async () => {
+    vi.useFakeTimers();
+    const evaluateAndDeliver = vi.fn(async () => ({ counts, durationMs: 1 }));
+    const scheduler = new LayoutAlertSchedulerService(
+      {} as any,
+      { evaluateAndDeliver },
+      100,
+      { POLLING_MODE: "active", NODE_ENV: "production" },
+    );
+
+    scheduler.start();
+    await Promise.resolve();
+    expect(evaluateAndDeliver).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(evaluateAndDeliver).toHaveBeenCalledTimes(2);
+    scheduler.stop();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(evaluateAndDeliver).toHaveBeenCalledTimes(2);
   });
 
   it("skips overlapping runCycle calls", async () => {
