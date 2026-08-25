@@ -2023,9 +2023,33 @@ model FwaLayouts {
   LayoutLink  String
   ImageUrl    String?
   LastUpdated DateTime      @updatedAt
+  layoutId     String?
+  layoutRecord LayoutRecord? @relation(fields: [layoutId], references: [id], onDelete: SetNull)
 
   @@id([Townhall, Type])
   @@index([Type])
+  @@index([layoutId])
+}
+
+model LayoutRecord {
+  id                           String       @id @default(cuid())
+  layoutLink                   String       @unique
+  title                        String?
+  description                  String?
+  imageUrl                     String?
+  postedByDiscordUserId        String?
+  discordGuildId               String?
+  discordChannelId             String?
+  discordMessageId             String?
+  submittedAt                  DateTime?
+  lastConfirmedAt              DateTime?
+  lastConfirmedByDiscordUserId String?
+  createdAt                    DateTime     @default(now())
+  updatedAt                    DateTime     @updatedAt
+  fwaLayouts                   FwaLayouts[]
+
+  @@unique([discordGuildId, discordChannelId, discordMessageId])
+  @@index([discordMessageId])
 }
 
 model FwaClanCatalog {

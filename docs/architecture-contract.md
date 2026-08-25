@@ -142,6 +142,8 @@ Each domain concept must have exactly one authoritative owner.
 | CWL clan-to-current-event pointer | CwlEventClan |
 | CWL war-tag-to-event mapping | CwlEventWarTag |
 | Tracked FWA clans | TrackedClan |
+| Generic Clash layout link lifecycle, freshness, and post provenance | LayoutRecord |
+| Canonical FWA `(Townhall, Type)` layout designation | FwaLayouts |
 | Per-clan FWA weight-alert policy (enablement and stale-age threshold) | FwaWeightAlertConfig |
 | Durable per-clan/date FWA weight-alert delivery claims and outcomes | FwaWeightAlertDelivery |
 | Tracked FWA clan rep accounts | TrackedClanRep |
@@ -199,6 +201,8 @@ Each domain concept must have exactly one authoritative owner.
 | Police-handled dedupe | FwaPoliceHandledViolation |
 
 `FwaWeightAlertConfig` is the authoritative owner of per-clan FWA weight-alert enablement and stale-age threshold configuration. `FwaWeightAlertDelivery` is the authoritative owner of the durable per-clan/per-`weightSubmitDate` claim, retry, and Discord delivery outcome; it does not own policy or routing. `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId` remain the authoritative routing fields and must not be duplicated in either alert table. `FwaClanCatalog.weightSubmitDate` remains the authoritative persisted weight-submission date used for stale-age evaluation. The delivery evaluator runs only after a fresh Clans.json catalog sync reports `SUCCESS` or `NOOP`; there is no separate alert poller. Active runtime may send after a successful claim, while mirror/staging runtime must not send.
+
+`LayoutRecord` is the authoritative owner of a tracked Clash layout link's lifecycle, semantic freshness, and Discord post provenance. `FwaLayouts` remains the authoritative owner of the canonical FWA `(Townhall, Type)` designation. During the staged migration, `FwaLayouts.layoutId` is nullable and existing `FwaLayouts.LayoutLink`, `ImageUrl`, and `LastUpdated` fields remain transitional legacy ownership; no FWA rows are backfilled and no consumers switch owners in this foundation task. Layout freshness is derived only from `LayoutRecord.lastConfirmedAt ?? LayoutRecord.submittedAt`, never from `updatedAt`, `FwaLayouts.LastUpdated`, message timestamps, clicks, or reads.
 
 `AllianceClanMembershipInterval` is the sole owner of historical observed alliance clan-membership intervals intended for camping analytics and future read-only reporting. `PlayerCurrent` and `FwaClanMemberCurrent` remain current-state owners; they are not interval history and are not duplicated by this table. Interval timing has observation-cadence precision: `firstObservedAt` and `lastObservedAt` describe positive roster observations, not exact join or leave timestamps. Production activity observation writes these intervals. No manual/frozen CWL alliance baseline owner remains.
 
