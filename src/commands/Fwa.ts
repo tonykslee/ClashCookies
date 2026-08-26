@@ -14343,16 +14343,6 @@ async function buildTrackedMatchOverview(
       );
     }
   }
-  const activeWarCycleContext: ActiveWarCycleContext | null =
-    guildId && activeWarPreparationStartTimeByClanTag.size > 0
-      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
-          guildId,
-          preparationStartTimes: [
-            ...activeWarPreparationStartTimeByClanTag.values(),
-          ],
-        })
-      : null;
-
   const scopedSyncWarIds = [
     ...new Set(
       [...syncIdentityByClanTag.values()]
@@ -14408,6 +14398,53 @@ async function buildTrackedMatchOverview(
       : [];
   const warScopedSyncRowsByClanTag =
     groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
+  const activeWarCycleContext: ActiveWarCycleContext | null =
+    guildId && activeWarPreparationStartTimeByClanTag.size > 0
+      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+          guildId,
+          preparationStartTimes: [
+            ...activeWarPreparationStartTimeByClanTag.values(),
+          ],
+        })
+      : null;
+  if (guildId && activeWarCycleContext) {
+    await activeWarSyncResolutionService.primeActiveWarCycleContext(
+      activeWarCycleContext,
+      scopedTracked.flatMap((clan) => {
+        const clanTag = normalizeTag(clan.tag);
+        const war = warByClanTag.get(clanTag) ?? null;
+        const identity = syncIdentityByClanTag.get(clanTag);
+        const preparationStartTime =
+          activeWarPreparationStartTimeByClanTag.get(clanTag);
+        const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+          rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+          warId: identity?.warId ?? null,
+          warStartTime: identity?.warStartTime ?? null,
+          opponentTag:
+            normalizeTag(String(war?.opponent?.tag ?? "")) ||
+            (identity?.opponentTag ?? null),
+        });
+        if (
+          !identity?.positivelyResolved ||
+          !normalizeTag(String(war?.opponent?.tag ?? "")) ||
+          !preparationStartTime
+        ) {
+          return [];
+        }
+        const sub = subByTag.get(clanTag);
+        return [
+          {
+            guildId,
+            identity,
+            preparationStartTime,
+            matchType: sub?.matchType ?? null,
+            inferredMatchType: sub?.inferredMatchType ?? null,
+            sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+          },
+        ];
+      }),
+    );
+  }
   const baselineWarStartMs =
     activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
   const nowMs = Date.now();
@@ -18500,6 +18537,37 @@ export const Fwa: Command = {
               ],
             })
           : null;
+      if (interaction.guildId && activeWarCycleContext) {
+        await activeWarSyncResolutionService.primeActiveWarCycleContext(
+          activeWarCycleContext,
+          tracked.flatMap((clan) => {
+            const trackedTag = normalizeTag(clan.tag);
+            const identity = syncIdentityByTag.get(trackedTag);
+            const preparationStartTime =
+              preparationStartTimeByTag.get(trackedTag);
+            const sub = subByTag.get(trackedTag);
+            const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+              rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
+              warId: identity?.warId ?? null,
+              warStartTime: identity?.warStartTime ?? null,
+              opponentTag: identity?.opponentTag ?? null,
+            });
+            if (!identity?.positivelyResolved || !preparationStartTime) {
+              return [];
+            }
+            return [
+              {
+                guildId: interaction.guildId ?? "",
+                identity,
+                preparationStartTime,
+                matchType: sub?.matchType ?? null,
+                inferredMatchType: sub?.inferredMatchType ?? null,
+                sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+              },
+            ];
+          }),
+        );
+      }
 
       const baselineWarStartMs =
         activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;

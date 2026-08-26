@@ -80,6 +80,12 @@ export type ActiveWarCycleContext = {
     syncTime: Date;
     previousSyncNumber: number;
   }>;
+  /** Request-local boundary conflicts are sticky and always take precedence over reuse. */
+  activeCycleConflicts?: Array<{
+    syncTime: Date;
+    scheduledSyncPostId: string;
+    reason: string;
+  }>;
   readErrorReason:
     | "active_cycle_database_unavailable"
     | "schedule_read_failed"
@@ -290,6 +296,7 @@ export class SyncCycleService {
         syncCycles: [],
         previousAnchor: null,
         derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: null,
       };
     }
@@ -317,6 +324,7 @@ export class SyncCycleService {
         syncCycles: [],
         previousAnchor: null,
         derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "active_cycle_database_unavailable",
       };
     }
@@ -351,6 +359,7 @@ export class SyncCycleService {
         syncCycles: [],
         previousAnchor: null,
         derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "sync_cycle_read_failed",
       };
     }
@@ -380,6 +389,7 @@ export class SyncCycleService {
         syncCycles,
         previousAnchor,
         derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: null,
       };
     } catch (error) {
@@ -396,6 +406,7 @@ export class SyncCycleService {
         syncCycles: [],
         previousAnchor: null,
         derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "schedule_read_failed",
       };
     }
@@ -427,6 +438,14 @@ export class SyncCycleService {
       previousSyncNumber: number;
     },
   ): void {
+    if (
+      context.activeCycleConflicts?.some(
+        (conflict) =>
+          conflict.syncTime.getTime() === candidate.syncTime.getTime(),
+      )
+    ) {
+      return;
+    }
     if (context.derivedCandidates === undefined) {
       context.derivedCandidates = [];
     }
@@ -438,6 +457,34 @@ export class SyncCycleService {
       return;
     }
     context.derivedCandidates.push(candidate);
+  }
+
+  /** Purpose: make a request-local active boundary conflict sticky and un-reusable. */
+  markActiveWarCycleConflict(
+    context: ActiveWarCycleContext,
+    conflict: {
+      syncTime: Date;
+      scheduledSyncPostId: string;
+      reason: string;
+    },
+  ): void {
+    if (context.activeCycleConflicts === undefined) {
+      context.activeCycleConflicts = [];
+    }
+    const existingIndex = context.activeCycleConflicts.findIndex(
+      (existing) => existing.syncTime.getTime() === conflict.syncTime.getTime(),
+    );
+    if (existingIndex >= 0) {
+      context.activeCycleConflicts[existingIndex] = conflict;
+    } else {
+      context.activeCycleConflicts.push(conflict);
+    }
+    if (context.derivedCandidates !== undefined) {
+      context.derivedCandidates = context.derivedCandidates.filter(
+        (candidate) =>
+          candidate.syncTime.getTime() !== conflict.syncTime.getTime(),
+      );
+    }
   }
 
   /** Purpose: resolve an active war cycle entirely from one request-scoped context. */
@@ -565,6 +612,21 @@ export class SyncCycleService {
         syncTime: null,
         previousSyncNumber: null,
         reason: "terminal_intervening_schedule",
+        resolutionSource: null,
+      };
+    }
+    const boundaryConflict = context.activeCycleConflicts?.find(
+      (conflict) =>
+        conflict.syncTime.getTime() === schedule.syncTime.getTime(),
+    );
+    if (boundaryConflict) {
+      return {
+        status: "conflict",
+        syncNumber: null,
+        scheduledSyncPostId: boundaryConflict.scheduledSyncPostId,
+        syncTime: boundaryConflict.syncTime,
+        previousSyncNumber: null,
+        reason: boundaryConflict.reason,
         resolutionSource: null,
       };
     }

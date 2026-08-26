@@ -40,6 +40,15 @@ export type ActiveWarSyncResolutionResult = {
   postedSyncNumber: number | null;
 };
 
+export type ActiveWarCyclePrimingRequest = {
+  guildId: string;
+  identity: ActiveWarSyncIdentity;
+  preparationStartTime: Date | null | undefined;
+  matchType?: string | null;
+  inferredMatchType?: boolean | null;
+  sameWarPersistedSyncNumber?: number | null;
+};
+
 export type ActiveWarSyncAssignmentSource =
   | "existing_current_war"
   | "exact_same_war_reconcile"
@@ -547,6 +556,31 @@ export class ActiveWarSyncResolutionService {
     return this.syncCycles.loadActiveWarCycleContext(input);
   }
 
+  /** Purpose: finalize request-local active-cycle candidates and conflicts before alliance rendering. */
+  async primeActiveWarCycleContext(
+    context: ActiveWarCycleContext,
+    requests: ActiveWarCyclePrimingRequest[],
+  ): Promise<void> {
+    const orderedRequests = [...requests].sort((left, right) => {
+      const leftEvidence = classifyFwaEvidence(left);
+      const rightEvidence = classifyFwaEvidence(right);
+      const leftFwaCapable =
+        leftEvidence === "confirmed_fwa" ||
+        leftEvidence === "strongly_inferred_fwa";
+      const rightFwaCapable =
+        rightEvidence === "confirmed_fwa" ||
+        rightEvidence === "strongly_inferred_fwa";
+      return Number(rightFwaCapable) - Number(leftFwaCapable);
+    });
+    for (const request of orderedRequests) {
+      await this.resolveActiveWarSyncFromCanonicalCycle({
+        ...request,
+        activeCycleContext: context,
+        persistCanonical: false,
+      });
+    }
+  }
+
   /** Purpose: resolve a locally provable active FWA sync and persist it only when explicitly authorized. */
   async resolveActiveWarSyncFromCanonicalCycle(input: {
     guildId: string;
@@ -667,6 +701,16 @@ export class ActiveWarSyncResolutionService {
       sameWarPersistedSyncNumber !== null &&
       sameWarPersistedSyncNumber !== resolution.syncNumber
     ) {
+      if (input.activeCycleContext) {
+        this.syncCycles.markActiveWarCycleConflict?.(
+          input.activeCycleContext,
+          {
+            syncTime: resolution.syncTime,
+            scheduledSyncPostId: resolution.scheduledSyncPostId,
+            reason: "points_sync_conflicts_with_active_cycle",
+          },
+        );
+      }
       return {
         syncNumber: null,
         source: "active_war_ambiguous",
