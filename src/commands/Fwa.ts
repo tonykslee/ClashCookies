@@ -4805,6 +4805,7 @@ const warMailCurrentWarRenderSelect =
     outcome: true,
     fwaPoints: true,
     opponentFwaPoints: true,
+    prepStartTime: true,
     startTime: true,
     state: true,
     endTime: true,
@@ -5571,6 +5572,7 @@ type WarMailCurrentWarRenderState = {
   outcome: "WIN" | "LOSE" | null;
   fwaPoints: number | null;
   opponentFwaPoints: number | null;
+  prepStartTime: Date | null;
   startTime: Date | null;
   endTime: Date | null;
   opponentTag: string | null;
@@ -5590,6 +5592,7 @@ function buildWarMailCurrentWarRenderState(
       outcome: null,
       fwaPoints: null,
       opponentFwaPoints: null,
+      prepStartTime: null,
       startTime: null,
       endTime: null,
       opponentTag: null,
@@ -5621,6 +5624,7 @@ function buildWarMailCurrentWarRenderState(
       Number.isFinite(Number(currentWarRow.opponentFwaPoints))
         ? Number(currentWarRow.opponentFwaPoints)
         : null,
+    prepStartTime: currentWarRow.prepStartTime ?? null,
     startTime: currentWarRow.startTime ?? null,
     endTime: currentWarRow.endTime ?? null,
     opponentTag: normalizeTag(String(currentWarRow.opponentTag ?? "")),
@@ -5642,6 +5646,56 @@ function buildWarMailCurrentWarRenderState(
 
 export const buildWarMailCurrentWarRenderStateForTest =
   buildWarMailCurrentWarRenderState;
+
+const ACTIVE_WAR_PREPARATION_FALLBACK_MS = 24 * 60 * 60 * 1000;
+
+/** Purpose: choose the schedule-boundary timestamp without changing physical war identity semantics. */
+function resolveActiveWarPreparationStartTime(input: {
+  livePreparationStartTime?: Date | number | null;
+  persistedPreparationStartTime?: Date | null;
+  warStartTime?: Date | null;
+}): Date | null {
+  const livePreparationStartTime = input.livePreparationStartTime;
+  if (
+    typeof livePreparationStartTime === "number" &&
+    Number.isFinite(livePreparationStartTime)
+  ) {
+    return new Date(livePreparationStartTime);
+  }
+  if (
+    livePreparationStartTime instanceof Date &&
+    Number.isFinite(livePreparationStartTime.getTime())
+  ) {
+    return livePreparationStartTime;
+  }
+  const persistedPreparationStartTime = input.persistedPreparationStartTime;
+  if (
+    persistedPreparationStartTime instanceof Date &&
+    Number.isFinite(persistedPreparationStartTime.getTime())
+  ) {
+    return persistedPreparationStartTime;
+  }
+  const warStartTime = input.warStartTime;
+  if (warStartTime instanceof Date && Number.isFinite(warStartTime.getTime())) {
+    return new Date(
+      warStartTime.getTime() - ACTIVE_WAR_PREPARATION_FALLBACK_MS,
+    );
+  }
+  return null;
+}
+
+/** Purpose: only a confirmed FWA may create a new canonical active SyncCycle. */
+function shouldPersistActiveFwaSync(input: {
+  matchType?: string | null;
+  inferredMatchType?: boolean | null;
+  confirmed?: boolean | null;
+}): boolean {
+  return (
+    String(input.matchType ?? "").trim().toUpperCase() === "FWA" &&
+    input.inferredMatchType !== true &&
+    input.confirmed === true
+  );
+}
 
 async function buildWarMailEmbedForTag(
   cocService: CoCService,
@@ -5684,6 +5738,9 @@ async function buildWarMailEmbedForTag(
     .getCurrentWar(`#${normalizedTag}`)
     .catch(() => null);
   const warState = deriveWarState(war?.state);
+  const livePreparationStartTime = parseCocApiTime(
+    war?.preparationStartTime ?? null,
+  );
   const opponentTag = normalizeTag(String(war?.opponent?.tag ?? ""));
   const opponentName =
     sanitizeClanName(String(war?.opponent?.name ?? "")) ?? "Unknown";
@@ -5731,6 +5788,11 @@ async function buildWarMailEmbedForTag(
     : syncIdentity;
   const warIdForSync = syncIdentityForRender.warId;
   const warStartTimeForSync = syncIdentityForRender.warStartTime;
+  const preparationStartTimeForSync = resolveActiveWarPreparationStartTime({
+    livePreparationStartTime,
+    persistedPreparationStartTime: currentWarRenderState.prepStartTime,
+    warStartTime: warStartTimeForSync,
+  });
   const warIdForSyncNumber =
     warIdForSync !== null && Number.isFinite(Number(warIdForSync))
       ? Math.trunc(Number(warIdForSync))
@@ -5800,8 +5862,15 @@ async function buildWarMailEmbedForTag(
           {
             guildId,
             identity: syncIdentityForRender,
+            preparationStartTime: preparationStartTimeForSync,
             matchType: appliedResolution?.matchType ?? null,
             inferredMatchType: appliedResolution?.inferred ?? inferredMatchType,
+            persistCanonical: shouldPersistActiveFwaSync({
+              matchType: appliedResolution?.matchType,
+              inferredMatchType:
+                appliedResolution?.inferred ?? inferredMatchType,
+              confirmed: appliedResolution?.confirmed,
+            }),
           },
         )
       : null;
@@ -6011,8 +6080,14 @@ async function buildWarMailEmbedForTag(
           {
             guildId,
             identity: syncIdentityForRender,
+            preparationStartTime: preparationStartTimeForSync,
             matchType,
             inferredMatchType,
+            persistCanonical: shouldPersistActiveFwaSync({
+              matchType,
+              inferredMatchType,
+              confirmed: appliedResolution?.confirmed,
+            }),
           },
         );
       if (
@@ -14506,6 +14581,13 @@ async function buildTrackedMatchOverview(
         subByTag.set(clanTag, reconciledSub);
       }
     }
+    const preparationStartTimeForSync = resolveActiveWarPreparationStartTime({
+      livePreparationStartTime: parseCocApiTime(
+        war?.preparationStartTime ?? null,
+      ),
+      persistedPreparationStartTime: sub?.prepStartTime ?? null,
+      warStartTime: syncIdentity.warStartTime,
+    });
     const fallbackResolution = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,
@@ -14527,6 +14609,7 @@ async function buildTrackedMatchOverview(
             {
               guildId,
               identity: syncIdentity,
+              preparationStartTime: preparationStartTimeForSync,
               matchType:
                 fallbackResolution.confirmedCurrent?.matchType ??
                 fallbackResolution.unconfirmedCurrent?.matchType ??
@@ -14539,6 +14622,24 @@ async function buildTrackedMatchOverview(
                 fallbackResolution.storedSync?.inferred ??
                 sub?.inferredMatchType ??
                 null,
+              persistCanonical: shouldPersistActiveFwaSync({
+                matchType:
+                  fallbackResolution.confirmedCurrent?.matchType ??
+                  fallbackResolution.unconfirmedCurrent?.matchType ??
+                  fallbackResolution.storedSync?.matchType ??
+                  sub?.matchType ??
+                  null,
+                inferredMatchType:
+                  fallbackResolution.confirmedCurrent?.inferred ??
+                  fallbackResolution.unconfirmedCurrent?.inferred ??
+                  fallbackResolution.storedSync?.inferred ??
+                  sub?.inferredMatchType ??
+                  null,
+                confirmed:
+                  fallbackResolution.confirmedCurrent?.confirmed ??
+                  fallbackResolution.storedSync?.confirmed ??
+                  false,
+              }),
             },
           )
         : null;
@@ -14820,8 +14921,14 @@ async function buildTrackedMatchOverview(
             {
               guildId,
               identity: syncIdentity,
+              preparationStartTime: preparationStartTimeForSync,
               matchType,
               inferredMatchType,
+              persistCanonical: shouldPersistActiveFwaSync({
+                matchType,
+                inferredMatchType,
+                confirmed: appliedResolution.confirmed,
+              }),
             },
           )
         : null;
@@ -18539,6 +18646,7 @@ export const Fwa: Command = {
               select: {
                 state: true,
                 warId: true,
+                prepStartTime: true,
                 startTime: true,
                 opponentTag: true,
                 matchType: true,
@@ -18563,6 +18671,14 @@ export const Fwa: Command = {
         });
         const warIdForReuse = syncIdentity.warId;
         const warStartTimeForReuse = syncIdentity.warStartTime;
+        const preparationStartTimeForSync =
+          resolveActiveWarPreparationStartTime({
+            livePreparationStartTime: parseCocApiTime(
+              war?.preparationStartTime ?? null,
+            ),
+            persistedPreparationStartTime: subscription?.prepStartTime ?? null,
+            warStartTime: warStartTimeForReuse,
+          });
         const warIdForReuseNumber =
           warIdForReuse !== null && Number.isFinite(Number(warIdForReuse))
             ? Math.trunc(Number(warIdForReuse))
@@ -19013,8 +19129,14 @@ export const Fwa: Command = {
                 {
                   guildId: interaction.guildId,
                   identity: syncIdentity,
+                  preparationStartTime: preparationStartTimeForSync,
                   matchType,
                   inferredMatchType: appliedResolution.inferred,
+                  persistCanonical: shouldPersistActiveFwaSync({
+                    matchType,
+                    inferredMatchType: appliedResolution.inferred,
+                    confirmed: appliedResolution.confirmed,
+                  }),
                 },
               )
             : null;

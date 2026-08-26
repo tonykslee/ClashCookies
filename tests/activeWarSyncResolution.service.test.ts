@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
@@ -251,8 +251,10 @@ describe("ActiveWarSyncResolutionService resolver", () => {
         warStartTime: syncTime,
         opponentTag: "#OPP123",
       }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
       matchType: "FWA",
       inferredMatchType: false,
+      persistCanonical: true,
     });
 
     expect(resolution).toMatchObject({
@@ -267,5 +269,43 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       scheduledSyncPostId: "post-b",
       resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
     });
+  });
+
+  it("uses an inferred active FWA candidate without persisting a new canonical cycle", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycle: async () => ({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_SCHEDULE_CANONICAL,
+      }),
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: true,
+      persistCanonical: false,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 553,
+      source: "active_war_schedule_canonical",
+      status: "derived",
+    });
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
   });
 });

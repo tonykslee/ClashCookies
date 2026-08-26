@@ -261,6 +261,47 @@ describe("SyncCycleService", () => {
     expect(restarted).toMatchObject({ status: "exact", syncNumber: 553 });
   });
 
+  it("anchors active schedule lookup to preparation start rather than battle-day start", async () => {
+    const scheduleA = new Date("2026-08-15T10:00:00.000Z");
+    const scheduleB = new Date("2026-08-15T11:00:00.000Z");
+    const laterBattleDaySchedule = new Date("2026-08-16T11:00:00.000Z");
+    const db = makeDb({
+      schedules: [
+        { id: "post-a", syncTime: scheduleA },
+        { id: "post-b", syncTime: scheduleB },
+        { id: "post-after-prep", syncTime: laterBattleDaySchedule },
+      ],
+      cycles: [
+        makeCycle({
+          syncNumber: 552,
+          syncTime: scheduleA,
+          scheduledSyncPostId: "post-a",
+        }),
+      ],
+    });
+
+    const result = await new SyncCycleService(db).resolveActiveWarCycle({
+      guildId: "guild-1",
+      preparationStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "derived",
+      syncNumber: 553,
+      scheduledSyncPostId: "post-b",
+      syncTime: scheduleB,
+    });
+    expect(db.scheduledSyncPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          syncTime: expect.objectContaining({ lte: preparationStartTime }),
+        }),
+      }),
+    );
+  });
+
   it("does not guess when multiple unresolved schedules remain after the previous cycle", async () => {
     const db = makeDb({
       schedules: [

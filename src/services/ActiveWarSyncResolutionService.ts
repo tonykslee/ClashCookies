@@ -538,12 +538,14 @@ export class ActiveWarSyncResolutionService {
     private readonly syncCycles = new SyncCycleService(),
   ) {}
 
-  /** Purpose: resolve and persist a locally provable active FWA sync from the canonical schedule chronology. */
+  /** Purpose: resolve a locally provable active FWA sync and persist it only when explicitly authorized. */
   async resolveActiveWarSyncFromCanonicalCycle(input: {
     guildId: string;
     identity: ActiveWarSyncIdentity;
+    preparationStartTime: Date | null | undefined;
     matchType?: string | null;
     inferredMatchType?: boolean | null;
+    persistCanonical?: boolean;
   }): Promise<{
     syncNumber: number | null;
     source:
@@ -593,7 +595,7 @@ export class ActiveWarSyncResolutionService {
     try {
       resolution = await this.syncCycles.resolveActiveWarCycle({
         guildId: input.guildId,
-        preparationStartTime: input.identity.warStartTime,
+        preparationStartTime: input.preparationStartTime,
         matchType: input.matchType ?? null,
         inferredMatchType: input.inferredMatchType ?? null,
       });
@@ -631,7 +633,7 @@ export class ActiveWarSyncResolutionService {
         reason: resolution.reason,
       };
     }
-    if (resolution.status === "derived") {
+    if (resolution.status === "derived" && input.persistCanonical === true) {
       if (isMirrorPollingMode()) {
         return {
           ...base,
