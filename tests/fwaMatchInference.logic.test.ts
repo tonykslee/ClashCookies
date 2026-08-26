@@ -8,6 +8,7 @@ import {
   inferMatchTypeFromPointsSnapshotsForTest,
   resolveMatchTypeWithFallbackForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
+  resolveTrackedActiveWarPreparationStartTimeForTest,
 } from "../src/commands/Fwa";
 import {
   chooseMatchTypeResolution,
@@ -338,6 +339,112 @@ describe("fwa match stored sync fallback", () => {
 });
 
 describe("fwa active-war identity reconciliation", () => {
+  it("uses the reconciled rollover preparation time for shared active-cycle context", () => {
+    const oldPreparationStartTime = new Date("2026-03-10T22:00:00.000Z");
+    const newWarStartTime = new Date("2026-03-12T22:00:00.000Z");
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: {
+        warId: 2001,
+        startTime: oldPreparationStartTime,
+        opponentTag: "#2OLDTAG",
+        prepStartTime: oldPreparationStartTime,
+      },
+      liveWar: {
+        state: "preparation",
+        startTime: "20260312T220000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "New Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(patch?.sameWar).toBe(false);
+    const preparationStartTime =
+      resolveTrackedActiveWarPreparationStartTimeForTest({
+        liveIdentityPatch: patch,
+        persistedPreparationStartTime: oldPreparationStartTime,
+        warStartTime: newWarStartTime,
+      });
+
+    expect(preparationStartTime).toEqual(
+      new Date("2026-03-11T22:00:00.000Z"),
+    );
+  });
+
+  it("preserves same-war persisted preparation time when live preparation is missing", () => {
+    const persistedPreparationStartTime = new Date("2026-03-11T18:30:00.000Z");
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: {
+        warId: 2001,
+        startTime: new Date("2026-03-12T22:00:00.000Z"),
+        opponentTag: "#20P292Q2V",
+        prepStartTime: persistedPreparationStartTime,
+      },
+      liveWar: {
+        state: "preparation",
+        startTime: "20260312T220000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "Same Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(patch?.sameWar).toBe(true);
+    expect(
+      resolveTrackedActiveWarPreparationStartTimeForTest({
+        liveIdentityPatch: patch,
+        persistedPreparationStartTime,
+        warStartTime: new Date("2026-03-12T22:00:00.000Z"),
+      }),
+    ).toEqual(persistedPreparationStartTime);
+  });
+
+  it("prefers valid live preparation time over reconciled rollover fallback", () => {
+    const livePreparationStartTime = new Date("2026-03-11T17:00:00.000Z");
+    const patch = resolveActiveWarIdentityPatchForTest({
+      guildId: "guild-1",
+      clanTag: "2TRACK",
+      currentWar: {
+        warId: 2001,
+        startTime: new Date("2026-03-10T22:00:00.000Z"),
+        opponentTag: "#2OLDTAG",
+      },
+      liveWar: {
+        state: "preparation",
+        startTime: "20260312T220000.000Z",
+        preparationStartTime: "20260311T170000.000Z",
+        opponent: {
+          tag: "#20P292Q2V",
+          name: "New Opponent",
+        },
+        clan: {
+          name: "Tracked Clan",
+        },
+      } as any,
+    });
+
+    expect(
+      resolveTrackedActiveWarPreparationStartTimeForTest({
+        livePreparationStartTime,
+        liveIdentityPatch: patch,
+        persistedPreparationStartTime: new Date("2026-03-10T22:00:00.000Z"),
+        warStartTime: new Date("2026-03-12T22:00:00.000Z"),
+      }),
+    ).toEqual(livePreparationStartTime);
+  });
+
   it("preserves the existing warId when the live war is the same war", () => {
     const patch = resolveActiveWarIdentityPatchForTest({
       guildId: "guild-1",

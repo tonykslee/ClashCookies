@@ -5685,6 +5685,31 @@ function resolveActiveWarPreparationStartTime(input: {
   return null;
 }
 
+/** Purpose: keep the shared active-cycle context aligned with live-war reconciliation. */
+function resolveTrackedActiveWarPreparationStartTime(input: {
+  livePreparationStartTime?: Date | number | null;
+  liveIdentityPatch?: ReturnType<typeof resolveActiveWarIdentityPatch> | null;
+  persistedPreparationStartTime?: Date | null;
+  warStartTime?: Date | null;
+}): Date | null {
+  const livePreparationStartTime = resolveActiveWarPreparationStartTime({
+    livePreparationStartTime: input.livePreparationStartTime,
+  });
+  if (livePreparationStartTime) return livePreparationStartTime;
+
+  if (input.liveIdentityPatch && !input.liveIdentityPatch.sameWar) {
+    return input.liveIdentityPatch.patch.prepStartTime;
+  }
+
+  return resolveActiveWarPreparationStartTime({
+    persistedPreparationStartTime: input.persistedPreparationStartTime,
+    warStartTime: input.warStartTime,
+  });
+}
+
+export const resolveTrackedActiveWarPreparationStartTimeForTest =
+  resolveTrackedActiveWarPreparationStartTime;
+
 /** Purpose: only a confirmed FWA may create a new canonical active SyncCycle. */
 function shouldPersistActiveFwaSync(input: {
   matchType?: string | null;
@@ -14265,6 +14290,10 @@ async function buildTrackedMatchOverview(
     string,
     Date
   >();
+  const liveIdentityPatchByClanTag = new Map<
+    string,
+    ReturnType<typeof resolveActiveWarIdentityPatch> | null
+  >();
   for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const war = warByClanTag.get(clanTag) ?? null;
@@ -14272,10 +14301,21 @@ async function buildTrackedMatchOverview(
     if (!identity?.positivelyResolved || identity.warState === "notInWar") {
       continue;
     }
-    const preparationStartTime = resolveActiveWarPreparationStartTime({
+    const liveIdentityPatch =
+      guildId && war
+        ? resolveActiveWarIdentityPatch({
+            guildId,
+            clanTag,
+            liveWar: war,
+            currentWar: subByTag.get(clanTag) ?? null,
+          })
+        : null;
+    liveIdentityPatchByClanTag.set(clanTag, liveIdentityPatch);
+    const preparationStartTime = resolveTrackedActiveWarPreparationStartTime({
       livePreparationStartTime: parseCocApiTime(
         war?.preparationStartTime ?? null,
       ),
+      liveIdentityPatch,
       persistedPreparationStartTime: subByTag.get(clanTag)?.prepStartTime ?? null,
       warStartTime: identity.warStartTime,
     });
@@ -14516,15 +14556,7 @@ async function buildTrackedMatchOverview(
     const syncIdentity =
       syncIdentityByClanTag.get(clanTag) ??
       buildActiveWarSyncIdentity({ warState });
-    const liveIdentityPatch =
-      guildId && war
-        ? resolveActiveWarIdentityPatch({
-            guildId,
-            clanTag,
-            liveWar: war,
-            currentWar: sub,
-          })
-        : null;
+    const liveIdentityPatch = liveIdentityPatchByClanTag.get(clanTag) ?? null;
     if (guildId && liveIdentityPatch) {
       const currentIdentity = {
         warId: sub?.warId ?? null,
@@ -14625,13 +14657,16 @@ async function buildTrackedMatchOverview(
         subByTag.set(clanTag, reconciledSub);
       }
     }
-    const preparationStartTimeForSync = resolveActiveWarPreparationStartTime({
-      livePreparationStartTime: parseCocApiTime(
-        war?.preparationStartTime ?? null,
-      ),
-      persistedPreparationStartTime: sub?.prepStartTime ?? null,
-      warStartTime: syncIdentity.warStartTime,
-    });
+    const preparationStartTimeForSync =
+      activeWarPreparationStartTimeByClanTag.get(clanTag) ??
+      resolveTrackedActiveWarPreparationStartTime({
+        livePreparationStartTime: parseCocApiTime(
+          war?.preparationStartTime ?? null,
+        ),
+        liveIdentityPatch,
+        persistedPreparationStartTime: sub?.prepStartTime ?? null,
+        warStartTime: syncIdentity.warStartTime,
+      });
     const fallbackResolution = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,
