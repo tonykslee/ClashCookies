@@ -1527,7 +1527,7 @@ describe("fwa mail confirm button", () => {
         matchType: "FWA",
         expectedOutcome: "UNKNOWN",
         mailBlockedReason:
-          "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+          "FWA expected outcome is unresolved. Wait for sync parity evidence or manually set WIN/LOSE from this match view before sending mail.",
       }),
     });
     const send = vi.fn();
@@ -1550,7 +1550,7 @@ describe("fwa mail confirm button", () => {
     expect(repWorkActivityMock.recordMailSent).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenLastCalledWith({
       content:
-        "Cannot send mail: :warning: FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+        "Cannot send mail: :warning: FWA expected outcome is unresolved. Wait for sync parity evidence or manually set WIN/LOSE from this match view before sending mail.",
       embeds: [],
       components: expect.any(Array),
     });

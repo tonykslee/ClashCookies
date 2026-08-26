@@ -192,6 +192,7 @@ import {
   buildMatchTypeActionCustomId,
   buildMatchTypeEditCustomId,
   buildOutcomeActionCustomId,
+  buildOutcomeSetActionCustomId,
   buildPointsPostButtonCustomId,
   parseFwaMailBackCustomId,
   parseFwaMailGateResumeCustomId,
@@ -213,6 +214,7 @@ import {
   parseMatchTypeActionCustomId,
   parseMatchTypeEditCustomId,
   parseOutcomeActionCustomId,
+  parseOutcomeSetActionCustomId,
   parsePointsPostButtonCustomId,
   isPointsPostButtonCustomId,
   type FwaWeightViewScope,
@@ -292,6 +294,7 @@ export {
   isFwaMatchTypeActionButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
   isFwaOutcomeActionButtonCustomId,
+  isFwaOutcomeSetActionButtonCustomId,
   isPointsPostButtonCustomId,
 } from "./fwa/customIds";
 const POINTS_BASE_URL = "https://points.fwafarm.com/clan?tag=";
@@ -3201,7 +3204,7 @@ function buildFwaMatchCompactCopyLine(params: {
 const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
   "Match type is inferred. Confirm match type before sending mail.";
 const UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON =
-  "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.";
+  "FWA expected outcome is unresolved. Wait for sync parity evidence or manually set WIN/LOSE from this match view before sending mail.";
 const MATCHTYPE_WARNING_LEGEND =
   `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
@@ -3358,6 +3361,7 @@ type MatchView = {
   matchTypeCurrent?: "FWA" | "BL" | "MM" | "SKIP" | null;
   inferredMatchType?: boolean;
   outcomeAction?: { tag: string; currentOutcome: "WIN" | "LOSE" } | null;
+  outcomeSetAction?: { tag: string } | null;
   syncAction?: {
     tag: string;
     siteMatchType: "FWA" | "BL" | "MM" | null;
@@ -4065,6 +4069,23 @@ function buildDraftFromOutcomeToggle(params: {
     ...effective,
     matchType: "FWA",
     expectedOutcome: nextOutcome,
+  });
+  if (!nextDraft || areRevisionFieldsEqual(nextDraft, baseline)) return null;
+  return nextDraft;
+}
+
+/** Purpose: build a draft for explicitly resolving an unresolved FWA expected outcome. */
+function buildDraftFromOutcomeSelection(params: {
+  view: MatchView;
+  targetOutcome: "WIN" | "LOSE";
+}): MatchRevisionFields | null {
+  const baseline = getRevisionBaselineForView(params.view);
+  const effective = getEffectiveRevisionForView(params.view);
+  if (!baseline || !effective || effective.matchType !== "FWA") return null;
+  const nextDraft = normalizeRevisionFields({
+    ...effective,
+    matchType: "FWA",
+    expectedOutcome: params.targetOutcome,
   });
   if (!nextDraft || areRevisionFieldsEqual(nextDraft, baseline)) return null;
   return nextDraft;
@@ -8389,6 +8410,7 @@ function buildFwaMatchCopyComponents(
       : (payload.singleViews[payload.currentTag] ?? payload.allianceView);
   const matchTypeAction = view.matchTypeAction ?? null;
   const outcomeAction = view.outcomeAction ?? null;
+  const outcomeSetAction = view.outcomeSetAction ?? null;
   const syncAction = view.syncAction ?? null;
   const mailAction = view.mailAction ?? null;
   const skipSyncAction = view.skipSyncAction ?? null;
@@ -8545,6 +8567,35 @@ function buildFwaMatchCopyComponents(
         .setStyle(ButtonStyle.Primary),
     );
     rows.push(outcomeRow);
+  }
+  if (
+    payload.currentScope === "single" &&
+    payload.currentTag &&
+    outcomeSetAction
+  ) {
+    const outcomeSetRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildOutcomeSetActionCustomId({
+            userId,
+            tag: outcomeSetAction.tag,
+            targetOutcome: "WIN",
+          }),
+        )
+        .setLabel("Set WIN")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(
+          buildOutcomeSetActionCustomId({
+            userId,
+            tag: outcomeSetAction.tag,
+            targetOutcome: "LOSE",
+          }),
+        )
+        .setLabel("Set LOSE")
+        .setStyle(ButtonStyle.Danger),
+    );
+    rows.push(outcomeSetRow);
   }
   if (syncAction) {
     rows.push(
@@ -9341,6 +9392,109 @@ export async function handleFwaOutcomeActionButton(
           showMode === "copy"
             ? limitDiscordContent(nextView.copyText)
             : undefined,
+        embeds: showMode === "embed" ? [nextView.embed] : [],
+        components: buildFwaMatchCopyComponents(
+          refreshed,
+          refreshed.userId,
+          key,
+          showMode,
+        ),
+      });
+      return;
+    }
+
+    await interaction.followUp({
+      ephemeral: true,
+      content: "This match view expired. Please run /fwa match again.",
+    });
+  } finally {
+    await clearProcessing();
+  }
+}
+
+export async function handleFwaOutcomeSetActionButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseOutcomeSetActionCustomId(interaction.customId);
+  if (!parsed) return;
+  logFwaMatchTelemetry(
+    "outcome_set_click",
+    `user=${interaction.user.id} tag=${parsed.tag} target=${parsed.targetOutcome}`,
+  );
+
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    `Setting expected outcome to ${parsed.targetOutcome}...`,
+  );
+  try {
+    for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
+      if (payload.userId !== parsed.userId) continue;
+      if (
+        payload.currentScope !== "single" ||
+        payload.currentTag !== parsed.tag
+      )
+        continue;
+      const currentView = payload.singleViews[parsed.tag];
+      if (!currentView) continue;
+
+      const nextDraft = buildDraftFromOutcomeSelection({
+        view: currentView,
+        targetOutcome: parsed.targetOutcome,
+      });
+      const nextDraftByTag = { ...payload.revisionDraftByTag };
+      if (nextDraft) {
+        nextDraftByTag[parsed.tag] = nextDraft;
+      } else {
+        delete nextDraftByTag[parsed.tag];
+      }
+      const refreshed = await rebuildTrackedPayloadForTag(
+        {
+          ...payload,
+          revisionDraftByTag: nextDraftByTag,
+        },
+        interaction.guildId,
+        parsed.tag,
+        interaction.client,
+      );
+      if (!refreshed) {
+        await interaction.followUp({
+          ephemeral: true,
+          content:
+            "Could not refresh this match view. Please run /fwa match again.",
+        });
+        return;
+      }
+      const nextView = refreshed.singleViews[parsed.tag];
+      if (!nextView) {
+        await interaction.followUp({
+          ephemeral: true,
+          content:
+            "Could not refresh this clan view. Please run /fwa match again.",
+        });
+        return;
+      }
+      fwaMatchCopyPayloads.set(key, refreshed);
+      const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+      await interaction.editReply({
+        content:
+          showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
         embeds: showMode === "embed" ? [nextView.embed] : [],
         components: buildFwaMatchCopyComponents(
           refreshed,
@@ -12549,6 +12703,7 @@ export const buildDraftFromMatchTypeSelectionForTest =
   buildDraftFromMatchTypeSelection;
 export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
+export const buildDraftFromOutcomeSelectionForTest = buildDraftFromOutcomeSelection;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const resolveFwaOutcomeFromCurrentWarStateForTest =
   resolveFwaOutcomeFromCurrentWarState;
@@ -14986,6 +15141,10 @@ async function buildTrackedMatchOverview(
         (effectiveExpectedOutcome === "WIN" ||
           effectiveExpectedOutcome === "LOSE")
           ? { tag: clanTag, currentOutcome: effectiveExpectedOutcome }
+          : null,
+      outcomeSetAction:
+        effectiveMatchType === "FWA" && effectiveExpectedOutcome === "UNKNOWN"
+          ? { tag: clanTag }
           : null,
       syncAction,
       clanName,

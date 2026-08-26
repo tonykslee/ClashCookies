@@ -34,6 +34,7 @@ import {
   handleFwaMatchAllianceButton,
   handleFwaMatchTypeEditButton,
   handleFwaOutcomeActionButton,
+  handleFwaOutcomeSetActionButton,
   handleFwaMatchTypeActionButton,
   handleFwaMatchSyncActionButton,
   handleFwaMatchSkipSyncActionButton,
@@ -65,6 +66,7 @@ import {
   isFwaMatchTieBreakerButtonCustomId,
   isFwaMatchTypeEditButtonCustomId,
   isFwaOutcomeActionButtonCustomId,
+  isFwaOutcomeSetActionButtonCustomId,
   isFwaMatchSelectCustomId,
   isFwaMatchTypeActionButtonCustomId,
   isFwaComplianceViewButtonCustomId,
@@ -1669,6 +1671,20 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to reverse expected outcome.",
+        });
+      }
+    }
+  }
+
+  if (isFwaOutcomeSetActionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaOutcomeSetActionButton(interaction);
+    } catch (err) {
+      console.error(`FWA outcome set action button failed: ${formatError(err)}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to set expected outcome.",
         });
       }
     }

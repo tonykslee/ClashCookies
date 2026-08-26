@@ -4,6 +4,7 @@ import {
   buildCurrentWarConfirmedStateForTest,
   buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
+  buildDraftFromOutcomeSelectionForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   buildMailSendGateDecisionForTest,
@@ -503,7 +504,7 @@ describe("fwa unresolved outcome mail gate", () => {
         effectiveExpectedOutcome: "UNKNOWN",
       }),
     ).toBe(
-      "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+      "FWA expected outcome is unresolved. Wait for sync parity evidence or manually set WIN/LOSE from this match view before sending mail.",
     );
   });
 
@@ -1711,6 +1712,93 @@ describe("fwa alliance payload hydration flag", () => {
         guildId: "123",
       })
     ).toBe(false);
+  });
+});
+
+describe("fwa inferred unknown outcome resolution", () => {
+  it("keeps inferred FWA confirmation explicit, then creates WIN/LOSE drafts", () => {
+    const inferredView = {
+      embed: {} as never,
+      copyText: "",
+      matchTypeCurrent: "FWA" as const,
+      inferredMatchType: true,
+      confirmedRevisionBaseline: {
+        warId: "4004",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "UNKNOWN" as const,
+      },
+      effectiveRevisionFields: {
+        warId: "4004",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "UNKNOWN" as const,
+      },
+    };
+
+    const confirmation = resolveMatchTypeSelectionForTest({
+      view: inferredView,
+      targetType: "FWA",
+    });
+    expect(confirmation).toEqual({
+      draft: null,
+      explicitConfirmation: {
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+      },
+    });
+
+    const confirmedView = {
+      ...inferredView,
+      inferredMatchType: false,
+    };
+    for (const targetOutcome of ["WIN", "LOSE"] as const) {
+      const draft = buildDraftFromOutcomeSelectionForTest({
+        view: confirmedView,
+        targetOutcome,
+      });
+
+      expect(draft).toEqual({
+        warId: "4004",
+        opponentTag: "2TAG",
+        matchType: "FWA",
+        expectedOutcome: targetOutcome,
+      });
+      expect(
+        resolveSingleClanMatchEmbedColorForTest({
+          effectiveMatchType: draft!.matchType,
+          effectiveExpectedOutcome: draft!.expectedOutcome,
+        }),
+      ).toBe(
+        targetOutcome === "WIN" ? WAR_MAIL_COLOR_FWA_WIN : WAR_MAIL_COLOR_FWA_LOSE,
+      );
+    }
+  });
+
+  it("does not provide an FWA outcome draft path for BL/MM", () => {
+    const view = {
+      embed: {} as never,
+      copyText: "",
+      confirmedRevisionBaseline: {
+        warId: "5005",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+      effectiveRevisionFields: {
+        warId: "5005",
+        opponentTag: "2TAG",
+        matchType: "BL" as const,
+        expectedOutcome: null,
+      },
+    };
+
+    expect(
+      buildDraftFromOutcomeSelectionForTest({
+        view,
+        targetOutcome: "WIN",
+      }),
+    ).toBeNull();
   });
 });
 

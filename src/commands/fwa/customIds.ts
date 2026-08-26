@@ -3,6 +3,7 @@ const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
 const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
 const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
+const FWA_OUTCOME_SET_PREFIX = "fwa-outcome-set";
 const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
 const FWA_MATCH_SKIP_SYNC_ACTION_PREFIX = "fwa-match-skip-sync-action";
 const FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX = "fwa-match-skip-sync-confirm";
@@ -36,6 +37,12 @@ export type OutcomeActionParams = {
   userId: string;
   tag: string;
   currentOutcome: "WIN" | "LOSE";
+};
+
+export type OutcomeSetActionParams = {
+  userId: string;
+  tag: string;
+  targetOutcome: "WIN" | "LOSE";
 };
 
 export type MatchSyncActionParams = {
@@ -267,6 +274,28 @@ export function parseOutcomeActionCustomId(customId: string): OutcomeActionParam
 /** Purpose: detect expected-outcome action button prefix. */
 export function isFwaOutcomeActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_OUTCOME_ACTION_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for manually resolving an unresolved FWA expected outcome. */
+export function buildOutcomeSetActionCustomId(params: OutcomeSetActionParams): string {
+  return `${FWA_OUTCOME_SET_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.targetOutcome}`;
+}
+
+/** Purpose: parse manual FWA expected-outcome action custom-id payload. */
+export function parseOutcomeSetActionCustomId(
+  customId: string,
+): OutcomeSetActionParams | null {
+  const values = parseCustomIdParts(customId, FWA_OUTCOME_SET_PREFIX, 4);
+  if (!values) return null;
+  const [userId, rawTag, rawOutcome] = values;
+  const targetOutcome = rawOutcome === "WIN" || rawOutcome === "LOSE" ? rawOutcome : null;
+  if (!targetOutcome) return null;
+  return { userId, tag: normalizeTag(rawTag), targetOutcome };
+}
+
+/** Purpose: detect manual FWA expected-outcome action button prefix. */
+export function isFwaOutcomeSetActionButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_OUTCOME_SET_PREFIX}:`);
 }
 
 /** Purpose: build custom-id for sync data action button. */
