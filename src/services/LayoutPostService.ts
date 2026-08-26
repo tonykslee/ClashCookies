@@ -30,7 +30,7 @@ export const LAYOUT_POST_AUTO_COLLAPSE_DELAY_MS = DEFAULT_AUTO_COLLAPSE_DELAY_MS
 
 export type LayoutPostButtonAction = "link" | "confirm" | "close" | "info";
 
-export type LayoutPostRenderMode = "collapsed" | "expanded";
+export type LayoutPostRenderMode = "collapsed" | "link" | "info";
 
 export type LayoutPostPayload = {
   content?: string;
@@ -116,11 +116,12 @@ export function isLayoutPostButtonCustomId(customId: string): boolean {
   return parseLayoutPostCustomId(customId) !== null;
 }
 
-/** Purpose: render the collapsed or temporarily expanded canonical public layout post. */
+/** Purpose: render one edit-safe presentation of the canonical public layout post. */
 export function buildLayoutPostPayload(
   record: LayoutRecord,
   mode: LayoutPostRenderMode = "collapsed",
   imageSource: LayoutPostImageSource = {},
+  alertLine?: string,
 ): LayoutPostPayload {
   const embed = new EmbedBuilder();
   const title = record.title?.trim();
@@ -129,13 +130,15 @@ export function buildLayoutPostPayload(
   if (title) embed.setTitle(title);
   if (imageUrl) embed.setImage(imageUrl);
 
-  if (mode === "expanded") {
+  if (mode === "link") {
     embed.setDescription(
       `[Open Layout](<${record.layoutLink}>)\n\nDid the layout open successfully in Clash of Clans?`,
     );
+  } else if (mode === "info") {
+    embed.setDescription(buildLayoutInfoDescription(record, alertLine));
   }
 
-  const hasVisibleEmbedContent = Boolean(title || imageUrl || mode === "expanded");
+  const hasVisibleEmbedContent = Boolean(title || imageUrl || mode !== "collapsed");
   return {
     embeds: hasVisibleEmbedContent ? [embed] : [],
     components: [buildLayoutPostButtonRow(record.id, mode)],
@@ -143,24 +146,8 @@ export function buildLayoutPostPayload(
   };
 }
 
-/** Purpose: render ephemeral layout metadata without exposing the layout URL. */
-export function buildLayoutInfoPayload(record: LayoutRecord, alertLine?: string): {
-  embeds?: EmbedBuilder[];
-  content?: string;
-  ephemeral: true;
-  allowedMentions: { parse: []; repliedUser: false };
-} {
-  const embed = buildLayoutInfoEmbed(record, alertLine);
-  return {
-    embeds: [embed],
-    ephemeral: true,
-    allowedMentions: { parse: [], repliedUser: false },
-  };
-}
-
-/** Purpose: build the metadata view while deliberately omitting the public title and layout URL. */
-export function buildLayoutInfoEmbed(record: LayoutRecord, alertLine?: string): EmbedBuilder {
-  const embed = new EmbedBuilder();
+/** Purpose: build the public Info description without exposing the layout URL. */
+export function buildLayoutInfoDescription(record: LayoutRecord, alertLine?: string): string {
   const parsed = tryParseLayoutLink(record.layoutLink);
   const lines: string[] = [];
 
@@ -188,8 +175,7 @@ export function buildLayoutInfoEmbed(record: LayoutRecord, alertLine?: string): 
   }
   if (alertLine) lines.push(alertLine);
 
-  embed.setDescription(lines.join("\n\n") || "No additional layout information is available.");
-  return embed;
+  return lines.join("\n\n") || "No additional layout information is available.";
 }
 
 /** Purpose: format persisted lifecycle timestamps using Discord's relative timestamp rendering. */
@@ -250,18 +236,21 @@ export class LayoutPostService {
                 "layout-alerts",
               )
             : null;
-        await interaction.reply(
-          buildLayoutInfoPayload(
+        await interaction.update(
+          buildLayoutPostPayload(
             record,
+            "info",
+            imageSource,
             formatLayoutAlertPolicyLine(alertPolicy, defaultChannelId) ?? undefined,
           ),
         );
+        this.scheduleAutoCollapse(interaction, record.id, imageSource);
         return;
       }
 
       if (parsed.action === "link") {
         await interaction.update(
-          buildLayoutPostPayload(record, "expanded", imageSource),
+          buildLayoutPostPayload(record, "link", imageSource),
         );
         this.scheduleAutoCollapse(interaction, record.id, imageSource);
         return;
@@ -365,27 +354,13 @@ export async function handleLayoutButtonInteraction(
   await service.handleButtonInteraction(interaction);
 }
 
-/** Purpose: build the canonical collapsed/expanded button row for one layout record. */
+/** Purpose: build the button row for one canonical layout post presentation. */
 function buildLayoutPostButtonRow(
   layoutId: string,
   mode: LayoutPostRenderMode,
 ): ActionRowBuilder<ButtonBuilder> {
-  const buttons = mode === "expanded"
+  const buttons = mode === "collapsed"
     ? [
-        new ButtonBuilder()
-          .setCustomId(buildLayoutPostCustomId("confirm", layoutId))
-          .setLabel("Yes, It Opened")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(buildLayoutPostCustomId("close", layoutId))
-          .setLabel("Close")
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(buildLayoutPostCustomId("info", layoutId))
-          .setLabel("Info")
-          .setStyle(ButtonStyle.Secondary),
-      ]
-    : [
         new ButtonBuilder()
           .setCustomId(buildLayoutPostCustomId("link", layoutId))
           .setLabel("Layout Link")
@@ -394,7 +369,32 @@ function buildLayoutPostButtonRow(
           .setCustomId(buildLayoutPostCustomId("info", layoutId))
           .setLabel("Info")
           .setStyle(ButtonStyle.Secondary),
-      ];
+      ]
+    : mode === "link"
+      ? [
+          new ButtonBuilder()
+            .setCustomId(buildLayoutPostCustomId("confirm", layoutId))
+            .setLabel("Yes, It Opened")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(buildLayoutPostCustomId("close", layoutId))
+            .setLabel("Close")
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
+            .setCustomId(buildLayoutPostCustomId("info", layoutId))
+            .setLabel("Info")
+            .setStyle(ButtonStyle.Secondary),
+        ]
+      : [
+          new ButtonBuilder()
+            .setCustomId(buildLayoutPostCustomId("link", layoutId))
+            .setLabel("Layout Link")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(buildLayoutPostCustomId("close", layoutId))
+            .setLabel("Close")
+            .setStyle(ButtonStyle.Secondary),
+        ];
 
   return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
 }

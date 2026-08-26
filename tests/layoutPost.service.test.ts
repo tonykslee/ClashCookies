@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LayoutAlertMode, LayoutRecord } from "@prisma/client";
 import {
-  buildLayoutInfoPayload,
+  buildLayoutInfoDescription,
   buildLayoutPostCustomId,
   buildLayoutPostPayload,
   isLayoutPostButtonCustomId,
@@ -102,8 +102,18 @@ describe("layout post rendering", () => {
     expect(payload.embeds?.[0]?.toJSON().image?.url).toBe("attachment://base.png");
   });
 
-  it("renders the expanded URL and confirmation question with expanded controls", () => {
-    const payload = buildLayoutPostPayload(record, "expanded");
+  it("keeps a same-message attachment in the public Info view", () => {
+    const payload = buildLayoutPostPayload(
+      buildRecord({ imageUrl: null }),
+      "info",
+      { attachmentName: "base.png" },
+    );
+
+    expect(payload.embeds?.[0]?.toJSON().image?.url).toBe("attachment://base.png");
+  });
+
+  it("renders the link URL and confirmation question with link controls", () => {
+    const payload = buildLayoutPostPayload(record, "link");
     const embed = payload.embeds?.[0]?.toJSON();
     const buttons = payload.components[0]?.toJSON().components;
 
@@ -119,30 +129,34 @@ describe("layout post rendering", () => {
     ]);
   });
 
-  it("renders Info metadata without repeating the title or exposing the URL", () => {
-    const payload = buildLayoutInfoPayload(record);
+  it("renders Info metadata in the public post without exposing the URL", () => {
+    const payload = buildLayoutPostPayload(record, "info");
+    const embed = payload.embeds?.[0]?.toJSON();
     const serialized = JSON.stringify(payload);
-    const description = payload.embeds?.[0]?.toJSON().description ?? "";
+    const description = embed?.description ?? "";
 
+    expect(embed?.title).toBe(record.title);
+    expect(embed?.image?.url).toBe(record.imageUrl);
     expect(description).toContain("TH18 • WB");
     expect(description).toContain(record.description as string);
     expect(description).toContain("<@poster-1>");
     expect(description).toContain("Submitted:");
     expect(description).toContain("Last confirmed active:");
     expect(description).toContain("<@confirmer-1>");
-    expect(description).not.toContain(record.title as string);
     expect(serialized).not.toContain(record.layoutLink);
     expect(payload.allowedMentions).toEqual({ parse: [], repliedUser: false });
+    expect(payload.components[0]?.toJSON().components.map((button) => button.label)).toEqual([
+      "Layout Link",
+      "Close",
+    ]);
   });
 
   it("shows unknown freshness for a legacy record without confirmation or submission", () => {
-    const payload = buildLayoutInfoPayload(
+    const description = buildLayoutInfoDescription(
       buildRecord({ submittedAt: null, lastConfirmedAt: null }),
     );
 
-    expect(payload.embeds?.[0]?.toJSON().description).toContain(
-      "Freshness: unknown/not yet established",
-    );
+    expect(description).toContain("Freshness: unknown/not yet established");
   });
 });
 
@@ -197,7 +211,7 @@ describe("layout post persistent interactions", () => {
     expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).toContain(record.layoutLink);
   });
 
-  it("shows Info ephemerally without mutating the public post or freshness", async () => {
+  it("shows Info publicly without mutating the post policy or freshness", async () => {
     const record = buildRecord();
     layoutRecordService.findById.mockResolvedValue(record);
     const { interaction } = makeInteraction({
@@ -207,11 +221,9 @@ describe("layout post persistent interactions", () => {
     await postService.handleButtonInteraction(interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
-    expect(interaction.update).not.toHaveBeenCalled();
-    expect(interaction.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ ephemeral: true }),
-    );
-    expect(JSON.stringify(interaction.reply.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(interaction.update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
   });
 
   it("shows the current durable alert policy and resolves the default channel dynamically", async () => {
@@ -234,25 +246,100 @@ describe("layout post persistent interactions", () => {
 
     await postService.handleButtonInteraction(interaction);
 
-    const description = interaction.reply.mock.calls[0]?.[0]?.embeds?.[0]
+    const description = interaction.update.mock.calls[0]?.[0]?.embeds?.[0]
       ?.toJSON().description;
     expect(description).toContain("Expiration alert: <#alerts-1>");
     expect(getPolicy).toHaveBeenCalledWith(record.id);
     expect(getChannelIdForType).toHaveBeenCalledWith("guild-1", "layout-alerts");
   });
 
-  it("closes the expanded view without writing lifecycle state", async () => {
+  it("switches directly from the link view to Info and resets its collapse timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = buildRecord();
+      layoutRecordService.findById.mockResolvedValue(record);
+      const link = makeInteraction({
+        customId: buildLayoutPostCustomId("link", record.id),
+      });
+      const info = makeInteraction({
+        customId: buildLayoutPostCustomId("info", record.id),
+      });
+      info.interaction.message = link.interaction.message;
+      postService = new LayoutPostService({
+        layoutService: layoutRecordService,
+        autoCollapseDelayMs: 100,
+      });
+
+      await postService.handleButtonInteraction(link.interaction);
+      await vi.advanceTimersByTimeAsync(50);
+      await postService.handleButtonInteraction(info.interaction);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(link.message.edit).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(link.message.edit).toHaveBeenCalledTimes(1);
+      expect(link.message.edit.mock.calls[0]?.[0].embeds).toEqual([
+        expect.anything(),
+      ]);
+      expect(JSON.stringify(link.message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("switches directly from Info to the link view", async () => {
+    const record = buildRecord();
+    layoutRecordService.findById.mockResolvedValue(record);
+    const info = makeInteraction({
+      customId: buildLayoutPostCustomId("info", record.id),
+    });
+    const link = makeInteraction({
+      customId: buildLayoutPostCustomId("link", record.id),
+    });
+    link.interaction.message = info.interaction.message;
+
+    await postService.handleButtonInteraction(info.interaction);
+    await postService.handleButtonInteraction(link.interaction);
+
+    const payload = link.interaction.update.mock.calls[0]?.[0];
+    expect(JSON.stringify(payload)).toContain(record.layoutLink);
+    expect(payload.components[0].toJSON().components.map((button: { label: string }) => button.label)).toEqual([
+      "Yes, It Opened",
+      "Close",
+      "Info",
+    ]);
+  });
+
+  it("closes an Info view with an empty embed list when no title or image exists", async () => {
     const record = buildRecord({ title: null, imageUrl: null });
     layoutRecordService.findById.mockResolvedValue(record);
-    const expanded = makeInteraction({
+    const info = makeInteraction({
+      customId: buildLayoutPostCustomId("info", record.id),
+    });
+    const close = makeInteraction({
+      customId: buildLayoutPostCustomId("close", record.id),
+    });
+    close.interaction.message = info.interaction.message;
+
+    await postService.handleButtonInteraction(info.interaction);
+    await postService.handleButtonInteraction(close.interaction);
+
+    expect(close.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
+    expect(JSON.stringify(close.interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+  });
+
+  it("closes the link view without writing lifecycle state", async () => {
+    const record = buildRecord({ title: null, imageUrl: null });
+    layoutRecordService.findById.mockResolvedValue(record);
+    const link = makeInteraction({
       customId: buildLayoutPostCustomId("link", record.id),
     });
     const collapsed = makeInteraction({
       customId: buildLayoutPostCustomId("close", record.id),
     });
-    collapsed.interaction.message = expanded.interaction.message;
+    collapsed.interaction.message = link.interaction.message;
 
-    await postService.handleButtonInteraction(expanded.interaction);
+    await postService.handleButtonInteraction(link.interaction);
     await postService.handleButtonInteraction(collapsed.interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
@@ -273,15 +360,15 @@ describe("layout post persistent interactions", () => {
     });
     layoutRecordService.findById.mockResolvedValue(record);
     layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(confirmed);
-    const expanded = makeInteraction({
+    const link = makeInteraction({
       customId: buildLayoutPostCustomId("link", record.id),
     });
     const interaction = makeInteraction({
       customId: buildLayoutPostCustomId("confirm", record.id),
     });
-    interaction.interaction.message = expanded.interaction.message;
+    interaction.interaction.message = link.interaction.message;
 
-    await postService.handleButtonInteraction(expanded.interaction);
+    await postService.handleButtonInteraction(link.interaction);
     await postService.handleButtonInteraction(interaction.interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledTimes(1);
@@ -331,13 +418,37 @@ describe("layout post persistent interactions", () => {
     );
   });
 
-  it("auto-collapses an expanded post after the presentation timeout", async () => {
+  it("auto-collapses a link post after the presentation timeout", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord({ title: null, imageUrl: null });
       layoutRecordService.findById.mockResolvedValue(record);
       const { interaction, message } = makeInteraction({
         customId: buildLayoutPostCustomId("link", record.id),
+      });
+      postService = new LayoutPostService({
+        layoutService: layoutRecordService,
+        autoCollapseDelayMs: 100,
+      });
+
+      await postService.handleButtonInteraction(interaction);
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(message.edit).toHaveBeenCalledTimes(1);
+      expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
+      expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("auto-collapses an Info post with an empty embed list after the presentation timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = buildRecord({ title: null, imageUrl: null });
+      layoutRecordService.findById.mockResolvedValue(record);
+      const { interaction, message } = makeInteraction({
+        customId: buildLayoutPostCustomId("info", record.id),
       });
       postService = new LayoutPostService({
         layoutService: layoutRecordService,
