@@ -7,6 +7,7 @@ export type WarScopedSyncReuseRow = {
   opponentPoints: number;
   isFwa: boolean | null;
   needsValidation: boolean;
+  lastKnownSyncNumber?: number | null;
   lastSuccessfulPointsApiFetchAt: Date | null;
   syncFetchedAt: Date;
 };

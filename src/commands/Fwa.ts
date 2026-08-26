@@ -5872,22 +5872,31 @@ async function buildWarMailEmbedForTag(
         `[fwa-matchtype] stage=mail_embed_active_fwa clan=#${normalizedTag} opponent=#${opponentTag} parsed_active_fwa=${opponentSnapshot.activeFwa === null ? "unknown" : opponentSnapshot.activeFwa ? "yes" : "no"} not_found=${opponentSnapshot.notFound ? "1" : "0"} source=${appliedResolution?.source ?? "none"} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`,
       );
     }
+    const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
+      primarySnapshot,
+      opponentSnapshot,
+    });
+    const finalResolvedCurrentSyncNum = resolveFinalActiveWarSyncNumber({
+      baseSyncNumber: resolvedCurrentSyncNum,
+      row: syncRow,
+      observedSyncNumber: siteSyncObservedForWrite,
+      siteCurrent,
+      opponentNotFound: opponentSnapshot?.notFound === true,
+      warId: warIdForSync,
+      warStartTime: warStartTimeForSync,
+    });
     const derivedOutcome = deriveProjectedOutcome(
       normalizedTag,
       opponentTag,
       primaryBalance,
       opponentBalance,
-      resolvedCurrentSyncNum,
+      finalResolvedCurrentSyncNum,
     );
     outcome = resolveFwaOutcomeFromCurrentWarState({
       matchType,
       currentWarOutcome: currentWarRenderState.outcome,
       currentWarOutcomeConfirmed: appliedResolution?.confirmed === true,
       projectedOutcome: derivedOutcome,
-    });
-    const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
-      primarySnapshot,
-      opponentSnapshot,
     });
     if (
       siteCurrent &&
@@ -11821,6 +11830,38 @@ function resolveCurrentWarScopedSyncRow(input: {
   return null;
 }
 
+/** Purpose: retain a same-war checkpoint row even when its raw lifecycle row is dirty. */
+function resolveCurrentWarScopedSyncCheckpointRow(input: {
+  rows: WarScopedSyncReuseRow[];
+  warId: string | null;
+  warStartTime: Date | null;
+  opponentTag: string | null;
+}): WarScopedSyncReuseRow | null {
+  const expectedOpponentTag = normalizeTag(String(input.opponentTag ?? ""));
+  const candidates = input.rows.filter((row) => {
+    if (
+      expectedOpponentTag &&
+      normalizeTag(String(row.opponentTag ?? "")) !== expectedOpponentTag
+    ) {
+      return false;
+    }
+    return isSameWarIdentityForCanonicalSync({
+      row,
+      warId: input.warId,
+      warStartTime: input.warStartTime,
+    });
+  });
+  return candidates.reduce<WarScopedSyncReuseRow | null>((best, row) => {
+    const rowCheckpoint = toComparableSyncNumber(row.lastKnownSyncNumber);
+    if (best === null) return row;
+    const bestCheckpoint = toComparableSyncNumber(best.lastKnownSyncNumber);
+    if (rowCheckpoint !== null && (bestCheckpoint === null || rowCheckpoint > bestCheckpoint)) {
+      return row;
+    }
+    return best;
+  }, null);
+}
+
 function normalizeFwaOutcomeForValidation(
   value: string | null | undefined,
 ): "WIN" | "LOSE" | "UNKNOWN" | null {
@@ -12215,6 +12256,74 @@ function resolveRenderedSyncNumberForStoredSummary(input: {
   return toComparableSyncNumber(input.canonicalSyncNum);
 }
 
+type CanonicalCurrentWarSyncRow = {
+  syncNum?: number | null;
+  lastKnownSyncNumber?: number | null;
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  needsValidation?: boolean | null;
+};
+
+function isSameWarIdentityForCanonicalSync(input: {
+  row: CanonicalCurrentWarSyncRow;
+  warId: string | number | null | undefined;
+  warStartTime: Date | null | undefined;
+}): boolean {
+  const targetStartMs = toWarStartMs(input.warStartTime);
+  const rowStartMs = toWarStartMs(input.row.warStartTime);
+  if (targetStartMs !== null && rowStartMs !== null) {
+    return targetStartMs === rowStartMs;
+  }
+  const targetWarId = normalizeWarIdText(input.warId);
+  const rowWarId = normalizeWarIdText(input.row.warId);
+  return targetWarId !== null && rowWarId !== null && targetWarId === rowWarId;
+}
+
+/** Purpose: promote only current-war checkpoint evidence that has an explicit live opponent-not-found proof. */
+function resolveFinalActiveWarSyncNumber(input: {
+  baseSyncNumber: number | null;
+  row: CanonicalCurrentWarSyncRow | null;
+  observedSyncNumber: number | null;
+  siteCurrent: boolean;
+  opponentNotFound: boolean;
+  warId: string | number | null | undefined;
+  warStartTime: Date | null | undefined;
+}): number | null {
+  const baseSyncNumber = toComparableSyncNumber(input.baseSyncNumber);
+  if (!input.siteCurrent || !input.opponentNotFound) return baseSyncNumber;
+
+  const candidates = [baseSyncNumber];
+  const rowIsSameWar =
+    input.row !== null &&
+    isSameWarIdentityForCanonicalSync({
+      row: input.row,
+      warId: input.warId,
+      warStartTime: input.warStartTime,
+    });
+  if (rowIsSameWar && input.row) {
+    // A dirty row's raw syncNum remains non-authoritative. Its checkpoint is
+    // trusted only under the explicit current-war proof above.
+    candidates.push(toComparableSyncNumber(input.row.lastKnownSyncNumber));
+    if (input.row.needsValidation !== true) {
+      candidates.push(toComparableSyncNumber(input.row.syncNum));
+    }
+  }
+
+  // A current, explicitly proven opponent-not-found observation is safe to
+  // use even when checkpointCurrentWarSync could not update a row.
+  if (
+    normalizeWarIdText(input.warId) !== null ||
+    toWarStartMs(input.warStartTime) !== null
+  ) {
+    candidates.push(toComparableSyncNumber(input.observedSyncNumber));
+  }
+
+  const knownSyncNumbers = candidates.filter(
+    (value): value is number => value !== null,
+  );
+  return knownSyncNumbers.length > 0 ? Math.max(...knownSyncNumbers) : null;
+}
+
 /** Purpose: classify whether points-site data is current for this matchup, including tracked-clan fallback proof. */
 function isPointsValidationCurrentForMatchup(input: {
   primarySnapshot: Pick<
@@ -12539,6 +12648,8 @@ export const resolveMatchTypeFromStoredSyncRowForTest =
 export const buildSyncValidationStateForTest = buildSyncValidationState;
 export const resolveRenderedSyncNumberForStoredSummaryForTest =
   resolveRenderedSyncNumberForStoredSummary;
+export const resolveFinalActiveWarSyncNumberForTest =
+  resolveFinalActiveWarSyncNumber;
 export const hasSameWarExplicitFwaConfirmationForTest =
   hasSameWarExplicitFwaConfirmation;
 export const applyExplicitOpponentNotFoundFallbackGuardForTest =
@@ -13384,6 +13495,7 @@ async function getPersistedPointsSnapshotFallback(
       warId: true,
       warStartTime: true,
       syncNum: true,
+      lastKnownSyncNumber: true,
       opponentTag: true,
       clanPoints: true,
       opponentPoints: true,
@@ -13902,7 +14014,6 @@ async function buildTrackedMatchOverview(
           where: {
             guildId,
             clanTag: { in: scopedTrackedTags },
-            needsValidation: false,
             OR: reuseIdentityFilters,
           },
           select: {
@@ -13910,6 +14021,7 @@ async function buildTrackedMatchOverview(
             warId: true,
             warStartTime: true,
             syncNum: true,
+            lastKnownSyncNumber: true,
             opponentTag: true,
             clanPoints: true,
             opponentPoints: true,
@@ -14297,6 +14409,12 @@ async function buildTrackedMatchOverview(
       warStartTime: warStartTimeForReuse,
       opponentTag: opponentTag || syncIdentity.opponentTag,
     });
+    const currentWarSyncCheckpointRow = resolveCurrentWarScopedSyncCheckpointRow({
+      rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+      warId: warIdForReuse,
+      warStartTime: warStartTimeForReuse,
+      opponentTag: opponentTag || syncIdentity.opponentTag,
+    });
     const syncResolution = resolveActiveWarSyncNumberReadOnly({
       identity: syncIdentity,
       latestPersistedSyncNumber: sourceSync,
@@ -14482,12 +14600,22 @@ async function buildTrackedMatchOverview(
     console.info(
       `[fwa-matchtype] stage=alliance_view_active_fwa clan=#${clanTag} opponent=#${opponentTag} parsed_active_fwa=${opponentPoints?.activeFwa === null || opponentPoints?.activeFwa === undefined ? "unknown" : opponentPoints.activeFwa ? "yes" : "no"} not_found=${opponentPoints?.notFound ? "1" : "0"} source=${appliedResolution.source} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`,
     );
+    const finalResolvedCurrentSyncNum = resolveFinalActiveWarSyncNumber({
+      baseSyncNumber: resolvedCurrentSyncNum,
+      row: currentWarSyncCheckpointRow,
+      observedSyncNumber: siteSyncObservedForWrite,
+      siteCurrent: siteUpdatedForAlert,
+      opponentNotFound: opponentPoints?.notFound === true,
+      warId: warIdForReuse,
+      warStartTime: warStartTimeForReuse,
+    });
+    clanSyncLine = formatResolvedSyncDisplay(finalResolvedCurrentSyncNum);
     const derivedOutcome = deriveProjectedOutcome(
       clanTag,
       opponentTag,
       primaryPoints?.balance ?? null,
       opponentPoints?.balance ?? null,
-      resolvedCurrentSyncNum,
+      finalResolvedCurrentSyncNum,
     );
     const liveExpectedOutcome = resolveFwaOutcomeFromCurrentWarState({
       matchType,
@@ -14603,7 +14731,7 @@ async function buildTrackedMatchOverview(
       opponentSnapshot: opponentPoints,
     });
     const syncMismatch = siteUpdatedForAlert
-      ? buildSyncMismatchWarning(resolvedCurrentSyncNum, siteSyncObserved)
+      ? buildSyncMismatchWarning(finalResolvedCurrentSyncNum, siteSyncObserved)
       : null;
     const siteMatchType: "FWA" | "BL" | "MM" | null =
       inferredFromPointsType &&
@@ -14680,7 +14808,7 @@ async function buildTrackedMatchOverview(
     const pointsSyncStatus = validationState.statusLine;
     const storedSyncSummary = buildStoredSyncSummary({
       syncRow,
-      canonicalSyncNum: resolvedCurrentSyncNum,
+      canonicalSyncNum: finalResolvedCurrentSyncNum,
       warId: warIdForReuse,
       warStartTime: warStartTimeForSync,
       opponentNotFound: opponentPoints?.notFound ?? false,
@@ -17762,6 +17890,7 @@ export const Fwa: Command = {
                 warId: true,
                 warStartTime: true,
                 syncNum: true,
+                lastKnownSyncNumber: true,
                 opponentTag: true,
                 clanPoints: true,
                 opponentPoints: true,
@@ -18127,7 +18256,6 @@ export const Fwa: Command = {
                 where: {
                   guildId: interaction.guildId,
                   clanTag: `#${tag}`,
-                  needsValidation: false,
                   OR: warScopedIdentityFilters,
                 },
                 select: {
@@ -18135,6 +18263,7 @@ export const Fwa: Command = {
                   warId: true,
                   warStartTime: true,
                   syncNum: true,
+                  lastKnownSyncNumber: true,
                   opponentTag: true,
                   clanPoints: true,
                   opponentPoints: true,
@@ -18158,6 +18287,13 @@ export const Fwa: Command = {
           warStartTime: warStartTimeForReuse,
           opponentTag: opponentTag || syncIdentity.opponentTag,
         });
+        const currentWarSyncCheckpointRow =
+          resolveCurrentWarScopedSyncCheckpointRow({
+            rows: warScopedSyncRowsByClanTag.get(tag) ?? [],
+            warId: warIdForReuse,
+            warStartTime: warStartTimeForReuse,
+            opponentTag: opponentTag || syncIdentity.opponentTag,
+          });
         const activeCycleDiscovery =
           await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
         const syncResolution = resolveActiveWarSyncNumberReadOnly({
@@ -18553,12 +18689,21 @@ export const Fwa: Command = {
         console.info(
           `[fwa-matchtype] stage=single_view_active_fwa clan=#${tag} opponent=#${opponentTag} parsed_active_fwa=${opponent.activeFwa === null || opponent.activeFwa === undefined ? "unknown" : opponent.activeFwa ? "yes" : "no"} not_found=${opponent.notFound ? "1" : "0"} source=${appliedResolution.source} sync_is_fwa=${syncIsFwaSignal ? "1" : "0"}`,
         );
+        const finalResolvedCurrentSyncNum = resolveFinalActiveWarSyncNumber({
+          baseSyncNumber: resolvedCurrentSyncNum,
+          row: currentWarSyncCheckpointRow,
+          observedSyncNumber: siteSyncObservedForWrite,
+          siteCurrent: siteUpdated,
+          opponentNotFound: opponent.notFound === true,
+          warId: warIdForReuse,
+          warStartTime: warStartTimeForReuse,
+        });
         const derivedOutcome = deriveProjectedOutcome(
           tag,
           opponentTag,
           primary.balance,
           opponent.balance,
-          resolvedCurrentSyncNum,
+          finalResolvedCurrentSyncNum,
         );
         const inferredMatchType = appliedResolution.inferred;
         const effectiveOutcome = resolveFwaOutcomeFromCurrentWarState({
@@ -18699,7 +18844,7 @@ export const Fwa: Command = {
         });
         const storedSyncSummary = buildStoredSyncSummary({
           syncRow,
-          canonicalSyncNum: resolvedCurrentSyncNum,
+          canonicalSyncNum: finalResolvedCurrentSyncNum,
           warId: warIdForReuse,
           warStartTime: warStartTimeForSync,
           opponentNotFound: opponent.notFound,
@@ -18710,7 +18855,7 @@ export const Fwa: Command = {
           opponentSnapshot: opponent,
         });
         const syncMismatch = siteUpdated
-          ? buildSyncMismatchWarning(resolvedCurrentSyncNum, siteSyncObserved)
+          ? buildSyncMismatchWarning(finalResolvedCurrentSyncNum, siteSyncObserved)
           : null;
         const effectiveMismatchWarnings = buildEffectiveMatchMismatchWarnings({
           siteUpdated,
