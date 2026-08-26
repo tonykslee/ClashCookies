@@ -60,6 +60,33 @@ export type ActiveSyncCycleResolution = {
   resolutionSource: SyncCycleResolutionSource | null;
 };
 
+export type ActiveWarCycleContext = {
+  guildId: string;
+  minPreparationStartTime: Date | null;
+  lowerBound: Date | null;
+  maxPreparationStartTime: Date | null;
+  scheduleCoverageStart: Date | null;
+  scheduledSyncPosts: Array<{
+    id: string;
+    syncTime: Date;
+    status?: string;
+  }>;
+  syncCycles: SyncCycle[];
+  previousAnchor: SyncCycle | null;
+  readErrorReason:
+    | "active_cycle_database_unavailable"
+    | "schedule_read_failed"
+    | "sync_cycle_read_failed"
+    | null;
+};
+
+export type ActiveWarCycleResolutionInput = {
+  guildId: string;
+  preparationStartTime: Date | null | undefined;
+  matchType: string | null | undefined;
+  inferredMatchType?: boolean | null;
+};
+
 export type SyncCycleBindingResult =
   | { status: "created"; cycle: SyncCycle }
   | { status: "existing"; cycle: SyncCycle }
@@ -238,13 +265,151 @@ export class SyncCycleService {
     return persistResolvedSyncCycle({ syncCycle: this.db.syncCycle }, input);
   }
 
-  /** Purpose: resolve the active war's canonical scheduled boundary from persisted schedule and cycle chronology. */
-  async resolveActiveWarCycle(input: {
+  /** Purpose: load bounded schedule and SyncCycle chronology for one active-war request. */
+  async loadActiveWarCycleContext(input: {
     guildId: string;
-    preparationStartTime: Date | null | undefined;
-    matchType: string | null | undefined;
-    inferredMatchType?: boolean | null;
-  }): Promise<ActiveSyncCycleResolution> {
+    preparationStartTimes: Array<Date | null | undefined>;
+  }): Promise<ActiveWarCycleContext> {
+    const guildId = normalizeGuildId(input.guildId);
+    const preparationStartTimes = input.preparationStartTimes.filter(isValidDate);
+    if (!guildId || preparationStartTimes.length === 0) {
+      return {
+        guildId,
+        minPreparationStartTime: null,
+        lowerBound: null,
+        maxPreparationStartTime: null,
+        scheduleCoverageStart: null,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        readErrorReason: null,
+      };
+    }
+    const minPreparationStartTime = new Date(
+      Math.min(...preparationStartTimes.map((value) => value.getTime())),
+    );
+    const maxPreparationStartTime = new Date(
+      Math.max(...preparationStartTimes.map((value) => value.getTime())),
+    );
+    const lowerBound = new Date(
+      minPreparationStartTime.getTime() - SYNC_CYCLE_SCHEDULE_LOOKBACK_MS,
+    );
+    if (
+      !this.db.scheduledSyncPost?.findMany ||
+      !this.db.syncCycle?.findMany ||
+      !this.db.syncCycle?.findFirst
+    ) {
+      return {
+        guildId,
+        minPreparationStartTime,
+        lowerBound,
+        maxPreparationStartTime,
+        scheduleCoverageStart: null,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        readErrorReason: "active_cycle_database_unavailable",
+      };
+    }
+
+    let syncCycles: SyncCycle[];
+    let previousAnchor: SyncCycle | null;
+    try {
+      [syncCycles, previousAnchor] = await Promise.all([
+        this.db.syncCycle.findMany({
+          where: {
+            guildId,
+            syncTime: { gte: lowerBound, lte: maxPreparationStartTime },
+          },
+          orderBy: [{ syncTime: "asc" }, { syncNumber: "asc" }],
+        }),
+        this.db.syncCycle.findFirst({
+          where: { guildId, syncTime: { lt: lowerBound } },
+          orderBy: [{ syncTime: "desc" }, { syncNumber: "desc" }],
+        }),
+      ]);
+    } catch (error) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_context outcome=failure guild_id=${guildId} reason=sync_cycle_read_failed error=${formatError(error)}`,
+      );
+      return {
+        guildId,
+        minPreparationStartTime,
+        lowerBound,
+        maxPreparationStartTime,
+        scheduleCoverageStart: null,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        readErrorReason: "sync_cycle_read_failed",
+      };
+    }
+    const scheduleCoverageStart =
+      previousAnchor && previousAnchor.syncTime.getTime() < lowerBound.getTime()
+        ? previousAnchor.syncTime
+        : lowerBound;
+    try {
+      const scheduledSyncPosts = await this.db.scheduledSyncPost.findMany({
+        where: {
+          guildId,
+          syncTime: {
+            gte: scheduleCoverageStart,
+            lte: maxPreparationStartTime,
+          },
+        },
+        orderBy: { syncTime: "asc" },
+        select: { id: true, syncTime: true, status: true },
+      });
+      return {
+        guildId,
+        minPreparationStartTime,
+        lowerBound,
+        maxPreparationStartTime,
+        scheduleCoverageStart,
+        scheduledSyncPosts,
+        syncCycles,
+        previousAnchor,
+        readErrorReason: null,
+      };
+    } catch (error) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_context outcome=failure guild_id=${guildId} reason=bulk_read_failed error=${formatError(error)}`,
+      );
+      return {
+        guildId,
+        minPreparationStartTime,
+        lowerBound,
+        maxPreparationStartTime,
+        scheduleCoverageStart,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        readErrorReason: "schedule_read_failed",
+      };
+    }
+  }
+
+  /** Purpose: add a newly persisted canonical active cycle to the current request context. */
+  updateActiveWarCycleContext(
+    context: ActiveWarCycleContext,
+    cycle: SyncCycle,
+  ): void {
+    if (context.guildId !== cycle.guildId) return;
+    const existingIndex = context.syncCycles.findIndex(
+      (existing) => existing.syncTime.getTime() === cycle.syncTime.getTime(),
+    );
+    if (existingIndex >= 0) {
+      context.syncCycles[existingIndex] = cycle;
+      return;
+    }
+    context.syncCycles.push(cycle);
+  }
+
+  /** Purpose: resolve an active war cycle entirely from one request-scoped context. */
+  async resolveActiveWarCycleFromContext(
+    context: ActiveWarCycleContext,
+    input: ActiveWarCycleResolutionInput,
+  ): Promise<ActiveSyncCycleResolution> {
     const guildId = normalizeGuildId(input.guildId);
     const preparationStartTime = input.preparationStartTime;
     const matchType = normalizeMatchType(input.matchType);
@@ -272,11 +437,7 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
-    if (
-      !this.db.scheduledSyncPost?.findMany ||
-      !this.db.syncCycle?.findUnique ||
-      !this.db.syncCycle?.findFirst
-    ) {
+    if (context.guildId !== guildId) {
       return {
         status: "unresolved",
         syncNumber: null,
@@ -287,36 +448,46 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
-
-    const lowerBound = new Date(
-      preparationStartTime.getTime() - SYNC_CYCLE_SCHEDULE_LOOKBACK_MS,
-    );
-    let schedules: Array<{ id: string; syncTime: Date; status?: string }>;
-    try {
-      schedules = await this.db.scheduledSyncPost.findMany({
-        where: {
-          guildId,
-          status: { notIn: ["CANCELLED", "REPLACED"] },
-          syncTime: { gte: lowerBound, lte: preparationStartTime },
-        },
-        orderBy: { syncTime: "asc" },
-        select: { id: true, syncTime: true, status: true },
-      });
-    } catch (error) {
-      dozzleLog.warn(
-        `[sync-cycle] event=active_resolve outcome=failure guild_id=${guildId} reason=schedule_read_failed error=${formatError(error)}`,
-      );
+    if (
+      context.minPreparationStartTime === null ||
+      context.maxPreparationStartTime === null ||
+      preparationStartTime.getTime() <
+        context.minPreparationStartTime.getTime() ||
+      preparationStartTime.getTime() > context.maxPreparationStartTime.getTime()
+    ) {
       return {
         status: "unresolved",
         syncNumber: null,
         scheduledSyncPostId: null,
         syncTime: null,
         previousSyncNumber: null,
-        reason: "schedule_read_failed",
+        reason: "preparation_time_outside_context",
         resolutionSource: null,
       };
     }
-    const validSchedules = schedules.filter((row) => isValidDate(row.syncTime));
+    if (context.readErrorReason !== null) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: context.readErrorReason,
+        resolutionSource: null,
+      };
+    }
+
+    const lowerBound = new Date(
+      preparationStartTime.getTime() - SYNC_CYCLE_SCHEDULE_LOOKBACK_MS,
+    );
+    const validSchedules = context.scheduledSyncPosts.filter(
+      (row) =>
+        isValidDate(row.syncTime) &&
+        row.syncTime.getTime() >= lowerBound.getTime() &&
+        row.syncTime.getTime() <= preparationStartTime.getTime() &&
+        row.status !== "CANCELLED" &&
+        row.status !== "REPLACED",
+    );
     if (validSchedules.length === 0) {
       return {
         status: "unresolved",
@@ -333,14 +504,12 @@ export class SyncCycleService {
     // in the lookback window are normal chronology evidence for its previous
     // canonical cycle, not competing candidates for the current war.
     const schedule = validSchedules[validSchedules.length - 1];
-    const laterScheduleRows = await this.db.scheduledSyncPost.findMany({
-      where: {
-        guildId,
-        syncTime: { gt: schedule.syncTime, lte: preparationStartTime },
-      },
-      select: { id: true, syncTime: true, status: true },
-      orderBy: { syncTime: "asc" },
-    });
+    const laterScheduleRows = context.scheduledSyncPosts.filter(
+      (row) =>
+        isValidDate(row.syncTime) &&
+        row.syncTime.getTime() > schedule.syncTime.getTime() &&
+        row.syncTime.getTime() <= preparationStartTime.getTime(),
+    );
     const terminalLaterSchedules = laterScheduleRows.filter(
       (row) => row.status === "CANCELLED" || row.status === "REPLACED",
     );
@@ -358,9 +527,9 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
-    const exactCurrentCycle = await this.db.syncCycle.findUnique({
-      where: { guildId_syncTime: { guildId, syncTime: schedule.syncTime } },
-    });
+    const exactCurrentCycle = context.syncCycles.find(
+      (cycle) => cycle.syncTime.getTime() === schedule.syncTime.getTime(),
+    );
     if (exactCurrentCycle) {
       return {
         status: "exact",
@@ -372,13 +541,16 @@ export class SyncCycleService {
         resolutionSource: exactCurrentCycle.resolutionSource,
       };
     }
-    const previous = await this.db.syncCycle.findFirst({
-      where: {
-        guildId,
-        syncTime: { lt: schedule.syncTime },
-      },
-      orderBy: [{ syncTime: "desc" }, { syncNumber: "desc" }],
-    });
+    const previous = [
+      ...context.syncCycles,
+      ...(context.previousAnchor ? [context.previousAnchor] : []),
+    ]
+      .filter((cycle) => cycle.syncTime.getTime() < schedule.syncTime.getTime())
+      .sort(
+        (left, right) =>
+          right.syncTime.getTime() - left.syncTime.getTime() ||
+          right.syncNumber - left.syncNumber,
+      )[0] ?? null;
     if (
       !previous ||
       !Number.isInteger(previous.syncNumber) ||
@@ -409,15 +581,14 @@ export class SyncCycleService {
       };
     }
 
-    const interveningSchedules = await this.db.scheduledSyncPost.findMany({
-      where: {
-        guildId,
-        status: { notIn: ["CANCELLED", "REPLACED"] },
-        syncTime: { gt: previous.syncTime, lt: schedule.syncTime },
-      },
-      select: { id: true, syncTime: true, status: true },
-      orderBy: { syncTime: "asc" },
-    });
+    const interveningSchedules = context.scheduledSyncPosts.filter(
+      (row) =>
+        isValidDate(row.syncTime) &&
+        row.status !== "CANCELLED" &&
+        row.status !== "REPLACED" &&
+        row.syncTime.getTime() > previous.syncTime.getTime() &&
+        row.syncTime.getTime() < schedule.syncTime.getTime(),
+    );
     if (interveningSchedules.length > 0) {
       dozzleLog.warn(
         `[sync-cycle] event=active_resolve outcome=ambiguous guild_id=${guildId} reason=intervening_schedule schedule_count=${interveningSchedules.length}`,
@@ -447,6 +618,20 @@ export class SyncCycleService {
         ? SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED
         : null,
     };
+  }
+
+  /** Purpose: resolve one active war by loading a one-item request context. */
+  async resolveActiveWarCycle(
+    input: ActiveWarCycleResolutionInput,
+  ): Promise<ActiveSyncCycleResolution> {
+    const matchType = normalizeMatchType(input.matchType);
+    const isFwa =
+      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    const context = await this.loadActiveWarCycleContext({
+      guildId: input.guildId,
+      preparationStartTimes: isFwa ? [input.preparationStartTime] : [],
+    });
+    return this.resolveActiveWarCycleFromContext(context, input);
   }
 
   async bindFromEndedWar(

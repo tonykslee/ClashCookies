@@ -138,6 +138,7 @@ import {
   resolveCurrentWarSyncIdentity,
   type ActiveWarSyncIdentity,
 } from "../services/ActiveWarSyncResolutionService";
+import type { ActiveWarCycleContext } from "../services/SyncCycleService";
 import { resolveActiveWarIdentityPatch } from "../services/ActiveWarIdentityReconciliationService";
 import { isActivePollingMode } from "../services/PollingModeService";
 import {
@@ -5684,6 +5685,31 @@ function resolveActiveWarPreparationStartTime(input: {
   return null;
 }
 
+/** Purpose: keep the shared active-cycle context aligned with live-war reconciliation. */
+function resolveTrackedActiveWarPreparationStartTime(input: {
+  livePreparationStartTime?: Date | number | null;
+  liveIdentityPatch?: ReturnType<typeof resolveActiveWarIdentityPatch> | null;
+  persistedPreparationStartTime?: Date | null;
+  warStartTime?: Date | null;
+}): Date | null {
+  const livePreparationStartTime = resolveActiveWarPreparationStartTime({
+    livePreparationStartTime: input.livePreparationStartTime,
+  });
+  if (livePreparationStartTime) return livePreparationStartTime;
+
+  if (input.liveIdentityPatch && !input.liveIdentityPatch.sameWar) {
+    return input.liveIdentityPatch.patch.prepStartTime;
+  }
+
+  return resolveActiveWarPreparationStartTime({
+    persistedPreparationStartTime: input.persistedPreparationStartTime,
+    warStartTime: input.warStartTime,
+  });
+}
+
+export const resolveTrackedActiveWarPreparationStartTimeForTest =
+  resolveTrackedActiveWarPreparationStartTime;
+
 /** Purpose: only a confirmed FWA may create a new canonical active SyncCycle. */
 function shouldPersistActiveFwaSync(input: {
   matchType?: string | null;
@@ -5793,6 +5819,13 @@ async function buildWarMailEmbedForTag(
     persistedPreparationStartTime: currentWarRenderState.prepStartTime,
     warStartTime: warStartTimeForSync,
   });
+  const activeWarCycleContext =
+    guildId && preparationStartTimeForSync
+      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+          guildId,
+          preparationStartTimes: [preparationStartTimeForSync],
+        })
+      : null;
   const warIdForSyncNumber =
     warIdForSync !== null && Number.isFinite(Number(warIdForSync))
       ? Math.trunc(Number(warIdForSync))
@@ -5865,6 +5898,7 @@ async function buildWarMailEmbedForTag(
             preparationStartTime: preparationStartTimeForSync,
             matchType: appliedResolution?.matchType ?? null,
             inferredMatchType: appliedResolution?.inferred ?? inferredMatchType,
+            activeCycleContext: activeWarCycleContext ?? undefined,
             persistCanonical: shouldPersistActiveFwaSync({
               matchType: appliedResolution?.matchType,
               inferredMatchType:
@@ -6083,6 +6117,7 @@ async function buildWarMailEmbedForTag(
             preparationStartTime: preparationStartTimeForSync,
             matchType,
             inferredMatchType,
+            activeCycleContext: activeWarCycleContext ?? undefined,
             persistCanonical: shouldPersistActiveFwaSync({
               matchType,
               inferredMatchType,
@@ -14251,6 +14286,55 @@ async function buildTrackedMatchOverview(
       }),
     );
   }
+  const activeWarPreparationStartTimeByClanTag = new Map<
+    string,
+    Date
+  >();
+  const liveIdentityPatchByClanTag = new Map<
+    string,
+    ReturnType<typeof resolveActiveWarIdentityPatch> | null
+  >();
+  for (const clan of scopedTracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const war = warByClanTag.get(clanTag) ?? null;
+    const identity = syncIdentityByClanTag.get(clanTag);
+    if (!identity?.positivelyResolved || identity.warState === "notInWar") {
+      continue;
+    }
+    const liveIdentityPatch =
+      guildId && war
+        ? resolveActiveWarIdentityPatch({
+            guildId,
+            clanTag,
+            liveWar: war,
+            currentWar: subByTag.get(clanTag) ?? null,
+          })
+        : null;
+    liveIdentityPatchByClanTag.set(clanTag, liveIdentityPatch);
+    const preparationStartTime = resolveTrackedActiveWarPreparationStartTime({
+      livePreparationStartTime: parseCocApiTime(
+        war?.preparationStartTime ?? null,
+      ),
+      liveIdentityPatch,
+      persistedPreparationStartTime: subByTag.get(clanTag)?.prepStartTime ?? null,
+      warStartTime: identity.warStartTime,
+    });
+    if (preparationStartTime) {
+      activeWarPreparationStartTimeByClanTag.set(
+        clanTag,
+        preparationStartTime,
+      );
+    }
+  }
+  const activeWarCycleContext: ActiveWarCycleContext | null =
+    guildId && activeWarPreparationStartTimeByClanTag.size > 0
+      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+          guildId,
+          preparationStartTimes: [
+            ...activeWarPreparationStartTimeByClanTag.values(),
+          ],
+        })
+      : null;
 
   const scopedSyncWarIds = [
     ...new Set(
@@ -14472,15 +14556,7 @@ async function buildTrackedMatchOverview(
     const syncIdentity =
       syncIdentityByClanTag.get(clanTag) ??
       buildActiveWarSyncIdentity({ warState });
-    const liveIdentityPatch =
-      guildId && war
-        ? resolveActiveWarIdentityPatch({
-            guildId,
-            clanTag,
-            liveWar: war,
-            currentWar: sub,
-          })
-        : null;
+    const liveIdentityPatch = liveIdentityPatchByClanTag.get(clanTag) ?? null;
     if (guildId && liveIdentityPatch) {
       const currentIdentity = {
         warId: sub?.warId ?? null,
@@ -14581,13 +14657,16 @@ async function buildTrackedMatchOverview(
         subByTag.set(clanTag, reconciledSub);
       }
     }
-    const preparationStartTimeForSync = resolveActiveWarPreparationStartTime({
-      livePreparationStartTime: parseCocApiTime(
-        war?.preparationStartTime ?? null,
-      ),
-      persistedPreparationStartTime: sub?.prepStartTime ?? null,
-      warStartTime: syncIdentity.warStartTime,
-    });
+    const preparationStartTimeForSync =
+      activeWarPreparationStartTimeByClanTag.get(clanTag) ??
+      resolveTrackedActiveWarPreparationStartTime({
+        livePreparationStartTime: parseCocApiTime(
+          war?.preparationStartTime ?? null,
+        ),
+        liveIdentityPatch,
+        persistedPreparationStartTime: sub?.prepStartTime ?? null,
+        warStartTime: syncIdentity.warStartTime,
+      });
     const fallbackResolution = await resolveMatchTypeWithFallback({
       guildId,
       clanTag,
@@ -14622,6 +14701,7 @@ async function buildTrackedMatchOverview(
                 fallbackResolution.storedSync?.inferred ??
                 sub?.inferredMatchType ??
                 null,
+              activeCycleContext: activeWarCycleContext ?? undefined,
               persistCanonical: shouldPersistActiveFwaSync({
                 matchType:
                   fallbackResolution.confirmedCurrent?.matchType ??
@@ -14924,6 +15004,7 @@ async function buildTrackedMatchOverview(
               preparationStartTime: preparationStartTimeForSync,
               matchType,
               inferredMatchType,
+              activeCycleContext: activeWarCycleContext ?? undefined,
               persistCanonical: shouldPersistActiveFwaSync({
                 matchType,
                 inferredMatchType,
