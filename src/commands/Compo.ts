@@ -1,4 +1,4 @@
-﻿import {
+import {
   ActionRowBuilder,
   APIActionRowComponent,
   APIComponentInMessageActionRow,
@@ -2084,6 +2084,21 @@ export async function buildCompoAdviceResponsePayload(input: {
   };
 }
 
+/** Purpose: carry the service-resolved Custom band selection into the next rendered component payload. */
+function resolveCompoAdviceRefreshPayloadFromResult(
+  payload: Extract<CompoRefreshPayload, { kind: "advice" }>,
+  advice: CompoAdviceReadResult,
+): Extract<CompoRefreshPayload, { kind: "advice" }> {
+  if (payload.mode !== "actual" || advice.kind !== "ready") {
+    return payload;
+  }
+  return {
+    ...payload,
+    customBandIndex: advice.summary.selectedCustomBandIndex,
+    customBandCount: advice.summary.customBandCount,
+  };
+}
+
 /*
   const recommendedRows = params.recommended.map(
     (c) =>
@@ -2792,13 +2807,15 @@ export async function handleCompoRefreshButton(
             ? adviceRefreshPayload.customBandIndex
             : null,
       });
+      const resolvedAdviceRefreshPayload =
+        resolveCompoAdviceRefreshPayloadFromResult(adviceRefreshPayload, advice);
       await interaction.editReply({
         ...(await buildCompoAdviceResponsePayload({
           advice,
           client: interaction.client,
         })),
         components: buildCompoRefreshComponents({
-          refreshPayload: adviceRefreshPayload,
+          refreshPayload: resolvedAdviceRefreshPayload,
           loading: false,
           adviceClanChoices: advice.trackedClanChoices,
           selectedAdviceClanTag: advice.clanTag,
@@ -3340,10 +3357,12 @@ export async function handleCompoAdviceClanSelectMenuInteraction(
       customBandIndex:
         parsed.mode === "actual" ? parsed.customBandIndex ?? 0 : null,
     });
+    const resolvedAdviceRefreshPayload =
+      resolveCompoAdviceRefreshPayloadFromResult(adviceRefreshPayload, advice);
     await interaction.editReply({
       ...(await buildCompoAdviceResponsePayload({ advice, client: interaction.client })),
       components: buildCompoRefreshComponents({
-        refreshPayload: adviceRefreshPayload,
+        refreshPayload: resolvedAdviceRefreshPayload,
         loading: false,
         adviceClanChoices: advice.trackedClanChoices,
         selectedAdviceClanTag: advice.clanTag ?? selectedTargetTag,
