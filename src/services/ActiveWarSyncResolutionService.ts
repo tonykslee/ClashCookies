@@ -556,11 +556,14 @@ export class ActiveWarSyncResolutionService {
     inferredMatchType?: boolean | null;
     persistCanonical?: boolean;
     activeCycleContext?: ActiveWarCycleContext;
+    /** Exact same-war points evidence is corroboration, not a cycle owner. */
+    sameWarPersistedSyncNumber?: number | null;
   }): Promise<{
     syncNumber: number | null;
     source:
       | "active_war_confirmed"
       | "active_war_schedule_candidate"
+      | "active_cycle_reuse"
       | "active_war_ambiguous"
       | "none";
     status:
@@ -593,7 +596,11 @@ export class ActiveWarSyncResolutionService {
         reason: "identity_incomplete",
       };
     }
-    if (evidence !== "confirmed_fwa" && evidence !== "strongly_inferred_fwa") {
+    if (
+      evidence !== "confirmed_fwa" &&
+      evidence !== "strongly_inferred_fwa" &&
+      !input.activeCycleContext
+    ) {
       return {
         ...base,
         source: "none",
@@ -653,8 +660,57 @@ export class ActiveWarSyncResolutionService {
         reason: resolution.reason,
       };
     }
+    const sameWarPersistedSyncNumber = normalizeSyncNumber(
+      input.sameWarPersistedSyncNumber ?? null,
+    );
     if (
-      resolution.status === "derived" &&
+      sameWarPersistedSyncNumber !== null &&
+      sameWarPersistedSyncNumber !== resolution.syncNumber
+    ) {
+      return {
+        syncNumber: null,
+        source: "active_war_ambiguous",
+        status: "conflict",
+        scheduledSyncPostId: resolution.scheduledSyncPostId,
+        syncTime: resolution.syncTime,
+        reason: "points_sync_conflicts_with_active_cycle",
+      };
+    }
+    const isFwaEvidence =
+      evidence === "confirmed_fwa" || evidence === "strongly_inferred_fwa";
+    if (resolution.status === "derived" && !isFwaEvidence) {
+      return {
+        ...base,
+        source: "none",
+        status: "not_fwa",
+        reason: "fwa_evidence_unresolved",
+      };
+    }
+    if (resolution.status === "exact" && !isFwaEvidence) {
+      return {
+        syncNumber: resolution.syncNumber,
+        source: "active_cycle_reuse",
+        status: resolution.status,
+        scheduledSyncPostId: resolution.scheduledSyncPostId,
+        syncTime: resolution.syncTime,
+        reason: resolution.reason,
+      };
+    }
+    if (resolution.status === "derived" && input.activeCycleContext) {
+      this.syncCycles.updateActiveWarCycleCandidateContext?.(
+        input.activeCycleContext,
+        {
+          syncNumber: resolution.syncNumber,
+          scheduledSyncPostId: resolution.scheduledSyncPostId,
+          syncTime: resolution.syncTime,
+          previousSyncNumber: resolution.previousSyncNumber ?? 0,
+        },
+      );
+    }
+    if (
+      (resolution.status === "derived" ||
+        (resolution.status === "exact" &&
+          resolution.resolutionSource === null)) &&
       input.persistCanonical === true &&
       evidence === "confirmed_fwa"
     ) {

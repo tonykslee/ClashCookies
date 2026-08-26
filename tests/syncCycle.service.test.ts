@@ -588,6 +588,35 @@ describe("SyncCycleService", () => {
     });
   });
 
+  it.each(["BL", "MM", "SKIP"])(
+    "reuses an exact persisted active cycle for %s without deriving a new one",
+    async (matchType) => {
+      const scheduleTime = new Date("2026-08-15T11:00:00.000Z");
+      const db = makeDb({
+        schedules: [{ id: "post-b", syncTime: scheduleTime }],
+        cycles: [makeCycle({ syncNumber: 553, syncTime: scheduleTime })],
+      });
+      const service = new SyncCycleService(db);
+      const context = await service.loadActiveWarCycleContext({
+        guildId: "guild-1",
+        preparationStartTimes: [preparationStartTime],
+      });
+
+      await expect(
+        service.resolveActiveWarCycleFromContext(context, {
+          guildId: "guild-1",
+          preparationStartTime,
+          matchType,
+          inferredMatchType: false,
+        }),
+      ).resolves.toMatchObject({
+        status: "exact",
+        syncNumber: 553,
+        reason: "exact_sync_cycle",
+      });
+    },
+  );
+
   it.each(["BL", "MM"])(
     "requires positive FWA evidence before the schedule chronology is consulted for %s",
     async (matchType) => {
