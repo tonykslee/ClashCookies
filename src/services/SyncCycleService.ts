@@ -11,9 +11,18 @@ export type SyncCycleDb = {
       id: string;
       syncTime: Date;
     } | null>;
+    findMany?: (args: any) => Promise<
+      Array<{
+        id: string;
+        syncTime: Date;
+        status?: string;
+      }>
+    >;
   };
   syncCycle?: {
     findUnique: (args: any) => Promise<SyncCycle | null>;
+    findFirst?: (args: any) => Promise<SyncCycle | null>;
+    findMany?: (args: any) => Promise<SyncCycle[]>;
     create: (args: any) => Promise<SyncCycle>;
   };
 };
@@ -24,6 +33,7 @@ export type SyncCycleResolvedBindingInput = {
   syncTime: Date;
   scheduledSyncPostId: string;
   resolvedAt?: Date;
+  resolutionSource?: SyncCycleResolutionSource;
 };
 
 export type SyncCyclePersistenceDb = {
@@ -40,6 +50,16 @@ export type SyncCycleBindingInput = {
   preparationStartTime: Date | null | undefined;
 };
 
+export type ActiveSyncCycleResolution = {
+  status: "exact" | "derived" | "unresolved" | "ambiguous" | "conflict";
+  syncNumber: number | null;
+  scheduledSyncPostId: string | null;
+  syncTime: Date | null;
+  previousSyncNumber: number | null;
+  reason: string;
+  resolutionSource: SyncCycleResolutionSource | null;
+};
+
 export type SyncCycleBindingResult =
   | { status: "created"; cycle: SyncCycle }
   | { status: "existing"; cycle: SyncCycle }
@@ -53,7 +73,9 @@ function normalizeGuildId(value: unknown): string {
 }
 
 function normalizeMatchType(value: unknown): string {
-  return String(value ?? "").trim().toUpperCase();
+  return String(value ?? "")
+    .trim()
+    .toUpperCase();
 }
 
 function normalizeSyncNumber(value: unknown): number | null {
@@ -66,8 +88,11 @@ function isValidDate(value: Date | null | undefined): value is Date {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null &&
-    String((error as { code?: unknown }).code ?? "") === "P2002";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    String((error as { code?: unknown }).code ?? "") === "P2002"
+  );
 }
 
 function cycleIdentity(cycle: SyncCycle): string {
@@ -97,18 +122,27 @@ export async function persistResolvedSyncCycle(
     return { status: "failed", reason: "sync_cycle_read_failed", error };
   }
 
-  if (existingByNumber && existingByNumber.syncTime.getTime() !== syncTime.getTime()) {
+  if (
+    existingByNumber &&
+    existingByNumber.syncTime.getTime() !== syncTime.getTime()
+  ) {
     const reason = `sync_number_already_mapped existing_sync_time=${existingByNumber.syncTime.toISOString()} candidate_sync_time=${syncTime.toISOString()}`;
-    dozzleLog.warn(`[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_number=${syncNumber} ${reason}`);
+    dozzleLog.warn(
+      `[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_number=${syncNumber} ${reason}`,
+    );
     return { status: "conflict", reason };
   }
   if (existingByTime && existingByTime.syncNumber !== syncNumber) {
     const reason = `sync_time_already_mapped existing_sync_number=${existingByTime.syncNumber} candidate_sync_number=${syncNumber}`;
-    dozzleLog.warn(`[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_time=${syncTime.toISOString()} ${reason}`);
+    dozzleLog.warn(
+      `[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_time=${syncTime.toISOString()} ${reason}`,
+    );
     return { status: "conflict", reason };
   }
   if (existingByNumber || existingByTime) {
-    dozzleLog.debug(`[sync-cycle] event=bind outcome=idempotent ${cycleIdentity(existingByNumber ?? existingByTime!)}`);
+    dozzleLog.debug(
+      `[sync-cycle] event=bind outcome=idempotent ${cycleIdentity(existingByNumber ?? existingByTime!)}`,
+    );
     return { status: "existing", cycle: existingByNumber ?? existingByTime! };
   }
 
@@ -120,7 +154,9 @@ export async function persistResolvedSyncCycle(
         syncTime,
         scheduledSyncPostId,
         resolvedAt,
-        resolutionSource: SyncCycleResolutionSource.ENDED_WAR_CANONICAL,
+        resolutionSource:
+          input.resolutionSource ??
+          SyncCycleResolutionSource.ENDED_WAR_CANONICAL,
       },
     });
     dozzleLog.info(
@@ -140,44 +176,282 @@ export async function persistResolvedSyncCycle(
         db.syncCycle.findUnique({ where: byNumberWhere }),
         db.syncCycle.findUnique({ where: byTimeWhere }),
       ]);
-      if (racedByNumber && racedByNumber.syncTime.getTime() !== syncTime.getTime()) {
+      if (
+        racedByNumber &&
+        racedByNumber.syncTime.getTime() !== syncTime.getTime()
+      ) {
         const reason = `sync_number_already_mapped existing_sync_time=${racedByNumber.syncTime.toISOString()} candidate_sync_time=${syncTime.toISOString()}`;
-        dozzleLog.warn(`[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_number=${syncNumber} ${reason}`);
+        dozzleLog.warn(
+          `[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_number=${syncNumber} ${reason}`,
+        );
         return { status: "conflict", reason };
       }
       if (racedByTime && racedByTime.syncNumber !== syncNumber) {
         const reason = `sync_time_already_mapped existing_sync_number=${racedByTime.syncNumber} candidate_sync_number=${syncNumber}`;
-        dozzleLog.warn(`[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_time=${syncTime.toISOString()} ${reason}`);
+        dozzleLog.warn(
+          `[sync-cycle] event=bind outcome=conflict guild_id=${guildId} sync_time=${syncTime.toISOString()} ${reason}`,
+        );
         return { status: "conflict", reason };
       }
       const cycle = racedByNumber ?? racedByTime;
       if (cycle) {
-        dozzleLog.debug(`[sync-cycle] event=bind outcome=idempotent_after_race ${cycleIdentity(cycle)}`);
+        dozzleLog.debug(
+          `[sync-cycle] event=bind outcome=idempotent_after_race ${cycleIdentity(cycle)}`,
+        );
         return { status: "existing", cycle };
       }
     } catch (readError) {
       dozzleLog.warn(
         `[sync-cycle] event=bind outcome=failure guild_id=${guildId} sync_number=${syncNumber} sync_time=${syncTime.toISOString()} error=${formatError(readError)}`,
       );
-      return { status: "failed", reason: "sync_cycle_race_read_failed", error: readError };
+      return {
+        status: "failed",
+        reason: "sync_cycle_race_read_failed",
+        error: readError,
+      };
     }
-    return { status: "failed", reason: "sync_cycle_unique_conflict_without_row", error };
+    return {
+      status: "failed",
+      reason: "sync_cycle_unique_conflict_without_row",
+      error,
+    };
   }
 }
 
 /** Purpose: bind canonical ended-war sync identity to one exact scheduled sync boundary. */
 export class SyncCycleService {
-  constructor(private readonly db: SyncCycleDb = prisma as unknown as SyncCycleDb) {}
+  constructor(
+    private readonly db: SyncCycleDb = prisma as unknown as SyncCycleDb,
+  ) {}
 
   /** Purpose: persist a caller-resolved canonical boundary while preserving SyncCycle uniqueness semantics. */
-  async bindResolvedCanonical(input: SyncCycleResolvedBindingInput): Promise<SyncCycleBindingResult> {
+  async bindResolvedCanonical(
+    input: SyncCycleResolvedBindingInput,
+  ): Promise<SyncCycleBindingResult> {
     if (!this.db.syncCycle?.findUnique || !this.db.syncCycle?.create) {
-      return { status: "failed", reason: "sync_cycle_database_unavailable", error: new Error("SyncCycle database delegates unavailable") };
+      return {
+        status: "failed",
+        reason: "sync_cycle_database_unavailable",
+        error: new Error("SyncCycle database delegates unavailable"),
+      };
     }
     return persistResolvedSyncCycle({ syncCycle: this.db.syncCycle }, input);
   }
 
-  async bindFromEndedWar(input: SyncCycleBindingInput): Promise<SyncCycleBindingResult> {
+  /** Purpose: resolve the active war's canonical scheduled boundary from persisted schedule and cycle chronology. */
+  async resolveActiveWarCycle(input: {
+    guildId: string;
+    preparationStartTime: Date | null | undefined;
+    matchType: string | null | undefined;
+    inferredMatchType?: boolean | null;
+  }): Promise<ActiveSyncCycleResolution> {
+    const guildId = normalizeGuildId(input.guildId);
+    const preparationStartTime = input.preparationStartTime;
+    const matchType = normalizeMatchType(input.matchType);
+    const isFwa =
+      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    if (!guildId || !isValidDate(preparationStartTime)) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "incomplete_active_identity",
+        resolutionSource: null,
+      };
+    }
+    if (!isFwa) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "fwa_evidence_unresolved",
+        resolutionSource: null,
+      };
+    }
+    if (
+      !this.db.scheduledSyncPost?.findMany ||
+      !this.db.syncCycle?.findUnique ||
+      !this.db.syncCycle?.findFirst
+    ) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "active_cycle_database_unavailable",
+        resolutionSource: null,
+      };
+    }
+
+    const lowerBound = new Date(
+      preparationStartTime.getTime() - SYNC_CYCLE_SCHEDULE_LOOKBACK_MS,
+    );
+    let schedules: Array<{ id: string; syncTime: Date; status?: string }>;
+    try {
+      schedules = await this.db.scheduledSyncPost.findMany({
+        where: {
+          guildId,
+          status: { notIn: ["CANCELLED", "REPLACED"] },
+          syncTime: { gte: lowerBound, lte: preparationStartTime },
+        },
+        orderBy: { syncTime: "asc" },
+        select: { id: true, syncTime: true, status: true },
+      });
+    } catch (error) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_resolve outcome=failure guild_id=${guildId} reason=schedule_read_failed error=${formatError(error)}`,
+      );
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "schedule_read_failed",
+        resolutionSource: null,
+      };
+    }
+    const validSchedules = schedules.filter((row) => isValidDate(row.syncTime));
+    if (validSchedules.length === 0) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "no_eligible_schedule",
+        resolutionSource: null,
+      };
+    }
+
+    // The latest eligible schedule is the live candidate. Earlier schedules
+    // in the lookback window are normal chronology evidence for its previous
+    // canonical cycle, not competing candidates for the current war.
+    const schedule = validSchedules[validSchedules.length - 1];
+    const laterScheduleRows = await this.db.scheduledSyncPost.findMany({
+      where: {
+        guildId,
+        syncTime: { gt: schedule.syncTime, lte: preparationStartTime },
+      },
+      select: { id: true, syncTime: true, status: true },
+      orderBy: { syncTime: "asc" },
+    });
+    const terminalLaterSchedules = laterScheduleRows.filter(
+      (row) => row.status === "CANCELLED" || row.status === "REPLACED",
+    );
+    if (terminalLaterSchedules.length > 0) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_resolve outcome=unresolved guild_id=${guildId} reason=terminal_intervening_schedule schedule_count=${terminalLaterSchedules.length}`,
+      );
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "terminal_intervening_schedule",
+        resolutionSource: null,
+      };
+    }
+    const exactCurrentCycle = await this.db.syncCycle.findUnique({
+      where: { guildId_syncTime: { guildId, syncTime: schedule.syncTime } },
+    });
+    if (exactCurrentCycle) {
+      return {
+        status: "exact",
+        syncNumber: exactCurrentCycle.syncNumber,
+        scheduledSyncPostId: schedule.id,
+        syncTime: schedule.syncTime,
+        previousSyncNumber: null,
+        reason: "exact_sync_cycle",
+        resolutionSource: exactCurrentCycle.resolutionSource,
+      };
+    }
+    const previous = await this.db.syncCycle.findFirst({
+      where: {
+        guildId,
+        syncTime: { lt: schedule.syncTime },
+      },
+      orderBy: [{ syncTime: "desc" }, { syncNumber: "desc" }],
+    });
+    if (
+      !previous ||
+      !Number.isInteger(previous.syncNumber) ||
+      previous.syncNumber <= 0
+    ) {
+      if (validSchedules.length > 1) {
+        dozzleLog.warn(
+          `[sync-cycle] event=active_resolve outcome=ambiguous guild_id=${guildId} reason=multiple_eligible_schedules schedule_count=${validSchedules.length}`,
+        );
+        return {
+          status: "ambiguous",
+          syncNumber: null,
+          scheduledSyncPostId: schedule.id,
+          syncTime: schedule.syncTime,
+          previousSyncNumber: null,
+          reason: "multiple_eligible_schedules",
+          resolutionSource: null,
+        };
+      }
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: schedule.id,
+        syncTime: schedule.syncTime,
+        previousSyncNumber: null,
+        reason: "no_previous_canonical_cycle",
+        resolutionSource: null,
+      };
+    }
+
+    const interveningSchedules = await this.db.scheduledSyncPost.findMany({
+      where: {
+        guildId,
+        status: { notIn: ["CANCELLED", "REPLACED"] },
+        syncTime: { gt: previous.syncTime, lt: schedule.syncTime },
+      },
+      select: { id: true, syncTime: true, status: true },
+      orderBy: { syncTime: "asc" },
+    });
+    if (interveningSchedules.length > 0) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_resolve outcome=ambiguous guild_id=${guildId} reason=intervening_schedule schedule_count=${interveningSchedules.length}`,
+      );
+      return {
+        status: "ambiguous",
+        syncNumber: null,
+        scheduledSyncPostId: schedule.id,
+        syncTime: schedule.syncTime,
+        previousSyncNumber: previous.syncNumber,
+        reason: "intervening_schedule",
+        resolutionSource: null,
+      };
+    }
+
+    const syncNumber = previous.syncNumber + 1;
+    const isConfirmedFwa =
+      matchType === "FWA" && input.inferredMatchType === false;
+    return {
+      status: "derived",
+      syncNumber,
+      scheduledSyncPostId: schedule.id,
+      syncTime: schedule.syncTime,
+      previousSyncNumber: previous.syncNumber,
+      reason: "previous_cycle_immediate_next_schedule",
+      resolutionSource: isConfirmedFwa
+        ? SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED
+        : null,
+    };
+  }
+
+  async bindFromEndedWar(
+    input: SyncCycleBindingInput,
+  ): Promise<SyncCycleBindingResult> {
     const guildId = normalizeGuildId(input.guildId);
     const syncNumber = normalizeSyncNumber(input.syncNumber);
     const matchType = normalizeMatchType(input.matchType);
@@ -189,8 +463,16 @@ export class SyncCycleService {
     if (matchType !== "FWA") {
       return { status: "skipped", reason: "non_fwa_cycle" };
     }
-    if (!this.db.scheduledSyncPost?.findFirst || !this.db.syncCycle?.findUnique || !this.db.syncCycle?.create) {
-      return { status: "failed", reason: "sync_cycle_database_unavailable", error: new Error("SyncCycle database delegates unavailable") };
+    if (
+      !this.db.scheduledSyncPost?.findFirst ||
+      !this.db.syncCycle?.findUnique ||
+      !this.db.syncCycle?.create
+    ) {
+      return {
+        status: "failed",
+        reason: "sync_cycle_database_unavailable",
+        error: new Error("SyncCycle database delegates unavailable"),
+      };
     }
 
     const syncTimeUpperBound = preparationStartTime;
