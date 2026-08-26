@@ -62,8 +62,10 @@ export type ActiveSyncCycleResolution = {
 
 export type ActiveWarCycleContext = {
   guildId: string;
+  minPreparationStartTime: Date | null;
   lowerBound: Date | null;
   maxPreparationStartTime: Date | null;
+  scheduleCoverageStart: Date | null;
   scheduledSyncPosts: Array<{
     id: string;
     syncTime: Date;
@@ -74,6 +76,7 @@ export type ActiveWarCycleContext = {
   readErrorReason:
     | "active_cycle_database_unavailable"
     | "schedule_read_failed"
+    | "sync_cycle_read_failed"
     | null;
 };
 
@@ -272,8 +275,10 @@ export class SyncCycleService {
     if (!guildId || preparationStartTimes.length === 0) {
       return {
         guildId,
+        minPreparationStartTime: null,
         lowerBound: null,
         maxPreparationStartTime: null,
+        scheduleCoverageStart: null,
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
@@ -296,8 +301,10 @@ export class SyncCycleService {
     ) {
       return {
         guildId,
+        minPreparationStartTime,
         lowerBound,
         maxPreparationStartTime,
+        scheduleCoverageStart: null,
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
@@ -305,16 +312,10 @@ export class SyncCycleService {
       };
     }
 
+    let syncCycles: SyncCycle[];
+    let previousAnchor: SyncCycle | null;
     try {
-      const [scheduledSyncPosts, syncCycles, previousAnchor] = await Promise.all([
-        this.db.scheduledSyncPost.findMany({
-          where: {
-            guildId,
-            syncTime: { gte: lowerBound, lte: maxPreparationStartTime },
-          },
-          orderBy: { syncTime: "asc" },
-          select: { id: true, syncTime: true, status: true },
-        }),
+      [syncCycles, previousAnchor] = await Promise.all([
         this.db.syncCycle.findMany({
           where: {
             guildId,
@@ -327,10 +328,44 @@ export class SyncCycleService {
           orderBy: [{ syncTime: "desc" }, { syncNumber: "desc" }],
         }),
       ]);
+    } catch (error) {
+      dozzleLog.warn(
+        `[sync-cycle] event=active_context outcome=failure guild_id=${guildId} reason=sync_cycle_read_failed error=${formatError(error)}`,
+      );
       return {
         guildId,
+        minPreparationStartTime,
         lowerBound,
         maxPreparationStartTime,
+        scheduleCoverageStart: null,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        readErrorReason: "sync_cycle_read_failed",
+      };
+    }
+    const scheduleCoverageStart =
+      previousAnchor && previousAnchor.syncTime.getTime() < lowerBound.getTime()
+        ? previousAnchor.syncTime
+        : lowerBound;
+    try {
+      const scheduledSyncPosts = await this.db.scheduledSyncPost.findMany({
+        where: {
+          guildId,
+          syncTime: {
+            gte: scheduleCoverageStart,
+            lte: maxPreparationStartTime,
+          },
+        },
+        orderBy: { syncTime: "asc" },
+        select: { id: true, syncTime: true, status: true },
+      });
+      return {
+        guildId,
+        minPreparationStartTime,
+        lowerBound,
+        maxPreparationStartTime,
+        scheduleCoverageStart,
         scheduledSyncPosts,
         syncCycles,
         previousAnchor,
@@ -342,8 +377,10 @@ export class SyncCycleService {
       );
       return {
         guildId,
+        minPreparationStartTime,
         lowerBound,
         maxPreparationStartTime,
+        scheduleCoverageStart,
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
@@ -400,17 +437,42 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
-    if (context.guildId !== guildId || context.readErrorReason !== null) {
+    if (context.guildId !== guildId) {
       return {
         status: "unresolved",
         syncNumber: null,
         scheduledSyncPostId: null,
         syncTime: null,
         previousSyncNumber: null,
-        reason:
-          context.guildId !== guildId
-            ? "active_cycle_database_unavailable"
-            : context.readErrorReason ?? "active_cycle_database_unavailable",
+        reason: "active_cycle_database_unavailable",
+        resolutionSource: null,
+      };
+    }
+    if (
+      context.minPreparationStartTime === null ||
+      context.maxPreparationStartTime === null ||
+      preparationStartTime.getTime() <
+        context.minPreparationStartTime.getTime() ||
+      preparationStartTime.getTime() > context.maxPreparationStartTime.getTime()
+    ) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: "preparation_time_outside_context",
+        resolutionSource: null,
+      };
+    }
+    if (context.readErrorReason !== null) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: null,
+        syncTime: null,
+        previousSyncNumber: null,
+        reason: context.readErrorReason,
         resolutionSource: null,
       };
     }

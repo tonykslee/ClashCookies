@@ -302,6 +302,79 @@ describe("SyncCycleService", () => {
     );
   });
 
+  it("keeps an eligible pre-window schedule visible for intervening chronology ambiguity", async () => {
+    const previousCycleTime = new Date("2026-08-13T10:00:00.000Z");
+    const hiddenInterveningSchedule = new Date("2026-08-15T11:00:00.000Z");
+    const candidateSchedule = new Date("2026-08-17T11:00:00.000Z");
+    const currentPreparationStart = new Date("2026-08-17T12:00:00.000Z");
+    const db = makeDb({
+      schedules: [
+        { id: "post-intervening", syncTime: hiddenInterveningSchedule },
+        { id: "post-candidate", syncTime: candidateSchedule },
+      ],
+      cycles: [
+        makeCycle({
+          syncNumber: 552,
+          syncTime: previousCycleTime,
+          scheduledSyncPostId: "post-previous",
+        }),
+      ],
+    });
+    const service = new SyncCycleService(db);
+    const context = await service.loadActiveWarCycleContext({
+      guildId: "guild-1",
+      preparationStartTimes: [currentPreparationStart],
+    });
+
+    const result = await service.resolveActiveWarCycleFromContext(context, {
+      guildId: "guild-1",
+      preparationStartTime: currentPreparationStart,
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "ambiguous",
+      syncNumber: null,
+      scheduledSyncPostId: "post-candidate",
+      reason: "intervening_schedule",
+    });
+  });
+
+  it("derives from the previous anchor when no earlier eligible boundary intervenes", async () => {
+    const previousCycleTime = new Date("2026-08-13T10:00:00.000Z");
+    const candidateSchedule = new Date("2026-08-17T11:00:00.000Z");
+    const currentPreparationStart = new Date("2026-08-17T12:00:00.000Z");
+    const db = makeDb({
+      schedules: [{ id: "post-candidate", syncTime: candidateSchedule }],
+      cycles: [
+        makeCycle({
+          syncNumber: 552,
+          syncTime: previousCycleTime,
+          scheduledSyncPostId: "post-previous",
+        }),
+      ],
+    });
+    const service = new SyncCycleService(db);
+    const context = await service.loadActiveWarCycleContext({
+      guildId: "guild-1",
+      preparationStartTimes: [currentPreparationStart],
+    });
+
+    await expect(
+      service.resolveActiveWarCycleFromContext(context, {
+        guildId: "guild-1",
+        preparationStartTime: currentPreparationStart,
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "derived",
+      syncNumber: 553,
+      scheduledSyncPostId: "post-candidate",
+    });
+  });
+
   it("bulk-loads bounded active-cycle chronology once for multiple preparation times", async () => {
     const earliestPreparation = new Date("2026-08-15T12:00:00.000Z");
     const latestPreparation = new Date("2026-08-17T12:00:00.000Z");
@@ -429,6 +502,33 @@ describe("SyncCycleService", () => {
       status: "unresolved",
       reason: "no_previous_canonical_cycle",
     });
+  });
+
+  it("fails closed when a context is used outside its preparation-time coverage", async () => {
+    const db = makeDb();
+    const service = new SyncCycleService(db);
+    const context = await service.loadActiveWarCycleContext({
+      guildId: "guild-1",
+      preparationStartTimes: [preparationStartTime],
+    });
+    const scheduleReadCount = db.scheduledSyncPost.findMany.mock.calls.length;
+    const cycleRangeReadCount = db.syncCycle.findMany.mock.calls.length;
+    const anchorReadCount = db.syncCycle.findFirst.mock.calls.length;
+
+    const result = await service.resolveActiveWarCycleFromContext(context, {
+      guildId: "guild-1",
+      preparationStartTime: new Date("2026-08-16T12:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "unresolved",
+      reason: "preparation_time_outside_context",
+    });
+    expect(db.scheduledSyncPost.findMany).toHaveBeenCalledTimes(scheduleReadCount);
+    expect(db.syncCycle.findMany).toHaveBeenCalledTimes(cycleRangeReadCount);
+    expect(db.syncCycle.findFirst).toHaveBeenCalledTimes(anchorReadCount);
   });
 
   it("does not guess when multiple unresolved schedules remain after the previous cycle", async () => {
