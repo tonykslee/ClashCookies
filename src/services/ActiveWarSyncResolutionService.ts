@@ -6,7 +6,7 @@ import {
   type ActiveSyncCycleResolution,
 } from "./SyncCycleService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
-import type { Prisma } from "@prisma/client";
+import { SyncCycleResolutionSource, type Prisma } from "@prisma/client";
 
 export type ActiveWarSyncState = "preparation" | "inWar" | "notInWar";
 
@@ -17,7 +17,7 @@ export type ActiveWarSyncResolutionSource =
   | "active_cycle_conflict"
   | "historical_latest_persisted"
   | "active_war_confirmed"
-  | "active_war_schedule_canonical"
+  | "active_war_schedule_candidate"
   | "active_war_ambiguous"
   | "none";
 
@@ -176,9 +176,9 @@ function classifyFwaEvidence(input: {
     .trim()
     .toUpperCase();
   if (matchType === "FWA") {
-    return input.inferredMatchType === true
-      ? "strongly_inferred_fwa"
-      : "confirmed_fwa";
+    return input.inferredMatchType === false
+      ? "confirmed_fwa"
+      : "strongly_inferred_fwa";
   }
   if (matchType === "BL" || matchType === "MM" || matchType === "SKIP") {
     return "not_fwa";
@@ -550,7 +550,7 @@ export class ActiveWarSyncResolutionService {
     syncNumber: number | null;
     source:
       | "active_war_confirmed"
-      | "active_war_schedule_canonical"
+      | "active_war_schedule_candidate"
       | "active_war_ambiguous"
       | "none";
     status:
@@ -633,7 +633,11 @@ export class ActiveWarSyncResolutionService {
         reason: resolution.reason,
       };
     }
-    if (resolution.status === "derived" && input.persistCanonical === true) {
+    if (
+      resolution.status === "derived" &&
+      input.persistCanonical === true &&
+      evidence === "confirmed_fwa"
+    ) {
       if (isMirrorPollingMode()) {
         return {
           ...base,
@@ -647,7 +651,7 @@ export class ActiveWarSyncResolutionService {
         syncNumber: resolution.syncNumber,
         syncTime: resolution.syncTime,
         scheduledSyncPostId: resolution.scheduledSyncPostId,
-        resolutionSource: resolution.resolutionSource ?? undefined,
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
       });
       if (binding.status === "conflict" || binding.status === "failed") {
         return {
@@ -664,7 +668,7 @@ export class ActiveWarSyncResolutionService {
     const source =
       evidence === "confirmed_fwa"
         ? "active_war_confirmed"
-        : "active_war_schedule_canonical";
+        : "active_war_schedule_candidate";
     return {
       syncNumber: resolution.syncNumber,
       source,

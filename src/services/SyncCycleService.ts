@@ -434,10 +434,8 @@ export class SyncCycleService {
     }
 
     const syncNumber = previous.syncNumber + 1;
-    const source =
-      matchType === "FWA" && input.inferredMatchType !== true
-        ? SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED
-        : SyncCycleResolutionSource.ACTIVE_WAR_SCHEDULE_CANONICAL;
+    const isConfirmedFwa =
+      matchType === "FWA" && input.inferredMatchType === false;
     return {
       status: "derived",
       syncNumber,
@@ -445,7 +443,9 @@ export class SyncCycleService {
       syncTime: schedule.syncTime,
       previousSyncNumber: previous.syncNumber,
       reason: "previous_cycle_immediate_next_schedule",
-      resolutionSource: source,
+      resolutionSource: isConfirmedFwa
+        ? SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED
+        : null,
     };
   }
 
