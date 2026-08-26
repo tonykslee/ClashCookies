@@ -1288,6 +1288,8 @@ enum HomeAwaySyncAlertDeliveryStatus {
 
 enum SyncCycleResolutionSource {
   ENDED_WAR_CANONICAL
+  ACTIVE_WAR_CONFIRMED
+  ACTIVE_WAR_SCHEDULE_CANONICAL
 }
 
 enum RepWorkActivityType {

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
   resolveActiveWarSyncNumber,
   resolveActiveWarSyncNumberReadOnly,
   resolveCurrentWarSyncIdentity,
 } from "../src/services/ActiveWarSyncResolutionService";
+import { SyncCycleResolutionSource } from "@prisma/client";
+import type { SyncCycleService } from "../src/services/SyncCycleService";
 
 describe("ActiveWarSyncResolutionService resolver", () => {
   it("fails closed for positively resolved preparation wars without sync evidence", () => {
@@ -218,6 +221,51 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       syncNumber: null,
       source: "none",
       isDerived: false,
+    });
+  });
+
+  it("persists a locally derived active FWA cycle without points-site evidence", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    let boundInput: Record<string, unknown> | null = null;
+    const syncCycles = {
+      resolveActiveWarCycle: async () => ({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+      }),
+      bindResolvedCanonical: async (input: Record<string, unknown>) => {
+        boundInput = input;
+        return { status: "created" as const, cycle: {} as never };
+      },
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "preparation",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 553,
+      source: "active_war_confirmed",
+      status: "derived",
+      scheduledSyncPostId: "post-b",
+    });
+    expect(boundInput).toMatchObject({
+      guildId: "guild-1",
+      syncNumber: 553,
+      scheduledSyncPostId: "post-b",
+      resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
     });
   });
 });
