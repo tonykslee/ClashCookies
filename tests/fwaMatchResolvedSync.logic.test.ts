@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   resolveCurrentWarScopedSyncRowForTest,
   deriveProjectedOutcomeForTest,
+  formatFwaPointsSyncDisplayForTest,
+  resolveEffectiveFwaOutcomeForTest,
   resolveRenderedSyncNumberForStoredSummaryForTest,
 } from "../src/commands/Fwa";
 import {
@@ -128,17 +130,7 @@ describe("fwa match resolved current sync", () => {
       sameWarPersistedSyncNumber: null,
     });
     const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
-      syncRow: null,
-      fallbackSyncNum: resolution.syncNumber,
-      warId: "2002",
-      warStartTime: new Date("2026-03-12T09:00:00.000Z"),
-      opponentNotFound: false,
-      validationState: {
-        siteCurrent: false,
-        syncRowMissing: true,
-        differences: [],
-        statusLine: "",
-      },
+      canonicalSyncNum: resolution.syncNumber,
     });
 
     expect(renderedSync).toBeNull();
@@ -154,17 +146,7 @@ describe("fwa match resolved current sync", () => {
       sameWarPersistedSyncNumber: null,
     });
     const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
-      syncRow: null,
-      fallbackSyncNum: resolution.syncNumber,
-      warId: "3001",
-      warStartTime: new Date("2026-03-25T04:20:57.000Z"),
-      opponentNotFound: false,
-      validationState: {
-        siteCurrent: false,
-        syncRowMissing: true,
-        differences: [],
-        statusLine: "",
-      },
+      canonicalSyncNum: resolution.syncNumber,
     });
 
     expect(renderedSync).toBeNull();
@@ -199,22 +181,7 @@ describe("fwa match resolved current sync", () => {
       sameWarPersistedSyncNumber: 482,
     });
     const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
-      syncRow: {
-        syncNum: 482,
-        lastKnownSyncNumber: 482,
-        warId: "3002",
-        warStartTime: new Date("2026-03-25T04:21:07.000Z"),
-      },
-      fallbackSyncNum: resolution.syncNumber,
-      warId: "3002",
-      warStartTime: new Date("2026-03-25T04:21:07.000Z"),
-      opponentNotFound: false,
-      validationState: {
-        siteCurrent: false,
-        syncRowMissing: false,
-        differences: [],
-        statusLine: "",
-      },
+      canonicalSyncNum: resolution.syncNumber,
     });
 
     expect(renderedSync).toBe(482);
@@ -237,5 +204,79 @@ describe("fwa match resolved current sync", () => {
 
     expect(outcomeFromResolved).toBe("WIN");
     expect(outcomeFromRendered).toBe(outcomeFromResolved);
+  });
+
+  it("rejects a raw same-war row when canonical resolution rejected it", () => {
+    const resolution = resolveActiveWarSyncNumber({
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "3003",
+      }),
+      latestPersistedSyncNumber: 552,
+      sameWarPersistedSyncNumber: null,
+    });
+    const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
+      canonicalSyncNum: resolution.syncNumber,
+    });
+
+    expect(renderedSync).toBeNull();
+    expect(
+      deriveProjectedOutcomeForTest("B000", "A000", 1000, 1000, renderedSync),
+    ).toBeNull();
+    expect(
+      resolveEffectiveFwaOutcomeForTest({
+        matchType: "FWA",
+        explicitOutcome: null,
+        projectedOutcome: null,
+      }),
+    ).toBe("UNKNOWN");
+  });
+
+  it("keeps a trusted same-war sync identical for display and parity", () => {
+    const resolution = resolveActiveWarSyncNumber({
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "3004",
+      }),
+      latestPersistedSyncNumber: 552,
+      sameWarPersistedSyncNumber: 553,
+    });
+    const renderedSync = resolveRenderedSyncNumberForStoredSummaryForTest({
+      canonicalSyncNum: resolution.syncNumber,
+    });
+
+    expect(renderedSync).toBe(553);
+    expect(formatFwaPointsSyncDisplayForTest(renderedSync)).toBe(
+      "#553 (Low Sync)",
+    );
+    expect(
+      deriveProjectedOutcomeForTest("B000", "A000", 1000, 1000, renderedSync),
+    ).toBe("LOSE");
+    expect(
+      resolveEffectiveFwaOutcomeForTest({
+        matchType: "FWA",
+        explicitOutcome: null,
+        projectedOutcome: "LOSE",
+      }),
+    ).toBe("LOSE");
+  });
+
+  it("excludes needs-validation rows from canonical current-war reuse", () => {
+    const resolved = resolveCurrentWarScopedSyncRowForTest({
+      rows: [
+        {
+          warId: "3005",
+          warStartTime: new Date("2026-03-25T04:21:07.000Z"),
+          opponentTag: "#2NEW",
+          syncNum: 553,
+          needsValidation: true,
+        } as any,
+      ],
+      warId: "3005",
+      warStartTime: new Date("2026-03-25T04:21:07.000Z"),
+      opponentTag: "2NEW",
+    });
+
+    expect(resolved).toBeNull();
   });
 });

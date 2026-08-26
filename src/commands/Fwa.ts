@@ -5675,7 +5675,13 @@ async function buildWarMailEmbedForTag(
   const syncResolution = resolveActiveWarSyncNumberReadOnly({
     identity: syncIdentityForRender,
     latestPersistedSyncNumber: sourceSync,
-    sameWarPersistedSyncNumber: syncRow?.syncNum ?? null,
+    // A needs-validation row is lifecycle-dirty evidence, not an authoritative
+    // current-war sync. Keep it available below for status/diagnostics, but do
+    // not let it participate in parity resolution.
+    sameWarPersistedSyncNumber:
+      syncRow && syncRow.needsValidation === false
+        ? syncRow.syncNum
+        : null,
     activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
     activeCycleConflict: activeCycleDiscovery.conflict,
   });
@@ -12008,7 +12014,7 @@ function buildStoredSyncSummary(input: {
     lastSuccessfulPointsApiFetchAt: Date | null;
     needsValidation: boolean;
   } | null;
-  fallbackSyncNum: number | null;
+  canonicalSyncNum: number | null;
   warId: string | number | null | undefined;
   warStartTime: Date | null;
   opponentNotFound: boolean;
@@ -12018,7 +12024,9 @@ function buildStoredSyncSummary(input: {
   updatedLine: string | null;
   stateLine: string;
 } {
-  const syncNumber = resolveRenderedSyncNumberForStoredSummary(input);
+  const syncNumber = resolveRenderedSyncNumberForStoredSummary({
+    canonicalSyncNum: input.canonicalSyncNum,
+  });
   const syncLine =
     syncNumber !== null && Number.isFinite(syncNumber)
       ? `#${Math.trunc(syncNumber)} (${Math.trunc(syncNumber) % 2 === 0 ? "High Sync" : "Low Sync"})`
@@ -12200,81 +12208,11 @@ function toWarStartMs(value: Date | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** Purpose: compare persisted and active war identities with warId-first precedence. */
-function isSameWarIdentityForSyncSummary(input: {
-  rowWarId: string | null | undefined;
-  rowWarStartTime: Date | null | undefined;
-  activeWarId: string | number | null | undefined;
-  activeWarStartTime: Date | null | undefined;
-}): boolean {
-  const activeWarId = normalizeWarIdText(input.activeWarId);
-  const rowWarId = normalizeWarIdText(input.rowWarId);
-  if (activeWarId) {
-    return rowWarId === activeWarId;
-  }
-  const activeWarStartMs = toWarStartMs(input.activeWarStartTime);
-  const rowWarStartMs = toWarStartMs(input.rowWarStartTime);
-  return (
-    activeWarStartMs !== null &&
-    rowWarStartMs !== null &&
-    Math.trunc(activeWarStartMs) === Math.trunc(rowWarStartMs)
-  );
-}
-
-/** Purpose: resolve sync number rendering with same-war fallback precedence for explicit opponent-not-found cases. */
+/** Purpose: render the exact canonical sync already resolved for this active war. */
 function resolveRenderedSyncNumberForStoredSummary(input: {
-  syncRow: {
-    syncNum: number;
-    lastKnownSyncNumber: number | null;
-    warId: string | null;
-    warStartTime: Date;
-  } | null;
-  fallbackSyncNum: number | null;
-  warId: string | number | null | undefined;
-  warStartTime: Date | null;
-  opponentNotFound: boolean;
-  validationState: SyncValidationState;
+  canonicalSyncNum: number | null;
 }): number | null {
-  const persistedSyncNum = toComparableSyncNumber(input.syncRow?.syncNum);
-  const fallbackSyncNum = toComparableSyncNumber(input.fallbackSyncNum);
-  if (
-    !input.opponentNotFound ||
-    !input.validationState.siteCurrent ||
-    (!normalizeWarIdText(input.warId) &&
-      toWarStartMs(input.warStartTime) === null)
-  ) {
-    return persistedSyncNum ?? fallbackSyncNum;
-  }
-
-  const rowMatchesActiveWar =
-    input.syncRow === null
-      ? false
-      : isSameWarIdentityForSyncSummary({
-          rowWarId: input.syncRow.warId ?? null,
-          rowWarStartTime: input.syncRow.warStartTime ?? null,
-          activeWarId: input.warId,
-          activeWarStartTime: input.warStartTime,
-        });
-  if (input.syncRow !== null && !rowMatchesActiveWar) {
-    return fallbackSyncNum ?? persistedSyncNum;
-  }
-
-  const checkpointSyncNum = toComparableSyncNumber(
-    input.syncRow?.lastKnownSyncNumber ?? null,
-  );
-  const persistedBestSync = Math.max(
-    persistedSyncNum ?? -1,
-    checkpointSyncNum ?? -1,
-  );
-  if (persistedBestSync < 0) {
-    return fallbackSyncNum;
-  }
-  if (fallbackSyncNum === null) {
-    return persistedBestSync;
-  }
-  return fallbackSyncNum > persistedBestSync
-    ? fallbackSyncNum
-    : persistedBestSync;
+  return toComparableSyncNumber(input.canonicalSyncNum);
 }
 
 /** Purpose: classify whether points-site data is current for this matchup, including tracked-clan fallback proof. */
@@ -14742,7 +14680,7 @@ async function buildTrackedMatchOverview(
     const pointsSyncStatus = validationState.statusLine;
     const storedSyncSummary = buildStoredSyncSummary({
       syncRow,
-      fallbackSyncNum: resolvedCurrentSyncNum ?? siteSyncObservedForWrite,
+      canonicalSyncNum: resolvedCurrentSyncNum,
       warId: warIdForReuse,
       warStartTime: warStartTimeForSync,
       opponentNotFound: opponentPoints?.notFound ?? false,
@@ -18761,7 +18699,7 @@ export const Fwa: Command = {
         });
         const storedSyncSummary = buildStoredSyncSummary({
           syncRow,
-          fallbackSyncNum: resolvedCurrentSyncNum ?? siteSyncObservedForWrite,
+          canonicalSyncNum: resolvedCurrentSyncNum,
           warId: warIdForReuse,
           warStartTime: warStartTimeForSync,
           opponentNotFound: opponent.notFound,
