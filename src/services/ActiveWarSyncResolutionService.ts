@@ -4,6 +4,7 @@ import { isMirrorPollingMode } from "./PollingModeService";
 import {
   SyncCycleService,
   type ActiveSyncCycleResolution,
+  type ActiveWarCycleContext,
 } from "./SyncCycleService";
 import { normalizeTag, normalizeTagBare } from "./war-events/core";
 import { SyncCycleResolutionSource, type Prisma } from "@prisma/client";
@@ -538,6 +539,14 @@ export class ActiveWarSyncResolutionService {
     private readonly syncCycles = new SyncCycleService(),
   ) {}
 
+  /** Purpose: load one request-scoped active-cycle chronology context. */
+  async loadActiveWarCycleContext(input: {
+    guildId: string;
+    preparationStartTimes: Array<Date | null | undefined>;
+  }): Promise<ActiveWarCycleContext> {
+    return this.syncCycles.loadActiveWarCycleContext(input);
+  }
+
   /** Purpose: resolve a locally provable active FWA sync and persist it only when explicitly authorized. */
   async resolveActiveWarSyncFromCanonicalCycle(input: {
     guildId: string;
@@ -546,6 +555,7 @@ export class ActiveWarSyncResolutionService {
     matchType?: string | null;
     inferredMatchType?: boolean | null;
     persistCanonical?: boolean;
+    activeCycleContext?: ActiveWarCycleContext;
   }): Promise<{
     syncNumber: number | null;
     source:
@@ -593,12 +603,22 @@ export class ActiveWarSyncResolutionService {
     }
     let resolution: ActiveSyncCycleResolution;
     try {
-      resolution = await this.syncCycles.resolveActiveWarCycle({
-        guildId: input.guildId,
-        preparationStartTime: input.preparationStartTime,
-        matchType: input.matchType ?? null,
-        inferredMatchType: input.inferredMatchType ?? null,
-      });
+      resolution = input.activeCycleContext
+        ? await this.syncCycles.resolveActiveWarCycleFromContext(
+            input.activeCycleContext,
+            {
+              guildId: input.guildId,
+              preparationStartTime: input.preparationStartTime,
+              matchType: input.matchType ?? null,
+              inferredMatchType: input.inferredMatchType ?? null,
+            },
+          )
+        : await this.syncCycles.resolveActiveWarCycle({
+            guildId: input.guildId,
+            preparationStartTime: input.preparationStartTime,
+            matchType: input.matchType ?? null,
+            inferredMatchType: input.inferredMatchType ?? null,
+          });
     } catch (error) {
       console.warn(
         `[sync-cycle] event=active_resolve outcome=failure guild_id=${input.guildId} reason=resolver_exception error=${String(error)}`,
@@ -663,6 +683,15 @@ export class ActiveWarSyncResolutionService {
           reason:
             binding.status === "conflict" ? binding.reason : binding.reason,
         };
+      }
+      if (
+        input.activeCycleContext &&
+        (binding.status === "created" || binding.status === "existing")
+      ) {
+        this.syncCycles.updateActiveWarCycleContext(
+          input.activeCycleContext,
+          binding.cycle,
+        );
       }
     }
     const source =
