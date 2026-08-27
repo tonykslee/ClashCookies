@@ -60,6 +60,13 @@ export type ActiveWarSyncAssignmentSource =
   | "mirror_mode"
   | "unavailable";
 
+export type ActiveWarSyncResolutionProvenance =
+  | "canonical_exact"
+  | "confirmed_canonical"
+  | "inferred_candidate"
+  | "request_local_candidate"
+  | "none";
+
 export type ActiveWarSyncValidationState =
   "matched" | "missing_local" | "missing_external" | "mismatch";
 
@@ -91,6 +98,8 @@ export type ResolveOrAllocateActiveWarSyncNumberInput = {
   sameWarPointsSyncNumber?: number | null;
   matchType?: string | null;
   inferredMatchType?: boolean | null;
+  preparationStartTime?: Date | null;
+  activeCycleContext?: ActiveWarCycleContext | null;
   allowAllocation?: boolean;
   pollCycle?: ActiveWarSyncPollCycle | null;
 };
@@ -608,6 +617,7 @@ export class ActiveWarSyncResolutionService {
     scheduledSyncPostId: string | null;
     syncTime: Date | null;
     reason: string;
+    provenance: ActiveWarSyncResolutionProvenance;
   }> {
     const evidence = classifyFwaEvidence({
       matchType: input.matchType ?? null,
@@ -628,6 +638,7 @@ export class ActiveWarSyncResolutionService {
         source: "none",
         status: "identity_incomplete",
         reason: "identity_incomplete",
+        provenance: "none",
       };
     }
     if (
@@ -640,6 +651,7 @@ export class ActiveWarSyncResolutionService {
         source: "none",
         status: "not_fwa",
         reason: "fwa_evidence_unresolved",
+        provenance: "none",
       };
     }
     let resolution: ActiveSyncCycleResolution;
@@ -669,6 +681,7 @@ export class ActiveWarSyncResolutionService {
         source: "none",
         status: "unresolved",
         reason: "resolver_exception",
+        provenance: "none",
       };
     }
     if (resolution.status === "conflict" || resolution.status === "ambiguous") {
@@ -679,6 +692,7 @@ export class ActiveWarSyncResolutionService {
         scheduledSyncPostId: resolution.scheduledSyncPostId,
         syncTime: resolution.syncTime,
         reason: resolution.reason,
+        provenance: "none",
       };
     }
     if (
@@ -692,6 +706,7 @@ export class ActiveWarSyncResolutionService {
         source: "none",
         status: resolution.status,
         reason: resolution.reason,
+        provenance: "none",
       };
     }
     const sameWarPersistedSyncNumber = normalizeSyncNumber(
@@ -701,7 +716,7 @@ export class ActiveWarSyncResolutionService {
       sameWarPersistedSyncNumber !== null &&
       sameWarPersistedSyncNumber !== resolution.syncNumber
     ) {
-      if (input.activeCycleContext) {
+      if (input.activeCycleContext && input.shareDerivedCandidate !== false) {
         this.syncCycles.markActiveWarCycleConflict?.(
           input.activeCycleContext,
           {
@@ -718,6 +733,7 @@ export class ActiveWarSyncResolutionService {
         scheduledSyncPostId: resolution.scheduledSyncPostId,
         syncTime: resolution.syncTime,
         reason: "points_sync_conflicts_with_active_cycle",
+        provenance: "none",
       };
     }
     const isFwaEvidence =
@@ -728,8 +744,14 @@ export class ActiveWarSyncResolutionService {
         source: "none",
         status: "not_fwa",
         reason: "fwa_evidence_unresolved",
+        provenance: "none",
       };
     }
+    const exactCanonicalCycle =
+      resolution.status === "exact" &&
+      (input.activeCycleContext?.syncCycles?.some(
+        (cycle) => cycle.syncTime.getTime() === resolution.syncTime!.getTime(),
+      ) ?? resolution.resolutionSource !== null);
     if (resolution.status === "exact" && !isFwaEvidence) {
       return {
         syncNumber: resolution.syncNumber,
@@ -738,6 +760,9 @@ export class ActiveWarSyncResolutionService {
         scheduledSyncPostId: resolution.scheduledSyncPostId,
         syncTime: resolution.syncTime,
         reason: resolution.reason,
+        provenance: exactCanonicalCycle
+          ? "canonical_exact"
+          : "request_local_candidate",
       };
     }
     if (
@@ -755,6 +780,7 @@ export class ActiveWarSyncResolutionService {
         },
       );
     }
+    let canonicalPersistenceSucceeded = false;
     if (
       (resolution.status === "derived" ||
         (resolution.status === "exact" &&
@@ -768,6 +794,7 @@ export class ActiveWarSyncResolutionService {
           source: "none",
           status: "mirror_mode",
           reason: "mirror_does_not_resolve_sync_cycles",
+          provenance: "none",
         };
       }
       const binding = await this.syncCycles.bindResolvedCanonical({
@@ -786,6 +813,7 @@ export class ActiveWarSyncResolutionService {
           syncTime: resolution.syncTime,
           reason:
             binding.status === "conflict" ? binding.reason : binding.reason,
+          provenance: "none",
         };
       }
       if (
@@ -796,6 +824,9 @@ export class ActiveWarSyncResolutionService {
           input.activeCycleContext,
           binding.cycle,
         );
+      }
+      if (binding.status === "created" || binding.status === "existing") {
+        canonicalPersistenceSucceeded = true;
       }
     }
     const source =
@@ -809,6 +840,13 @@ export class ActiveWarSyncResolutionService {
       scheduledSyncPostId: resolution.scheduledSyncPostId,
       syncTime: resolution.syncTime,
       reason: resolution.reason,
+      provenance: canonicalPersistenceSucceeded
+        ? "confirmed_canonical"
+        : resolution.status === "exact"
+          ? exactCanonicalCycle
+            ? "canonical_exact"
+            : "request_local_candidate"
+          : "inferred_candidate",
     };
   }
 
@@ -853,11 +891,17 @@ export class ActiveWarSyncResolutionService {
       currentWarSyncNumber,
       sameWarPointsSyncNumber,
     });
+    const preparedActiveCycle =
+      input.activeCycleContext !== null &&
+      input.activeCycleContext !== undefined &&
+      input.preparationStartTime instanceof Date &&
+      Number.isFinite(input.preparationStartTime.getTime());
     const cachedActiveSyncNumber = normalizeAssignmentSyncNumber(
       input.pollCycle?.activeSyncNumber ?? null,
     );
     const shouldReadActiveCycleEvidence =
-      !input.pollCycle || input.pollCycle.activeSyncEvidenceChecked !== true;
+      !preparedActiveCycle &&
+      (!input.pollCycle || input.pollCycle.activeSyncEvidenceChecked !== true);
     const persistedActiveCycleDiscovery = shouldReadActiveCycleEvidence
       ? await this.findPersistedActiveSyncNumber()
       : null;
@@ -919,6 +963,134 @@ export class ActiveWarSyncResolutionService {
       return resolution;
     };
 
+    // A prepared context is the request-scoped source of active chronology.
+    // It deliberately bypasses the legacy cross-clan CurrentWar/points scan;
+    // those rows are corroboration only and cannot replace SyncCycle chronology.
+    if (preparedActiveCycle) {
+      if (isMirrorPollingMode()) {
+        return finish("mirror_mode", {
+          syncNumber: null,
+          proposedSyncNumber: null,
+          usable: false,
+          source: "mirror_mode",
+          shouldPersist: false,
+          persistence: "not_needed",
+          ...baseResult,
+          activeCycleSyncNumber: null,
+          persistedSyncNumber: null,
+          persistedRevisionAt: null,
+        });
+      }
+      const cycle = await this.resolveActiveWarSyncFromCanonicalCycle({
+        guildId,
+        identity: input.identity,
+        preparationStartTime: input.preparationStartTime,
+        matchType: input.matchType ?? null,
+        inferredMatchType: input.inferredMatchType ?? null,
+        sameWarPersistedSyncNumber: sameWarPointsSyncNumber,
+        activeCycleContext: input.activeCycleContext ?? undefined,
+        persistCanonical:
+          input.allowAllocation !== false && evidence === "confirmed_fwa",
+        shareDerivedCandidate: false,
+      });
+      const cycleIsConflict =
+        cycle.status === "conflict" || cycle.status === "ambiguous";
+      if (cycleIsConflict) {
+        return finish("active_cycle_conflict", {
+          syncNumber: null,
+          proposedSyncNumber: null,
+          usable: false,
+          source: "active_cycle_conflict",
+          shouldPersist: false,
+          persistence: "conflict",
+          ...baseResult,
+          activeCycleSyncNumber: null,
+          persistedSyncNumber: null,
+          persistedRevisionAt: null,
+        });
+      }
+      if (cycle.syncNumber === null) {
+        return finish("prepared_active_cycle_unavailable", {
+          syncNumber: null,
+          proposedSyncNumber: null,
+          usable: false,
+          source:
+            cycle.status === "not_fwa" ? "not_fwa" : "unavailable",
+          shouldPersist: false,
+          persistence: "not_needed",
+          ...baseResult,
+          activeCycleSyncNumber: null,
+          persistedSyncNumber: null,
+          persistedRevisionAt: null,
+        });
+      }
+      const currentMaterializedSyncNumber =
+        currentWarCanonicalSyncNumber ?? currentWarLegacySyncNumber;
+      const canonicalCycleMayMaterialize =
+        cycle.provenance === "canonical_exact" ||
+        cycle.provenance === "confirmed_canonical";
+      if (!canonicalCycleMayMaterialize) {
+        return finish("prepared_active_cycle_candidate", {
+          syncNumber: cycle.syncNumber,
+          proposedSyncNumber: cycle.syncNumber,
+          usable: true,
+          source: "active_cycle_reuse",
+          shouldPersist: false,
+          persistence: "not_needed",
+          ...baseResult,
+          activeCycleSyncNumber: cycle.syncNumber,
+          persistedSyncNumber:
+            currentMaterializedSyncNumber === cycle.syncNumber
+              ? cycle.syncNumber
+              : null,
+          persistedRevisionAt: null,
+        });
+      }
+      if (currentMaterializedSyncNumber === cycle.syncNumber) {
+        return finish("prepared_active_cycle_reuse", {
+          syncNumber: cycle.syncNumber,
+          proposedSyncNumber: cycle.syncNumber,
+          usable: true,
+          source: "active_cycle_reuse",
+          shouldPersist: false,
+          persistence: "idempotent",
+          ...baseResult,
+          activeCycleSyncNumber: cycle.syncNumber,
+          persistedSyncNumber: cycle.syncNumber,
+          persistedRevisionAt: null,
+        });
+      }
+      const persistence =
+        await this.reconcileCurrentWarMaterializedSyncFromCanonicalCycle({
+          guildId,
+          clanTag,
+          identity: input.identity,
+          expectedRevisionAt: expectedCurrentWarRevisionAt,
+          expectedCanonicalSyncNumber: currentWarCanonicalSyncNumber,
+          expectedLegacySyncNumber: currentWarLegacySyncNumber,
+          canonicalSyncNumber: cycle.syncNumber,
+        });
+      const usable =
+        persistence.state === "saved" || persistence.state === "idempotent";
+      return finish("prepared_active_cycle_reuse", {
+        syncNumber: usable ? cycle.syncNumber : null,
+        proposedSyncNumber: cycle.syncNumber,
+        usable,
+        source:
+          persistence.state === "conflict" ||
+          persistence.state === "revision_changed" ||
+          persistence.state === "identity_changed"
+            ? "active_cycle_conflict"
+            : "active_cycle_reuse",
+        shouldPersist: persistence.state === "saved",
+        persistence: persistence.state,
+        ...baseResult,
+        activeCycleSyncNumber: cycle.syncNumber,
+        persistedSyncNumber: usable ? cycle.syncNumber : null,
+        persistedRevisionAt: usable ? persistence.persistedRevisionAt : null,
+      });
+    }
+
     if (isMirrorPollingMode()) {
       return finish("mirror_mode", {
         syncNumber: null,
@@ -975,7 +1147,7 @@ export class ActiveWarSyncResolutionService {
       });
     }
 
-    if (sameWarPointsSyncNumber !== null) {
+    if (!preparedActiveCycle && sameWarPointsSyncNumber !== null) {
       if (
         currentWarCanonicalSyncNumber !== null &&
         currentWarCanonicalSyncNumber !== sameWarPointsSyncNumber
@@ -1309,6 +1481,127 @@ export class ActiveWarSyncResolutionService {
     if (cachedSyncNumber === null) {
       pollCycle.recordActiveSyncNumber(resolvedSyncNumber);
     }
+  }
+
+  /** Purpose: reconcile only the materialized CurrentWar copy to an already-canonical SyncCycle. */
+  private async reconcileCurrentWarMaterializedSyncFromCanonicalCycle(input: {
+    guildId: string;
+    clanTag: string;
+    identity: ActiveWarSyncIdentity;
+    expectedRevisionAt: Date | null;
+    expectedCanonicalSyncNumber: number | null;
+    expectedLegacySyncNumber: number | null;
+    canonicalSyncNumber: number;
+  }): Promise<{
+    state: ActiveWarSyncPersistenceState;
+    persistedRevisionAt: Date | null;
+  }> {
+    const canonicalSyncNumber = normalizeAssignmentSyncNumber(
+      input.canonicalSyncNumber,
+    );
+    const expectedCanonicalSyncNumber = normalizeAssignmentSyncNumber(
+      input.expectedCanonicalSyncNumber,
+    );
+    const expectedLegacySyncNumber = normalizeAssignmentSyncNumber(
+      input.expectedLegacySyncNumber,
+    );
+    const expectedRevisionAt = normalizeDate(input.expectedRevisionAt);
+    if (canonicalSyncNumber === null) {
+      return { state: "not_needed", persistedRevisionAt: null };
+    }
+    if (expectedCanonicalSyncNumber === canonicalSyncNumber) {
+      return { state: "idempotent", persistedRevisionAt: expectedRevisionAt };
+    }
+    if (!expectedRevisionAt) {
+      return { state: "revision_changed", persistedRevisionAt: null };
+    }
+
+    const dbClanTag = normalizeTag(input.clanTag) ?? "";
+    const dbOpponentTag = input.identity.opponentTag
+      ? normalizeTag(input.identity.opponentTag)
+      : null;
+    const assignmentRevisionAt = nextCurrentWarRevision(expectedRevisionAt);
+    const where: Parameters<typeof prisma.currentWar.updateMany>[0]["where"] = {
+      guildId: input.guildId,
+      clanTag: dbClanTag,
+      updatedAt: expectedRevisionAt,
+      syncNumber: expectedCanonicalSyncNumber,
+      syncNum: expectedLegacySyncNumber,
+      state: { in: ["preparation", "inWar"] },
+      ...(input.identity.warStartTime
+        ? { startTime: input.identity.warStartTime }
+        : {}),
+      ...(input.identity.opponentTag ? { opponentTag: dbOpponentTag } : {}),
+      ...(input.identity.warId !== null
+        ? { warId: Number(input.identity.warId) }
+        : {}),
+    };
+    const updated = await prisma.currentWar.updateMany({
+      where,
+      data: {
+        syncNumber: canonicalSyncNumber,
+        updatedAt: assignmentRevisionAt,
+      },
+    });
+    if (updated.count === 1) {
+      return { state: "saved", persistedRevisionAt: assignmentRevisionAt };
+    }
+    if (updated.count > 1) {
+      return { state: "conflict", persistedRevisionAt: null };
+    }
+
+    const exactRow = await prisma.currentWar.findFirst({
+      where: {
+        guildId: input.guildId,
+        clanTag: dbClanTag,
+        state: { in: ["preparation", "inWar"] },
+        ...(input.identity.warStartTime
+          ? { startTime: input.identity.warStartTime }
+          : {}),
+        ...(input.identity.opponentTag ? { opponentTag: dbOpponentTag } : {}),
+        ...(input.identity.warId !== null
+          ? { warId: Number(input.identity.warId) }
+          : {}),
+      },
+      select: {
+        syncNumber: true,
+        syncNum: true,
+        warId: true,
+        startTime: true,
+        opponentTag: true,
+        state: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+    if (exactRow) {
+      const observedSyncNumber =
+        normalizeAssignmentSyncNumber(exactRow.syncNumber) ??
+        normalizeAssignmentSyncNumber(exactRow.syncNum);
+      if (exactRow.updatedAt.getTime() !== expectedRevisionAt.getTime()) {
+        return { state: "revision_changed", persistedRevisionAt: null };
+      }
+      if (observedSyncNumber === canonicalSyncNumber) {
+        return { state: "idempotent", persistedRevisionAt: exactRow.updatedAt };
+      }
+      return { state: "conflict", persistedRevisionAt: null };
+    }
+
+    const replacementRow = await prisma.currentWar.findFirst({
+      where: {
+        guildId: input.guildId,
+        clanTag: dbClanTag,
+        state: { in: ["preparation", "inWar"] },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        updatedAt: true,
+      },
+    });
+    return {
+      state: replacementRow ? "identity_changed" : "conflict",
+      persistedRevisionAt: null,
+    };
   }
 
   /** Purpose: persist one canonical sync number to the exact current-war identity. */
