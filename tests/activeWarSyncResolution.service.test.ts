@@ -760,6 +760,61 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     });
   });
 
+  it("does not mutate the shared context during a frozen post-prime resolution", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const context = {
+      guildId: "guild-1",
+      minPreparationStartTime: preparationStartTime,
+      lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+      maxPreparationStartTime: preparationStartTime,
+      scheduleCoverageStart: preparationStartTime,
+      scheduledSyncPosts: [],
+      syncCycles: [],
+      previousAnchor: null,
+      derivedCandidates: [],
+      activeCycleConflicts: [],
+      readErrorReason: null,
+    } as ActiveWarCycleContext;
+    const updateCandidate = vi.fn();
+    const markConflict = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      updateActiveWarCycleCandidateContext: updateCandidate,
+      markActiveWarCycleConflict: markConflict,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      activeCycleContext: context,
+      sameWarPersistedSyncNumber: 552,
+      persistCanonical: false,
+      shareDerivedCandidate: false,
+    });
+
+    expect(updateCandidate).not.toHaveBeenCalled();
+    expect(markConflict).not.toHaveBeenCalled();
+    expect(context.derivedCandidates).toEqual([]);
+    expect(context.activeCycleConflicts).toEqual([]);
+  });
+
   it.each(["BL", "MM", "SKIP"])(
     "never persists an active FWA cycle for confirmed %s evidence",
     async (matchType) => {

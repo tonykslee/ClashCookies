@@ -1787,10 +1787,14 @@ function resolveExactSameWarPointsSyncNumber(input: {
   pointsWarStartTime: Date | null | undefined;
   pointsOpponentTag: string | null | undefined;
   pointsSyncNumber: number | null | undefined;
+  pointsNeedsValidation?: boolean | null | undefined;
   intendedWarId: string | number | null | undefined;
   intendedWarStartTime: Date | null | undefined;
   intendedOpponentTag: string | null | undefined;
 }): number | null {
+  if (input.pointsNeedsValidation !== false) {
+    return null;
+  }
   const pointsSyncNumber = toValidSyncNumber(input.pointsSyncNumber);
   if (pointsSyncNumber === null) {
     return null;
@@ -2358,6 +2362,24 @@ export class WarEventLogService {
       const liveWar = snapshotContext.currentWarSnapshotByClanTag.get(
         normalizeTag(target.clanTag),
       );
+      const persistedState = deriveState(target.currentWarState ?? "notInWar");
+      const liveState = liveWar
+        ? deriveState(String(liveWar.state ?? ""))
+        : null;
+      const persistedWarIsActive =
+        persistedState === "preparation" || persistedState === "inWar";
+      const liveWarNeedsEndedWarCoverage =
+        liveState === "notInWar" && persistedWarIsActive;
+      const liveWarFetchNeedsRecoveryCoverage =
+        liveState === null && persistedWarIsActive;
+      if (
+        !liveWarNeedsEndedWarCoverage &&
+        !liveWarFetchNeedsRecoveryCoverage &&
+        liveState !== "preparation" &&
+        liveState !== "inWar"
+      ) {
+        continue;
+      }
       const preparationStartTime = resolvePollActivePreparationStartTime({
         liveWar,
         persistedPreparationStartTime: target.currentWarPrepStartTime,
@@ -2443,10 +2465,7 @@ export class WarEventLogService {
                 row.guildId === target.guildId &&
                 normalizeTag(row.clanTag) === normalizeTag(target.clanTag) &&
                 row.warStartTime.getTime() === liveStartTime.getTime() &&
-                normalizeTag(row.opponentTag) === liveOpponentTag &&
-                (row.warId === null ||
-                  target.currentWarId === null ||
-                  Number(row.warId) === target.currentWarId),
+                normalizeTag(row.opponentTag) === liveOpponentTag,
             );
             const pointsSyncNumber = pointsRow
               ? toValidSyncNumber(pointsRow.syncNum)
@@ -2467,18 +2486,19 @@ export class WarEventLogService {
               warStartTime: liveStartTime,
               opponentTag: liveOpponentTag,
             });
+            const currentWarMatchType = sameWar
+              ? target.currentWarMatchType
+              : null;
+            const effectiveMatchType =
+              currentWarMatchType ?? storedMatchType?.matchType ?? null;
             requests.push({
               guildId,
               identity,
               preparationStartTime,
-              matchType: sameWar
-                ? target.currentWarMatchType ?? storedMatchType?.matchType ?? null
-                : null,
-              inferredMatchType: sameWar
-                ? target.currentWarMatchType
-                  ? target.currentWarInferredMatchType
-                  : storedMatchType?.inferred ?? null
-                : null,
+              matchType: effectiveMatchType,
+              inferredMatchType: currentWarMatchType
+                ? target.currentWarInferredMatchType
+                : storedMatchType?.inferred ?? null,
               sameWarPersistedSyncNumber: pointsSyncNumber,
             });
           }
@@ -2981,7 +3001,7 @@ export class WarEventLogService {
         ? await this.coc.getCurrentWar(sub.clanTag).catch(() => null)
         : null;
     const activeSync =
-      params.source === "current"
+      params.source === "current" && sub.pointsNeedsValidation === false
         ? sub.pointsSyncNum ?? null
         : null;
     const lastWarLogEntry =
@@ -3132,6 +3152,40 @@ export class WarEventLogService {
         : null;
     const sameWarCurrentEvidence =
       params.source === "current" && currentWarIdentity?.sameWar === true;
+    const previewSameWarPointsSyncNumber =
+      params.source === "current"
+        ? resolveExactSameWarPointsSyncNumber({
+            guildId: sub.guildId,
+            clanTag: sub.clanTag,
+            pointsWarId: sub.pointsWarId,
+            pointsWarStartTime: sub.pointsWarStartTime,
+            pointsOpponentTag: sub.pointsOpponentTag,
+            pointsSyncNumber: sub.pointsSyncNum,
+            pointsNeedsValidation: sub.pointsNeedsValidation,
+            intendedWarId: sameWarCurrentEvidence ? sub.warId : null,
+            intendedWarStartTime: testWarStartTime,
+            intendedOpponentTag: opponentTag,
+          })
+        : null;
+    const validatedStoredMatchEvidence =
+      previewSameWarPointsSyncNumber !== null
+        ? resolveMatchTypeFromStoredSyncRow({
+            syncRow: {
+              opponentTag: sub.pointsOpponentTag ?? "",
+              isFwa: sub.pointsIsFwa,
+              lastKnownMatchType: sub.pointsLastKnownMatchType,
+            },
+            opponentTag,
+          })
+        : null;
+    const currentPreviewMatchType = sameWarCurrentEvidence
+      ? sub.matchType ?? validatedStoredMatchEvidence?.matchType ?? null
+      : validatedStoredMatchEvidence?.matchType ?? null;
+    const currentPreviewInferredMatchType = sameWarCurrentEvidence
+      ? sub.matchType
+        ? sub.inferredMatchType
+        : validatedStoredMatchEvidence?.inferred ?? null
+      : validatedStoredMatchEvidence?.inferred ?? null;
     const previewPreparationStartTime =
       params.source === "current"
         ? resolvePollActivePreparationStartTime({
@@ -3162,23 +3216,9 @@ export class WarEventLogService {
           opponentTag,
         }),
         preparationStartTime: previewPreparationStartTime,
-        matchType: sameWarCurrentEvidence ? sub.matchType : null,
-        inferredMatchType: sameWarCurrentEvidence
-          ? sub.inferredMatchType
-          : null,
-        sameWarPersistedSyncNumber: sameWarCurrentEvidence
-          ? resolveExactSameWarPointsSyncNumber({
-              guildId: sub.guildId,
-              clanTag: sub.clanTag,
-              pointsWarId: sub.pointsWarId,
-              pointsWarStartTime: sub.pointsWarStartTime,
-              pointsOpponentTag: sub.pointsOpponentTag,
-              pointsSyncNumber: sub.pointsSyncNum,
-              intendedWarId: sub.warId,
-              intendedWarStartTime: testWarStartTime,
-              intendedOpponentTag: opponentTag,
-            })
-          : null,
+        matchType: currentPreviewMatchType,
+        inferredMatchType: currentPreviewInferredMatchType,
+        sameWarPersistedSyncNumber: previewSameWarPointsSyncNumber,
         activeCycleContext,
         persistCanonical: false,
         shareDerivedCandidate: false,
@@ -5176,6 +5216,7 @@ export class WarEventLogService {
       pointsWarStartTime: sub.pointsWarStartTime,
       pointsOpponentTag: sub.pointsOpponentTag,
       pointsSyncNumber: sub.pointsSyncNum,
+      pointsNeedsValidation: sub.pointsNeedsValidation,
       intendedWarId: resolvedWarIdText,
       intendedWarStartTime: nextWarStartTime,
       intendedOpponentTag: intendedActiveWarOpponentTag,
@@ -5969,6 +6010,7 @@ export class WarEventLogService {
               pointsWarStartTime: params.sub.pointsWarStartTime,
               pointsOpponentTag: params.sub.pointsOpponentTag,
               pointsSyncNumber: params.sub.pointsSyncNum,
+              pointsNeedsValidation: params.sub.pointsNeedsValidation,
               intendedWarId: params.sub.warId,
               intendedWarStartTime: params.sub.startTime,
               intendedOpponentTag: recoveryOpponentTag,
@@ -9004,7 +9046,10 @@ export class WarEventLogService {
         warStartTime: input.warStartTime,
       })
       .catch(() => null);
-    const sameWarPersistedSyncNumber = toValidSyncNumber(sameWarSync?.syncNum ?? null);
+    const sameWarPersistedSyncNumber =
+      sameWarSync?.needsValidation === false
+        ? toValidSyncNumber(sameWarSync.syncNum ?? null)
+        : null;
     const postedSyncNumber = toValidSyncNumber(input.postedSyncNumber);
     const preferredBaseline = toValidSyncNumber(input.previousSyncNumber ?? null);
     const needsLatestPersistedBaseline =

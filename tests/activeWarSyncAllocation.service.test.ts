@@ -1643,4 +1643,66 @@ describe("ActiveWarSyncResolutionService allocation", () => {
       guildId: null,
     });
   });
+
+  it("does not materialize an inferred request-local candidate into CurrentWar", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const context = {
+      guildId: testGuildId,
+      minPreparationStartTime: preparationStartTime,
+      lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+      maxPreparationStartTime: preparationStartTime,
+      scheduleCoverageStart: preparationStartTime,
+      scheduledSyncPosts: [],
+      syncCycles: [],
+      previousAnchor: null,
+      derivedCandidates: [],
+      activeCycleConflicts: [],
+      readErrorReason: null,
+    };
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      bindResolvedCanonical,
+      updateActiveWarCycleCandidateContext: vi.fn(),
+    } as any;
+    const service = new ActiveWarSyncResolutionService(
+      { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+      syncCycles,
+    );
+    prismaMock.currentWar.findFirst.mockResolvedValue(null);
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2QG2C08UP",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: "4013",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime,
+      activeCycleContext: context,
+      matchType: "FWA",
+      inferredMatchType: true,
+      expectedCurrentWarRevisionAt: allocationRevision,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 553,
+      usable: true,
+      shouldPersist: false,
+      persistence: "not_needed",
+    });
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+  });
 });

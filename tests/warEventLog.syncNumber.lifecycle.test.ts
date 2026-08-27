@@ -595,12 +595,17 @@ describe("exact same-war points identity validation", () => {
       pointsWarStartTime: intendedWarStartTime,
       pointsOpponentTag: intendedOpponentTag,
       pointsSyncNumber: 535,
+      pointsNeedsValidation: false,
       ...overrides,
     });
   }
 
   it("accepts an exact same-war points row", () => {
     expect(resolvePointsSync()).toBe(535);
+  });
+
+  it("rejects a dirty same-war points row as corroboration", () => {
+    expect(resolvePointsSync({ pointsNeedsValidation: true })).toBeNull();
   });
 
   it("rejects a different start time", () => {
@@ -1334,7 +1339,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
       expect.objectContaining({
         currentWarCanonicalSyncNumber: 534,
         currentWarLegacySyncNumber: 534,
-        sameWarPointsSyncNumber: 534,
+        sameWarPointsSyncNumber: null,
       }),
     );
     expectNoPreliminarySyncClear();
@@ -1425,6 +1430,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([
       makeSubscriptionRow({
         state: "preparation",
+        pointsNeedsValidation: false,
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
@@ -1467,6 +1473,7 @@ describe("WarEventLogService sync-number lifecycle", () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([
       makeSubscriptionRow({
         state: "preparation",
+        pointsNeedsValidation: false,
         updatedAt: currentWarStore.state.updatedAt,
       }),
     ]);
