@@ -1705,4 +1705,356 @@ describe("ActiveWarSyncResolutionService allocation", () => {
     expect(bindResolvedCanonical).not.toHaveBeenCalled();
     expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
   });
+
+  it("lets canonical SyncCycle chronology repair a stale materialized CurrentWar copy", async () => {
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const currentWarStore = createCurrentWarStore({
+      clanTag: "#2YUYLJCGV",
+      warId: 4014,
+      syncNumber: 552,
+      syncNum: 552,
+      startTime: syncTime,
+      opponentTag: "#2RU0J9QQJ",
+      updatedAt: allocationRevision,
+    });
+    prismaMock.currentWar.updateMany.mockImplementation(
+      currentWarStore.updateMany,
+    );
+    const cycle = { syncNumber: 553, syncTime } as never;
+    const context = {
+      guildId: testGuildId,
+      minPreparationStartTime: preparationStartTime,
+      lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+      maxPreparationStartTime: preparationStartTime,
+      scheduleCoverageStart: preparationStartTime,
+      scheduledSyncPosts: [],
+      syncCycles: [cycle],
+      previousAnchor: null,
+      derivedCandidates: [],
+      activeCycleConflicts: [],
+      readErrorReason: null,
+    };
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "exact" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-canonical",
+        syncTime,
+        previousSyncNumber: null,
+        reason: "exact_sync_cycle",
+        resolutionSource: null,
+      }),
+      updateActiveWarCycleContext: vi.fn(),
+      bindResolvedCanonical: vi.fn(),
+    } as any;
+    const service = new ActiveWarSyncResolutionService(
+      { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+      syncCycles,
+    );
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#2YUYLJCGV",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: 4014,
+        warStartTime: syncTime,
+        opponentTag: "#2RU0J9QQJ",
+      }),
+      expectedCurrentWarRevisionAt: allocationRevision,
+      currentWarSyncNumber: 552,
+      currentWarLegacySyncNumber: 552,
+      preparationStartTime,
+      matchType: "BL",
+      inferredMatchType: false,
+      activeCycleContext: context,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 553,
+      source: "active_cycle_reuse",
+      persistence: "saved",
+      usable: true,
+    });
+    expect(syncCycles.bindResolvedCanonical).not.toHaveBeenCalled();
+    expect(currentWarStore.state.syncNumber).toBe(553);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          updatedAt: allocationRevision,
+          syncNumber: 552,
+          syncNum: 552,
+          startTime: syncTime,
+          opponentTag: "#2RU0J9QQJ",
+        }),
+        data: expect.objectContaining({ syncNumber: 553 }),
+      }),
+    );
+  });
+
+  it.each(["created", "existing"] as const)(
+    "materializes a successfully %s confirmed candidate in the same resolution",
+    async (bindingStatus) => {
+      const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+      const syncTime = new Date("2026-04-13T08:00:00.000Z");
+      const currentWarStore = createCurrentWarStore({
+        clanTag: "#2YUYLJCGV",
+        warId: 4018,
+        syncNumber: 552,
+        syncNum: 552,
+        startTime: syncTime,
+        opponentTag: "#2RU0J9QQJ",
+        updatedAt: allocationRevision,
+      });
+      prismaMock.currentWar.updateMany.mockImplementation(
+        currentWarStore.updateMany,
+      );
+      const bindResolvedCanonical = vi.fn(async () => ({
+        status: bindingStatus,
+        cycle: { syncNumber: 553, syncTime } as never,
+      }));
+      const service = new ActiveWarSyncResolutionService(
+        { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+        {
+          resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+            status: "exact" as const,
+            syncNumber: 553,
+            scheduledSyncPostId: "post-promote",
+            syncTime,
+            previousSyncNumber: null,
+            reason: "request_local_active_cycle_candidate",
+            resolutionSource: null,
+          }),
+          bindResolvedCanonical,
+          updateActiveWarCycleContext: vi.fn(),
+        } as any,
+      );
+
+      const result = await service.resolveOrAllocateActiveSyncNumber({
+        guildId: testGuildId,
+        clanTag: "#2YUYLJCGV",
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warId: 4018,
+          warStartTime: syncTime,
+          opponentTag: "#2RU0J9QQJ",
+        }),
+        expectedCurrentWarRevisionAt: allocationRevision,
+        currentWarSyncNumber: 552,
+        currentWarLegacySyncNumber: 552,
+        preparationStartTime,
+        matchType: "FWA",
+        inferredMatchType: false,
+        activeCycleContext: {
+          guildId: testGuildId,
+          minPreparationStartTime: preparationStartTime,
+          lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+          maxPreparationStartTime: preparationStartTime,
+          scheduleCoverageStart: preparationStartTime,
+          scheduledSyncPosts: [],
+          syncCycles: [],
+          previousAnchor: null,
+          derivedCandidates: [],
+          activeCycleConflicts: [],
+          readErrorReason: null,
+        },
+      });
+
+      expect(result).toMatchObject({
+        syncNumber: 553,
+        usable: true,
+        persistence: "saved",
+        shouldPersist: true,
+      });
+      expect(bindResolvedCanonical).toHaveBeenCalledTimes(1);
+      expect(currentWarStore.state.syncNumber).toBe(553);
+    },
+  );
+
+  it("does not let an inferred candidate veto or materialize over CurrentWar", async () => {
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-inferred",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      bindResolvedCanonical,
+    } as any;
+    const service = new ActiveWarSyncResolutionService(
+      { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+      syncCycles,
+    );
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#INFERRED",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: 4015,
+        warStartTime: syncTime,
+        opponentTag: "#OPPINFERRED",
+      }),
+      expectedCurrentWarRevisionAt: allocationRevision,
+      currentWarSyncNumber: 552,
+      preparationStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      activeCycleContext: {
+        guildId: testGuildId,
+        minPreparationStartTime: preparationStartTime,
+        lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+        maxPreparationStartTime: preparationStartTime,
+        scheduleCoverageStart: preparationStartTime,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
+        readErrorReason: null,
+      },
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: 553,
+      usable: true,
+      shouldPersist: false,
+      persistence: "not_needed",
+    });
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for a validated points mismatch without reconciling CurrentWar", async () => {
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "exact" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-canonical",
+        syncTime,
+        previousSyncNumber: null,
+        reason: "exact_sync_cycle",
+        resolutionSource: null,
+      }),
+      bindResolvedCanonical: vi.fn(),
+    } as any;
+    const service = new ActiveWarSyncResolutionService(
+      { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+      syncCycles,
+    );
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#POINTSMISMATCH",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: 4016,
+        warStartTime: syncTime,
+        opponentTag: "#OPPPOINTS",
+      }),
+      expectedCurrentWarRevisionAt: allocationRevision,
+      currentWarSyncNumber: 552,
+      sameWarPointsSyncNumber: 552,
+      preparationStartTime,
+      matchType: "FWA",
+      inferredMatchType: true,
+      activeCycleContext: {
+        guildId: testGuildId,
+        minPreparationStartTime: preparationStartTime,
+        lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+        maxPreparationStartTime: preparationStartTime,
+        scheduleCoverageStart: preparationStartTime,
+        scheduledSyncPosts: [],
+        syncCycles: [],
+        previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
+        readErrorReason: null,
+      },
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "active_cycle_conflict",
+      usable: false,
+      persistence: "conflict",
+    });
+    expect(prismaMock.currentWar.updateMany).not.toHaveBeenCalled();
+    expect(syncCycles.bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
+  it("fails safely when canonical CurrentWar reconciliation loses the row race", async () => {
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 0 });
+    prismaMock.currentWar.findFirst.mockResolvedValueOnce({
+      syncNumber: 552,
+      syncNum: 552,
+      warId: 4999,
+      startTime: syncTime,
+      opponentTag: "#OPPNEW",
+      state: "inWar",
+      updatedAt: new Date("2026-04-13T08:01:00.000Z"),
+    });
+    const service = new ActiveWarSyncResolutionService(
+      { findLatestSyncNum: vi.fn().mockResolvedValue(552) } as any,
+      {
+        resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+          status: "exact" as const,
+          syncNumber: 553,
+          scheduledSyncPostId: "post-race",
+          syncTime,
+          previousSyncNumber: null,
+          reason: "exact_sync_cycle",
+          resolutionSource: null,
+        }),
+      } as any,
+    );
+
+    const result = await service.resolveOrAllocateActiveSyncNumber({
+      guildId: testGuildId,
+      clanTag: "#RACE",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: 4017,
+        warStartTime: syncTime,
+        opponentTag: "#OPPRACE",
+      }),
+      expectedCurrentWarRevisionAt: allocationRevision,
+      currentWarSyncNumber: 552,
+      currentWarLegacySyncNumber: 552,
+      preparationStartTime,
+      matchType: "BL",
+      inferredMatchType: false,
+      activeCycleContext: {
+        guildId: testGuildId,
+        minPreparationStartTime: preparationStartTime,
+        lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+        maxPreparationStartTime: preparationStartTime,
+        scheduleCoverageStart: preparationStartTime,
+        scheduledSyncPosts: [],
+        syncCycles: [{ syncNumber: 553, syncTime } as never],
+        previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
+        readErrorReason: null,
+      },
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "active_cycle_conflict",
+      persistence: "revision_changed",
+      usable: false,
+    });
+  });
 });

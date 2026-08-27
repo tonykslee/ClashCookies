@@ -265,6 +265,7 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       source: "active_war_confirmed",
       status: "derived",
       scheduledSyncPostId: "post-b",
+      provenance: "confirmed_canonical",
     });
     expect(boundInput).toMatchObject({
       guildId: "guild-1",
@@ -308,6 +309,7 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       syncNumber: 553,
       source: "active_war_schedule_candidate",
       status: "derived",
+      provenance: "inferred_candidate",
     });
     expect(bindResolvedCanonical).not.toHaveBeenCalled();
   });
@@ -491,6 +493,7 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     expect(resolution).toMatchObject({
       syncNumber: 553,
       status: "exact",
+      provenance: "canonical_exact",
     });
     expect(bindResolvedCanonical).not.toHaveBeenCalled();
   });
@@ -613,8 +616,91 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       status: "derived",
       source: "active_war_confirmed",
       syncNumber: 553,
+      provenance: "confirmed_canonical",
     });
     expect(bindResolvedCanonical).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["created", "existing"] as const)(
+    "marks a successfully %s confirmed promotion canonical immediately",
+    async (bindingStatus) => {
+      const syncTime = new Date("2026-04-13T08:00:00.000Z");
+      const bindResolvedCanonical = vi.fn(async () => ({
+        status: bindingStatus,
+        cycle: { syncNumber: 553, syncTime } as never,
+      }));
+      const syncCycles = {
+        resolveActiveWarCycle: vi.fn().mockResolvedValue({
+          status: "derived" as const,
+          syncNumber: 553,
+          scheduledSyncPostId: "post-b",
+          syncTime,
+          previousSyncNumber: 552,
+          reason: "previous_cycle_immediate_next_schedule",
+          resolutionSource: null,
+        }),
+        bindResolvedCanonical,
+      } as unknown as SyncCycleService;
+      const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+      const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+        guildId: "guild-1",
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warStartTime: syncTime,
+          opponentTag: "#OPP123",
+        }),
+        preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+        matchType: "FWA",
+        inferredMatchType: false,
+        persistCanonical: true,
+      });
+
+      expect(resolution).toMatchObject({
+        syncNumber: 553,
+        provenance: "confirmed_canonical",
+      });
+    },
+  );
+
+  it("does not report canonical provenance when confirmed binding fails", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const syncCycles = {
+      resolveActiveWarCycle: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      bindResolvedCanonical: vi.fn().mockResolvedValue({
+        status: "failed" as const,
+        reason: "sync_cycle_read_failed",
+        error: new Error("read failed"),
+      }),
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: false,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: null,
+      status: "conflict",
+      provenance: "none",
+    });
   });
 
   it("primes candidate evidence before non-FWA reuse and keeps boundary conflicts sticky", async () => {
