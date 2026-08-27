@@ -15,11 +15,13 @@ import { CoCService } from "./CoCService";
 import {
   ActiveWarSyncResolutionService,
   type ActiveWarSyncAssignmentResult,
+  type ActiveWarCyclePrimingRequest,
   buildActiveWarSyncIdentity,
   logActiveWarSyncResolution,
   nextCurrentWarRevision,
   resolveActiveWarSyncNumber,
 } from "./ActiveWarSyncResolutionService";
+import type { ActiveWarCycleContext } from "./SyncCycleService";
 import { PointsProjectionService } from "./PointsProjectionService";
 import { PointsDirectFetchGateService } from "./PointsDirectFetchGateService";
 import { PostedMessageService } from "./PostedMessageService";
@@ -44,6 +46,7 @@ import {
   chooseMatchTypeResolution,
   compareActiveWarIdentities,
   inferMatchTypeFromOpponentPoints,
+  resolveMatchTypeFromStoredSyncRow,
   resolveCurrentWarMatchTypeSignal,
   toSyncIsFwa,
   type MatchTypeResolution,
@@ -771,11 +774,19 @@ type PollTarget = {
   inferredMatchType: boolean;
   notifyRole: string | null;
   clanName: string | null;
+  currentWarId: number | null;
+  currentWarStartTime: Date | null;
+  currentWarPrepStartTime: Date | null;
+  currentWarOpponentTag: string | null;
+  currentWarMatchType: string | null;
+  currentWarInferredMatchType: boolean | null;
+  currentWarState: string | null;
 };
 
 type PollSyncContext = {
   previousSync: number | null;
   activeSync: number | null;
+  activeWarCycleContextByGuildId: Map<string, ActiveWarCycleContext>;
   resolveActiveSyncNumber?: (
     input: ActiveWarSyncResolutionInput,
   ) => Promise<ActiveWarSyncAssignmentResult>;
@@ -794,6 +805,8 @@ type ActiveWarSyncResolutionInput = {
   sameWarPointsSyncNumber: number | null;
   matchType: string | null;
   inferredMatchType: boolean | null;
+  preparationStartTime?: Date | null;
+  activeCycleContext?: ActiveWarCycleContext | null;
   allowAllocation?: boolean;
   pollCycle?: {
     activeSyncNumber: number | null;
@@ -801,6 +814,37 @@ type ActiveWarSyncResolutionInput = {
     clearActiveSyncNumber: () => void;
   };
 };
+
+/** Purpose: keep poll chronology anchored to the same preparation boundary used by rollover reconciliation. */
+function resolvePollActivePreparationStartTime(input: {
+  liveWar: CurrentWarSnapshot | null | undefined;
+  persistedPreparationStartTime: Date | null;
+  persistedWarStartTime: Date | null;
+  persistedOpponentTag: string | null;
+}): Date | null {
+  const livePreparationStartTime = parseCocTime(
+    input.liveWar?.preparationStartTime ?? null,
+  );
+  if (livePreparationStartTime) return livePreparationStartTime;
+
+  const liveStartTime = parseCocTime(input.liveWar?.startTime ?? null);
+  const liveOpponentTag = normalizeTag(input.liveWar?.opponent?.tag ?? "");
+  const identityChanged =
+    liveStartTime !== null &&
+    (input.persistedWarStartTime === null ||
+      liveStartTime.getTime() !== input.persistedWarStartTime.getTime() ||
+      (liveOpponentTag !== null &&
+        normalizeTag(input.persistedOpponentTag ?? "") !== liveOpponentTag));
+  if (identityChanged && liveStartTime) {
+    return new Date(liveStartTime.getTime() - 24 * 60 * 60 * 1000);
+  }
+  if (input.persistedPreparationStartTime) {
+    return input.persistedPreparationStartTime;
+  }
+  return liveStartTime
+    ? new Date(liveStartTime.getTime() - 24 * 60 * 60 * 1000)
+    : null;
+}
 
 type ReconciliationRelease = () => void;
 type ReconciliationMode = "global" | "targeted";
@@ -2223,8 +2267,18 @@ export class WarEventLogService {
     await reconciliationCoordinator.runGlobal(async () => {
       const sendBattleDaySwapReminders =
         input?.sendBattleDaySwapReminders === true;
-      const syncContext = await this.buildPollSyncContext();
       const targets = await this.listPollTargets();
+      const currentWarSnapshotCycleContext =
+        input?.currentWarSnapshotCycleContext ?? {
+          currentWarSnapshotByClanTag: new Map<
+            string,
+            CurrentWarSnapshot | null
+          >(),
+        };
+      const syncContext = await this.buildPollSyncContext(
+        targets,
+        currentWarSnapshotCycleContext,
+      );
       const maintenanceOverGuildIds = new Set<string>();
       for (const target of targets) {
         await this.ensureCurrentWarBaseline(target);
@@ -2235,7 +2289,7 @@ export class WarEventLogService {
           {
             sendBattleDaySwapReminders,
             maintenanceOverGuildIds,
-            currentWarSnapshotCycleContext: input?.currentWarSnapshotCycleContext ?? null,
+            currentWarSnapshotCycleContext,
           },
         ).catch((err) => {
           console.error(
@@ -2274,7 +2328,167 @@ export class WarEventLogService {
   }
 
   /** Purpose: derive the shared poll sync context without widening the global poll loop. */
-  private async buildPollSyncContext(): Promise<PollSyncContext> {
+  private async buildPollSyncContext(
+    targets: PollTarget[] = [],
+    currentWarSnapshotCycleContext?: CurrentWarSnapshotCycleContext | null,
+  ): Promise<PollSyncContext> {
+    const snapshotContext =
+      currentWarSnapshotCycleContext ?? {
+        currentWarSnapshotByClanTag: new Map<
+          string,
+          CurrentWarSnapshot | null
+        >(),
+      };
+    const uniqueClanTags = [
+      ...new Set(targets.map((target) => normalizeTag(target.clanTag))),
+    ].filter(Boolean);
+    await Promise.all(
+      uniqueClanTags.map(async (clanTag) => {
+        if (snapshotContext.currentWarSnapshotByClanTag.has(clanTag)) return;
+        if (typeof (this.coc as { getCurrentWar?: unknown }).getCurrentWar !== "function") {
+          return;
+        }
+        const snapshot = await this.getCurrentWarSnapshot(clanTag, snapshotContext);
+        snapshotContext.currentWarSnapshotByClanTag.set(clanTag, snapshot.war);
+      }),
+    );
+
+    const preparationTimesByGuildId = new Map<string, Date[]>();
+    for (const target of targets) {
+      const liveWar = snapshotContext.currentWarSnapshotByClanTag.get(
+        normalizeTag(target.clanTag),
+      );
+      const preparationStartTime = resolvePollActivePreparationStartTime({
+        liveWar,
+        persistedPreparationStartTime: target.currentWarPrepStartTime,
+        persistedWarStartTime: target.currentWarStartTime,
+        persistedOpponentTag: target.currentWarOpponentTag,
+      });
+      if (!preparationStartTime) continue;
+      const existing = preparationTimesByGuildId.get(target.guildId) ?? [];
+      existing.push(preparationStartTime);
+      preparationTimesByGuildId.set(target.guildId, existing);
+    }
+    const activeWarCycleContextByGuildId = new Map<
+      string,
+      ActiveWarCycleContext
+    >();
+    const pointsRows =
+      targets.length > 0 &&
+      typeof (prisma.clanPointsSync as { findMany?: unknown })?.findMany ===
+        "function"
+      ? await prisma.clanPointsSync.findMany({
+          where: {
+            needsValidation: false,
+            OR: targets.map((target) => {
+              const liveWar = snapshotContext.currentWarSnapshotByClanTag.get(
+                normalizeTag(target.clanTag),
+              );
+              const warStartTime = parseCocTime(liveWar?.startTime ?? null);
+              const opponentTag = normalizeTag(liveWar?.opponent?.tag ?? "");
+              return {
+                guildId: target.guildId,
+                clanTag: normalizeTag(target.clanTag),
+                ...(warStartTime ? { warStartTime } : {}),
+                ...(opponentTag ? { opponentTag } : {}),
+              };
+            }),
+          },
+          select: {
+            guildId: true,
+            clanTag: true,
+            warId: true,
+            warStartTime: true,
+            opponentTag: true,
+            syncNum: true,
+            isFwa: true,
+            lastKnownMatchType: true,
+          },
+        })
+      : [];
+    await Promise.all(
+      [...preparationTimesByGuildId.entries()].map(
+        async ([guildId, preparationStartTimes]) => {
+          const context = await this.syncResolution.loadActiveWarCycleContext({
+              guildId,
+              preparationStartTimes,
+            });
+          activeWarCycleContextByGuildId.set(guildId, context);
+          const requests: ActiveWarCyclePrimingRequest[] = [];
+          for (const target of targets.filter((row) => row.guildId === guildId)) {
+            const liveWar = snapshotContext.currentWarSnapshotByClanTag.get(
+              normalizeTag(target.clanTag),
+            );
+            const liveState = liveWar
+              ? deriveState(String(liveWar.state ?? ""))
+              : deriveState(target.currentWarState ?? "notInWar");
+            if (liveState !== "preparation" && liveState !== "inWar") continue;
+            const preparationStartTime = resolvePollActivePreparationStartTime({
+              liveWar,
+              persistedPreparationStartTime: target.currentWarPrepStartTime,
+              persistedWarStartTime: target.currentWarStartTime,
+              persistedOpponentTag: target.currentWarOpponentTag,
+            });
+            const liveStartTime = parseCocTime(liveWar?.startTime ?? null);
+            const liveOpponentTag = normalizeTag(liveWar?.opponent?.tag ?? "");
+            if (!preparationStartTime || !liveStartTime || !liveOpponentTag) {
+              continue;
+            }
+            const sameWar =
+              target.currentWarStartTime !== null &&
+              target.currentWarStartTime.getTime() === liveStartTime.getTime() &&
+              normalizeTag(target.currentWarOpponentTag ?? "") === liveOpponentTag;
+            const pointsRow = pointsRows.find(
+              (row) =>
+                row.guildId === target.guildId &&
+                normalizeTag(row.clanTag) === normalizeTag(target.clanTag) &&
+                row.warStartTime.getTime() === liveStartTime.getTime() &&
+                normalizeTag(row.opponentTag) === liveOpponentTag &&
+                (row.warId === null ||
+                  target.currentWarId === null ||
+                  Number(row.warId) === target.currentWarId),
+            );
+            const pointsSyncNumber = pointsRow
+              ? toValidSyncNumber(pointsRow.syncNum)
+              : null;
+            const storedMatchType = pointsRow
+              ? resolveMatchTypeFromStoredSyncRow({
+                  syncRow: {
+                    opponentTag: pointsRow.opponentTag,
+                    isFwa: pointsRow.isFwa,
+                    lastKnownMatchType: pointsRow.lastKnownMatchType,
+                  },
+                  opponentTag: liveOpponentTag,
+                })
+              : null;
+            const identity = buildActiveWarSyncIdentity({
+              warState: liveState,
+              warId: sameWar ? target.currentWarId : null,
+              warStartTime: liveStartTime,
+              opponentTag: liveOpponentTag,
+            });
+            requests.push({
+              guildId,
+              identity,
+              preparationStartTime,
+              matchType: sameWar
+                ? target.currentWarMatchType ?? storedMatchType?.matchType ?? null
+                : null,
+              inferredMatchType: sameWar
+                ? target.currentWarMatchType
+                  ? target.currentWarInferredMatchType
+                  : storedMatchType?.inferred ?? null
+                : null,
+              sameWarPersistedSyncNumber: pointsSyncNumber,
+            });
+          }
+          await this.syncResolution.primeActiveWarCycleContext(
+            context,
+            requests,
+          );
+        },
+      ),
+    );
     const previousSync = await this.syncResolution.getLatestPersistedSyncBaseline();
     let activeSync: number | null = null;
     let pollCycle: ActiveWarSyncResolutionInput["pollCycle"] = {
@@ -2292,6 +2506,7 @@ export class WarEventLogService {
     };
     return {
       previousSync,
+      activeWarCycleContextByGuildId,
       get activeSync() {
         return activeSync;
       },
@@ -2312,6 +2527,9 @@ export class WarEventLogService {
           sameWarPointsSyncNumber: input.sameWarPointsSyncNumber,
           matchType: input.matchType,
           inferredMatchType: input.inferredMatchType,
+          preparationStartTime: input.preparationStartTime,
+          activeCycleContext:
+            activeWarCycleContextByGuildId.get(input.guildId) ?? null,
           allowAllocation: input.allowAllocation,
           pollCycle,
         });
@@ -2351,15 +2569,42 @@ export class WarEventLogService {
         };
       }
 
-      const syncContext = await this.buildPollSyncContext();
+      const singleTarget: PollTarget = {
+        guildId,
+        clanTag,
+        channelId: subscription.channelId,
+        notify: subscription.notify,
+        pingRole: subscription.pingRole,
+        inferredMatchType: subscription.inferredMatchType,
+        notifyRole: subscription.notifyRole,
+        clanName: subscription.clanName,
+        currentWarId: subscription.warId,
+        currentWarStartTime: subscription.startTime,
+        currentWarPrepStartTime: subscription.prepStartTime,
+        currentWarOpponentTag: subscription.opponentTag,
+        currentWarMatchType: subscription.matchType,
+        currentWarInferredMatchType: subscription.inferredMatchType,
+        currentWarState: subscription.state,
+      };
+      const snapshotContext: CurrentWarSnapshotCycleContext = {
+        currentWarSnapshotByClanTag: new Map(),
+      };
+      const syncContext = await this.buildPollSyncContext(
+        [singleTarget],
+        snapshotContext,
+      );
+      const processOptions = {
+        sendBattleDaySwapReminders:
+          input.sendBattleDaySwapReminders === true,
+        ...(syncContext.activeWarCycleContextByGuildId
+          ? { currentWarSnapshotCycleContext: snapshotContext }
+          : {}),
+      };
       const warEnded = await this.processSubscription(
         guildId,
         clanTag,
         syncContext,
-        {
-          sendBattleDaySwapReminders:
-            input.sendBattleDaySwapReminders === true,
-        },
+        processOptions,
       );
 
       return { processed: true, warEnded };
@@ -2400,6 +2645,12 @@ export class WarEventLogService {
         select: {
           guildId: true,
           clanTag: true,
+          warId: true,
+          startTime: true,
+          prepStartTime: true,
+          opponentTag: true,
+          matchType: true,
+          state: true,
           channelId: true,
           notify: true,
           pingRole: true,
@@ -2457,7 +2708,7 @@ export class WarEventLogService {
           tracked.logChannelId ??
           null;
         if (!channelId) continue;
-        targets.push({
+        const target = {
           guildId,
           clanTag,
           channelId,
@@ -2471,7 +2722,48 @@ export class WarEventLogService {
           notifyRole:
             config?.roleId ?? current?.notifyRole ?? tracked.notifyRole ?? null,
           clanName: current?.clanName ?? tracked.name ?? null,
+          currentWarId:
+            current?.warId !== null && current?.warId !== undefined
+              ? Number(current.warId)
+              : null,
+          currentWarStartTime: current?.startTime ?? null,
+          currentWarPrepStartTime: current?.prepStartTime ?? null,
+          currentWarOpponentTag: current?.opponentTag ?? null,
+          currentWarMatchType:
+            current?.matchType !== null && current?.matchType !== undefined
+              ? String(current.matchType)
+              : null,
+          currentWarInferredMatchType: current?.inferredMatchType ?? null,
+          currentWarState: current?.state ?? null,
+        } as PollTarget;
+        Object.defineProperties(target, {
+          currentWarId: { enumerable: false, value: target.currentWarId },
+          currentWarStartTime: {
+            enumerable: false,
+            value: target.currentWarStartTime,
+          },
+          currentWarPrepStartTime: {
+            enumerable: false,
+            value: target.currentWarPrepStartTime,
+          },
+          currentWarOpponentTag: {
+            enumerable: false,
+            value: target.currentWarOpponentTag,
+          },
+          currentWarMatchType: {
+            enumerable: false,
+            value: target.currentWarMatchType,
+          },
+          currentWarInferredMatchType: {
+            enumerable: false,
+            value: target.currentWarInferredMatchType,
+          },
+          currentWarState: {
+            enumerable: false,
+            value: target.currentWarState,
+          },
         });
+        targets.push(target);
       }
     }
 
@@ -2736,7 +3028,7 @@ export class WarEventLogService {
             },
           })
         : null;
-    const syncNumber =
+    let syncNumber =
       params.source === "last" &&
       lastWarHistoryRow?.syncNumber !== null &&
       lastWarHistoryRow?.syncNumber !== undefined &&
@@ -2820,6 +3112,88 @@ export class WarEventLogService {
           lastWarRow?.warStartTime ??
           sub.startTime ??
           currentWarStartTime);
+    const currentState =
+      params.source === "current"
+        ? deriveState(String(currentWar?.state ?? ""))
+        : "notInWar";
+    const currentWarIdentity =
+      params.source === "current" && currentWar
+        ? compareActiveWarIdentities({
+            persisted: {
+              warId: sub.warId,
+              warStartTime: sub.startTime,
+              opponentTag: sub.opponentTag,
+            },
+            active: {
+              warStartTime: currentWarStartTime,
+              opponentTag: currentWar.opponent?.tag ?? null,
+            },
+          })
+        : null;
+    const sameWarCurrentEvidence =
+      params.source === "current" && currentWarIdentity?.sameWar === true;
+    const previewPreparationStartTime =
+      params.source === "current"
+        ? resolvePollActivePreparationStartTime({
+            liveWar: currentWar,
+            persistedPreparationStartTime: sub.prepStartTime,
+            persistedWarStartTime: sub.startTime,
+            persistedOpponentTag: sub.opponentTag,
+          })
+        : null;
+    if (
+      params.source === "current" &&
+      currentWar &&
+      (currentState === "preparation" || currentState === "inWar") &&
+      testWarStartTime &&
+      opponentTag &&
+      previewPreparationStartTime
+    ) {
+      const activeCycleContext = await this.syncResolution.loadActiveWarCycleContext({
+        guildId: sub.guildId,
+        preparationStartTimes: [previewPreparationStartTime],
+      });
+      const activeCycle = await this.syncResolution.resolveActiveWarSyncFromCanonicalCycle({
+        guildId: sub.guildId,
+        identity: buildActiveWarSyncIdentity({
+          warState: currentState,
+          warId: sameWarCurrentEvidence ? sub.warId : null,
+          warStartTime: testWarStartTime,
+          opponentTag,
+        }),
+        preparationStartTime: previewPreparationStartTime,
+        matchType: sameWarCurrentEvidence ? sub.matchType : null,
+        inferredMatchType: sameWarCurrentEvidence
+          ? sub.inferredMatchType
+          : null,
+        sameWarPersistedSyncNumber: sameWarCurrentEvidence
+          ? resolveExactSameWarPointsSyncNumber({
+              guildId: sub.guildId,
+              clanTag: sub.clanTag,
+              pointsWarId: sub.pointsWarId,
+              pointsWarStartTime: sub.pointsWarStartTime,
+              pointsOpponentTag: sub.pointsOpponentTag,
+              pointsSyncNumber: sub.pointsSyncNum,
+              intendedWarId: sub.warId,
+              intendedWarStartTime: testWarStartTime,
+              intendedOpponentTag: opponentTag,
+            })
+          : null,
+        activeCycleContext,
+        persistCanonical: false,
+        shareDerivedCandidate: false,
+      });
+      syncNumber = activeCycle.syncNumber;
+    }
+    if (params.source === "current" && opponentTag) {
+      outcome = deriveExpectedOutcome(
+        clanTag,
+        opponentTag,
+        fwaPoints,
+        opponentFwaPoints,
+        syncNumber,
+      );
+    }
     const currentClanStars = Number.isFinite(Number(currentWar?.clan?.stars))
       ? Number(currentWar?.clan?.stars)
       : sub.clanStars;
@@ -2912,6 +3286,7 @@ export class WarEventLogService {
             ? Number(currentWar?.opponent?.stars)
             : sub.opponentStars,
       prepStartTime:
+        previewPreparationStartTime ??
         parseCocTime(currentWar?.preparationStartTime ?? null) ??
         sub.prepStartTime,
       warStartTime: testWarStartTime,
@@ -4302,8 +4677,12 @@ export class WarEventLogService {
     });
     const nextWarStartTime = timing.warStartTime;
     const nextWarEndTime = timing.warEndTime;
-    const nextPrepStartTime =
-      parseCocTime(war?.preparationStartTime ?? null) ?? sub.prepStartTime;
+    const nextPrepStartTime = resolvePollActivePreparationStartTime({
+      liveWar: war,
+      persistedPreparationStartTime: sub.prepStartTime,
+      persistedWarStartTime: sub.startTime,
+      persistedOpponentTag: sub.opponentTag,
+    });
     // This poller keeps its own identity/timing reconciliation because it also
     // decides outage recovery and event emission; the shared active-war helper
     // used by `/fwa match` is intentionally narrower and command-focused.
@@ -4393,7 +4772,11 @@ export class WarEventLogService {
     if (
       sub.state === "notInWar" &&
       pendingEventResolution.kind !== "valid" &&
-      (await this.maybeRecoverEndedWarArchive({ sub }))
+      (await this.maybeRecoverEndedWarArchive({
+        sub,
+        activeWarCycleContext:
+          syncContext.activeWarCycleContextByGuildId?.get(sub.guildId) ?? null,
+      }))
     ) {
       return false;
     }
@@ -5141,6 +5524,10 @@ export class WarEventLogService {
             sameWarPointsSyncNumber,
             matchType: nextMatchType,
             inferredMatchType: nextInferredMatchType,
+            preparationStartTime: nextPrepStartTime,
+            activeCycleContext:
+              syncContext.activeWarCycleContextByGuildId?.get(sub.guildId) ??
+              null,
             allowAllocation: true,
             expectedCurrentWarRevisionAt: ownedCurrentWarRevisionAt,
           });
@@ -5167,19 +5554,47 @@ export class WarEventLogService {
         : syncAssignment?.usable && syncAssignment.syncNumber !== null
           ? syncAssignment.syncNumber
           : null;
-    const syncNumberForEvent =
-      currentState === "notInWar"
-        ? await this.resolveNotifyEventSyncNumber({
+    let syncNumberForEvent =
+      currentState === "notInWar" ? null : nextCanonicalSyncNumber;
+    if (currentState === "notInWar") {
+      const endedWarIdentity = buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warId: resolvedWarIdText,
+        warStartTime: nextWarStartTime,
+        opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+      });
+      const endedWarContext =
+        syncContext.activeWarCycleContextByGuildId?.get(sub.guildId) ?? null;
+      let endedCycleResolutionAttempted = false;
+      if (endedWarContext && nextPrepStartTime) {
+        endedCycleResolutionAttempted = true;
+        const endedCycle =
+          await this.syncResolution.resolveActiveWarSyncFromCanonicalCycle({
             guildId,
-            clanTag: sub.clanTag,
-            warId: resolvedWarIdText,
-            warStartTime: nextWarStartTime,
-            opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
-            currentState,
-            postedSyncNumber: null,
-            previousSyncNumber: syncContext.previousSync,
-          })
-        : nextCanonicalSyncNumber;
+            identity: endedWarIdentity,
+            preparationStartTime: nextPrepStartTime,
+            matchType: sub.matchType,
+            inferredMatchType: sub.inferredMatchType,
+            sameWarPersistedSyncNumber: sameWarPointsSyncNumber,
+            activeCycleContext: endedWarContext,
+            persistCanonical: false,
+            shareDerivedCandidate: false,
+          });
+        syncNumberForEvent = endedCycle.syncNumber;
+      }
+      if (syncNumberForEvent === null && !endedCycleResolutionAttempted) {
+        syncNumberForEvent = await this.resolveNotifyEventSyncNumber({
+          guildId,
+          clanTag: sub.clanTag,
+          warId: resolvedWarIdText,
+          warStartTime: nextWarStartTime,
+          opponentTag: nextOpponentTag || normalizeTag(sub.opponentTag ?? ""),
+          currentState,
+          postedSyncNumber: null,
+          previousSyncNumber: syncContext.previousSync,
+        });
+      }
+    }
     if (outcomeComputationInput) {
       nextOutcome = deriveExpectedOutcome(
         outcomeComputationInput.clanTag,
@@ -5488,6 +5903,7 @@ export class WarEventLogService {
   /** Purpose: recover a failed ended-war archive before attack sync can discard the stale rows. */
   private async maybeRecoverEndedWarArchive(params: {
     sub: SubscriptionRow;
+    activeWarCycleContext?: ActiveWarCycleContext | null;
   }): Promise<boolean> {
     if (params.sub.state !== "notInWar") return false;
     if (
@@ -5530,6 +5946,39 @@ export class WarEventLogService {
     }
 
     const recoveryWarId = params.sub.warId ?? oldAttackRow?.warId ?? "unknown";
+    const recoveryPreparationStartTime =
+      params.sub.prepStartTime ??
+      new Date(params.sub.startTime.getTime() - 24 * 60 * 60 * 1000);
+    const recoveryCycle =
+      params.activeWarCycleContext && recoveryPreparationStartTime
+        ? await this.syncResolution.resolveActiveWarSyncFromCanonicalCycle({
+            guildId: params.sub.guildId,
+            identity: buildActiveWarSyncIdentity({
+              warState: "inWar",
+              warId: params.sub.warId,
+              warStartTime: params.sub.startTime,
+              opponentTag: recoveryOpponentTag,
+            }),
+            preparationStartTime: recoveryPreparationStartTime,
+            matchType: params.sub.matchType,
+            inferredMatchType: params.sub.inferredMatchType,
+            sameWarPersistedSyncNumber: resolveExactSameWarPointsSyncNumber({
+              guildId: params.sub.guildId,
+              clanTag: params.sub.clanTag,
+              pointsWarId: params.sub.pointsWarId,
+              pointsWarStartTime: params.sub.pointsWarStartTime,
+              pointsOpponentTag: params.sub.pointsOpponentTag,
+              pointsSyncNumber: params.sub.pointsSyncNum,
+              intendedWarId: params.sub.warId,
+              intendedWarStartTime: params.sub.startTime,
+              intendedOpponentTag: recoveryOpponentTag,
+            }),
+            activeCycleContext: params.activeWarCycleContext,
+            persistCanonical: false,
+            shareDerivedCandidate: false,
+          })
+        : null;
+    const recoverySyncNumber = recoveryCycle?.syncNumber ?? null;
     try {
       await this.history.persistWarEndHistory({
         eventType: "war_ended",
@@ -5539,7 +5988,7 @@ export class WarEventLogService {
         opponentTag: recoveryOpponentTag,
         opponentName:
           String(params.sub.opponentName ?? "Unknown").trim() || "Unknown",
-        syncNumber: params.sub.syncNum ?? null,
+        syncNumber: recoverySyncNumber,
         notifyRole: params.sub.notifyRole,
         fwaPoints: params.sub.fwaPoints,
         opponentFwaPoints: params.sub.opponentFwaPoints,
@@ -8109,10 +8558,12 @@ export class WarEventLogService {
     const state = deriveState(String(war.state ?? ""));
     if (state !== "preparation" && state !== "inWar") return false;
 
-    const prepStartTime =
-      parseCocTime(war.preparationStartTime ?? null) ??
-      sub.prepStartTime ??
-      null;
+    const prepStartTime = resolvePollActivePreparationStartTime({
+      liveWar: war,
+      persistedPreparationStartTime: sub.prepStartTime,
+      persistedWarStartTime: sub.startTime,
+      persistedOpponentTag: sub.opponentTag,
+    });
     const warStartTime =
       parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
     const warEndTime = parseCocTime(war.endTime ?? null) ?? sub.endTime ?? null;
@@ -8202,6 +8653,9 @@ export class WarEventLogService {
       warStartTime,
       opponentTag: nextOpponentTag,
       currentState: state,
+      preparationStartTime: prepStartTime,
+      matchType: refreshedSub.matchType,
+      inferredMatchType: refreshedSub.inferredMatchType,
       postedSyncNumber: toValidSyncNumber(existingMessage.syncNum),
       allowPostedSyncReuse: true,
     });
@@ -8346,10 +8800,12 @@ export class WarEventLogService {
       return "frozen";
     }
 
-    const prepStartTime =
-      parseCocTime(war.preparationStartTime ?? null) ??
-      sub.prepStartTime ??
-      null;
+    const prepStartTime = resolvePollActivePreparationStartTime({
+      liveWar: war,
+      persistedPreparationStartTime: sub.prepStartTime,
+      persistedWarStartTime: sub.startTime,
+      persistedOpponentTag: sub.opponentTag,
+    });
     const warStartTime =
       parseCocTime(war.startTime ?? null) ?? sub.startTime ?? null;
     const warEndTime = parseCocTime(war.endTime ?? null);
@@ -8430,6 +8886,9 @@ export class WarEventLogService {
       warStartTime,
       opponentTag: nextOpponentTag || refreshedSub.opponentTag,
       currentState: "inWar",
+      preparationStartTime: prepStartTime,
+      matchType: refreshedSub.matchType,
+      inferredMatchType: refreshedSub.inferredMatchType,
       postedSyncNumber,
       allowPostedSyncReuse: true,
     });
@@ -8529,6 +8988,10 @@ export class WarEventLogService {
     warStartTime: Date | null;
     opponentTag?: string | null;
     currentState: WarState;
+    preparationStartTime?: Date | null;
+    matchType?: string | null;
+    inferredMatchType?: boolean | null;
+    activeCycleContext?: ActiveWarCycleContext | null;
     postedSyncNumber: number | null;
     previousSyncNumber?: number | null;
     allowPostedSyncReuse?: boolean;
@@ -8561,6 +9024,45 @@ export class WarEventLogService {
       warStartTime: input.warStartTime,
       opponentTag: input.opponentTag ?? null,
     });
+    if (
+      (input.currentState === "preparation" || input.currentState === "inWar") &&
+      input.preparationStartTime instanceof Date &&
+      Number.isFinite(input.preparationStartTime.getTime()) &&
+      typeof (this.syncResolution as {
+        loadActiveWarCycleContext?: unknown;
+      }).loadActiveWarCycleContext === "function" &&
+      typeof (this.syncResolution as {
+        resolveActiveWarSyncFromCanonicalCycle?: unknown;
+      }).resolveActiveWarSyncFromCanonicalCycle === "function"
+    ) {
+      const activeCycleContext =
+        input.activeCycleContext ??
+        (await this.syncResolution.loadActiveWarCycleContext({
+          guildId: input.guildId,
+          preparationStartTimes: [input.preparationStartTime],
+        }));
+      const activeCycle =
+        await this.syncResolution.resolveActiveWarSyncFromCanonicalCycle({
+          guildId: input.guildId,
+          identity,
+          preparationStartTime: input.preparationStartTime,
+          matchType: input.matchType ?? null,
+          inferredMatchType: input.inferredMatchType ?? null,
+          sameWarPersistedSyncNumber,
+          activeCycleContext,
+          persistCanonical: false,
+          shareDerivedCandidate: false,
+        });
+      if (
+        activeCycle.status === "conflict" ||
+        activeCycle.status === "ambiguous"
+      ) {
+        return null;
+      }
+      if (activeCycle.syncNumber !== null) {
+        return activeCycle.syncNumber;
+      }
+    }
     const resolution = resolveActiveWarSyncNumber({
       identity,
       latestPersistedSyncNumber,
