@@ -9,6 +9,7 @@ import {
   resolveFreshMatchupEvidenceForTest,
   resolveFwaPointsCurrentSyncForTest,
   resolveFwaPointsFooterSyncForTest,
+  resolveMatchTypeWithPreparedStoredSyncForTest,
   resolveManualMatchupFreshnessSourceSyncForTest,
 } from "../src/commands/Fwa";
 import { buildSyncMismatchWarning } from "../src/commands/fwa/matchState";
@@ -458,6 +459,84 @@ describe("fwa points sync numbering regression", () => {
   it("keeps alliance and tag-specific output on the same active sync", () => {
     expect(formatFwaPointsSyncFooterForTest(545)).toBe("Sync#: #545");
     expect(formatFwaPointsSyncDisplayForTest(545)).toBe("#545 (Low Sync)");
+  });
+});
+
+describe("fwa points prepared match evidence", () => {
+  const activeWarStartTime = new Date("2026-08-10T20:00:00.000Z");
+
+  it("does not carry prior-war FWA state across a live-war rollover", () => {
+    const resolution = resolveMatchTypeWithPreparedStoredSyncForTest({
+      opponentTag: "2NEWOPP",
+      warState: "inWar",
+      currentWarId: 7001,
+      currentWarStartTime: new Date("2026-08-08T20:00:00.000Z"),
+      currentWarOpponentTag: "2OLDOPP",
+      activeWarId: 7002,
+      activeWarStartTime,
+      activeOpponentTag: "2NEWOPP",
+      existingMatchType: "FWA",
+      existingInferredMatchType: false,
+    });
+
+    expect(resolution.confirmedCurrent).toBeNull();
+    expect(resolution.unconfirmedCurrent).toBeNull();
+    expect(resolution.storedSync).toBeNull();
+  });
+
+  it("preserves same-war inferred FWA evidence", () => {
+    const resolution = resolveMatchTypeWithPreparedStoredSyncForTest({
+      opponentTag: "2OPP",
+      warState: "inWar",
+      currentWarId: 7001,
+      currentWarStartTime: activeWarStartTime,
+      currentWarOpponentTag: "2OPP",
+      activeWarId: 7001,
+      activeWarStartTime,
+      activeOpponentTag: "2OPP",
+      existingMatchType: "FWA",
+      existingInferredMatchType: true,
+    });
+
+    expect(resolution.unconfirmedCurrent).toMatchObject({
+      matchType: "FWA",
+      inferred: true,
+      confirmed: false,
+    });
+  });
+
+  it("uses validated same-war stored FWA metadata when current-war type is missing", () => {
+    const resolution = resolveMatchTypeWithPreparedStoredSyncForTest({
+      opponentTag: "2OPP",
+      warState: "inWar",
+      currentWarId: 7001,
+      currentWarStartTime: activeWarStartTime,
+      currentWarOpponentTag: "2OPP",
+      activeWarId: 7001,
+      activeWarStartTime,
+      activeOpponentTag: "2OPP",
+      existingMatchType: null,
+      existingInferredMatchType: true,
+      storedSyncRow: {
+        warId: "7001",
+        warStartTime: activeWarStartTime,
+        syncNum: 552,
+        opponentTag: "#2OPP",
+        clanPoints: 1000,
+        opponentPoints: 900,
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+        needsValidation: false,
+        lastKnownSyncNumber: null,
+        lastSuccessfulPointsApiFetchAt: null,
+        syncFetchedAt: activeWarStartTime,
+      },
+    });
+
+    expect(resolution.storedSync).toMatchObject({
+      matchType: "FWA",
+      inferred: true,
+    });
   });
 });
 

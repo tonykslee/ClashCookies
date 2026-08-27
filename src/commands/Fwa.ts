@@ -12874,6 +12874,9 @@ function resolveMatchTypeWithPreparedStoredSync(params: {
 }
 
 /** Purpose: verify confirmed FWA fallback comes from the same live-war identity. */
+export const resolveMatchTypeWithPreparedStoredSyncForTest =
+  resolveMatchTypeWithPreparedStoredSync;
+
 function hasSameWarExplicitFwaConfirmation(input: {
   fallbackResolution: MatchTypeFallbackResolution;
   currentWarStartTime: Date | null | undefined;
@@ -14358,6 +14361,25 @@ async function buildTrackedMatchOverview(
       }
     }),
   );
+  const baselineWarStartMs =
+    activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+  const nowMs = Date.now();
+  const missedSyncTags = new Set<string>();
+  for (const clan of scopedTracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
+    const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
+    if (
+      isMissedSyncClan({
+        baselineWarStartMs,
+        clanWarState,
+        clanWarStartMs,
+        nowMs,
+      })
+    ) {
+      missedSyncTags.add(clanTag);
+    }
+  }
   for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const war = warByClanTag.get(clanTag) ?? null;
@@ -14389,7 +14411,11 @@ async function buildTrackedMatchOverview(
     const clanTag = normalizeTag(clan.tag);
     const war = warByClanTag.get(clanTag) ?? null;
     const identity = syncIdentityByClanTag.get(clanTag);
-    if (!identity?.positivelyResolved || identity.warState === "notInWar") {
+    if (
+      missedSyncTags.has(clanTag) ||
+      !identity?.positivelyResolved ||
+      identity.warState === "notInWar"
+    ) {
       continue;
     }
     const liveIdentityPatch =
@@ -14527,6 +14553,7 @@ async function buildTrackedMatchOverview(
       activeWarCycleContext,
       scopedTracked.flatMap((clan) => {
         const clanTag = normalizeTag(clan.tag);
+        if (missedSyncTags.has(clanTag)) return [];
         const war = warByClanTag.get(clanTag) ?? null;
         const identity = syncIdentityByClanTag.get(clanTag);
         const preparationStartTime =
@@ -14570,25 +14597,6 @@ async function buildTrackedMatchOverview(
         ];
       }),
     );
-  }
-  const baselineWarStartMs =
-    activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
-  const nowMs = Date.now();
-  const missedSyncTags = new Set<string>();
-  for (const clan of scopedTracked) {
-    const clanTag = normalizeTag(clan.tag);
-    const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
-    const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
-    if (
-      isMissedSyncClan({
-        baselineWarStartMs,
-        clanWarState,
-        clanWarStartMs,
-        nowMs,
-      })
-    ) {
-      missedSyncTags.add(clanTag);
-    }
   }
   const includedTracked = scopedTracked.filter(
     (clan) => !missedSyncTags.has(normalizeTag(clan.tag)),
@@ -14869,7 +14877,10 @@ async function buildTrackedMatchOverview(
     });
 
     const canonicalActiveCycle =
-      guildId && syncIdentity.positivelyResolved && opponentTag
+      !missedSyncTags.has(clanTag) &&
+      guildId &&
+      syncIdentity.positivelyResolved &&
+      opponentTag
         ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
             {
               guildId,
@@ -18587,6 +18598,26 @@ export const Fwa: Command = {
         }
       }
 
+      const baselineWarStartMs =
+        activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+      const nowMs = Date.now();
+      const missedSyncTags = new Set<string>();
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
+        const warStartMs = warStartMsByTag.get(trackedTag) ?? null;
+        if (
+          isMissedSyncClan({
+            baselineWarStartMs,
+            clanWarState: warState,
+            clanWarStartMs: warStartMs,
+            nowMs,
+          })
+        ) {
+          missedSyncTags.add(trackedTag);
+        }
+      }
+
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
         const war = warByTag.get(trackedTag) ?? null;
@@ -18602,6 +18633,7 @@ export const Fwa: Command = {
           currentWarOpponentTag: sub?.opponentTag ?? null,
         });
         syncIdentityByTag.set(trackedTag, identity);
+        if (missedSyncTags.has(trackedTag)) continue;
         if (interaction.guildId && war && identity.positivelyResolved) {
           const liveIdentityPatch = resolveActiveWarIdentityPatch({
             guildId: interaction.guildId,
@@ -18664,6 +18696,52 @@ export const Fwa: Command = {
           : [];
       const warScopedSyncRowsByClanTag =
         groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
+      const preLiveFallbackResolutionByTag = new Map<
+        string,
+        MatchTypeFallbackResolution
+      >();
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        if (missedSyncTags.has(trackedTag)) continue;
+        const identity = syncIdentityByTag.get(trackedTag);
+        if (!identity?.positivelyResolved) continue;
+        const sub = subByTag.get(trackedTag);
+        const liveIdentityPatch =
+          liveIdentityPatchByTag.get(trackedTag) ?? null;
+        const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+          rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+        });
+        const sameWar = liveIdentityPatch?.sameWar !== false;
+        preLiveFallbackResolutionByTag.set(
+          trackedTag,
+          resolveMatchTypeWithPreparedStoredSync({
+            opponentTag: identity.opponentTag ?? "",
+            warState: warStateByTag.get(trackedTag) ?? "notInWar",
+            currentWarId: sub?.warId ?? null,
+            currentWarStartTime: sub?.startTime ?? null,
+            currentWarOpponentTag: sub?.opponentTag ?? null,
+            activeWarId: identity.warId,
+            activeWarStartTime: identity.warStartTime,
+            activeOpponentTag: identity.opponentTag,
+            existingMatchType: sameWar
+              ? (sub?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined)
+              : null,
+            existingInferredMatchType: sameWar
+              ? (sub?.inferredMatchType ?? true)
+              : true,
+            storedSyncRow: sameWarSyncRow,
+          }),
+        );
+      }
       const activeWarCycleContext =
         interaction.guildId && preparationStartTimeByTag.size > 0
           ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
@@ -18678,12 +18756,10 @@ export const Fwa: Command = {
           activeWarCycleContext,
           tracked.flatMap((clan) => {
             const trackedTag = normalizeTag(clan.tag);
+            if (missedSyncTags.has(trackedTag)) return [];
             const identity = syncIdentityByTag.get(trackedTag);
             const preparationStartTime =
               preparationStartTimeByTag.get(trackedTag);
-            const sub = subByTag.get(trackedTag);
-            const liveIdentityPatch =
-              liveIdentityPatchByTag.get(trackedTag) ?? null;
             const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
               rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
               warId: identity?.warId ?? null,
@@ -18693,31 +18769,9 @@ export const Fwa: Command = {
             if (!identity?.positivelyResolved || !preparationStartTime) {
               return [];
             }
-            const sameWar = liveIdentityPatch?.sameWar !== false;
             const fallbackResolution =
-              resolveMatchTypeWithPreparedStoredSync({
-                opponentTag: identity.opponentTag ?? "",
-                warState: warStateByTag.get(trackedTag) ?? "notInWar",
-                currentWarId: sub?.warId ?? null,
-                currentWarStartTime: sub?.startTime ?? null,
-                currentWarOpponentTag: sub?.opponentTag ?? null,
-                activeWarId: identity.warId,
-                activeWarStartTime: identity.warStartTime,
-                activeOpponentTag: identity.opponentTag,
-                existingMatchType: sameWar
-                  ? (sub?.matchType as
-                      | "FWA"
-                      | "BL"
-                      | "MM"
-                      | "SKIP"
-                      | null
-                      | undefined)
-                  : null,
-                existingInferredMatchType: sameWar
-                  ? (sub?.inferredMatchType ?? true)
-                  : true,
-                storedSyncRow: sameWarSyncRow,
-              });
+              preLiveFallbackResolutionByTag.get(trackedTag);
+            if (!fallbackResolution) return [];
             return [
               {
                 guildId: interaction.guildId ?? "",
@@ -18738,26 +18792,6 @@ export const Fwa: Command = {
             ];
           }),
         );
-      }
-
-      const baselineWarStartMs =
-        activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
-      const nowMs = Date.now();
-      const missedSyncTags = new Set<string>();
-      for (const clan of tracked) {
-        const trackedTag = normalizeTag(clan.tag);
-        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
-        const warStartMs = warStartMsByTag.get(trackedTag) ?? null;
-        if (
-          isMissedSyncClan({
-            baselineWarStartMs,
-            clanWarState: warState,
-            clanWarStartMs: warStartMs,
-            nowMs,
-          })
-        ) {
-          missedSyncTags.add(trackedTag);
-        }
       }
 
       const resolvedActiveSyncNumbers: number[] = [];
@@ -18789,7 +18823,20 @@ export const Fwa: Command = {
             warStartTime: syncIdentity.warStartTime,
             opponentTag: syncIdentity.opponentTag,
           });
+          const fallbackResolution =
+            preLiveFallbackResolutionByTag.get(trackedTag);
+          const effectiveMatchType =
+            fallbackResolution?.confirmedCurrent?.matchType ??
+            fallbackResolution?.unconfirmedCurrent?.matchType ??
+            fallbackResolution?.storedSync?.matchType ??
+            null;
+          const effectiveInferredMatchType =
+            fallbackResolution?.confirmedCurrent?.inferred ??
+            fallbackResolution?.unconfirmedCurrent?.inferred ??
+            fallbackResolution?.storedSync?.inferred ??
+            null;
           const canonicalActiveCycle =
+            !missedSyncTags.has(trackedTag) &&
             interaction.guildId &&
             syncIdentity.positivelyResolved &&
             syncIdentity.opponentTag
@@ -18799,11 +18846,11 @@ export const Fwa: Command = {
                     identity: syncIdentity,
                     preparationStartTime:
                       preparationStartTimeByTag.get(trackedTag) ?? null,
-                    matchType: subByTag.get(trackedTag)?.matchType ?? null,
-                    inferredMatchType:
-                      subByTag.get(trackedTag)?.inferredMatchType ?? null,
+                    matchType: effectiveMatchType,
+                    inferredMatchType: effectiveInferredMatchType,
                     sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
                     activeCycleContext: activeWarCycleContext ?? undefined,
+                    shareDerivedCandidate: false,
                     persistCanonical: false,
                   },
                 )
@@ -19158,6 +19205,7 @@ export const Fwa: Command = {
                   warStartTime: true,
                   syncNum: true,
                   lastKnownSyncNumber: true,
+                  lastKnownMatchType: true,
                   opponentTag: true,
                   clanPoints: true,
                   opponentPoints: true,
@@ -20178,10 +20226,60 @@ export const Fwa: Command = {
                 warStartTime: strictLiveWarStartTime,
                 opponentTag: `#${strictLiveOpponentTag}`,
               },
-              select: { syncNum: true },
+              select: {
+                clanTag: true,
+                warId: true,
+                warStartTime: true,
+                syncNum: true,
+                lastKnownSyncNumber: true,
+                lastKnownMatchType: true,
+                opponentTag: true,
+                clanPoints: true,
+                opponentPoints: true,
+                isFwa: true,
+                needsValidation: true,
+                lastSuccessfulPointsApiFetchAt: true,
+                syncFetchedAt: true,
+              },
               orderBy: [{ syncFetchedAt: "desc" }, { updatedAt: "desc" }],
             })
           : null;
+      const preparedFallbackResolution =
+        resolveMatchTypeWithPreparedStoredSync({
+          opponentTag: strictLiveOpponentTag ?? "",
+          warState,
+          currentWarId: subscription?.warId ?? null,
+          currentWarStartTime: subscription?.startTime ?? null,
+          currentWarOpponentTag: subscription?.opponentTag ?? null,
+          activeWarId: syncIdentity.warId,
+          activeWarStartTime: syncIdentity.warStartTime,
+          activeOpponentTag: syncIdentity.opponentTag ?? strictLiveOpponentTag,
+          existingMatchType:
+            liveIdentityPatch?.sameWar === false
+              ? null
+              : (subscription?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined),
+          existingInferredMatchType:
+            liveIdentityPatch?.sameWar === false
+              ? true
+              : (subscription?.inferredMatchType ?? true),
+          storedSyncRow: sameWarSyncRow,
+        });
+      const effectiveMatchType =
+        preparedFallbackResolution.confirmedCurrent?.matchType ??
+        preparedFallbackResolution.unconfirmedCurrent?.matchType ??
+        preparedFallbackResolution.storedSync?.matchType ??
+        null;
+      const effectiveInferredMatchType =
+        preparedFallbackResolution.confirmedCurrent?.inferred ??
+        preparedFallbackResolution.unconfirmedCurrent?.inferred ??
+        preparedFallbackResolution.storedSync?.inferred ??
+        null;
       const canonicalActiveCycleBeforeInference =
         interaction.guildId &&
         syncIdentity.positivelyResolved &&
@@ -20191,10 +20289,11 @@ export const Fwa: Command = {
                 guildId: interaction.guildId,
                 identity: syncIdentity,
                 preparationStartTime: preparationStartTimeForSync,
-                matchType: subscription?.matchType ?? null,
-                inferredMatchType: subscription?.inferredMatchType ?? null,
+                matchType: effectiveMatchType,
+                inferredMatchType: effectiveInferredMatchType,
                 sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
                 activeCycleContext: activeWarCycleContext ?? undefined,
+                shareDerivedCandidate: false,
                 persistCanonical: false,
               },
             )
