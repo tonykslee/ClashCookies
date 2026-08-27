@@ -483,6 +483,21 @@ describe("fwa match posted mail gating with revisions", () => {
 
     expect(reason).toBeNull();
   });
+
+  it("does not block confirmed FWA mail when local sync/outcome are resolved without current points evidence", () => {
+    const reason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "not_posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
+      hasConfirmedBaseline: false,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "WIN",
+    });
+
+    expect(reason).toBeNull();
+  });
 });
 
 describe("fwa unresolved outcome mail gate", () => {

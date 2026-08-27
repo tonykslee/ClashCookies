@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
   resolveActiveWarSyncNumber,
   resolveActiveWarSyncNumberReadOnly,
   resolveCurrentWarSyncIdentity,
 } from "../src/services/ActiveWarSyncResolutionService";
+import { SyncCycleResolutionSource } from "@prisma/client";
+import type {
+  ActiveWarCycleContext,
+  SyncCycleService,
+} from "../src/services/SyncCycleService";
 
 describe("ActiveWarSyncResolutionService resolver", () => {
   it("fails closed for positively resolved preparation wars without sync evidence", () => {
@@ -220,4 +226,570 @@ describe("ActiveWarSyncResolutionService resolver", () => {
       isDerived: false,
     });
   });
+
+  it("persists a locally derived active FWA cycle without points-site evidence", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    let boundInput: Record<string, unknown> | null = null;
+    const syncCycles = {
+      resolveActiveWarCycle: async () => ({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+      }),
+      bindResolvedCanonical: async (input: Record<string, unknown>) => {
+        boundInput = input;
+        return { status: "created" as const, cycle: {} as never };
+      },
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "preparation",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: false,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 553,
+      source: "active_war_confirmed",
+      status: "derived",
+      scheduledSyncPostId: "post-b",
+    });
+    expect(boundInput).toMatchObject({
+      guildId: "guild-1",
+      syncNumber: 553,
+      scheduledSyncPostId: "post-b",
+      resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+    });
+  });
+
+  it("uses an inferred active FWA candidate without persisting a new canonical cycle", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycle: async () => ({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: true,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 553,
+      source: "active_war_schedule_candidate",
+      status: "derived",
+    });
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare inferred flag even when a caller asks to persist", async () => {
+    const updateActiveWarCycleCandidateContext = vi.fn();
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime: new Date("2026-04-13T08:00:00.000Z"),
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      updateActiveWarCycleCandidateContext,
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: new Date("2026-04-13T08:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: null,
+      inferredMatchType: true,
+      activeCycleContext: {} as ActiveWarCycleContext,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: null,
+      status: "not_fwa",
+      reason: "fwa_evidence_unresolved",
+    });
+    expect(updateActiveWarCycleCandidateContext).not.toHaveBeenCalled();
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
+  it("keeps an inferred candidate reusable without allowing a BL/MM render to write it", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const context = {} as ActiveWarCycleContext;
+    const bindResolvedCanonical = vi.fn();
+    const resolveActiveWarCycleFromContext = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      })
+      .mockResolvedValueOnce({
+        status: "exact" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "request_local_active_cycle_candidate",
+        resolutionSource: null,
+      });
+    const updateActiveWarCycleCandidateContext = vi.fn();
+    const service = new ActiveWarSyncResolutionService(undefined, {
+      resolveActiveWarCycleFromContext,
+      updateActiveWarCycleCandidateContext,
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService);
+    const identity = buildActiveWarSyncIdentity({
+      warState: "inWar",
+      warStartTime: syncTime,
+      opponentTag: "#OPP123",
+    });
+    const baseInput = {
+      guildId: "guild-1",
+      identity,
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      activeCycleContext: context,
+      persistCanonical: true,
+    };
+
+    const inferred =
+      await service.resolveActiveWarSyncFromCanonicalCycle({
+        ...baseInput,
+        matchType: "FWA",
+        inferredMatchType: true,
+      });
+    const bl = await service.resolveActiveWarSyncFromCanonicalCycle({
+      ...baseInput,
+      matchType: "BL",
+      inferredMatchType: false,
+    });
+
+    expect(inferred).toMatchObject({
+      syncNumber: 553,
+      source: "active_war_schedule_candidate",
+      status: "derived",
+    });
+    expect(bl).toMatchObject({
+      syncNumber: 553,
+      source: "active_cycle_reuse",
+      status: "exact",
+    });
+    expect(updateActiveWarCycleCandidateContext).toHaveBeenCalledTimes(1);
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
+  it("returns a conflict when exact same-war points evidence disagrees with local active chronology", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const service = new ActiveWarSyncResolutionService(undefined, {
+      resolveActiveWarCycle: vi.fn(async () => ({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      })),
+      bindResolvedCanonical: vi.fn(),
+    } as unknown as SyncCycleService);
+
+    const result = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: true,
+      sameWarPersistedSyncNumber: 552,
+    });
+
+    expect(result).toMatchObject({
+      syncNumber: null,
+      source: "active_war_ambiguous",
+      status: "conflict",
+      reason: "points_sync_conflicts_with_active_cycle",
+    });
+  });
+
+  it("reuses an exact canonical active cycle while FWA type is still inferred", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycle: async () => ({
+        status: "exact" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: null,
+        reason: "exact_sync_cycle",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+      }),
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "preparation",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: true,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: 553,
+      status: "exact",
+    });
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
+  it("uses a prepared context and binds one shared confirmed boundary", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const context = {} as ActiveWarCycleContext;
+    const resolveActiveWarCycle = vi.fn();
+    const resolveActiveWarCycleFromContext = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+      })
+      .mockResolvedValueOnce({
+        status: "exact" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: null,
+        reason: "exact_sync_cycle",
+        resolutionSource: SyncCycleResolutionSource.ACTIVE_WAR_CONFIRMED,
+      });
+    const cycle = { syncNumber: 553, syncTime } as never;
+    const bindResolvedCanonical = vi.fn(async () => ({
+      status: "created" as const,
+      cycle,
+    }));
+    const updateActiveWarCycleContext = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycle,
+      resolveActiveWarCycleFromContext,
+      bindResolvedCanonical,
+      updateActiveWarCycleContext,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+    const baseInput = {
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      inferredMatchType: false,
+      activeCycleContext: context,
+      persistCanonical: true,
+    };
+
+    await service.resolveActiveWarSyncFromCanonicalCycle(baseInput);
+    const second = await service.resolveActiveWarSyncFromCanonicalCycle(
+      baseInput,
+    );
+
+    expect(resolveActiveWarCycle).not.toHaveBeenCalled();
+    expect(resolveActiveWarCycleFromContext).toHaveBeenCalledTimes(2);
+    expect(bindResolvedCanonical).toHaveBeenCalledTimes(1);
+    expect(updateActiveWarCycleContext).toHaveBeenCalledWith(context, cycle);
+    expect(second).toMatchObject({ status: "exact", syncNumber: 553 });
+  });
+
+  it("promotes an inferred candidate to one canonical write when confirmation arrives", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const context = {} as ActiveWarCycleContext;
+    const resolveActiveWarCycleFromContext = vi
+      .fn()
+      .mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      });
+    const bindResolvedCanonical = vi.fn(async () => ({
+      status: "created" as const,
+      cycle: { syncNumber: 553, syncTime } as never,
+    }));
+    const syncCycles = {
+      resolveActiveWarCycleFromContext,
+      bindResolvedCanonical,
+      updateActiveWarCycleContext: vi.fn(),
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+    const input = {
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: syncTime,
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: "FWA",
+      activeCycleContext: context,
+      persistCanonical: true,
+    };
+
+    const inferred = await service.resolveActiveWarSyncFromCanonicalCycle({
+      ...input,
+      inferredMatchType: true,
+    });
+    const confirmed = await service.resolveActiveWarSyncFromCanonicalCycle({
+      ...input,
+      inferredMatchType: false,
+    });
+
+    expect(inferred).toMatchObject({
+      status: "derived",
+      source: "active_war_schedule_candidate",
+      syncNumber: 553,
+    });
+    expect(confirmed).toMatchObject({
+      status: "derived",
+      source: "active_war_confirmed",
+      syncNumber: 553,
+    });
+    expect(bindResolvedCanonical).toHaveBeenCalledTimes(1);
+  });
+
+  it("primes candidate evidence before non-FWA reuse and keeps boundary conflicts sticky", async () => {
+    const syncTime = new Date("2026-04-13T08:00:00.000Z");
+    const preparationStartTime = new Date("2026-04-12T08:00:00.000Z");
+    const identity = buildActiveWarSyncIdentity({
+      warState: "inWar",
+      warStartTime: syncTime,
+      opponentTag: "#OPP123",
+    });
+
+    const resolveFromContext = vi.fn(async (
+      context: ActiveWarCycleContext,
+      _input: {
+        matchType?: string | null;
+        preparationStartTime: Date | null | undefined;
+      },
+    ) => {
+      const conflict = context.activeCycleConflicts?.[0];
+      if (conflict) {
+        return {
+          status: "conflict" as const,
+          syncNumber: null,
+          scheduledSyncPostId: conflict.scheduledSyncPostId,
+          syncTime: conflict.syncTime,
+          previousSyncNumber: null,
+          reason: conflict.reason,
+          resolutionSource: null,
+        };
+      }
+      const candidate = context.derivedCandidates?.[0];
+      if (candidate) {
+        return {
+          status: "exact" as const,
+          syncNumber: candidate.syncNumber,
+          scheduledSyncPostId: candidate.scheduledSyncPostId,
+          syncTime: candidate.syncTime,
+          previousSyncNumber: candidate.previousSyncNumber,
+          reason: "request_local_active_cycle_candidate",
+          resolutionSource: null,
+        };
+      }
+      return {
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime,
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      };
+    });
+    const updateCandidate = vi.fn(
+      (
+        context: ActiveWarCycleContext,
+        candidate: {
+          syncNumber: number;
+          scheduledSyncPostId: string;
+          syncTime: Date;
+          previousSyncNumber: number;
+        },
+      ) => {
+        context.derivedCandidates = [candidate];
+      },
+    );
+    const markConflict = vi.fn(
+      (
+        context: ActiveWarCycleContext,
+        conflict: {
+          syncTime: Date;
+          scheduledSyncPostId: string;
+          reason: string;
+        },
+      ) => {
+        context.activeCycleConflicts = [conflict];
+        context.derivedCandidates = [];
+      },
+    );
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: resolveFromContext,
+      updateActiveWarCycleCandidateContext: updateCandidate,
+      markActiveWarCycleConflict: markConflict,
+      bindResolvedCanonical: vi.fn(),
+    } as unknown as SyncCycleService;
+    const makeContext = (): ActiveWarCycleContext => ({
+      guildId: "guild-1",
+      minPreparationStartTime: preparationStartTime,
+      lowerBound: new Date(preparationStartTime.getTime() - 86_400_000),
+      maxPreparationStartTime: preparationStartTime,
+      scheduleCoverageStart: preparationStartTime,
+      scheduledSyncPosts: [],
+      syncCycles: [],
+      previousAnchor: null,
+      derivedCandidates: [],
+      activeCycleConflicts: [],
+      readErrorReason: null,
+    });
+    const makeRequest = (matchType: string, syncNumber?: number) => ({
+      guildId: "guild-1",
+      identity,
+      preparationStartTime,
+      matchType,
+      inferredMatchType: matchType === "FWA",
+      sameWarPersistedSyncNumber: syncNumber ?? null,
+    });
+
+    for (const requests of [
+      [makeRequest("FWA"), makeRequest("BL", 553)],
+      [makeRequest("BL", 553), makeRequest("FWA")],
+    ]) {
+      const context = makeContext();
+      const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+      await service.primeActiveWarCycleContext(context, requests);
+      const result = await service.resolveActiveWarSyncFromCanonicalCycle({
+        ...makeRequest("BL"),
+        activeCycleContext: context,
+        sameWarPersistedSyncNumber: null,
+      });
+      expect(result).toMatchObject({
+        syncNumber: 553,
+        source: "active_cycle_reuse",
+        status: "exact",
+      });
+    }
+
+    const conflictContext = makeContext();
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+    await service.primeActiveWarCycleContext(conflictContext, [
+      makeRequest("BL", 552),
+      makeRequest("FWA"),
+    ]);
+    expect(conflictContext.derivedCandidates).toEqual([]);
+    expect(conflictContext.activeCycleConflicts).toHaveLength(1);
+    await expect(
+      service.resolveActiveWarSyncFromCanonicalCycle({
+        ...makeRequest("MM"),
+        activeCycleContext: conflictContext,
+      }),
+    ).resolves.toMatchObject({
+      syncNumber: null,
+      source: "active_war_ambiguous",
+      status: "conflict",
+    });
+  });
+
+  it.each(["BL", "MM", "SKIP"])(
+    "never persists an active FWA cycle for confirmed %s evidence",
+    async (matchType) => {
+      const bindResolvedCanonical = vi.fn();
+      const resolveActiveWarCycle = vi.fn();
+      const syncCycles = {
+        resolveActiveWarCycle,
+        bindResolvedCanonical,
+      } as unknown as SyncCycleService;
+      const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+      const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+        guildId: "guild-1",
+        identity: buildActiveWarSyncIdentity({
+          warState: "inWar",
+          warStartTime: new Date("2026-04-13T08:00:00.000Z"),
+          opponentTag: "#OPP123",
+        }),
+        preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+        matchType,
+        inferredMatchType: false,
+        persistCanonical: true,
+      });
+
+      expect(resolution).toMatchObject({
+        syncNumber: null,
+        status: "not_fwa",
+      });
+      expect(resolveActiveWarCycle).not.toHaveBeenCalled();
+      expect(bindResolvedCanonical).not.toHaveBeenCalled();
+    },
+  );
 });

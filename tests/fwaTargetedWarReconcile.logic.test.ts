@@ -93,6 +93,7 @@ function expectNullWarMailRenderState(row: unknown): void {
     outcome: null,
     fwaPoints: null,
     opponentFwaPoints: null,
+    prepStartTime: null,
     startTime: null,
     endTime: null,
     opponentTag: null,

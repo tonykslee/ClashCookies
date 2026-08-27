@@ -66,6 +66,34 @@ function collectButtonCustomIds(payload: unknown): string[] {
   });
 }
 
+function findButtonByCustomId(
+  payload: unknown,
+  customId: string,
+): { disabled: boolean } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const rows = Array.isArray((payload as { components?: unknown[] }).components)
+    ? ((payload as { components: unknown[] }).components as unknown[])
+    : [];
+  for (const row of rows) {
+    const normalized =
+      row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+        ? (row as { toJSON: () => unknown }).toJSON()
+        : row;
+    if (!normalized || typeof normalized !== "object") continue;
+    const components = Array.isArray((normalized as { components?: unknown[] }).components)
+      ? ((normalized as { components: unknown[] }).components as unknown[])
+      : [];
+    const button = components.find(
+      (component) =>
+        String((component as { custom_id?: unknown }).custom_id ?? "") === customId,
+    );
+    if (button && typeof button === "object") {
+      return { disabled: Boolean((button as { disabled?: unknown }).disabled) };
+    }
+  }
+  return null;
+}
+
 function getEmbedFieldValue(payload: unknown, fieldName: string): string | null {
   if (!payload || typeof payload !== "object") return null;
   const embeds = Array.isArray((payload as { embeds?: unknown[] }).embeds)
@@ -628,6 +656,137 @@ describe("compo refresh button behavior", () => {
         "compo-refresh:advice-band:user-1:AAA111:2:1:prev",
         "compo-refresh:advice-band:user-1:AAA111:2:1:next",
       ]),
+    );
+  });
+
+  it("refreshes stale long-lived Custom controls from the current HeatMapRef bands", async () => {
+    const heatMapRefs = Array.from({ length: 14 }, (_, index) => {
+      const min = 7_100_001 + index * 100_000;
+      return {
+        weightMinInclusive: min,
+        weightMaxInclusive: min + 99_999,
+      };
+    });
+    const makeAdvice = (selectedCustomBandIndex: number) => {
+      const selectedHeatMapRef = heatMapRefs[selectedCustomBandIndex]!;
+      return {
+        kind: "ready" as const,
+        mode: "actual" as const,
+        selectedView: "custom" as const,
+        trackedClanTags: ["#AAA111"],
+        trackedClanChoices: [{ tag: "#AAA111", name: "Alpha Clan" }],
+        clanTag: "#AAA111",
+        clanName: "Alpha Clan",
+        memberCount: 50,
+        rushedCount: 0,
+        refreshLine: "RAW Data last refreshed: <t:1709900003:F>",
+        summary: {
+          mode: "actual",
+          view: "custom",
+          viewLabel: "Custom",
+          heatMapRefs,
+          bandMatchRatesByBandKey: new Map(),
+          currentProjection: {
+            view: "raw",
+            totalWeight: 8_150_000,
+            memberCount: 50,
+            missingWeights: 0,
+            unresolvedWeightCount: 0,
+            missingTo50Count: 0,
+            selectedHeatMapRef,
+            deltaByBucket: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 0,
+              "<=TH13": 0,
+            },
+          },
+          targetDeltaByBucket: {
+            TH18: 0,
+            TH17: 0,
+            TH16: 0,
+            TH15: 0,
+            TH14: 0,
+            "<=TH13": 0,
+          },
+          currentMatchrate: 1,
+          targetBandMatchrate: 1,
+          resultingMatchrate: 1,
+          currentWeight: 8_150_000,
+          resolvedRosterWeight: 8_150_000,
+          targetBandMidpoint: selectedHeatMapRef.weightMinInclusive + 50_000,
+          currentScore: 0,
+          currentBandLabel: "8,100,001 - 8,200,000",
+          targetBandLabel: `${selectedHeatMapRef.weightMinInclusive.toLocaleString()} - ${selectedHeatMapRef.weightMaxInclusive.toLocaleString()}`,
+          targetHeatMapRef: selectedHeatMapRef,
+          recommendationText: "No adjustment needed",
+          resultingScore: 0,
+          resultingBandLabel: "No adjustment needed",
+          alternateTexts: [],
+          statusText: null,
+          selectedCustomBandIndex,
+          customBandCount: heatMapRefs.length,
+        },
+      } as any;
+    };
+
+    vi.spyOn(CompoAdviceService.prototype, "refreshAdvice")
+      .mockResolvedValueOnce(makeAdvice(10))
+      .mockResolvedValueOnce(makeAdvice(11));
+
+    const staleRefreshInteraction = makeInteraction(
+      "compo-refresh:advice:user-1:actual:custom:AAA111:11:10",
+    );
+    staleRefreshInteraction.message.components = [
+      makeMessageRow(
+        "compo-refresh:advice:user-1:actual:custom:AAA111:11:10",
+        "Refresh Data",
+      ),
+      makeMessageRow("post-channel:user-1", "Post to Channel"),
+    ];
+
+    await handleCompoRefreshButton(staleRefreshInteraction as any, {} as any);
+
+    const refreshedPayload = staleRefreshInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(collectButtonCustomIds(refreshedPayload)).toEqual(
+      expect.arrayContaining([
+        "compo-refresh:advice:user-1:actual:custom:AAA111:14:10",
+        "compo-refresh:advice-clan:user-1:actual:AAA111:custom:14:10",
+        "compo-refresh:advice-band:user-1:AAA111:14:10:prev",
+        "compo-refresh:advice-band:user-1:AAA111:14:10:next",
+      ]),
+    );
+    expect(
+      findButtonByCustomId(
+        refreshedPayload,
+        "compo-refresh:advice-band:user-1:AAA111:14:10:next",
+      ),
+    ).toEqual({ disabled: false });
+
+    const nextInteraction = makeInteraction(
+      "compo-refresh:advice-band:user-1:AAA111:14:10:next",
+    );
+    nextInteraction.message.components = (refreshedPayload.components as unknown[]).map(
+      (row) =>
+        row && typeof (row as { toJSON?: () => unknown }).toJSON === "function"
+          ? row
+          : { toJSON: () => row },
+    );
+
+    await handleCompoRefreshButton(nextInteraction as any, {} as any);
+
+    expect(CompoAdviceService.prototype.refreshAdvice).toHaveBeenLastCalledWith({
+      guildId: "guild-1",
+      targetTag: "AAA111",
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 11,
+    });
+    const nextPayload = nextInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(collectButtonCustomIds(nextPayload)).toContain(
+      "compo-refresh:advice-band:user-1:AAA111:14:11:next",
     );
   });
 
