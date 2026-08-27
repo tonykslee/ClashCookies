@@ -22,6 +22,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     deleteMany: vi.fn(),
   },
+  clanWarHistory: {
+    findFirst: vi.fn(),
+  },
   maintenanceWindowRuntimeState: {
     findUnique: vi.fn(),
     upsert: vi.fn(),
@@ -50,6 +53,7 @@ beforeEach(() => {
   prismaMock.warAttacks.findFirst.mockResolvedValue(null);
   prismaMock.warAttacks.findMany.mockResolvedValue([]);
   prismaMock.warAttacks.deleteMany.mockResolvedValue({ count: 0 });
+  prismaMock.clanWarHistory.findFirst.mockResolvedValue(null);
   prismaMock.maintenanceWindowRuntimeState.findUnique.mockResolvedValue(null);
   prismaMock.maintenanceWindowRuntimeState.upsert.mockResolvedValue({});
 });
@@ -579,6 +583,23 @@ function expectNoFinalizationUpdateMany() {
   expect(getCurrentWarUpdateManyCallsByKind("finalization")).toHaveLength(0);
 }
 
+function configurePreviewDependencies(
+  service: WarEventLogService,
+  resolution: Record<string, unknown>,
+) {
+  (service as any).points.fetchSnapshot = vi.fn().mockResolvedValue({
+    balance: 100,
+  });
+  (service as any).syncResolution = {
+    getLatestPersistedSyncBaseline: vi.fn().mockResolvedValue(552),
+    loadActiveWarCycleContext: vi.fn().mockResolvedValue({}),
+    resolveActiveWarSyncFromCanonicalCycle: vi
+      .fn()
+      .mockResolvedValue(resolution),
+  };
+  return (service as any).syncResolution;
+}
+
 describe("exact same-war points identity validation", () => {
   const intendedWarId = "5002";
   const intendedWarStartTime = newWarStartTime;
@@ -648,6 +669,211 @@ describe("exact same-war points identity validation", () => {
 });
 
 describe("WarEventLogService sync-number lifecycle", () => {
+  it("does not display points sync evidence when the current-war API is unavailable", async () => {
+    const service = makeService(null);
+    (service as any).coc.getCurrentWar = vi
+      .fn()
+      .mockRejectedValue(new Error("CoC unavailable"));
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: 553,
+      status: "exact",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "exact_sync_cycle",
+      provenance: "canonical_exact",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 553,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBeNull();
+    expect(syncResolution.resolveActiveWarSyncFromCanonicalCycle).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the current-war physical identity is incomplete", async () => {
+    const service = makeService({
+      state: "inWar",
+      startTime: null,
+      preparationStartTime: null,
+      opponent: null,
+    });
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: 553,
+      status: "exact",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "exact_sync_cycle",
+      provenance: "canonical_exact",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 553,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBeNull();
+    expect(syncResolution.resolveActiveWarSyncFromCanonicalCycle).not.toHaveBeenCalled();
+  });
+
+  it("uses a canonical active cycle when validated points match it", async () => {
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+      }),
+    );
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: 553,
+      status: "exact",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "exact_sync_cycle",
+      provenance: "canonical_exact",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 553,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBe(553);
+    expect(
+      syncResolution.resolveActiveWarSyncFromCanonicalCycle,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ sameWarPersistedSyncNumber: 553 }),
+    );
+  });
+
+  it("ignores dirty points when canonical active-cycle resolution succeeds", async () => {
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+      }),
+    );
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: 553,
+      status: "exact",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "exact_sync_cycle",
+      provenance: "canonical_exact",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: true,
+        pointsSyncNum: 552,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBe(553);
+    expect(
+      syncResolution.resolveActiveWarSyncFromCanonicalCycle,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ sameWarPersistedSyncNumber: null }),
+    );
+  });
+
+  it("displays unknown when validated points conflict with canonical chronology", async () => {
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+      }),
+    );
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: null,
+      status: "conflict",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "points_sync_conflicts_with_active_cycle",
+      provenance: "none",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 552,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBeNull();
+    expect(syncResolution.resolveActiveWarSyncFromCanonicalCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ sameWarPersistedSyncNumber: 552 }),
+    );
+  });
+
+  it("does not let validated points establish a current preview cycle by themselves", async () => {
+    const service = makeService(
+      makeWarSnapshot({
+        state: "inWar",
+        startTime: sameWarStartTime,
+        opponentTag: "#0PPX",
+      }),
+    );
+    const syncResolution = configurePreviewDependencies(service, {
+      syncNumber: null,
+      status: "unresolved",
+      scheduledSyncPostId: null,
+      syncTime: null,
+      reason: "no_previous_canonical_cycle",
+      provenance: "none",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 553,
+      }),
+      { eventType: "war_started", source: "current" },
+    );
+
+    expect(payload.syncNumber).toBeNull();
+    expect(syncResolution.resolveActiveWarSyncFromCanonicalCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ sameWarPersistedSyncNumber: 553 }),
+    );
+  });
+
+  it("keeps source:last on its historical previous-sync fallback", async () => {
+    const service = makeService(null);
+    (service as any).coc.getClanWarLog = vi.fn().mockResolvedValue([]);
+    configurePreviewDependencies(service, {
+      syncNumber: 553,
+      status: "exact",
+      scheduledSyncPostId: "post-current",
+      syncTime: prepStartTime,
+      reason: "exact_sync_cycle",
+      provenance: "canonical_exact",
+    });
+
+    const payload = await (service as any).buildTestEventPayload(
+      makeSubscriptionRow({
+        pointsNeedsValidation: false,
+        pointsSyncNum: 553,
+      }),
+      { eventType: "war_started", source: "last" },
+    );
+
+    expect(payload.syncNumber).toBe(552);
+  });
+
   it("fails closed on the first-poll FWA war_started path and clears the pending marker", async () => {
     const clanTag = "#1AAAA";
     const opponentTag = "#2AAAA";

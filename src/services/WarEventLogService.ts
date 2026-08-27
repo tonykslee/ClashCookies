@@ -3000,10 +3000,6 @@ export class WarEventLogService {
       params.source === "current"
         ? await this.coc.getCurrentWar(sub.clanTag).catch(() => null)
         : null;
-    const activeSync =
-      params.source === "current" && sub.pointsNeedsValidation === false
-        ? sub.pointsSyncNum ?? null
-        : null;
     const lastWarLogEntry =
       params.source === "last"
         ? ((await this.coc.getClanWarLog(sub.clanTag, 1))[0] ?? null)
@@ -3056,7 +3052,7 @@ export class WarEventLogService {
         ? Math.trunc(Number(lastWarHistoryRow.syncNumber))
         : params.source === "last"
           ? previousSync
-          : activeSync;
+          : null;
 
     const clanTag = normalizeTag(sub.clanTag);
     const opponentTag = normalizeTag(
@@ -3199,6 +3195,8 @@ export class WarEventLogService {
       params.source === "current" &&
       currentWar &&
       (currentState === "preparation" || currentState === "inWar") &&
+      currentWarStartTime &&
+      currentWar.opponent?.tag &&
       testWarStartTime &&
       opponentTag &&
       previewPreparationStartTime
