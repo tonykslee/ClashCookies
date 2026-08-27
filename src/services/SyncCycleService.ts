@@ -73,6 +73,19 @@ export type ActiveWarCycleContext = {
   }>;
   syncCycles: SyncCycle[];
   previousAnchor: SyncCycle | null;
+  /** Request-local candidates are display evidence only until confirmed FWA persistence. */
+  derivedCandidates?: Array<{
+    syncNumber: number;
+    scheduledSyncPostId: string;
+    syncTime: Date;
+    previousSyncNumber: number;
+  }>;
+  /** Request-local boundary conflicts are sticky and always take precedence over reuse. */
+  activeCycleConflicts?: Array<{
+    syncTime: Date;
+    scheduledSyncPostId: string;
+    reason: string;
+  }>;
   readErrorReason:
     | "active_cycle_database_unavailable"
     | "schedule_read_failed"
@@ -282,6 +295,8 @@ export class SyncCycleService {
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: null,
       };
     }
@@ -308,6 +323,8 @@ export class SyncCycleService {
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "active_cycle_database_unavailable",
       };
     }
@@ -341,6 +358,8 @@ export class SyncCycleService {
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "sync_cycle_read_failed",
       };
     }
@@ -369,6 +388,8 @@ export class SyncCycleService {
         scheduledSyncPosts,
         syncCycles,
         previousAnchor,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: null,
       };
     } catch (error) {
@@ -384,6 +405,8 @@ export class SyncCycleService {
         scheduledSyncPosts: [],
         syncCycles: [],
         previousAnchor: null,
+        derivedCandidates: [],
+        activeCycleConflicts: [],
         readErrorReason: "schedule_read_failed",
       };
     }
@@ -405,6 +428,65 @@ export class SyncCycleService {
     context.syncCycles.push(cycle);
   }
 
+  /** Purpose: retain a safe active FWA candidate for reuse in this request without persisting it. */
+  updateActiveWarCycleCandidateContext(
+    context: ActiveWarCycleContext,
+    candidate: {
+      syncNumber: number;
+      scheduledSyncPostId: string;
+      syncTime: Date;
+      previousSyncNumber: number;
+    },
+  ): void {
+    if (
+      context.activeCycleConflicts?.some(
+        (conflict) =>
+          conflict.syncTime.getTime() === candidate.syncTime.getTime(),
+      )
+    ) {
+      return;
+    }
+    if (context.derivedCandidates === undefined) {
+      context.derivedCandidates = [];
+    }
+    const existingIndex = context.derivedCandidates.findIndex(
+      (existing) => existing.syncTime.getTime() === candidate.syncTime.getTime(),
+    );
+    if (existingIndex >= 0) {
+      context.derivedCandidates[existingIndex] = candidate;
+      return;
+    }
+    context.derivedCandidates.push(candidate);
+  }
+
+  /** Purpose: make a request-local active boundary conflict sticky and un-reusable. */
+  markActiveWarCycleConflict(
+    context: ActiveWarCycleContext,
+    conflict: {
+      syncTime: Date;
+      scheduledSyncPostId: string;
+      reason: string;
+    },
+  ): void {
+    if (context.activeCycleConflicts === undefined) {
+      context.activeCycleConflicts = [];
+    }
+    const existingIndex = context.activeCycleConflicts.findIndex(
+      (existing) => existing.syncTime.getTime() === conflict.syncTime.getTime(),
+    );
+    if (existingIndex >= 0) {
+      context.activeCycleConflicts[existingIndex] = conflict;
+    } else {
+      context.activeCycleConflicts.push(conflict);
+    }
+    if (context.derivedCandidates !== undefined) {
+      context.derivedCandidates = context.derivedCandidates.filter(
+        (candidate) =>
+          candidate.syncTime.getTime() !== conflict.syncTime.getTime(),
+      );
+    }
+  }
+
   /** Purpose: resolve an active war cycle entirely from one request-scoped context. */
   async resolveActiveWarCycleFromContext(
     context: ActiveWarCycleContext,
@@ -413,8 +495,7 @@ export class SyncCycleService {
     const guildId = normalizeGuildId(input.guildId);
     const preparationStartTime = input.preparationStartTime;
     const matchType = normalizeMatchType(input.matchType);
-    const isFwa =
-      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    const isFwa = matchType === "FWA";
     if (!guildId || !isValidDate(preparationStartTime)) {
       return {
         status: "unresolved",
@@ -426,7 +507,13 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
-    if (!isFwa) {
+    // The standalone API intentionally does not load chronology for non-FWA
+    // evidence. A prepared context may still reuse an exact/candidate boundary.
+    if (
+      !isFwa &&
+      (context.minPreparationStartTime === null ||
+        context.maxPreparationStartTime === null)
+    ) {
       return {
         status: "unresolved",
         syncNumber: null,
@@ -527,6 +614,21 @@ export class SyncCycleService {
         resolutionSource: null,
       };
     }
+    const boundaryConflict = context.activeCycleConflicts?.find(
+      (conflict) =>
+        conflict.syncTime.getTime() === schedule.syncTime.getTime(),
+    );
+    if (boundaryConflict) {
+      return {
+        status: "conflict",
+        syncNumber: null,
+        scheduledSyncPostId: boundaryConflict.scheduledSyncPostId,
+        syncTime: boundaryConflict.syncTime,
+        previousSyncNumber: null,
+        reason: boundaryConflict.reason,
+        resolutionSource: null,
+      };
+    }
     const exactCurrentCycle = context.syncCycles.find(
       (cycle) => cycle.syncTime.getTime() === schedule.syncTime.getTime(),
     );
@@ -539,6 +641,31 @@ export class SyncCycleService {
         previousSyncNumber: null,
         reason: "exact_sync_cycle",
         resolutionSource: exactCurrentCycle.resolutionSource,
+      };
+    }
+    const requestCandidate = context.derivedCandidates?.find(
+      (candidate) => candidate.syncTime.getTime() === schedule.syncTime.getTime(),
+    );
+    if (requestCandidate) {
+      return {
+        status: "exact",
+        syncNumber: requestCandidate.syncNumber,
+        scheduledSyncPostId: requestCandidate.scheduledSyncPostId,
+        syncTime: requestCandidate.syncTime,
+        previousSyncNumber: requestCandidate.previousSyncNumber,
+        reason: "request_local_active_cycle_candidate",
+        resolutionSource: null,
+      };
+    }
+    if (!isFwa) {
+      return {
+        status: "unresolved",
+        syncNumber: null,
+        scheduledSyncPostId: schedule.id,
+        syncTime: schedule.syncTime,
+        previousSyncNumber: null,
+        reason: "fwa_evidence_unresolved",
+        resolutionSource: null,
       };
     }
     const previous = [
@@ -625,8 +752,7 @@ export class SyncCycleService {
     input: ActiveWarCycleResolutionInput,
   ): Promise<ActiveSyncCycleResolution> {
     const matchType = normalizeMatchType(input.matchType);
-    const isFwa =
-      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    const isFwa = matchType === "FWA";
     const context = await this.loadActiveWarCycleContext({
       guildId: input.guildId,
       preparationStartTimes: isFwa ? [input.preparationStartTime] : [],

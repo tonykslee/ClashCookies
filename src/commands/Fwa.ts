@@ -5898,6 +5898,10 @@ async function buildWarMailEmbedForTag(
             preparationStartTime: preparationStartTimeForSync,
             matchType: appliedResolution?.matchType ?? null,
             inferredMatchType: appliedResolution?.inferred ?? inferredMatchType,
+            sameWarPersistedSyncNumber:
+              syncRow && syncRow.needsValidation === false
+                ? syncRow.syncNum
+                : null,
             activeCycleContext: activeWarCycleContext ?? undefined,
             persistCanonical: shouldPersistActiveFwaSync({
               matchType: appliedResolution?.matchType,
@@ -5920,7 +5924,9 @@ async function buildWarMailEmbedForTag(
         : canonicalActiveCycle?.syncNumber !== null &&
             canonicalActiveCycle?.syncNumber !== undefined
           ? { syncNumber: canonicalActiveCycle.syncNumber, conflict: false }
-          : await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
+          : { syncNumber: null, conflict: false };
+  let activeWarSyncConflict =
+    canonicalActiveCycle?.source === "active_war_ambiguous";
   const syncResolution = resolveActiveWarSyncNumberReadOnly({
     identity: syncIdentityForRender,
     latestPersistedSyncNumber: sourceSync,
@@ -5928,7 +5934,11 @@ async function buildWarMailEmbedForTag(
     // current-war sync. Keep it available below for status/diagnostics, but do
     // not let it participate in parity resolution.
     sameWarPersistedSyncNumber:
-      syncRow && syncRow.needsValidation === false ? syncRow.syncNum : null,
+      canonicalActiveCycle?.source === "active_war_ambiguous"
+        ? null
+        : syncRow && syncRow.needsValidation === false
+          ? syncRow.syncNum
+          : null,
     activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
     activeCycleConflict: activeCycleDiscovery.conflict,
   });
@@ -6106,8 +6116,7 @@ async function buildWarMailEmbedForTag(
       options?.activeCycleConflict === undefined &&
       guildId &&
       syncIdentityForRender.positivelyResolved &&
-      opponentTag &&
-      matchType === "FWA"
+      opponentTag
     ) {
       const canonicalActiveCycleAfterInference =
         await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
@@ -6117,6 +6126,10 @@ async function buildWarMailEmbedForTag(
             preparationStartTime: preparationStartTimeForSync,
             matchType,
             inferredMatchType,
+            sameWarPersistedSyncNumber:
+              syncRow && syncRow.needsValidation === false
+                ? syncRow.syncNum
+                : null,
             activeCycleContext: activeWarCycleContext ?? undefined,
             persistCanonical: shouldPersistActiveFwaSync({
               matchType,
@@ -6128,6 +6141,7 @@ async function buildWarMailEmbedForTag(
       if (
         canonicalActiveCycleAfterInference.source === "active_war_ambiguous"
       ) {
+        activeWarSyncConflict = true;
         resolvedCurrentSyncNum = null;
       } else if (canonicalActiveCycleAfterInference.syncNumber !== null) {
         resolvedCurrentSyncNum = canonicalActiveCycleAfterInference.syncNumber;
@@ -6165,6 +6179,7 @@ async function buildWarMailEmbedForTag(
       opponentNotFound: opponentSnapshot?.notFound === true,
       warId: warIdForSync,
       warStartTime: warStartTimeForSync,
+      activeCycleConflict: activeWarSyncConflict,
     });
     const derivedOutcome = deriveProjectedOutcome(
       normalizedTag,
@@ -12441,6 +12456,9 @@ function resolveFwaPointsFooterSync(input: {
   const distinctExactResolvedSyncNumbers = [
     ...new Set(exactResolvedActiveSyncNumbers),
   ];
+  if (input.activeCycleConflict) {
+    return null;
+  }
   if (distinctExactResolvedSyncNumbers.length > 1) return null;
   if (distinctExactResolvedSyncNumbers.length === 1) {
     const exactSyncNumber = distinctExactResolvedSyncNumbers[0];
@@ -12450,9 +12468,6 @@ function resolveFwaPointsFooterSync(input: {
       : distinctResolvedSyncNumbers.length === 0
         ? exactSyncNumber
         : null;
-  }
-  if (input.activeCycleConflict) {
-    return null;
   }
   if (
     input.activeCycleSyncNumber !== null &&
@@ -12596,7 +12611,9 @@ function resolveFinalActiveWarSyncNumber(input: {
   opponentNotFound: boolean;
   warId: string | number | null | undefined;
   warStartTime: Date | null | undefined;
+  activeCycleConflict?: boolean;
 }): number | null {
+  if (input.activeCycleConflict === true) return null;
   const baseSyncNumber = toComparableSyncNumber(input.baseSyncNumber);
   if (!input.siteCurrent || !input.opponentNotFound) return baseSyncNumber;
 
@@ -12783,7 +12800,83 @@ type MatchTypeFallbackResolution = {
   unconfirmedCurrent: MatchTypeResolution | null;
 };
 
+/** Purpose: resolve the same fallback using already-loaded war-scoped evidence. */
+function resolveMatchTypeWithPreparedStoredSync(params: {
+  opponentTag: string;
+  warState: WarStateForSync;
+  currentWarId?: number | string | null;
+  currentWarStartTime?: Date | null;
+  currentWarOpponentTag?: string | null;
+  activeWarId?: number | string | null;
+  activeWarStartTime?: Date | null;
+  activeOpponentTag?: string | null;
+  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
+  existingInferredMatchType?: boolean | null | undefined;
+  storedSyncRow?: WarScopedSyncReuseRow | null;
+}): MatchTypeFallbackResolution {
+  const sameActiveWar =
+    params.warState === "notInWar"
+      ? true
+      : compareActiveWarIdentities({
+          persisted: {
+            warId: params.currentWarId ?? null,
+            warStartTime: params.currentWarStartTime ?? null,
+            opponentTag: params.currentWarOpponentTag ?? null,
+          },
+          active: {
+            warId: params.activeWarId ?? null,
+            warStartTime: params.activeWarStartTime ?? null,
+            opponentTag: params.activeOpponentTag ?? params.opponentTag,
+          },
+        }).sameWar;
+  const currentResolution = resolveCurrentWarMatchTypeSignal({
+    matchType: sameActiveWar ? (params.existingMatchType ?? null) : null,
+    inferredMatchType: sameActiveWar
+      ? (params.existingInferredMatchType ?? true)
+      : true,
+  });
+  const lookupWarId =
+    params.warState === "notInWar"
+      ? (params.currentWarId ?? params.activeWarId ?? null)
+      : (params.activeWarId ?? null);
+  const lookupWarStartTime =
+    params.warState === "notInWar"
+      ? (params.currentWarStartTime ?? params.activeWarStartTime ?? null)
+      : (params.activeWarStartTime ?? null);
+  const lookupOpponentTag =
+    params.warState === "notInWar"
+      ? (params.currentWarOpponentTag ??
+        params.activeOpponentTag ??
+        params.opponentTag)
+      : (params.activeOpponentTag ?? params.opponentTag);
+  const hasWarIdentity =
+    (lookupWarId !== null &&
+      lookupWarId !== undefined &&
+      Number.isFinite(Number(lookupWarId))) ||
+    lookupWarStartTime instanceof Date;
+  const storedSync =
+    hasWarIdentity && params.storedSyncRow
+      ? resolveMatchTypeFromStoredSyncRow({
+          syncRow: {
+            opponentTag: params.storedSyncRow.opponentTag,
+            isFwa: params.storedSyncRow.isFwa ?? null,
+            lastKnownMatchType:
+              params.storedSyncRow.lastKnownMatchType ?? null,
+          },
+          opponentTag: lookupOpponentTag,
+        })
+      : null;
+  return {
+    confirmedCurrent: currentResolution.confirmed,
+    storedSync,
+    unconfirmedCurrent: currentResolution.unconfirmed,
+  };
+}
+
 /** Purpose: verify confirmed FWA fallback comes from the same live-war identity. */
+export const resolveMatchTypeWithPreparedStoredSyncForTest =
+  resolveMatchTypeWithPreparedStoredSync;
+
 function hasSameWarExplicitFwaConfirmation(input: {
   fallbackResolution: MatchTypeFallbackResolution;
   currentWarStartTime: Date | null | undefined;
@@ -13702,6 +13795,7 @@ function groupWarScopedSyncRowsByClanTag(
       clanPoints: row.clanPoints,
       opponentPoints: row.opponentPoints,
       isFwa: row.isFwa ?? null,
+      lastKnownMatchType: row.lastKnownMatchType ?? null,
       needsValidation: row.needsValidation,
       lastSuccessfulPointsApiFetchAt:
         row.lastSuccessfulPointsApiFetchAt ?? null,
@@ -14267,6 +14361,25 @@ async function buildTrackedMatchOverview(
       }
     }),
   );
+  const baselineWarStartMs =
+    activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+  const nowMs = Date.now();
+  const missedSyncTags = new Set<string>();
+  for (const clan of scopedTracked) {
+    const clanTag = normalizeTag(clan.tag);
+    const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
+    const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
+    if (
+      isMissedSyncClan({
+        baselineWarStartMs,
+        clanWarState,
+        clanWarStartMs,
+        nowMs,
+      })
+    ) {
+      missedSyncTags.add(clanTag);
+    }
+  }
   for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
     const war = warByClanTag.get(clanTag) ?? null;
@@ -14298,7 +14411,11 @@ async function buildTrackedMatchOverview(
     const clanTag = normalizeTag(clan.tag);
     const war = warByClanTag.get(clanTag) ?? null;
     const identity = syncIdentityByClanTag.get(clanTag);
-    if (!identity?.positivelyResolved || identity.warState === "notInWar") {
+    if (
+      missedSyncTags.has(clanTag) ||
+      !identity?.positivelyResolved ||
+      identity.warState === "notInWar"
+    ) {
       continue;
     }
     const liveIdentityPatch =
@@ -14326,16 +14443,6 @@ async function buildTrackedMatchOverview(
       );
     }
   }
-  const activeWarCycleContext: ActiveWarCycleContext | null =
-    guildId && activeWarPreparationStartTimeByClanTag.size > 0
-      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
-          guildId,
-          preparationStartTimes: [
-            ...activeWarPreparationStartTimeByClanTag.values(),
-          ],
-        })
-      : null;
-
   const scopedSyncWarIds = [
     ...new Set(
       [...syncIdentityByClanTag.values()]
@@ -14374,6 +14481,7 @@ async function buildTrackedMatchOverview(
             warStartTime: true,
             syncNum: true,
             lastKnownSyncNumber: true,
+            lastKnownMatchType: true,
             opponentTag: true,
             clanPoints: true,
             opponentPoints: true,
@@ -14391,28 +14499,104 @@ async function buildTrackedMatchOverview(
       : [];
   const warScopedSyncRowsByClanTag =
     groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
-  const activeCycleDiscovery = guildId
-    ? await activeWarSyncResolutionService.findPersistedActiveSyncNumber()
-    : { syncNumber: null, conflict: false };
-
-  const baselineWarStartMs =
-    activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
-  const nowMs = Date.now();
-  const missedSyncTags = new Set<string>();
+  const preLiveFallbackResolutionByClanTag = new Map<
+    string,
+    MatchTypeFallbackResolution
+  >();
   for (const clan of scopedTracked) {
     const clanTag = normalizeTag(clan.tag);
-    const clanWarState = warStateByClanTag.get(clanTag) ?? "notInWar";
-    const clanWarStartMs = warStartMsByClanTag.get(clanTag) ?? null;
-    if (
-      isMissedSyncClan({
-        baselineWarStartMs,
-        clanWarState,
-        clanWarStartMs,
-        nowMs,
-      })
-    ) {
-      missedSyncTags.add(clanTag);
-    }
+    const war = warByClanTag.get(clanTag) ?? null;
+    const warState =
+      warStateByClanTag.get(clanTag) ?? deriveWarState(war?.state);
+    if (warState === "notInWar") continue;
+    const identity = syncIdentityByClanTag.get(clanTag);
+    if (!identity?.positivelyResolved) continue;
+    const liveIdentityPatch = liveIdentityPatchByClanTag.get(clanTag) ?? null;
+    const sub = subByTag.get(clanTag);
+    const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+      rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+      warId: identity.warId,
+      warStartTime: identity.warStartTime,
+      opponentTag: identity.opponentTag,
+    });
+    const sameWar = liveIdentityPatch?.sameWar !== false;
+    preLiveFallbackResolutionByClanTag.set(
+      clanTag,
+      resolveMatchTypeWithPreparedStoredSync({
+        opponentTag: identity.opponentTag ?? "",
+        warState,
+        currentWarId: sub?.warId ?? null,
+        currentWarStartTime: sub?.startTime ?? null,
+        currentWarOpponentTag: sub?.opponentTag ?? null,
+        activeWarId: identity.warId,
+        activeWarStartTime: identity.warStartTime,
+        activeOpponentTag: identity.opponentTag,
+        existingMatchType: sameWar ? (sub?.matchType ?? null) : null,
+        existingInferredMatchType: sameWar
+          ? (sub?.inferredMatchType ?? true)
+          : true,
+        storedSyncRow: sameWarSyncRow,
+      }),
+    );
+  }
+  const activeWarCycleContext: ActiveWarCycleContext | null =
+    guildId && activeWarPreparationStartTimeByClanTag.size > 0
+      ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+          guildId,
+          preparationStartTimes: [
+            ...activeWarPreparationStartTimeByClanTag.values(),
+          ],
+        })
+      : null;
+  if (guildId && activeWarCycleContext) {
+    await activeWarSyncResolutionService.primeActiveWarCycleContext(
+      activeWarCycleContext,
+      scopedTracked.flatMap((clan) => {
+        const clanTag = normalizeTag(clan.tag);
+        if (missedSyncTags.has(clanTag)) return [];
+        const war = warByClanTag.get(clanTag) ?? null;
+        const identity = syncIdentityByClanTag.get(clanTag);
+        const preparationStartTime =
+          activeWarPreparationStartTimeByClanTag.get(clanTag);
+        const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+          rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+          warId: identity?.warId ?? null,
+          warStartTime: identity?.warStartTime ?? null,
+          opponentTag:
+            normalizeTag(String(war?.opponent?.tag ?? "")) ||
+            (identity?.opponentTag ?? null),
+        });
+        if (
+          !identity?.positivelyResolved ||
+          !normalizeTag(String(war?.opponent?.tag ?? "")) ||
+          !preparationStartTime
+        ) {
+          return [];
+        }
+        const fallbackResolution =
+          preLiveFallbackResolutionByClanTag.get(clanTag);
+        const effectiveMatchType =
+          fallbackResolution?.confirmedCurrent?.matchType ??
+          fallbackResolution?.unconfirmedCurrent?.matchType ??
+          fallbackResolution?.storedSync?.matchType ??
+          null;
+        const effectiveInferredMatchType =
+          fallbackResolution?.confirmedCurrent?.inferred ??
+          fallbackResolution?.unconfirmedCurrent?.inferred ??
+          fallbackResolution?.storedSync?.inferred ??
+          null;
+        return [
+          {
+            guildId,
+            identity,
+            preparationStartTime,
+            matchType: effectiveMatchType,
+            inferredMatchType: effectiveInferredMatchType,
+            sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+          },
+        ];
+      }),
+    );
   }
   const includedTracked = scopedTracked.filter(
     (clan) => !missedSyncTags.has(normalizeTag(clan.tag)),
@@ -14667,23 +14851,36 @@ async function buildTrackedMatchOverview(
         persistedPreparationStartTime: sub?.prepStartTime ?? null,
         warStartTime: syncIdentity.warStartTime,
       });
-    const fallbackResolution = await resolveMatchTypeWithFallback({
-      guildId,
-      clanTag,
-      opponentTag,
-      warState,
-      currentWarId: sub?.warId ?? null,
-      currentWarStartTime: sub?.startTime ?? null,
-      currentWarOpponentTag: sub?.opponentTag ?? null,
-      activeWarId: syncIdentity.warId,
-      activeWarStartTime: syncIdentity.warStartTime,
-      activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
-      existingMatchType: sub?.matchType ?? null,
-      existingInferredMatchType: sub?.inferredMatchType ?? null,
+    const fallbackResolution =
+      preLiveFallbackResolutionByClanTag.get(clanTag) ??
+      (await resolveMatchTypeWithFallback({
+        guildId,
+        clanTag,
+        opponentTag,
+        warState,
+        currentWarId: sub?.warId ?? null,
+        currentWarStartTime: sub?.startTime ?? null,
+        currentWarOpponentTag: sub?.opponentTag ?? null,
+        activeWarId: syncIdentity.warId,
+        activeWarStartTime: syncIdentity.warStartTime,
+        activeOpponentTag: syncIdentity.opponentTag ?? opponentTag,
+        existingMatchType: sub?.matchType ?? null,
+        existingInferredMatchType: sub?.inferredMatchType ?? null,
+      }));
+    const warIdForReuse = syncIdentity.warId;
+    const warStartTimeForReuse = syncIdentity.warStartTime;
+    const preCanonicalSameWarSyncRow = resolveCurrentWarScopedSyncRow({
+      rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
+      warId: warIdForReuse,
+      warStartTime: warStartTimeForReuse,
+      opponentTag: opponentTag || syncIdentity.opponentTag,
     });
 
     const canonicalActiveCycle =
-      guildId && syncIdentity.positivelyResolved && opponentTag
+      !missedSyncTags.has(clanTag) &&
+      guildId &&
+      syncIdentity.positivelyResolved &&
+      opponentTag
         ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
             {
               guildId,
@@ -14701,7 +14898,10 @@ async function buildTrackedMatchOverview(
                 fallbackResolution.storedSync?.inferred ??
                 sub?.inferredMatchType ??
                 null,
+              sameWarPersistedSyncNumber:
+                preCanonicalSameWarSyncRow?.syncNum ?? null,
               activeCycleContext: activeWarCycleContext ?? undefined,
+              shareDerivedCandidate: false,
               persistCanonical: shouldPersistActiveFwaSync({
                 matchType:
                   fallbackResolution.confirmedCurrent?.matchType ??
@@ -14729,7 +14929,7 @@ async function buildTrackedMatchOverview(
         : canonicalActiveCycle?.syncNumber !== null &&
             canonicalActiveCycle?.syncNumber !== undefined
           ? { syncNumber: canonicalActiveCycle.syncNumber, conflict: false }
-          : activeCycleDiscovery;
+          : { syncNumber: null, conflict: false };
 
     if (!opponentTag) {
       const nonActiveMailProjection = await resolveNonActiveMailProjection({
@@ -14808,8 +15008,6 @@ async function buildTrackedMatchOverview(
       continue;
     }
 
-    const warIdForReuse = syncIdentity.warId;
-    const warStartTimeForReuse = syncIdentity.warStartTime;
     const confirmedCurrentWarSyncRow = resolveCurrentWarScopedSyncRow({
       rows: warScopedSyncRowsByClanTag.get(clanTag) ?? [],
       warId: warIdForReuse,
@@ -14826,7 +15024,10 @@ async function buildTrackedMatchOverview(
     const syncResolution = resolveActiveWarSyncNumberReadOnly({
       identity: syncIdentity,
       latestPersistedSyncNumber: sourceSync,
-      sameWarPersistedSyncNumber: confirmedCurrentWarSyncRow?.syncNum ?? null,
+      sameWarPersistedSyncNumber:
+        canonicalActiveCycle?.source === "active_war_ambiguous"
+          ? null
+          : confirmedCurrentWarSyncRow?.syncNum ?? null,
       activeCycleSyncNumber: clanActiveCycleDiscovery.syncNumber,
       activeCycleConflict: clanActiveCycleDiscovery.conflict,
     });
@@ -14995,8 +15196,7 @@ async function buildTrackedMatchOverview(
     const canonicalActiveCycleAfterInference =
       guildId &&
       syncIdentity.positivelyResolved &&
-      opponentTag &&
-      matchType === "FWA"
+      opponentTag
         ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
             {
               guildId,
@@ -15004,7 +15204,10 @@ async function buildTrackedMatchOverview(
               preparationStartTime: preparationStartTimeForSync,
               matchType,
               inferredMatchType,
+              sameWarPersistedSyncNumber:
+                confirmedCurrentWarSyncRow?.syncNum ?? null,
               activeCycleContext: activeWarCycleContext ?? undefined,
+              shareDerivedCandidate: false,
               persistCanonical: shouldPersistActiveFwaSync({
                 matchType,
                 inferredMatchType,
@@ -15045,6 +15248,9 @@ async function buildTrackedMatchOverview(
       opponentNotFound: opponentPoints?.notFound === true,
       warId: warIdForReuse,
       warStartTime: warStartTimeForReuse,
+      activeCycleConflict:
+        canonicalActiveCycle?.source === "active_war_ambiguous" ||
+        canonicalActiveCycleAfterInference?.source === "active_war_ambiguous",
     });
     clanSyncLine = formatResolvedSyncDisplay(finalResolvedCurrentSyncNum);
     const derivedOutcome = deriveProjectedOutcome(
@@ -18320,14 +18526,34 @@ export const Fwa: Command = {
         orderBy: { createdAt: "asc" },
         select: { name: true, tag: true },
       });
-      const subByTag = new Map<string, { fwaPoints: number | null }>();
+      const subByTag = new Map<string, {
+        clanTag: string;
+        fwaPoints: number | null;
+        warId: number | null;
+        startTime: Date | null;
+        opponentTag: string | null;
+        state: string | null;
+        prepStartTime: Date | null;
+        matchType: string | null;
+        inferredMatchType: boolean | null;
+      }>();
       if (interaction.guildId) {
         const subs = await prisma.currentWar.findMany({
           where: { guildId: interaction.guildId },
-          select: { clanTag: true, fwaPoints: true },
+          select: {
+            clanTag: true,
+            fwaPoints: true,
+            warId: true,
+            startTime: true,
+            opponentTag: true,
+            state: true,
+            prepStartTime: true,
+            matchType: true,
+            inferredMatchType: true,
+          },
         });
         for (const sub of subs) {
-          subByTag.set(normalizeTag(sub.clanTag), { fwaPoints: sub.fwaPoints });
+          subByTag.set(normalizeTag(sub.clanTag), sub);
         }
       }
 
@@ -18344,6 +18570,12 @@ export const Fwa: Command = {
       const warStateByTag = new Map<string, WarStateForSync>();
       const warStartMsByTag = new Map<string, number | null>();
       const warByTag = new Map<string, CurrentWarResult | null>();
+      const syncIdentityByTag = new Map<string, ActiveWarSyncIdentity>();
+      const liveIdentityPatchByTag = new Map<
+        string,
+        ReturnType<typeof resolveActiveWarIdentityPatch> | null
+      >();
+      const preparationStartTimeByTag = new Map<string, Date>();
       const activeWarStarts: number[] = [];
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
@@ -18363,6 +18595,65 @@ export const Fwa: Command = {
           Number.isFinite(warStartMs)
         ) {
           activeWarStarts.push(warStartMs);
+        }
+      }
+
+      const baselineWarStartMs =
+        activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
+      const nowMs = Date.now();
+      const missedSyncTags = new Set<string>();
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
+        const warStartMs = warStartMsByTag.get(trackedTag) ?? null;
+        if (
+          isMissedSyncClan({
+            baselineWarStartMs,
+            clanWarState: warState,
+            clanWarStartMs: warStartMs,
+            nowMs,
+          })
+        ) {
+          missedSyncTags.add(trackedTag);
+        }
+      }
+
+      for (const clan of tracked) {
+        const trackedTag = normalizeTag(clan.tag);
+        const war = warByTag.get(trackedTag) ?? null;
+        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
+        const sub = subByTag.get(trackedTag);
+        const identity = resolveCurrentWarSyncIdentity({
+          clanTag: trackedTag,
+          warState,
+          liveWarStartTime: war?.startTime ?? null,
+          liveOpponentTag: war?.opponent?.tag ?? null,
+          currentWarId: sub?.warId ?? null,
+          currentWarStartTime: sub?.startTime ?? null,
+          currentWarOpponentTag: sub?.opponentTag ?? null,
+        });
+        syncIdentityByTag.set(trackedTag, identity);
+        if (missedSyncTags.has(trackedTag)) continue;
+        if (interaction.guildId && war && identity.positivelyResolved) {
+          const liveIdentityPatch = resolveActiveWarIdentityPatch({
+            guildId: interaction.guildId,
+            clanTag: trackedTag,
+            liveWar: war,
+            currentWar: sub ?? null,
+          });
+          liveIdentityPatchByTag.set(trackedTag, liveIdentityPatch);
+          const preparationStartTime =
+            resolveTrackedActiveWarPreparationStartTime({
+              livePreparationStartTime: parseCocApiTime(
+                war.preparationStartTime ?? null,
+              ),
+              liveIdentityPatch,
+              persistedPreparationStartTime: sub?.prepStartTime ?? null,
+              warStartTime: identity.warStartTime,
+            });
+          if (preparationStartTime) {
+            preparationStartTimeByTag.set(trackedTag, preparationStartTime);
+          }
         }
       }
 
@@ -18387,6 +18678,7 @@ export const Fwa: Command = {
                 warStartTime: true,
                 syncNum: true,
                 lastKnownSyncNumber: true,
+                lastKnownMatchType: true,
                 opponentTag: true,
                 clanPoints: true,
                 opponentPoints: true,
@@ -18404,31 +18696,107 @@ export const Fwa: Command = {
           : [];
       const warScopedSyncRowsByClanTag =
         groupWarScopedSyncRowsByClanTag(warScopedSyncRows);
-      const activeCycleDiscovery =
-        await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
-
-      const baselineWarStartMs =
-        activeWarStarts.length > 0 ? Math.min(...activeWarStarts) : null;
-      const nowMs = Date.now();
-      const missedSyncTags = new Set<string>();
+      const preLiveFallbackResolutionByTag = new Map<
+        string,
+        MatchTypeFallbackResolution
+      >();
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
-        const warState = warStateByTag.get(trackedTag) ?? "notInWar";
-        const warStartMs = warStartMsByTag.get(trackedTag) ?? null;
-        if (
-          isMissedSyncClan({
-            baselineWarStartMs,
-            clanWarState: warState,
-            clanWarStartMs: warStartMs,
-            nowMs,
-          })
-        ) {
-          missedSyncTags.add(trackedTag);
-        }
+        if (missedSyncTags.has(trackedTag)) continue;
+        const identity = syncIdentityByTag.get(trackedTag);
+        if (!identity?.positivelyResolved) continue;
+        const sub = subByTag.get(trackedTag);
+        const liveIdentityPatch =
+          liveIdentityPatchByTag.get(trackedTag) ?? null;
+        const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+          rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
+          warId: identity.warId,
+          warStartTime: identity.warStartTime,
+          opponentTag: identity.opponentTag,
+        });
+        const sameWar = liveIdentityPatch?.sameWar !== false;
+        preLiveFallbackResolutionByTag.set(
+          trackedTag,
+          resolveMatchTypeWithPreparedStoredSync({
+            opponentTag: identity.opponentTag ?? "",
+            warState: warStateByTag.get(trackedTag) ?? "notInWar",
+            currentWarId: sub?.warId ?? null,
+            currentWarStartTime: sub?.startTime ?? null,
+            currentWarOpponentTag: sub?.opponentTag ?? null,
+            activeWarId: identity.warId,
+            activeWarStartTime: identity.warStartTime,
+            activeOpponentTag: identity.opponentTag,
+            existingMatchType: sameWar
+              ? (sub?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined)
+              : null,
+            existingInferredMatchType: sameWar
+              ? (sub?.inferredMatchType ?? true)
+              : true,
+            storedSyncRow: sameWarSyncRow,
+          }),
+        );
+      }
+      const activeWarCycleContext =
+        interaction.guildId && preparationStartTimeByTag.size > 0
+          ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+              guildId: interaction.guildId,
+              preparationStartTimes: [
+                ...preparationStartTimeByTag.values(),
+              ],
+            })
+          : null;
+      if (interaction.guildId && activeWarCycleContext) {
+        await activeWarSyncResolutionService.primeActiveWarCycleContext(
+          activeWarCycleContext,
+          tracked.flatMap((clan) => {
+            const trackedTag = normalizeTag(clan.tag);
+            if (missedSyncTags.has(trackedTag)) return [];
+            const identity = syncIdentityByTag.get(trackedTag);
+            const preparationStartTime =
+              preparationStartTimeByTag.get(trackedTag);
+            const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
+              rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
+              warId: identity?.warId ?? null,
+              warStartTime: identity?.warStartTime ?? null,
+              opponentTag: identity?.opponentTag ?? null,
+            });
+            if (!identity?.positivelyResolved || !preparationStartTime) {
+              return [];
+            }
+            const fallbackResolution =
+              preLiveFallbackResolutionByTag.get(trackedTag);
+            if (!fallbackResolution) return [];
+            return [
+              {
+                guildId: interaction.guildId ?? "",
+                identity,
+                preparationStartTime,
+                matchType:
+                  fallbackResolution.confirmedCurrent?.matchType ??
+                  fallbackResolution.unconfirmedCurrent?.matchType ??
+                  fallbackResolution.storedSync?.matchType ??
+                  null,
+                inferredMatchType:
+                  fallbackResolution.confirmedCurrent?.inferred ??
+                  fallbackResolution.unconfirmedCurrent?.inferred ??
+                  fallbackResolution.storedSync?.inferred ??
+                  null,
+                sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+              },
+            ];
+          }),
+        );
       }
 
       const resolvedActiveSyncNumbers: number[] = [];
       const exactResolvedActiveSyncNumbers: number[] = [];
+      let activeCycleConflict = false;
       let activeCurrentClanCount = 0;
       for (const clan of tracked) {
         const trackedTag = normalizeTag(clan.tag);
@@ -18442,25 +18810,71 @@ export const Fwa: Command = {
             ).catch(() => null));
           const warState =
             warStateByTag.get(trackedTag) ?? deriveWarState(war?.state);
-          const syncIdentity = buildActiveWarSyncIdentity({
-            warState,
-            warStartTime: getWarStartDateForSync(null, war),
-            opponentTag: String(war?.opponent?.tag ?? ""),
-          });
+          const syncIdentity =
+            syncIdentityByTag.get(trackedTag) ??
+            buildActiveWarSyncIdentity({
+              warState,
+              warStartTime: getWarStartDateForSync(null, war),
+              opponentTag: String(war?.opponent?.tag ?? ""),
+            });
           const sameWarSyncRow = resolveCurrentWarScopedSyncRow({
             rows: warScopedSyncRowsByClanTag.get(trackedTag) ?? [],
             warId: syncIdentity.warId,
             warStartTime: syncIdentity.warStartTime,
             opponentTag: syncIdentity.opponentTag,
           });
+          const fallbackResolution =
+            preLiveFallbackResolutionByTag.get(trackedTag);
+          const effectiveMatchType =
+            fallbackResolution?.confirmedCurrent?.matchType ??
+            fallbackResolution?.unconfirmedCurrent?.matchType ??
+            fallbackResolution?.storedSync?.matchType ??
+            null;
+          const effectiveInferredMatchType =
+            fallbackResolution?.confirmedCurrent?.inferred ??
+            fallbackResolution?.unconfirmedCurrent?.inferred ??
+            fallbackResolution?.storedSync?.inferred ??
+            null;
+          const canonicalActiveCycle =
+            !missedSyncTags.has(trackedTag) &&
+            interaction.guildId &&
+            syncIdentity.positivelyResolved &&
+            syncIdentity.opponentTag
+              ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
+                  {
+                    guildId: interaction.guildId,
+                    identity: syncIdentity,
+                    preparationStartTime:
+                      preparationStartTimeByTag.get(trackedTag) ?? null,
+                    matchType: effectiveMatchType,
+                    inferredMatchType: effectiveInferredMatchType,
+                    sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+                    activeCycleContext: activeWarCycleContext ?? undefined,
+                    shareDerivedCandidate: false,
+                    persistCanonical: false,
+                  },
+                )
+              : null;
           const resolvedCurrentSync = resolveFwaPointsCurrentSync({
             identity: syncIdentity,
             sourceSync,
-            sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
-            activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
-            activeCycleConflict: activeCycleDiscovery.conflict,
+            sameWarPersistedSyncNumber:
+              canonicalActiveCycle?.source === "active_war_ambiguous"
+                ? null
+                : sameWarSyncRow?.syncNum ?? null,
+            activeCycleSyncNumber: canonicalActiveCycle?.syncNumber ?? null,
+            activeCycleConflict:
+              canonicalActiveCycle?.source === "active_war_ambiguous",
           });
-          if (!missedSyncTags.has(trackedTag) && warState !== "notInWar") {
+          const includedActiveCurrent =
+            !missedSyncTags.has(trackedTag) && warState !== "notInWar";
+          if (
+            includedActiveCurrent &&
+            canonicalActiveCycle?.source === "active_war_ambiguous"
+          ) {
+            activeCycleConflict = true;
+          }
+          if (includedActiveCurrent) {
             activeCurrentClanCount += 1;
             if (resolvedCurrentSync !== null) {
               resolvedActiveSyncNumbers.push(resolvedCurrentSync);
@@ -18532,8 +18946,8 @@ export const Fwa: Command = {
       summary += `\n${formatFwaPointsSyncFooter(
         resolveFwaPointsFooterSync({
           sourceSync,
-          activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
-          activeCycleConflict: activeCycleDiscovery.conflict,
+          activeCycleSyncNumber: null,
+          activeCycleConflict,
           resolvedActiveSyncNumbers,
           exactResolvedActiveSyncNumbers,
           activeCurrentClanCount,
@@ -18760,6 +19174,13 @@ export const Fwa: Command = {
             persistedPreparationStartTime: subscription?.prepStartTime ?? null,
             warStartTime: warStartTimeForReuse,
           });
+        const activeWarCycleContext =
+          interaction.guildId && preparationStartTimeForSync
+            ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+                guildId: interaction.guildId,
+                preparationStartTimes: [preparationStartTimeForSync],
+              })
+            : null;
         const warIdForReuseNumber =
           warIdForReuse !== null && Number.isFinite(Number(warIdForReuse))
             ? Math.trunc(Number(warIdForReuse))
@@ -18784,6 +19205,7 @@ export const Fwa: Command = {
                   warStartTime: true,
                   syncNum: true,
                   lastKnownSyncNumber: true,
+                  lastKnownMatchType: true,
                   opponentTag: true,
                   clanPoints: true,
                   opponentPoints: true,
@@ -18814,15 +19236,37 @@ export const Fwa: Command = {
             warStartTime: warStartTimeForReuse,
             opponentTag: opponentTag || syncIdentity.opponentTag,
           });
-        const activeCycleDiscovery =
-          await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
+        const canonicalActiveCycleBeforeInference =
+          interaction.guildId &&
+          syncIdentity.positivelyResolved &&
+          opponentTag
+            ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
+                {
+                  guildId: interaction.guildId,
+                  identity: syncIdentity,
+                  preparationStartTime: preparationStartTimeForSync,
+                  matchType: subscription?.matchType ?? null,
+                  inferredMatchType: subscription?.inferredMatchType ?? null,
+                  sameWarPersistedSyncNumber:
+                    confirmedCurrentWarSyncRow?.syncNum ?? null,
+                  activeCycleContext: activeWarCycleContext ?? undefined,
+                  persistCanonical: false,
+                },
+              )
+            : null;
         const syncResolution = resolveActiveWarSyncNumberReadOnly({
           identity: syncIdentity,
           latestPersistedSyncNumber: sourceSync,
           sameWarPersistedSyncNumber:
-            confirmedCurrentWarSyncRow?.syncNum ?? null,
-          activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
-          activeCycleConflict: activeCycleDiscovery.conflict,
+            canonicalActiveCycleBeforeInference?.source ===
+            "active_war_ambiguous"
+              ? null
+              : confirmedCurrentWarSyncRow?.syncNum ?? null,
+          activeCycleSyncNumber:
+            canonicalActiveCycleBeforeInference?.syncNumber ?? null,
+          activeCycleConflict:
+            canonicalActiveCycleBeforeInference?.source ===
+            "active_war_ambiguous",
         });
         let resolvedCurrentSyncNum = syncResolution.syncNumber;
         logActiveWarSyncResolution({
@@ -19204,8 +19648,7 @@ export const Fwa: Command = {
         const canonicalActiveCycle =
           interaction.guildId &&
           syncIdentity.positivelyResolved &&
-          opponentTag &&
-          matchType === "FWA"
+          opponentTag
             ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
                 {
                   guildId: interaction.guildId,
@@ -19213,6 +19656,9 @@ export const Fwa: Command = {
                   preparationStartTime: preparationStartTimeForSync,
                   matchType,
                   inferredMatchType: appliedResolution.inferred,
+                  sameWarPersistedSyncNumber:
+                    confirmedCurrentWarSyncRow?.syncNum ?? null,
+                  activeCycleContext: activeWarCycleContext ?? undefined,
                   persistCanonical: shouldPersistActiveFwaSync({
                     matchType,
                     inferredMatchType: appliedResolution.inferred,
@@ -19253,6 +19699,10 @@ export const Fwa: Command = {
           opponentNotFound: opponent.notFound === true,
           warId: warIdForReuse,
           warStartTime: warStartTimeForReuse,
+          activeCycleConflict:
+            canonicalActiveCycleBeforeInference?.source ===
+              "active_war_ambiguous" ||
+            canonicalActiveCycle?.source === "active_war_ambiguous",
         });
         const derivedOutcome = deriveProjectedOutcome(
           tag,
@@ -19713,10 +20163,12 @@ export const Fwa: Command = {
               warId: true,
               syncNumber: true,
               startTime: true,
+              prepStartTime: true,
               opponentTag: true,
               fwaPoints: true,
               outcome: true,
               matchType: true,
+              inferredMatchType: true,
             },
           })
         : null;
@@ -19729,6 +20181,31 @@ export const Fwa: Command = {
         currentWarStartTime: subscription?.startTime ?? null,
         currentWarOpponentTag: subscription?.opponentTag ?? null,
       });
+      const liveIdentityPatch =
+        interaction.guildId && war
+          ? resolveActiveWarIdentityPatch({
+              guildId: interaction.guildId,
+              clanTag: tag,
+              liveWar: war,
+              currentWar: subscription ?? null,
+            })
+          : null;
+      const preparationStartTimeForSync =
+        resolveTrackedActiveWarPreparationStartTime({
+          livePreparationStartTime: parseCocApiTime(
+            war?.preparationStartTime ?? null,
+          ),
+          liveIdentityPatch,
+          persistedPreparationStartTime: subscription?.prepStartTime ?? null,
+          warStartTime: syncIdentity.warStartTime,
+        });
+      const activeWarCycleContext =
+        interaction.guildId && preparationStartTimeForSync
+          ? await activeWarSyncResolutionService.loadActiveWarCycleContext({
+              guildId: interaction.guildId,
+              preparationStartTimes: [preparationStartTimeForSync],
+            })
+          : null;
       const strictLiveSyncIdentity = buildFwaPointsStrictLiveSyncIdentity({
         warState,
         liveWarStartTime: war?.startTime ?? null,
@@ -19749,18 +20226,90 @@ export const Fwa: Command = {
                 warStartTime: strictLiveWarStartTime,
                 opponentTag: `#${strictLiveOpponentTag}`,
               },
-              select: { syncNum: true },
+              select: {
+                clanTag: true,
+                warId: true,
+                warStartTime: true,
+                syncNum: true,
+                lastKnownSyncNumber: true,
+                lastKnownMatchType: true,
+                opponentTag: true,
+                clanPoints: true,
+                opponentPoints: true,
+                isFwa: true,
+                needsValidation: true,
+                lastSuccessfulPointsApiFetchAt: true,
+                syncFetchedAt: true,
+              },
               orderBy: [{ syncFetchedAt: "desc" }, { updatedAt: "desc" }],
             })
           : null;
-      const activeCycleDiscovery =
-        await activeWarSyncResolutionService.findPersistedActiveSyncNumber();
+      const preparedFallbackResolution =
+        resolveMatchTypeWithPreparedStoredSync({
+          opponentTag: strictLiveOpponentTag ?? "",
+          warState,
+          currentWarId: subscription?.warId ?? null,
+          currentWarStartTime: subscription?.startTime ?? null,
+          currentWarOpponentTag: subscription?.opponentTag ?? null,
+          activeWarId: syncIdentity.warId,
+          activeWarStartTime: syncIdentity.warStartTime,
+          activeOpponentTag: syncIdentity.opponentTag ?? strictLiveOpponentTag,
+          existingMatchType:
+            liveIdentityPatch?.sameWar === false
+              ? null
+              : (subscription?.matchType as
+                  | "FWA"
+                  | "BL"
+                  | "MM"
+                  | "SKIP"
+                  | null
+                  | undefined),
+          existingInferredMatchType:
+            liveIdentityPatch?.sameWar === false
+              ? true
+              : (subscription?.inferredMatchType ?? true),
+          storedSyncRow: sameWarSyncRow,
+        });
+      const effectiveMatchType =
+        preparedFallbackResolution.confirmedCurrent?.matchType ??
+        preparedFallbackResolution.unconfirmedCurrent?.matchType ??
+        preparedFallbackResolution.storedSync?.matchType ??
+        null;
+      const effectiveInferredMatchType =
+        preparedFallbackResolution.confirmedCurrent?.inferred ??
+        preparedFallbackResolution.unconfirmedCurrent?.inferred ??
+        preparedFallbackResolution.storedSync?.inferred ??
+        null;
+      const canonicalActiveCycleBeforeInference =
+        interaction.guildId &&
+        syncIdentity.positivelyResolved &&
+        strictLiveSyncIdentity.opponentTag
+          ? await activeWarSyncResolutionService.resolveActiveWarSyncFromCanonicalCycle(
+              {
+                guildId: interaction.guildId,
+                identity: syncIdentity,
+                preparationStartTime: preparationStartTimeForSync,
+                matchType: effectiveMatchType,
+                inferredMatchType: effectiveInferredMatchType,
+                sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
+                activeCycleContext: activeWarCycleContext ?? undefined,
+                shareDerivedCandidate: false,
+                persistCanonical: false,
+              },
+            )
+          : null;
       const resolvedCurrentSync = resolveFwaPointsCurrentSync({
         identity: syncIdentity,
         sourceSync,
-        sameWarPersistedSyncNumber: sameWarSyncRow?.syncNum ?? null,
-        activeCycleSyncNumber: activeCycleDiscovery.syncNumber,
-        activeCycleConflict: activeCycleDiscovery.conflict,
+        sameWarPersistedSyncNumber:
+          canonicalActiveCycleBeforeInference?.source === "active_war_ambiguous"
+            ? null
+            : sameWarSyncRow?.syncNum ?? null,
+        activeCycleSyncNumber:
+          canonicalActiveCycleBeforeInference?.syncNumber ?? null,
+        activeCycleConflict:
+          canonicalActiveCycleBeforeInference?.source ===
+          "active_war_ambiguous",
       });
       const freshnessBaseline = resolveManualMatchupFreshnessSourceSync({
         sourceSync,
