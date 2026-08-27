@@ -312,6 +312,47 @@ describe("ActiveWarSyncResolutionService resolver", () => {
     expect(bindResolvedCanonical).not.toHaveBeenCalled();
   });
 
+  it("rejects a bare inferred flag even when a caller asks to persist", async () => {
+    const updateActiveWarCycleCandidateContext = vi.fn();
+    const bindResolvedCanonical = vi.fn();
+    const syncCycles = {
+      resolveActiveWarCycleFromContext: vi.fn().mockResolvedValue({
+        status: "derived" as const,
+        syncNumber: 553,
+        scheduledSyncPostId: "post-b",
+        syncTime: new Date("2026-04-13T08:00:00.000Z"),
+        previousSyncNumber: 552,
+        reason: "previous_cycle_immediate_next_schedule",
+        resolutionSource: null,
+      }),
+      updateActiveWarCycleCandidateContext,
+      bindResolvedCanonical,
+    } as unknown as SyncCycleService;
+    const service = new ActiveWarSyncResolutionService(undefined, syncCycles);
+
+    const resolution = await service.resolveActiveWarSyncFromCanonicalCycle({
+      guildId: "guild-1",
+      identity: buildActiveWarSyncIdentity({
+        warState: "inWar",
+        warStartTime: new Date("2026-04-13T08:00:00.000Z"),
+        opponentTag: "#OPP123",
+      }),
+      preparationStartTime: new Date("2026-04-12T08:00:00.000Z"),
+      matchType: null,
+      inferredMatchType: true,
+      activeCycleContext: {} as ActiveWarCycleContext,
+      persistCanonical: true,
+    });
+
+    expect(resolution).toMatchObject({
+      syncNumber: null,
+      status: "not_fwa",
+      reason: "fwa_evidence_unresolved",
+    });
+    expect(updateActiveWarCycleCandidateContext).not.toHaveBeenCalled();
+    expect(bindResolvedCanonical).not.toHaveBeenCalled();
+  });
+
   it("keeps an inferred candidate reusable without allowing a BL/MM render to write it", async () => {
     const syncTime = new Date("2026-04-13T08:00:00.000Z");
     const context = {} as ActiveWarCycleContext;

@@ -279,6 +279,15 @@ describe("fwa points sync numbering regression", () => {
         }),
       ),
     ).toBe("Sync#: unknown");
+    expect(
+      resolveFwaPointsFooterSyncForTest({
+        sourceSync: 545,
+        activeCycleConflict: true,
+        resolvedActiveSyncNumbers: [552],
+        exactResolvedActiveSyncNumbers: [552],
+        activeCurrentClanCount: 2,
+      }),
+    ).toBeNull();
   });
 
   it("keeps tag-specific points on an already-resolved current sync", () => {

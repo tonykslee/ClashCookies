@@ -495,8 +495,7 @@ export class SyncCycleService {
     const guildId = normalizeGuildId(input.guildId);
     const preparationStartTime = input.preparationStartTime;
     const matchType = normalizeMatchType(input.matchType);
-    const isFwa =
-      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    const isFwa = matchType === "FWA";
     if (!guildId || !isValidDate(preparationStartTime)) {
       return {
         status: "unresolved",
@@ -753,8 +752,7 @@ export class SyncCycleService {
     input: ActiveWarCycleResolutionInput,
   ): Promise<ActiveSyncCycleResolution> {
     const matchType = normalizeMatchType(input.matchType);
-    const isFwa =
-      matchType === "FWA" || (!matchType && input.inferredMatchType === true);
+    const isFwa = matchType === "FWA";
     const context = await this.loadActiveWarCycleContext({
       guildId: input.guildId,
       preparationStartTimes: isFwa ? [input.preparationStartTime] : [],

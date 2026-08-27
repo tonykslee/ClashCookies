@@ -194,8 +194,6 @@ function classifyFwaEvidence(input: {
     return "not_fwa";
   }
   if (matchType) return "unresolved";
-  if (input.inferredMatchType === true) return "strongly_inferred_fwa";
-  if (input.inferredMatchType === false) return "unresolved";
   return "unresolved";
 }
 
@@ -589,6 +587,8 @@ export class ActiveWarSyncResolutionService {
     matchType?: string | null;
     inferredMatchType?: boolean | null;
     persistCanonical?: boolean;
+    /** Keep late render-only inference from changing shared alliance state. */
+    shareDerivedCandidate?: boolean;
     activeCycleContext?: ActiveWarCycleContext;
     /** Exact same-war points evidence is corroboration, not a cycle owner. */
     sameWarPersistedSyncNumber?: number | null;
@@ -740,7 +740,11 @@ export class ActiveWarSyncResolutionService {
         reason: resolution.reason,
       };
     }
-    if (resolution.status === "derived" && input.activeCycleContext) {
+    if (
+      resolution.status === "derived" &&
+      input.activeCycleContext &&
+      input.shareDerivedCandidate !== false
+    ) {
       this.syncCycles.updateActiveWarCycleCandidateContext?.(
         input.activeCycleContext,
         {

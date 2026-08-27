@@ -302,6 +302,43 @@ describe("SyncCycleService", () => {
     );
   });
 
+  it("does not derive an active cycle from inferred evidence without an explicit FWA type", async () => {
+    const scheduleA = new Date("2026-08-15T10:00:00.000Z");
+    const scheduleB = new Date("2026-08-15T11:00:00.000Z");
+    const db = makeDb({
+      schedules: [
+        { id: "post-a", syncTime: scheduleA },
+        { id: "post-b", syncTime: scheduleB },
+      ],
+      cycles: [
+        makeCycle({
+          syncNumber: 552,
+          syncTime: scheduleA,
+          scheduledSyncPostId: "post-a",
+        }),
+      ],
+    });
+    const service = new SyncCycleService(db);
+    const context = await service.loadActiveWarCycleContext({
+      guildId: "guild-1",
+      preparationStartTimes: [preparationStartTime],
+    });
+
+    await expect(
+      service.resolveActiveWarCycleFromContext(context, {
+        guildId: "guild-1",
+        preparationStartTime,
+        matchType: null,
+        inferredMatchType: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "unresolved",
+      syncNumber: null,
+      reason: "fwa_evidence_unresolved",
+    });
+    expect(context.derivedCandidates).toEqual([]);
+  });
+
   it("keeps an eligible pre-window schedule visible for intervening chronology ambiguity", async () => {
     const previousCycleTime = new Date("2026-08-13T10:00:00.000Z");
     const hiddenInterveningSchedule = new Date("2026-08-15T11:00:00.000Z");
