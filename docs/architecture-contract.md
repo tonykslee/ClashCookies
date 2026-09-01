@@ -120,6 +120,14 @@ RepWorkActivityService -> RepWorkActivityEvent
 TelemetryIngestService -> Telemetry aggregates / report schedules
 UnlinkedMemberAlertService -> UnlinkedAlertConfig / UnlinkedPlayer
 
+Roster lifecycle:
+
+Roster.endsAt + Roster.lifecycleState
+    ->
+RosterLifecycleSchedulerService (active production only)
+    ->
+Roster CLOSED + DB-backed posted-roster refresh
+
 Mirror runtime:
 
 Prod runtime allowlist
@@ -201,6 +209,7 @@ Each domain concept must have exactly one authoritative owner.
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
+| Roster signup lifecycle and deadline | Roster.lifecycleState and Roster.endsAt |
 
 `FwaWeightAlertConfig` is the authoritative owner of per-clan FWA weight-alert enablement and stale-age threshold configuration. `FwaWeightAlertDelivery` is the authoritative owner of the durable per-clan/per-`weightSubmitDate` claim, retry, and Discord delivery outcome; it does not own policy or routing. `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId` remain the authoritative routing fields and must not be duplicated in either alert table. `FwaClanCatalog.weightSubmitDate` remains the authoritative persisted weight-submission date used for stale-age evaluation. The delivery evaluator runs only after a fresh Clans.json catalog sync reports `SUCCESS` or `NOOP`; there is no separate alert poller. Active runtime may send after a successful claim, while mirror/staging runtime must not send.
 

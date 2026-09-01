@@ -14,6 +14,7 @@ const fwaFeedStart = vi.hoisted(() => vi.fn());
 const fwaBaseSwapDmReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const fwaBasesChecklistReminderSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const layoutAlertSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
+const rosterLifecycleSchedulerStart = vi.hoisted(() => vi.fn(() => ({ started: true })));
 const statusServiceMock = vi.hoisted(() => ({
   markStarted: vi.fn(),
   markSucceeded: vi.fn(),
@@ -346,6 +347,15 @@ vi.mock("../src/services/LayoutAlertSchedulerService", () => ({
   })),
 }));
 
+vi.mock("../src/services/RosterLifecycleSchedulerService", () => ({
+  DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS: 60_000,
+  ROSTER_LIFECYCLE_SCHEDULER_JOB_KEY: "roster_lifecycle_scheduler",
+  ROSTER_LIFECYCLE_SCHEDULER_DISPLAY_NAME: "Roster lifecycle scheduler",
+  RosterLifecycleSchedulerService: vi.fn().mockImplementation(() => ({
+    start: rosterLifecycleSchedulerStart,
+  })),
+}));
+
 vi.mock("../src/services/fwa/basesChecklistReminderService", () => ({
   DEFAULT_FWA_BASES_CHECKLIST_REMINDER_INTERVAL_MS: 60_000,
   findPendingFwaBasesChecklistReminderCandidates: vi.fn().mockResolvedValue([]),
@@ -539,6 +549,7 @@ describe("ready listener startup", () => {
     expect(fwaBaseSwapDmReminderSchedulerStart).toHaveBeenCalledTimes(1);
     expect(fwaBasesChecklistReminderSchedulerStart).toHaveBeenCalledTimes(1);
     expect(layoutAlertSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(rosterLifecycleSchedulerStart).toHaveBeenCalledTimes(1);
     expect(statusServiceMock.markSucceeded).toHaveBeenCalledWith(
       "layout_alert_scheduler",
       expect.objectContaining({
@@ -819,6 +830,7 @@ describe("ready listener startup", () => {
         "fwa_bases_checklist_reminder_scheduler",
         "user_activity_reminder_scheduler",
         "layout_alert_scheduler",
+        "roster_lifecycle_scheduler",
       ]),
     );
     expect(statusServiceMock.markDisabled).toHaveBeenCalledWith(
@@ -859,6 +871,7 @@ describe("ready listener startup", () => {
     );
     expect(cwlRegistryMock.rolloverCwlTrackedClanRegistryForSeason).not.toHaveBeenCalled();
     expect(layoutAlertSchedulerStart).not.toHaveBeenCalled();
+    expect(rosterLifecycleSchedulerStart).not.toHaveBeenCalled();
   });
 
   it("starts the layout alert scheduler in active production", async () => {
@@ -867,6 +880,7 @@ describe("ready listener startup", () => {
     await runStartup();
 
     expect(layoutAlertSchedulerStart).toHaveBeenCalledTimes(1);
+    expect(rosterLifecycleSchedulerStart).toHaveBeenCalledTimes(1);
     expect(statusServiceMock.markStarted).toHaveBeenCalledWith(
       "layout_alert_scheduler",
       expect.objectContaining({ metadata: { started: true } }),

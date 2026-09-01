@@ -303,6 +303,16 @@ export type RosterSelectionOpenResult =
   | { outcome: "no_linked_accounts"; rosterId: string }
   | { outcome: "no_owned_entries"; rosterId: string };
 
+export type RosterDueClosureResult = {
+  dueCount: number;
+  closedRosters: RosterRecord[];
+  failedCount: number;
+};
+
+export type RosterPostedMessageRefreshResult =
+  | { outcome: "refreshed"; rosterId: string }
+  | { outcome: "not_posted" | "roster_not_found" | "channel_unavailable" | "message_not_found" | "payload_unavailable"; rosterId: string };
+
 type RosterSelectionLoadErrorResult =
   | { outcome: "roster_not_found"; rosterId: string }
   | { outcome: "roster_closed"; rosterId: string }
@@ -1726,6 +1736,23 @@ function buildRosterStateLabel(state: RosterLifecycleState): string {
 
 function isRosterAcceptingSignups(state: RosterLifecycleState): boolean {
   return state === ROSTER_LIFECYCLE_STATE.OPEN || state === ROSTER_LIFECYCLE_STATE.ACTIVE;
+}
+
+/** Purpose: determine whether a roster currently accepts public self-service signups. */
+export function isRosterSignupWindowOpen(
+  roster: Pick<RosterRecord, "lifecycleState" | "endsAt">,
+  now: Date = new Date(),
+): boolean {
+  if (!isRosterAcceptingSignups(roster.lifecycleState)) {
+    return false;
+  }
+
+  const currentTime = normalizeRosterPolicyDate(now, "now");
+  if (!currentTime) {
+    throw new Error("now must be a valid Date.");
+  }
+  const endsAt = normalizeRosterPolicyDate(roster.endsAt, "endsAt");
+  return !endsAt || endsAt.getTime() > currentTime.getTime();
 }
 
 function isRosterArchived(state: RosterLifecycleState): boolean {
@@ -4224,10 +4251,7 @@ async function loadRosterSelectionOptions(input: {
     },
   });
   if (!roster) return { outcome: "roster_not_found", rosterId: input.rosterId };
-  if (
-    input.mode === "signup" &&
-    !isRosterAcceptingSignups(roster.lifecycleState)
-  ) {
+  if (input.mode === "signup" && !isRosterSignupWindowOpen(roster)) {
     return { outcome: "roster_closed", rosterId: roster.id };
   }
   const mappedRoster = mapRosterRecord(roster);
@@ -5206,6 +5230,29 @@ export function formatRosterVisitorSignupStatus(input: {
   return "Visitor signups: Open";
 }
 
+/** Purpose: format the public self-service signup deadline for a roster post. */
+export function formatRosterSignupEndStatus(input: {
+  endsAt: Date | null;
+  now?: Date;
+}): string | null {
+  const endsAt = input.endsAt;
+  if (endsAt === null) {
+    return null;
+  }
+
+  const endsAtMs = endsAt.getTime();
+  if (Number.isNaN(endsAtMs)) {
+    return null;
+  }
+
+  const renderNow = input.now instanceof Date && !Number.isNaN(input.now.getTime()) ? input.now : new Date();
+  const timestamp = Math.floor(endsAtMs / 1000);
+  if (renderNow.getTime() < endsAtMs) {
+    return `Self-service signups close <t:${timestamp}:F> (<t:${timestamp}:R>)`;
+  }
+  return "Self-service signups: Closed";
+}
+
 function logInvalidRosterVisitorSignupStatus(input: {
   rosterId: string;
   guildId: string;
@@ -5428,19 +5475,29 @@ async function buildRosterSignupPayloadFromView(
     visitorSignupOpensAt: resolvedView.roster.visitorSignupOpensAt,
     now: options?.now,
   });
+  const signupEndStatusLine = formatRosterSignupEndStatus({
+    endsAt: resolvedView.roster.endsAt,
+    now: options?.now,
+  });
   logInvalidRosterVisitorSignupStatus({
     rosterId: resolvedView.roster.id,
     guildId: resolvedView.roster.guildId,
     visitorSignupOpensAt: resolvedView.roster.visitorSignupOpensAt,
   });
-  const lines: string[] = [rosterLabel, ""];
+  const effectiveState = isRosterSignupWindowOpen(resolvedView.roster, options?.now ?? new Date())
+    ? resolvedView.roster.lifecycleState
+    : ROSTER_LIFECYCLE_STATE.CLOSED;
+  const lines: string[] = [rosterLabel, `State: ${buildRosterStateLabel(effectiveState)}`, ""];
   if (visitorSignupStatusLine) {
     lines.push(visitorSignupStatusLine);
+  }
+  if (signupEndStatusLine) {
+    lines.push(signupEndStatusLine);
   }
   if (signupRoleLines.length > 0) {
     lines.push(...signupRoleLines);
   }
-  if (visitorSignupStatusLine || signupRoleLines.length > 0) {
+  if (visitorSignupStatusLine || signupEndStatusLine || signupRoleLines.length > 0) {
     lines.push("");
   }
   lines.push(buildRosterBoardHeaderLine(columns, widths));
@@ -5494,8 +5551,7 @@ async function buildRosterSignupPayloadFromView(
           .setLabel("Signup")
           .setStyle(ButtonStyle.Success)
           .setDisabled(
-            view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.CLOSED ||
-              view.roster.lifecycleState === ROSTER_LIFECYCLE_STATE.ARCHIVED,
+            !isRosterSignupWindowOpen(view.roster, options?.now ?? new Date()),
           ),
         new ButtonBuilder()
           .setCustomId(buildRosterPostActionButtonCustomId("optout", view.roster.id))
@@ -6410,6 +6466,127 @@ export class RosterService {
     return this.buildRosterSignupPayload(rosterId, cocService ?? null, options);
   }
 
+  /** Purpose: close due public rosters conditionally while preserving Roster as lifecycle owner. */
+  async closeDueRosters(now: Date = new Date()): Promise<RosterDueClosureResult> {
+    const currentTime = normalizeRosterPolicyDate(now, "now");
+    if (!currentTime) {
+      throw new Error("now must be a valid Date.");
+    }
+
+    const dueRosters = await prisma.roster.findMany({
+      where: {
+        lifecycleState: {
+          in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.ACTIVE],
+        },
+        endsAt: {
+          lte: currentTime,
+        },
+      },
+      orderBy: [{ endsAt: "asc" }, { id: "asc" }],
+      select: ROSTER_RECORD_SELECT,
+    });
+
+    const closedRosters: RosterRecord[] = [];
+    let failedCount = 0;
+    for (const dueRoster of dueRosters) {
+      try {
+        const updateResult = await prisma.roster.updateMany({
+          where: {
+            id: dueRoster.id,
+            lifecycleState: {
+              in: [ROSTER_LIFECYCLE_STATE.OPEN, ROSTER_LIFECYCLE_STATE.ACTIVE],
+            },
+            endsAt: {
+              lte: currentTime,
+            },
+          },
+          data: {
+            lifecycleState: ROSTER_LIFECYCLE_STATE.CLOSED,
+          },
+        });
+        if (updateResult.count > 0) {
+          closedRosters.push(mapRosterRecord(dueRoster));
+        }
+      } catch (error) {
+        failedCount += 1;
+        console.error(
+          `[roster-lifecycle] close_failed roster_id=${dueRoster.id} error=${String((error as Error)?.message ?? error)}`,
+        );
+      }
+    }
+
+    return {
+      dueCount: dueRosters.length,
+      closedRosters,
+      failedCount,
+    };
+  }
+
+  /** Purpose: refresh a tracked roster post from persisted DB state for commands and lifecycle jobs. */
+  async refreshPostedRoster(input: {
+    rosterId: string;
+    client: Client;
+    cocService?: CoCService | null;
+    emojiClient?: Client | null;
+  }): Promise<RosterPostedMessageRefreshResult> {
+    const rosterView = await this.getRosterView(input.rosterId);
+    if (!rosterView) {
+      return { outcome: "roster_not_found", rosterId: input.rosterId };
+    }
+    if (!rosterView.roster.postedChannelId || !rosterView.roster.postedMessageId) {
+      return { outcome: "not_posted", rosterId: input.rosterId };
+    }
+
+    const channel = await input.client.channels.fetch(rosterView.roster.postedChannelId).catch(() => null);
+    if (!channel?.isTextBased() || !("messages" in channel)) {
+      return { outcome: "channel_unavailable", rosterId: input.rosterId };
+    }
+    const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
+    if (!message) {
+      return { outcome: "message_not_found", rosterId: input.rosterId };
+    }
+
+    const loadingPayload = await this.buildRosterSignupPayload(input.rosterId, null, {
+      emojiClient: input.emojiClient ?? input.client,
+      refreshButtonDisabled: true,
+    });
+    if (loadingPayload) {
+      await message.edit({
+        embeds: [loadingPayload.embed],
+        components: loadingPayload.components,
+      });
+    }
+
+    const payload = input.cocService
+      ? await this.refreshRosterSignupPayload(input.rosterId, input.cocService, {
+          emojiClient: input.emojiClient ?? input.client,
+          refreshButtonDisabled: false,
+        })
+      : await this.buildRosterSignupPayload(input.rosterId, null, {
+          emojiClient: input.emojiClient ?? input.client,
+          refreshButtonDisabled: false,
+        });
+    if (!payload) {
+      const restoredPayload = await this.buildRosterSignupPayload(input.rosterId, null, {
+        emojiClient: input.emojiClient ?? input.client,
+        refreshButtonDisabled: false,
+      });
+      if (restoredPayload) {
+        await message.edit({
+          embeds: [restoredPayload.embed],
+          components: restoredPayload.components,
+        });
+      }
+      return { outcome: "payload_unavailable", rosterId: input.rosterId };
+    }
+
+    await message.edit({
+      embeds: [payload.embed],
+      components: payload.components,
+    });
+    return { outcome: "refreshed", rosterId: input.rosterId };
+  }
+
   async getRosterGuildDisplayColumns(input: {
     guildId: string;
   }): Promise<RosterDisplayColumnsResolution> {
@@ -7170,23 +7347,33 @@ export class RosterService {
         minTownhall: true,
         maxTownhall: true,
         lifecycleState: true,
+        endsAt: true,
       },
     });
     if (!roster) {
       return { outcome: "roster_not_found", rosterId: input.rosterId };
     }
 
+    const effectiveLifecycleState =
+      (input.lifecycleState === ROSTER_LIFECYCLE_STATE.OPEN || input.lifecycleState === ROSTER_LIFECYCLE_STATE.ACTIVE) &&
+      !isRosterSignupWindowOpen(
+        { lifecycleState: input.lifecycleState, endsAt: roster.endsAt },
+        new Date(),
+      )
+        ? ROSTER_LIFECYCLE_STATE.CLOSED
+        : input.lifecycleState;
+
     await prisma.roster.update({
       where: { id: roster.id },
       data: {
-        lifecycleState: input.lifecycleState,
+        lifecycleState: effectiveLifecycleState,
         updatedByDiscordUserId: normalizeDiscordUserId(input.updatedByDiscordUserId),
       },
     });
     return {
       outcome: "updated",
       rosterId: roster.id,
-      lifecycleState: input.lifecycleState,
+      lifecycleState: effectiveLifecycleState,
     };
   }
 
@@ -9829,6 +10016,7 @@ export class RosterService {
         id: true,
         guildId: true,
         lifecycleState: true,
+        endsAt: true,
         rosterType: true,
         rosterCategory: true,
         clanTag: true,
@@ -9880,7 +10068,7 @@ export class RosterService {
       };
     }
 
-    if (!isRosterAcceptingSignups(roster.lifecycleState)) {
+    if (!isRosterSignupWindowOpen(roster)) {
       return {
         outcome: "roster_closed",
         rosterId: roster.id,
@@ -10177,6 +10365,30 @@ export class RosterService {
       const createdTags = eligibleTags;
 
       if (createdTags.length > 0) {
+        // Re-read the owner immediately before the final write so a panel opened before
+        // the deadline cannot commit after the configured self-service signup window.
+        const finalRoster = await prisma.roster.findUnique({
+          where: { id: roster.id },
+          select: {
+            lifecycleState: true,
+            endsAt: true,
+          },
+        });
+        if (!finalRoster || !isRosterSignupWindowOpen(finalRoster)) {
+          return {
+            outcome: "roster_closed",
+            rosterId: roster.id,
+            groupKey: group.key,
+            groupName: group.name,
+            requestedTags,
+            linkedTags: selectedTags,
+            createdTags: [],
+            createdAccounts: [],
+            duplicateTags,
+            missingLinkedTags,
+          };
+        }
+
         await prisma.rosterSignup.createMany({
           data: createdTags.map((playerTag) => {
             return {
