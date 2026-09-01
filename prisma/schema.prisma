@@ -1547,6 +1547,7 @@ model Roster {
   signups                RosterSignup[]
 
   @@index([guildId, rosterType, lifecycleState])
+  @@index([lifecycleState, endsAt])
   @@index([guildId, clanTag])
   @@index([guildId, startsAt])
 }

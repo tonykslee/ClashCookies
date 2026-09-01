@@ -1,4 +1,4 @@
-﻿import {
+import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
   AutocompleteInteraction,
@@ -25,6 +25,7 @@ import {
   parseRosterSelectionMenuCustomId,
   parseRosterSelectionGroupMenuCustomId,
   evaluateRosterDelayedSignupPolicy,
+  isRosterSignupWindowOpen,
   rosterService,
   ROSTER_LIFECYCLE_STATE,
   type RosterDelayedSignupPolicyReason,
@@ -533,13 +534,11 @@ async function clearRosterSelectionTerminalState(
   interaction: ButtonInteraction,
   content: string,
 ): Promise<void> {
-  await (interaction.message as any)
-    .edit({
+  await (interaction.message as any)?.edit?.({
       content,
       embeds: [],
       components: [],
-    })
-    .catch(() => undefined);
+    })?.catch?.(() => undefined);
 }
 
 function buildCwlRotationOriginalRosterMembers(plan: CwlRotationPlanExport): Array<{
@@ -1052,58 +1051,14 @@ async function refreshRosterSignupPost(
   rosterId: string,
   cocService?: CoCService | null,
 ): Promise<void> {
-  const rosterView = await rosterService.getRosterView(rosterId);
-  if (!rosterView?.roster.postedChannelId || !rosterView.roster.postedMessageId) {
-    return;
-  }
-
-  const loadingPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
-    emojiClient: interaction.client,
-    refreshButtonDisabled: true,
-  });
-  if (!loadingPayload) {
-    return;
-  }
-
-  const channel = await interaction.client.channels.fetch(rosterView.roster.postedChannelId).catch(() => null);
-  if (!channel?.isTextBased() || !("messages" in channel)) {
-    return;
-  }
-
-  const message = await channel.messages.fetch(rosterView.roster.postedMessageId).catch(() => null);
-  if (!message) return;
-  await message.edit({
-    embeds: [loadingPayload.embed],
-    components: loadingPayload.components,
-  }).catch(() => undefined);
-
-  const payload = cocService
-    ? await rosterService.refreshRosterSignupPayload(rosterId, cocService, {
-        emojiClient: interaction.client,
-        refreshButtonDisabled: false,
-      })
-    : await rosterService.buildRosterSignupPayload(rosterId, null, {
-        emojiClient: interaction.client,
-        refreshButtonDisabled: false,
-      });
-  if (!payload) {
-    const restoredPayload = await rosterService.buildRosterSignupPayload(rosterId, null, {
+  await rosterService
+    .refreshPostedRoster({
+      rosterId,
+      client: interaction.client,
+      cocService: cocService ?? null,
       emojiClient: interaction.client,
-      refreshButtonDisabled: false,
-    });
-    if (restoredPayload) {
-      await message.edit({
-        embeds: [restoredPayload.embed],
-        components: restoredPayload.components,
-      }).catch(() => undefined);
-    }
-    return;
-  }
-
-  await message.edit({
-    embeds: [payload.embed],
-    components: payload.components,
-  }).catch(() => undefined);
+    })
+    .catch(() => undefined);
   await syncRosterRoleAssignments(interaction.client, rosterId).catch(() => undefined);
 }
 
@@ -4706,6 +4661,13 @@ export async function handleRosterSignupButtonInteraction(
     return;
   }
 
+  if (!isRosterSignupWindowOpen(roster)) {
+    await sendSignupResponse({
+      content: "Signups are closed for that roster.",
+    });
+    return;
+  }
+
   const policyResolution = await resolveRosterSignupPolicyInput({
     interaction,
     roster,
@@ -4915,6 +4877,26 @@ export async function handleRosterSelectionActionButtonInteraction(
     });
     if (!roster) {
       await sendSelectionResponse("That roster is no longer available.");
+      return;
+    }
+
+    if (!isRosterSignupWindowOpen(roster)) {
+      await rosterService
+        .cancelRosterSelectionPanel({
+          sessionId: parsed.sessionId,
+          discordUserId: interaction.user.id,
+        })
+        .catch(() => undefined);
+      await clearRosterSelectionTerminalState(
+        interaction,
+        "That roster selection is no longer available. Please start again.",
+      );
+      await interaction
+        .reply({
+          content: "Signups are closed for that roster.",
+          ephemeral: true,
+        })
+        .catch(() => undefined);
       return;
     }
 
@@ -5290,7 +5272,6 @@ export const Cwl: Command = {
     await interaction.respond([]);
   },
 };
-
 
 
 
