@@ -1771,6 +1771,7 @@ model CurrentWar {
   warEndFwaPoints   Int?
   clanStars         Int?
   opponentStars     Int?
+  teamSize          Int?
   pendingEventType  String?
   pendingEventTargetState String?
   state             String?

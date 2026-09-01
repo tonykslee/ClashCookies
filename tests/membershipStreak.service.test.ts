@@ -128,13 +128,14 @@ function historical(
   };
 }
 
-function activeCandidate(syncNumber: number, day: number, clanTag = rockyRoad, warId = 200000 + syncNumber) {
+function activeCandidate(syncNumber: number, day: number, clanTag = rockyRoad, warId = 200000 + syncNumber, teamSize: number | null = null) {
   return {
     guildId,
     clanTag: clanTag.replace(/^#/, ""),
     warId,
     startTime: time(day),
     opponentTag: "0PP2",
+    teamSize,
     syncNumber,
     matchType: "FWA",
     inferredMatchType: false,
@@ -255,20 +256,71 @@ describe("MembershipStreakService", () => {
   });
 
   it("proves active-roster absence only when persisted team-size coverage is complete", async () => {
-    const candidate = activeCandidate(553, 2);
+    const candidate = activeCandidate(553, 2, rockyRoad, 200553, 1);
+    const secondCandidate = activeCandidate(553, 2, partyBlizzard, 200554, 1);
     const built = serviceFor({
       cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
-      warAttacks: [activeRoster(553, 2, rockyRoad, otherPlayerTag)],
-      lookups: [{
-        warId: String(candidate.warId),
-        clanTag: rockyRoad,
-        payload: { warMeta: { teamSizeSource: "war_event_snapshot", teamSize: 1 } },
-      }],
-    }, [candidate]);
+      points: [
+        { guildId, syncNum: 553, warId: String(candidate.warId), clanTag: rockyRoad, warStartTime: time(2), opponentTag: "#0PP2" },
+        { guildId, syncNum: 553, warId: String(secondCandidate.warId), clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      warAttacks: [
+        activeRoster(553, 2, rockyRoad, otherPlayerTag, candidate.warId),
+        activeRoster(553, 2, partyBlizzard, otherPlayerTag, secondCandidate.warId),
+      ],
+    }, [candidate, secondCandidate]);
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "ACTIVE_FWA_WAR_ROSTER" });
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps active absence unknown when an expected participating clan is unresolved", async () => {
+    const candidate = activeCandidate(553, 2, rockyRoad, 200553, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        { guildId, syncNum: 553, warId: String(candidate.warId), clanTag: rockyRoad, warStartTime: time(2), opponentTag: "#0PP2" },
+        { guildId, syncNum: 553, warId: "200554", clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      warAttacks: [activeRoster(553, 2, rockyRoad, otherPlayerTag, candidate.warId)],
+    }, [candidate]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed as unknown when the active CurrentWar team size is null", async () => {
+    const candidate = activeCandidate(553, 2, rockyRoad, 200553, null);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [{ guildId, syncNum: 553, warId: String(candidate.warId), clanTag: rockyRoad, warStartTime: time(2), opponentTag: "#0PP2" }],
+      warAttacks: [activeRoster(553, 2, rockyRoad, otherPlayerTag, candidate.warId)],
+    }, [candidate]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
+  });
+
+  it("allows active positive membership before the full participating clan cohort resolves", async () => {
+    const candidate = activeCandidate(553, 2, rockyRoad, 200553, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        { guildId, syncNum: 553, warId: String(candidate.warId), clanTag: rockyRoad, warStartTime: time(2), opponentTag: "#0PP2" },
+        { guildId, syncNum: 553, warId: "200554", clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      warAttacks: [activeRoster(553, 2, rockyRoad, playerTag, candidate.warId)],
+    }, [candidate]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
   });
 
   it("fails closed when active canonical sync identity is ambiguous", async () => {
@@ -492,6 +544,31 @@ describe("MembershipStreakService", () => {
   it("proves historical absence only when canonical participation coverage exists", async () => {
     const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
     const built = serviceFor(historicalFixture([row]));
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
+  });
+
+  it("keeps historical absence unknown when an expected participating clan is unresolved", async () => {
+    const resolved = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const missing = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
+    const built = serviceFor({
+      ...historicalFixture([resolved]),
+      points: [resolved.point, missing.point],
+      histories: [resolved.history],
+      participation: resolved.participation,
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("requires complete canonical coverage of every expected historical participating clan", async () => {
+    const first = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const second = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
+    const built = serviceFor(historicalFixture([first, second]));
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 

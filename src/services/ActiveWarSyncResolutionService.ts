@@ -219,6 +219,7 @@ export type ActiveCycleSyncCandidate = {
   warId: number | null;
   startTime: Date | null;
   opponentTag: string | null;
+  teamSize: number | null;
   syncNumber: number | null;
   matchType: string | null;
   inferredMatchType: boolean | null;
@@ -236,6 +237,7 @@ type ActiveCycleCurrentWarIdentity = {
   warId: number | null;
   startTime: Date;
   opponentTag: string;
+  teamSize: number | null;
   matchType: string | null;
   inferredMatchType: boolean | null;
 };
@@ -1337,6 +1339,7 @@ export class ActiveWarSyncResolutionService {
         warId: true,
         startTime: true,
         opponentTag: true,
+        teamSize: true,
         matchType: true,
         inferredMatchType: true,
       },
@@ -1351,6 +1354,10 @@ export class ActiveWarSyncResolutionService {
             : null,
         startTime: row.startTime ?? null,
         opponentTag: normalizeBareTag(row.opponentTag ?? null),
+        teamSize:
+          row.teamSize !== null && row.teamSize !== undefined && Number.isInteger(Number(row.teamSize)) && Number(row.teamSize) > 0
+            ? Number(row.teamSize)
+            : null,
         matchType: row.matchType !== null ? String(row.matchType) : null,
         inferredMatchType: row.inferredMatchType === true ? true : null,
       }))

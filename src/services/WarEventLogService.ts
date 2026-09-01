@@ -614,6 +614,7 @@ type SubscriptionRow = {
   warEndFwaPoints: number | null;
   clanStars: number | null;
   opponentStars: number | null;
+  teamSize: number | null;
   pendingEventType: string | null;
   pendingEventTargetState: string | null;
   state: string | null;
@@ -781,6 +782,7 @@ type PollTarget = {
   currentWarMatchType: string | null;
   currentWarInferredMatchType: boolean | null;
   currentWarState: string | null;
+  currentWarTeamSize: number | null;
 };
 
 type PollSyncContext = {
@@ -2605,6 +2607,7 @@ export class WarEventLogService {
         currentWarMatchType: subscription.matchType,
         currentWarInferredMatchType: subscription.inferredMatchType,
         currentWarState: subscription.state,
+        currentWarTeamSize: subscription.teamSize,
       };
       const snapshotContext: CurrentWarSnapshotCycleContext = {
         currentWarSnapshotByClanTag: new Map(),
@@ -2677,6 +2680,7 @@ export class WarEventLogService {
           inferredMatchType: true,
           notifyRole: true,
           clanName: true,
+          teamSize: true,
         },
       }),
       prisma.clanNotifyConfig.findMany({
@@ -2755,6 +2759,7 @@ export class WarEventLogService {
               : null,
           currentWarInferredMatchType: current?.inferredMatchType ?? null,
           currentWarState: current?.state ?? null,
+          currentWarTeamSize: current?.teamSize ?? null,
         } as PollTarget;
         Object.defineProperties(target, {
           currentWarId: { enumerable: false, value: target.currentWarId },
@@ -2781,6 +2786,10 @@ export class WarEventLogService {
           currentWarState: {
             enumerable: false,
             value: target.currentWarState,
+          },
+          currentWarTeamSize: {
+            enumerable: false,
+            value: target.currentWarTeamSize,
           },
         });
         targets.push(target);
@@ -4059,6 +4068,7 @@ export class WarEventLogService {
           cw."inferredMatchType",
           cw."fwaPoints",cw."opponentFwaPoints",cw."outcome",cw."matchType",cw."warStartFwaPoints",cw."warEndFwaPoints",
           cw."clanStars",cw."opponentStars",cw."pendingEventType",cw."pendingEventTargetState",cw."state",cw."prepStartTime",cw."startTime",cw."endTime",
+          cw."teamSize",
           cw."opponentTag",cw."opponentName",cw."clanName",
           tc."loseStyle" AS "loseStyle",
           tc."logChannelId" AS "trackedLogChannelId",
@@ -5410,6 +5420,7 @@ export class WarEventLogService {
       opponentTag: nextOpponentTag || sub.opponentTag,
       opponentName: nextOpponentName || sub.opponentName,
       clanName: nextClanName,
+      teamSize: nextTeamSize,
     };
     const currentWarPendingIdentity =
       currentState === "notInWar"
@@ -8622,6 +8633,9 @@ export class WarEventLogService {
     const nextOpponentStars = Number.isFinite(Number(war.opponent?.stars))
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
+    const nextTeamSize = Number.isFinite(Number(war.teamSize))
+      ? Number(war.teamSize)
+      : sub.teamSize;
     const resolvedWarId = await this.ensureCurrentWarId({
       sub,
       warStartTime,
@@ -8646,6 +8660,7 @@ export class WarEventLogService {
         clanName: nextClanName,
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
+        teamSize: nextTeamSize,
         updatedAt: new Date(),
       },
     });
@@ -8864,6 +8879,9 @@ export class WarEventLogService {
     const nextOpponentStars = Number.isFinite(Number(war.opponent?.stars))
       ? Number(war.opponent?.stars)
       : sub.opponentStars;
+    const nextTeamSize = Number.isFinite(Number(war.teamSize))
+      ? Number(war.teamSize)
+      : sub.teamSize;
     const resolvedWarId = await this.ensureCurrentWarId({
       sub,
       warStartTime,
@@ -8887,6 +8905,7 @@ export class WarEventLogService {
         clanName: nextClanName,
         clanStars: nextClanStars,
         opponentStars: nextOpponentStars,
+        teamSize: nextTeamSize,
         updatedAt: new Date(),
       },
     });

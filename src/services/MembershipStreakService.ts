@@ -110,6 +110,7 @@ type CanonicalCycle = {
 
 type PointIdentity = MembershipHistoryPointIdentity & {
   syncNumber: number;
+  isFwa: boolean;
 };
 
 type HistoricalFwaHistory = MembershipCanonicalHistoryIdentity & {
@@ -279,6 +280,7 @@ function normalizePointIdentity(row: any): PointIdentity | null {
   if (!syncNumber || !clanTag || !opponentTag || !isValidDate(warStartTime)) return null;
   return {
     syncNumber,
+    isFwa: row?.isFwa !== false,
     warId: normalizePositiveInteger(row?.warId),
     clanTag,
     warStartTime,
@@ -773,7 +775,7 @@ export class MembershipStreakService {
       fallbackSyncNumbers.length > 0
         ? this.db.clanPointsSync.findMany({
             where: { guildId, syncNum: { in: fallbackSyncNumbers } },
-            select: { clanTag: true, warId: true, warStartTime: true, opponentTag: true, syncNum: true },
+            select: { clanTag: true, warId: true, warStartTime: true, opponentTag: true, syncNum: true, isFwa: true },
           })
         : Promise.resolve([]),
       fallbackSyncNumbers.length > 0
@@ -787,6 +789,16 @@ export class MembershipStreakService {
     const points = rawPoints
       .map(normalizePointIdentity)
       .filter((row): row is PointIdentity => row !== null && boundedCyclesBySyncNumber.has(row.syncNumber));
+    const expectedFwaClanTagsByBoundary = new Map<string, Set<string>>();
+    for (const point of points) {
+      if (!point.isFwa) continue;
+      const cycle = boundedCyclesBySyncNumber.get(point.syncNumber);
+      if (!cycle) continue;
+      const boundaryKey = dateKey(cycle.syncTime);
+      const clanTags = expectedFwaClanTagsByBoundary.get(boundaryKey) ?? new Set<string>();
+      clanTags.add(point.clanTag);
+      expectedFwaClanTagsByBoundary.set(boundaryKey, clanTags);
+    }
     const historyWhere = buildHistoricalHistoryWhere(
       points,
       rawEvaluations,
@@ -857,13 +869,7 @@ export class MembershipStreakService {
       });
     });
     const warIds = [...new Set(histories.map((row) => String(row.warId)))];
-    const warLookupIds = [...new Set([
-      ...warIds,
-      ...activeCandidates
-        .map((candidate) => candidate.warId)
-        .filter((warId): warId is number => warId !== null)
-        .map(String),
-    ])];
+    const warLookupIds = [...new Set(warIds)];
     const [rawParticipation, rawParticipationCounts, rawWarLookups] = warIds.length > 0 || warLookupIds.length > 0
       ? await Promise.all([
           warIds.length > 0
@@ -922,16 +928,22 @@ export class MembershipStreakService {
         expectedSize === null ? "UNKNOWN" : observedCount === expectedSize ? "COMPLETE" : "PARTIAL",
       );
     }
-    const historicalRosterKeysByBoundary = new Map<string, Set<string>>();
+    const historicalRosterKeysByBoundaryAndClan = new Map<string, Map<string, Set<string>>>();
     for (const history of histories) {
       const boundaryKey = dateKey(history.syncTime);
-      const rosterKeys = historicalRosterKeysByBoundary.get(boundaryKey) ?? new Set<string>();
+      const rosterKeysByClan = historicalRosterKeysByBoundaryAndClan.get(boundaryKey) ?? new Map<string, Set<string>>();
+      const rosterKeys = rosterKeysByClan.get(history.clanTag) ?? new Set<string>();
       rosterKeys.add(rosterKey(history.warId, history.clanTag));
-      historicalRosterKeysByBoundary.set(boundaryKey, rosterKeys);
+      rosterKeysByClan.set(history.clanTag, rosterKeys);
+      historicalRosterKeysByBoundaryAndClan.set(boundaryKey, rosterKeysByClan);
     }
     const historicalCoverageBoundaryKeys = new Set<string>();
-    for (const [boundaryKey, rosterKeys] of historicalRosterKeysByBoundary) {
-      if ([...rosterKeys].every((key) => historicalCoverageByRosterKey.get(key) === "COMPLETE")) {
+    for (const [boundaryKey, expectedClanTags] of expectedFwaClanTagsByBoundary) {
+      const rosterKeysByClan = historicalRosterKeysByBoundaryAndClan.get(boundaryKey);
+      if (expectedClanTags.size > 0 && [...expectedClanTags].every((clanTag) => {
+        const rosterKeys = rosterKeysByClan?.get(clanTag);
+        return rosterKeys?.size === 1 && historicalCoverageByRosterKey.get([...rosterKeys][0]) === "COMPLETE";
+      })) {
         historicalCoverageBoundaryKeys.add(boundaryKey);
       }
     }
@@ -967,28 +979,32 @@ export class MembershipStreakService {
     }
 
     const activeCoverageByBoundary = new Map<string, RosterCompleteness>();
-    const activeCandidatesByBoundary = new Map<string, Set<string>>();
+    const activeCandidateKeysByBoundaryAndClan = new Map<string, Map<string, Set<string>>>();
     for (const candidate of activeCandidates) {
       const cycle = boundedCyclesBySyncNumber.get(candidate.syncNumber);
       if (!cycle) continue;
       const boundaryKey = dateKey(cycle.syncTime);
       const candidateKey = activeCandidateKey(candidate);
-      const candidateKeys = activeCandidatesByBoundary.get(boundaryKey) ?? new Set<string>();
-      candidateKeys.add(candidateKey);
-      activeCandidatesByBoundary.set(boundaryKey, candidateKeys);
-      const expectedSize = candidate.warId === null
-        ? null
-        : expectedTeamSizeForRoster(rosterKey(candidate.warId, candidate.clanTag));
+      const candidateKeysByClan = activeCandidateKeysByBoundaryAndClan.get(boundaryKey) ?? new Map<string, Set<string>>();
+      const candidateClanKeys = candidateKeysByClan.get(candidate.clanTag) ?? new Set<string>();
+      candidateClanKeys.add(candidateKey);
+      candidateKeysByClan.set(candidate.clanTag, candidateClanKeys);
+      activeCandidateKeysByBoundaryAndClan.set(boundaryKey, candidateKeysByClan);
+      const expectedSize = normalizePositiveInteger(candidate.teamSize);
       const observedSize = activeRosterPlayersByCandidateKey.get(candidateKey)?.size ?? 0;
-      const current = activeCoverageByBoundary.get(candidateKey);
       const coverage: RosterCompleteness = expectedSize === null
         ? "UNKNOWN"
         : observedSize === expectedSize ? "COMPLETE" : "PARTIAL";
+      const current = activeCoverageByBoundary.get(candidateKey);
       if (!current || current === "COMPLETE" && coverage !== "COMPLETE") activeCoverageByBoundary.set(candidateKey, coverage);
     }
     const completeActiveBoundaries = new Set<string>();
-    for (const [boundaryKey, candidateKeys] of activeCandidatesByBoundary) {
-      if ([...candidateKeys].every((candidateKey) => activeCoverageByBoundary.get(candidateKey) === "COMPLETE")) {
+    for (const [boundaryKey, expectedClanTags] of expectedFwaClanTagsByBoundary) {
+      const candidateKeysByClan = activeCandidateKeysByBoundaryAndClan.get(boundaryKey);
+      if (expectedClanTags.size > 0 && [...expectedClanTags].every((clanTag) => {
+        const candidateKeys = candidateKeysByClan?.get(clanTag);
+        return candidateKeys?.size === 1 && activeCoverageByBoundary.get([...candidateKeys][0]) === "COMPLETE";
+      })) {
         completeActiveBoundaries.add(boundaryKey);
       }
     }
