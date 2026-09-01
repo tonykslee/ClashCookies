@@ -323,6 +323,123 @@ describe("MembershipStreakService", () => {
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
   });
 
+  it("combines historical positive membership with an incomplete active cohort", async () => {
+    const archived = historical(553, 2, rockyRoad, [playerTag], 200553);
+    const active = activeCandidate(553, 2, partyBlizzard, 200554, 2);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        archived.point,
+        { guildId, syncNum: 553, warId: String(active.warId), clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, partyBlizzard, otherPlayerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("proves mixed-lifecycle absence from complete historical and active rosters", async () => {
+    const archived = historical(553, 2, rockyRoad, [otherPlayerTag], 200553);
+    const active = activeCandidate(553, 2, partyBlizzard, 200554, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        archived.point,
+        { guildId, syncNum: 553, warId: String(active.warId), clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, partyBlizzard, otherPlayerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT" });
+  });
+
+  it("marks cross-source positive membership ambiguous", async () => {
+    const archived = historical(553, 2, rockyRoad, [playerTag], 200553);
+    const active = activeCandidate(553, 2, partyBlizzard, 200554, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        archived.point,
+        { guildId, syncNum: 553, warId: String(active.warId), clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, partyBlizzard, playerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({
+      status: "AMBIGUOUS",
+      clanTags: [partyBlizzard, rockyRoad],
+    });
+  });
+
+  it("keeps mixed-lifecycle absence unknown when active team size is unavailable", async () => {
+    const archived = historical(553, 2, rockyRoad, [otherPlayerTag], 200553);
+    const active = activeCandidate(553, 2, partyBlizzard, 200554, null);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [
+        archived.point,
+        { guildId, syncNum: 553, warId: String(active.warId), clanTag: partyBlizzard, warStartTime: time(2), opponentTag: "#0PP2" },
+      ],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, partyBlizzard, otherPlayerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("allows compatible same-clan active and archived coverage once", async () => {
+    const archived = historical(553, 2, rockyRoad, [playerTag], 200553);
+    const active = activeCandidate(553, 2, rockyRoad, 200553, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [archived.point],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, rockyRoad, playerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("fails closed for incompatible same-clan active and archived identities", async () => {
+    const archived = historical(553, 2, rockyRoad, [otherPlayerTag], 200553);
+    const active = activeCandidate(553, 2, rockyRoad, 200554, 1);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
+      points: [archived.point],
+      histories: [archived.history],
+      participation: archived.participation,
+      lookups: [lookup(archived.history.warId, rockyRoad)],
+      warAttacks: [activeRoster(553, 2, rockyRoad, otherPlayerTag, active.warId)],
+    }, [active]);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
   it("fails closed when active canonical sync identity is ambiguous", async () => {
     const built = serviceFor({
       cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
