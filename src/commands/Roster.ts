@@ -1544,6 +1544,28 @@ export async function handleRosterPostSettingsMenuInteraction(
     return;
   }
 
+  const editSettingsMutationReply = async (content: string): Promise<void> => {
+    await interaction.editReply({
+      content,
+      embeds: [],
+      components: [],
+    });
+  };
+  const refreshSettingsRosterPost = async (action: RosterPostSettingsAction): Promise<boolean> => {
+    try {
+      return await refreshExistingRosterPost(
+        interaction as unknown as ChatInputCommandInteraction,
+        roster.id,
+        cocService,
+      );
+    } catch (error) {
+      console.error(
+        `[roster] settings_post_refresh_failed action=${action} rosterId=${roster.id} error=${formatError(error)}`,
+      );
+      return false;
+    }
+  };
+
   if (choice === "customize") {
     const panel = await buildRosterCustomizePanel(roster.id);
     if (!panel) {
@@ -1679,49 +1701,48 @@ export async function handleRosterPostSettingsMenuInteraction(
   }
 
   if (choice === "open_roster" || choice === "close_roster") {
+    await interaction.deferUpdate();
     const lifecycleState =
       choice === "open_roster" ? ROSTER_LIFECYCLE_STATE.OPEN : ROSTER_LIFECYCLE_STATE.CLOSED;
-    await rosterService.updateRosterLifecycleState({
+    const lifecycleResult = await rosterService.updateRosterLifecycleState({
       rosterId: roster.id,
       lifecycleState,
       updatedByDiscordUserId: interaction.user.id,
     });
-    const refreshed = await refreshExistingRosterPost(
-      interaction as unknown as ChatInputCommandInteraction,
-      roster.id,
-      cocService,
-    );
-    await interaction.update({
-      content: lifecycleState === ROSTER_LIFECYCLE_STATE.OPEN ? "Roster opened." : "Roster closed.",
-      embeds: [],
-      components: [],
-    });
+
+    if (lifecycleResult.outcome === "roster_not_found") {
+      await editSettingsMutationReply("That roster is no longer available.");
+      return;
+    }
+
+    const refreshed = await refreshSettingsRosterPost(choice);
     if (!refreshed) {
       await syncRosterRolesForRoster(interaction.client, roster.id).catch(() => undefined);
     }
+    const content =
+      lifecycleResult.lifecycleState === ROSTER_LIFECYCLE_STATE.OPEN
+        ? "Roster opened."
+        : choice === "open_roster"
+          ? "Roster remains closed because its signup deadline has passed. Move the end_time forward before reopening."
+          : "Roster closed.";
+    await editSettingsMutationReply(content);
     return;
   }
 
   if (choice === "hide_buttons") {
+    await interaction.deferUpdate();
     await rosterService.updateRosterPostButtonMode({
       rosterId: roster.id,
       postButtonMode: "hidden",
       updatedByDiscordUserId: interaction.user.id,
     });
-    await refreshExistingRosterPost(
-      interaction as unknown as ChatInputCommandInteraction,
-      roster.id,
-      cocService,
-    ).catch(() => undefined);
-    await interaction.update({
-      content: "Roster buttons hidden.",
-      embeds: [],
-      components: [],
-    });
+    await refreshSettingsRosterPost(choice);
+    await editSettingsMutationReply("Roster buttons hidden.");
     return;
   }
 
   if (choice === "archive_mode") {
+    await interaction.deferUpdate();
     await rosterService.updateRosterLifecycleState({
       rosterId: roster.id,
       lifecycleState: ROSTER_LIFECYCLE_STATE.ARCHIVED,
@@ -1732,16 +1753,8 @@ export async function handleRosterPostSettingsMenuInteraction(
       postButtonMode: "archived",
       updatedByDiscordUserId: interaction.user.id,
     });
-    await refreshExistingRosterPost(
-      interaction as unknown as ChatInputCommandInteraction,
-      roster.id,
-      cocService,
-    ).catch(() => undefined);
-    await interaction.update({
-      content: "Roster archived.",
-      embeds: [],
-      components: [],
-    });
+    await refreshSettingsRosterPost(choice);
+    await editSettingsMutationReply("Roster archived.");
     return;
   }
 
