@@ -57,6 +57,12 @@ import {
   LayoutAlertSchedulerService,
 } from "../services/LayoutAlertSchedulerService";
 import {
+  DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+  ROSTER_LIFECYCLE_SCHEDULER_DISPLAY_NAME,
+  ROSTER_LIFECYCLE_SCHEDULER_JOB_KEY,
+  RosterLifecycleSchedulerService,
+} from "../services/RosterLifecycleSchedulerService";
+import {
   DEFAULT_FWA_BASE_SWAP_DM_REMINDER_INTERVAL_MS,
   FwaBaseSwapDmReminderSchedulerService,
 } from "../services/fwa/baseSwapDmReminderSchedulerService";
@@ -129,6 +135,7 @@ const BOT_POLL_STATUS_JOB_KEYS = {
   fwaFeedScheduler: "fwa_feed_scheduler",
   fwaBaseSwapDmReminderScheduler: "fwa_base_swap_dm_reminder_scheduler",
   layoutAlertScheduler: LAYOUT_ALERT_SCHEDULER_JOB_KEY,
+  rosterLifecycleScheduler: ROSTER_LIFECYCLE_SCHEDULER_JOB_KEY,
   fwaBasesChecklistReminderScheduler: "fwa_bases_checklist_reminder_scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
   scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_JOB_KEY,
@@ -145,6 +152,7 @@ const BOT_POLL_STATUS_DISPLAY_NAMES = {
   fwaFeedScheduler: "FWA feed scheduler",
   fwaBaseSwapDmReminderScheduler: "FWA base-swap DM reminder scheduler",
   layoutAlertScheduler: LAYOUT_ALERT_SCHEDULER_DISPLAY_NAME,
+  rosterLifecycleScheduler: ROSTER_LIFECYCLE_SCHEDULER_DISPLAY_NAME,
   fwaBasesChecklistReminderScheduler: "FWA bases checklist reminder scheduler",
   fwaMatchChecklistAutoPostScheduler: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_DISPLAY_NAME,
   scheduledSyncPostScheduler: SCHEDULED_SYNC_POST_SCHEDULER_DISPLAY_NAME,
@@ -1728,6 +1736,47 @@ export default (client: Client, cocService: CoCService): void => {
           });
           throw err;
         }
+
+        const rosterLifecycleScheduler = new RosterLifecycleSchedulerService(client);
+        startupPhase = "roster_lifecycle_scheduler";
+        await markStartupPhase(startupPhase, { pollingMode });
+        await markPollJobStarted({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+          intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+          nextDueAt: new Date(Date.now() + DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS),
+          metadata: { started: true, runtime: runtimeEnvironment },
+        });
+        try {
+          const startResult = rosterLifecycleScheduler.start();
+          if (startResult.started) {
+            await markPollJobSucceeded({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+              intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS),
+              metadata: { started: true, runtime: runtimeEnvironment },
+            });
+          } else {
+            await markPollJobSkipped({
+              jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+              displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+              intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+              nextDueAt: new Date(Date.now() + DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS),
+              metadata: { started: false, reason: startResult.reason, runtime: runtimeEnvironment },
+            });
+          }
+        } catch (err) {
+          await markPollJobFailed({
+            jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+            displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+            error: err,
+            intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+            nextDueAt: new Date(Date.now() + DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS),
+            metadata: { started: true, runtime: runtimeEnvironment },
+          });
+          throw err;
+        }
       } else {
         await markPollJobDisabled({
           jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
@@ -1742,6 +1791,12 @@ export default (client: Client, cocService: CoCService): void => {
           jobKey: BOT_POLL_STATUS_JOB_KEYS.layoutAlertScheduler,
           displayName: BOT_POLL_STATUS_DISPLAY_NAMES.layoutAlertScheduler,
           intervalMs: DEFAULT_LAYOUT_ALERT_SCHEDULER_INTERVAL_MS,
+          metadata: { reason: "staging" },
+        });
+        await markPollJobDisabled({
+          jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+          displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+          intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
           metadata: { reason: "staging" },
         });
         dozzleLog.info(
@@ -1836,6 +1891,12 @@ export default (client: Client, cocService: CoCService): void => {
         metadata: { reason: "mirror" },
       });
       await markPollJobDisabled({
+        jobKey: BOT_POLL_STATUS_JOB_KEYS.rosterLifecycleScheduler,
+        displayName: BOT_POLL_STATUS_DISPLAY_NAMES.rosterLifecycleScheduler,
+        intervalMs: DEFAULT_ROSTER_LIFECYCLE_SCHEDULER_INTERVAL_MS,
+        metadata: { reason: "mirror" },
+      });
+      await markPollJobDisabled({
         jobKey: BOT_POLL_STATUS_JOB_KEYS.fwaMatchChecklistAutoPostScheduler,
         displayName: BOT_POLL_STATUS_DISPLAY_NAMES.fwaMatchChecklistAutoPostScheduler,
         intervalMs: DEFAULT_FWA_MATCH_CHECKLIST_AUTO_POST_INTERVAL_MS,
@@ -1858,6 +1919,9 @@ export default (client: Client, cocService: CoCService): void => {
       );
       console.log(
         "[polling-mode] event=poller_skipped job=fwa_match_checklist_auto_post_scheduler mode=mirror",
+      );
+      console.log(
+        "[polling-mode] event=poller_skipped job=roster_lifecycle_scheduler mode=mirror",
       );
       console.log(
         "[polling-mode] event=poller_skipped job=scheduled_sync_post_scheduler mode=mirror",

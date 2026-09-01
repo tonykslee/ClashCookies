@@ -275,6 +275,8 @@ function makeSignupRoster(overrides: Record<string, unknown> = {}) {
   return {
     id: "roster-1",
     guildId: "guild-1",
+    lifecycleState: "OPEN",
+    endsAt: null,
     visitorSignupOpensAt: null,
     ...overrides,
   } as any;
@@ -489,6 +491,8 @@ describe("/cwl command", () => {
     vi.spyOn(rosterService, "findGuildRosterById").mockResolvedValue({
       id: "roster-1",
       guildId: "guild-1",
+      lifecycleState: "OPEN",
+      endsAt: null,
       visitorSignupOpensAt: null,
     } as any);
     vi.spyOn(rosterService, "listCwlRostersForClan");

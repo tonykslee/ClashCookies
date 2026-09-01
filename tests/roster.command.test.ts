@@ -4699,6 +4699,212 @@ describe("/roster command", () => {
     );
   });
 
+  it("defers close settings before a slow public roster refresh", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: {
+        id: "roster-1",
+        postedChannelId: "channel-1",
+        postedMessageId: "message-1",
+      },
+    });
+    const refreshDeferred = createDeferred<ReturnType<typeof makeRosterRefreshPayload>>();
+    const events: string[] = [];
+    (rosterService.updateRosterLifecycleState as any).mockImplementation(async () => {
+      events.push("mutation");
+      return { outcome: "updated", rosterId: "roster-1", lifecycleState: "CLOSED" };
+    });
+    (rosterService.buildRosterSignupPayload as any).mockImplementation(async () => {
+      events.push("loading_payload");
+      return makeRosterRefreshPayload(true, "CWL Alpha Signup");
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockImplementation(async () => {
+      events.push("refresh_started");
+      return refreshDeferred.promise;
+    });
+    const editedMessage = { edit: vi.fn().mockResolvedValue(undefined) };
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["close_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferUpdate: vi.fn(async () => {
+        events.push("defer");
+      }),
+      editReply: vi.fn(async () => {
+        events.push("edit_reply");
+      }),
+      reply: vi.fn(),
+      update: vi.fn(),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            isTextBased: () => true,
+            messages: { fetch: vi.fn().mockResolvedValue(editedMessage) },
+          }),
+        },
+      },
+    } as any;
+
+    const handlerPromise = handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+    await vi.waitFor(() => expect(events).toContain("refresh_started"));
+    expect(events.slice(0, 2)).toEqual(["defer", "mutation"]);
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).not.toHaveBeenCalled();
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.reply).not.toHaveBeenCalled();
+
+    refreshDeferred.resolve(makeRosterRefreshPayload(false, "CWL Alpha Signup"));
+    await handlerPromise;
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Roster closed.",
+      embeds: [],
+      components: [],
+    });
+  });
+
+  it("reports an expired deadline when an open settings action remains closed", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: new Date("2026-01-01T00:00:00.000Z"),
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "CLOSED",
+      postedChannelId: null,
+      postedMessageId: null,
+      postedMessageUrl: null,
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
+      outcome: "updated",
+      rosterId: "roster-1",
+      lifecycleState: "CLOSED",
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: { id: "roster-1", postedChannelId: null, postedMessageId: null },
+    });
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["open_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn(),
+      update: vi.fn(),
+      client: { channels: { fetch: vi.fn() } },
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Roster remains closed because its signup deadline has passed. Move the end_time forward before reopening.",
+      embeds: [],
+      components: [],
+    });
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it("reports a successful close when the public roster refresh fails", async () => {
+    (rosterService.findGuildRosterById as any).mockResolvedValue({
+      id: "roster-1",
+      guildId: "guild-1",
+      rosterType: "CWL",
+      rosterCategory: "signup",
+      title: "CWL Alpha Signup",
+      clanTag: "#2QG2C08UP",
+      startsAt: new Date("2026-04-20T00:00:00.000Z"),
+      endsAt: null,
+      timezone: "America/Los_Angeles",
+      displayTimezone: "America/Los_Angeles",
+      lifecycleState: "OPEN",
+      postedChannelId: "channel-1",
+      postedMessageId: "message-1",
+      postedMessageUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+      postedAt: null,
+      createdByDiscordUserId: "111111111111111111",
+      updatedByDiscordUserId: "111111111111111111",
+      createdAt: new Date("2026-04-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+    (rosterService.getRosterView as any).mockResolvedValue({
+      roster: { id: "roster-1", postedChannelId: "channel-1", postedMessageId: "message-1" },
+    });
+    (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
+      outcome: "updated",
+      rosterId: "roster-1",
+      lifecycleState: "CLOSED",
+    });
+    (rosterService.refreshRosterSignupPayload as any).mockRejectedValueOnce(new Error("refresh unavailable"));
+    const interaction = {
+      customId: "roster-post-settings:roster-1",
+      values: ["close_roster"],
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      memberPermissions: { has: vi.fn().mockReturnValue(true) },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn(),
+      update: vi.fn(),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            isTextBased: () => true,
+            messages: { fetch: vi.fn().mockResolvedValue({ edit: vi.fn().mockResolvedValue(undefined) }) },
+          }),
+        },
+      },
+    } as any;
+
+    await handleRosterPostSettingsMenuInteraction(interaction, {} as any);
+
+    expect(rosterService.updateRosterLifecycleState).toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Roster closed.",
+      embeds: [],
+      components: [],
+    });
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
   it("applies close, hide, and archive settings to the posted roster board", async () => {
     (rosterService.findGuildRosterById as any).mockResolvedValue({
       id: "roster-1",
@@ -4737,11 +4943,22 @@ describe("/roster command", () => {
       embed: new EmbedBuilder().setTitle("CWL Alpha Signup"),
       components: [],
     });
-    (rosterService.updateRosterLifecycleState as any).mockResolvedValue({
-      outcome: "updated",
-      rosterId: "roster-1",
-      lifecycleState: "CLOSED",
-    });
+    (rosterService.updateRosterLifecycleState as any)
+      .mockResolvedValueOnce({
+        outcome: "updated",
+        rosterId: "roster-1",
+        lifecycleState: "OPEN",
+      })
+      .mockResolvedValueOnce({
+        outcome: "updated",
+        rosterId: "roster-1",
+        lifecycleState: "CLOSED",
+      })
+      .mockResolvedValueOnce({
+        outcome: "updated",
+        rosterId: "roster-1",
+        lifecycleState: "ARCHIVED",
+      });
     (rosterService.updateRosterPostButtonMode as any).mockResolvedValue({
       rosterId: "roster-1",
       postButtonMode: "hidden",
@@ -4764,6 +4981,8 @@ describe("/roster command", () => {
       },
       reply: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
       replied: false,
       deferred: false,
       client: {
@@ -4790,7 +5009,7 @@ describe("/roster command", () => {
       expect.anything(),
     );
     expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
-    expect(baseInteraction.update).toHaveBeenCalledWith(
+    expect(baseInteraction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: "Roster opened.",
         embeds: [],
@@ -4810,6 +5029,9 @@ describe("/roster command", () => {
       }),
     );
     expect(editedMessage.edit).toHaveBeenCalledWith(expect.objectContaining({ embeds: [expect.any(EmbedBuilder)] }));
+    expect(baseInteraction.editReply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Roster closed." }),
+    );
 
     await handleRosterPostSettingsMenuInteraction(
       { ...baseInteraction, customId: "roster-post-settings:roster-1", values: ["hide_buttons"] } as any,
@@ -4821,6 +5043,9 @@ describe("/roster command", () => {
         postButtonMode: "hidden",
         updatedByDiscordUserId: "111111111111111111",
       }),
+    );
+    expect(baseInteraction.editReply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Roster buttons hidden." }),
     );
 
     await handleRosterPostSettingsMenuInteraction(
@@ -4841,6 +5066,13 @@ describe("/roster command", () => {
         updatedByDiscordUserId: "111111111111111111",
       }),
     );
+    expect(baseInteraction.editReply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Roster archived." }),
+    );
+    expect(baseInteraction.deferUpdate).toHaveBeenCalledTimes(4);
+    expect(baseInteraction.editReply).toHaveBeenCalledTimes(4);
+    expect(baseInteraction.update).not.toHaveBeenCalled();
+    expect(baseInteraction.reply).not.toHaveBeenCalled();
   });
 
   it("shows exactly which selected accounts are missing town hall data when roster add is blocked", async () => {
