@@ -98,7 +98,7 @@ Important owners:
 | CWL event-scoped child rows | CurrentCwlRound, CwlRoundMemberCurrent, CurrentCwlPrepSnapshot, CwlRoundHistory, CwlRoundMemberHistory, CwlPlayerClanSeason, CwlSeasonRosterState |
 | CWL event-owned planner artifacts | CwlRotationPlan* tables |
 | Historical observed alliance clan-membership intervals | AllianceClanMembershipInterval |
-| Immutable scheduled-sync FWA physical-membership facts | SyncClanMemberSnapshot |
+| Immutable scheduled-sync persisted clan-member state snapshots | SyncClanMemberSnapshot |
 | Current player state | PlayerCurrent |
 | Current FWA clan roster state | FwaClanMemberCurrent |
 | Read-only CWL alliance activity reporting | CwlAllianceActivityService (consumer only; no interval/current-state writes) |
@@ -138,7 +138,7 @@ Do not duplicate ownership across tables.
 
 `LayoutAlertConfig` owns only per-layout expiration-alert mode and optional custom channel. `LayoutRecord` owns freshness and canonical post provenance. `LayoutAlertDelivery` owns durable per-layout/freshness-episode/target claim, retry, and Discord outcome state, including the actual attempted destination but no copied routing configuration. DM and CHANNEL targets are independently deduped and retried. The typed `/bot-logs type:layout-alerts` setting remains the guild default-channel owner and is resolved dynamically from the canonical post guild at send time. Only active production schedules and sends; mirror, staging, development, and unknown runtimes do not send. The shared 28-day stale-age value is a conservative internal reminder threshold, not a guaranteed expiration date, and the cross-system Discord/DB crash window remains bounded rather than atomic.
 
-`AllianceClanMembershipInterval` remains the owner of observation-based, continuously observed alliance/CWL clan-membership intervals. `SyncClanMemberSnapshot` owns the separate immutable scheduled-sync FWA physical-membership fact for each normalized clan/player roster entry. They are different concepts, not competing owners: the former describes observed residence over time, while the latter describes exact membership available at one scheduled boundary. The sync snapshot deliberately contains no filler status; `SyncClanReadinessSnapshot` owns filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's ACTUAL roster.
+`AllianceClanMembershipInterval` remains the owner of observation-based, continuously observed alliance/CWL clan-membership intervals. `SyncClanMemberSnapshot` owns the separate immutable scheduled-sync snapshot of persisted clan-member state available to that flow for each normalized clan/player roster entry. It is not a fresh physical observation at the scheduled second and is not C/S/A evidence; the snapshot remains relevant to Home establishment policy. The sync snapshot deliberately contains no filler status; `SyncClanReadinessSnapshot` owns filler membership by intersecting the boundary's explicit `FillerAccount` registry read with that same boundary's persisted ACTUAL roster state.
 
 ---
 

@@ -77,7 +77,9 @@ function resolveClanTenure(input: {
     row.fwa.status === "RESOLVED" &&
     row.fwa.clanTag === normalizeClanTag(input.home.clanTag),
   ).length;
-  return { syncs, isLowerBound: input.boundaryHistoryTruncated };
+  const activeHomeWindowTruncated = input.boundaryHistoryTruncated &&
+    oldestLoadedBoundary.getTime() > startedAt.getTime();
+  return { syncs, isLowerBound: activeHomeWindowTruncated };
 }
 
 /** Purpose: expose the authoritative physical-clan streak without applying Home-specific interpretation. */
@@ -93,7 +95,7 @@ function resolvePhysicalClanStreak(
   if (streak.latestFwaEvidenceStatus === "ABSENT") {
     return { syncs: 0, isLowerBound: false };
   }
-  if (streak.latestEvidencePending) {
+  if (streak.latestEvidencePending && streak.latestPendingClanValueAvailable) {
     return { syncs: streak.clanStreakSyncs, isLowerBound: streak.clanStreakIsLowerBound };
   }
   return { syncs: null, isLowerBound: false };
@@ -103,7 +105,9 @@ function resolvePhysicalClanStreak(
 function resolveAllianceStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
-  if (!streak.latestBoundaryTime || (!streak.latestEvidenceAvailable && !streak.latestEvidencePending)) {
+  if (!streak.latestBoundaryTime ||
+      (!streak.latestEvidenceAvailable &&
+        (!streak.latestEvidencePending || !streak.latestPendingAllianceValueAvailable))) {
     return { syncs: null, isLowerBound: false };
   }
   return {
