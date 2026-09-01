@@ -1,6 +1,7 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   $transaction: vi.fn(async (arg: any) => {
     if (typeof arg === "function") {
       return arg(prismaMock);
@@ -499,6 +500,9 @@ describe("RosterService", () => {
     prismaMock.roster.update.mockResolvedValue({} as never);
     prismaMock.roster.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.roster.delete.mockResolvedValue({} as never);
+    prismaMock.$queryRaw.mockResolvedValue([
+      { id: "roster-1", lifecycleState: "OPEN", endsAt: null },
+    ]);
     prismaMock.rosterGroup.createMany.mockResolvedValue({ count: 2 });
     prismaMock.rosterGroup.findMany.mockResolvedValue([
       {
@@ -1044,11 +1048,14 @@ describe("RosterService", () => {
           rosterType: "FWA",
           endsAt: new Date("2030-01-01T00:00:00.000Z"),
           lifecycleState: "OPEN",
-        } as any)
-        .mockResolvedValueOnce({
+        } as any);
+      prismaMock.$queryRaw.mockResolvedValueOnce([
+        {
+          id: "roster-1",
           lifecycleState: "OPEN",
           endsAt: new Date("2026-01-01T00:00:00.000Z"),
-        } as any);
+        },
+      ]);
 
       const result = await rosterService.signupLinkedAccounts({
         rosterId: "roster-1",
@@ -1058,6 +1065,81 @@ describe("RosterService", () => {
       });
 
       expect(result.outcome).toBe("roster_closed");
+      expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["null", null, "OPEN"],
+      ["future", new Date("2030-01-01T00:00:00.000Z"), "ACTIVE"],
+    ] as const)("creates through the locked transaction for %s endsAt", async (_label, endsAt, lifecycleState) => {
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+        { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(
+        makeRosterRecord({ endsAt, lifecycleState }),
+      );
+      const events: string[] = [];
+      const lockedRosterQuery = vi.fn(async () => {
+        events.push("lock");
+        return [{ id: "roster-1", lifecycleState, endsAt }];
+      });
+      const transactionCreateMany = vi.fn(async () => {
+        events.push("create");
+        return { count: 1 };
+      });
+      const transactionClient = {
+        $queryRaw: lockedRosterQuery,
+        rosterSignup: { createMany: transactionCreateMany },
+      };
+      prismaMock.$transaction.mockImplementationOnce(async (callback: (tx: any) => Promise<unknown>) =>
+        callback(transactionClient),
+      );
+
+      const result = await rosterService.signupLinkedAccounts({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        discordUserId: "111111111111111111",
+        playerTags: ["#PQL0289"],
+      });
+
+      expect(result.outcome).toBe("created");
+      expect(events).toEqual(["lock", "create"]);
+      expect(lockedRosterQuery).toHaveBeenCalledTimes(1);
+      expect(String((lockedRosterQuery.mock.calls[0]?.[0] as any)?.sql ?? "")).toContain("FOR UPDATE");
+      expect(transactionCreateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.any(Array), skipDuplicates: true }),
+      );
+      expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["closed lifecycle", { lifecycleState: "CLOSED", endsAt: null }],
+      ["expired deadline", { lifecycleState: "OPEN", endsAt: new Date("2026-01-01T00:00:00.000Z") }],
+    ] as const)("writes no rows when the locked roster is %s", async (_label, lockedRoster) => {
+      playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+        { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+      ]);
+      prismaMock.roster.findUnique.mockResolvedValueOnce(
+        makeRosterRecord({ endsAt: new Date("2030-01-01T00:00:00.000Z"), lifecycleState: "OPEN" }),
+      );
+      const transactionCreateMany = vi.fn();
+      const transactionClient = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "roster-1", ...lockedRoster }]),
+        rosterSignup: { createMany: transactionCreateMany },
+      };
+      prismaMock.$transaction.mockImplementationOnce(async (callback: (tx: any) => Promise<unknown>) =>
+        callback(transactionClient),
+      );
+
+      const result = await rosterService.signupLinkedAccounts({
+        rosterId: "roster-1",
+        groupKey: "confirmed",
+        discordUserId: "111111111111111111",
+        playerTags: ["#PQL0289"],
+      });
+
+      expect(result.outcome).toBe("roster_closed");
+      expect(transactionCreateMany).not.toHaveBeenCalled();
       expect(prismaMock.rosterSignup.createMany).not.toHaveBeenCalled();
     });
 
@@ -1132,6 +1214,31 @@ describe("RosterService", () => {
           discordUserId: "111111111111111111",
         }),
       ],
+      skipDuplicates: true,
+    });
+  });
+
+  it("reports selected tags without a player link while creating linked tags", async () => {
+    playerLinkServiceMock.listPlayerLinksForDiscordUser.mockResolvedValue([
+      { playerTag: "#PQL0289", linkedName: "Alpha", linkedAt: new Date("2026-04-20T00:00:00.000Z") },
+    ]);
+
+    const result = await rosterService.signupLinkedAccounts({
+      rosterId: "roster-1",
+      groupKey: "confirmed",
+      discordUserId: "111111111111111111",
+      playerTags: ["#PQL0289", "#QGRJ2222"],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "created",
+      linkedTags: ["#PQL0289"],
+      createdTags: ["#PQL0289"],
+      duplicateTags: [],
+      missingLinkedTags: ["#QGRJ2222"],
+    });
+    expect(prismaMock.rosterSignup.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ playerTag: "#PQL0289" })],
       skipDuplicates: true,
     });
   });

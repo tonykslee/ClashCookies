@@ -7,6 +7,7 @@ import {
   UserSelectMenuBuilder,
   StringSelectMenuBuilder,
 } from "discord.js";
+import { Prisma } from "@prisma/client";
 import { randomUUID } from "crypto";
 import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
@@ -10365,16 +10366,50 @@ export class RosterService {
       const createdTags = eligibleTags;
 
       if (createdTags.length > 0) {
-        // Re-read the owner immediately before the final write so a panel opened before
-        // the deadline cannot commit after the configured self-service signup window.
-        const finalRoster = await prisma.roster.findUnique({
-          where: { id: roster.id },
-          select: {
-            lifecycleState: true,
-            endsAt: true,
-          },
+        const signupRows = createdTags.map((playerTag) => ({
+          rosterId: roster.id,
+          groupId: group.id,
+          playerTag,
+          playerName: resolveBestRosterPlayerName({
+            playerTag,
+            rosterPlayerName: null,
+            playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
+            fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
+            snapshotPlayerName: linkedNameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
+            playerLinkPlayerName: linkedNameSources?.linkByTag.get(playerTag)?.playerName ?? null,
+          }),
+          discordUserId:
+            normalizeDiscordUserId(linkedNameSources?.linkByTag.get(playerTag)?.discordUserId ?? null) ??
+            input.discordUserId,
+        }));
+
+        const finalSignupWrite = await prisma.$transaction(async (tx) => {
+          // Lock the lifecycle owner before evaluating its current state. The lock
+          // serializes this final write against manual and scheduler lifecycle updates.
+          const lockedRosters = await tx.$queryRaw<
+            Array<Pick<RosterRecord, "id" | "lifecycleState" | "endsAt">>
+          >(
+            Prisma.sql`
+              SELECT "id", "lifecycleState", "endsAt"
+              FROM "Roster"
+              WHERE "id" = ${roster.id}
+              FOR UPDATE
+            `,
+          );
+          const lockedRoster = lockedRosters[0] ?? null;
+          const finalNow = new Date();
+          if (!lockedRoster || !isRosterSignupWindowOpen(lockedRoster, finalNow)) {
+            return { outcome: "roster_closed" as const };
+          }
+
+          await tx.rosterSignup.createMany({
+            data: signupRows,
+            skipDuplicates: true,
+          });
+          return { outcome: "created" as const };
         });
-        if (!finalRoster || !isRosterSignupWindowOpen(finalRoster)) {
+
+        if (finalSignupWrite.outcome === "roster_closed") {
           return {
             outcome: "roster_closed",
             rosterId: roster.id,
@@ -10388,28 +10423,6 @@ export class RosterService {
             missingLinkedTags,
           };
         }
-
-        await prisma.rosterSignup.createMany({
-          data: createdTags.map((playerTag) => {
-            return {
-              rosterId: roster.id,
-              groupId: group.id,
-              playerTag,
-              playerName: resolveBestRosterPlayerName({
-                playerTag,
-                rosterPlayerName: null,
-                playerCurrentName: linkedNameSources?.playerCurrentNameByTag.get(playerTag) ?? null,
-                fwaPlayerName: linkedNameSources?.fwaPlayerNameByTag.get(playerTag) ?? null,
-                snapshotPlayerName: linkedNameSources?.snapshotByTag.get(playerTag)?.playerName ?? null,
-                playerLinkPlayerName: linkedNameSources?.linkByTag.get(playerTag)?.playerName ?? null,
-              }),
-              discordUserId:
-                normalizeDiscordUserId(linkedNameSources?.linkByTag.get(playerTag)?.discordUserId ?? null) ??
-                input.discordUserId,
-            };
-          }),
-          skipDuplicates: true,
-        });
       }
 
       const buildBlockedAccounts = (issues: RosterSignupEligibilityIssue[]): RosterAccountIdentity[] => {
