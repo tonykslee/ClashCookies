@@ -2938,6 +2938,7 @@ export class WarEventLogService {
       warEndFwaPoints: null,
       clanStars: null,
       opponentStars: null,
+      teamSize: null,
       pendingEventType: null,
       pendingEventTargetState: null,
       updatedAt: new Date(),
