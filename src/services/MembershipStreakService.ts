@@ -1,6 +1,11 @@
 import { normalizeClashTagWithHash } from "../helper/clashTag";
 import { prisma } from "../prisma";
 import {
+  ActiveWarSyncResolutionService,
+  type ActiveCycleSyncCandidate,
+  type ActiveCycleSyncDiscovery,
+} from "./ActiveWarSyncResolutionService";
+import {
   hasMembershipHistoryIdentityConflict,
   hasMembershipHistoryPartialIdentityConflict,
   hasMembershipHistorySyncNumberDisagreement,
@@ -20,6 +25,8 @@ export type MembershipStreakInput = {
 };
 
 export type MembershipFwaEvidenceSource =
+  | "ACTIVE_FWA_WAR_ROSTER"
+  | "FWA_WAR_PARTICIPATION"
   | "SYNC_SNAPSHOT"
   | "FWA_WAR_PARTICIPATION_FALLBACK";
 
@@ -54,6 +61,7 @@ export type MembershipStreakResult = {
   allianceStreakSyncs: number;
   allianceStreakIsLowerBound: boolean;
   latestEvidenceAvailable: boolean;
+  latestEvidencePending: boolean;
 };
 
 export type MembershipStreakBatchResult = {
@@ -76,14 +84,11 @@ type MembershipStreakDb = {
     findMany: (args?: any) => Promise<any[]>;
     groupBy: (args?: any) => Promise<any[]>;
   };
-  syncClanReadinessSnapshot: {
-    groupBy: (args?: any) => Promise<any[]>;
-  };
   syncClanMemberSnapshot: {
     findMany: (args?: any) => Promise<any[]>;
     groupBy: (args?: any) => Promise<any[]>;
   };
-  allianceClanMembershipInterval: { findMany: (args?: any) => Promise<any[]> };
+  warAttacks: { findMany: (args?: any) => Promise<any[]> };
   clanPointsSync: { findMany: (args?: any) => Promise<any[]> };
   warPlanComplianceEvaluation: { findMany: (args?: any) => Promise<any[]> };
   clanWarHistory: { findMany: (args?: any) => Promise<any[]> };
@@ -106,12 +111,10 @@ type HistoricalFwaHistory = MembershipCanonicalHistoryIdentity & {
   syncTime: Date;
 };
 
-type IntervalRow = {
-  playerTag: string;
-  clanTag: string;
-  firstObservedAt: Date;
-  lastObservedAt: Date;
-};
+type ActiveWarSyncReader = Pick<
+  ActiveWarSyncResolutionService,
+  "findPersistedActiveSyncNumber"
+>;
 
 type LoadedEvidence = {
   playerTags: string[];
@@ -320,66 +323,48 @@ function normalizeHistoricalHistories(
   );
 }
 
-/** Purpose: normalize and deduplicate observed alliance membership intervals. */
-function normalizeIntervals(rows: any[]): IntervalRow[] {
-  const byIdentity = new Map<string, IntervalRow>();
-  for (const row of rows) {
-    const playerTag = normalizePlayerTag(row?.playerTag);
-    const clanTag = normalizeClanTag(row?.clanTag);
-    if (!playerTag || !clanTag || !isValidDate(row?.firstObservedAt) || !isValidDate(row?.lastObservedAt)) continue;
-    if (row.lastObservedAt.getTime() < row.firstObservedAt.getTime()) continue;
-    const normalized: IntervalRow = {
-      playerTag,
-      clanTag,
-      firstObservedAt: row.firstObservedAt,
-      lastObservedAt: row.lastObservedAt,
-    };
-    byIdentity.set(`${playerTag}|${clanTag}|${dateKey(row.firstObservedAt)}|${dateKey(row.lastObservedAt)}`, normalized);
-  }
-  return [...byIdentity.values()];
-}
-
-/** Purpose: resolve exact, absent, fallback, or unknown FWA evidence for one boundary. */
+/** Purpose: resolve canonical war-roster evidence for one boundary. */
 function buildFwaEvidence(
-  exactTags: Set<string> | undefined,
-  fallbackTags: Set<string> | undefined,
-  exactCaptureAvailable: boolean,
+  activeTags: Set<string> | undefined,
+  activeBoundary: boolean,
+  historicalTags: Set<string> | undefined,
+  historicalCoverage: boolean,
 ): MembershipFwaEvidence {
-  if (exactCaptureAvailable && (!exactTags || exactTags.size === 0)) {
-    return { status: "ABSENT", clanTag: null, clanTags: [], source: "SYNC_SNAPSHOT" };
+  if (activeBoundary) {
+    if (!activeTags || activeTags.size === 0) {
+      return { status: "UNKNOWN", clanTag: null, clanTags: [], source: null };
+    }
+    const clanTags = uniqueSortedTags(activeTags);
+    return {
+      status: clanTags.length === 1 ? "RESOLVED" : "AMBIGUOUS",
+      clanTag: clanTags.length === 1 ? clanTags[0] : null,
+      clanTags,
+      source: "ACTIVE_FWA_WAR_ROSTER",
+    };
   }
-  const tags = exactTags && exactTags.size > 0 ? exactTags : fallbackTags;
-  if (!tags || tags.size === 0) {
+  if (!historicalTags || historicalTags.size === 0) {
+    if (historicalCoverage) {
+      return { status: "ABSENT", clanTag: null, clanTags: [], source: "FWA_WAR_PARTICIPATION" };
+    }
     return { status: "UNKNOWN", clanTag: null, clanTags: [], source: null };
   }
-  const clanTags = uniqueSortedTags(tags);
-  const source: MembershipFwaEvidenceSource = exactTags && exactTags.size > 0
-    ? "SYNC_SNAPSHOT"
-    : "FWA_WAR_PARTICIPATION_FALLBACK";
+  const clanTags = uniqueSortedTags(historicalTags);
   return {
     status: clanTags.length === 1 ? "RESOLVED" : "AMBIGUOUS",
     clanTag: clanTags.length === 1 ? clanTags[0] : null,
     clanTags,
-    source,
+    source: "FWA_WAR_PARTICIPATION",
   };
 }
 
-/** Purpose: combine FWA and interval observations into positive alliance evidence. */
-function buildAllianceEvidence(
-  fwa: MembershipFwaEvidence,
-  intervalTags: Set<string>,
-): MembershipAllianceEvidence {
+/** Purpose: derive alliance membership only from the canonical FWA roster observation. */
+function buildAllianceEvidence(fwa: MembershipFwaEvidence): MembershipAllianceEvidence {
   const fwaPositive = fwa.status === "RESOLVED" || fwa.status === "AMBIGUOUS";
-  const intervalPositive = intervalTags.size > 0;
-  const clanTags = uniqueSortedTags([...fwa.clanTags, ...intervalTags]);
   return {
-    positive: fwaPositive || intervalPositive,
-    clanTags,
-    ambiguous: clanTags.length > 1,
-    sources: [
-      ...(fwaPositive ? ["FWA_EVIDENCE" as const] : []),
-      ...(intervalPositive ? ["ALLIANCE_INTERVAL" as const] : []),
-    ],
+    positive: fwaPositive,
+    clanTags: [...fwa.clanTags],
+    ambiguous: fwa.status === "AMBIGUOUS",
+    sources: fwaPositive ? ["FWA_EVIDENCE"] : [],
   };
 }
 
@@ -403,6 +388,9 @@ export function computeMembershipStreaksFromEvidence(
   }));
   const latestBoundaryTime = boundaries[0] ?? null;
   const latest = latestBoundaryTime ? evidenceByKey.get(evidenceKey(playerTag, latestBoundaryTime)) : undefined;
+  const latestEvidencePending = Boolean(
+    latest && latest.fwa.status === "UNKNOWN" && !latest.alliance.positive,
+  );
 
   const hasContiguousCanonicalBoundary = (index: number): boolean => {
     const newer = orderedIdentities[index - 1]?.syncNumber;
@@ -412,61 +400,85 @@ export function computeMembershipStreaksFromEvidence(
 
   let clanStreakSyncs = 0;
   let clanStreakIsLowerBound = false;
-  if (latest?.fwa.status === "ABSENT") {
-    clanStreakSyncs = 0;
-  } else if (latest?.fwa.status === "RESOLVED") {
-    const latestClanTag = latest.fwa.clanTag!;
+  let clanStartIndex: number | null = null;
+  if (latest?.fwa.status === "RESOLVED") {
+    clanStartIndex = 0;
+  } else if (latestEvidencePending && evidenceRows[1]?.fwa.status === "RESOLVED") {
+    clanStartIndex = 1;
+  }
+  if (clanStartIndex !== null) {
+    const latestClanTag = evidenceByKey.get(
+      evidenceKey(playerTag, boundaries[clanStartIndex]),
+    )!.fwa.clanTag!;
     clanStreakSyncs = 1;
-    let stopped = orderedIdentities[0]?.syncNumber === null;
+    let stopped = orderedIdentities[clanStartIndex]?.syncNumber === null;
+    if (clanStartIndex === 1 && !hasContiguousCanonicalBoundary(1)) {
+      clanStreakIsLowerBound = true;
+      stopped = true;
+    }
     if (stopped) clanStreakIsLowerBound = true;
-    for (let index = 1; index < boundaries.length; index += 1) {
-      if (!hasContiguousCanonicalBoundary(index)) {
+    if (!stopped) {
+      for (let index = clanStartIndex + 1; index < boundaries.length; index += 1) {
+        if (!hasContiguousCanonicalBoundary(index)) {
+          clanStreakIsLowerBound = true;
+          stopped = true;
+          break;
+        }
+        const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
+        if (evidence?.fwa.status === "RESOLVED" && evidence.fwa.clanTag === latestClanTag) {
+          clanStreakSyncs += 1;
+          continue;
+        }
+        if (evidence?.fwa.status === "RESOLVED" || evidence?.fwa.status === "ABSENT") break;
         clanStreakIsLowerBound = true;
         stopped = true;
         break;
       }
-      const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
-      if (evidence?.fwa.status === "RESOLVED" && evidence.fwa.clanTag === latestClanTag) {
-        clanStreakSyncs += 1;
-        continue;
-      }
-      if (evidence?.fwa.status === "RESOLVED" || evidence?.fwa.status === "ABSENT") break;
-      clanStreakIsLowerBound = true;
-      stopped = true;
-      break;
     }
     if (!stopped && clanStreakSyncs === boundaries.length && historyBoundReached) {
       clanStreakIsLowerBound = true;
     }
-  } else if (latestBoundaryTime) {
+  } else if (latestBoundaryTime && !latestEvidencePending) {
     clanStreakIsLowerBound = true;
   }
 
   let allianceStreakSyncs = 0;
   let allianceStreakIsLowerBound = false;
+  let allianceStartIndex: number | null = null;
   if (latest?.alliance.positive) {
+    allianceStartIndex = 0;
+  } else if (latestEvidencePending && evidenceRows[1]?.alliance.positive) {
+    allianceStartIndex = 1;
+  }
+  if (allianceStartIndex !== null) {
     allianceStreakSyncs = 1;
-    let stopped = orderedIdentities[0]?.syncNumber === null;
+    let stopped = orderedIdentities[allianceStartIndex]?.syncNumber === null;
+    if (allianceStartIndex === 1 && !hasContiguousCanonicalBoundary(1)) {
+      allianceStreakIsLowerBound = true;
+      stopped = true;
+    }
     if (stopped) allianceStreakIsLowerBound = true;
-    for (let index = 1; index < boundaries.length; index += 1) {
-      if (!hasContiguousCanonicalBoundary(index)) {
+    if (!stopped) {
+      for (let index = allianceStartIndex + 1; index < boundaries.length; index += 1) {
+        if (!hasContiguousCanonicalBoundary(index)) {
+          allianceStreakIsLowerBound = true;
+          stopped = true;
+          break;
+        }
+        const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
+        if (evidence?.alliance.positive) {
+          allianceStreakSyncs += 1;
+          continue;
+        }
         allianceStreakIsLowerBound = true;
         stopped = true;
         break;
       }
-      const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
-      if (evidence?.alliance.positive) {
-        allianceStreakSyncs += 1;
-        continue;
-      }
-      allianceStreakIsLowerBound = true;
-      stopped = true;
-      break;
     }
     if (!stopped && allianceStreakSyncs === boundaries.length && historyBoundReached) {
       allianceStreakIsLowerBound = true;
     }
-  } else if (latestBoundaryTime) {
+  } else if (latestBoundaryTime && !latestEvidencePending) {
     allianceStreakIsLowerBound = true;
   }
 
@@ -480,12 +492,22 @@ export function computeMembershipStreaksFromEvidence(
     allianceStreakSyncs,
     allianceStreakIsLowerBound,
     latestEvidenceAvailable: Boolean(latest && (latest.fwa.status !== "UNKNOWN" || latest.alliance.positive)),
+    latestEvidencePending,
   };
 }
 
 /** Purpose: resolve bounded, persisted membership evidence in bulk for future Home Clan automation. */
 export class MembershipStreakService {
-  constructor(private readonly db: MembershipStreakDb = defaultDb) {}
+  private readonly activeWarSyncReader: ActiveWarSyncReader | null;
+
+  constructor(
+    private readonly db: MembershipStreakDb = defaultDb,
+    activeWarSyncReader?: ActiveWarSyncReader | null,
+  ) {
+    this.activeWarSyncReader = activeWarSyncReader === undefined
+      ? db === defaultDb ? new ActiveWarSyncResolutionService() : null
+      : activeWarSyncReader;
+  }
 
   /** Purpose: return streaks and the same canonical boundary window through one bulk evidence load. */
   async getMembershipStreakBatchForPlayers(input: MembershipStreakInput): Promise<MembershipStreakBatchResult> {
@@ -518,14 +540,60 @@ export class MembershipStreakService {
   async getMembershipBoundaryEvidenceForPlayers(
     input: MembershipStreakInput,
   ): Promise<MembershipBoundaryEvidenceByPlayer> {
-    return (await this.loadEvidence(input)).evidenceByPlayer;
+    return this.loadHomeQualificationEvidence(input);
   }
 
-  /** Purpose: expose the same recent evidence under a concise future-consumer alias. */
+  /** Purpose: expose canonical FWA-roster evidence for C/S/A consumers. */
   async getRecentFwaEvidenceForPlayers(
     input: MembershipStreakInput,
   ): Promise<MembershipBoundaryEvidenceByPlayer> {
-    return this.getMembershipBoundaryEvidenceForPlayers(input);
+    return (await this.loadEvidence(input)).evidenceByPlayer;
+  }
+
+  /** Purpose: preserve the separate snapshot-backed Home establishment policy without making it C/S/A evidence. */
+  private async loadHomeQualificationEvidence(
+    input: MembershipStreakInput,
+  ): Promise<MembershipBoundaryEvidenceByPlayer> {
+    const guildId = normalizeGuildId(input.guildId);
+    const playerTags = normalizePlayerTags(input.playerTags);
+    const maxBoundaries = normalizeMaxBoundaries(input.maxBoundaries);
+    if (!guildId || playerTags.length === 0) return {};
+    const boundaryRows = await this.db.syncClanMemberSnapshot.groupBy({
+      by: ["syncTime"],
+      where: { guildId },
+      orderBy: { syncTime: "desc" },
+      take: maxBoundaries,
+    });
+    const boundaries = normalizeBoundaryTimes(boundaryRows);
+    if (boundaries.length === 0) return Object.fromEntries(playerTags.map((playerTag) => [playerTag, []]));
+    const rows = await this.db.syncClanMemberSnapshot.findMany({
+      where: { guildId, syncTime: { in: boundaries }, playerTag: { in: playerTags } },
+      orderBy: [{ syncTime: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+      select: { guildId: true, syncTime: true, clanTag: true, playerTag: true },
+    });
+    const tagsByKey = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const playerTag = normalizePlayerTag(row?.playerTag);
+      const clanTag = normalizeClanTag(row?.clanTag);
+      if (!playerTag || !clanTag || !isValidDate(row?.syncTime)) continue;
+      const key = evidenceKey(playerTag, row.syncTime);
+      const tags = tagsByKey.get(key) ?? new Set<string>();
+      tags.add(clanTag);
+      tagsByKey.set(key, tags);
+    }
+    return Object.fromEntries(playerTags.map((playerTag) => [playerTag, boundaries.map((boundaryTime) => {
+      const tags = tagsByKey.get(evidenceKey(playerTag, boundaryTime));
+      const clanTags = uniqueSortedTags(tags ?? []);
+      const fwa: MembershipFwaEvidence = tags && tags.size > 0
+        ? {
+            status: clanTags.length === 1 ? "RESOLVED" : "AMBIGUOUS",
+            clanTag: clanTags.length === 1 ? clanTags[0] : null,
+            clanTags,
+            source: "SYNC_SNAPSHOT",
+          }
+        : { status: "ABSENT", clanTag: null, clanTags: [], source: "SYNC_SNAPSHOT" };
+      return { playerTag, boundaryTime, fwa, alliance: buildAllianceEvidence(fwa) };
+    })]));
   }
 
   /** Purpose: load all bounded membership evidence with bulk, guild-scoped database reads. */
@@ -545,97 +613,97 @@ export class MembershipStreakService {
     }
 
     const boundaryTake = maxBoundaries + 1;
-    const intervalRowTake = boundaryTake * Math.max(playerTags.length, 1) * 4;
-    const [rawCycleBoundaries, rawReadinessBoundaries, rawMemberBoundaries] = await Promise.all([
-      this.db.syncCycle.groupBy({
-        by: ["syncTime"],
-        where: { guildId },
-        orderBy: { syncTime: "desc" },
-        take: boundaryTake,
-      }),
-      this.db.syncClanReadinessSnapshot.groupBy({
-        by: ["syncTime"],
-        where: { guildId },
-        orderBy: { syncTime: "desc" },
-        take: boundaryTake,
-      }),
-      this.db.syncClanMemberSnapshot.groupBy({
-        by: ["syncTime"],
-        where: { guildId },
-        orderBy: { syncTime: "desc" },
-        take: boundaryTake,
-      }),
-    ]);
-
+    const rawCycleBoundaries = await this.db.syncCycle.groupBy({
+      by: ["syncTime"],
+      where: { guildId },
+      orderBy: { syncTime: "desc" },
+      take: boundaryTake,
+    });
     const cycleBoundaryTimes = normalizeBoundaryTimes(rawCycleBoundaries);
-    const readinessBoundaryTimes = normalizeBoundaryTimes(rawReadinessBoundaries);
-    const memberBoundaryTimes = normalizeBoundaryTimes(rawMemberBoundaries);
-    const allBoundaryTimes = new Map<number, Date>();
-    for (const boundaryTime of [...cycleBoundaryTimes, ...readinessBoundaryTimes, ...memberBoundaryTimes]) {
-      allBoundaryTimes.set(boundaryTime.getTime(), boundaryTime);
-    }
-    const sortedBoundaryTimes = [...allBoundaryTimes.values()].sort(compareDatesDescending);
-    const historyBoundReached =
-      cycleBoundaryTimes.length > maxBoundaries ||
-      readinessBoundaryTimes.length > maxBoundaries ||
-      memberBoundaryTimes.length > maxBoundaries ||
-      sortedBoundaryTimes.length > maxBoundaries;
-    const boundaryHistoryTruncated = historyBoundReached;
-    const boundaries = sortedBoundaryTimes.slice(0, maxBoundaries);
+    const historyBoundReached = cycleBoundaryTimes.length > maxBoundaries;
+    const boundaries = cycleBoundaryTimes.slice(0, maxBoundaries);
     const boundaryTimeSet = new Set(boundaries.map(dateKey));
-    const exactCaptureBoundarySet = new Set(
-      memberBoundaryTimes.filter((boundaryTime) => boundaryTimeSet.has(dateKey(boundaryTime))).map(dateKey),
-    );
 
-    let rawCycles: any[] = [];
-    let rawMemberSnapshots: any[] = [];
-    if (boundaries.length > 0) {
-      [rawCycles, rawMemberSnapshots] = await Promise.all([
-        this.db.syncCycle.findMany({
+    const rawCycles = boundaries.length > 0
+      ? await this.db.syncCycle.findMany({
           where: { guildId, syncTime: { in: boundaries } },
           orderBy: [{ syncTime: "desc" }, { syncNumber: "desc" }],
           select: { syncNumber: true, syncTime: true },
-        }),
-        this.db.syncClanMemberSnapshot.findMany({
-          where: { guildId, syncTime: { in: boundaries }, playerTag: { in: playerTags } },
-          orderBy: [{ syncTime: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
-          select: { guildId: true, syncTime: true, clanTag: true, playerTag: true },
-        }),
-      ]);
-    }
-
+        })
+      : [];
     const cycles = normalizeCanonicalCycles(rawCycles);
     const boundedCycles = cycles.filter((cycle): cycle is CanonicalCycle & { syncNumber: number } =>
       cycle.syncNumber !== null && boundaryTimeSet.has(dateKey(cycle.syncTime)));
     const cycleByBoundaryTime = new Map(cycles.map((cycle) => [dateKey(cycle.syncTime), cycle]));
+    const boundedCyclesBySyncNumber = new Map(boundedCycles.map((cycle) => [cycle.syncNumber, cycle]));
     const boundaryIdentities: MembershipBoundaryIdentity[] = boundaries.map((boundaryTime) => ({
       boundaryTime,
       syncNumber: cycleByBoundaryTime.get(dateKey(boundaryTime))?.syncNumber ?? null,
     }));
-    const boundedCyclesBySyncNumber = new Map(boundedCycles.map((cycle) => [cycle.syncNumber, cycle]));
-    const fallbackSyncNumbers = boundedCycles
-      .filter((cycle) => !exactCaptureBoundarySet.has(dateKey(cycle.syncTime)))
-      .map((cycle) => cycle.syncNumber)
-      .sort((a, b) => a - b);
-    const newestBoundary = boundaries[0];
-    const oldestBoundary = boundaries[boundaries.length - 1];
 
-    const [rawIntervals, rawPoints, rawEvaluations] = await Promise.all([
-      this.db.allianceClanMembershipInterval.findMany({
-        where: {
-          guildId,
-          playerTag: { in: playerTags },
-          ...(newestBoundary && oldestBoundary
-            ? {
-                firstObservedAt: { lte: newestBoundary },
-                lastObservedAt: { gte: oldestBoundary },
-              }
-            : {}),
-        },
-        orderBy: [{ playerTag: "asc" }, { firstObservedAt: "asc" }, { clanTag: "asc" }],
-        take: intervalRowTake,
-        select: { playerTag: true, clanTag: true, firstObservedAt: true, lastObservedAt: true },
-      }),
+    let activeDiscovery: ActiveCycleSyncDiscovery | null = null;
+    let activeResolutionReadFailed = false;
+    if (this.activeWarSyncReader) {
+      try {
+        activeDiscovery = await this.activeWarSyncReader.findPersistedActiveSyncNumber({ guildId });
+      } catch (error) {
+        activeResolutionReadFailed = true;
+        console.warn(
+          `[membership-streak] event=active_roster_resolution_failed guild_id=${guildId} reason=${String(error)}`,
+        );
+      }
+    }
+    const activeCandidates = (activeDiscovery?.conflict ? [] : activeDiscovery?.candidates ?? [])
+      .filter((candidate): candidate is ActiveCycleSyncCandidate & { syncNumber: number; startTime: Date } =>
+        candidate.guildId === guildId &&
+        candidate.syncNumber !== null &&
+        candidate.syncNumber > 0 &&
+        isValidDate(candidate.startTime) &&
+        boundedCyclesBySyncNumber.has(candidate.syncNumber),
+      )
+      .map((candidate) => ({
+        ...candidate,
+        clanTag: normalizeClanTag(candidate.clanTag),
+        opponentTag: candidate.opponentTag ? normalizeClanTag(candidate.opponentTag) : null,
+      }));
+    const activeBoundaryKeys = new Set(
+      activeCandidates.map((candidate) => dateKey(boundedCyclesBySyncNumber.get(candidate.syncNumber)!.syncTime)),
+    );
+    const activeRosterWhereClauses = activeCandidates.map((candidate) => ({
+      clanTag: normalizeClanTag(candidate.clanTag),
+      warStartTime: candidate.startTime,
+      ...(candidate.warId !== null ? { warId: candidate.warId } : {}),
+      ...(candidate.opponentTag ? { opponentClanTag: normalizeClanTag(candidate.opponentTag) } : {}),
+    }));
+    let rawActiveRoster: any[] = [];
+    if (activeRosterWhereClauses.length > 0) {
+      try {
+        rawActiveRoster = await this.db.warAttacks.findMany({
+          where: {
+            attackOrder: 0,
+            warEndTime: null,
+            OR: activeRosterWhereClauses,
+          },
+          orderBy: [{ warStartTime: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+          select: {
+            warId: true,
+            clanTag: true,
+            opponentClanTag: true,
+            warStartTime: true,
+            warEndTime: true,
+            warState: true,
+            playerTag: true,
+          },
+        });
+      } catch (error) {
+        console.warn(
+          `[membership-streak] event=active_roster_read_failed guild_id=${guildId} reason=${String(error)}`,
+        );
+      }
+    }
+
+    const fallbackSyncNumbers = boundedCycles.map((cycle) => cycle.syncNumber).sort((a, b) => a - b);
+    const [rawPoints, rawEvaluations] = await Promise.all([
       fallbackSyncNumbers.length > 0
         ? this.db.clanPointsSync.findMany({
             where: { guildId, syncNum: { in: fallbackSyncNumbers } },
@@ -725,73 +793,78 @@ export class MembershipStreakService {
     const warIds = [...new Set(histories.map((row) => String(row.warId)))];
     const rawParticipation = warIds.length > 0
       ? await this.db.clanWarParticipation.findMany({
-          where: { guildId, warId: { in: warIds }, playerTag: { in: playerTags } },
+          where: { guildId, warId: { in: warIds } },
           orderBy: [{ warId: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
           select: { warId: true, clanTag: true, playerTag: true },
         })
       : [];
 
-    const exactTagsByKey = new Map<string, Set<string>>();
-    for (const row of rawMemberSnapshots) {
+    const activeTagsByKey = new Map<string, Set<string>>();
+    for (const row of rawActiveRoster) {
       const playerTag = normalizePlayerTag(row?.playerTag);
       const clanTag = normalizeClanTag(row?.clanTag);
-      if (!playerTag || !clanTag || !isValidDate(row?.syncTime) || !boundaryTimeSet.has(dateKey(row.syncTime))) continue;
-      const key = evidenceKey(playerTag, row.syncTime);
-      const tags = exactTagsByKey.get(key) ?? new Set<string>();
-      tags.add(clanTag);
-      exactTagsByKey.set(key, tags);
+      if (!playerTag || !clanTag || !isValidDate(row?.warStartTime)) continue;
+      const matchingCandidates = activeCandidates.filter((candidate) =>
+        candidate.clanTag === clanTag &&
+        candidate.startTime.getTime() === row.warStartTime.getTime() &&
+        (candidate.warId === null || normalizePositiveInteger(row?.warId) === candidate.warId) &&
+        (!candidate.opponentTag || !row?.opponentClanTag || normalizeClanTag(row.opponentClanTag) === normalizeClanTag(candidate.opponentTag)) &&
+        (row?.warEndTime == null) &&
+        (!row?.warState || ["PREPARATION", "INWAR"].includes(normalizedComparable(row.warState))),
+      );
+      for (const candidate of matchingCandidates) {
+        const cycle = boundedCyclesBySyncNumber.get(candidate.syncNumber);
+        if (!cycle) continue;
+        const boundaryKey = dateKey(cycle.syncTime);
+        activeBoundaryKeys.add(boundaryKey);
+        if (!playerTags.includes(playerTag)) continue;
+        const key = evidenceKey(playerTag, cycle.syncTime);
+        const tags = activeTagsByKey.get(key) ?? new Set<string>();
+        tags.add(clanTag);
+        activeTagsByKey.set(key, tags);
+      }
     }
 
-    const fallbackTagsByKey = new Map<string, Set<string>>();
+    const historicalTagsByKey = new Map<string, Set<string>>();
+    const historicalCoverageBoundaryKeys = new Set<string>();
     const historyByWarId = new Map<number, HistoricalFwaHistory[]>();
     for (const history of histories) {
       const rows = historyByWarId.get(history.warId) ?? [];
       rows.push(history);
       historyByWarId.set(history.warId, rows);
     }
-    const participationKeys = new Set<string>();
     for (const row of rawParticipation) {
       const warId = normalizePositiveInteger(row?.warId);
       const playerTag = normalizePlayerTag(row?.playerTag);
       const clanTag = normalizeClanTag(row?.clanTag);
-      if (!warId || !playerTag || !clanTag) continue;
+      if (!warId || !clanTag) continue;
       for (const history of historyByWarId.get(warId) ?? []) {
         if (history.clanTag !== clanTag) continue;
-        const dedupeKey = `${history.warId}|${history.syncNumber}|${playerTag}|${clanTag}`;
-        if (participationKeys.has(dedupeKey)) continue;
-        participationKeys.add(dedupeKey);
         const key = evidenceKey(playerTag, history.syncTime);
-        const tags = fallbackTagsByKey.get(key) ?? new Set<string>();
+        historicalCoverageBoundaryKeys.add(dateKey(history.syncTime));
+        if (!playerTag || !playerTags.includes(playerTag)) continue;
+        const tags = historicalTagsByKey.get(key) ?? new Set<string>();
         tags.add(clanTag);
-        fallbackTagsByKey.set(key, tags);
+        historicalTagsByKey.set(key, tags);
       }
     }
 
-    const intervals = normalizeIntervals(rawIntervals);
-    const intervalHistoryBoundReached = rawIntervals.length >= intervalRowTake;
     const evidenceByPlayer: MembershipBoundaryEvidenceByPlayer = {};
     for (const playerTag of playerTags) {
       evidenceByPlayer[playerTag] = boundaries.map((boundaryTime) => {
         const key = evidenceKey(playerTag, boundaryTime);
         const fwa = buildFwaEvidence(
-          exactTagsByKey.get(key),
-          fallbackTagsByKey.get(key),
-          exactCaptureBoundarySet.has(dateKey(boundaryTime)),
-        );
-        const intervalTags = new Set(
-          intervals
-            .filter((interval) =>
-              interval.playerTag === playerTag &&
-              interval.firstObservedAt.getTime() <= boundaryTime.getTime() &&
-              interval.lastObservedAt.getTime() >= boundaryTime.getTime(),
-            )
-            .map((interval) => interval.clanTag),
+          activeTagsByKey.get(key),
+          activeBoundaryKeys.has(dateKey(boundaryTime)) ||
+            (activeResolutionReadFailed && boundaries[0]?.getTime() === boundaryTime.getTime()),
+          historicalTagsByKey.get(key),
+          historicalCoverageBoundaryKeys.has(dateKey(boundaryTime)),
         );
         return {
           playerTag,
           boundaryTime,
           fwa,
-          alliance: buildAllianceEvidence(fwa, intervalTags),
+          alliance: buildAllianceEvidence(fwa),
         };
       });
     }
@@ -801,8 +874,8 @@ export class MembershipStreakService {
       boundaries,
       boundaryIdentities,
       evidenceByPlayer,
-      historyBoundReached: historyBoundReached || intervalHistoryBoundReached,
-      boundaryHistoryTruncated,
+      historyBoundReached,
+      boundaryHistoryTruncated: historyBoundReached,
     };
   }
 }

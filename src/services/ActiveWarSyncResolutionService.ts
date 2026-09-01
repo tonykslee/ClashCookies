@@ -213,7 +213,7 @@ function normalizeAssignmentSyncNumber(
   return normalizeSyncNumber(value);
 }
 
-type ActiveCycleSyncCandidate = {
+export type ActiveCycleSyncCandidate = {
   guildId: string;
   clanTag: string;
   warId: number | null;
@@ -224,7 +224,7 @@ type ActiveCycleSyncCandidate = {
   inferredMatchType: boolean | null;
 };
 
-type ActiveCycleSyncDiscovery = {
+export type ActiveCycleSyncDiscovery = {
   syncNumber: number | null;
   conflict: boolean;
   candidates: ActiveCycleSyncCandidate[];
@@ -1323,10 +1323,13 @@ export class ActiveWarSyncResolutionService {
   }
 
   /** Purpose: read the currently active canonical sync number from persisted active-war rows. */
-  async findPersistedActiveSyncNumber(): Promise<ActiveCycleSyncDiscovery> {
+  async findPersistedActiveSyncNumber(input?: {
+    guildId?: string | null;
+  }): Promise<ActiveCycleSyncDiscovery> {
     const rows = await prisma.currentWar.findMany({
       where: {
         state: { in: ["preparation", "inWar"] },
+        ...(input?.guildId ? { guildId: String(input.guildId).trim() } : {}),
       },
       select: {
         guildId: true,
