@@ -213,18 +213,19 @@ function normalizeAssignmentSyncNumber(
   return normalizeSyncNumber(value);
 }
 
-type ActiveCycleSyncCandidate = {
+export type ActiveCycleSyncCandidate = {
   guildId: string;
   clanTag: string;
   warId: number | null;
   startTime: Date | null;
   opponentTag: string | null;
+  teamSize: number | null;
   syncNumber: number | null;
   matchType: string | null;
   inferredMatchType: boolean | null;
 };
 
-type ActiveCycleSyncDiscovery = {
+export type ActiveCycleSyncDiscovery = {
   syncNumber: number | null;
   conflict: boolean;
   candidates: ActiveCycleSyncCandidate[];
@@ -236,6 +237,7 @@ type ActiveCycleCurrentWarIdentity = {
   warId: number | null;
   startTime: Date;
   opponentTag: string;
+  teamSize: number | null;
   matchType: string | null;
   inferredMatchType: boolean | null;
 };
@@ -1323,10 +1325,13 @@ export class ActiveWarSyncResolutionService {
   }
 
   /** Purpose: read the currently active canonical sync number from persisted active-war rows. */
-  async findPersistedActiveSyncNumber(): Promise<ActiveCycleSyncDiscovery> {
+  async findPersistedActiveSyncNumber(input?: {
+    guildId?: string | null;
+  }): Promise<ActiveCycleSyncDiscovery> {
     const rows = await prisma.currentWar.findMany({
       where: {
         state: { in: ["preparation", "inWar"] },
+        ...(input?.guildId ? { guildId: String(input.guildId).trim() } : {}),
       },
       select: {
         guildId: true,
@@ -1334,6 +1339,7 @@ export class ActiveWarSyncResolutionService {
         warId: true,
         startTime: true,
         opponentTag: true,
+        teamSize: true,
         matchType: true,
         inferredMatchType: true,
       },
@@ -1348,6 +1354,10 @@ export class ActiveWarSyncResolutionService {
             : null,
         startTime: row.startTime ?? null,
         opponentTag: normalizeBareTag(row.opponentTag ?? null),
+        teamSize:
+          row.teamSize !== null && row.teamSize !== undefined && Number.isInteger(Number(row.teamSize)) && Number(row.teamSize) > 0
+            ? Number(row.teamSize)
+            : null,
         matchType: row.matchType !== null ? String(row.matchType) : null,
         inferredMatchType: row.inferredMatchType === true ? true : null,
       }))

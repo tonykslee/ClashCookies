@@ -6,6 +6,7 @@ import {
 } from "./ClanHomeMembershipService";
 import {
   membershipStreakService,
+  type MembershipBoundaryEvidence,
   type MembershipStreakResult,
   type MembershipStreakService,
 } from "./MembershipStreakService";
@@ -51,10 +52,11 @@ function normalizePlayerTags(values: unknown): string[] {
   )].sort((left, right) => left.localeCompare(right));
 }
 
-/** Purpose: count canonical boundaries credited to one active Home period without using wall-clock time. */
+/** Purpose: count resolved canonical FWA-roster observations credited to one active Home period. */
 function resolveClanTenure(input: {
   home: ActiveHomeMembership;
   boundaryTimes: Date[];
+  evidenceRows: MembershipBoundaryEvidence[];
   boundaryHistoryTruncated: boolean;
 }): { syncs: number | null; isLowerBound: boolean } {
   const startedAt = input.home.startedAtSyncTime;
@@ -62,20 +64,22 @@ function resolveClanTenure(input: {
     return { syncs: null, isLowerBound: false };
   }
 
-  const coveredBoundaries = input.boundaryTimes.filter((boundaryTime) =>
-    boundaryTime.getTime() >= startedAt.getTime(),
-  );
+  const coveredBoundaries = input.boundaryTimes.filter((boundaryTime) => boundaryTime.getTime() >= startedAt.getTime());
   if (coveredBoundaries.length === 0) return { syncs: null, isLowerBound: false };
 
   const oldestLoadedBoundary = input.boundaryTimes[input.boundaryTimes.length - 1];
   if (!oldestLoadedBoundary) return { syncs: null, isLowerBound: false };
-  if (oldestLoadedBoundary.getTime() <= startedAt.getTime()) {
-    return { syncs: coveredBoundaries.length, isLowerBound: false };
+  if (oldestLoadedBoundary.getTime() > startedAt.getTime() && !input.boundaryHistoryTruncated) {
+    return { syncs: null, isLowerBound: false };
   }
-  if (input.boundaryHistoryTruncated) {
-    return { syncs: coveredBoundaries.length, isLowerBound: true };
-  }
-  return { syncs: null, isLowerBound: false };
+  const syncs = input.evidenceRows.filter((row) =>
+    row.boundaryTime.getTime() >= startedAt.getTime() &&
+    row.fwa.status === "RESOLVED" &&
+    row.fwa.clanTag === normalizeClanTag(input.home.clanTag),
+  ).length;
+  const activeHomeWindowTruncated = input.boundaryHistoryTruncated &&
+    oldestLoadedBoundary.getTime() > startedAt.getTime();
+  return { syncs, isLowerBound: activeHomeWindowTruncated };
 }
 
 /** Purpose: expose the authoritative physical-clan streak without applying Home-specific interpretation. */
@@ -91,6 +95,9 @@ function resolvePhysicalClanStreak(
   if (streak.latestFwaEvidenceStatus === "ABSENT") {
     return { syncs: 0, isLowerBound: false };
   }
+  if (streak.latestEvidencePending && streak.latestPendingClanValueAvailable) {
+    return { syncs: streak.clanStreakSyncs, isLowerBound: streak.clanStreakIsLowerBound };
+  }
   return { syncs: null, isLowerBound: false };
 }
 
@@ -98,7 +105,9 @@ function resolvePhysicalClanStreak(
 function resolveAllianceStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
-  if (!streak.latestBoundaryTime || !streak.latestEvidenceAvailable) {
+  if (!streak.latestBoundaryTime ||
+      (!streak.latestEvidenceAvailable &&
+        (!streak.latestEvidencePending || !streak.latestPendingAllianceValueAvailable))) {
     return { syncs: null, isLowerBound: false };
   }
   return {
@@ -173,6 +182,7 @@ export class HomeMembershipAnalyticsService {
       const tenure = resolveClanTenure({
         home,
         boundaryTimes: streakBatch.boundaryTimes,
+        evidenceRows: streakBatch.evidenceByPlayer[playerTag] ?? [],
         boundaryHistoryTruncated: streakBatch.boundaryHistoryTruncated,
       });
       return {

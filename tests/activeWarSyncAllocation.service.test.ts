@@ -185,6 +185,7 @@ function makeActiveFwaRow(input: {
   syncNumber: number | null;
   opponentTag: string;
   startTime?: Date;
+  teamSize?: number | null;
 }) {
   return {
     guildId: testGuildId,
@@ -193,6 +194,7 @@ function makeActiveFwaRow(input: {
     syncNumber: input.syncNumber,
     startTime: input.startTime ?? new Date("2026-03-12T09:00:00.000Z"),
     opponentTag: input.opponentTag,
+    teamSize: input.teamSize ?? null,
     matchType: "FWA",
     inferredMatchType: true,
   };
@@ -215,6 +217,30 @@ function setPointsEvidence(
 }
 
 describe("ActiveWarSyncResolutionService allocation", () => {
+  it("returns persisted CurrentWar team size with the active sync candidate", async () => {
+    const row = makeActiveFwaRow({
+      clanTag: "#TEAMSIZE",
+      warId: 4021,
+      syncNumber: 553,
+      opponentTag: "#OPPTEAM",
+      teamSize: 15,
+    });
+    prismaMock.currentWar.findMany.mockResolvedValue([row]);
+    setPointsEvidence([row]);
+    const service = makeService();
+
+    const discovery = await service.findPersistedActiveSyncNumber();
+
+    expect(discovery).toMatchObject({
+      syncNumber: 553,
+      conflict: false,
+      candidates: [{ clanTag: "TEAMSIZE", teamSize: 15 }],
+    });
+    expect(prismaMock.currentWar.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ teamSize: true }),
+    }));
+  });
+
   it("uses canonical hashed CurrentWar database keys for exact sync persistence", async () => {
     const incidentStartTime = new Date("2026-07-16T20:03:41.000Z");
     const currentWarStore = createCurrentWarStore({
