@@ -12,6 +12,7 @@ export type BackfillMembershipHistoryParticipationArgs = {
   apply: boolean;
 };
 
+/** Purpose: parse a required positive sync number from the explicit CLI scope. */
 function parsePositiveSync(value: string): number {
   const syncNumber = Number(value.trim());
   if (!Number.isInteger(syncNumber) || syncNumber <= 0) throw new Error(`Invalid sync number: ${value}`);
@@ -39,7 +40,7 @@ export function parseParticipationSyncFilter(value: string): Set<number> {
   return syncNumbers;
 }
 
-/** Purpose: require explicit guild and sync scope while keeping apply opt-in. */
+/** Purpose: parse the explicit guild/sync scope while keeping apply opt-in. */
 export function parseBackfillMembershipHistoryParticipationArgs(argv: string[]): BackfillMembershipHistoryParticipationArgs {
   let guildId = "";
   let syncFilter: Set<number> | null = null;
@@ -71,7 +72,7 @@ export function parseBackfillMembershipHistoryParticipationArgs(argv: string[]):
   return { guildId, syncFilter, apply };
 }
 
-/** Purpose: print bounded per-war evidence without dumping player rosters. */
+/** Purpose: format bounded per-war evidence without dumping player rosters. */
 export function formatParticipationBackfillPlan(plan: ParticipationBackfillPlan, apply: boolean): string {
   const lines = [
     `${MEMBERSHIP_PARTICIPATION_BACKFILL_PREFIX} mode=${apply ? "APPLY" : "DRY_RUN"} guild=${plan.guildId}`,
@@ -86,10 +87,14 @@ export function formatParticipationBackfillPlan(plan: ParticipationBackfillPlan,
       `canonical_war_id=${report.canonicalWarId ?? "-"}`,
       `action=${report.action}`,
       `archive_participants=${report.archiveParticipantCount}`,
+      `archive_positive=${report.archivePositivePlayerCount}`,
       `reconstructable=${report.reconstructableCount}`,
       `existing=${report.existingCount}`,
+      `existing_positive=${report.existingPositivePlayerCount}`,
       `planned_inserts=${report.plannedInsertCount}`,
       `skipped_unreconstructable=${report.skippedUnreconstructableCount}`,
+      `malformed_participants=${report.malformedParticipantCount}`,
+      `unidentified_participants=${report.unidentifiedParticipantCount}`,
       `expected_team_size=${report.expectedTeamSize ?? "UNKNOWN"}`,
       `projected_coverage=${report.projectedCoverage}`,
       `reasons=${report.reasons.join(",") || "-"}`,
@@ -126,10 +131,15 @@ export async function runBackfillMembershipHistoryParticipation(
   if (!args.apply) return plan;
   if (plan.summary.conflicts > 0) throw new Error("Apply aborted before writes because the selected plan contains conflicts.");
   const result = await service.apply(plan);
-  console.log(`${MEMBERSHIP_PARTICIPATION_BACKFILL_PREFIX} apply batches=${result.batches} rows_attempted=${result.rowsAttempted} rows_reported_created=${result.rowsReportedCreated} verified_wars=${Object.keys(result.verifiedRowsByWar).length}`);
+  console.log(`${MEMBERSHIP_PARTICIPATION_BACKFILL_PREFIX} apply batches=${result.batches} rows_attempted=${result.rowsAttempted} rows_reported_created=${result.rowsReportedCreated} verified_wars=${result.verifiedWars.length} mismatched_wars=${result.mismatchedWars.length} verification=${result.verificationSuccessful ? "SUCCESS" : "FAILED"}`);
+  for (const verification of result.verifiedWars) {
+    console.log(`${MEMBERSHIP_PARTICIPATION_BACKFILL_PREFIX} verify war_id=${verification.warId} clan=${verification.clanTag || "-"} expected_projected_count=${verification.expectedProjectedDistinctCount} observed_distinct_count=${verification.observedDistinctCount} result=${verification.matches ? "MATCH" : "MISMATCH"}`);
+  }
+  if (!result.verificationSuccessful) throw new Error("Post-apply verification detected participation count mismatches.");
   return plan;
 }
 
+/** Purpose: run the compiled operator entrypoint and release the Prisma connection. */
 async function main(): Promise<void> {
   const args = parseBackfillMembershipHistoryParticipationArgs(process.argv.slice(2));
   await runBackfillMembershipHistoryParticipation(args);

@@ -116,10 +116,12 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(plan.reports[0].reasons).toEqual(expect.arrayContaining(["malformed_attack", "declared_attack_count_mismatch"]));
   });
 
-  it("reports partial and unknown coverage while retaining positive rows", async () => {
-    const partial = makeDb({ lookups: [lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], [{ playerTag: "#P2", stars: 1, trueStars: 1, attackSeenAt: start.toISOString() }])] }).db;
+  it("reports genuine partial and unknown coverage while retaining positive rows", async () => {
+    const partialLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }, { playerTag: "#P3", attacksUsed: 1 }], [{ playerTag: "#P2", stars: 1, trueStars: 1, attackSeenAt: start.toISOString() }]);
+    partialLookup.payload.warMeta.teamSize = 3;
+    const partial = makeDb({ lookups: [partialLookup] }).db;
     const partialPlan = await new MembershipHistoryParticipationBackfillService(partial).plan(guildId, new Set([543]));
-    expect(partialPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "COMPLETE", expectedTeamSize: 2 });
+    expect(partialPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "PARTIAL", expectedTeamSize: 3, archivePositivePlayerCount: 3, skippedUnreconstructableCount: 1 });
 
     const unknownLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }]);
     unknownLookup.payload.warMeta.teamSize = null;
@@ -127,6 +129,65 @@ describe("backfillMembershipHistoryParticipation", () => {
     const unknown = makeDb({ lookups: [unknownLookup] }).db;
     const unknownPlan = await new MembershipHistoryParticipationBackfillService(unknown).plan(guildId, new Set([543]));
     expect(unknownPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "UNKNOWN", expectedTeamSize: null });
+  });
+
+  it("counts authoritative positive identities even when one participant is unreconstructable", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], []);
+    evidence.payload.warMeta.teamSize = 1;
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", projectedDistinctParticipationCount: 1, archivePositivePlayerCount: 2, skippedUnreconstructableCount: 1, reasons: expect.arrayContaining(["authoritative_positive_roster_exceeds_team_size"]) });
+  });
+
+  it("does not report complete coverage when an unidentified archive participant remains", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { name: "missing tag" }]);
+    evidence.payload.warMeta.teamSize = 1;
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", projectedDistinctParticipationCount: 1, projectedCoverage: "PARTIAL", unidentifiedParticipantCount: 1, skippedUnreconstructableCount: 1, reasons: expect.arrayContaining(["unidentified_participant_with_projected_complete_roster"]) });
+  });
+
+  it("permits safe partial recovery when valid positive evidence is incomplete", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], []);
+    evidence.payload.warMeta.teamSize = 3;
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedDistinctParticipationCount: 1, projectedCoverage: "PARTIAL", skippedUnreconstructableCount: 1 });
+  });
+
+  it("detects positive identities across a missing lookup and a reconstructable clan", async () => {
+    const awayLookup = lookup(101, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#EB",
+      opponentTag: "#OPP2",
+      payload: { warMeta: { warId: "101", clanTag: "#EB", opponentTag: "#OPP2", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({
+      points: [point(543, 100, "#RR"), point(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      histories: [history(543, 100, "#RR"), history(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      lookups: [awayLookup],
+      participation: [{ guildId, warId: "100", clanTag: "#RR", playerTag: "#P1", matchType: "FWA", warStartTime: start }],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
+    expect(plan.summary.conflicts).toBe(2);
+    expect(plan.rowsPlanned).toBe(0);
+    expect(plan.reports.map((row) => row.reasons).flat()).toContain("same_sync_player_multiple_clans");
+  });
+
+  it("detects cross-clan contradiction when one archived positive identity is unreconstructable", async () => {
+    const rrLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 1 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 1 }], attacks: [] } },
+    });
+    const ebLookup = lookup(101, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#EB",
+      opponentTag: "#OPP2",
+      payload: { warMeta: { warId: "101", clanTag: "#EB", opponentTag: "#OPP2", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({
+      points: [point(543, 100, "#RR"), point(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      histories: [history(543, 100, "#RR"), history(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      lookups: [rrLookup, ebLookup],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
+    expect(plan.summary.conflicts).toBe(2);
+    expect(plan.rowsPlanned).toBe(0);
   });
 
   it("fails closed when projected roster exceeds authoritative team size", async () => {
@@ -154,6 +215,76 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(participation).toHaveLength(0);
   });
 
+  it("rejects contradictory duplicate participants and de-duplicates identical participants", async () => {
+    const contradictory = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P1", attacksUsed: 1 }]);
+    const conflictPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [contradictory] }).db).plan(guildId, new Set([543]));
+    expect(conflictPlan.reports[0].action).toBe("CONFLICT");
+
+    const identical = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P1", attacksUsed: 0 }]);
+    const identicalPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [identical] }).db).plan(guildId, new Set([543]));
+    expect(identicalPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archiveParticipantCount: 2, archivePositivePlayerCount: 1, reconstructableCount: 1, plannedInsertCount: 1, projectedCoverage: "PARTIAL" });
+  });
+
+  it("accepts string-only participants only with matching attack evidence", async () => {
+    const sufficient = lookup(100, ["#P1"], [{ playerTag: "#P1", stars: 3, trueStars: 3, attackSeenAt: start.toISOString() }]);
+    const sufficientPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [sufficient] }).db).plan(guildId, new Set([543]));
+    expect(sufficientPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", reconstructableCount: 1, plannedInsertCount: 1 });
+
+    const insufficient = lookup(100, ["#P1"], []);
+    insufficient.payload.canonical.attacks = undefined;
+    const insufficientPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [insufficient] }).db).plan(guildId, new Set([543]));
+    expect(insufficientPlan.reports[0]).toMatchObject({ action: "SKIP", reconstructableCount: 0, skippedUnreconstructableCount: 1, plannedInsertCount: 0 });
+  });
+
+  it("keeps exact twelve-hour attacks on time and marks later attacks missed", () => {
+    const rows = buildParticipationRows({
+      guildId,
+      warId: "100",
+      clanTag: "#HOME",
+      opponentTag: "#OPP",
+      warStartTime: start,
+      warEndTime: end,
+      matchType: "FWA",
+      participantRows: [{ playerTag: "#P1", playerName: "P1", playerPosition: 1 }],
+      attackRows: [{ playerTag: "#P1", playerName: "P1", stars: 2, trueStars: 2, attackSeenAt: new Date(start.getTime() + 12 * 60 * 60 * 1000) }],
+    });
+    expect(rows[0].attackWindowMissed).toBe(false);
+  });
+
+  it("fails closed for persisted sync disagreement, partial identity conflict, and non-FWA history", async () => {
+    const disagreement = makeDb({ histories: [history(544, 100)] }).db;
+    const disagreementPlan = await new MembershipHistoryParticipationBackfillService(disagreement).plan(guildId, new Set([543]));
+    expect(disagreementPlan.reports[0]).toMatchObject({ action: "CONFLICT", reasons: expect.arrayContaining(["persisted_sync_number_disagreement"]) });
+
+    const partialIdentity = makeDb({
+      points: [point(543, "", "#HOME"), point(544, 101, "#HOME")],
+      histories: [history(543, 100), history(544, 101)],
+      cycles: [{ guildId, syncNumber: 543, syncTime: new Date("2026-08-14T23:00:00.000Z") }, { guildId, syncNumber: 544, syncTime: new Date("2026-08-14T23:00:00.000Z") }],
+      lookups: [lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }]), lookup(101, [{ playerTag: "#P2", attacksUsed: 0 }])],
+    }).db;
+    const partialIdentityPlan = await new MembershipHistoryParticipationBackfillService(partialIdentity).plan(guildId, new Set([543, 544]));
+    expect(partialIdentityPlan.reports.find((row) => row.syncNumber === 543)).toMatchObject({ action: "CONFLICT", reasons: expect.arrayContaining(["conflicting_partial_war_identity_across_sync_buckets"]) });
+
+    const nonFwa = makeDb({ points: [point(543, 100, "#HOME", { isFwa: false })], histories: [history(543, 100, "#HOME", { matchType: "BL" })] }).db;
+    const nonFwaPlan = await new MembershipHistoryParticipationBackfillService(nonFwa).plan(guildId, new Set([543]));
+    expect(nonFwaPlan.reports[0]).toMatchObject({ action: "SKIP", reasons: expect.arrayContaining(["non_fwa_cycle"]) });
+  });
+
+  it("bounds compliance evaluation reads to the selected sync numbers", async () => {
+    const { db } = makeDb();
+    await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543, 545]));
+    expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { guildId, warHistory: { syncNumber: { in: [543, 545] } } } }));
+  });
+
+  it("returns a failed post-apply verification when projected counts do not match", async () => {
+    const { db } = makeDb();
+    const service = new MembershipHistoryParticipationBackfillService(db);
+    const plan = await service.plan(guildId, new Set([543]));
+    db.clanWarParticipation.findMany.mockImplementation(async () => []);
+    const result = await service.apply(plan);
+    expect(result).toMatchObject({ verificationSuccessful: false, mismatchedWars: [{ warId: "100", expectedProjectedDistinctCount: 2, observedDistinctCount: 0 }] });
+  });
+
   it("plans only the missing subset and second apply is idempotent", async () => {
     const { db, participation } = makeDb({
       participation: [{ guildId, warId: "100", clanTag: "#HOME", playerTag: "#P1", matchType: "FWA", warStartTime: start }],
@@ -164,6 +295,8 @@ describe("backfillMembershipHistoryParticipation", () => {
     await service.apply(plan);
     const rerun = await service.plan(guildId, new Set([543]));
     expect(rerun.reports[0]).toMatchObject({ action: "ALREADY_PRESENT", plannedInsertCount: 0 });
+    const secondApply = await service.apply(rerun);
+    expect(secondApply).toMatchObject({ rowsAttempted: 0, rowsReportedCreated: 0, verificationSuccessful: true });
     expect(participation).toHaveLength(2);
   });
 
