@@ -107,6 +107,81 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(rows[0].firstAttackAt).toEqual(new Date(start.getTime() + 12 * 60 * 60 * 1000 + 60_000));
   });
 
+  it("fails closed on duplicate canonical attack orders while retaining the positive player", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 2 }], [
+      { playerTag: "#P1", attackOrder: 1, stars: 2, trueStars: 2, attackSeenAt: start.toISOString() },
+      { playerTag: "#P1", attackOrder: 1, stars: 3, trueStars: 3, attackSeenAt: new Date(start.getTime() + 60_000).toISOString() },
+    ]);
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", archivePositivePlayerCount: 1, plannedInsertCount: 0, reasons: expect.arrayContaining(["duplicate_canonical_attack_order"]) });
+  });
+
+  it("reconstructs two distinct ordered attacks with production metrics", async () => {
+    const first = new Date(start.getTime() + 60 * 60 * 1000);
+    const second = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 2 }], [
+      { playerTag: "#P1", attackOrder: 1, stars: 1, trueStars: 2, attackSeenAt: first.toISOString() },
+      { playerTag: "#P1", attackOrder: 2, stars: 3, trueStars: 3, attackSeenAt: second.toISOString() },
+    ]);
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", reconstructableCount: 1, plannedInsertCount: 1 });
+    expect(plan.reports[0].plannedRows[0]).toMatchObject({ attacksUsed: 2, attacksMissed: 0, starsEarned: 4, trueStars: 5, missedBoth: false, firstAttackAt: first, attackDelayMinutes: 60, attackWindowMissed: false });
+  });
+
+  it("rejects declared or observed attack counts above the two-attack limit", async () => {
+    const declared = lookup(100, [{ playerTag: "#P1", attacksUsed: 3 }]);
+    const declaredPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [declared] }).db).plan(guildId, new Set([543]));
+    expect(declaredPlan.reports[0]).toMatchObject({ action: "CONFLICT", archivePositivePlayerCount: 1, plannedInsertCount: 0, reasons: expect.arrayContaining(["invalid_declared_attack_count"]) });
+
+    const tooMany = lookup(100, [{ playerTag: "#P1", attacksUsed: 2 }], [
+      { playerTag: "#P1", attackOrder: 1, stars: 1, trueStars: 1, attackSeenAt: start.toISOString() },
+      { playerTag: "#P1", attackOrder: 2, stars: 1, trueStars: 1, attackSeenAt: new Date(start.getTime() + 60_000).toISOString() },
+      { playerTag: "#P1", attackOrder: 3, stars: 1, trueStars: 1, attackSeenAt: new Date(start.getTime() + 120_000).toISOString() },
+    ]);
+    const tooManyPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [tooMany] }).db).plan(guildId, new Set([543]));
+    expect(tooManyPlan.reports[0]).toMatchObject({ action: "CONFLICT", plannedInsertCount: 0, reasons: expect.arrayContaining(["canonical_attack_count_exceeds_limit"]) });
+  });
+
+  it("does not count exact duplicate unordered legacy attacks", async () => {
+    const duplicate = { playerTag: "#P1", stars: 2, trueStars: 2, attackSeenAt: start.toISOString() };
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 1 }], [duplicate, { ...duplicate }]);
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archivePositivePlayerCount: 1, reconstructableCount: 1, plannedInsertCount: 1, skippedUnreconstructableCount: 0, reasons: expect.arrayContaining(["duplicate_legacy_attack"]) });
+    expect(plan.reports[0].plannedRows[0]).toMatchObject({ attacksUsed: 1, attacksMissed: 1, starsEarned: 2, trueStars: 2 });
+  });
+
+  it("keeps unrelated participants recoverable after one participant attack-integrity failure", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 1 }, { playerTag: "#P2", attacksUsed: 0 }], [
+      { playerTag: "#P1", stars: 4, trueStars: 4, attackSeenAt: start.toISOString() },
+    ]);
+    evidence.payload.warMeta.teamSize = 3;
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archivePositivePlayerCount: 2, reconstructableCount: 1, plannedInsertCount: 1, skippedUnreconstructableCount: 1, projectedCoverage: "PARTIAL" });
+    expect(plan.reports[0].plannedRows[0].playerTag).toBe("#P2");
+  });
+
+  it("retains attack-corrupt positive identity for same-sync cross-clan conflict detection", async () => {
+    const rr = lookup(100, [{ playerTag: "#P1", attacksUsed: 2 }], [
+      { playerTag: "#P1", attackOrder: 1, stars: 2, trueStars: 2, attackSeenAt: start.toISOString() },
+      { playerTag: "#P1", attackOrder: 1, stars: 2, trueStars: 2, attackSeenAt: start.toISOString() },
+    ]);
+    const eb = lookup(101, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#EB",
+      opponentTag: "#OPP2",
+      payload: { warMeta: { warId: "101", clanTag: "#EB", opponentTag: "#OPP2", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({
+      points: [point(543, 100, "#RR"), point(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      histories: [history(543, 100, "#RR"), history(543, 101, "#EB", { opponentTag: "#OPP2" })],
+      lookups: [rr, eb],
+    });
+    rr.clanTag = "#RR";
+    rr.payload.warMeta.clanTag = "#RR";
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
+    expect(plan.reports.every((row) => row.action === "CONFLICT")).toBe(true);
+    expect(plan.reports.map((row) => row.reasons).flat()).toContain("same_sync_player_multiple_clans");
+  });
+
   it("rejects declared attack-count disagreement and malformed required attack fields", async () => {
     const { db } = makeDb({
       lookups: [lookup(100, [{ playerTag: "#P1", attacksUsed: 2 }], [{ playerTag: "#P1", stars: 3, trueStars: 3, attackSeenAt: "not-a-date" }])],

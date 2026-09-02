@@ -116,9 +116,14 @@ type ExistingParticipation = {
 };
 
 type ParsedParticipant = ParticipationParticipantInput & { declaredAttacksUsed: number | null };
+type ParsedArchiveAttack = ParticipationAttackInput & {
+  attackOrder: number | null;
+  hasAttackOrder: boolean;
+  legacyIdentityKey: string;
+};
 type ParsedArchive = {
   participants: ParsedParticipant[];
-  attacks: ParticipationAttackInput[] | null;
+  attacks: ParsedArchiveAttack[] | null;
   skippedPlayers: Set<string>;
   archivePositivePlayerTags: Set<string>;
   malformedParticipantCount: number;
@@ -302,8 +307,24 @@ function parseParticipant(value: unknown): ParsedParticipant | null {
   return { playerTag, playerName: readPlayerName(record), playerPosition: readPosition(record), declaredAttacksUsed };
 }
 
-/** Purpose: parse the required archived attack metrics and timestamp without fallback values. */
-function parseAttack(value: unknown): ParticipationAttackInput | null {
+/** Purpose: identify whether an archived attack declares an attack-order field. */
+function readAttackOrder(record: Record<string, any>): { present: boolean; value: number | null } {
+  const hasAttackOrder = Object.prototype.hasOwnProperty.call(record, "attackOrder");
+  const hasLegacyOrder = Object.prototype.hasOwnProperty.call(record, "order");
+  const present = hasAttackOrder || hasLegacyOrder;
+  if (!present) return { present: false, value: null };
+  return { present: true, value: positiveInteger(hasAttackOrder ? record.attackOrder : record.order) };
+}
+
+/** Purpose: derive conservative identity fields for legacy attacks without persisted order. */
+function legacyAttackIdentityKey(record: Record<string, any>, attack: ParticipationAttackInput): string {
+  const defenderTag = normalizePlayerTag(record.defenderTag ?? record.defender?.tag);
+  const defenderPosition = nonNegativeInteger(record.defenderPosition ?? record.defender?.mapPosition);
+  return [attack.playerTag, defenderTag, defenderPosition ?? "null", attack.stars, attack.trueStars, attack.attackSeenAt.getTime()].join("|");
+}
+
+/** Purpose: parse required archived attack facts while retaining order and legacy identity metadata. */
+function parseAttack(value: unknown): ParsedArchiveAttack | null {
   const record = objectRecord(value);
   if (!record) return null;
   const playerTag = readTag(record);
@@ -311,7 +332,17 @@ function parseAttack(value: unknown): ParticipationAttackInput | null {
   const trueStars = nonNegativeInteger(record.trueStars);
   const attackSeenAt = finiteDate(record.attackSeenAt ?? record.timestamp ?? record.attackTime);
   if (!playerTag || stars === null || trueStars === null || stars > 3 || trueStars > 3 || !attackSeenAt) return null;
-  return { playerTag, playerName: readPlayerName(record), stars, trueStars, attackSeenAt };
+  const order = readAttackOrder(record);
+  return {
+    playerTag,
+    playerName: readPlayerName(record),
+    stars,
+    trueStars,
+    attackSeenAt,
+    attackOrder: order.value,
+    hasAttackOrder: order.present,
+    legacyIdentityKey: legacyAttackIdentityKey(record, { playerTag, playerName: readPlayerName(record), stars, trueStars, attackSeenAt }),
+  };
 }
 
 /** Purpose: read archived war metadata for identity and team-size checks. */
@@ -394,6 +425,9 @@ function parseArchive(history: HistoryIdentity, lookup: LookupIdentity): ParsedA
     const rawRecord = objectRecord(rawParticipant);
     const rawTag = rawRecord ? readTag(rawRecord) : typeof rawParticipant === "string" ? normalizePlayerTag(rawParticipant) : "";
     if (rawTag) archivePositivePlayerTags.add(rawTag);
+    if (rawRecord && Object.prototype.hasOwnProperty.call(rawRecord, "attacksUsed") && nonNegativeInteger(rawRecord.attacksUsed) !== null && Number(rawRecord.attacksUsed) > 2) {
+      return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["invalid_declared_attack_count"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount });
+    }
     const participant = parseParticipant(rawParticipant);
     if (!participant) {
       const fingerprint = archiveFingerprint(rawParticipant);
@@ -425,25 +459,67 @@ function parseArchive(history: HistoryIdentity, lookup: LookupIdentity): ParsedA
     byTag.set(participant.playerTag, participant);
   }
 
-  let attacks: ParticipationAttackInput[] | null = null;
+  let attacks: ParsedArchiveAttack[] | null = null;
   if (rawAttacks !== undefined && rawAttacks !== null) {
     if (!Array.isArray(rawAttacks)) {
       for (const tag of byTag.keys()) skippedPlayers.add(tag);
       return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["malformed_canonical_attacks"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
     }
-    const parsed: ParticipationAttackInput[] = [];
+    const parsed: ParsedArchiveAttack[] = [];
+    const seenOrderedAttacks = new Set<string>();
+    const seenLegacyAttackFingerprints = new Set<string>();
+    const legacyIdentityKeysByPlayer = new Map<string, Set<string>>();
+    const legacyAmbiguousPlayers = new Set<string>();
+    let sawOrderedAttack = false;
+    let sawLegacyAttack = false;
     for (const rawAttack of rawAttacks) {
       const rawRecord = objectRecord(rawAttack);
       const tag = rawRecord ? readTag(rawRecord) : "";
       if (!tag) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["attack_player_unreconcilable"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
       if (!byTag.has(tag)) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["attack_player_not_in_participants"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+      const order = readAttackOrder(rawRecord!);
+      if (order.present) {
+        sawOrderedAttack = true;
+        if (order.value === null) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["invalid_canonical_attack_order"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+        const orderKey = `${tag}|${order.value}`;
+        if (seenOrderedAttacks.has(orderKey)) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["duplicate_canonical_attack_order"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+        seenOrderedAttacks.add(orderKey);
+      } else {
+        sawLegacyAttack = true;
+      }
       const attack = parseAttack(rawAttack);
       if (!attack) {
         skippedPlayers.add(tag);
         reasons.push("malformed_attack");
         continue;
       }
+      if (attack.hasAttackOrder) {
+        if (sawLegacyAttack) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["mixed_canonical_attack_identity"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+      } else {
+        if (sawOrderedAttack) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["mixed_canonical_attack_identity"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+        const rawFingerprint = archiveFingerprint(rawAttack);
+        if (seenLegacyAttackFingerprints.has(`${tag}|${rawFingerprint}`)) {
+          reasons.push("duplicate_legacy_attack");
+          continue;
+        }
+        seenLegacyAttackFingerprints.add(`${tag}|${rawFingerprint}`);
+        const legacyKeys = legacyIdentityKeysByPlayer.get(tag) ?? new Set<string>();
+        if (legacyKeys.has(attack.legacyIdentityKey)) legacyAmbiguousPlayers.add(tag);
+        legacyKeys.add(attack.legacyIdentityKey);
+        legacyIdentityKeysByPlayer.set(tag, legacyKeys);
+      }
       parsed.push(attack);
+    }
+    for (const [tag, identityKeys] of legacyIdentityKeysByPlayer) {
+      if (identityKeys.size > 2) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["canonical_attack_count_exceeds_limit"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+      if (legacyAmbiguousPlayers.has(tag)) skippedPlayers.add(tag);
+    }
+    const orderedCounts = new Map<string, number>();
+    for (const attack of parsed) {
+      if (attack.attackOrder === null) continue;
+      const count = (orderedCounts.get(attack.playerTag) ?? 0) + 1;
+      if (count > 2) return archiveFailure({ history, lookup, canonical, archivePositivePlayerTags, malformedParticipantCount, unidentifiedParticipantCount, reasons: ["canonical_attack_count_exceeds_limit"], conflict: true, skippedUnreconstructableCount: malformedParticipantCount + skippedPlayers.size });
+      orderedCounts.set(attack.playerTag, count);
     }
     attacks = parsed;
   }
@@ -556,6 +632,11 @@ function reasonConflict(reason: string): boolean {
     "projected_roster_exceeds_team_size",
     "authoritative_positive_roster_exceeds_team_size",
     "unidentified_participant_with_projected_complete_roster",
+    "duplicate_canonical_attack_order",
+    "invalid_canonical_attack_order",
+    "mixed_canonical_attack_identity",
+    "canonical_attack_count_exceeds_limit",
+    "invalid_declared_attack_count",
   ].includes(reason);
 }
 
