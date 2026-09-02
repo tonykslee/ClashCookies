@@ -1,0 +1,721 @@
+import {
+  hasMembershipHistoryIdentityConflict,
+  hasMembershipHistoryPartialIdentityConflict,
+  hasMembershipHistorySyncNumberDisagreement,
+  historicalHistoryMatchesPoint,
+  membershipCanonicalHistoryKey,
+  membershipHistoryConflictingPersistedOwnerKeys,
+  normalizeMembershipHistoryClanTag,
+  type MembershipCanonicalHistoryIdentity,
+  type MembershipHistoryPointIdentity,
+} from "./membershipHistoryIdentity";
+import {
+  buildParticipationRows,
+  type ParticipationAttackInput,
+  type ParticipationParticipantInput,
+  type ParticipationRow,
+} from "./war-events/participationRowBuilder";
+import { normalizeTag } from "./war-events/core";
+
+const ID_QUERY_BATCH_SIZE = 500;
+export const PARTICIPATION_CREATE_BATCH_SIZE = 250;
+export const MEMBERSHIP_PARTICIPATION_BACKFILL_PREFIX = "[membership-participation-backfill]";
+
+export type ParticipationBackfillAction = "INSERT_MISSING" | "ALREADY_PRESENT" | "SKIP" | "CONFLICT";
+export type ProjectedRosterCoverage = "COMPLETE" | "PARTIAL" | "UNKNOWN";
+
+export type ParticipationBackfillDb = {
+  clanPointsSync: { findMany: (args?: any) => Promise<any[]> };
+  warPlanComplianceEvaluation: { findMany: (args?: any) => Promise<any[]> };
+  clanWarHistory: { findMany: (args?: any) => Promise<any[]> };
+  syncCycle: { findMany: (args?: any) => Promise<any[]> };
+  warLookup: { findMany: (args?: any) => Promise<any[]> };
+  clanWarParticipation: {
+    findMany: (args?: any) => Promise<any[]>;
+    createMany: (args: any) => Promise<{ count?: number }>;
+  };
+};
+
+export type ParticipationBackfillWarReport = {
+  guildId: string;
+  syncNumber: number;
+  clanTag: string | null;
+  canonicalWarId: number | null;
+  action: ParticipationBackfillAction;
+  archiveParticipantCount: number;
+  reconstructableCount: number;
+  existingCount: number;
+  plannedInsertCount: number;
+  skippedUnreconstructableCount: number;
+  expectedTeamSize: number | null;
+  projectedDistinctParticipationCount: number;
+  projectedCoverage: ProjectedRosterCoverage;
+  reasons: string[];
+  plannedRows: ParticipationRow[];
+  candidatePlayerTags?: string[];
+};
+
+export type ParticipationBackfillPlan = {
+  guildId: string;
+  selectedSyncs: number[];
+  existingSyncCycles: number;
+  candidateCanonicalFwaWars: number;
+  reports: ParticipationBackfillWarReport[];
+  rowsPlanned: number;
+  rowsUnreconstructable: number;
+  summary: {
+    selectedSyncs: number;
+    existingSyncCycles: number;
+    candidateCanonicalFwaWars: number;
+    alreadyCompleteNoOpWars: number;
+    warsWithPlannedInserts: number;
+    rowsPlanned: number;
+    rowsUnreconstructable: number;
+    completeProjectedRosters: number;
+    partialProjectedRosters: number;
+    unknownProjectedRosters: number;
+    skippedWars: number;
+    conflicts: number;
+  };
+};
+
+export type ParticipationBackfillApplyResult = {
+  batches: number;
+  rowsAttempted: number;
+  rowsReportedCreated: number;
+  verifiedRowsByWar: Record<string, number>;
+};
+
+type PointIdentity = MembershipHistoryPointIdentity & { isFwa: boolean };
+type HistoryIdentity = MembershipCanonicalHistoryIdentity & {
+  warEndTime: Date | null;
+};
+type CycleIdentity = { syncNumber: number; syncTime: Date };
+type LookupIdentity = { warId: number; clanTag: string; opponentTag: string | null; startTime: Date; endTime: Date | null; payload: unknown };
+type ExistingParticipation = {
+  warId: string;
+  clanTag: string;
+  playerTag: string;
+  matchType: string;
+  warStartTime: Date;
+  [key: string]: unknown;
+};
+
+type ParsedParticipant = ParticipationParticipantInput & { declaredAttacksUsed: number | null };
+type ParsedArchive = {
+  participants: ParsedParticipant[];
+  attacks: ParticipationAttackInput[] | null;
+  skippedPlayers: Set<string>;
+  reasons: string[];
+  conflict: boolean;
+  warEndTime: Date | null;
+};
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+}
+
+async function bulkFindMany<T>(values: readonly T[], fetch: (batch: T[]) => Promise<any[]>): Promise<any[]> {
+  if (values.length === 0) return [];
+  const rows = await Promise.all(chunks(values, ID_QUERY_BATCH_SIZE).map(fetch));
+  return rows.flat();
+}
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function finiteDate(value: unknown): Date | null {
+  const date = value instanceof Date ? value : typeof value === "string" || typeof value === "number" ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+function guildId(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function comparable(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function normalizePlayerTag(value: unknown): string {
+  return normalizeTag(String(value ?? ""));
+}
+
+function normalizeWarId(value: unknown): number | null {
+  return positiveInteger(value);
+}
+
+function pointFromRow(row: any): PointIdentity | null {
+  const normalizedGuildId = guildId(row?.guildId);
+  const syncNumber = positiveInteger(row?.syncNum);
+  const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
+  const warStartTime = finiteDate(row?.warStartTime);
+  const opponentTag = normalizeMembershipHistoryClanTag(row?.opponentTag);
+  if (!normalizedGuildId || !syncNumber || !clanTag || !warStartTime || !opponentTag) return null;
+  return {
+    guildId: normalizedGuildId,
+    syncNumber,
+    warId: normalizeWarId(row?.warId),
+    clanTag,
+    warStartTime,
+    opponentTag,
+    isFwa: row?.isFwa === true || comparable(row?.matchType) === "FWA",
+  };
+}
+
+function historyFromRow(row: any): HistoryIdentity | null {
+  const warId = normalizeWarId(row?.warId);
+  const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
+  const warStartTime = finiteDate(row?.warStartTime);
+  if (!warId || !clanTag || !warStartTime || comparable(row?.matchType) !== "FWA") return null;
+  return {
+    warId,
+    syncNumber: positiveInteger(row?.syncNumber),
+    clanTag,
+    warStartTime,
+    opponentTag: row?.opponentTag == null ? null : normalizeMembershipHistoryClanTag(row.opponentTag),
+    warEndTime: finiteDate(row?.warEndTime),
+  };
+}
+
+function uniquePoints(rows: PointIdentity[]): PointIdentity[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.guildId}|${row.syncNumber}|${row.warId ?? "null"}|${row.clanTag}|${row.warStartTime.getTime()}|${row.opponentTag}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function uniqueHistories(rows: HistoryIdentity[]): HistoryIdentity[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.warId}|${row.syncNumber ?? "null"}|${row.clanTag}|${row.warStartTime?.getTime() ?? "null"}|${row.opponentTag ?? "null"}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function ownerKey(point: PointIdentity): string {
+  return `${point.guildId}|${point.syncNumber}`;
+}
+
+function parseTeamSize(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const warMeta = (payload as any).warMeta;
+  if (!warMeta || typeof warMeta !== "object" || comparable(warMeta.teamSizeSource) !== "WAR_EVENT_SNAPSHOT") return null;
+  return positiveInteger(warMeta.teamSize);
+}
+
+function objectRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+function readTag(value: Record<string, any>): string {
+  return normalizePlayerTag(value.playerTag ?? value.attackerTag ?? value.tag ?? value.player?.tag);
+}
+
+function readPlayerName(value: Record<string, any>): string | null {
+  const name = value.playerName ?? value.attackerName ?? value.name ?? value.player?.name;
+  return name == null ? null : String(name);
+}
+
+function readPosition(value: Record<string, any>): number | null {
+  const raw = value.playerPosition ?? value.mapPosition ?? value.position ?? value.player?.mapPosition;
+  return raw == null ? null : nonNegativeInteger(raw);
+}
+
+function sameParticipant(left: ParsedParticipant, right: ParsedParticipant): boolean {
+  return left.playerName === right.playerName && left.playerPosition === right.playerPosition && left.declaredAttacksUsed === right.declaredAttacksUsed;
+}
+
+function parseParticipant(value: unknown): ParsedParticipant | null {
+  if (typeof value === "string") {
+    const playerTag = normalizePlayerTag(value);
+    return playerTag ? { playerTag, playerName: null, playerPosition: null, declaredAttacksUsed: null } : null;
+  }
+  const record = objectRecord(value);
+  if (!record) return null;
+  const playerTag = readTag(record);
+  if (!playerTag) return null;
+  const hasDeclaredCount = Object.prototype.hasOwnProperty.call(record, "attacksUsed");
+  const declaredAttacksUsed = hasDeclaredCount ? nonNegativeInteger(record.attacksUsed) : null;
+  if (hasDeclaredCount && declaredAttacksUsed === null) return null;
+  return { playerTag, playerName: readPlayerName(record), playerPosition: readPosition(record), declaredAttacksUsed };
+}
+
+function parseAttack(value: unknown): ParticipationAttackInput | null {
+  const record = objectRecord(value);
+  if (!record) return null;
+  const playerTag = readTag(record);
+  const stars = nonNegativeInteger(record.stars);
+  const trueStars = nonNegativeInteger(record.trueStars);
+  const attackSeenAt = finiteDate(record.attackSeenAt ?? record.timestamp ?? record.attackTime);
+  if (!playerTag || stars === null || trueStars === null || stars > 3 || trueStars > 3 || !attackSeenAt) return null;
+  return { playerTag, playerName: readPlayerName(record), stars, trueStars, attackSeenAt };
+}
+
+function lookupMeta(payload: unknown): Record<string, any> | null {
+  const record = objectRecord(payload);
+  return objectRecord(record?.warMeta);
+}
+
+function validateLookup(history: HistoryIdentity, lookup: LookupIdentity): string[] {
+  const reasons: string[] = [];
+  if (lookup.warId !== history.warId) reasons.push("lookup_war_id_mismatch");
+  if (normalizeMembershipHistoryClanTag(lookup.clanTag) !== history.clanTag) reasons.push("lookup_clan_mismatch");
+  if (lookup.startTime.getTime() !== history.warStartTime!.getTime()) reasons.push("lookup_start_time_mismatch");
+  if (lookup.opponentTag && history.opponentTag && normalizeMembershipHistoryClanTag(lookup.opponentTag) !== normalizeMembershipHistoryClanTag(history.opponentTag)) reasons.push("lookup_opponent_mismatch");
+  const meta = lookupMeta(lookup.payload);
+  if (meta) {
+    const metaWarId = normalizeWarId(meta.warId);
+    const metaClanTag = normalizeMembershipHistoryClanTag(meta.clanTag);
+    const metaStart = finiteDate(meta.startTime);
+    const metaOpponent = meta.opponentTag == null ? null : normalizeMembershipHistoryClanTag(meta.opponentTag);
+    if (metaWarId !== null && metaWarId !== history.warId) reasons.push("canonical_war_id_mismatch");
+    if (metaClanTag && metaClanTag !== history.clanTag) reasons.push("canonical_clan_mismatch");
+    if (metaStart && metaStart.getTime() !== history.warStartTime!.getTime()) reasons.push("canonical_start_time_mismatch");
+    if (metaOpponent && history.opponentTag && metaOpponent !== normalizeMembershipHistoryClanTag(history.opponentTag)) reasons.push("canonical_opponent_mismatch");
+  }
+  return [...new Set(reasons)].sort();
+}
+
+function parseArchive(history: HistoryIdentity, lookup: LookupIdentity): ParsedArchive {
+  const payload = objectRecord(lookup.payload);
+  const canonical = objectRecord(payload?.canonical);
+  const rawParticipants = canonical?.participants;
+  const rawAttacks = canonical?.attacks;
+  const reasons: string[] = [];
+  const skippedPlayers = new Set<string>();
+  if (!Array.isArray(rawParticipants)) return { participants: [], attacks: null, skippedPlayers, reasons: ["missing_canonical_participants"], conflict: false, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) ?? finiteDate(lookupMeta(lookup.payload)?.endTime) };
+
+  const byTag = new Map<string, ParsedParticipant>();
+  for (const rawParticipant of rawParticipants) {
+    const rawRecord = objectRecord(rawParticipant);
+    const rawTag = rawRecord ? readTag(rawRecord) : typeof rawParticipant === "string" ? normalizePlayerTag(rawParticipant) : "";
+    const participant = parseParticipant(rawParticipant);
+    if (!participant) {
+      if (rawTag && byTag.has(rawTag)) {
+        return { participants: [], attacks: null, skippedPlayers, reasons: ["contradictory_duplicate_participant"], conflict: true, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) };
+      }
+      reasons.push("malformed_participant");
+      continue;
+    }
+    const previous = byTag.get(participant.playerTag);
+    if (previous && !sameParticipant(previous, participant)) {
+      return { participants: [], attacks: null, skippedPlayers, reasons: ["contradictory_duplicate_participant"], conflict: true, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) };
+    }
+    byTag.set(participant.playerTag, participant);
+  }
+
+  let attacks: ParticipationAttackInput[] | null = null;
+  if (rawAttacks !== undefined && rawAttacks !== null) {
+    if (!Array.isArray(rawAttacks)) return { participants: [], attacks: null, skippedPlayers, reasons: ["malformed_canonical_attacks"], conflict: true, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) };
+    const parsed: ParticipationAttackInput[] = [];
+    for (const rawAttack of rawAttacks) {
+      const rawRecord = objectRecord(rawAttack);
+      const tag = rawRecord ? readTag(rawRecord) : "";
+      if (!tag) return { participants: [], attacks: null, skippedPlayers, reasons: ["attack_player_unreconcilable"], conflict: true, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) };
+      if (!byTag.has(tag)) return { participants: [], attacks: null, skippedPlayers, reasons: ["attack_player_not_in_participants"], conflict: true, warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) };
+      const attack = parseAttack(rawAttack);
+      if (!attack) {
+        skippedPlayers.add(tag);
+        reasons.push("malformed_attack");
+        continue;
+      }
+      parsed.push(attack);
+    }
+    attacks = parsed;
+  }
+
+  const reconstructable: ParsedParticipant[] = [];
+  for (const participant of byTag.values()) {
+    const matchingAttacks = attacks?.filter((attack) => attack.playerTag === participant.playerTag) ?? [];
+    if (skippedPlayers.has(participant.playerTag)) {
+      if (participant.declaredAttacksUsed !== null && participant.declaredAttacksUsed !== matchingAttacks.length) reasons.push("declared_attack_count_mismatch");
+      skippedPlayers.add(participant.playerTag);
+      continue;
+    }
+    if (attacks === null) {
+      if (participant.declaredAttacksUsed === 0) reconstructable.push(participant);
+      else {
+        skippedPlayers.add(participant.playerTag);
+        reasons.push(participant.declaredAttacksUsed === null ? "missing_attack_count" : "missing_attack_details");
+      }
+      continue;
+    }
+    if (participant.declaredAttacksUsed !== null && participant.declaredAttacksUsed !== matchingAttacks.length) {
+      skippedPlayers.add(participant.playerTag);
+      reasons.push("declared_attack_count_mismatch");
+      continue;
+    }
+    if (participant.declaredAttacksUsed === null && matchingAttacks.length === 0) {
+      skippedPlayers.add(participant.playerTag);
+      reasons.push("missing_explicit_zero_attack_evidence");
+      continue;
+    }
+    reconstructable.push(participant);
+  }
+
+  return {
+    participants: reconstructable,
+    attacks,
+    skippedPlayers,
+    reasons: [...new Set(reasons)].sort(),
+    conflict: false,
+    warEndTime: history.warEndTime ?? lookup.endTime ?? finiteDate(canonical?.warEndTime) ?? finiteDate(lookupMeta(lookup.payload)?.endTime),
+  };
+}
+
+function normalizeLookup(row: any): LookupIdentity | null {
+  const warId = normalizeWarId(row?.warId);
+  const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
+  const startTime = finiteDate(row?.startTime);
+  if (!warId || !clanTag || !startTime) return null;
+  return { warId, clanTag, opponentTag: row?.opponentTag == null ? null : normalizeMembershipHistoryClanTag(row.opponentTag), startTime, endTime: finiteDate(row?.endTime), payload: row?.payload };
+}
+
+function normalizeExisting(row: any): ExistingParticipation | null {
+  const warId = String(row?.warId ?? "").trim();
+  const clanTag = normalizeMembershipHistoryClanTag(row?.clanTag);
+  const playerTag = normalizePlayerTag(row?.playerTag);
+  const matchType = comparable(row?.matchType);
+  const warStartTime = finiteDate(row?.warStartTime);
+  if (!warId || !clanTag || !playerTag || !warStartTime) return null;
+  return { ...row, warId, clanTag, playerTag, matchType, warStartTime };
+}
+
+function structuralMismatch(row: ExistingParticipation, expected: ParticipationRow, history: HistoryIdentity): boolean {
+  const existingOpponent = row.opponentTag == null ? null : normalizeMembershipHistoryClanTag(row.opponentTag);
+  return row.warId !== String(history.warId) || row.clanTag !== history.clanTag || row.matchType !== "FWA" || row.warStartTime.getTime() !== expected.warStartTime.getTime() || Boolean(existingOpponent && expected.opponentTag && existingOpponent !== normalizeMembershipHistoryClanTag(expected.opponentTag));
+}
+
+function uniqueRows(rows: ExistingParticipation[]): ExistingParticipation[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.warId}|${row.playerTag}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function reasonConflict(reason: string): boolean {
+  return reason.startsWith("identity_") || reason.startsWith("lookup_") || reason.startsWith("canonical_") || [
+    "conflicting_persisted_identity_sources",
+    "persisted_sync_number_disagreement",
+    "conflicting_war_identities",
+    "conflicting_partial_war_identity_across_sync_buckets",
+    "history_maps_to_multiple_guild_sync_owners",
+    "contradictory_clan_ownership",
+    "missing_sync_cycle",
+    "contradictory_duplicate_participant",
+    "attack_player_not_in_participants",
+    "attack_player_unreconcilable",
+    "existing_structural_identity_conflict",
+    "same_sync_player_multiple_clans",
+    "projected_roster_exceeds_team_size",
+  ].includes(reason);
+}
+
+function sortedReasons(reasons: Iterable<string>): string[] {
+  return [...new Set(reasons)].sort((left, right) => left.localeCompare(right));
+}
+
+export class MembershipHistoryParticipationBackfillService {
+  constructor(private readonly db: ParticipationBackfillDb) {}
+
+  /** Purpose: build a dry-run-only plan from canonical persisted owners and archived evidence. */
+  async plan(guildIdInput: string, syncFilter: ReadonlySet<number>): Promise<ParticipationBackfillPlan> {
+    const guild = guildId(guildIdInput);
+    if (!guild) throw new Error("guild ID is required");
+    if (!syncFilter || syncFilter.size === 0) throw new Error("an explicit sync filter is required");
+    const selectedSyncs = [...syncFilter].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
+    if (selectedSyncs.length === 0) throw new Error("sync filter must contain positive sync numbers");
+
+    const [rawPoints, rawEvaluations, rawCycles] = await Promise.all([
+      bulkFindMany(selectedSyncs, (batch) => this.db.clanPointsSync.findMany({
+        where: { guildId: guild, syncNum: { in: batch } },
+        select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
+      })),
+      this.db.warPlanComplianceEvaluation.findMany({
+        where: { guildId: guild },
+        select: { guildId: true, warId: true, matchType: true, warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true, warEndTime: true } } },
+      }),
+      bulkFindMany(selectedSyncs, (batch) => this.db.syncCycle.findMany({ where: { guildId: guild, syncNumber: { in: batch } }, select: { guildId: true, syncNumber: true, syncTime: true } })),
+    ]);
+    const points = uniquePoints(rawPoints.map(pointFromRow).filter((row): row is PointIdentity => Boolean(row)));
+    const evaluationPoints = uniquePoints(rawEvaluations.map((row) => pointFromRow({
+      guildId: row?.guildId,
+      syncNum: row?.warHistory?.syncNumber,
+      warId: row?.warId,
+      clanTag: row?.warHistory?.clanTag,
+      warStartTime: row?.warHistory?.warStartTime,
+      opponentTag: row?.warHistory?.opponentTag,
+      isFwa: comparable(row?.matchType ?? row?.warHistory?.matchType) === "FWA",
+    })).filter((row): row is PointIdentity => Boolean(row)));
+    const targetPoints = uniquePoints([...points, ...evaluationPoints]).filter((point) => selectedSyncs.includes(point.syncNumber));
+    const rawWarIds = [...new Set(targetPoints.map((point) => point.warId).filter((value): value is number => value !== null))];
+    const allPointRows = await Promise.all([
+      ...chunks(selectedSyncs, ID_QUERY_BATCH_SIZE).map((batch) => this.db.clanPointsSync.findMany({
+        where: { syncNum: { in: batch } },
+        select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
+      })),
+      ...chunks(rawWarIds, ID_QUERY_BATCH_SIZE).map((batch) => this.db.clanPointsSync.findMany({
+        where: { warId: { in: batch.map(String) } },
+        select: { guildId: true, syncNum: true, warId: true, clanTag: true, warStartTime: true, opponentTag: true, isFwa: true },
+      })),
+    ]).then((rows) => rows.flat());
+    const allPoints = uniquePoints([...allPointRows.map(pointFromRow).filter((row): row is PointIdentity => Boolean(row)), ...targetPoints]);
+    const historiesRaw = await Promise.all([
+      ...chunks(selectedSyncs, ID_QUERY_BATCH_SIZE).map((batch) => this.db.clanWarHistory.findMany({
+        where: { syncNumber: { in: batch } },
+        select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true, warEndTime: true },
+      })),
+      ...chunks(rawWarIds, ID_QUERY_BATCH_SIZE).map((batch) => this.db.clanWarHistory.findMany({
+        where: { warId: { in: batch } },
+        select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true, warEndTime: true },
+      })),
+    ]).then((rows) => rows.flat());
+    const histories = uniqueHistories(historiesRaw.map(historyFromRow).filter((row): row is HistoryIdentity => Boolean(row)));
+    const crossOwnerEvaluations = histories.length > 0
+      ? await bulkFindMany([...new Set(histories.map((history) => history.warId))], (batch) => this.db.warPlanComplianceEvaluation.findMany({
+          where: { warId: { in: batch } },
+          select: { guildId: true, warId: true, matchType: true, warHistory: { select: { warId: true, syncNumber: true, matchType: true, clanTag: true, warStartTime: true, opponentTag: true, warEndTime: true } } },
+        }))
+      : [];
+    const allEvaluations = [...rawEvaluations, ...crossOwnerEvaluations];
+    const allEvaluationPoints = uniquePoints(allEvaluations.map((row) => pointFromRow({
+      guildId: row?.guildId,
+      syncNum: row?.warHistory?.syncNumber,
+      warId: row?.warId,
+      clanTag: row?.warHistory?.clanTag,
+      warStartTime: row?.warHistory?.warStartTime,
+      opponentTag: row?.warHistory?.opponentTag,
+      isFwa: comparable(row?.matchType ?? row?.warHistory?.matchType) === "FWA",
+    })).filter((row): row is PointIdentity => Boolean(row)));
+    const identityPoints = uniquePoints([...allPoints, ...allEvaluationPoints]);
+    const cycles = rawCycles.map((row): CycleIdentity | null => {
+      const syncNumber = positiveInteger(row?.syncNumber);
+      const syncTime = finiteDate(row?.syncTime);
+      return syncNumber && syncTime ? { syncNumber, syncTime } : null;
+    }).filter((row): row is CycleIdentity => Boolean(row));
+    const cycleBySync = new Map(cycles.map((cycle) => [cycle.syncNumber, cycle]));
+    const canonicalHistoriesByOwner = new Map<string, HistoryIdentity[]>();
+    for (const point of targetPoints) {
+      if (!point.isFwa) continue;
+      const matches = histories.filter((history) => historicalHistoryMatchesPoint(history, point));
+      const rows = canonicalHistoriesByOwner.get(ownerKey(point)) ?? [];
+      rows.push(...matches);
+      canonicalHistoriesByOwner.set(ownerKey(point), rows);
+    }
+    for (const evaluationPoint of evaluationPoints) {
+      const matches = histories.filter((history) => historicalHistoryMatchesPoint(history, evaluationPoint));
+      const rows = canonicalHistoriesByOwner.get(ownerKey(evaluationPoint)) ?? [];
+      rows.push(...matches);
+      canonicalHistoriesByOwner.set(ownerKey(evaluationPoint), rows);
+    }
+    for (const [key, rows] of canonicalHistoriesByOwner) canonicalHistoriesByOwner.set(key, uniqueHistories(rows));
+    const ownersByHistory = new Map<string, Set<string>>();
+    for (const point of identityPoints) {
+      if (!point.isFwa) continue;
+      for (const history of histories) {
+        if (!historicalHistoryMatchesPoint(history, point)) continue;
+        const owners = ownersByHistory.get(membershipCanonicalHistoryKey(history)) ?? new Set<string>();
+        owners.add(ownerKey(point));
+        ownersByHistory.set(membershipCanonicalHistoryKey(history), owners);
+      }
+    }
+    const conflictingPersistedOwnerKeys = membershipHistoryConflictingPersistedOwnerKeys(identityPoints);
+    const historiesForLookup = [...new Map([...canonicalHistoriesByOwner.values()].flat().map((history) => [history.warId, history])).values()];
+    const lookups = (await bulkFindMany(historiesForLookup.map((history) => String(history.warId)), (batch) => this.db.warLookup.findMany({ where: { warId: { in: batch } }, select: { warId: true, clanTag: true, opponentTag: true, startTime: true, endTime: true, payload: true } })))
+      .map(normalizeLookup).filter((row): row is LookupIdentity => Boolean(row));
+    const lookupByWarId = new Map<number, LookupIdentity>();
+    for (const lookup of lookups) {
+      if (!lookupByWarId.has(lookup.warId)) lookupByWarId.set(lookup.warId, lookup);
+    }
+    const participationWarIds = [...new Set(historiesForLookup.map((history) => String(history.warId)))];
+    const existingRows = (await bulkFindMany(participationWarIds, (batch) => this.db.clanWarParticipation.findMany({
+      where: { guildId: guild, warId: { in: batch } },
+      select: { guildId: true, warId: true, clanTag: true, opponentTag: true, playerTag: true, playerName: true, playerPosition: true, matchType: true, warStartTime: true },
+    }))).map(normalizeExisting).filter((row): row is ExistingParticipation => Boolean(row));
+    const existingByWar = new Map<number, ExistingParticipation[]>();
+    for (const row of existingRows) {
+      const warId = normalizeWarId(row.warId);
+      if (!warId) continue;
+      const rows = existingByWar.get(warId) ?? [];
+      rows.push(row);
+      existingByWar.set(warId, rows);
+    }
+
+    const reports: ParticipationBackfillWarReport[] = [];
+    for (const syncNumber of selectedSyncs) {
+      const owner = `${guild}|${syncNumber}`;
+      const ownerPoints = targetPoints.filter((point) => ownerKey(point) === owner);
+      const ownerHistories = canonicalHistoriesByOwner.get(owner) ?? [];
+      if (!cycleBySync.has(syncNumber)) {
+        reports.push(this.skipReport(guild, syncNumber, null, null, ["missing_sync_cycle"]));
+        continue;
+      }
+      const reasons = new Set<string>();
+      if (ownerPoints.length === 0) reasons.add("no_guild_owned_historical_identity");
+      if (ownerPoints.every((point) => !point.isFwa)) reasons.add("non_fwa_cycle");
+      for (const point of ownerPoints) {
+        if (!point.isFwa) continue;
+        if (hasMembershipHistorySyncNumberDisagreement(point, histories)) reasons.add("persisted_sync_number_disagreement");
+        if (hasMembershipHistoryIdentityConflict(point, allPoints)) reasons.add("conflicting_war_identities");
+        if (hasMembershipHistoryPartialIdentityConflict(point, identityPoints)) reasons.add("conflicting_partial_war_identity_across_sync_buckets");
+        if (point.warId !== null && conflictingPersistedOwnerKeys.has(`${normalizeMembershipHistoryClanTag(point.clanTag)}|${point.warId}`)) reasons.add("conflicting_persisted_identity_sources");
+      }
+      for (const history of ownerHistories) {
+        if ((ownersByHistory.get(membershipCanonicalHistoryKey(history))?.size ?? 0) > 1) reasons.add("history_maps_to_multiple_guild_sync_owners");
+      }
+      const historiesByClan = new Map<string, HistoryIdentity[]>();
+      for (const history of ownerHistories) {
+        const rows = historiesByClan.get(history.clanTag) ?? [];
+        rows.push(history);
+        historiesByClan.set(history.clanTag, rows);
+      }
+      if ([...historiesByClan.values()].some((rows) => new Set(rows.map((row) => row.warId)).size > 1)) reasons.add("conflicting_war_identities");
+      const ownerClanTags = new Set(ownerPoints.filter((point) => point.isFwa).map((point) => point.clanTag));
+      for (const clanTag of ownerClanTags) {
+        const sameSyncClanHistories = histories.filter((history) => history.syncNumber === syncNumber && history.clanTag === clanTag);
+        if (new Set(sameSyncClanHistories.map((history) => history.warId)).size > 1) reasons.add("conflicting_war_identities");
+      }
+      if (ownerHistories.length === 0 && reasons.size === 0) reasons.add("no_canonical_history");
+      if (reasons.size > 0 && [...reasons].some(reasonConflict)) {
+        for (const history of ownerHistories) reports.push(this.skipReport(guild, syncNumber, history.clanTag, history.warId, sortedReasons(reasons), "CONFLICT"));
+        if (ownerHistories.length === 0) reports.push(this.skipReport(guild, syncNumber, null, null, sortedReasons(reasons), "CONFLICT"));
+        continue;
+      }
+      if (ownerHistories.length === 0) {
+        reports.push(this.skipReport(guild, syncNumber, null, null, sortedReasons(reasons.size > 0 ? reasons : ["no_canonical_history"])));
+        continue;
+      }
+      for (const history of ownerHistories) reports.push(this.buildWarReport({ guild, syncNumber, history, lookup: lookupByWarId.get(history.warId) ?? null, existingRows: existingByWar.get(history.warId) ?? [], baseReasons: reasons }));
+    }
+
+    const playerClanBySync = new Map<string, Set<string>>();
+    for (const report of reports) {
+      for (const playerTag of report.candidatePlayerTags ?? report.plannedRows.map((row) => row.playerTag)) {
+        const key = `${report.syncNumber}|${playerTag}`;
+        const clans = playerClanBySync.get(key) ?? new Set<string>();
+        clans.add(report.clanTag ?? "");
+        playerClanBySync.set(key, clans);
+      }
+    }
+    for (const report of reports) {
+      const affected = (report.candidatePlayerTags ?? report.plannedRows.map((row) => row.playerTag)).some((playerTag) => (playerClanBySync.get(`${report.syncNumber}|${playerTag}`)?.size ?? 0) > 1);
+      if (!affected) continue;
+      report.action = "CONFLICT";
+      report.reasons = sortedReasons([...report.reasons, "same_sync_player_multiple_clans"]);
+      report.plannedRows = [];
+      report.plannedInsertCount = 0;
+    }
+    const rowsPlanned = reports.reduce((sum, report) => sum + report.plannedInsertCount, 0);
+    const rowsUnreconstructable = reports.reduce((sum, report) => sum + report.skippedUnreconstructableCount, 0);
+    const summary = {
+      selectedSyncs: selectedSyncs.length,
+      existingSyncCycles: cycles.length,
+      candidateCanonicalFwaWars: reports.filter((report) => report.canonicalWarId !== null).length,
+      alreadyCompleteNoOpWars: reports.filter((report) => report.action === "ALREADY_PRESENT").length,
+      warsWithPlannedInserts: reports.filter((report) => report.action === "INSERT_MISSING").length,
+      rowsPlanned,
+      rowsUnreconstructable,
+      completeProjectedRosters: reports.filter((report) => report.projectedCoverage === "COMPLETE").length,
+      partialProjectedRosters: reports.filter((report) => report.projectedCoverage === "PARTIAL").length,
+      unknownProjectedRosters: reports.filter((report) => report.projectedCoverage === "UNKNOWN").length,
+      skippedWars: reports.filter((report) => report.action === "SKIP").length,
+      conflicts: reports.filter((report) => report.action === "CONFLICT").length,
+    };
+    return { guildId: guild, selectedSyncs, existingSyncCycles: cycles.length, candidateCanonicalFwaWars: summary.candidateCanonicalFwaWars, reports, rowsPlanned, rowsUnreconstructable, summary };
+  }
+
+  /** Purpose: apply only deterministic missing rows in bounded idempotent batches. */
+  async apply(plan: ParticipationBackfillPlan): Promise<ParticipationBackfillApplyResult> {
+    if (plan.summary.conflicts > 0) throw new Error("Apply aborted before writes because the selected plan contains conflicts.");
+    const rows = plan.reports.flatMap((report) => report.plannedRows);
+    let batches = 0;
+    let rowsReportedCreated = 0;
+    for (const batch of chunks(rows, PARTICIPATION_CREATE_BATCH_SIZE)) {
+      if (batch.length === 0) continue;
+      batches += 1;
+      const result = await this.db.clanWarParticipation.createMany({ data: batch, skipDuplicates: true });
+      rowsReportedCreated += Number(result?.count ?? 0);
+    }
+    const warIds = [...new Set(rows.map((row) => row.warId))];
+    const verifiedRows = await bulkFindMany(warIds, (batch) => this.db.clanWarParticipation.findMany({ where: { guildId: plan.guildId, warId: { in: batch } }, select: { warId: true, playerTag: true } }));
+    const verifiedRowsByWar: Record<string, number> = {};
+    for (const row of verifiedRows) {
+      const warId = String(row?.warId ?? "");
+      if (!warId) continue;
+      verifiedRowsByWar[warId] = (verifiedRowsByWar[warId] ?? 0) + 1;
+    }
+    return { batches, rowsAttempted: rows.length, rowsReportedCreated, verifiedRowsByWar };
+  }
+
+  private skipReport(guild: string, syncNumber: number, clanTag: string | null, warId: number | null, reasons: string[], action: ParticipationBackfillAction = "SKIP"): ParticipationBackfillWarReport {
+    return { guildId: guild, syncNumber, clanTag, canonicalWarId: warId, action, archiveParticipantCount: 0, reconstructableCount: 0, existingCount: 0, plannedInsertCount: 0, skippedUnreconstructableCount: 0, expectedTeamSize: null, projectedDistinctParticipationCount: 0, projectedCoverage: "UNKNOWN", reasons: sortedReasons(reasons), plannedRows: [], candidatePlayerTags: [] };
+  }
+
+  private buildWarReport(input: { guild: string; syncNumber: number; history: HistoryIdentity; lookup: LookupIdentity | null; existingRows: ExistingParticipation[]; baseReasons: Set<string> }): ParticipationBackfillWarReport {
+    const { guild, syncNumber, history, lookup } = input;
+    const reasons = new Set(input.baseReasons);
+    if (!lookup) return this.skipReport(guild, syncNumber, history.clanTag, history.warId, ["missing_war_lookup"]);
+    const lookupReasons = validateLookup(history, lookup);
+    for (const reason of lookupReasons) reasons.add(reason);
+    if (lookupReasons.length > 0) return this.skipReport(guild, syncNumber, history.clanTag, history.warId, sortedReasons(reasons), "CONFLICT");
+    const archive = parseArchive(history, lookup);
+    for (const reason of archive.reasons) reasons.add(reason);
+    const expectedTeamSize = parseTeamSize(lookup.payload);
+    const archiveParticipantCount = objectRecord(lookup.payload)?.canonical && Array.isArray((objectRecord(lookup.payload)!.canonical as any).participants) ? ((objectRecord(lookup.payload)!.canonical as any).participants as unknown[]).length : 0;
+    if (archive.conflict) return { ...this.skipReport(guild, syncNumber, history.clanTag, history.warId, sortedReasons(reasons), "CONFLICT"), archiveParticipantCount, expectedTeamSize };
+    const participantRows: ParticipationParticipantInput[] = archive.participants.map((participant) => ({ playerTag: participant.playerTag, playerName: participant.playerName, playerPosition: participant.playerPosition }));
+    const attackRows = archive.attacks ?? [];
+    const reconstructed = buildParticipationRows({ guildId: guild, warId: String(history.warId), clanTag: history.clanTag, opponentTag: history.opponentTag ?? null, warStartTime: history.warStartTime!, warEndTime: archive.warEndTime, matchType: "FWA", participantRows, attackRows });
+    const existing = uniqueRows(input.existingRows);
+    const existingForClan = existing.filter((row) => row.clanTag === history.clanTag);
+    if (existing.some((row) => row.clanTag !== history.clanTag)) reasons.add("existing_structural_identity_conflict");
+    const plannedRows: ParticipationRow[] = [];
+    for (const row of reconstructed) {
+      const current = existing.find((candidate) => candidate.playerTag === row.playerTag);
+      if (!current) plannedRows.push(row);
+      else if (structuralMismatch(current, row, history)) reasons.add("existing_structural_identity_conflict");
+    }
+    const projectedTags = new Set([...existingForClan.map((row) => row.playerTag), ...plannedRows.map((row) => row.playerTag)]);
+    const projectedCount = projectedTags.size;
+    if (expectedTeamSize !== null && projectedCount > expectedTeamSize) reasons.add("projected_roster_exceeds_team_size");
+    const projectedCoverage: ProjectedRosterCoverage = expectedTeamSize === null ? "UNKNOWN" : projectedCount === expectedTeamSize ? "COMPLETE" : "PARTIAL";
+    const conflict = [...reasons].some(reasonConflict);
+    const action: ParticipationBackfillAction = conflict ? "CONFLICT" : plannedRows.length > 0 ? "INSERT_MISSING" : reconstructed.length === 0 && existingForClan.length === 0 ? "SKIP" : "ALREADY_PRESENT";
+    return {
+      guildId: guild,
+      syncNumber,
+      clanTag: history.clanTag,
+      canonicalWarId: history.warId,
+      action,
+      archiveParticipantCount,
+      reconstructableCount: reconstructed.length,
+      existingCount: existingForClan.length,
+      plannedInsertCount: conflict ? 0 : plannedRows.length,
+      skippedUnreconstructableCount: archive.skippedPlayers.size,
+      expectedTeamSize,
+      projectedDistinctParticipationCount: projectedCount,
+      projectedCoverage,
+      reasons: sortedReasons(reasons),
+      plannedRows: conflict ? [] : plannedRows,
+      candidatePlayerTags: reconstructed.map((row) => row.playerTag),
+    };
+  }
+}
