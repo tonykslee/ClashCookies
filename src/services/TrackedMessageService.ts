@@ -134,6 +134,8 @@ export type FwaMatchChecklistTrackedRow = {
   badgeEmojiInline: string;
   basesStatus?: "not_checked" | "issues" | "all_good" | "skipped" | null;
   matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
+  /** True when the displayed match state came from unconfirmed/current or persisted inference. */
+  matchStateInferred?: boolean;
   contextKey?: string | null;
   detailLines?: string[] | null;
   warId?: string | number | null;
@@ -1150,6 +1152,7 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiName: badgeEmojiName || null,
     badgeEmojiInline: badgeEmojiInline || "",
     basesStatus,
+    matchStateInferred: value.matchStateInferred === true,
     contextKey: String(value.contextKey ?? "").trim() || null,
     detailLines: detailLines && detailLines.length > 0 ? detailLines : null,
     warId: normalizeWarIdText(value.warId as string | number | null | undefined),

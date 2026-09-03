@@ -37,6 +37,7 @@
     "start": "npm run build && npm run start:runtime",
     "start:runtime": "prisma migrate deploy && node dist/ClashCookies.js",
     "test": "vitest run",
+    "check": "npm run lint && npm test && npm run build",
     "test:watch": "vitest",
     "dev": "ts-node-dev dist/ClashCookies.ts",
     "postinstall": "prisma generate"
