@@ -17,6 +17,11 @@ import {
   normalizeTag,
   parseCocTime,
 } from "./core";
+import {
+  buildParticipationRows,
+  type ParticipationAttackInput,
+  type ParticipationParticipantInput,
+} from "./participationRowBuilder";
 
 /** Purpose: select the authoritative guild scope for participation persistence with explicit precedence. */
 export function resolveParticipationGuildId(input: {
@@ -1045,82 +1050,11 @@ export class WarEventHistoryService {
     warStartTime: Date;
     warEndTime: Date | null;
     matchType: MatchType | null;
-    participantRows: Array<{
-      playerTag: string;
-      playerName: string | null;
-      playerPosition: number | null;
-      attacksUsed: number;
-    }>;
-    attackRows: Array<{
-      playerTag: string;
-      playerName: string | null;
-      stars: number;
-      trueStars: number;
-      attackSeenAt: Date;
-    }>;
+    participantRows: ParticipationParticipantInput[];
+    attackRows: ParticipationAttackInput[];
   }): Promise<void> {
     if (!input.guildId) return;
-    const guildId = input.guildId;
-
-    const battleDayStartMs = input.warStartTime.getTime();
-    const firstAttackWindowCloseMs = battleDayStartMs + 12 * 60 * 60 * 1000;
-    const attacksByPlayer = new Map<string, typeof input.attackRows>();
-    for (const row of input.attackRows) {
-      const rows = attacksByPlayer.get(row.playerTag) ?? [];
-      rows.push(row);
-      attacksByPlayer.set(row.playerTag, rows);
-    }
-
-    const rows = input.participantRows.map((player) => {
-      const attackRows = attacksByPlayer.get(player.playerTag) ?? [];
-      const attacksUsed = attackRows.length;
-      const firstAttackAt =
-        attackRows.length > 0
-          ? new Date(
-              Math.min(...attackRows.map((row) => row.attackSeenAt.getTime())),
-            )
-          : null;
-      const attackDelayMinutes =
-        firstAttackAt !== null
-          ? Math.max(
-              0,
-              Math.floor((firstAttackAt.getTime() - battleDayStartMs) / 60000),
-            )
-          : null;
-      return {
-        guildId,
-        warId: input.warId,
-        clanTag: input.clanTag,
-        opponentTag: input.opponentTag,
-        playerTag: player.playerTag,
-        playerName:
-          player.playerName?.trim() ||
-          attackRows[0]?.playerName?.trim() ||
-          player.playerTag,
-        playerPosition: player.playerPosition,
-        townHall: null,
-        attacksUsed,
-        attacksMissed: Math.max(0, 2 - attacksUsed),
-        starsEarned: attackRows.reduce(
-          (sum, row) => sum + Number(row.stars || 0),
-          0,
-        ),
-        trueStars: attackRows.reduce(
-          (sum, row) => sum + Number(row.trueStars || 0),
-          0,
-        ),
-        missedBoth: attacksUsed === 0,
-        firstAttackAt,
-        attackDelayMinutes,
-        attackWindowMissed:
-          firstAttackAt !== null
-            ? firstAttackAt.getTime() > firstAttackWindowCloseMs
-            : null,
-        matchType: input.matchType ?? "FWA",
-        warStartTime: input.warStartTime,
-        warEndTime: input.warEndTime,
-      };
-    });
+    const rows = buildParticipationRows({ ...input, guildId: input.guildId });
     if (rows.length === 0) return;
 
     await input.tx.clanWarParticipation.createMany({
