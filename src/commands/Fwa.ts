@@ -156,6 +156,9 @@ import {
   inferMatchTypeFromOpponentPoints,
   resolveCurrentWarMatchTypeSignal,
   resolveMatchTypeFromStoredSyncRow,
+  resolveMatchTypeWithPreparedStoredSync,
+  resolveFwaOutcomeFromPreparedEvidence,
+  type PreparedMatchTypeFallbackResolution,
   type MatchTypeResolution,
   type MatchTypeResolutionSource,
 } from "../services/MatchTypeResolutionService";
@@ -231,12 +234,11 @@ import {
 } from "./fwa/dataParsers";
 import {
   buildLimitedMessage,
-  compareTagsForTiebreak,
   formatPoints,
   getWinnerMarkerForSide,
-  getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
+import { compareTagsForTiebreak, getSyncMode } from "../helper/fwaProjection";
 import {
   resolveWarMailEmbedColor,
   type WarMailExpectedOutcome,
@@ -3978,14 +3980,13 @@ function resolveFwaOutcomeFromCurrentWarState(params: {
   currentWarOutcomeConfirmed: boolean;
   projectedOutcome: "WIN" | "LOSE" | null | undefined;
 }): "WIN" | "LOSE" | null {
-  if (params.matchType !== "FWA") return null;
-  if (params.currentWarOutcomeConfirmed) {
-    return (
-      toWinLoseOutcome(params.currentWarOutcome) ??
-      toWinLoseOutcome(params.projectedOutcome)
-    );
-  }
-  return toWinLoseOutcome(params.projectedOutcome);
+  const resolved = resolveFwaOutcomeFromPreparedEvidence({
+    matchType: params.matchType,
+    currentOutcome: params.currentWarOutcome,
+    currentOutcomeConfirmed: params.currentWarOutcomeConfirmed,
+    projectedOutcome: params.projectedOutcome,
+  });
+  return resolved === "WIN" || resolved === "LOSE" ? resolved : null;
 }
 
 /** Purpose: keep single-clan `/fwa match` color aligned to the exact effective state shown in the card. */
@@ -12794,84 +12795,7 @@ async function persistClanPointsSyncIfCurrent(input: {
   return checkpointed ? "checkpoint" : "none";
 }
 
-type MatchTypeFallbackResolution = {
-  confirmedCurrent: MatchTypeResolution | null;
-  storedSync: MatchTypeResolution | null;
-  unconfirmedCurrent: MatchTypeResolution | null;
-};
-
-/** Purpose: resolve the same fallback using already-loaded war-scoped evidence. */
-function resolveMatchTypeWithPreparedStoredSync(params: {
-  opponentTag: string;
-  warState: WarStateForSync;
-  currentWarId?: number | string | null;
-  currentWarStartTime?: Date | null;
-  currentWarOpponentTag?: string | null;
-  activeWarId?: number | string | null;
-  activeWarStartTime?: Date | null;
-  activeOpponentTag?: string | null;
-  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
-  existingInferredMatchType?: boolean | null | undefined;
-  storedSyncRow?: WarScopedSyncReuseRow | null;
-}): MatchTypeFallbackResolution {
-  const sameActiveWar =
-    params.warState === "notInWar"
-      ? true
-      : compareActiveWarIdentities({
-          persisted: {
-            warId: params.currentWarId ?? null,
-            warStartTime: params.currentWarStartTime ?? null,
-            opponentTag: params.currentWarOpponentTag ?? null,
-          },
-          active: {
-            warId: params.activeWarId ?? null,
-            warStartTime: params.activeWarStartTime ?? null,
-            opponentTag: params.activeOpponentTag ?? params.opponentTag,
-          },
-        }).sameWar;
-  const currentResolution = resolveCurrentWarMatchTypeSignal({
-    matchType: sameActiveWar ? (params.existingMatchType ?? null) : null,
-    inferredMatchType: sameActiveWar
-      ? (params.existingInferredMatchType ?? true)
-      : true,
-  });
-  const lookupWarId =
-    params.warState === "notInWar"
-      ? (params.currentWarId ?? params.activeWarId ?? null)
-      : (params.activeWarId ?? null);
-  const lookupWarStartTime =
-    params.warState === "notInWar"
-      ? (params.currentWarStartTime ?? params.activeWarStartTime ?? null)
-      : (params.activeWarStartTime ?? null);
-  const lookupOpponentTag =
-    params.warState === "notInWar"
-      ? (params.currentWarOpponentTag ??
-        params.activeOpponentTag ??
-        params.opponentTag)
-      : (params.activeOpponentTag ?? params.opponentTag);
-  const hasWarIdentity =
-    (lookupWarId !== null &&
-      lookupWarId !== undefined &&
-      Number.isFinite(Number(lookupWarId))) ||
-    lookupWarStartTime instanceof Date;
-  const storedSync =
-    hasWarIdentity && params.storedSyncRow
-      ? resolveMatchTypeFromStoredSyncRow({
-          syncRow: {
-            opponentTag: params.storedSyncRow.opponentTag,
-            isFwa: params.storedSyncRow.isFwa ?? null,
-            lastKnownMatchType:
-              params.storedSyncRow.lastKnownMatchType ?? null,
-          },
-          opponentTag: lookupOpponentTag,
-        })
-      : null;
-  return {
-    confirmedCurrent: currentResolution.confirmed,
-    storedSync,
-    unconfirmedCurrent: currentResolution.unconfirmed,
-  };
-}
+type MatchTypeFallbackResolution = PreparedMatchTypeFallbackResolution;
 
 /** Purpose: verify confirmed FWA fallback comes from the same live-war identity. */
 export const resolveMatchTypeWithPreparedStoredSyncForTest =

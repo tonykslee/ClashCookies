@@ -1,3 +1,6 @@
+import { normalizeClashTagBareInput } from "../helper/clashTag";
+import { compareTagsForTiebreak, getSyncMode } from "../helper/fwaProjection";
+
 type MatchType = "FWA" | "BL" | "MM" | "SKIP";
 
 export type MatchTypeResolutionSource =
@@ -19,10 +22,27 @@ export type MatchTypeResolution = {
   syncIsFwa: boolean | null;
 };
 
+export type PreparedMatchTypeFallbackResolution = {
+  confirmedCurrent: MatchTypeResolution | null;
+  storedSync: MatchTypeResolution | null;
+  unconfirmedCurrent: MatchTypeResolution | null;
+};
+
+export type PreparedStoredSyncMatchRow = StoredSyncMatchTypeRow & {
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  syncNum?: number | null;
+  clanPoints?: number | null;
+  opponentPoints?: number | null;
+  outcome?: string | null;
+  lastKnownOutcome?: string | null;
+  needsValidation?: boolean | null;
+};
+
 export type StoredSyncMatchTypeRow = {
   opponentTag: string;
   isFwa: boolean | null;
-  lastKnownMatchType: string | null;
+  lastKnownMatchType?: string | null;
 };
 
 export type OpponentPointsMatchTypeSignal = {
@@ -319,4 +339,165 @@ export function chooseMatchTypeResolution(input: {
     null
   );
 }
-import { normalizeClashTagBareInput } from "../helper/clashTag";
+
+/** Purpose: resolve the command and checklist fallback from one current-war identity and prepared same-war sync row. */
+export function resolveMatchTypeWithPreparedStoredSync(input: {
+  opponentTag: string;
+  warState: "preparation" | "inWar" | "notInWar";
+  currentWarId?: number | string | null;
+  currentWarStartTime?: Date | null;
+  currentWarOpponentTag?: string | null;
+  activeWarId?: number | string | null;
+  activeWarStartTime?: Date | null;
+  activeOpponentTag?: string | null;
+  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
+  existingInferredMatchType?: boolean | null | undefined;
+  storedSyncRow?: PreparedStoredSyncMatchRow | null;
+}): PreparedMatchTypeFallbackResolution {
+  const sameActiveWar =
+    input.warState === "notInWar"
+      ? true
+      : compareActiveWarIdentities({
+          persisted: {
+            warId: input.currentWarId ?? null,
+            warStartTime: input.currentWarStartTime ?? null,
+            opponentTag: input.currentWarOpponentTag ?? null,
+          },
+          active: {
+            warId: input.activeWarId ?? null,
+            warStartTime: input.activeWarStartTime ?? null,
+            opponentTag: input.activeOpponentTag ?? input.opponentTag,
+          },
+        }).sameWar;
+  const currentResolution = resolveCurrentWarMatchTypeSignal({
+    matchType: sameActiveWar ? (input.existingMatchType ?? null) : null,
+    inferredMatchType: sameActiveWar
+      ? (input.existingInferredMatchType ?? true)
+      : true,
+  });
+  const lookupWarId =
+    input.warState === "notInWar"
+      ? (input.currentWarId ?? input.activeWarId ?? null)
+      : (input.activeWarId ?? null);
+  const lookupWarStartTime =
+    input.warState === "notInWar"
+      ? (input.currentWarStartTime ?? input.activeWarStartTime ?? null)
+      : (input.activeWarStartTime ?? null);
+  const lookupOpponentTag =
+    input.warState === "notInWar"
+      ? (input.currentWarOpponentTag ?? input.activeOpponentTag ?? input.opponentTag)
+      : (input.activeOpponentTag ?? input.opponentTag);
+  const hasWarIdentity =
+    (lookupWarId !== null &&
+      lookupWarId !== undefined &&
+      Number.isFinite(Number(lookupWarId))) ||
+    lookupWarStartTime instanceof Date;
+  const storedSync =
+    hasWarIdentity && input.storedSyncRow
+      ? resolveMatchTypeFromStoredSyncRow({
+          syncRow: input.storedSyncRow,
+          opponentTag: lookupOpponentTag,
+        })
+      : null;
+  return {
+    confirmedCurrent: currentResolution.confirmed,
+    storedSync,
+    unconfirmedCurrent: currentResolution.unconfirmed,
+  };
+}
+
+/** Purpose: reproduce the existing FWA points/tiebreak projection for a prepared sync row. */
+export function deriveFwaProjectedOutcomeFromPreparedSync(input: {
+  clanTag: string;
+  opponentTag: string;
+  clanPoints?: number | null;
+  opponentPoints?: number | null;
+  syncNum?: number | null;
+}): "WIN" | "LOSE" | null {
+  const clanPoints = input.clanPoints ?? null;
+  const opponentPoints = input.opponentPoints ?? null;
+  if (
+    clanPoints === null ||
+    opponentPoints === null ||
+    Number.isNaN(clanPoints) ||
+    Number.isNaN(opponentPoints) ||
+    !Number.isFinite(clanPoints) ||
+    !Number.isFinite(opponentPoints)
+  ) {
+    return null;
+  }
+  if (clanPoints > opponentPoints) return "WIN";
+  if (clanPoints < opponentPoints) return "LOSE";
+  const syncNum =
+    input.syncNum !== null && input.syncNum !== undefined && Number.isFinite(input.syncNum)
+      ? Math.trunc(input.syncNum)
+      : null;
+  const mode = getSyncMode(syncNum);
+  if (!mode) return null;
+  const cmp = compareTagsForTiebreak(input.clanTag, input.opponentTag);
+  if (cmp === 0) return null;
+  return (mode === "low" ? cmp < 0 : cmp > 0) ? "WIN" : "LOSE";
+}
+
+/** Purpose: resolve FWA outcome with confirmed-current precedence and safe projected fallback. */
+export function resolveFwaOutcomeFromPreparedEvidence(input: {
+  matchType: string | null | undefined;
+  currentOutcome?: string | null;
+  currentOutcomeConfirmed?: boolean;
+  projectedOutcome?: string | null;
+  clanTag?: string | null;
+  opponentTag?: string | null;
+  storedSyncRow?: Pick<
+    PreparedStoredSyncMatchRow,
+    | "outcome"
+    | "lastKnownOutcome"
+    | "syncNum"
+    | "clanPoints"
+    | "opponentPoints"
+    | "opponentTag"
+  > | null;
+}): "WIN" | "LOSE" | "UNKNOWN" | null {
+  if (normalizeStoredMatchType(input.matchType) !== "FWA") return null;
+  const confirmedCurrentOutcome =
+    input.currentOutcomeConfirmed === true
+      ? toWinLoseOutcome(input.currentOutcome ?? null)
+      : null;
+  const projectedOutcome = toWinLoseOutcome(input.projectedOutcome ?? null);
+  const storedOutcome =
+    toWinLoseOutcome(input.storedSyncRow?.outcome ?? null) ??
+    toWinLoseOutcome(input.storedSyncRow?.lastKnownOutcome ?? null);
+  const preparedProjection =
+    input.clanTag && (input.opponentTag ?? input.storedSyncRow?.opponentTag)
+      ? deriveFwaProjectedOutcomeFromPreparedSync({
+          clanTag: input.clanTag,
+          opponentTag: input.opponentTag ?? input.storedSyncRow?.opponentTag ?? "",
+          clanPoints: input.storedSyncRow?.clanPoints ?? null,
+          opponentPoints: input.storedSyncRow?.opponentPoints ?? null,
+          syncNum: input.storedSyncRow?.syncNum ?? null,
+        })
+      : null;
+  return (
+    confirmedCurrentOutcome ??
+    projectedOutcome ??
+    storedOutcome ??
+    preparedProjection ??
+    "UNKNOWN"
+  );
+}
+
+function toWinLoseOutcome(
+  value: string | null | undefined,
+): "WIN" | "LOSE" | null {
+  const normalized = normalizeOutcomeValue(value);
+  return normalized === "WIN" || normalized === "LOSE" ? normalized : null;
+}
+
+function normalizeOutcomeValue(
+  value: string | null | undefined,
+): "WIN" | "LOSE" | "UNKNOWN" | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (normalized === "WIN" || normalized === "LOSE" || normalized === "UNKNOWN") {
+    return normalized;
+  }
+  return null;
+}
