@@ -11,7 +11,7 @@ const start = new Date("2026-08-15T00:00:00.000Z");
 const end = new Date("2026-08-16T00:00:00.000Z");
 
 function point(syncNum: number, warId: number | string, clanTag = "#HOME", overrides: Record<string, unknown> = {}) {
-  return { guildId, syncNum, warId: String(warId), clanTag, warStartTime: start, opponentTag: "#OPP", isFwa: true, ...overrides };
+  return { guildId, syncNum, warId: String(warId), clanTag, warStartTime: start, opponentTag: "#OPP", isFwa: true, needsValidation: false, ...overrides };
 }
 
 function history(syncNumber: number, warId: number, clanTag = "#HOME", overrides: Record<string, unknown> = {}) {
@@ -33,12 +33,13 @@ function lookup(warId: number, participants: unknown[], attacks: unknown[] = [],
   };
 }
 
-function makeDb(options: { points?: any[]; histories?: any[]; cycles?: any[]; lookups?: any[]; participation?: any[] } = {}) {
+function makeDb(options: { points?: any[]; histories?: any[]; cycles?: any[]; lookups?: any[]; participation?: any[]; evaluations?: any[] } = {}) {
   const points = [...(options.points ?? [point(543, 100)])];
   const histories = [...(options.histories ?? [history(543, 100)])];
   const cycles = [...(options.cycles ?? [{ guildId, syncNumber: 543, syncTime: new Date("2026-08-14T23:00:00.000Z") }])];
   const lookups = [...(options.lookups ?? [lookup(100, [{ playerTag: "#P1", playerName: "P1", playerPosition: 1, attacksUsed: 0 }, { playerTag: "#P2", playerName: "P2", playerPosition: 2, attacksUsed: 0 }])])];
   const participation = [...(options.participation ?? [])];
+  const evaluations = [...(options.evaluations ?? [])];
   const matches = (row: any, where: any = {}) => {
     if (where.guildId && row.guildId !== where.guildId) return false;
     const sync = where.syncNum ?? where.syncNumber;
@@ -48,7 +49,7 @@ function makeDb(options: { points?: any[]; histories?: any[]; cycles?: any[]; lo
   };
   const db: any = {
     clanPointsSync: { findMany: vi.fn(async ({ where }: any = {}) => points.filter((row) => matches(row, where))) },
-    warPlanComplianceEvaluation: { findMany: vi.fn(async (_args: any = {}) => []) },
+    warPlanComplianceEvaluation: { findMany: vi.fn(async ({ where }: any = {}) => evaluations.filter((row) => matches(row, where))) },
     clanWarHistory: { findMany: vi.fn(async ({ where }: any = {}) => histories.filter((row) => matches(row, where))) },
     syncCycle: { findMany: vi.fn(async ({ where }: any = {}) => cycles.filter((row) => matches(row, where))) },
     warLookup: { findMany: vi.fn(async ({ where }: any = {}) => lookups.filter((row) => matches(row, where))) },
@@ -67,14 +68,15 @@ describe("backfillMembershipHistoryParticipation", () => {
   });
 
   it("skips missing sync 544 without bridging 543 and 545", async () => {
+    const sync545Start = new Date(start.getTime() + 2 * 60 * 60 * 1000);
     const db = makeDb({
-      points: [point(543, 100), point(544, 101), point(545, 102)],
-      histories: [history(543, 100), history(544, 101), history(545, 102)],
+      points: [point(543, 100), point(544, 101), point(545, 102, "#HOME", { warStartTime: sync545Start })],
+      histories: [history(543, 100), history(544, 101), history(545, 102, "#HOME", { warStartTime: sync545Start })],
       cycles: [
         { guildId, syncNumber: 543, syncTime: new Date("2026-08-14T23:00:00.000Z") },
         { guildId, syncNumber: 545, syncTime: new Date("2026-08-14T23:00:00.000Z") },
       ],
-      lookups: [lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }]), lookup(102, [{ playerTag: "#P2", attacksUsed: 0 }])],
+      lookups: [lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }]), lookup(102, [{ playerTag: "#P2", attacksUsed: 0 }], [], { startTime: sync545Start, payload: { warMeta: { warId: "102", clanTag: "#HOME", opponentTag: "#OPP", startTime: sync545Start.toISOString(), teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P2", attacksUsed: 0 }], attacks: [] } } })],
     }).db;
     const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543, 544, 545]));
     expect(plan.reports.find((row) => row.syncNumber === 544)).toMatchObject({ action: "SKIP", reasons: ["missing_sync_cycle"] });
@@ -89,6 +91,99 @@ describe("backfillMembershipHistoryParticipation", () => {
     const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
     expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100, reconstructableCount: 1 });
     expect(plan.reports[0].plannedRows[0].playerTag).toBe("#P1");
+  });
+
+  it("ignores a stale extra point row in the same sync after exact-tuple canonicalization", async () => {
+    const oldStart = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+    const oldPoint = point(552, 99, "#RR", { warStartTime: oldStart, opponentTag: "#OLD" });
+    const currentPoint = point(552, 100, "#RR");
+    const currentHistory = history(552, 100, "#RR");
+    const oldHistory = history(551, 99, "#RR", { warStartTime: oldStart, opponentTag: "#OLD" });
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [oldPoint, currentPoint], histories: [oldHistory, currentHistory], lookups: [currentLookup], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100 });
+    expect(plan.summary).toMatchObject({ unmatchedValidatedPoints: 1, pointsCanonicalized: 1 });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "persisted_sync_number_disagreement"]));
+  });
+
+  it("canonicalizes a stale raw war ID when its exact tuple matches the selected history", async () => {
+    const evidence = point(552, 99, "#RR");
+    const currentHistory = history(552, 100, "#RR");
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({ points: [evidence], histories: [currentHistory], lookups: [currentLookup], cycles: [{ guildId, syncNumber: 552, syncTime: start }] });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100 });
+    expect(plan.reports[0].reasons).toEqual(expect.arrayContaining(["stale_raw_war_id_canonicalized"]));
+    expect(plan.summary).toMatchObject({ pointsCanonicalized: 1, staleRawWarIdsCanonicalized: 1, unmatchedValidatedPoints: 0, ambiguousTuplePoints: 0 });
+    expect(db.warLookup.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { warId: { in: ["100"] } } }));
+  });
+
+  it("converges compliance evidence and a stale point onto one canonical history", async () => {
+    const currentHistory = history(552, 100, "#RR");
+    const evaluation = { guildId, warId: "100", matchType: "FWA", warHistory: currentHistory };
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [point(552, 99, "#RR")], histories: [currentHistory], evaluations: [evaluation], lookups: [currentLookup], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100 });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "conflicting_persisted_identity_sources"]));
+  });
+
+  it("ignores dirty points for authority when validated compliance evidence resolves the history", async () => {
+    const currentHistory = history(552, 100, "#RR");
+    const evaluation = { guildId, warId: "100", matchType: "FWA", warHistory: currentHistory };
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [point(552, 99, "#RR", { needsValidation: true })], histories: [currentHistory], evaluations: [evaluation], lookups: [currentLookup], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100 });
+    expect(plan.summary).toMatchObject({ dirtyPointsIgnored: 1, pointsCanonicalized: 0 });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "conflicting_persisted_identity_sources"]));
+  });
+
+  it("does not establish ownership from a dirty point alone", async () => {
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [point(552, 100, "#RR", { needsValidation: true })], histories: [history(552, 100, "#RR")], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", canonicalWarId: null });
+    expect(plan.summary).toMatchObject({ dirtyPointsIgnored: 1, pointsCanonicalized: 0 });
+  });
+
+  it("fails closed when two distinct canonical histories own the same guild sync and clan", async () => {
+    const secondStart = new Date(start.getTime() + 60 * 60 * 1000);
+    const first = point(552, 100, "#RR");
+    const second = point(552, 101, "#RR", { warStartTime: secondStart });
+    const firstHistory = history(552, 100, "#RR");
+    const secondHistory = history(552, 101, "#RR", { warStartTime: secondStart });
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [first, second], histories: [firstHistory, secondHistory], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.summary.conflicts).toBe(2);
+    expect(plan.rowsPlanned).toBe(0);
+    expect(plan.reports.every((report) => report.action === "CONFLICT")).toBe(true);
+  });
+
+  it("fails closed on an ambiguous exact tuple without choosing a history", async () => {
+    const firstHistory = history(552, 100, "#RR");
+    const secondHistory = history(552, 101, "#RR");
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ points: [point(552, 99, "#RR")], histories: [firstHistory, secondHistory], cycles: [{ guildId, syncNumber: 552, syncTime: start }] }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", canonicalWarId: null, reasons: expect.arrayContaining(["ambiguous_canonical_tuple"]) });
+    expect(plan.rowsPlanned).toBe(0);
+    expect(plan.summary.ambiguousTuplePoints).toBe(1);
+  });
+
+  it("preserves a real cross-guild canonical owner conflict", async () => {
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({
+      points: [point(552, 100, "#RR"), point(552, 100, "#RR", { guildId: "guild-2" })],
+      histories: [history(552, 100, "#RR")],
+      cycles: [{ guildId, syncNumber: 552, syncTime: start }],
+    }).db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", reasons: expect.arrayContaining(["history_maps_to_multiple_guild_sync_owners"]) });
+    expect(plan.rowsPlanned).toBe(0);
   });
 
   it("reconstructs production metrics including the exact 12-hour boundary", () => {
@@ -329,7 +424,7 @@ describe("backfillMembershipHistoryParticipation", () => {
   it("fails closed for persisted sync disagreement, partial identity conflict, and non-FWA history", async () => {
     const disagreement = makeDb({ histories: [history(544, 100)] }).db;
     const disagreementPlan = await new MembershipHistoryParticipationBackfillService(disagreement).plan(guildId, new Set([543]));
-    expect(disagreementPlan.reports[0]).toMatchObject({ action: "CONFLICT", reasons: expect.arrayContaining(["persisted_sync_number_disagreement"]) });
+    expect(disagreementPlan.reports[0]).toMatchObject({ action: "SKIP", reasons: expect.arrayContaining(["unmatched_validated_point"]) });
 
     const partialIdentity = makeDb({
       points: [point(543, "", "#HOME"), point(544, 101, "#HOME")],
@@ -349,6 +444,7 @@ describe("backfillMembershipHistoryParticipation", () => {
     const { db } = makeDb();
     await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543, 545]));
     expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { guildId, warHistory: { syncNumber: { in: [543, 545] } } } }));
+    expect(db.clanPointsSync.findMany).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({ needsValidation: true }) }));
   });
 
   it("returns a failed post-apply verification when projected counts do not match", async () => {
@@ -387,6 +483,7 @@ describe("backfillMembershipHistoryParticipation", () => {
     const output = formatParticipationBackfillPlan(plan, false);
     expect(output).toContain("[membership-participation-backfill]");
     expect(output).toContain("archive_participants=");
+    expect(output).toContain("validated_points_considered=");
     expect(output).toContain("rows_planned=");
     expect(output).not.toContain("P1");
   });
