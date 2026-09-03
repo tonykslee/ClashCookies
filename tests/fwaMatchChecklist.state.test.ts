@@ -2600,6 +2600,39 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
   );
 
   it.each([
+    ["BL", "⚫"],
+    ["MM", "⚪"],
+  ] as const)(
+    "renders inferred %s in Mail with a trailing warning",
+    async (matchType, emoji) => {
+      const startTime = "2026-05-13T18:00:00.000Z";
+      const cocService = configureSingleClanChecklistScenario({
+        currentWar: makeCurrentWarRow({
+          clanTag: "#PYPY",
+          warId: 1001,
+          startTimeIso: startTime,
+          opponentTag: "#OPP1",
+          matchType,
+          inferredMatchType: true,
+        }),
+        liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+      }).cocService;
+
+      const state = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+
+      expect(state.rows[0].matchStateInferred).toBe(true);
+      expect(state.rows[0].compactCopyLine).toBe(
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+      );
+    },
+  );
+
+  it.each([
     ["UNKNOWN", "WIN", "🟢"],
     ["LOSE", "WIN", "🟢"],
   ] as const)(
