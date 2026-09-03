@@ -31,6 +31,7 @@
     "diagnose:membership-history-backfill": "node dist/scripts/auditMembershipHistoryBackfill.js",
     "diagnose:historical-sync-reconciliation": "node dist/scripts/auditHistoricalSyncReconciliation.js",
     "backfill:historical-sync-reconciliation": "node dist/scripts/backfillHistoricalSyncReconciliation.js",
+    "backfill:membership-history-participation": "node dist/scripts/backfillMembershipHistoryParticipation.js",
     "sync:mirror": "ts-node src/scripts/mirrorSync.ts",
     "sync:fwa-feeds": "ts-node src/scripts/fwaFeedSync.ts",
     "start": "npm run build && npm run start:runtime",
