@@ -250,7 +250,6 @@ function uniquePoints(rows: PointIdentity[]): PointIdentity[] {
 
 /** Purpose: convert a raw validated point into the canonical history identity selected by exact tuple and sync. */
 function canonicalizePoint(point: PointIdentity, histories: readonly HistoryIdentity[]): { point: PointIdentity | null; matchCount: number; staleRawWarId: boolean } {
-  if (!point.isFwa) return { point, matchCount: 0, staleRawWarId: false };
   const matches = canonicalHistoryMatchesForPoint(point, histories);
   if (matches.length !== 1) return { point: null, matchCount: matches.length, staleRawWarId: false };
   const history = matches[0];
@@ -259,9 +258,11 @@ function canonicalizePoint(point: PointIdentity, histories: readonly HistoryIden
     point: {
       ...point,
       warId: history.warId,
+      syncNumber: history.syncNumber ?? point.syncNumber,
       clanTag: history.clanTag,
       warStartTime: history.warStartTime!,
       opponentTag: history.opponentTag ?? "",
+      isFwa: true,
       needsValidation: false,
       staleRawWarId,
     },
@@ -834,17 +835,18 @@ export class MembershipHistoryParticipationBackfillService {
     let unmatchedValidatedPoints = 0;
     let ambiguousTuplePoints = 0;
     const canonicalizedPointEvidence: PointIdentity[] = [];
+    const nonFwaOperationalOwners = new Set<string>();
     for (const point of allRawPoints) {
       if (point.needsValidation) continue;
       const result = canonicalizePoint(point, histories);
-      if (!point.isFwa) {
-        canonicalizedPointEvidence.push(point);
-        continue;
-      }
       if (!result.point) {
         if (result.matchCount === 0) {
-          unmatchedValidatedPoints += 1;
-          addDiagnosticReason(point, "unmatched_validated_point");
+          if (point.isFwa) {
+            unmatchedValidatedPoints += 1;
+            addDiagnosticReason(point, "unmatched_validated_point");
+          } else {
+            nonFwaOperationalOwners.add(ownerKey(point));
+          }
         } else {
           ambiguousTuplePoints += 1;
           addDiagnosticReason(point, "ambiguous_canonical_tuple");
@@ -856,6 +858,7 @@ export class MembershipHistoryParticipationBackfillService {
         staleRawWarIdsCanonicalized += 1;
         addDiagnosticReason(result.point, "stale_raw_war_id_canonicalized");
       }
+      if (!point.isFwa) addDiagnosticReason(result.point, "raw_non_fwa_canonicalized_to_fwa");
       canonicalizedPointEvidence.push(result.point);
     }
     const targetPoints = uniquePoints([...canonicalizedPointEvidence.filter((point) => selectedSyncs.includes(point.syncNumber)), ...evaluationPoints]);
@@ -933,7 +936,7 @@ export class MembershipHistoryParticipationBackfillService {
       for (const reason of tupleConflictReasonsByOwner.get(owner) ?? []) reasons.add(reason);
       for (const reason of canonicalWarClanConflictReasonsByOwner.get(owner) ?? []) reasons.add(reason);
       if (ownerPoints.length === 0) reasons.add("no_guild_owned_historical_identity");
-      if (ownerPoints.every((point) => !point.isFwa)) reasons.add("non_fwa_cycle");
+      if (ownerHistories.length === 0 && nonFwaOperationalOwners.has(owner)) reasons.add("non_fwa_cycle");
       for (const point of ownerPoints) {
         if (!point.isFwa) continue;
         if (hasMembershipHistorySyncNumberDisagreement(point, histories)) reasons.add("persisted_sync_number_disagreement");

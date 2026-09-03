@@ -109,6 +109,58 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "persisted_sync_number_disagreement"]));
   });
 
+  it("ignores stale validated non-FWA points when canonical FWA evidence owns the sync", async () => {
+    const oldStart = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+    const oldPoint = point(552, 99, "#RR", { isFwa: false, warStartTime: oldStart, opponentTag: "#OLD" });
+    const currentPoint = point(552, 100, "#RR");
+    const currentHistory = history(552, 100, "#RR");
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({
+      points: [oldPoint, currentPoint],
+      histories: [currentHistory],
+      lookups: [currentLookup],
+      cycles: [{ guildId, syncNumber: 552, syncTime: start }],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100, plannedInsertCount: 1 });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "conflicting_persisted_identity_sources", "non_fwa_cycle"]));
+    expect(plan.summary).toMatchObject({ pointsCanonicalized: 1, unmatchedValidatedPoints: 0, ambiguousTuplePoints: 0 });
+    expect(db.warLookup.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { warId: { in: ["100"] } } }));
+  });
+
+  it("treats unmatched validated non-FWA points only as non-FWA operational evidence", async () => {
+    const { db } = makeDb({
+      points: [point(552, 99, "#RR", { isFwa: false })],
+      histories: [],
+      lookups: [],
+      cycles: [{ guildId, syncNumber: 552, syncTime: start }],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", canonicalWarId: null, plannedInsertCount: 0, reasons: expect.arrayContaining(["non_fwa_cycle"]) });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "conflicting_persisted_identity_sources"]));
+    expect(plan.rowsPlanned).toBe(0);
+    expect(plan.summary).toMatchObject({ pointsCanonicalized: 0, unmatchedValidatedPoints: 0, ambiguousTuplePoints: 0 });
+    expect(db.warLookup.findMany).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a validated raw non-FWA point when its exact tuple uniquely matches FWA history", async () => {
+    const evidence = point(552, 99, "#RR", { isFwa: false });
+    const currentHistory = history(552, 100, "#RR");
+    const currentLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }], [], {
+      clanTag: "#RR",
+      payload: { warMeta: { warId: "100", clanTag: "#RR", opponentTag: "#OPP", startTime: start.toISOString(), teamSize: 1, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [{ playerTag: "#P1", attacksUsed: 0 }], attacks: [] } },
+    });
+    const { db } = makeDb({ points: [evidence], histories: [currentHistory], lookups: [currentLookup], cycles: [{ guildId, syncNumber: 552, syncTime: start }] });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([552]));
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", canonicalWarId: 100, reasons: expect.arrayContaining(["raw_non_fwa_canonicalized_to_fwa"]) });
+    expect(plan.reports[0].reasons).not.toEqual(expect.arrayContaining(["conflicting_war_identities", "conflicting_persisted_identity_sources", "non_fwa_cycle"]));
+    expect(plan.summary).toMatchObject({ pointsCanonicalized: 1, staleRawWarIdsCanonicalized: 1, unmatchedValidatedPoints: 0, ambiguousTuplePoints: 0 });
+    expect(db.warLookup.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { warId: { in: ["100"] } } }));
+  });
+
   it("canonicalizes a stale raw war ID when its exact tuple matches the selected history", async () => {
     const evidence = point(552, 99, "#RR");
     const currentHistory = history(552, 100, "#RR");
