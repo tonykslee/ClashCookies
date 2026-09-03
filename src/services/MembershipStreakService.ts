@@ -149,6 +149,7 @@ type HistoricalCanonicalizationStats = {
   unmatchedValidatedPoints: number;
   ambiguousTuplePoints: number;
   canonicalHistoriesUsed: number;
+  negativeCoverageUncertainBoundaries: number;
 };
 
 /** Purpose: create the bounded diagnostic counters for historical owner canonicalization. */
@@ -161,6 +162,7 @@ function emptyHistoricalCanonicalizationStats(): HistoricalCanonicalizationStats
     unmatchedValidatedPoints: 0,
     ambiguousTuplePoints: 0,
     canonicalHistoriesUsed: 0,
+    negativeCoverageUncertainBoundaries: 0,
   };
 }
 
@@ -564,7 +566,7 @@ export class MembershipStreakService {
     );
     const canonicalization = loaded.historicalCanonicalization;
     console.debug(
-      `[membership-streak] event=historical_canonicalization guild_id=${normalizeGuildId(input.guildId) || "unknown"} validated_points=${canonicalization.validatedPoints} dirty_points_ignored=${canonicalization.dirtyPointsIgnored} points_canonicalized=${canonicalization.pointsCanonicalized} stale_raw_ids_canonicalized=${canonicalization.staleRawIdsCanonicalized} unmatched_validated_points=${canonicalization.unmatchedValidatedPoints} ambiguous_tuple_points=${canonicalization.ambiguousTuplePoints} canonical_histories_used=${canonicalization.canonicalHistoriesUsed}`,
+      `[membership-streak] event=historical_canonicalization guild_id=${normalizeGuildId(input.guildId) || "unknown"} validated_points=${canonicalization.validatedPoints} dirty_points_ignored=${canonicalization.dirtyPointsIgnored} points_canonicalized=${canonicalization.pointsCanonicalized} stale_raw_ids_canonicalized=${canonicalization.staleRawIdsCanonicalized} unmatched_validated_points=${canonicalization.unmatchedValidatedPoints} ambiguous_tuple_points=${canonicalization.ambiguousTuplePoints} canonical_histories_used=${canonicalization.canonicalHistoriesUsed} negative_coverage_uncertain_boundaries=${canonicalization.negativeCoverageUncertainBoundaries}`,
     );
     return {
       streaks: results,
@@ -815,6 +817,7 @@ export class MembershipStreakService {
     const canonicalHistoryCandidates = normalizeHistoricalHistories(rawHistories, boundedCyclesBySyncNumber);
     const canonicalOwnerHistoryKeys = new Set<string>();
     const historyKeysByBoundaryClan = new Map<string, Set<string>>();
+    const negativeCoverageUncertainBoundaryKeys = new Set<string>();
     const addCanonicalOwner = (history: HistoricalFwaHistory): void => {
       const historyKey = `${history.syncNumber}|${membershipCanonicalHistoryKey(history)}`;
       canonicalOwnerHistoryKeys.add(historyKey);
@@ -828,11 +831,23 @@ export class MembershipStreakService {
       const matches = canonicalHistoryCandidates.filter((history) =>
         history.syncNumber === point.syncNumber && historicalHistoryMatchesPointByExactTuple(history, point));
       if (matches.length === 0) {
-        historicalCanonicalization.unmatchedValidatedPoints += 1;
+        if (point.isFwa) historicalCanonicalization.unmatchedValidatedPoints += 1;
+        const activeMatches = activeCandidates.filter((candidate) =>
+          candidate.syncNumber === point.syncNumber &&
+          candidate.clanTag === point.clanTag &&
+          candidate.startTime.getTime() === point.warStartTime.getTime() &&
+          Boolean(candidate.opponentTag) &&
+          normalizeClanTag(candidate.opponentTag) === normalizeClanTag(point.opponentTag));
+        if (point.isFwa && activeMatches.length !== 1) {
+          const cycle = boundedCyclesBySyncNumber.get(point.syncNumber);
+          if (cycle) negativeCoverageUncertainBoundaryKeys.add(dateKey(cycle.syncTime));
+        }
         continue;
       }
       if (matches.length > 1) {
         historicalCanonicalization.ambiguousTuplePoints += 1;
+        const cycle = boundedCyclesBySyncNumber.get(point.syncNumber);
+        if (cycle) negativeCoverageUncertainBoundaryKeys.add(dateKey(cycle.syncTime));
         for (const history of matches) ambiguousOwnerKeys.add(`${history.syncNumber}|${history.clanTag}`);
         continue;
       }
@@ -852,17 +867,26 @@ export class MembershipStreakService {
         history.syncNumber === evaluationSyncNumber && history.warId === evaluationWarId);
       if (matches.length === 1) addCanonicalOwner(matches[0]);
       else if (matches.length > 1) {
-        for (const history of matches) ambiguousOwnerKeys.add(`${history.syncNumber}|${history.clanTag}`);
+        for (const history of matches) {
+          ambiguousOwnerKeys.add(`${history.syncNumber}|${history.clanTag}`);
+          negativeCoverageUncertainBoundaryKeys.add(dateKey(history.syncTime));
+        }
       }
     }
     for (const [ownerKey, historyKeys] of historyKeysByBoundaryClan) {
-      if (historyKeys.size > 1) ambiguousOwnerKeys.add(ownerKey);
+      if (historyKeys.size > 1) {
+        ambiguousOwnerKeys.add(ownerKey);
+        const ownerHistory = canonicalHistoryCandidates.find((history) =>
+          `${history.syncNumber}|${history.clanTag}` === ownerKey);
+        if (ownerHistory) negativeCoverageUncertainBoundaryKeys.add(dateKey(ownerHistory.syncTime));
+      }
     }
     const histories = canonicalHistoryCandidates.filter((history) => {
       const historyKey = `${history.syncNumber}|${membershipCanonicalHistoryKey(history)}`;
       return canonicalOwnerHistoryKeys.has(historyKey) && !ambiguousOwnerKeys.has(`${history.syncNumber}|${history.clanTag}`);
     });
     historicalCanonicalization.canonicalHistoriesUsed = histories.length;
+    historicalCanonicalization.negativeCoverageUncertainBoundaries = negativeCoverageUncertainBoundaryKeys.size;
     const expectedFwaClanTagsByBoundary = new Map<string, Set<string>>();
     for (const candidate of activeCandidates) {
       const cycle = boundedCyclesBySyncNumber.get(candidate.syncNumber);
@@ -1021,6 +1045,7 @@ export class MembershipStreakService {
     }>();
     for (const [boundaryKey, expectedClanTags] of expectedFwaClanTagsByBoundary) {
       if (expectedClanTags.size === 0) continue;
+      if (negativeCoverageUncertainBoundaryKeys.has(boundaryKey)) continue;
       const activeCoverageByClan = activeCoverageByBoundaryAndClan.get(boundaryKey);
       const historicalCoverageByClan = historicalCoverageByBoundaryAndClan.get(boundaryKey);
       let complete = true;

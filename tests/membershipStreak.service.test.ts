@@ -286,7 +286,7 @@ describe("MembershipStreakService", () => {
     expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
   });
 
-  it("ignores an unmatched raw active point when canonical active coverage is complete", async () => {
+  it("keeps active absence unknown when an expected participating clan is unresolved", async () => {
     const candidate = activeCandidate(553, 2, rockyRoad, 200553, 1);
     const built = serviceFor({
       cycles: [{ guildId, syncNumber: 553, syncTime: time(2) }],
@@ -299,7 +299,7 @@ describe("MembershipStreakService", () => {
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
-    expect(evidence[playerTag][0].fwa.status).toBe("ABSENT");
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
     expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
   });
 
@@ -803,7 +803,7 @@ describe("MembershipStreakService", () => {
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
   });
 
-  it("ignores an unmatched historical point when canonical coverage is complete", async () => {
+  it("keeps historical absence unknown when an expected participating clan is unresolved", async () => {
     const resolved = historical(552, 1, rockyRoad, [otherPlayerTag]);
     const missing = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
     const built = serviceFor({
@@ -815,7 +815,68 @@ describe("MembershipStreakService", () => {
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
-    expect(evidence[playerTag][0].fwa.status).toBe("ABSENT");
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("resolves canonical positive participation despite unmatched extra FWA evidence", async () => {
+    const row = historical(552, 1, rockyRoad, [playerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, clanTag: partyBlizzard, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("keeps absence unknown when an ambiguous owner accompanies complete coverage", async () => {
+    const complete = historical(552, 1, rockyRoad, [otherPlayerTag], 1005520);
+    const ambiguous = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 552, syncTime: time(1) }],
+      points: [complete.point, ambiguous.point],
+      histories: [complete.history, ambiguous.history, { ...ambiguous.history, warId: 1005522 }],
+      participation: complete.participation,
+      lookups: [lookup(complete.history.warId, rockyRoad)],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("allows negative proof with unmatched non-FWA operational evidence", async () => {
+    const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, isFwa: false, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
+  });
+
+  it("allows negative proof when dirty FWA-looking evidence is present", async () => {
+    const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, needsValidation: true, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
   });
 
   it("requires complete canonical coverage of every expected historical participating clan", async () => {
