@@ -1,5 +1,5 @@
 import { normalizeClashTagBareInput } from "../helper/clashTag";
-import { compareTagsForTiebreak, getSyncMode } from "../commands/fwa/matchUtils";
+import { compareTagsForTiebreak, getSyncMode } from "../helper/fwaProjection";
 
 type MatchType = "FWA" | "BL" | "MM" | "SKIP";
 

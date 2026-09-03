@@ -234,12 +234,11 @@ import {
 } from "./fwa/dataParsers";
 import {
   buildLimitedMessage,
-  compareTagsForTiebreak,
   formatPoints,
   getWinnerMarkerForSide,
-  getSyncMode,
   limitDiscordContent,
 } from "./fwa/matchUtils";
+import { compareTagsForTiebreak, getSyncMode } from "../helper/fwaProjection";
 import {
   resolveWarMailEmbedColor,
   type WarMailExpectedOutcome,
