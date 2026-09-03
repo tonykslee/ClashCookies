@@ -1,3 +1,6 @@
+import { normalizeClashTagBareInput } from "../helper/clashTag";
+import { compareTagsForTiebreak, getSyncMode } from "../commands/fwa/matchUtils";
+
 type MatchType = "FWA" | "BL" | "MM" | "SKIP";
 
 export type MatchTypeResolutionSource =
@@ -28,6 +31,9 @@ export type PreparedMatchTypeFallbackResolution = {
 export type PreparedStoredSyncMatchRow = StoredSyncMatchTypeRow & {
   warId?: string | number | null;
   warStartTime?: Date | null;
+  syncNum?: number | null;
+  clanPoints?: number | null;
+  opponentPoints?: number | null;
   outcome?: string | null;
   lastKnownOutcome?: string | null;
   needsValidation?: boolean | null;
@@ -400,21 +406,90 @@ export function resolveMatchTypeWithPreparedStoredSync(input: {
   };
 }
 
-/** Purpose: read a safely scoped FWA outcome without inventing WIN for unresolved evidence. */
+/** Purpose: reproduce the existing FWA points/tiebreak projection for a prepared sync row. */
+export function deriveFwaProjectedOutcomeFromPreparedSync(input: {
+  clanTag: string;
+  opponentTag: string;
+  clanPoints?: number | null;
+  opponentPoints?: number | null;
+  syncNum?: number | null;
+}): "WIN" | "LOSE" | null {
+  const clanPoints = input.clanPoints ?? null;
+  const opponentPoints = input.opponentPoints ?? null;
+  if (
+    clanPoints === null ||
+    opponentPoints === null ||
+    Number.isNaN(clanPoints) ||
+    Number.isNaN(opponentPoints) ||
+    !Number.isFinite(clanPoints) ||
+    !Number.isFinite(opponentPoints)
+  ) {
+    return null;
+  }
+  if (clanPoints > opponentPoints) return "WIN";
+  if (clanPoints < opponentPoints) return "LOSE";
+  const syncNum =
+    input.syncNum !== null && input.syncNum !== undefined && Number.isFinite(input.syncNum)
+      ? Math.trunc(input.syncNum)
+      : null;
+  const mode = getSyncMode(syncNum);
+  if (!mode) return null;
+  const cmp = compareTagsForTiebreak(input.clanTag, input.opponentTag);
+  if (cmp === 0) return null;
+  return (mode === "low" ? cmp < 0 : cmp > 0) ? "WIN" : "LOSE";
+}
+
+/** Purpose: resolve FWA outcome with confirmed-current precedence and safe projected fallback. */
 export function resolveFwaOutcomeFromPreparedEvidence(input: {
   matchType: string | null | undefined;
   currentOutcome?: string | null;
-  storedSyncRow?: Pick<PreparedStoredSyncMatchRow, "outcome" | "lastKnownOutcome"> | null;
+  currentOutcomeConfirmed?: boolean;
+  projectedOutcome?: string | null;
+  clanTag?: string | null;
+  opponentTag?: string | null;
+  storedSyncRow?: Pick<
+    PreparedStoredSyncMatchRow,
+    | "outcome"
+    | "lastKnownOutcome"
+    | "syncNum"
+    | "clanPoints"
+    | "opponentPoints"
+    | "opponentTag"
+  > | null;
 }): "WIN" | "LOSE" | "UNKNOWN" | null {
-  if (normalizeStoredMatchType(input.matchType) !== "FWA") {
-    return normalizeOutcomeValue(input.currentOutcome ?? null);
-  }
+  if (normalizeStoredMatchType(input.matchType) !== "FWA") return null;
+  const confirmedCurrentOutcome =
+    input.currentOutcomeConfirmed === true
+      ? toWinLoseOutcome(input.currentOutcome ?? null)
+      : null;
+  const projectedOutcome = toWinLoseOutcome(input.projectedOutcome ?? null);
+  const storedOutcome =
+    toWinLoseOutcome(input.storedSyncRow?.outcome ?? null) ??
+    toWinLoseOutcome(input.storedSyncRow?.lastKnownOutcome ?? null);
+  const preparedProjection =
+    input.clanTag && (input.opponentTag ?? input.storedSyncRow?.opponentTag)
+      ? deriveFwaProjectedOutcomeFromPreparedSync({
+          clanTag: input.clanTag,
+          opponentTag: input.opponentTag ?? input.storedSyncRow?.opponentTag ?? "",
+          clanPoints: input.storedSyncRow?.clanPoints ?? null,
+          opponentPoints: input.storedSyncRow?.opponentPoints ?? null,
+          syncNum: input.storedSyncRow?.syncNum ?? null,
+        })
+      : null;
   return (
-    normalizeOutcomeValue(input.currentOutcome ?? null) ??
-    normalizeOutcomeValue(input.storedSyncRow?.outcome ?? null) ??
-    normalizeOutcomeValue(input.storedSyncRow?.lastKnownOutcome ?? null) ??
+    confirmedCurrentOutcome ??
+    projectedOutcome ??
+    storedOutcome ??
+    preparedProjection ??
     "UNKNOWN"
   );
+}
+
+function toWinLoseOutcome(
+  value: string | null | undefined,
+): "WIN" | "LOSE" | null {
+  const normalized = normalizeOutcomeValue(value);
+  return normalized === "WIN" || normalized === "LOSE" ? normalized : null;
 }
 
 function normalizeOutcomeValue(
@@ -426,4 +501,3 @@ function normalizeOutcomeValue(
   }
   return null;
 }
-import { normalizeClashTagBareInput } from "../helper/clashTag";

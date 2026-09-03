@@ -157,6 +157,7 @@ import {
   resolveCurrentWarMatchTypeSignal,
   resolveMatchTypeFromStoredSyncRow,
   resolveMatchTypeWithPreparedStoredSync,
+  resolveFwaOutcomeFromPreparedEvidence,
   type PreparedMatchTypeFallbackResolution,
   type MatchTypeResolution,
   type MatchTypeResolutionSource,
@@ -3980,14 +3981,13 @@ function resolveFwaOutcomeFromCurrentWarState(params: {
   currentWarOutcomeConfirmed: boolean;
   projectedOutcome: "WIN" | "LOSE" | null | undefined;
 }): "WIN" | "LOSE" | null {
-  if (params.matchType !== "FWA") return null;
-  if (params.currentWarOutcomeConfirmed) {
-    return (
-      toWinLoseOutcome(params.currentWarOutcome) ??
-      toWinLoseOutcome(params.projectedOutcome)
-    );
-  }
-  return toWinLoseOutcome(params.projectedOutcome);
+  const resolved = resolveFwaOutcomeFromPreparedEvidence({
+    matchType: params.matchType,
+    currentOutcome: params.currentWarOutcome,
+    currentOutcomeConfirmed: params.currentWarOutcomeConfirmed,
+    projectedOutcome: params.projectedOutcome,
+  });
+  return resolved === "WIN" || resolved === "LOSE" ? resolved : null;
 }
 
 /** Purpose: keep single-clan `/fwa match` color aligned to the exact effective state shown in the card. */
