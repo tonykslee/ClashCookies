@@ -2,7 +2,7 @@
 
 ## Historical participation backfill
 
-The one-time operator utility emits bounded, structured lines with the prefix `[membership-participation-backfill]`. Per-war lines include guild, sync, clan, canonical war ID, action, archive/reconstruction/existing/planned counts, expected team size, projected coverage, and reason codes. The summary includes selected syncs, canonical FWA candidates, planned rows, unreconstructable rows, COMPLETE/PARTIAL/UNKNOWN projected rosters, skips, and conflicts. Dry runs perform no writes; apply mode prints a post-write verification summary.
+The one-time operator utility emits bounded, structured lines with the prefix `[membership-participation-backfill]`. Per-war lines include guild, sync, clan, canonical war ID, action, archive/reconstruction/existing/planned counts, expected team size, projected coverage, and reason codes. The summary includes selected syncs, canonical FWA candidates, validated/dirty point evidence, exact-tuple canonicalization and stale-ID repair counts, unmatched/ambiguous tuple counts, planned rows, unreconstructable rows, COMPLETE/PARTIAL/UNKNOWN projected rosters, skips, and conflicts. Dry runs perform no writes; apply mode prints a post-write verification summary.
 
 ClashCookies currently uses two observability layers:
 
