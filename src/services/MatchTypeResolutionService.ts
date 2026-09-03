@@ -19,10 +19,24 @@ export type MatchTypeResolution = {
   syncIsFwa: boolean | null;
 };
 
+export type PreparedMatchTypeFallbackResolution = {
+  confirmedCurrent: MatchTypeResolution | null;
+  storedSync: MatchTypeResolution | null;
+  unconfirmedCurrent: MatchTypeResolution | null;
+};
+
+export type PreparedStoredSyncMatchRow = StoredSyncMatchTypeRow & {
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  outcome?: string | null;
+  lastKnownOutcome?: string | null;
+  needsValidation?: boolean | null;
+};
+
 export type StoredSyncMatchTypeRow = {
   opponentTag: string;
   isFwa: boolean | null;
-  lastKnownMatchType: string | null;
+  lastKnownMatchType?: string | null;
 };
 
 export type OpponentPointsMatchTypeSignal = {
@@ -318,5 +332,98 @@ export function chooseMatchTypeResolution(input: {
     input.unconfirmedCurrent ??
     null
   );
+}
+
+/** Purpose: resolve the command and checklist fallback from one current-war identity and prepared same-war sync row. */
+export function resolveMatchTypeWithPreparedStoredSync(input: {
+  opponentTag: string;
+  warState: "preparation" | "inWar" | "notInWar";
+  currentWarId?: number | string | null;
+  currentWarStartTime?: Date | null;
+  currentWarOpponentTag?: string | null;
+  activeWarId?: number | string | null;
+  activeWarStartTime?: Date | null;
+  activeOpponentTag?: string | null;
+  existingMatchType: "FWA" | "BL" | "MM" | "SKIP" | null | undefined;
+  existingInferredMatchType?: boolean | null | undefined;
+  storedSyncRow?: PreparedStoredSyncMatchRow | null;
+}): PreparedMatchTypeFallbackResolution {
+  const sameActiveWar =
+    input.warState === "notInWar"
+      ? true
+      : compareActiveWarIdentities({
+          persisted: {
+            warId: input.currentWarId ?? null,
+            warStartTime: input.currentWarStartTime ?? null,
+            opponentTag: input.currentWarOpponentTag ?? null,
+          },
+          active: {
+            warId: input.activeWarId ?? null,
+            warStartTime: input.activeWarStartTime ?? null,
+            opponentTag: input.activeOpponentTag ?? input.opponentTag,
+          },
+        }).sameWar;
+  const currentResolution = resolveCurrentWarMatchTypeSignal({
+    matchType: sameActiveWar ? (input.existingMatchType ?? null) : null,
+    inferredMatchType: sameActiveWar
+      ? (input.existingInferredMatchType ?? true)
+      : true,
+  });
+  const lookupWarId =
+    input.warState === "notInWar"
+      ? (input.currentWarId ?? input.activeWarId ?? null)
+      : (input.activeWarId ?? null);
+  const lookupWarStartTime =
+    input.warState === "notInWar"
+      ? (input.currentWarStartTime ?? input.activeWarStartTime ?? null)
+      : (input.activeWarStartTime ?? null);
+  const lookupOpponentTag =
+    input.warState === "notInWar"
+      ? (input.currentWarOpponentTag ?? input.activeOpponentTag ?? input.opponentTag)
+      : (input.activeOpponentTag ?? input.opponentTag);
+  const hasWarIdentity =
+    (lookupWarId !== null &&
+      lookupWarId !== undefined &&
+      Number.isFinite(Number(lookupWarId))) ||
+    lookupWarStartTime instanceof Date;
+  const storedSync =
+    hasWarIdentity && input.storedSyncRow
+      ? resolveMatchTypeFromStoredSyncRow({
+          syncRow: input.storedSyncRow,
+          opponentTag: lookupOpponentTag,
+        })
+      : null;
+  return {
+    confirmedCurrent: currentResolution.confirmed,
+    storedSync,
+    unconfirmedCurrent: currentResolution.unconfirmed,
+  };
+}
+
+/** Purpose: read a safely scoped FWA outcome without inventing WIN for unresolved evidence. */
+export function resolveFwaOutcomeFromPreparedEvidence(input: {
+  matchType: string | null | undefined;
+  currentOutcome?: string | null;
+  storedSyncRow?: Pick<PreparedStoredSyncMatchRow, "outcome" | "lastKnownOutcome"> | null;
+}): "WIN" | "LOSE" | "UNKNOWN" | null {
+  if (normalizeStoredMatchType(input.matchType) !== "FWA") {
+    return normalizeOutcomeValue(input.currentOutcome ?? null);
+  }
+  return (
+    normalizeOutcomeValue(input.currentOutcome ?? null) ??
+    normalizeOutcomeValue(input.storedSyncRow?.outcome ?? null) ??
+    normalizeOutcomeValue(input.storedSyncRow?.lastKnownOutcome ?? null) ??
+    "UNKNOWN"
+  );
+}
+
+function normalizeOutcomeValue(
+  value: string | null | undefined,
+): "WIN" | "LOSE" | "UNKNOWN" | null {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (normalized === "WIN" || normalized === "LOSE" || normalized === "UNKNOWN") {
+    return normalized;
+  }
+  return null;
 }
 import { normalizeClashTagBareInput } from "../helper/clashTag";

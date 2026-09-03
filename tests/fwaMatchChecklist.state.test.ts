@@ -7,6 +7,9 @@ const prismaMock = vi.hoisted(() => ({
   currentWar: {
     findMany: vi.fn(),
   },
+  clanPointsSync: {
+    findMany: vi.fn(),
+  },
   trackedMessage: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -618,6 +621,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         state: "preparation",
       },
     ]);
+    prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
       null as any,
@@ -2461,4 +2465,85 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows[0].compactCopyLine).toContain("\u{274C} Bases not checked");
   });
+
+  it.each([
+    ["WIN", "🟢"],
+    ["LOSE", "🔴"],
+  ] as const)(
+    "renders inferred FWA %s in Mail and Bases with a trailing warning",
+    async (outcome, emoji) => {
+      const startTime = new Date("2026-05-13T18:00:00.000Z");
+      const currentWar = {
+        clanTag: "#PYPY",
+        warId: 1001,
+        prepStartTime: new Date("2026-05-13T13:00:00.000Z"),
+        startTime,
+        endTime: new Date("2026-05-14T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+        outcome: null,
+        state: "preparation",
+      };
+      const persistedSync = {
+        clanTag: "#PYPY",
+        warId: "1001",
+        warStartTime: startTime,
+        opponentTag: "#OPP1",
+        isFwa: true,
+        lastKnownMatchType: "FWA",
+        outcome,
+        lastKnownOutcome: outcome,
+        needsValidation: false,
+      };
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
+      ]);
+      prismaMock.currentWar.findMany.mockResolvedValue([currentWar]);
+      prismaMock.clanPointsSync.findMany.mockResolvedValue([persistedSync]);
+      vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue(null);
+      vi.mocked(trackedMessageService.resolveLatestRelevantSyncPostForClanWar).mockResolvedValue(
+        null as any,
+      );
+      vi.mocked(trackedMessageService.findLatestActiveFwaBaseSwapTrackedMessageForClan).mockResolvedValue(
+        null as any,
+      );
+      vi.mocked(trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan).mockResolvedValue(
+        null as any,
+      );
+      const liveWar = makeLiveWarSnapshot({
+        startTimeIso: startTime.toISOString(),
+        opponentTag: "#OPP1",
+        opponentName: "Opponent",
+      });
+      const cocService = { getCurrentWar: vi.fn().mockResolvedValue(liveWar) } as any;
+
+      const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+      expect(mailState.rows[0]).toMatchObject({
+        matchStateInferred: true,
+      });
+      expect(mailState.rows[0].compactCopyLine).toBe(
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+      );
+
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+      expect(basesState.rows[0]).toMatchObject({
+        matchType: "FWA",
+        matchStateInferred: true,
+      });
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        `A | ${emoji} | ❌ Bases not checked ⚠️`,
+      );
+    },
+  );
 });

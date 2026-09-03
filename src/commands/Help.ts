@@ -773,6 +773,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "The active sync scheduler posts Mail at sync+1m and Bases at sync+2m to `/bot-logs type:checklist channel:<channel>` when configured; manual public/private snapshots still work.",
       "Public mail checklist posts are auto-pinned, include a Refresh button, and can be refreshed to rebuild the current match state while preserving badge reactions.",
       "Refreshing the mail checklist updates mailbox and match-type emoji status in place without clearing clan badge reactions.",
+      "Checklist rows may show a safely inferred active match state before `/fwa match` confirmation; inferred rows end with `⚠️`, which disappears after confirmation.",
       "`/fwa blacklist-import tags:<clanTag(s)>` bulk-registers known blacklist clans into a dedicated registry for future heatmapref sampling; tags accept comma-separated, space-separated, or mixed-separated input and are stored idempotently with `source-label` and `active` metadata. This command is admin-only by default.",
       "`/fwa blacklist-samples rebuild` rebuilds persisted blacklist matchup samples from stored FWA war history plus the active blacklist registry, using only persisted data. This command is admin-only by default.",
       "`/fwa blacklist-profile rebuild` rebuilds the persisted blacklist heatmapref profile from stored blacklist matchup samples only. This command is admin-only by default.",

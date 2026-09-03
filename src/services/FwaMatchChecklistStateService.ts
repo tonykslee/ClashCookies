@@ -18,6 +18,11 @@ import {
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { WarMailLifecycleService } from "./WarMailLifecycleService";
 import { formatError } from "../helper/formatError";
+import {
+  resolveFwaOutcomeFromPreparedEvidence,
+  resolveMatchTypeWithPreparedStoredSync,
+  type PreparedStoredSyncMatchRow,
+} from "./MatchTypeResolutionService";
 
 type FwaMatchChecklistViewType = "Mail" | "Bases";
 type FwaChecklistSyncIdentitySource =
@@ -25,6 +30,21 @@ type FwaChecklistSyncIdentitySource =
   | "active_sync_post"
   | "expired_sync_post_fallback"
   | "none";
+
+type ChecklistPersistedSyncRow = PreparedStoredSyncMatchRow & {
+  clanTag: string;
+  warId: string | null;
+  warStartTime: Date;
+  outcome: string | null;
+  lastKnownOutcome: string | null;
+  needsValidation: boolean;
+};
+
+type ChecklistEffectiveMatchState = {
+  matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN";
+  outcome: "WIN" | "LOSE" | "UNKNOWN" | null;
+  inferred: boolean;
+};
 
 type FwaMatchChecklistSingleView = {
   liveRevisionFields?: {
@@ -246,6 +266,174 @@ function normalizeWarState(
     return "notInWar";
   }
   return "unknown";
+}
+
+function resolveChecklistEffectiveMatchState(input: {
+  currentWar: {
+    state?: string | null;
+    warId?: number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    matchType?: string | null;
+    inferredMatchType?: boolean | null;
+    outcome?: string | null;
+  } | null;
+  activeWar: {
+    warId?: number | string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null;
+  storedSyncRow?: ChecklistPersistedSyncRow | null;
+}): ChecklistEffectiveMatchState {
+  const currentMatchType = normalizeMatchType(input.currentWar?.matchType ?? null);
+  const hasSafeActiveWarIdentity = Boolean(
+    input.activeWar &&
+      normalizeChecklistClanTag(input.activeWar.opponentTag ?? "") &&
+      ((input.activeWar.warId !== null &&
+        input.activeWar.warId !== undefined &&
+        Number.isFinite(Number(input.activeWar.warId))) ||
+        (input.activeWar.startTime instanceof Date &&
+          Number.isFinite(input.activeWar.startTime.getTime()))),
+  );
+  const activeWar = hasSafeActiveWarIdentity ? input.activeWar : null;
+  const resolution = resolveMatchTypeWithPreparedStoredSync({
+    opponentTag: activeWar?.opponentTag ?? input.currentWar?.opponentTag ?? "",
+    warState:
+      normalizeWarState(input.currentWar?.state ?? null) === "inWar"
+        ? "inWar"
+        : normalizeWarState(input.currentWar?.state ?? null) === "notInWar"
+          ? "notInWar"
+          : "preparation",
+    currentWarId: input.currentWar?.warId ?? null,
+    currentWarStartTime: input.currentWar?.startTime ?? null,
+    currentWarOpponentTag: input.currentWar?.opponentTag ?? null,
+    activeWarId: activeWar?.warId ?? null,
+    activeWarStartTime: activeWar?.startTime ?? null,
+    activeOpponentTag: activeWar?.opponentTag ?? null,
+    existingMatchType: currentMatchType === "UNKNOWN" ? null : currentMatchType,
+    existingInferredMatchType: input.currentWar?.inferredMatchType ?? null,
+    storedSyncRow: input.storedSyncRow ?? null,
+  });
+  const effectiveResolution =
+    resolution.confirmedCurrent ??
+    resolution.storedSync ??
+    resolution.unconfirmedCurrent;
+  const matchType =
+    effectiveResolution?.matchType ??
+    (input.currentWar?.inferredMatchType === true && !hasSafeActiveWarIdentity
+      ? "UNKNOWN"
+      : currentMatchType);
+  return {
+    matchType,
+    outcome: resolveFwaOutcomeFromPreparedEvidence({
+      matchType,
+      currentOutcome: input.currentWar?.outcome ?? null,
+      storedSyncRow: input.storedSyncRow ?? null,
+    }),
+    inferred:
+      effectiveResolution?.inferred === true &&
+      (input.currentWar?.inferredMatchType === true ||
+        effectiveResolution.source === "stored_sync"),
+  };
+}
+
+function resolveChecklistPersistedSyncRow(input: {
+  rows: ChecklistPersistedSyncRow[];
+  clanTag: string;
+  warId?: number | string | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+}): ChecklistPersistedSyncRow | null {
+  const expectedClanTag = normalizeChecklistClanTag(input.clanTag);
+  const expectedOpponentTag = normalizeChecklistClanTag(input.opponentTag ?? "");
+  const expectedWarId =
+    input.warId !== null && input.warId !== undefined && String(input.warId).trim()
+      ? String(input.warId)
+      : null;
+  return (
+    input.rows.find((row) => {
+      if (row.needsValidation || normalizeChecklistClanTag(row.clanTag) !== expectedClanTag) {
+        return false;
+      }
+      if (expectedOpponentTag && normalizeChecklistClanTag(row.opponentTag) !== expectedOpponentTag) {
+        return false;
+      }
+      if (input.warStartTime instanceof Date) {
+        if (!(row.warStartTime instanceof Date) || row.warStartTime.getTime() !== input.warStartTime.getTime()) {
+          return false;
+        }
+      } else if (expectedWarId === null || String(row.warId ?? "") !== expectedWarId) {
+        return false;
+      }
+      if (expectedWarId !== null && row.warId !== null && String(row.warId) !== expectedWarId) {
+        return false;
+      }
+      return true;
+    }) ?? null
+  );
+}
+
+async function loadChecklistPersistedSyncRows(input: {
+  guildId: string;
+  currentWars: Array<{
+    clanTag: string;
+    state?: string | null;
+    warId?: number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  }>;
+}): Promise<ChecklistPersistedSyncRow[]> {
+  const activeWars = input.currentWars.filter((war) => {
+    const state = normalizeWarState(war.state ?? null);
+    return (
+      (state === "preparation" || state === "inWar") &&
+      Boolean(normalizeChecklistClanTag(war.opponentTag ?? "")) &&
+      ((war.startTime instanceof Date && Number.isFinite(war.startTime.getTime())) ||
+        (war.warId !== null && war.warId !== undefined && Number.isFinite(Number(war.warId))))
+    );
+  });
+  if (activeWars.length === 0 || typeof (prisma as any).clanPointsSync?.findMany !== "function") {
+    return [];
+  }
+  const starts = [
+    ...new Set(
+      activeWars
+        .map((war) => war.startTime instanceof Date ? war.startTime.toISOString() : null)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ].map((value) => new Date(value));
+  const warIds = [
+    ...new Set(
+      activeWars
+        .map((war) => war.warId !== null && war.warId !== undefined ? String(war.warId) : null)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  const identityFilters = [
+    starts.length > 0 ? { warStartTime: { in: starts } } : null,
+    warIds.length > 0 ? { warId: { in: warIds } } : null,
+  ].filter((value): value is NonNullable<typeof value> => value !== null);
+  if (identityFilters.length === 0) return [];
+  const rows = await (prisma as any).clanPointsSync.findMany({
+    where: {
+      guildId: input.guildId,
+      needsValidation: false,
+      clanTag: { in: [...new Set(activeWars.map((war) => `#${normalizeChecklistClanTag(war.clanTag)}`))] },
+      OR: identityFilters,
+    },
+    select: {
+      clanTag: true,
+      warId: true,
+      warStartTime: true,
+      opponentTag: true,
+      isFwa: true,
+      lastKnownMatchType: true,
+      outcome: true,
+      lastKnownOutcome: true,
+      needsValidation: true,
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
 }
 
 type MailChecklistWarRenderState = {
@@ -517,6 +705,15 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
+  const persistedSyncRows = await loadChecklistPersistedSyncRows({
+    guildId: params.guildId,
+    currentWars,
+  }).catch((err) => {
+    console.error(
+      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Bases error=${formatError(err)}`,
+    );
+    return [] as ChecklistPersistedSyncRow[];
+  });
   const rows: FwaMatchChecklistTrackedRow[] = [];
   const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
 
@@ -593,20 +790,30 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
           })
           .catch(() => null)
       : null;
+    const persistedSyncRow = resolveChecklistPersistedSyncRow({
+      rows: persistedSyncRows,
+      clanTag,
+      warId: activeCurrentWar?.warId ?? null,
+      warStartTime: activeCurrentWar?.startTime ?? null,
+      opponentTag: activeCurrentWar?.opponentTag ?? null,
+    });
+    const effectiveMatchState = resolveChecklistEffectiveMatchState({
+      currentWar: activeCurrentWar,
+      activeWar: activeCurrentWar,
+      storedSyncRow: persistedSyncRow,
+    });
     const issueSummary = currentBaseSwap
       ? buildFwaBaseSwapIssueSummary(
           currentBaseSwap.metadata,
-          String(activeCurrentWar?.matchType ?? activeCurrentWar?.inferredMatchType ?? "").trim() || null,
+          effectiveMatchState.matchType === "UNKNOWN" ? null : effectiveMatchState.matchType,
         )
       : {
           hasIssues: false,
           statusText: "❌ Bases not checked",
           detailLines: [],
         };
-    const matchType = normalizeMatchType(
-      String(activeCurrentWar?.matchType ?? activeCurrentWar?.inferredMatchType ?? "").trim() || null,
-    );
-    const outcome = normalizeOutcome(activeCurrentWar?.outcome ?? null);
+    const matchType = effectiveMatchState.matchType;
+    const outcome = effectiveMatchState.outcome;
     const matchStateEmoji = resolveFwaMatchStateEmoji({
       matchType,
       outcome,
@@ -702,16 +909,17 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         ? "\u2705 Bases checked and all good"
         : "\u274c Bases not checked";
     console.debug(
-      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwapReason=${baseSwapSource} baseSwapSyncMessageId=${currentBaseSwapSyncIdentity ?? "missing"} completionReason=${completionSource} finalStatus=${basesStatus}`,
+      `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=${visibleReaction} matchSource=${effectiveMatchState.inferred ? "inferred" : "confirmed"} matchType=${matchType} outcome=${outcome ?? "none"} syncIdentitySource=${rowSyncIdentitySource} syncMessageId=${rowSyncIdentity ?? "missing"} baseSwapReason=${baseSwapSource} baseSwapSyncMessageId=${currentBaseSwapSyncIdentity ?? "missing"} completionReason=${completionSource} finalStatus=${basesStatus}`,
     );
     rows.push({
       clanTag,
-      compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}`,
+      compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}${effectiveMatchState.inferred ? " ⚠️" : ""}`,
       badgeEmojiId: clanBadge.badgeEmojiId,
       badgeEmojiName: clanBadge.badgeEmojiName,
       badgeEmojiInline: clanBadge.badgeEmojiInline,
       basesStatus,
       matchType,
+      matchStateInferred: effectiveMatchState.inferred,
       warId: activeCurrentWar?.warId ?? null,
       opponentTag: activeCurrentWar?.opponentTag ?? null,
       warStartTimeIso: activeCurrentWar?.startTime ? activeCurrentWar.startTime.toISOString() : null,
@@ -881,9 +1089,19 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
+  const persistedSyncRows = await loadChecklistPersistedSyncRows({
+    guildId: params.guildId,
+    currentWars,
+  }).catch((err) => {
+    console.error(
+      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Mail error=${formatError(err)}`,
+    );
+    return [] as ChecklistPersistedSyncRow[];
+  });
   const warMailLifecycleService = new WarMailLifecycleService();
   const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
   const copyLines: string[] = [];
+  const inferredByTag = new Map<string, boolean>();
   const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
 
   for (const clan of trackedClans) {
@@ -918,6 +1136,39 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       guildId: params.guildId,
       clanTag,
     });
+    const liveWarStartMs = parseCocApiTime(liveWar?.startTime ?? null);
+    const liveWarStartTime =
+      liveWarStartMs === null ? null : new Date(liveWarStartMs);
+    const persistedSyncRow = mailRenderState.fresh
+      ? resolveChecklistPersistedSyncRow({
+          rows: persistedSyncRows,
+          clanTag,
+          warId: mailRenderState.warId,
+          warStartTime: liveWarStartTime,
+          opponentTag: mailRenderState.opponentTag,
+        })
+      : null;
+    const effectiveMatchState = resolveChecklistEffectiveMatchState({
+      currentWar: mailRenderState.fresh && currentWar
+        ? {
+            state: currentWar.state ?? null,
+            warId: currentWar.warId ?? null,
+            startTime: currentWar.startTime ?? null,
+            opponentTag: currentWar.opponentTag ?? null,
+            matchType: currentWar.matchType ?? null,
+            inferredMatchType: currentWar.inferredMatchType ?? null,
+            outcome: currentWar.outcome ?? null,
+          }
+        : null,
+      activeWar: mailRenderState.fresh
+        ? {
+            warId: mailRenderState.warId,
+            startTime: liveWarStartTime,
+            opponentTag: mailRenderState.opponentTag,
+          }
+        : null,
+      storedSyncRow: persistedSyncRow,
+    });
     checklistExpiresAtCandidates.push(...mailRenderState.timingCandidates);
     const mailStatus = mailRenderState.fresh
       ? await warMailLifecycleService.resolveStatusForCurrentWar({
@@ -942,13 +1193,16 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       clanName,
       opponentName: mailRenderState.opponentName,
       opponentTag: mailRenderState.opponentTag,
-      matchType: mailRenderState.matchType,
-      outcome: mailRenderState.outcome,
+      matchType: effectiveMatchState.matchType,
+      outcome: effectiveMatchState.outcome,
     });
     singleViews[clanTag] = {
       liveRevisionFields: mailRenderState.liveRevisionFields,
     };
-    copyLines.push(compactCopyLine);
+    inferredByTag.set(clanTag, effectiveMatchState.inferred);
+    copyLines.push(
+      `${compactCopyLine}${effectiveMatchState.inferred ? " ⚠️" : ""}`,
+    );
   }
 
   const rows = buildRowsFromCopyView({
@@ -958,7 +1212,10 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       trackedClans.map((row) => [normalizeChecklistClanTag(row.tag), row.clanBadge ?? null]),
     ),
     contextKeyByTag: buildChecklistContextKeyByTag(singleViews),
-  });
+  }).map((row) => ({
+    ...row,
+    matchStateInferred: inferredByTag.get(normalizeChecklistClanTag(row.clanTag)) === true,
+  }));
   const scopeKey = buildFwaMatchChecklistScopeKey({
     guildId: params.guildId,
     clanTag: null,
