@@ -10,7 +10,6 @@ type RetrospectiveDb = {
   clanWarHistory: { findMany: (args: any) => Promise<any[]> };
   syncClanReadinessSnapshot: { findMany: (args: any) => Promise<any[]> };
   clanWarParticipation: { findMany: (args: any) => Promise<any[]> };
-  warLookup: { findMany: (args: any) => Promise<any[]> };
   warPlanComplianceEvaluation: { findMany: (args: any) => Promise<any[]> };
   warPlanViolation: { findMany: (args: any) => Promise<any[]> };
 };
@@ -206,16 +205,6 @@ function isValidDate(value: unknown): value is Date {
 
 function rowKey(warId: number | null, clanTag: string): string {
   return `${warId ?? "none"}|${clanTag}`;
-}
-
-function parseAuthoritativeTeamSize(payload: unknown): number | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const warMeta = (payload as { warMeta?: unknown }).warMeta;
-  if (!warMeta || typeof warMeta !== "object" || Array.isArray(warMeta)) return null;
-  const source = String((warMeta as { teamSizeSource?: unknown }).teamSizeSource ?? "").trim();
-  if (source !== "war_event_snapshot") return null;
-  const teamSize = Number((warMeta as { teamSize?: unknown }).teamSize);
-  return Number.isInteger(teamSize) && teamSize > 0 ? teamSize : null;
 }
 
 function normalizeHistoryRow(row: any): HistoryRow | null {
@@ -629,7 +618,7 @@ export class SyncRetrospectiveService {
         })
       : Promise.resolve([]);
 
-    const [rawParticipation, rawLookups, rawEvaluations, rawSnapshots] = await Promise.all([
+    const [rawParticipation, rawEvaluations, rawSnapshots] = await Promise.all([
       warIds.length > 0
         ? this.db.clanWarParticipation.findMany({
             where: { guildId, warId: { in: warIds.map(String) } },
@@ -643,12 +632,6 @@ export class SyncRetrospectiveService {
               attacksMissed: true,
               starsEarned: true,
             },
-          })
-        : Promise.resolve([]),
-      warIds.length > 0
-        ? this.db.warLookup.findMany({
-            where: { warId: { in: warIds.map(String) } },
-            select: { warId: true, payload: true },
           })
         : Promise.resolve([]),
       Promise.resolve(ownershipEvaluations.filter((row: any) => warIds.includes(Number(row?.warId)))),
@@ -679,7 +662,6 @@ export class SyncRetrospectiveService {
       histories,
       snapshots: rawSnapshots.map(normalizeSnapshotRow).filter((row): row is SnapshotRow => row !== null),
       participation: rawParticipation,
-      lookups: rawLookups,
       evaluations: rawEvaluations,
       violations: rawViolations,
     });
@@ -693,7 +675,6 @@ function buildRetrospectiveResult(input: {
   histories: HistoryRow[];
   snapshots: SnapshotRow[];
   participation: any[];
-  lookups: any[];
   evaluations: any[];
   violations: any[];
 }): SyncRetrospectiveResult {
@@ -711,7 +692,6 @@ function buildRetrospectiveResult(input: {
     rows.push(row);
     participationByWarAndClan.set(key, rows);
   }
-  const lookupByWarId = new Map(input.lookups.map((row) => [String(row?.warId), row]));
   const evaluationByWarId = new Map(input.evaluations.map((row) => [Number(row?.warId), row]));
   const violationsByEvaluationId = new Map<string, any[]>();
   for (const row of input.violations) {
@@ -725,11 +705,10 @@ function buildRetrospectiveResult(input: {
   const clans: SyncRetrospectiveClanRow[] = clanTags.map((clanTag) => {
     const history = historyByClan.get(clanTag) ?? null;
     const snapshot = snapshotByClan.get(clanTag) ?? null;
-    const teamSize = history ? parseAuthoritativeTeamSize(lookupByWarId.get(String(history.warId))?.payload) : null;
     const participationRows = history
       ? participationByWarAndClan.get(rowKey(history.warId, clanTag)) ?? []
       : [];
-    const normalizedPlayers = buildCompleteParticipation(participationRows, teamSize);
+    const normalizedPlayers = buildCanonicalParticipation(participationRows);
     const missedAttacks = normalizedPlayers
       ? normalizedPlayers.reduce((sum, player) => sum + player.attacksMissed, 0)
       : null;
@@ -845,11 +824,9 @@ function buildRetrospectiveResult(input: {
   };
 }
 
-function buildCompleteParticipation(
-  rows: any[],
-  authoritativeTeamSize: number | null,
-): SyncRetrospectivePlayerRow[] | null {
-  if (authoritativeTeamSize === null || rows.length !== authoritativeTeamSize) return null;
+/** Purpose: validate the canonical ended-war participation roster without external size metadata. */
+function buildCanonicalParticipation(rows: any[]): SyncRetrospectivePlayerRow[] | null {
+  if (rows.length === 0) return null;
   const tags = new Set<string>();
   const players: SyncRetrospectivePlayerRow[] = [];
   for (const row of rows) {

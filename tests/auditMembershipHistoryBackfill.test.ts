@@ -241,6 +241,7 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(nullTupleConflict.conflicts).toContain("conflicting_war_identities");
 
     const sizeConflict = classifyAuditCycle(input({
+      participation: [],
       lookups: [
         lookup({ payload: { warMeta: { teamSize: 50, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
         lookup({ payload: { warMeta: { teamSize: 40, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
@@ -468,10 +469,10 @@ describe("auditMembershipHistoryBackfill", () => {
     expect(report.missingParticipantWarMappings).toEqual(["missing_participation:#HOME:42"]);
   });
 
-  it("marks participation partial when persisted team-size evidence exceeds observed players", () => {
+  it("marks a persisted canonical participation roster complete without team-size gating", () => {
     const report = classifyAuditCycle(input({ participation: [participation()], lookups: [lookup()] }));
     expect(report.expectedTeamSize).toBe(2);
-    expect(report.rosterCompleteness).toBe("PARTIAL");
+    expect(report.rosterCompleteness).toBe("COMPLETE");
     expect(report.participationDistinctPlayerCount).toBe(1);
   });
 
@@ -514,8 +515,8 @@ describe("auditMembershipHistoryBackfill", () => {
         lookup({ warId: 43, clanTag: "#HOME2", payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" }, canonical: { participants: [] } } }),
       ],
     }));
-    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE", "#H0ME2": "PARTIAL" });
-    expect(formatCycleRow(report)).toContain("#H0ME=2/2:COMPLETE,#H0ME2=1/2:PARTIAL");
+    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE", "#H0ME2": "COMPLETE" });
+    expect(formatCycleRow(report)).toContain("#H0ME=2/2:COMPLETE,#H0ME2=1/2:COMPLETE");
 
     const unknownReport = classifyAuditCycle(input({
       points: [point(), secondPoint],
@@ -531,13 +532,13 @@ describe("auditMembershipHistoryBackfill", () => {
     ]);
   });
 
-  it("keeps completeness UNKNOWN when WarLookup has no authoritative team size", () => {
+  it("keeps persisted participation complete when WarLookup has no authoritative team size", () => {
     const report = classifyAuditCycle(input({
       participation: [participation(), participation({ playerTag: "#PLAYER2" })],
       lookups: [lookup({ payload: { canonical: { participants: ["#PLAYER1", "#PLAYER2"] } } })],
     }));
     expect(report.expectedTeamSizesByClan).toEqual({ "#H0ME": null });
-    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "UNKNOWN" });
+    expect(report.perClanRosterCompleteness).toEqual({ "#H0ME": "COMPLETE" });
   });
 
   it("uses normalized participation for one clan and WarLookup fallback for another", () => {

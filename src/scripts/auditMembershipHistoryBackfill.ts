@@ -323,9 +323,19 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     if (clans.size > 1) conflicts.push(`player_in_multiple_clans:${playerTag}`);
   }
   const legacyRosterFacts: Array<{ playerTag: string; clanTag: string }> = [];
-  const participationIdentityKeys = new Set(
-    participation.map((row) => `${row.warId}|${normalizeClanTag(row.clanTag)}`),
-  );
+  const mappedHistoryIdentityKeysByClan = new Map<string, Set<string>>();
+  for (const history of mappedHistories) {
+    const clanTag = normalizeClanTag(history.clanTag);
+    const identityKeys = mappedHistoryIdentityKeysByClan.get(clanTag) ?? new Set<string>();
+    identityKeys.add(`${history.warId}|${clanTag}`);
+    mappedHistoryIdentityKeysByClan.set(clanTag, identityKeys);
+  }
+  const participationIdentityKeys = new Set<string>();
+  for (const row of participation) {
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const clanTag = normalizeClanTag(row.clanTag);
+    if (playerTag && clanTag) participationIdentityKeys.add(`${row.warId}|${clanTag}`);
+  }
   for (const history of mappedHistories) {
     const identityKey = `${history.warId}|${normalizeClanTag(history.clanTag)}`;
     if (participationIdentityKeys.has(identityKey)) continue;
@@ -359,14 +369,23 @@ export function classifyAuditCycle(input: AuditCycleInput): AuditCycleReport {
     return [clanTag, sizes.size === 1 ? [...sizes][0] : null];
   }));
   for (const [clanTag, sizes] of expectedTeamSizesByClan) {
-    if (sizes.size > 1) conflicts.push(`conflicting_expected_team_sizes:${clanTag}`);
+    const hasPersistedParticipation = [...(mappedHistoryIdentityKeysByClan.get(clanTag) ?? new Set<string>())]
+      .some((key) => participationIdentityKeys.has(key));
+    if (!hasPersistedParticipation && sizes.size > 1) conflicts.push(`conflicting_expected_team_sizes:${clanTag}`);
   }
   const perClanRosterCompleteness = Object.fromEntries([...historicalClanTags].sort((a, b) => a.localeCompare(b)).map((clanTag) => {
+    const historyIdentityKeys = mappedHistoryIdentityKeysByClan.get(clanTag) ?? new Set<string>();
+    const persistedParticipationComplete = historyIdentityKeys.size > 0 && [...historyIdentityKeys].every((key) => participationIdentityKeys.has(key));
+    const persistedParticipationPartial = [...historyIdentityKeys].some((key) => participationIdentityKeys.has(key));
     const expectedSize = expectedTeamSizesByClanRecord[clanTag];
     const observedSize = perClanRosterCounts[clanTag] ?? 0;
-    const completeness = expectedSize === null
-      ? "UNKNOWN"
-      : observedSize === expectedSize ? "COMPLETE" : "PARTIAL";
+    const completeness = persistedParticipationComplete
+      ? "COMPLETE"
+      : persistedParticipationPartial
+        ? "UNKNOWN"
+        : expectedSize === null
+          ? "UNKNOWN"
+          : observedSize === expectedSize ? "COMPLETE" : "PARTIAL";
     return [clanTag, completeness];
   })) as Record<string, "COMPLETE" | "PARTIAL" | "UNKNOWN">;
   const expectedTeamSizes = Object.values(expectedTeamSizesByClanRecord).filter((value): value is number => value !== null);

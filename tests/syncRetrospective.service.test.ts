@@ -330,7 +330,7 @@ describe("SyncRetrospectiveService", () => {
 
     expect(result.identity).toEqual({ guildId: "guild-1", syncNumber: 42, syncTime, cycleMapped: true });
     expect(result.warSummary).toEqual({ clanWarCount: 2, totalStarsKnown: 100, starsCoverage: { known: 1, total: 2 } });
-    expect(result.missedAttacks).toEqual({ missedAttacksKnownTotal: 1, coverage: { completeClans: 1, warClans: 2 } });
+    expect(result.missedAttacks).toEqual({ missedAttacksKnownTotal: 1, coverage: { completeClans: 2, warClans: 2 } });
     expect(result.fwaViolations).toEqual({ violationKnownTotal: 1, coverage: { completedFwaEvaluations: 1, fwaWars: 1 } });
     expect(result.readiness).toEqual({ averageDeviation: 2, deviationCoverage: { valid: 2, totalSnapshots: 3 } });
     expect(result.fillers).toEqual({ fillerKnownTotal: 2, fillerCoverage: { complete: 2, totalSnapshots: 3 } });
@@ -343,7 +343,7 @@ describe("SyncRetrospectiveService", () => {
     expect(alpha.violations).toMatchObject({ total: 1, evaluationComplete: true, applicable: true });
     expect(alpha.fillers).toEqual({ fillerCount: 0, fillerPlayerTags: [], fillerCaptureComplete: true });
     expect(bravo).toMatchObject({
-      missedAttacks: { total: null, coverageComplete: false },
+      missedAttacks: { total: 0, coverageComplete: true },
       violations: { total: null, evaluationComplete: false, applicable: false },
       readiness: { deviationScore: null, projectionComplete: false },
       fillers: { fillerCount: null, fillerCaptureComplete: false },
@@ -352,12 +352,12 @@ describe("SyncRetrospectiveService", () => {
     expect(charlie.fillers.fillerPlayerTags).toEqual(["#F1", "#F2"]);
 
     expect(db.clanWarParticipation.findMany).toHaveBeenCalledTimes(1);
-    expect(db.warLookup.findMany).toHaveBeenCalledTimes(1);
+    expect(db.warLookup.findMany).not.toHaveBeenCalled();
     expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
     expect(db.warPlanViolation.findMany).toHaveBeenCalledTimes(1);
   });
 
-  it("marks participation incomplete for missing, duplicate, or non-authoritative roster evidence", async () => {
+  it("marks participation incomplete for missing, duplicate, or malformed roster evidence", async () => {
     const db = makeDb({
       histories: [history()],
       pointsSync: [{
@@ -365,13 +365,36 @@ describe("SyncRetrospectiveService", () => {
         opponentTag: "#OPP111", syncNum: 42,
       }],
       participation: [
-        { warId: "101", clanTag: "#AAA111", playerTag: "#P1", attacksUsed: 2, attacksMissed: 0, starsEarned: 3 },
+        { warId: "101", clanTag: "#AAA111", playerTag: "#P1", attacksUsed: 2, attacksMissed: -1, starsEarned: 3 },
       ],
-      lookups: [{ warId: "101", payload: { warMeta: { teamSize: 2, teamSizeSource: "inferred" } } }],
     });
     const result = await new SyncRetrospectiveService(db).getBySyncNumber({ guildId: "guild-1", syncNumber: 42 });
     expect(result.missedAttacks).toEqual({ missedAttacksKnownTotal: null, coverage: { completeClans: 0, warClans: 1 } });
     expect(result.clans[0].missedAttacks).toEqual({ total: null, coverageComplete: false, players: [] });
+  });
+
+  it("accepts 45- and 50-player canonical participation rosters without WarLookup", async () => {
+    const first = history({ warId: 1045, clanTag: "#AAA145" });
+    const second = history({ warId: 1050, clanTag: "#AAA150" });
+    const rows = (warId: number, clanTag: string, count: number) => Array.from({ length: count }, (_, index) => ({
+      warId: String(warId),
+      clanTag,
+      playerTag: `#P${String(index).padStart(4, "0")}`,
+      attacksUsed: 0,
+      attacksMissed: 0,
+      starsEarned: 0,
+    }));
+    const db = makeDb({
+      histories: [first, second],
+      pointsSync: [pointsBridge(first), pointsBridge(second)],
+      participation: [...rows(first.warId, first.clanTag, 45), ...rows(second.warId, second.clanTag, 50)],
+    });
+
+    const result = await new SyncRetrospectiveService(db).getBySyncNumber({ guildId: "guild-1", syncNumber: 42 });
+
+    expect(result.clans.find((clan) => clan.identity.clanTag === first.clanTag)?.missedAttacks).toMatchObject({ total: 0, coverageComplete: true });
+    expect(result.clans.find((clan) => clan.identity.clanTag === second.clanTag)?.missedAttacks).toMatchObject({ total: 0, coverageComplete: true });
+    expect(db.warLookup.findMany).not.toHaveBeenCalled();
   });
 
   it("does not turn an incomplete FWA evaluation or invalid readiness into zero", async () => {
@@ -465,7 +488,7 @@ describe("SyncRetrospectiveService", () => {
       OR: [{ warId: { in: [701] } }],
     });
     expect(db.clanWarParticipation.findMany).toHaveBeenCalledTimes(1);
-    expect(db.warLookup.findMany).toHaveBeenCalledTimes(1);
+    expect(db.warLookup.findMany).not.toHaveBeenCalled();
     expect(db.warPlanComplianceEvaluation.findMany).toHaveBeenCalledTimes(1);
     expect(db.warPlanViolation.findMany).not.toHaveBeenCalled();
   });
