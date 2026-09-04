@@ -4835,9 +4835,6 @@ describe("WarEventLogService war-event poll targets", () => {
       expectedOutcome: "LOSE",
       warEndTime: new Date("2026-01-02T00:00:00.000Z"),
     });
-    prismaMock.warLookup.findUnique.mockResolvedValue({
-      payload: { warMeta: { teamSize: 2, teamSizeSource: "war_event_snapshot" } },
-    });
     prismaMock.warPlanComplianceEvaluation.findUnique.mockResolvedValue({
       guildId: testGuildId,
       warId: 123,
@@ -4868,6 +4865,7 @@ describe("WarEventLogService war-event poll targets", () => {
     });
 
     expect(send).toHaveBeenCalledTimes(2);
+    expect(prismaMock.warLookup.findUnique).not.toHaveBeenCalled();
     expect(prismaMock.warEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ eventType: "clan_goal:FWA_NO_VIOLATIONS" }),
@@ -4953,7 +4951,7 @@ describe("WarEventLogService war-event poll targets", () => {
       }),
     );
     expect(prismaMock.clanWarParticipation.findMany).toHaveBeenCalledTimes(1);
-    expect(prismaMock.warLookup.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warLookup.findMany).not.toHaveBeenCalled();
     expect(prismaMock.warEvent.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.warPlanComplianceEvaluation.findUnique).not.toHaveBeenCalled();
     expect(prismaMock.clanWarHistory.findUnique).not.toHaveBeenCalled();

@@ -190,11 +190,6 @@ function historicalFixture(rows: ReturnType<typeof historical>[]) {
     points: rows.map((row) => row.point),
     histories: rows.map((row) => row.history),
     participation: rows.flatMap((row) => row.participation),
-    lookups: rows.map((row) => ({
-      warId: String(row.history.warId),
-      clanTag: row.history.clanTag,
-      payload: { warMeta: { teamSizeSource: "war_event_snapshot", teamSize: row.participation.length } },
-    })),
   };
 }
 
@@ -670,7 +665,7 @@ describe("MembershipStreakService", () => {
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", source: "FWA_WAR_PARTICIPATION" });
   });
 
-  it("does not assert negative membership without trusted team-size coverage", async () => {
+  it("proves historical negative membership from a nonempty canonical roster without WarLookup", async () => {
     const row = historical(551, 1, rockyRoad, [otherPlayerTag], 100123);
     const built = serviceFor({
       ...historicalFixture([row]),
@@ -679,7 +674,40 @@ describe("MembershipStreakService", () => {
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
-    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][0].fwa.status).toBe("ABSENT");
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
+  });
+
+  it("treats a 45-player canonical historical participation roster as complete without WarLookup", async () => {
+    const participants = Array.from({ length: 45 }, (_, index) => `#P${String(index).padStart(4, "0")}`);
+    const row = historical(551, 1, rockyRoad, participants, 100123);
+    const built = serviceFor(historicalFixture([row]), [], false);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input([participants[0]]));
+
+    expect(evidence[participants[0]][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
+    expect(built.db.clanWarParticipation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ playerTag: { in: [participants[0]] } }),
+      select: { warId: true, clanTag: true, playerTag: true },
+    }));
+    expect(built.db.clanWarParticipation.groupBy).toHaveBeenCalledTimes(1);
+    expect(built.db.clanWarParticipation.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      by: ["warId", "clanTag"],
+      where: { guildId, warId: { in: ["100123"] } },
+      _count: { playerTag: true },
+    }));
+  });
+
+  it("treats a 50-player canonical historical participation roster as complete without WarLookup", async () => {
+    const participants = Array.from({ length: 50 }, (_, index) => `#P${String(index).padStart(4, "0")}`);
+    const row = historical(551, 1, rockyRoad, participants, 100123);
+    const built = serviceFor(historicalFixture([row]), [], false);
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input([participants[0]]));
+
+    expect(evidence[participants[0]][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+    expect(built.db.warLookup.findMany).not.toHaveBeenCalled();
   });
 
   it("ignores an unrelated raw-ID collision when tuple recovery is available", async () => {
@@ -801,6 +829,34 @@ describe("MembershipStreakService", () => {
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
+  });
+
+  it("keeps historical absence unknown when canonical history has no participation roster", async () => {
+    const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      participation: [],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(built.db.clanWarParticipation.groupBy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps historical absence unknown when a second canonical clan has no participation roster", async () => {
+    const resolved = historical(552, 1, rockyRoad, [otherPlayerTag], 1005520);
+    const missing = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 552, syncTime: time(1) }],
+      points: [resolved.point, missing.point],
+      histories: [resolved.history, missing.history],
+      participation: resolved.participation,
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
   });
 
   it("keeps historical absence unknown when an expected participating clan is unresolved", async () => {

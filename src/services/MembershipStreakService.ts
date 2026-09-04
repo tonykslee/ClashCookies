@@ -95,7 +95,6 @@ type MembershipStreakDb = {
     findMany: (args?: any) => Promise<any[]>;
     groupBy: (args?: any) => Promise<any[]>;
   };
-  warLookup: { findMany: (args?: any) => Promise<any[]> };
 };
 
 const defaultDb = prisma as unknown as MembershipStreakDb;
@@ -206,17 +205,6 @@ function isValidDate(value: unknown): value is Date {
 function normalizePositiveInteger(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-/** Purpose: extract only the authoritative archived roster size from WarLookup metadata. */
-function parseCanonicalTeamSize(payload: unknown): number | null {
-  if (!payload || typeof payload !== "object") return null;
-  const root = payload as Record<string, unknown>;
-  const warMeta = root.warMeta && typeof root.warMeta === "object"
-    ? root.warMeta as Record<string, unknown>
-    : null;
-  if (String(warMeta?.teamSizeSource ?? "").trim().toLowerCase() !== "war_event_snapshot") return null;
-  return normalizePositiveInteger(warMeta?.teamSize);
 }
 
 /** Purpose: key one canonical war/clan roster for bounded completeness aggregation. */
@@ -903,63 +891,35 @@ export class MembershipStreakService {
       expectedFwaClanTagsByBoundary.set(boundaryKey, clanTags);
     }
     const warIds = [...new Set(histories.map((row) => String(row.warId)))];
-    const warLookupIds = [...new Set(warIds)];
-    const [rawParticipation, rawParticipationCounts, rawWarLookups] = warIds.length > 0 || warLookupIds.length > 0
+    const [rawParticipation, rawParticipationCounts] = warIds.length > 0
       ? await Promise.all([
-          warIds.length > 0
-            ? this.db.clanWarParticipation.findMany({
-                where: { guildId, warId: { in: warIds }, playerTag: { in: playerTags } },
-                orderBy: [{ warId: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
-                select: { warId: true, clanTag: true, playerTag: true },
-              })
-            : Promise.resolve([]),
-          warIds.length > 0
-            ? this.db.clanWarParticipation.groupBy({
-                by: ["warId", "clanTag"],
-                where: { guildId, warId: { in: warIds } },
-                _count: { playerTag: true },
-              })
-            : Promise.resolve([]),
-          warLookupIds.length > 0
-            ? this.db.warLookup.findMany({
-                where: { warId: { in: warLookupIds } },
-                select: { warId: true, clanTag: true, payload: true },
-              })
-            : Promise.resolve([]),
+          this.db.clanWarParticipation.findMany({
+            where: { guildId, warId: { in: warIds }, playerTag: { in: playerTags } },
+            orderBy: [{ warId: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
+            select: { warId: true, clanTag: true, playerTag: true },
+          }),
+          this.db.clanWarParticipation.groupBy({
+            by: ["warId", "clanTag"],
+            where: { guildId, warId: { in: warIds } },
+            _count: { playerTag: true },
+          }),
         ])
-      : [[], [], []];
+      : [[], []];
 
-    const expectedTeamSizesByRosterKey = new Map<string, Set<number>>();
-    for (const row of rawWarLookups) {
-      const warId = normalizePositiveInteger(row?.warId);
-      const clanTag = normalizeClanTag(row?.clanTag);
-      const teamSize = parseCanonicalTeamSize(row?.payload);
-      if (!warId || !clanTag || teamSize === null) continue;
-      const key = rosterKey(warId, clanTag);
-      const sizes = expectedTeamSizesByRosterKey.get(key) ?? new Set<number>();
-      sizes.add(teamSize);
-      expectedTeamSizesByRosterKey.set(key, sizes);
-    }
-    const expectedTeamSizeForRoster = (key: string): number | null => {
-      const sizes = expectedTeamSizesByRosterKey.get(key);
-      return sizes?.size === 1 ? [...sizes][0] : null;
-    };
-    const observedParticipationCountByRosterKey = new Map<string, number>();
+    const observedParticipationRosterKeys = new Set<string>();
     for (const row of rawParticipationCounts) {
       const warId = normalizePositiveInteger(row?.warId);
       const clanTag = normalizeClanTag(row?.clanTag);
-      if (!warId || !clanTag) continue;
       const count = Number(row?._count?.playerTag);
-      observedParticipationCountByRosterKey.set(rosterKey(warId, clanTag), Number.isInteger(count) && count >= 0 ? count : 0);
+      if (!warId || !clanTag || !Number.isInteger(count) || count <= 0) continue;
+      observedParticipationRosterKeys.add(rosterKey(warId, clanTag));
     }
     const historicalCoverageByRosterKey = new Map<string, RosterCompleteness>();
     for (const history of histories) {
       const key = rosterKey(history.warId, history.clanTag);
-      const expectedSize = expectedTeamSizeForRoster(key);
-      const observedCount = observedParticipationCountByRosterKey.get(key) ?? 0;
       historicalCoverageByRosterKey.set(
         key,
-        expectedSize === null ? "UNKNOWN" : observedCount === expectedSize ? "COMPLETE" : "PARTIAL",
+        observedParticipationRosterKeys.has(key) ? "COMPLETE" : "UNKNOWN",
       );
     }
     const activeTagsByKey = new Map<string, Set<string>>();

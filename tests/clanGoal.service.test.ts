@@ -344,7 +344,7 @@ describe("ClanGoalService foundation", () => {
     ).toMatchObject({ qualified: false, reason: "evaluation_canonical_mismatch" });
   });
 
-  it("requires an explicit complete canonical roster for no-missed-attacks", () => {
+  it("qualifies no-missed-attacks from any nonempty canonical ended roster", () => {
     const base = {
       guildId: "guild-1",
       warId: "42",
@@ -355,8 +355,6 @@ describe("ClanGoalService foundation", () => {
         matchType: "MM",
         warEndTime: new Date("2026-01-02T00:00:00.000Z"),
       },
-      expectedParticipantCount: 2,
-      expectedParticipantCountAuthoritative: true,
     };
     expect(
       evaluateWarNoMissedAttacksGoal({
@@ -374,7 +372,7 @@ describe("ClanGoalService foundation", () => {
           { guildId: "guild-1", warId: "42", clanTag: "#ABC123", playerTag: "#P1", attacksMissed: 0 },
         ],
       }),
-    ).toMatchObject({ qualified: false, reason: "participant_count_mismatch" });
+    ).toMatchObject({ qualified: true, reason: "qualified" });
     expect(
       evaluateWarNoMissedAttacksGoal({
         ...base,
@@ -386,7 +384,7 @@ describe("ClanGoalService foundation", () => {
     ).toMatchObject({ qualified: false, reason: "missed_attacks_present" });
   });
 
-  it("requires authoritative roster coverage rather than participant-derived size", () => {
+  it("does not require WarLookup team-size metadata for the ended-war goal", () => {
     const rows = Array.from({ length: 49 }, (_, index) => ({
       guildId: "guild-1",
       warId: "50",
@@ -409,34 +407,24 @@ describe("ClanGoalService foundation", () => {
     expect(
       evaluateWarNoMissedAttacksGoal({
         ...base,
-        expectedParticipantCount: 50,
-        expectedParticipantCountAuthoritative: true,
-      }),
-    ).toMatchObject({ qualified: false, reason: "participant_count_mismatch" });
-    expect(
-      evaluateWarNoMissedAttacksGoal({
-        ...base,
-        expectedParticipantCount: 49,
-        expectedParticipantCountAuthoritative: false,
-      }),
-    ).toMatchObject({ qualified: false, reason: "participant_count_missing" });
-    expect(
-      evaluateWarNoMissedAttacksGoal({
-        ...base,
-        expectedParticipantCount: 50,
-        expectedParticipantCountAuthoritative: true,
-        participation: [
-          ...rows,
-          {
-            guildId: "guild-1",
-            warId: "50",
-            clanTag: "#ABC123",
-            playerTag: "#P49",
-            attacksMissed: 0,
-          },
-        ],
+        participation: rows,
       }),
     ).toMatchObject({ qualified: true, reason: "qualified" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({ ...base, participation: [] }),
+    ).toMatchObject({ qualified: false, reason: "participation_missing" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        participation: [...rows, { ...rows[0] }],
+      }),
+    ).toMatchObject({ qualified: false, reason: "participant_roster_incomplete" });
+    expect(
+      evaluateWarNoMissedAttacksGoal({
+        ...base,
+        participation: [{ ...rows[0], attacksMissed: -1 }],
+      }),
+    ).toMatchObject({ qualified: false, reason: "participant_roster_incomplete" });
   });
 
   it("resolves all routed destination modes and reports missing destinations as skips", () => {
