@@ -200,8 +200,6 @@ export type WarNoMissedAttacksGoalFacts = {
   warId: number | string;
   clanTag: string;
   history: CanonicalWarEndGoalHistory | null | undefined;
-  expectedParticipantCount: number | null | undefined;
-  expectedParticipantCountAuthoritative: boolean;
   participation:
     | Array<{
         guildId: string;
@@ -246,8 +244,6 @@ export type CanonicalWarEndGoalEvaluation = {
     | "evaluation_not_completed"
     | "violations_present"
     | "participation_missing"
-    | "participant_count_missing"
-    | "participant_count_mismatch"
     | "participant_identity_mismatch"
     | "participant_roster_incomplete"
     | "missed_attacks_present"
@@ -348,28 +344,13 @@ export function evaluateFwaNoViolationsGoal(
   return { goalId: "FWA_NO_VIOLATIONS", qualified: true, reason: "qualified" };
 }
 
-/** Purpose: evaluate WAR_NO_MISSED_ATTACKS from a complete canonical roster snapshot. */
+/** Purpose: evaluate WAR_NO_MISSED_ATTACKS from canonical ended history and participation rows. */
 export function evaluateWarNoMissedAttacksGoal(
   input: WarNoMissedAttacksGoalFacts,
 ): CanonicalWarEndGoalEvaluation {
   const historyReason = isEndedHistoryForGoal(input);
   if (historyReason) {
     return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: false, reason: historyReason };
-  }
-  const expectedCount = Number(input.expectedParticipantCount);
-  if (input.expectedParticipantCountAuthoritative !== true) {
-    return {
-      goalId: "WAR_NO_MISSED_ATTACKS",
-      qualified: false,
-      reason: "participant_count_missing",
-    };
-  }
-  if (!Number.isInteger(expectedCount) || expectedCount <= 0) {
-    return {
-      goalId: "WAR_NO_MISSED_ATTACKS",
-      qualified: false,
-      reason: "participant_count_missing",
-    };
   }
   if (!input.participation || input.participation.length === 0) {
     return {
@@ -400,10 +381,12 @@ export function evaluateWarNoMissedAttacksGoal(
       };
     }
     participantTags.add(playerTag);
+    const attacksMissed = Number(participant.attacksMissed);
     if (
       participant.attacksMissed === null ||
       participant.attacksMissed === undefined ||
-      !Number.isInteger(Number(participant.attacksMissed))
+      !Number.isInteger(attacksMissed) ||
+      attacksMissed < 0
     ) {
       return {
         goalId: "WAR_NO_MISSED_ATTACKS",
@@ -411,20 +394,13 @@ export function evaluateWarNoMissedAttacksGoal(
         reason: "participant_roster_incomplete",
       };
     }
-    if (Number(participant.attacksMissed) !== 0) {
+    if (attacksMissed !== 0) {
       return {
         goalId: "WAR_NO_MISSED_ATTACKS",
         qualified: false,
         reason: "missed_attacks_present",
       };
     }
-  }
-  if (participantTags.size !== expectedCount || input.participation.length !== expectedCount) {
-    return {
-      goalId: "WAR_NO_MISSED_ATTACKS",
-      qualified: false,
-      reason: "participant_count_mismatch",
-    };
   }
   return { goalId: "WAR_NO_MISSED_ATTACKS", qualified: true, reason: "qualified" };
 }
@@ -723,8 +699,6 @@ export function logClanGoalOutcome(input: {
     "evaluation_not_completed",
     "violations_present",
     "participation_missing",
-    "participant_count_missing",
-    "participant_count_mismatch",
     "participant_identity_mismatch",
     "participant_roster_incomplete",
     "missed_attacks_present",

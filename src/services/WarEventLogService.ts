@@ -6573,7 +6573,7 @@ export class WarEventLogService {
       });
       if (!history) return;
 
-      const [evaluation, participation, lookup] = await Promise.all([
+      const [evaluation, participation] = await Promise.all([
         prisma.warPlanComplianceEvaluation.findUnique({
           where: {
             guildId_warId: {
@@ -6604,25 +6604,7 @@ export class WarEventLogService {
             attacksMissed: true,
           },
         }),
-        prisma.warLookup.findUnique({
-          where: { warId: String(Math.trunc(Number(input.warId))) },
-          select: { payload: true },
-        }),
       ]);
-
-      const lookupPayload =
-        lookup?.payload && typeof lookup.payload === "object"
-          ? (lookup.payload as {
-              warMeta?: { teamSize?: unknown; teamSizeSource?: unknown };
-            })
-          : null;
-      const teamSizeSource = String(
-        lookupPayload?.warMeta?.teamSizeSource ?? "",
-      ).trim();
-      const expectedParticipantCount =
-        teamSizeSource === "war_event_snapshot"
-          ? Number(lookupPayload?.warMeta?.teamSize)
-          : null;
       const historyFacts = {
         warId: history.warId,
         clanTag: history.clanTag,
@@ -6651,9 +6633,6 @@ export class WarEventLogService {
         warId: input.warId,
         clanTag: input.clanTag,
         history: historyFacts,
-        expectedParticipantCount,
-        expectedParticipantCountAuthoritative:
-          teamSizeSource === "war_event_snapshot",
         participation,
       });
 
@@ -6708,7 +6687,6 @@ export class WarEventLogService {
   /** Purpose: bounded DB-first retry for war-end goals after compliance reconciliation. */
   private async reconcileCanonicalWarEndGoals(): Promise<void> {
     const db = prisma as typeof prisma & {
-      warLookup?: { findMany?: typeof prisma.warLookup.findMany };
       warEvent?: { findMany?: typeof prisma.warEvent.findMany };
       trackedClan?: { findMany?: typeof prisma.trackedClan.findMany };
     };
@@ -6716,7 +6694,6 @@ export class WarEventLogService {
       !prisma.clanWarHistory?.findMany ||
       !prisma.warPlanComplianceEvaluation?.findMany ||
       !prisma.clanWarParticipation?.findMany ||
-      !db.warLookup?.findMany ||
       !db.warEvent?.findMany ||
       !db.trackedClan?.findMany
     ) {
@@ -6787,7 +6764,7 @@ export class WarEventLogService {
       "clan_goal:FWA_NO_VIOLATIONS",
       "clan_goal:WAR_NO_MISSED_ATTACKS",
     ];
-    const [evaluations, participation, lookups, goalEvents, trackedClans] =
+    const [evaluations, participation, goalEvents, trackedClans] =
       await Promise.all([
         prisma.warPlanComplianceEvaluation.findMany({
           where: { warId: { in: warIds } },
@@ -6809,10 +6786,6 @@ export class WarEventLogService {
             playerTag: true,
             attacksMissed: true,
           },
-        }),
-        db.warLookup.findMany({
-          where: { warId: { in: warIdStrings } },
-          select: { warId: true, payload: true },
         }),
         db.warEvent.findMany({
           where: { warId: { in: warIds }, eventType: { in: goalEventTypes } },
@@ -6853,9 +6826,6 @@ export class WarEventLogService {
       guildIds.add(evaluation.guildId);
       guildIdsByWar.set(String(evaluation.warId), guildIds);
     }
-    const lookupByWarId = new Map(
-      lookups.map((lookup) => [String(lookup.warId), lookup] as const),
-    );
     const trackedByClanTag = new Map(
       trackedClans.map((tracked) => [normalizeTag(tracked.tag), tracked] as const),
     );
@@ -6889,20 +6859,6 @@ export class WarEventLogService {
         const evaluation = evaluationByGuildWar.get(`${guildId}:${history.warId}`);
         const scopedParticipation =
           participationByGuildWar.get(`${guildId}:${history.warId}`) ?? [];
-        const lookup = lookupByWarId.get(String(history.warId));
-        const lookupPayload =
-          lookup?.payload && typeof lookup.payload === "object"
-            ? (lookup.payload as {
-                warMeta?: { teamSize?: unknown; teamSizeSource?: unknown };
-              })
-            : null;
-        const teamSizeSource = String(
-          lookupPayload?.warMeta?.teamSizeSource ?? "",
-        ).trim();
-        const expectedParticipantCount =
-          teamSizeSource === "war_event_snapshot"
-            ? Number(lookupPayload?.warMeta?.teamSize)
-            : null;
         const historyFacts = {
           warId: history.warId,
           clanTag: history.clanTag,
@@ -6931,9 +6887,6 @@ export class WarEventLogService {
           warId: history.warId,
           clanTag: history.clanTag,
           history: historyFacts,
-          expectedParticipantCount,
-          expectedParticipantCountAuthoritative:
-            teamSizeSource === "war_event_snapshot",
           participation: scopedParticipation,
         });
         const trackedContext: ClanGoalDeliveryContext = {
