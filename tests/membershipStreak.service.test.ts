@@ -17,6 +17,7 @@ type Fixture = {
   snapshots?: any[];
   warAttacks?: any[];
   points?: any[];
+  evaluations?: any[];
   histories?: any[];
   participation?: any[];
   lookups?: any[];
@@ -79,6 +80,7 @@ function groupedParticipationRows(rows: any[], args: any): any[] {
 }
 
 function makeDb(fixture: Fixture = {}) {
+  const points = (fixture.points ?? []).map((row) => ({ needsValidation: false, ...row }));
   return {
     syncCycle: {
       findMany: vi.fn(async (args: any) => filteredRows(fixture.cycles ?? [], args)),
@@ -89,8 +91,8 @@ function makeDb(fixture: Fixture = {}) {
       groupBy: vi.fn(async (args: any) => groupedBoundaryRows(fixture.snapshots ?? [], args)),
     },
     warAttacks: { findMany: vi.fn(async (args: any) => filteredRows(fixture.warAttacks ?? [], args)) },
-    clanPointsSync: { findMany: vi.fn(async (args: any) => filteredRows(fixture.points ?? [], args)) },
-    warPlanComplianceEvaluation: { findMany: vi.fn(async () => []) },
+    clanPointsSync: { findMany: vi.fn(async (args: any) => filteredRows(points, args)) },
+    warPlanComplianceEvaluation: { findMany: vi.fn(async () => fixture.evaluations ?? []) },
     clanWarHistory: { findMany: vi.fn(async () => fixture.histories ?? []) },
     clanWarParticipation: {
       findMany: vi.fn(async (args: any) => filteredRows(fixture.participation ?? [], args)),
@@ -159,6 +161,14 @@ function lookup(warId: number, clanTag: string, teamSize = 1) {
     warId: String(warId),
     clanTag,
     payload: { warMeta: { teamSizeSource: "war_event_snapshot", teamSize } },
+  };
+}
+
+function complianceEvaluation(history: any) {
+  return {
+    guildId,
+    warId: history.warId,
+    warHistory: { ...history },
   };
 }
 
@@ -546,6 +556,132 @@ describe("MembershipStreakService", () => {
     expect(evidence[playerTag][1].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
   });
 
+  it("does not let a stale extra point veto the current canonical tuple", async () => {
+    const current = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 551, syncTime: time(1) }],
+      points: [
+        { ...current.point, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+        { ...current.point, warId: "900002" },
+      ],
+      histories: [current.history],
+      participation: current.participation,
+      lookups: [lookup(current.history.warId, rockyRoad)],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("canonicalizes an exact tuple even when the raw point says non-FWA", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [{ ...row.point, isFwa: false }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("ignores unmatched non-FWA operational evidence beside valid FWA evidence", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1", isFwa: false },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("ignores dirty points while preserving safe canonical evidence", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [row.point, { ...row.point, warId: "900001", needsValidation: true }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("does not establish historical ownership from dirty points alone", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [{ ...row.point, needsValidation: true }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(built.db.clanWarHistory.findMany).not.toHaveBeenCalled();
+  });
+
+  it("uses canonical compliance evidence when a raw point is unmatched", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 551, syncTime: time(1) }],
+      points: [{ ...row.point, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" }],
+      histories: [row.history],
+      evaluations: [complianceEvaluation(row.history)],
+      participation: row.participation,
+      lookups: [lookup(row.history.warId, rockyRoad)],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("fails closed when one exact tuple matches multiple canonical histories", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 551, syncTime: time(1) }],
+      points: [row.point],
+      histories: [row.history, { ...row.history, warId: 100124 }],
+      participation: row.participation,
+      lookups: [lookup(row.history.warId, rockyRoad)],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+    expect(built.db.clanWarParticipation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("resolves positive participation without trusted team-size coverage", async () => {
+    const row = historical(551, 1, rockyRoad, [playerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      lookups: [{ warId: "100123", clanTag: rockyRoad, payload: { warMeta: { teamSize: 50 } } }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", source: "FWA_WAR_PARTICIPATION" });
+  });
+
+  it("does not assert negative membership without trusted team-size coverage", async () => {
+    const row = historical(551, 1, rockyRoad, [otherPlayerTag], 100123);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      lookups: [{ warId: "100123", clanTag: rockyRoad, payload: { warMeta: { teamSize: 50 } } }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
   it("ignores an unrelated raw-ID collision when tuple recovery is available", async () => {
     const built = serviceFor({
       cycles: [{ guildId, syncNumber: 551, syncTime: time(1) }],
@@ -563,7 +699,7 @@ describe("MembershipStreakService", () => {
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
   });
 
-  it("fails closed on persisted sync-number disagreement", async () => {
+  it("ignores persisted raw-ID disagreement when the canonical tuple resolves", async () => {
     const built = serviceFor({
       cycles: [
         { guildId, syncNumber: 552, syncTime: time(2) },
@@ -580,7 +716,7 @@ describe("MembershipStreakService", () => {
 
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
-    expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][1].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
   });
 
   it("fails closed when no guild-scoped canonical ownership can be established", async () => {
@@ -680,6 +816,67 @@ describe("MembershipStreakService", () => {
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
     expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("resolves canonical positive participation despite unmatched extra FWA evidence", async () => {
+    const row = historical(552, 1, rockyRoad, [playerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, clanTag: partyBlizzard, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "RESOLVED", clanTag: rockyRoad });
+  });
+
+  it("keeps absence unknown when an ambiguous owner accompanies complete coverage", async () => {
+    const complete = historical(552, 1, rockyRoad, [otherPlayerTag], 1005520);
+    const ambiguous = historical(552, 1, partyBlizzard, [otherPlayerTag], 1005521);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 552, syncTime: time(1) }],
+      points: [complete.point, ambiguous.point],
+      histories: [complete.history, ambiguous.history, { ...ambiguous.history, warId: 1005522 }],
+      participation: complete.participation,
+      lookups: [lookup(complete.history.warId, rockyRoad)],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("allows negative proof with unmatched non-FWA operational evidence", async () => {
+    const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, isFwa: false, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
+  });
+
+  it("allows negative proof when dirty FWA-looking evidence is present", async () => {
+    const row = historical(552, 1, rockyRoad, [otherPlayerTag]);
+    const built = serviceFor({
+      ...historicalFixture([row]),
+      points: [
+        row.point,
+        { ...row.point, needsValidation: true, warId: "900001", warStartTime: time(2), opponentTag: "#OLD1" },
+      ],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+
+    expect(evidence[playerTag][0].fwa).toMatchObject({ status: "ABSENT", source: "FWA_WAR_PARTICIPATION" });
   });
 
   it("requires complete canonical coverage of every expected historical participating clan", async () => {
