@@ -26,7 +26,6 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
-import { prisma } from "../src/prisma";
 import { WarEventHistoryService } from "../src/services/war-events/history";
 
 describe("WarEventHistoryService.persistWarEndHistory", () => {
@@ -189,6 +188,44 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     ]);
     expect(JSON.stringify(lookupSqlArg)).toContain("teamSize");
     expect(JSON.stringify(lookupSqlArg)).toContain("war_event_snapshot");
+  });
+
+  it("archives every canonical war member, including zero-attack members", async () => {
+    const order: string[] = [];
+    const { service } = buildService(order);
+    vi.restoreAllMocks();
+    const createMany = vi.fn(async () => ({ count: 45 }));
+    const tx = { clanWarParticipation: { createMany } };
+    const participantRows = Array.from({ length: 45 }, (_, index) => ({
+      playerTag: `#P${index + 1}`,
+      playerName: `Player ${index + 1}`,
+      playerPosition: index + 1,
+    }));
+
+    await (service as any).persistWarParticipationSnapshot({
+      tx,
+      guildId: "g1",
+      warId: "99",
+      clanTag: "#AAA111",
+      opponentTag: "#OPP",
+      warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+      warEndTime: new Date("2026-03-30T01:00:00.000Z"),
+      matchType: "FWA",
+      participantRows,
+      attackRows: [{
+        playerTag: "#P1",
+        playerName: "Player 1",
+        stars: 3,
+        trueStars: 3,
+        attackSeenAt: new Date("2026-03-30T00:30:00.000Z"),
+      }],
+    });
+
+    const rows = createMany.mock.calls[0][0].data;
+    expect(rows).toHaveLength(45);
+    expect(rows.filter((row: any) => row.attacksUsed === 0)).toHaveLength(44);
+    expect(rows.find((row: any) => row.playerTag === "#P2")).toMatchObject({ attacksUsed: 0, attacksMissed: 2, missedBoth: true, firstAttackAt: null });
+    expect(rows.find((row: any) => row.playerTag === "#P1")).toMatchObject({ attacksUsed: 1, attacksMissed: 1, missedBoth: false });
   });
 
   it("preserves existing WarLookup payload and participation when re-entered without live attacks", async () => {
