@@ -297,14 +297,21 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(plan.reports[0].plannedRows[0]).toMatchObject({ attacksUsed: 1, attacksMissed: 1, starsEarned: 2, trueStars: 2 });
   });
 
-  it("keeps unrelated participants recoverable after one participant attack-integrity failure", async () => {
-    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 1 }, { playerTag: "#P2", attacksUsed: 0 }], [
-      { playerTag: "#P1", stars: 4, trueStars: 4, attackSeenAt: start.toISOString() },
-    ]);
-    evidence.payload.warMeta.teamSize = 3;
+  it("refuses partial repair when one participant is unreconstructable", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 1 }, { playerTag: "#P2", attacksUsed: 0 }], []);
     const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
-    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archivePositivePlayerCount: 2, reconstructableCount: 1, plannedInsertCount: 1, skippedUnreconstructableCount: 1, projectedCoverage: "PARTIAL" });
-    expect(plan.reports[0].plannedRows[0].playerTag).toBe("#P2");
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", archivePositivePlayerCount: 2, reconstructableCount: 1, plannedInsertCount: 0, skippedUnreconstructableCount: 1, projectedCoverage: "UNKNOWN", reasons: expect.arrayContaining(["canonical_roster_unreconstructable"]) });
+  });
+
+  it("refuses all writes when a canonical participant lacks reconstructable attack evidence", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2" }], []);
+    const { db, participation } = makeDb({
+      lookups: [evidence],
+      participation: [{ guildId, warId: "100", clanTag: "#HOME", playerTag: "#P1", matchType: "FWA", warStartTime: start }],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", plannedInsertCount: 0, skippedUnreconstructableCount: 1, projectedCoverage: "UNKNOWN", reasons: expect.arrayContaining(["canonical_roster_unreconstructable"]) });
+    expect(participation).toHaveLength(1);
   });
 
   it("retains attack-corrupt positive identity for same-sync cross-clan conflict detection", async () => {
@@ -338,40 +345,74 @@ describe("backfillMembershipHistoryParticipation", () => {
     expect(plan.reports[0].reasons).toEqual(expect.arrayContaining(["malformed_attack", "declared_attack_count_mismatch"]));
   });
 
-  it("reports genuine partial and unknown coverage while retaining positive rows", async () => {
+  it("derives the complete roster count from canonical participants without metadata", async () => {
     const partialLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }, { playerTag: "#P3", attacksUsed: 1 }], [{ playerTag: "#P2", stars: 1, trueStars: 1, attackSeenAt: start.toISOString() }]);
-    partialLookup.payload.warMeta.teamSize = 3;
-    const partial = makeDb({ lookups: [partialLookup] }).db;
-    const partialPlan = await new MembershipHistoryParticipationBackfillService(partial).plan(guildId, new Set([543]));
-    expect(partialPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "PARTIAL", expectedTeamSize: 3, archivePositivePlayerCount: 3, skippedUnreconstructableCount: 1 });
+    delete partialLookup.payload.warMeta.teamSize;
+    delete partialLookup.payload.warMeta.teamSizeSource;
+    partialLookup.payload.canonical.participants = Array.from({ length: 45 }, (_, index) => ({ playerTag: `#P${index + 1}`, attacksUsed: 0 }));
+    partialLookup.payload.canonical.attacks = [];
+    const full = makeDb({ lookups: [partialLookup] }).db;
+    const fullPlan = await new MembershipHistoryParticipationBackfillService(full).plan(guildId, new Set([543]));
+    expect(fullPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "COMPLETE", expectedTeamSize: 45, archivePositivePlayerCount: 45, reconstructableCount: 45, plannedInsertCount: 45 });
 
     const unknownLookup = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }]);
     unknownLookup.payload.warMeta.teamSize = null;
     unknownLookup.payload.warMeta.teamSizeSource = "unknown";
     const unknown = makeDb({ lookups: [unknownLookup] }).db;
     const unknownPlan = await new MembershipHistoryParticipationBackfillService(unknown).plan(guildId, new Set([543]));
-    expect(unknownPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "UNKNOWN", expectedTeamSize: null });
+    expect(unknownPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedCoverage: "COMPLETE", expectedTeamSize: 1 });
   });
 
-  it("counts authoritative positive identities even when one participant is unreconstructable", async () => {
-    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], []);
-    evidence.payload.warMeta.teamSize = 1;
+  it("supports a complete 50-player canonical roster without team-size metadata", async () => {
+    const evidence = lookup(100, Array.from({ length: 50 }, (_, index) => ({ playerTag: `#P${index + 1}`, attacksUsed: 0 })), []);
+    delete evidence.payload.warMeta.teamSize;
+    delete evidence.payload.warMeta.teamSizeSource;
     const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
-    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", projectedDistinctParticipationCount: 1, archivePositivePlayerCount: 2, skippedUnreconstructableCount: 1, reasons: expect.arrayContaining(["authoritative_positive_roster_exceeds_team_size"]) });
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", expectedTeamSize: 50, archivePositivePlayerCount: 50, reconstructableCount: 50, plannedInsertCount: 50, projectedDistinctParticipationCount: 50, projectedCoverage: "COMPLETE" });
+  });
+
+  it("keeps an existing complete roster as an idempotent no-op without metadata", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 0 }], []);
+    delete evidence.payload.warMeta.teamSize;
+    delete evidence.payload.warMeta.teamSizeSource;
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({
+      lookups: [evidence],
+      participation: [
+        { guildId, warId: "100", clanTag: "#HOME", playerTag: "#P1", matchType: "FWA", warStartTime: start },
+        { guildId, warId: "100", clanTag: "#HOME", playerTag: "#P2", matchType: "FWA", warStartTime: start },
+      ],
+    }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "ALREADY_PRESENT", expectedTeamSize: 2, plannedInsertCount: 0, projectedDistinctParticipationCount: 2, projectedCoverage: "COMPLETE" });
+  });
+
+  it("does not synthesize a roster when canonical participants are absent", async () => {
+    const evidence = lookup(100, [], []);
+    delete evidence.payload.canonical.participants;
+    const { db, participation } = makeDb({
+      lookups: [evidence],
+      participation: [{ guildId, warId: "100", clanTag: "#HOME", playerTag: "#P1", matchType: "FWA", warStartTime: start }],
+    });
+    const plan = await new MembershipHistoryParticipationBackfillService(db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "ALREADY_PRESENT", expectedTeamSize: null, plannedInsertCount: 0, projectedCoverage: "UNKNOWN", reasons: expect.arrayContaining(["missing_canonical_participants"]) });
+    expect(participation).toHaveLength(1);
+  });
+
+  it("fails closed when canonical participant reconstruction is incomplete", async () => {
+    const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], []);
+    const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", projectedDistinctParticipationCount: 0, archivePositivePlayerCount: 2, skippedUnreconstructableCount: 1, plannedInsertCount: 0, reasons: expect.arrayContaining(["canonical_roster_unreconstructable"]) });
   });
 
   it("does not report complete coverage when an unidentified archive participant remains", async () => {
     const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { name: "missing tag" }]);
-    evidence.payload.warMeta.teamSize = 1;
     const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
-    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", projectedDistinctParticipationCount: 1, projectedCoverage: "PARTIAL", unidentifiedParticipantCount: 1, skippedUnreconstructableCount: 1, reasons: expect.arrayContaining(["unidentified_participant_with_projected_complete_roster"]) });
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", projectedDistinctParticipationCount: 0, projectedCoverage: "UNKNOWN", unidentifiedParticipantCount: 1, skippedUnreconstructableCount: 1, plannedInsertCount: 0, reasons: expect.arrayContaining(["malformed_participant", "canonical_roster_unreconstructable"]) });
   });
 
-  it("permits safe partial recovery when valid positive evidence is incomplete", async () => {
+  it("does not partially recover valid positive evidence when the archive is incomplete", async () => {
     const evidence = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 1 }], []);
-    evidence.payload.warMeta.teamSize = 3;
     const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [evidence] }).db).plan(guildId, new Set([543]));
-    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", projectedDistinctParticipationCount: 1, projectedCoverage: "PARTIAL", skippedUnreconstructableCount: 1 });
+    expect(plan.reports[0]).toMatchObject({ action: "SKIP", projectedDistinctParticipationCount: 0, projectedCoverage: "UNKNOWN", skippedUnreconstructableCount: 1, plannedInsertCount: 0 });
   });
 
   it("detects positive identities across a missing lookup and a reconstructable clan", async () => {
@@ -416,7 +457,7 @@ describe("backfillMembershipHistoryParticipation", () => {
     const oneSlot = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P2", attacksUsed: 0 }]);
     oneSlot.payload.warMeta.teamSize = 1;
     const plan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [oneSlot] }).db).plan(guildId, new Set([543]));
-    expect(plan.reports[0]).toMatchObject({ action: "CONFLICT", plannedInsertCount: 0, projectedCoverage: "PARTIAL" });
+    expect(plan.reports[0]).toMatchObject({ action: "INSERT_MISSING", plannedInsertCount: 2, expectedTeamSize: 2, projectedCoverage: "COMPLETE" });
   });
 
   it("rejects contradictory same-sync cross-clan player evidence without choosing a clan", async () => {
@@ -444,7 +485,7 @@ describe("backfillMembershipHistoryParticipation", () => {
 
     const identical = lookup(100, [{ playerTag: "#P1", attacksUsed: 0 }, { playerTag: "#P1", attacksUsed: 0 }]);
     const identicalPlan = await new MembershipHistoryParticipationBackfillService(makeDb({ lookups: [identical] }).db).plan(guildId, new Set([543]));
-    expect(identicalPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archiveParticipantCount: 2, archivePositivePlayerCount: 1, reconstructableCount: 1, plannedInsertCount: 1, projectedCoverage: "PARTIAL" });
+    expect(identicalPlan.reports[0]).toMatchObject({ action: "INSERT_MISSING", archiveParticipantCount: 2, archivePositivePlayerCount: 1, reconstructableCount: 1, plannedInsertCount: 1, expectedTeamSize: 1, projectedCoverage: "COMPLETE" });
   });
 
   it("accepts string-only participants only with matching attack evidence", async () => {

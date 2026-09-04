@@ -378,14 +378,6 @@ function ownerKey(point: PointIdentity): string {
   return `${point.guildId}|${point.syncNumber}`;
 }
 
-/** Purpose: read only the authoritative archived team size when its provenance is explicit. */
-function parseTeamSize(payload: unknown): number | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const warMeta = (payload as any).warMeta;
-  if (!warMeta || typeof warMeta !== "object" || comparable(warMeta.teamSizeSource) !== "WAR_EVENT_SNAPSHOT") return null;
-  return positiveInteger(warMeta.teamSize);
-}
-
 /** Purpose: safely narrow an archived JSON value to a non-array object. */
 function objectRecord(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
@@ -746,7 +738,8 @@ function uniqueRows(rows: ExistingParticipation[]): ExistingParticipation[] {
 
 /** Purpose: classify identity and cardinality reasons that require fail-closed apply behavior. */
 function reasonConflict(reason: string): boolean {
-  return reason.startsWith("identity_") || reason.startsWith("lookup_") || reason.startsWith("canonical_") || [
+  return reason.startsWith("identity_") || reason.startsWith("lookup_") ||
+    (reason.startsWith("canonical_") && !["canonical_roster_complete", "canonical_roster_unreconstructable"].includes(reason)) || [
     "conflicting_persisted_identity_sources",
     "persisted_sync_number_disagreement",
     "conflicting_war_identities",
@@ -759,9 +752,8 @@ function reasonConflict(reason: string): boolean {
     "attack_player_unreconcilable",
     "existing_structural_identity_conflict",
     "same_sync_player_multiple_clans",
-    "projected_roster_exceeds_team_size",
-    "authoritative_positive_roster_exceeds_team_size",
-    "unidentified_participant_with_projected_complete_roster",
+    "projected_roster_exceeds_canonical_roster",
+    "canonical_roster_contains_extra_existing_player",
     "duplicate_canonical_attack_order",
     "invalid_canonical_attack_order",
     "mixed_canonical_attack_identity",
@@ -1116,11 +1108,11 @@ export class MembershipHistoryParticipationBackfillService {
     if (lookupReasons.length > 0) return this.skipReport(guild, syncNumber, history.clanTag, history.warId, [...reasons], "CONFLICT", existingOverrides);
     const archive = parseArchive(history, lookup);
     for (const reason of archive.reasons) reasons.add(reason);
-    const expectedTeamSize = parseTeamSize(lookup.payload);
     const canonical = objectRecord(lookup.payload)?.canonical;
     const archiveParticipantCount = canonical && Array.isArray(canonical.participants) ? (canonical.participants as unknown[]).length : 0;
     const archivePositivePlayerTags = archive.archivePositivePlayerTags;
     const knownPositivePlayerTags = new Set([...archivePositivePlayerTags, ...existingPositivePlayerTags]);
+    const canonicalParticipantsPresent = Boolean(canonical && Array.isArray(canonical.participants));
     const baseArchiveOverrides = {
       archiveParticipantCount,
       archivePositivePlayerCount: archivePositivePlayerTags.size,
@@ -1129,10 +1121,44 @@ export class MembershipHistoryParticipationBackfillService {
       skippedUnreconstructableCount: archive.skippedUnreconstructableCount,
       malformedParticipantCount: archive.malformedParticipantCount,
       unidentifiedParticipantCount: archive.unidentifiedParticipantCount,
-      expectedTeamSize,
+      expectedTeamSize: null,
       candidatePlayerTags: [...knownPositivePlayerTags].sort(),
     };
     if (archive.conflict) return this.skipReport(guild, syncNumber, history.clanTag, history.warId, [...reasons], "CONFLICT", baseArchiveOverrides);
+    const canonicalRosterComplete = canonicalParticipantsPresent &&
+      archive.malformedParticipantCount === 0 &&
+      archive.unidentifiedParticipantCount === 0 &&
+      archive.skippedPlayers.size === 0 &&
+      archive.participants.length === archivePositivePlayerTags.size;
+    if (!canonicalRosterComplete) {
+      if (canonicalParticipantsPresent) reasons.add("canonical_roster_unreconstructable");
+      const projectedDistinctParticipationCount = existingPositivePlayerTags.size;
+      const incompleteArchiveHasConflict = [...reasons].some(reasonConflict);
+      const incompleteArchiveAction: ParticipationBackfillAction = incompleteArchiveHasConflict
+        ? "CONFLICT"
+        : !canonicalParticipantsPresent && compatibleExisting.length > 0
+          ? "ALREADY_PRESENT"
+          : "SKIP";
+      return this.skipReport(
+        guild,
+        syncNumber,
+        history.clanTag,
+        history.warId,
+        [...reasons],
+        incompleteArchiveAction,
+        {
+          ...baseArchiveOverrides,
+          reconstructableCount: archive.participants.length,
+          projectedDistinctParticipationCount,
+          projectedCoverage: "UNKNOWN",
+        },
+      );
+    }
+    const expectedRosterCount = archivePositivePlayerTags.size;
+    reasons.add("canonical_roster_complete");
+    if ([...existingPositivePlayerTags].some((playerTag) => !archivePositivePlayerTags.has(playerTag))) {
+      reasons.add("canonical_roster_contains_extra_existing_player");
+    }
     const participantRows: ParticipationParticipantInput[] = archive.participants.map((participant) => ({ playerTag: participant.playerTag, playerName: participant.playerName, playerPosition: participant.playerPosition }));
     const reconstructed = buildParticipationRows({ guildId: guild, warId: String(history.warId), clanTag: history.clanTag, opponentTag: history.opponentTag ?? null, warStartTime: history.warStartTime!, warEndTime: archive.warEndTime, matchType: "FWA", participantRows, attackRows: archive.attacks ?? [] });
     const plannedRows: ParticipationRow[] = [];
@@ -1143,15 +1169,12 @@ export class MembershipHistoryParticipationBackfillService {
     }
     const projectedTags = new Set([...existingPositivePlayerTags, ...plannedRows.map((row) => row.playerTag)]);
     const projectedCount = projectedTags.size;
-    if (expectedTeamSize !== null && knownPositivePlayerTags.size > expectedTeamSize) reasons.add("authoritative_positive_roster_exceeds_team_size");
-    if (expectedTeamSize !== null && projectedCount > expectedTeamSize) reasons.add("projected_roster_exceeds_team_size");
-    if (expectedTeamSize !== null && archive.unidentifiedParticipantCount > 0 && projectedCount === expectedTeamSize) reasons.add("unidentified_participant_with_projected_complete_roster");
+    if (knownPositivePlayerTags.size > expectedRosterCount) reasons.add("projected_roster_exceeds_canonical_roster");
+    if (projectedCount > expectedRosterCount) reasons.add("projected_roster_exceeds_canonical_roster");
     const conflict = [...reasons].some(reasonConflict);
-    const projectedCoverage: ProjectedRosterCoverage = expectedTeamSize === null
-      ? "UNKNOWN"
-      : projectedCount === expectedTeamSize && archive.unidentifiedParticipantCount === 0 && knownPositivePlayerTags.size <= expectedTeamSize
-        ? "COMPLETE"
-        : "PARTIAL";
+    const projectedCoverage: ProjectedRosterCoverage = projectedCount === expectedRosterCount && knownPositivePlayerTags.size <= expectedRosterCount
+      ? "COMPLETE"
+      : "PARTIAL";
     const action: ParticipationBackfillAction = conflict ? "CONFLICT" : plannedRows.length > 0 ? "INSERT_MISSING" : reconstructed.length === 0 && compatibleExisting.length === 0 ? "SKIP" : "ALREADY_PRESENT";
     return {
       guildId: guild,
@@ -1168,7 +1191,7 @@ export class MembershipHistoryParticipationBackfillService {
       skippedUnreconstructableCount: archive.skippedUnreconstructableCount,
       malformedParticipantCount: archive.malformedParticipantCount,
       unidentifiedParticipantCount: archive.unidentifiedParticipantCount,
-      expectedTeamSize,
+      expectedTeamSize: expectedRosterCount,
       projectedDistinctParticipationCount: projectedCount,
       projectedCoverage,
       reasons: sortedReasons(reasons),
