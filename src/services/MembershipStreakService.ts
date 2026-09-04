@@ -93,6 +93,7 @@ type MembershipStreakDb = {
   clanWarHistory: { findMany: (args?: any) => Promise<any[]> };
   clanWarParticipation: {
     findMany: (args?: any) => Promise<any[]>;
+    groupBy: (args?: any) => Promise<any[]>;
   };
 };
 
@@ -890,22 +891,27 @@ export class MembershipStreakService {
       expectedFwaClanTagsByBoundary.set(boundaryKey, clanTags);
     }
     const warIds = [...new Set(histories.map((row) => String(row.warId)))];
-    const [rawParticipation] = warIds.length > 0
+    const [rawParticipation, rawParticipationCounts] = warIds.length > 0
       ? await Promise.all([
           this.db.clanWarParticipation.findMany({
-            where: { guildId, warId: { in: warIds } },
+            where: { guildId, warId: { in: warIds }, playerTag: { in: playerTags } },
             orderBy: [{ warId: "asc" }, { playerTag: "asc" }, { clanTag: "asc" }],
-            select: { guildId: true, warId: true, clanTag: true, playerTag: true },
+            select: { warId: true, clanTag: true, playerTag: true },
+          }),
+          this.db.clanWarParticipation.groupBy({
+            by: ["warId", "clanTag"],
+            where: { guildId, warId: { in: warIds } },
+            _count: { playerTag: true },
           }),
         ])
-      : [[]];
+      : [[], []];
 
     const observedParticipationRosterKeys = new Set<string>();
-    for (const row of rawParticipation) {
+    for (const row of rawParticipationCounts) {
       const warId = normalizePositiveInteger(row?.warId);
       const clanTag = normalizeClanTag(row?.clanTag);
-      const playerTag = normalizePlayerTag(row?.playerTag);
-      if (!warId || !clanTag || !playerTag) continue;
+      const count = Number(row?._count?.playerTag);
+      if (!warId || !clanTag || !Number.isInteger(count) || count <= 0) continue;
       observedParticipationRosterKeys.add(rosterKey(warId, clanTag));
     }
     const historicalCoverageByRosterKey = new Map<string, RosterCompleteness>();
