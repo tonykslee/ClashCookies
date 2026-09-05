@@ -1,5 +1,9 @@
-import { prisma } from "../prisma";
 import { normalizeClashTagWithHash } from "../helper/clashTag";
+import { prisma } from "../prisma";
+import {
+  resolvePersistedCwlEventTimings,
+  type CwlEventTimingDb,
+} from "./CwlEventTimingService";
 
 export type CwlAllianceActivityInput = {
   season: string;
@@ -129,7 +133,7 @@ export type CwlAllianceActivityResult = {
   };
 };
 
-type ActivityDb = {
+type ActivityDb = CwlEventTimingDb & {
   trackedClan: { findMany: (args?: any) => Promise<any[]> };
   cwlTrackedClan: { findMany: (args?: any) => Promise<any[]> };
   cwlEventClan: { findMany: (args?: any) => Promise<any[]> };
@@ -452,7 +456,7 @@ type ResolvedCwlWindow = {
 
 /** Purpose: derive the CWL window from Round 1 and ended Round 7 owners without inventing ongoing end times. */
 async function resolveCwlWindow(input: {
-  db: ActivityDb;
+  db: CwlEventTimingDb;
   eventInstanceIds: string[];
 }): Promise<ResolvedCwlWindow> {
   if (input.eventInstanceIds.length <= 0) {
@@ -467,45 +471,21 @@ async function resolveCwlWindow(input: {
       endTimingResolved: false,
     };
   }
-  const where = { eventInstanceId: { in: input.eventInstanceIds } };
-  const [currentRows, prepRows, historyRows] = await Promise.all([
-    input.db.currentCwlRound.findMany({ where }),
-    input.db.currentCwlPrepSnapshot.findMany({ where }),
-    input.db.cwlRoundHistory.findMany({ where }),
-  ]);
-  const allRows = [...currentRows, ...prepRows, ...historyRows];
-  const rowsByEvent = new Map<string, any[]>();
-  for (const row of allRows) {
-    const eventInstanceId = String(row?.eventInstanceId ?? "");
-    if (!eventInstanceId) continue;
-    const rows = rowsByEvent.get(eventInstanceId) ?? [];
-    rows.push(row);
-    rowsByEvent.set(eventInstanceId, rows);
-  }
+  const timings = await resolvePersistedCwlEventTimings(input.db, input.eventInstanceIds);
   const starts: Date[] = [];
   const ends: Date[] = [];
   const missingTimingDetails: string[] = [];
   for (const eventInstanceId of input.eventInstanceIds) {
-    const rows = rowsByEvent.get(eventInstanceId) ?? [];
-    const roundOneRows = rows.filter((row) => Number(row?.roundDay) === 1);
-    const startCandidates = roundOneRows
-      .map((row) => asDate(row?.preparationStartTime) ?? asDate(row?.startTime))
-      .filter((value): value is Date => Boolean(value));
-    const finalEndedRows = rows.filter(
-      (row) => Number(row?.roundDay) === 7 && isEndedCwlRoundState(row?.roundState),
-    );
-    const endCandidates = finalEndedRows
-      .map((row) => asDate(row?.endTime))
-      .filter((value): value is Date => Boolean(value));
-    if (startCandidates.length <= 0) {
+    const timing = timings.get(eventInstanceId);
+    if (!timing?.startResolved || !timing.startsAt) {
       missingTimingDetails.push(`${eventInstanceId}:START_ROUND_1`);
     } else {
-      starts.push(minDate(startCandidates));
+      starts.push(timing.startsAt);
     }
-    if (endCandidates.length <= 0) {
+    if (!timing?.endResolved || !timing.endsAt) {
       missingTimingDetails.push(`${eventInstanceId}:FINAL_END_ROUND_7`);
     } else {
-      ends.push(maxDate(endCandidates));
+      ends.push(timing.endsAt);
     }
   }
   const startCoverageComplete = !missingTimingDetails.some((detail) => detail.endsWith(":START_ROUND_1"));
@@ -521,11 +501,6 @@ async function resolveCwlWindow(input: {
     startTimingResolved: startCoverageComplete && starts.length > 0,
     endTimingResolved: complete && ends.length > 0,
   };
-}
-
-/** Purpose: recognize the persisted ended-round state used by CWL history ownership. */
-function isEndedCwlRoundState(value: unknown): boolean {
-  return String(value ?? "").toLowerCase().includes("warended");
 }
 
 type HistoryWar = CwlAllianceActivitySourceWar & { warId: number };
