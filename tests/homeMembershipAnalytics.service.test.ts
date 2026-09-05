@@ -28,7 +28,7 @@ function home(clanTag = homeClanTag, startedAtSyncTime = time(1)): ActiveHomeMem
   };
 }
 
-function evidence(day: number, status: "RESOLVED" | "ABSENT" | "UNKNOWN", clanTag: string | null = null) {
+function evidence(day: number, status: "RESOLVED" | "ABSENT" | "UNKNOWN" | "AMBIGUOUS", clanTag: string | null = null) {
   const positive = status === "RESOLVED";
   return {
     playerTag,
@@ -36,7 +36,7 @@ function evidence(day: number, status: "RESOLVED" | "ABSENT" | "UNKNOWN", clanTa
     fwa: {
       status,
       clanTag: positive ? clanTag : null,
-      clanTags: positive && clanTag ? [clanTag] : [],
+      clanTags: (positive || status === "AMBIGUOUS") && clanTag ? [clanTag] : [],
       source: positive ? "FWA_WAR_PARTICIPATION" as const : null,
     },
     alliance: {
@@ -61,6 +61,7 @@ function streak(overrides: Partial<{
   latestEvidencePending: boolean;
   latestPendingClanValueAvailable: boolean;
   latestPendingAllianceValueAvailable: boolean;
+  latestCwlContinuityExempt: boolean;
 }> = {}) {
   return {
     playerTag: overrides.playerTag ?? playerTag,
@@ -75,6 +76,7 @@ function streak(overrides: Partial<{
     latestEvidencePending: overrides.latestEvidencePending ?? false,
     latestPendingClanValueAvailable: overrides.latestPendingClanValueAvailable ?? false,
     latestPendingAllianceValueAvailable: overrides.latestPendingAllianceValueAvailable ?? false,
+    latestCwlContinuityExempt: overrides.latestCwlContinuityExempt ?? false,
   };
 }
 
@@ -82,6 +84,7 @@ function serviceFor(input: {
   homes?: ActiveHomeMembership[];
   streaks?: ReturnType<typeof streak>[];
   boundaryTimes?: Date[];
+  boundaryIdentities?: Array<{ boundaryTime: Date; syncNumber: number | null }>;
   boundaryHistoryTruncated?: boolean;
   evidenceByPlayer?: Record<string, any[]>;
 }) {
@@ -92,6 +95,7 @@ function serviceFor(input: {
     getMembershipStreakBatchForPlayers: vi.fn(async () => ({
       streaks: input.streaks ?? [],
       boundaryTimes: input.boundaryTimes ?? [],
+      boundaryIdentities: input.boundaryIdentities ?? [],
       boundaryHistoryTruncated: input.boundaryHistoryTruncated ?? false,
       evidenceByPlayer: input.evidenceByPlayer ?? {},
     })),
@@ -104,6 +108,71 @@ function byTag(results: HomeMembershipAnalyticsResult[]): HomeMembershipAnalytic
 }
 
 describe("HomeMembershipAnalyticsService", () => {
+  it("keeps prior S/A values visible for a latest CWL-neutral UNKNOWN boundary", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "UNKNOWN", latestFwaClanTag: null, latestEvidenceAvailable: false, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 2, allianceStreakSyncs: 2 })],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "UNKNOWN"), evidence(2, "RESOLVED", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+  });
+
+  it("keeps prior S/A values visible for a latest CWL-neutral ABSENT boundary", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 2, allianceStreakSyncs: 2 })],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT"), evidence(2, "RESOLVED", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+  });
+
+  it("does not render exact zero for a latest CWL-neutral ABSENT boundary without an anchor", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestCwlContinuityExempt: true, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: null, allianceStreakSyncs: null });
+  });
+
+  it("does not render exact zero for a latest CWL-neutral UNKNOWN boundary without an anchor", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "UNKNOWN", latestFwaClanTag: null, latestEvidenceAvailable: false, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "UNKNOWN")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: null, allianceStreakSyncs: null });
+  });
+
+  it("keeps ordinary ABSENT rendering at exact zero without CWL exemption", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestCwlContinuityExempt: false, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0 });
+  });
+
   it("counts only resolved FWA-roster observations matching the active Home clan", async () => {
     const built = serviceFor({
       homes: [home(homeClanTag, time(1))],
@@ -115,6 +184,27 @@ describe("HomeMembershipAnalyticsService", () => {
     const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
 
     expect(result).toMatchObject({ clanTenureSyncs: 2, clanTenureIsLowerBound: false });
+  });
+
+  it("counts canonical Home observations before a late Home establishment", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag, time(3))],
+      streaks: [streak()],
+      boundaryTimes: [time(7), time(6), time(5), time(4), time(3)],
+      evidenceByPlayer: {
+        [playerTag]: [
+          evidence(7, "RESOLVED", homeClanTag),
+          evidence(6, "RESOLVED", homeClanTag),
+          evidence(5, "RESOLVED", homeClanTag),
+          evidence(4, "RESOLVED", homeClanTag),
+          evidence(3, "RESOLVED", homeClanTag),
+        ],
+      },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 5, clanTenureIsLowerBound: false });
   });
 
   it("does not erase prior C when the player moves to another clan", async () => {
@@ -140,7 +230,7 @@ describe("HomeMembershipAnalyticsService", () => {
 
     const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
 
-    expect(result).toMatchObject({ clanTenureSyncs: 2, clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+    expect(result).toMatchObject({ clanTenureSyncs: 2, clanTenureIsLowerBound: true, clanStreakSyncs: 2, allianceStreakSyncs: 2 });
   });
 
   it("does not synthesize S0/A0 when the prior boundary is unresolved", async () => {
@@ -175,6 +265,88 @@ describe("HomeMembershipAnalyticsService", () => {
     expect(result).toMatchObject({ clanTenureSyncs: null, clanTenureIsLowerBound: false });
   });
 
+  it("keeps Home tenure credit across UNKNOWN boundaries and marks C lower-bounded", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag, time(1))],
+      streaks: [streak()],
+      boundaryTimes: [time(6), time(5), time(4), time(3), time(2), time(1)],
+      boundaryIdentities: [6, 5, 4, 3, 2, 1].map((syncNumber, index) => ({
+        boundaryTime: time(6 - index),
+        syncNumber: 550 + syncNumber,
+      })),
+      evidenceByPlayer: {
+        [playerTag]: [
+          evidence(6, "RESOLVED", homeClanTag),
+          evidence(5, "UNKNOWN"),
+          evidence(4, "UNKNOWN"),
+          evidence(3, "UNKNOWN"),
+          evidence(2, "RESOLVED", homeClanTag),
+          evidence(1, "RESOLVED", homeClanTag),
+        ],
+      },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 3, clanTenureIsLowerBound: true });
+  });
+
+  it("does not reset C for a resolved observation in another clan", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag)],
+      streaks: [streak()],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "RESOLVED", homeClanTag), evidence(2, "RESOLVED", otherClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 2, clanTenureIsLowerBound: false });
+  });
+
+  it("does not lower-bound C for a known ABSENT boundary", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag)],
+      streaks: [streak()],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "RESOLVED", homeClanTag), evidence(2, "ABSENT"), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 2, clanTenureIsLowerBound: false });
+  });
+
+  it("does not credit an AMBIGUOUS boundary and lower-bounds C", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag)],
+      streaks: [streak()],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "RESOLVED", homeClanTag), evidence(2, "AMBIGUOUS", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 2, clanTenureIsLowerBound: true });
+  });
+
+  it("lower-bounds C across a canonical sync-number gap without synthesizing it", async () => {
+    const built = serviceFor({
+      homes: [home(homeClanTag)],
+      streaks: [streak()],
+      boundaryTimes: [time(4), time(3), time(2), time(1)],
+      boundaryIdentities: [556, 555, 553, 552].map((syncNumber, index) => ({
+        boundaryTime: time(4 - index),
+        syncNumber,
+      })),
+      evidenceByPlayer: { [playerTag]: [evidence(4, "RESOLVED", homeClanTag), evidence(3, "RESOLVED", homeClanTag), evidence(2, "RESOLVED", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanTenureSyncs: 4, clanTenureIsLowerBound: true });
+  });
+
   it("marks C as a lower bound when the bounded canonical window is truncated", async () => {
     const built = serviceFor({
       homes: [home(homeClanTag, time(1))],
@@ -189,7 +361,7 @@ describe("HomeMembershipAnalyticsService", () => {
     expect(result).toMatchObject({ clanTenureSyncs: 3, clanTenureIsLowerBound: true });
   });
 
-  it("keeps C exact when older pre-Home boundaries are truncated", async () => {
+  it("keeps C lower-bounded whenever the canonical history is truncated", async () => {
     const built = serviceFor({
       homes: [home(homeClanTag, time(5))],
       streaks: [streak()],
@@ -200,7 +372,7 @@ describe("HomeMembershipAnalyticsService", () => {
 
     const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
 
-    expect(result).toMatchObject({ clanTenureSyncs: 1, clanTenureIsLowerBound: false });
+    expect(result).toMatchObject({ clanTenureSyncs: 3, clanTenureIsLowerBound: true });
   });
 
   it("keeps physical and alliance streaks independent of Home ownership", async () => {

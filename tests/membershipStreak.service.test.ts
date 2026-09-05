@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { MembershipStreakService } from "../src/services/MembershipStreakService";
+import {
+  computeMembershipStreaksFromEvidence,
+  MembershipStreakService,
+} from "../src/services/MembershipStreakService";
+import { cwlContinuityPairKey } from "../src/services/CwlContinuityEvidenceService";
 
 const guildId = "guild-1";
 const playerTag = "#P2222";
@@ -172,7 +176,7 @@ function complianceEvaluation(history: any) {
   };
 }
 
-function serviceFor(fixture: Fixture, candidates: any[] = [], conflict = false) {
+function serviceFor(fixture: Fixture, candidates: any[] = [], conflict = false, cwlContinuityReader: any = null) {
   const db = makeDb(fixture);
   const activeReader = {
     findPersistedActiveSyncNumber: vi.fn(async () => ({
@@ -181,7 +185,7 @@ function serviceFor(fixture: Fixture, candidates: any[] = [], conflict = false) 
       candidates,
     })),
   };
-  return { service: new MembershipStreakService(db, activeReader), db, activeReader };
+  return { service: new MembershipStreakService(db, activeReader, cwlContinuityReader), db, activeReader };
 }
 
 function historicalFixture(rows: ReturnType<typeof historical>[]) {
@@ -197,7 +201,157 @@ function input(playerTags = [playerTag], maxBoundaries?: number) {
   return { guildId, playerTags, ...(maxBoundaries === undefined ? {} : { maxBoundaries }) };
 }
 
+function pureEvidence(
+  boundaryTime: Date,
+  status: "RESOLVED" | "AMBIGUOUS" | "ABSENT" | "UNKNOWN",
+  clanTag: string | null = rockyRoad,
+  cwlExempt = false,
+) {
+  const resolved = status === "RESOLVED";
+  const positive = resolved || status === "AMBIGUOUS";
+  return {
+    playerTag,
+    boundaryTime,
+    fwa: {
+      status,
+      clanTag: resolved ? clanTag : null,
+      clanTags: positive && clanTag ? [clanTag] : [],
+      source: positive ? "FWA_WAR_PARTICIPATION" as const : null,
+    },
+    alliance: {
+      positive,
+      clanTags: positive && clanTag ? [clanTag] : [],
+      ambiguous: status === "AMBIGUOUS",
+      sources: positive ? ["FWA_EVIDENCE" as const] : [],
+    },
+    ...(cwlExempt ? { continuity: { cwlExempt: true as const, source: "CWL_EXCURSION" as const } } : {}),
+  };
+}
+
+function canonicalIdentities(boundaries: Date[], startSync = 556) {
+  return boundaries.map((boundaryTime, index) => ({ boundaryTime, syncNumber: startSync - index }));
+}
+
 describe("MembershipStreakService", () => {
+  it("attaches bounded CWL-neutral evidence without changing the FWA status", async () => {
+    const boundaryTime = time(3);
+    const cwlContinuityReader = {
+      getEvidence: vi.fn(async () => ({
+        exemptPairs: new Set([cwlContinuityPairKey(playerTag, boundaryTime)]),
+        neutralBoundaryCount: 1,
+        neutralPlayerCount: 1,
+        candidatesRejected: 0,
+        ambiguousCandidates: 0,
+      })),
+    };
+    const built = serviceFor({ cycles: [{ guildId, syncNumber: 556, syncTime: boundaryTime }] }, [], false, cwlContinuityReader);
+
+    const batch = await built.service.getMembershipStreakBatchForPlayers(input());
+
+    expect(cwlContinuityReader.getEvidence).toHaveBeenCalledTimes(1);
+    expect(batch.evidenceByPlayer[playerTag][0]).toMatchObject({ fwa: { status: "UNKNOWN" }, continuity: { cwlExempt: true, source: "CWL_EXCURSION" } });
+    expect(batch.streaks[0]).toMatchObject({ latestFwaEvidenceStatus: "UNKNOWN", latestCwlContinuityExempt: true });
+  });
+
+  it("treats CWL-neutral UNKNOWN boundaries as continuity-neutral for S/A", () => {
+    const boundaries = [6, 5, 4, 3, 2, 1].map(time);
+    const result = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [
+        pureEvidence(boundaries[0], "RESOLVED"),
+        pureEvidence(boundaries[1], "UNKNOWN", null, true),
+        pureEvidence(boundaries[2], "UNKNOWN", null, true),
+        pureEvidence(boundaries[3], "UNKNOWN", null, true),
+        pureEvidence(boundaries[4], "RESOLVED"),
+        pureEvidence(boundaries[5], "RESOLVED"),
+      ],
+      false,
+      canonicalIdentities(boundaries),
+    );
+
+    expect(result).toMatchObject({ clanStreakSyncs: 3, allianceStreakSyncs: 3, clanStreakIsLowerBound: false, allianceStreakIsLowerBound: false });
+  });
+
+  it("treats CWL-neutral ABSENT boundaries as continuity-neutral without changing FWA status", () => {
+    const boundaries = [3, 2, 1].map(time);
+    const result = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "ABSENT", null, true), pureEvidence(boundaries[2], "RESOLVED")],
+      false,
+      canonicalIdentities(boundaries),
+    );
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, latestFwaEvidenceStatus: "RESOLVED" });
+  });
+
+  it("skips multiple leading CWL-neutral boundaries to the prior FWA anchor", () => {
+    const boundaries = [4, 3, 2, 1].map(time);
+    const result = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "UNKNOWN", null, true), pureEvidence(boundaries[1], "ABSENT", null, true), pureEvidence(boundaries[2], "RESOLVED"), pureEvidence(boundaries[3], "RESOLVED")],
+      false,
+      canonicalIdentities(boundaries),
+    );
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, clanStreakIsLowerBound: false, allianceStreakIsLowerBound: false });
+  });
+
+  it("does not neutralize ambiguous or resolved FWA evidence when flagged", () => {
+    const boundaries = [3, 2].map(time);
+    const result = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "AMBIGUOUS", rockyRoad, true)],
+      false,
+      canonicalIdentities(boundaries),
+    );
+    const resolvedFlagged = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "RESOLVED", rockyRoad, true)],
+      false,
+      canonicalIdentities(boundaries),
+    );
+
+    expect(result).toMatchObject({ clanStreakSyncs: 1, clanStreakIsLowerBound: true, allianceStreakSyncs: 2 });
+    expect(resolvedFlagged).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, clanStreakIsLowerBound: false });
+  });
+
+  it("does not bridge a resolved observation in another clan or a canonical sync gap", () => {
+    const boundaries = [3, 2, 1].map(time);
+    const otherClan = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "RESOLVED", otherAllianceClan, true), pureEvidence(boundaries[2], "RESOLVED")],
+      false,
+      canonicalIdentities(boundaries),
+    );
+    const gap = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "UNKNOWN", null, true), pureEvidence(boundaries[2], "RESOLVED")],
+      false,
+      [{ boundaryTime: boundaries[0], syncNumber: 545 }, { boundaryTime: boundaries[1], syncNumber: null }, { boundaryTime: boundaries[2], syncNumber: 543 }],
+    );
+
+    expect(otherClan).toMatchObject({ clanStreakSyncs: 1, allianceStreakSyncs: 3 });
+    expect(gap).toMatchObject({ clanStreakSyncs: 1, allianceStreakSyncs: 1, clanStreakIsLowerBound: true, allianceStreakIsLowerBound: true });
+  });
+
+  it("keeps ordinary UNKNOWN lower-bounded, ABSENT exact, and bounded history lower-bounded", () => {
+    const boundaries = [3, 2, 1].map(time);
+    const unknown = computeMembershipStreaksFromEvidence(playerTag, boundaries, [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "UNKNOWN"), pureEvidence(boundaries[2], "RESOLVED")], false, canonicalIdentities(boundaries));
+    const absent = computeMembershipStreaksFromEvidence(playerTag, boundaries, [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "ABSENT"), pureEvidence(boundaries[2], "RESOLVED")], false, canonicalIdentities(boundaries));
+    const bounded = computeMembershipStreaksFromEvidence(playerTag, boundaries, [pureEvidence(boundaries[0], "RESOLVED"), pureEvidence(boundaries[1], "RESOLVED"), pureEvidence(boundaries[2], "RESOLVED")], true, canonicalIdentities(boundaries));
+
+    expect(unknown).toMatchObject({ clanStreakSyncs: 1, clanStreakIsLowerBound: true, allianceStreakSyncs: 1, allianceStreakIsLowerBound: true });
+    expect(absent).toMatchObject({ clanStreakSyncs: 1, clanStreakIsLowerBound: false, allianceStreakSyncs: 1, allianceStreakIsLowerBound: false });
+    expect(bounded).toMatchObject({ clanStreakSyncs: 3, clanStreakIsLowerBound: true, allianceStreakSyncs: 3, allianceStreakIsLowerBound: true });
+  });
+
   it("uses canonical historical participation when a stale snapshot omits the player", async () => {
     const row = historical(552, 1, rockyRoad);
     const built = serviceFor({
