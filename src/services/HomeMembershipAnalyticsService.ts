@@ -95,6 +95,12 @@ function resolveClanTenure(input: {
 function resolvePhysicalClanStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
+  if (streak.latestCwlContinuityExempt) {
+    return {
+      syncs: streak.clanStreakSyncs > 0 ? streak.clanStreakSyncs : null,
+      isLowerBound: streak.clanStreakIsLowerBound,
+    };
+  }
   if (streak.latestFwaEvidenceStatus === "RESOLVED") {
     return {
       syncs: streak.clanStreakSyncs,
@@ -114,6 +120,12 @@ function resolvePhysicalClanStreak(
 function resolveAllianceStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
+  if (streak.latestCwlContinuityExempt) {
+    return {
+      syncs: streak.allianceStreakSyncs > 0 ? streak.allianceStreakSyncs : null,
+      isLowerBound: streak.allianceStreakIsLowerBound,
+    };
+  }
   if (!streak.latestBoundaryTime ||
       (!streak.latestEvidenceAvailable &&
         (!streak.latestEvidencePending || !streak.latestPendingAllianceValueAvailable))) {

@@ -61,6 +61,7 @@ function streak(overrides: Partial<{
   latestEvidencePending: boolean;
   latestPendingClanValueAvailable: boolean;
   latestPendingAllianceValueAvailable: boolean;
+  latestCwlContinuityExempt: boolean;
 }> = {}) {
   return {
     playerTag: overrides.playerTag ?? playerTag,
@@ -75,6 +76,7 @@ function streak(overrides: Partial<{
     latestEvidencePending: overrides.latestEvidencePending ?? false,
     latestPendingClanValueAvailable: overrides.latestPendingClanValueAvailable ?? false,
     latestPendingAllianceValueAvailable: overrides.latestPendingAllianceValueAvailable ?? false,
+    latestCwlContinuityExempt: overrides.latestCwlContinuityExempt ?? false,
   };
 }
 
@@ -106,6 +108,71 @@ function byTag(results: HomeMembershipAnalyticsResult[]): HomeMembershipAnalytic
 }
 
 describe("HomeMembershipAnalyticsService", () => {
+  it("keeps prior S/A values visible for a latest CWL-neutral UNKNOWN boundary", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "UNKNOWN", latestFwaClanTag: null, latestEvidenceAvailable: false, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 2, allianceStreakSyncs: 2 })],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "UNKNOWN"), evidence(2, "RESOLVED", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+  });
+
+  it("keeps prior S/A values visible for a latest CWL-neutral ABSENT boundary", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 2, allianceStreakSyncs: 2 })],
+      boundaryTimes: [time(3), time(2), time(1)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT"), evidence(2, "RESOLVED", homeClanTag), evidence(1, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+  });
+
+  it("does not render exact zero for a latest CWL-neutral ABSENT boundary without an anchor", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestCwlContinuityExempt: true, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: null, allianceStreakSyncs: null });
+  });
+
+  it("does not render exact zero for a latest CWL-neutral UNKNOWN boundary without an anchor", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "UNKNOWN", latestFwaClanTag: null, latestEvidenceAvailable: false, latestEvidencePending: false, latestCwlContinuityExempt: true, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "UNKNOWN")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: null, allianceStreakSyncs: null });
+  });
+
+  it("keeps ordinary ABSENT rendering at exact zero without CWL exemption", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({ latestFwaEvidenceStatus: "ABSENT", latestFwaClanTag: null, latestEvidenceAvailable: true, latestCwlContinuityExempt: false, clanStreakSyncs: 0, allianceStreakSyncs: 0 })],
+      boundaryTimes: [time(3)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "ABSENT")] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0 });
+  });
+
   it("counts only resolved FWA-roster observations matching the active Home clan", async () => {
     const built = serviceFor({
       homes: [home(homeClanTag, time(1))],
