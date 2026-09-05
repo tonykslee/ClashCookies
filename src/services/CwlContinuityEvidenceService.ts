@@ -60,6 +60,7 @@ type RosterCandidate = {
   season: string;
   playerTag: string;
   clanTag: string;
+  eventLastObservedAt: Date | null;
 };
 
 /** Purpose: prove whether one persisted player/clan interval belongs to the exact CWL window. */
@@ -67,6 +68,7 @@ function intervalProvesBoundary(
   interval: any,
   boundaryTime: Date,
   window: PersistedCwlWindow,
+  eventLastObservedAt: Date | null,
 ): boolean {
   const firstObservedAt = interval?.firstObservedAt instanceof Date ? interval.firstObservedAt : null;
   const endedAt = interval?.endedAt instanceof Date ? interval.endedAt : null;
@@ -76,6 +78,9 @@ function intervalProvesBoundary(
   if (window.endsAt && boundaryTime.getTime() > window.endsAt.getTime()) return false;
   if (boundaryTime.getTime() < window.startsAt.getTime()) {
     return !endedAt || window.startsAt.getTime() < endedAt.getTime();
+  }
+  if (!window.endsAt) {
+    if (!eventLastObservedAt || boundaryTime.getTime() > eventLastObservedAt.getTime()) return false;
   }
   return true;
 }
@@ -104,7 +109,13 @@ export class CwlContinuityEvidenceService {
           lastObservedAt: { gte: minBoundaryTime },
         },
       },
-      select: { eventInstanceId: true, season: true, playerTag: true, cwlClanTag: true },
+      select: {
+        eventInstanceId: true,
+        season: true,
+        playerTag: true,
+        cwlClanTag: true,
+        eventInstance: { select: { firstObservedAt: true, lastObservedAt: true } },
+      },
     });
     const rosterCandidates = playerSeasonRows
       .map((row): RosterCandidate | null => {
@@ -112,8 +123,11 @@ export class CwlContinuityEvidenceService {
         const clanTag = normalizeClanTag(row?.cwlClanTag);
         const season = String(row?.season ?? "").trim();
         const eventInstanceId = String(row?.eventInstanceId ?? "").trim();
+        const eventLastObservedAt = row?.eventInstance?.lastObservedAt instanceof Date
+          ? row.eventInstance.lastObservedAt
+          : null;
         return playerTag && clanTag && season && eventInstanceId
-          ? { eventInstanceId, season, playerTag, clanTag }
+          ? { eventInstanceId, season, playerTag, clanTag, eventLastObservedAt }
           : null;
       })
       .filter((row): row is RosterCandidate => row !== null);
@@ -166,7 +180,12 @@ export class CwlContinuityEvidenceService {
           if (candidate.playerTag !== playerTag || !trackedKeys.has(`${candidate.season}|${candidate.clanTag}`)) return false;
           const intervals = intervalsByPlayerAndClan.get(`${playerTag}|${candidate.clanTag}`) ?? [];
           const window = windows.get(candidate.season);
-          return Boolean(window && intervals.some((interval) => intervalProvesBoundary(interval, boundaryTime, window)));
+          return Boolean(window && intervals.some((interval) => intervalProvesBoundary(
+            interval,
+            boundaryTime,
+            window,
+            candidate.eventLastObservedAt,
+          )));
         });
         const uniqueCandidates = [...new Map(candidates.map((candidate) => [
           `${candidate.eventInstanceId}|${candidate.season}|${candidate.clanTag}`,

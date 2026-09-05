@@ -95,9 +95,9 @@ function resolveClanTenure(input: {
 function resolvePhysicalClanStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
-  if (streak.latestCwlContinuityExempt && streak.clanStreakSyncs > 0) {
+  if (streak.latestCwlContinuityExempt) {
     return {
-      syncs: streak.clanStreakSyncs,
+      syncs: streak.clanStreakSyncs > 0 ? streak.clanStreakSyncs : null,
       isLowerBound: streak.clanStreakIsLowerBound,
     };
   }
@@ -120,9 +120,9 @@ function resolvePhysicalClanStreak(
 function resolveAllianceStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
-  if (streak.latestCwlContinuityExempt && streak.allianceStreakSyncs > 0) {
+  if (streak.latestCwlContinuityExempt) {
     return {
-      syncs: streak.allianceStreakSyncs,
+      syncs: streak.allianceStreakSyncs > 0 ? streak.allianceStreakSyncs : null,
       isLowerBound: streak.allianceStreakIsLowerBound,
     };
   }

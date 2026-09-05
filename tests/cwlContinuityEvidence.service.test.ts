@@ -28,8 +28,14 @@ function window(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function roster(eventInstanceId = "event-1", clanTag = cwlClanTag) {
-  return { eventInstanceId, season, playerTag, cwlClanTag: clanTag };
+function roster(eventInstanceId = "event-1", clanTag = cwlClanTag, eventLastObservedAt: Date | null = date("2026-04-06")) {
+  return {
+    eventInstanceId,
+    season,
+    playerTag,
+    cwlClanTag: clanTag,
+    eventInstance: { firstObservedAt: startsAt, lastObservedAt: eventLastObservedAt },
+  };
 }
 
 function interval(firstObservedAt: Date, endedAt: Date | null = null, clanTag = cwlClanTag) {
@@ -112,7 +118,29 @@ describe("CwlContinuityEvidenceService", () => {
   });
 
   it("J: accepts an ongoing interval after a resolved CWL start when no end is known", async () => {
-    const result = await evidenceFor({ roster: [roster()], intervals: [interval(date("2026-03-30"), null)] }, date("2026-04-06"));
+    const result = await evidenceFor({
+      roster: [roster("event-1", cwlClanTag, date("2026-04-06"))],
+      intervals: [interval(date("2026-03-30"), null)],
+      cwlWindow: { endsAt: null, endTimingResolved: false },
+    }, date("2026-04-06"));
+    expect(result.exemptPairs.size).toBe(1);
+  });
+
+  it("K: rejects an unresolved CWL end when the boundary is after the last event observation", async () => {
+    const result = await evidenceFor({
+      roster: [roster("event-1", cwlClanTag, date("2026-04-05"))],
+      intervals: [interval(date("2026-03-30"), null)],
+      cwlWindow: { endsAt: null, endTimingResolved: false },
+    }, date("2026-04-06"));
+    expect(result.exemptPairs.size).toBe(0);
+  });
+
+  it("L: accepts an unresolved CWL end when the event observation covers the boundary", async () => {
+    const result = await evidenceFor({
+      roster: [roster("event-1", cwlClanTag, date("2026-04-06"))],
+      intervals: [interval(date("2026-03-30"), null)],
+      cwlWindow: { endsAt: null, endTimingResolved: false },
+    }, date("2026-04-06"));
     expect(result.exemptPairs.size).toBe(1);
   });
 });
