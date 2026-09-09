@@ -23,6 +23,7 @@ import {
   resolveMatchTypeWithPreparedStoredSync,
   type PreparedStoredSyncMatchRow,
 } from "./MatchTypeResolutionService";
+import { reconcileActiveWarIdentity } from "./ActiveWarIdentityReconciliationService";
 
 type FwaMatchChecklistViewType = "Mail" | "Bases";
 type FwaChecklistSyncIdentitySource =
@@ -295,33 +296,6 @@ function normalizeChecklistWarId(value: number | string | null | undefined): num
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
-}
-
-function hasSafeChecklistWarIdentityAgreement(input: {
-  persisted: { warId?: number | string | null; startTime?: Date | null; opponentTag?: string | null };
-  active: { warId?: number | string | null; startTime?: Date | null; opponentTag?: string | null };
-}): boolean {
-  const persistedOpponent = normalizeChecklistClanTag(input.persisted.opponentTag ?? "");
-  const activeOpponent = normalizeChecklistClanTag(input.active.opponentTag ?? "");
-  if (!persistedOpponent || !activeOpponent || persistedOpponent !== activeOpponent) return false;
-  const persistedStart = input.persisted.startTime instanceof Date && Number.isFinite(input.persisted.startTime.getTime())
-    ? input.persisted.startTime.getTime()
-    : null;
-  const activeStart = input.active.startTime instanceof Date && Number.isFinite(input.active.startTime.getTime())
-    ? input.active.startTime.getTime()
-    : null;
-  const persistedWarId = input.persisted.warId === null || input.persisted.warId === undefined
-    ? null
-    : String(input.persisted.warId).trim();
-  const activeWarId = input.active.warId === null || input.active.warId === undefined
-    ? null
-    : String(input.active.warId).trim();
-  if (persistedStart !== null && activeStart !== null && persistedStart !== activeStart) return false;
-  if (persistedWarId && activeWarId && persistedWarId !== activeWarId) return false;
-  return (
-    (persistedStart !== null && activeStart !== null && persistedStart === activeStart) ||
-    (Boolean(persistedWarId) && Boolean(activeWarId) && persistedWarId === activeWarId)
-  );
 }
 
 function resolveChecklistEffectiveMatchState(input: {
@@ -819,51 +793,48 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
-    const currentWarState = normalizeWarState(currentWar?.state ?? null);
-    const liveWar = currentWarState === "notInWar"
-      ? await getCurrentWarCached(params.cocService, clanTag, params.warLookupCache)
-      : null;
+    const liveWar = await getCurrentWarCached(
+      params.cocService,
+      clanTag,
+      params.warLookupCache,
+    );
     const liveWarIdentity = resolveChecklistLiveWarIdentity(liveWar);
     const liveWarIsActive =
       liveWarIdentity?.state === "preparation" || liveWarIdentity?.state === "inWar";
-    const stalePersistedSyncRow =
-      currentWarState === "notInWar" && liveWarIsActive && currentWar && liveWarIdentity &&
-      hasSafeChecklistWarIdentityAgreement({
-        persisted: {
-          warId: currentWar.warId ?? null,
-          startTime: currentWar.startTime ?? null,
-          opponentTag: currentWar.opponentTag ?? null,
-        },
-        active: liveWarIdentity,
-      })
-        ? resolveChecklistPersistedSyncRow({
-            rows: persistedSyncRows,
+    const reconciliationLiveWar = liveWar
+      ? { ...liveWar, clan: { name: liveWar.clan?.name ?? clan.name } }
+      : liveWar;
+    const reconciliation =
+      params.guildId && liveWarIsActive
+        ? await reconcileActiveWarIdentity({
+            guildId: params.guildId,
             clanTag,
-            warId: liveWarIdentity.warId,
-            warStartTime: liveWarIdentity.startTime,
-            opponentTag: liveWarIdentity.opponentTag,
+            liveWar: reconciliationLiveWar,
+            currentWar,
+            allowInMemoryFallback: true,
+          }).catch((err) => {
+            console.error(
+              `[fwa_checklist] current_war_identity_reconcile_failed guildId=${params.guildId} clanTag=${clanTag} error=${formatError(err)}`,
+            );
+            return null;
           })
         : null;
-    const activeCurrentWar =
-      currentWarState === "notInWar"
-        ? stalePersistedSyncRow && liveWarIdentity && liveWarIsActive && currentWar
-          ? {
-              ...currentWar,
-              state: liveWarIdentity.state,
-              warId: normalizeChecklistWarId(liveWarIdentity.warId) ?? currentWar.warId,
-              startTime: liveWarIdentity.startTime ?? currentWar.startTime,
-              opponentTag: liveWarIdentity.opponentTag ?? currentWar.opponentTag,
-            }
-          : null
-        : currentWar;
+    const activeCurrentWar = reconciliation?.currentWar ?? currentWar;
+    if (activeCurrentWar) {
+      currentWarByTag.set(clanTag, activeCurrentWar as Exclude<typeof currentWar, null>);
+    }
+    const effectiveCurrentWarState = normalizeWarState(activeCurrentWar?.state ?? null);
+    console.debug(
+      `[fwa_checklist_identity] view=Bases guildId=${params.guildId} clanTag=${clanTag} persistedState=${currentWar?.state ?? "missing"} persistedWarId=${currentWar?.warId ?? "missing"} persistedOpponent=${currentWar?.opponentTag ?? "missing"} liveState=${liveWar?.state ?? "missing"} liveWarId=${liveWar?.warId ?? "missing"} liveOpponent=${liveWar?.opponent?.tag ?? "missing"} sameWar=${reconciliation?.identity?.sameWar ?? "unavailable"} reconciled=${reconciliation?.persisted ? "persisted" : reconciliation?.identity ? "effective" : "unavailable"}`,
+    );
     const clanLabel =
       sanitizeClanName(clan.shortName) ??
       sanitizeClanName(clan.name) ??
       `#${clanTag}`;
     const clanBadge = parseTrackedClanBadge(clan.clanBadge);
-    if (currentWarState === "notInWar" && !activeCurrentWar) {
+    if (effectiveCurrentWarState === "notInWar") {
       console.debug(
-        `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=false matchSource=skipped syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapReason=skipped baseSwapSyncMessageId=missing completionReason=skipped finalStatus=skipped currentWarState=${currentWarState}`,
+        `[fwa_checklist_bases_row] guildId=${params.guildId} clanTag=${clanTag} visibleReaction=false matchSource=skipped syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} baseSwapReason=skipped baseSwapSyncMessageId=missing completionReason=skipped finalStatus=skipped currentWarState=${effectiveCurrentWarState}`,
       );
       rows.push({
         clanTag,
@@ -1259,40 +1230,45 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       params.warLookupCache,
     ).catch(() => null);
     const liveWarIdentity = resolveChecklistLiveWarIdentity(liveWar);
-    const currentWarState = normalizeWarState(currentWar?.state ?? null);
-    const stalePersistedSyncRow =
-      currentWarState === "notInWar" &&
-      (liveWarIdentity?.state === "preparation" || liveWarIdentity?.state === "inWar") &&
-      currentWar &&
-      liveWarIdentity &&
-      hasSafeChecklistWarIdentityAgreement({
-        persisted: {
-          warId: currentWar.warId ?? null,
-          startTime: currentWar.startTime ?? null,
-          opponentTag: currentWar.opponentTag ?? null,
-        },
-        active: liveWarIdentity,
-      })
-        ? resolveChecklistPersistedSyncRow({
-            rows: persistedSyncRows,
+    const liveWarIsActive =
+      liveWarIdentity?.state === "preparation" || liveWarIdentity?.state === "inWar";
+    const reconciliationLiveWar = liveWar
+      ? { ...liveWar, clan: { name: liveWar.clan?.name ?? clan.name } }
+      : liveWar;
+    const reconciliation =
+      params.guildId && liveWarIsActive
+        ? await reconcileActiveWarIdentity({
+            guildId: params.guildId,
             clanTag,
-            warId: liveWarIdentity.warId,
-            warStartTime: liveWarIdentity.startTime,
-            opponentTag: liveWarIdentity.opponentTag,
+            liveWar: reconciliationLiveWar,
+            currentWar,
+            allowInMemoryFallback: true,
+          }).catch((err) => {
+            console.error(
+              `[fwa_checklist] current_war_identity_reconcile_failed guildId=${params.guildId} clanTag=${clanTag} error=${formatError(err)}`,
+            );
+            return null;
           })
         : null;
+    const effectiveCurrentWar = reconciliation?.currentWar ?? currentWar;
+    if (effectiveCurrentWar) {
+      currentWarByTag.set(clanTag, effectiveCurrentWar as Exclude<typeof currentWar, null>);
+    }
+    console.debug(
+      `[fwa_checklist_identity] view=Mail guildId=${params.guildId} clanTag=${clanTag} persistedState=${currentWar?.state ?? "missing"} persistedWarId=${currentWar?.warId ?? "missing"} persistedOpponent=${currentWar?.opponentTag ?? "missing"} liveState=${liveWar?.state ?? "missing"} liveWarId=${liveWar?.warId ?? "missing"} liveOpponent=${liveWar?.opponent?.tag ?? "missing"} sameWar=${reconciliation?.identity?.sameWar ?? "unavailable"} reconciled=${reconciliation?.persisted ? "persisted" : reconciliation?.identity ? "effective" : "unavailable"}`,
+    );
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
     const mailRenderState = resolveMailChecklistWarRenderState({
-      currentWar: currentWar
+      currentWar: effectiveCurrentWar
         ? {
-            state: currentWar.state ?? null,
-            prepStartTime: currentWar.prepStartTime ?? null,
-            startTime: currentWar.startTime ?? null,
-            endTime: currentWar.endTime ?? null,
-            warId: currentWar.warId ?? null,
-            opponentTag: currentWar.opponentTag ?? null,
-            matchType: currentWar.matchType ?? null,
-            outcome: currentWar.outcome ?? null,
+            state: effectiveCurrentWar.state ?? null,
+            prepStartTime: effectiveCurrentWar.prepStartTime ?? null,
+            startTime: effectiveCurrentWar.startTime ?? null,
+            endTime: effectiveCurrentWar.endTime ?? null,
+            warId: effectiveCurrentWar.warId ?? null,
+            opponentTag: effectiveCurrentWar.opponentTag ?? null,
+            matchType: effectiveCurrentWar.matchType ?? null,
+            outcome: effectiveCurrentWar.outcome ?? null,
           }
         : null,
       liveWar: liveWar
@@ -1305,14 +1281,12 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
         : null,
       guildId: params.guildId,
       clanTag,
-      allowStaleCurrentNotInWar: Boolean(stalePersistedSyncRow),
     });
     const liveWarStartMs = parseCocApiTime(liveWar?.startTime ?? null);
     const liveWarStartTime =
       liveWarStartMs === null ? null : new Date(liveWarStartMs);
     const persistedSyncRow = mailRenderState.fresh
-      ? stalePersistedSyncRow ??
-        resolveChecklistPersistedSyncRow({
+      ? resolveChecklistPersistedSyncRow({
           rows: persistedSyncRows,
           clanTag,
           warId: mailRenderState.warId,
@@ -1322,15 +1296,15 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       : null;
     const effectiveMatchState = resolveChecklistEffectiveMatchState({
       clanTag,
-      currentWar: mailRenderState.fresh && currentWar
+      currentWar: mailRenderState.fresh && effectiveCurrentWar
         ? {
-            state: currentWar.state ?? null,
-            warId: currentWar.warId ?? null,
-            startTime: currentWar.startTime ?? null,
-            opponentTag: currentWar.opponentTag ?? null,
-            matchType: currentWar.matchType ?? null,
-            inferredMatchType: currentWar.inferredMatchType ?? null,
-            outcome: currentWar.outcome ?? null,
+            state: effectiveCurrentWar.state ?? null,
+            warId: effectiveCurrentWar.warId ?? null,
+            startTime: effectiveCurrentWar.startTime ?? null,
+            opponentTag: effectiveCurrentWar.opponentTag ?? null,
+            matchType: effectiveCurrentWar.matchType ?? null,
+            inferredMatchType: effectiveCurrentWar.inferredMatchType ?? null,
+            outcome: effectiveCurrentWar.outcome ?? null,
           }
         : null,
       activeWar: mailRenderState.fresh

@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   currentWar: {
     findMany: vi.fn(),
+    upsert: vi.fn(),
   },
   clanPointsSync: {
     findMany: vi.fn(),
@@ -646,6 +647,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-13T16:00:00.000Z"));
     vi.clearAllMocks();
+    prismaMock.currentWar.upsert.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#PYPY", clanBadge: "<:rr:111>", name: "Alpha", shortName: "A" },
       { tag: "#PYPL", clanBadge: "<:twc:222>", name: "Bravo", shortName: "B" },
