@@ -6,6 +6,7 @@ import {
   getMailBlockedReasonFromStatusForTest,
   shouldRedirectToFwaMatchForMailGateReasonForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
+  isKnownActiveBlacklistTagForTest,
   resolveMatchTypeWithFallbackForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
   resolveTrackedActiveWarPreparationStartTimeForTest,
@@ -197,11 +198,24 @@ describe("fwa match inference from points snapshots", () => {
     });
   });
 
-  it("passes known active-blacklist evidence through the production points preparation", () => {
+  it("normalizes command-side blacklist candidates before production inference preparation", () => {
+    const activeTags = new Set(["#ABC123"]);
+
+    expect(isKnownActiveBlacklistTagForTest(activeTags, "ABC123")).toBe(true);
+    expect(isKnownActiveBlacklistTagForTest(activeTags, "#ABC123")).toBe(true);
+    expect(isKnownActiveBlacklistTagForTest(activeTags, "#DEF456")).toBe(false);
+    expect(isKnownActiveBlacklistTagForTest(activeTags, "")).toBe(false);
+    expect(isKnownActiveBlacklistTagForTest(activeTags, "not-a-tag")).toBe(false);
+
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       { balance: null, activeFwa: null, notFound: true },
-      { knownBlacklisted: true },
+      {
+        knownBlacklisted: isKnownActiveBlacklistTagForTest(
+          activeTags,
+          "ABC123",
+        ),
+      },
     );
 
     expect(inferred).toMatchObject({
@@ -210,6 +224,21 @@ describe("fwa match inference from points snapshots", () => {
       inferred: true,
       confirmed: false,
       syncIsFwa: false,
+    });
+
+    const strongFwa = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: true, notFound: false },
+      {
+        knownBlacklisted: isKnownActiveBlacklistTagForTest(
+          activeTags,
+          "ABC123",
+        ),
+      },
+    );
+    expect(strongFwa).toMatchObject({
+      matchType: "FWA",
+      source: "live_points_active_fwa_yes",
     });
   });
 
