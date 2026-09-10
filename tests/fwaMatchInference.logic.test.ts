@@ -76,6 +76,7 @@ describe("fwa match inference from points snapshots", () => {
       { activeFwa: true },
       { balance: null, activeFwa: null, notFound: true },
       {
+        knownBlacklisted: false,
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
         currentWarState: "inWar",
@@ -108,6 +109,7 @@ describe("fwa match inference from points snapshots", () => {
       { activeFwa: true },
       null,
       {
+        knownBlacklisted: false,
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
       },
@@ -127,6 +129,7 @@ describe("fwa match inference from points snapshots", () => {
       { activeFwa: true },
       { balance: null, activeFwa: null, notFound: true },
       {
+        knownBlacklisted: false,
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
         currentWarState: "inWar",
@@ -148,6 +151,7 @@ describe("fwa match inference from points snapshots", () => {
       { activeFwa: true },
       null,
       {
+        knownBlacklisted: false,
         winnerBoxNotMarkedFwa: true,
         opponentEvidenceMissingOrNotCurrent: true,
         currentWarState: "inWar",
@@ -257,14 +261,50 @@ describe("fwa match inference from points snapshots", () => {
     expect(inferred?.source).toBe("known_blacklist_registry");
   });
 
-  it("does not use blacklist evidence without the existing non-FWA prerequisite", () => {
+  it("uses known active-blacklist evidence without an opponent snapshot or non-FWA signal", () => {
     const inferred = inferMatchTypeFromPointsSnapshotsForTest(
       { activeFwa: true },
       null,
       { knownBlacklisted: true },
     );
 
-    expect(inferred).toBeNull();
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "known_blacklist_registry",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
+  });
+
+  it("uses known active-blacklist evidence with an ambiguous opponent snapshot", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: false },
+      { knownBlacklisted: true },
+    );
+
+    expect(inferred?.matchType).toBe("BL");
+    expect(inferred?.source).toBe("known_blacklist_registry");
+  });
+
+  it("keeps known active-blacklist evidence ahead of active-war MM heuristics", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        knownBlacklisted: true,
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 6,
+        currentWarClanStars: 12,
+        currentWarOpponentStars: 4,
+      },
+    );
+
+    expect(inferred?.matchType).toBe("BL");
+    expect(inferred?.source).toBe("known_blacklist_registry");
   });
 
   it("keeps strong current points evidence ahead of blacklist evidence", () => {

@@ -251,7 +251,7 @@ export function inferMatchTypeFromOpponentPoints(
       }
     }
   }
-  if (nonFwaEvidencePresent && signal.knownBlacklisted === true) {
+  if (signal.knownBlacklisted === true) {
     return {
       matchType: "BL",
       source: "known_blacklist_registry",
