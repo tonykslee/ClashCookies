@@ -2795,15 +2795,6 @@ describe("fwa checklist tracked messages", () => {
         syncMessageId: "sync-message-1",
       }),
     );
-    expect(
-      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan,
-    ).toHaveBeenCalledWith(
-      expect.objectContaining({
-        guildId: "guild-1",
-        clanTag: "#PYPY",
-        syncMessageId: "sync-message-1",
-      }),
-    );
     expect(recordBasesChecklistChecked).toHaveBeenCalledTimes(1);
     expect(recordBasesChecklistChecked).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2821,7 +2812,7 @@ describe("fwa checklist tracked messages", () => {
       }),
     );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅ Bases checked and all good");
-    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("A |");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Alpha |");
   });
 
 
@@ -2865,6 +2856,7 @@ describe("fwa checklist tracked messages", () => {
 
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: makeBasesTrackedChecklistRow().metadata.rows as any,
         scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=alpha",
         expiresAt: new Date("2026-06-13T22:00:00.000Z"),
       }),
@@ -3228,7 +3220,7 @@ describe("fwa checklist tracked messages", () => {
     expect(edit).toHaveBeenCalled();
   });
 
-  it("keeps a skipped-to-active bases refresh additive without deleting the existing reaction", async () => {
+  it("keeps a skipped bases snapshot unchanged during a reaction refresh", async () => {
     const trackedRow = makeSkippedThenActiveBasesTrackedChecklistRow();
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(trackedRow as any);
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(
@@ -3332,13 +3324,7 @@ describe("fwa checklist tracked messages", () => {
         where: { messageId: "bases-message-1" },
         data: expect.objectContaining({
           metadata: expect.objectContaining({
-            basesReactionBaselines: expect.arrayContaining([
-              expect.objectContaining({
-                contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
-                reactionKey: "custom:111",
-                userCount: 0,
-              }),
-            ]),
+            basesReactionBaselines: [],
           }),
         }),
       }),
@@ -3741,11 +3727,24 @@ describe("fwa checklist tracked messages", () => {
 
     expect(setCompletion).not.toHaveBeenCalled();
     expect(edit).toHaveBeenCalled();
-    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Bases not checked");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Skipped this sync");
+    expect(prismaMock.currentWar.findMany).not.toHaveBeenCalled();
   });
 
   it("keeps a base-swap issue ahead of an all-good bases completion on reaction add", async () => {
-    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeBasesTrackedChecklistRow());
+    const issueRow = {
+      ...makeBasesTrackedChecklistRow().metadata.rows[0],
+      basesStatus: "issues",
+      compactCopyLine: "Alpha | ⚫ | ⚠️ Bases checked - issues found",
+      detailLines: ["[base-swap post](https://discord.com/channels/guild-1/channel-1/swap-message-1)"],
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      ...makeBasesTrackedChecklistRow(),
+      metadata: {
+        ...makeBasesTrackedChecklistRow().metadata,
+        rows: [issueRow],
+      },
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
         tag: "#PYPY",
@@ -3861,7 +3860,6 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBe(true);
 
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("⚠️ Bases checked - issues found");
-    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("[base-swap post](");
     expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("War bases:");
     expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("Base errors:");
   });

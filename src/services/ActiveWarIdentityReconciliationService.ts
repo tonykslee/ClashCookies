@@ -1,5 +1,6 @@
 import { compareActiveWarIdentities } from "./MatchTypeResolutionService";
 import { parseCocApiTime } from "../utils/cocTime";
+import { prisma } from "../prisma";
 
 export type ActiveWarIdentityPatch = {
   state: "preparation" | "inWar";
@@ -42,6 +43,13 @@ export type ActiveWarIdentityCurrentWarInput = {
   endTime?: Date | null;
   opponentName?: string | null;
   clanName?: string | null;
+  channelId?: string | null;
+  notify?: boolean | null;
+  pingRole?: boolean | null;
+  notifyRole?: string | null;
+  matchType?: string | null;
+  inferredMatchType?: boolean | null;
+  outcome?: string | null;
 };
 
 export type ResolveActiveWarIdentityPatchInput = {
@@ -138,6 +146,137 @@ export function resolveActiveWarIdentityPatch(
       updatedAt: new Date(),
     },
   };
+}
+
+/** Reconcile a live active-war identity into CurrentWar before resolving match state. */
+export async function reconcileActiveWarIdentity(input: {
+  guildId: string;
+  clanTag: string;
+  liveWar: ActiveWarIdentityLiveWarInput | null | undefined;
+  currentWar?: ActiveWarIdentityCurrentWarInput | null;
+}): Promise<{
+  identity: ActiveWarIdentityPatchResult | null;
+  currentWar: (ActiveWarIdentityCurrentWarInput & { clanTag: string }) | null;
+  persisted: boolean;
+}> {
+  const identity = resolveActiveWarIdentityPatch(input);
+  const currentWar = input.currentWar ?? null;
+  if (!identity) {
+    return {
+      identity: null,
+      currentWar: currentWar
+        ? { ...currentWar, clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}` }
+        : null,
+      persisted: false,
+    };
+  }
+
+  const currentIdentity = {
+    warId: currentWar?.warId ?? null,
+    warStartTime: currentWar?.startTime ?? null,
+    opponentTag: currentWar?.opponentTag ?? null,
+  };
+  const nextIdentity = {
+    warId: identity.patch.warId ?? null,
+    warStartTime: identity.patch.startTime,
+    opponentTag: identity.patch.opponentTag,
+  };
+  const hasMetadataDiff =
+    !currentWar ||
+    currentWar.state !== identity.patch.state ||
+    (currentWar.prepStartTime?.getTime?.() ?? null) !== identity.patch.prepStartTime.getTime() ||
+    (currentWar.endTime?.getTime?.() ?? null) !== identity.patch.endTime.getTime() ||
+    sanitizeClanName(String(currentWar.opponentName ?? "")) !== identity.patch.opponentName ||
+    sanitizeClanName(String(currentWar.clanName ?? "")) !== identity.patch.clanName ||
+    !compareActiveWarIdentities({ persisted: currentIdentity, active: nextIdentity }).sameWar;
+
+  if (!hasMetadataDiff && currentWar) {
+    return {
+      identity,
+      currentWar: {
+        ...currentWar,
+        clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+      },
+      persisted: false,
+    };
+  }
+
+  if (!identity.sameWar) {
+    console.info(
+      `[fwa-match-identity] action=reconciled guild=${input.guildId} clan=#${normalizeTag(input.clanTag) ?? input.clanTag} warStart=${identity.patch.startTime.toISOString()} opponent=#${identity.patch.opponentTag} source=live_coc`,
+    );
+  }
+  const matchType = (identity.sameWar ? (currentWar?.matchType ?? null) : null) as any;
+  const inferredMatchType = identity.sameWar ? (currentWar?.inferredMatchType ?? true) : true;
+  const outcome = identity.sameWar ? (currentWar?.outcome ?? null) : null;
+  const reconciledCurrentWar = {
+    ...(currentWar ?? {}),
+    clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+    state: identity.patch.state,
+    prepStartTime: identity.patch.prepStartTime,
+    startTime: identity.patch.startTime,
+    endTime: identity.patch.endTime,
+    opponentTag: identity.patch.opponentTag,
+    opponentName: identity.patch.opponentName,
+    clanName: identity.patch.clanName,
+    warId: identity.patch.warId,
+    matchType,
+    inferredMatchType,
+    outcome,
+  };
+  try {
+    const persisted = await prisma.currentWar.upsert({
+      where: {
+        clanTag_guildId: {
+          guildId: input.guildId,
+          clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+        },
+      },
+      create: {
+        guildId: input.guildId,
+        clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+        channelId: currentWar?.channelId ?? "",
+        notify: currentWar?.notify ?? false,
+        pingRole: currentWar?.pingRole ?? undefined,
+        notifyRole: currentWar?.notifyRole ?? null,
+        state: identity.patch.state,
+        prepStartTime: identity.patch.prepStartTime,
+        startTime: identity.patch.startTime,
+        endTime: identity.patch.endTime,
+        opponentTag: identity.patch.opponentTag,
+        opponentName: identity.patch.opponentName,
+        clanName: identity.patch.clanName,
+        warId: identity.patch.warId,
+        matchType,
+        inferredMatchType,
+        outcome,
+      },
+      update: {
+        state: identity.patch.state,
+        prepStartTime: identity.patch.prepStartTime,
+        startTime: identity.patch.startTime,
+        endTime: identity.patch.endTime,
+        opponentTag: identity.patch.opponentTag,
+        opponentName: identity.patch.opponentName,
+        clanName: identity.patch.clanName,
+        warId: identity.patch.warId,
+        matchType,
+        inferredMatchType,
+        outcome,
+        updatedAt: identity.patch.updatedAt,
+      },
+    });
+    return {
+      identity,
+      currentWar: (persisted as any) ?? reconciledCurrentWar,
+      persisted: true,
+    };
+  } catch (err) {
+    console.error(
+      `[fwa-match-identity] action=reconcile_persist_failed guild=${input.guildId} clan=#${normalizeTag(input.clanTag) ?? input.clanTag} source=live_coc error=${String(err instanceof Error ? err.message : err)}`,
+    );
+    throw err;
+  }
 }
 
 export const resolveActiveWarIdentityPatchForTest =
