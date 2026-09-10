@@ -1844,6 +1844,31 @@ export function shouldApplyFwaMatchChecklistBadgeReaction(
   return true;
 }
 
+/** Apply a completion event without overriding the canonical issue/skipped precedence. */
+export function applyFwaMatchChecklistBasesCompletionToRow(
+  row: FwaMatchChecklistTrackedRow,
+  checked: boolean,
+): FwaMatchChecklistTrackedRow {
+  if (row.basesStatus === "issues" || row.basesStatus === "skipped") {
+    return { ...row };
+  }
+  const nextStatus = checked ? "all_good" : "not_checked";
+  const nextCompactCopyLine = checked
+    ? row.compactCopyLine.replace(
+        "❌ Bases not checked",
+        "✅ Bases checked and all good",
+      )
+    : row.compactCopyLine.replace(
+        "✅ Bases checked and all good",
+        "❌ Bases not checked",
+      );
+  return {
+    ...row,
+    basesStatus: nextStatus,
+    compactCopyLine: nextCompactCopyLine,
+  };
+}
+
 function findChecklistRowTagForReaction(
   rows: FwaMatchChecklistTrackedRow[],
   reaction: { emoji: { id: string | null; name: string | null } },
@@ -4105,6 +4130,7 @@ export class TrackedMessageService {
         return persisted;
       };
 
+      const completionStatusByTag = new Map<string, boolean>();
       const changedRowTag = change
         ? findChecklistRowTagForReaction(sourceRows, change.reaction)
         : null;
@@ -4132,6 +4158,9 @@ export class TrackedMessageService {
           );
           if (reactionChange.kind === "add") {
             const persisted = await persistBasesCheckedStateForRow(matchedRow, true);
+            if (persisted) {
+              completionStatusByTag.set(changedRowTag, true);
+            }
             if (
               persisted &&
               reactionChange.reactorUserId
@@ -4186,7 +4215,10 @@ export class TrackedMessageService {
                 matchedBaseline && matchedBaseline.userCount !== null
                   ? matchedReactionUserCount > matchedBaseline.userCount
                   : Math.trunc(Number(matchedReactionCount ?? 0)) > 1;
-              await persistBasesCheckedStateForRow(matchedRow, checked);
+              const persisted = await persistBasesCheckedStateForRow(matchedRow, checked);
+              if (persisted) {
+                completionStatusByTag.set(changedRowTag, checked);
+              }
             }
           } else {
             console.warn(
@@ -4196,18 +4228,11 @@ export class TrackedMessageService {
         }
       }
 
-      const [stateService, checklistService] = await Promise.all([
-        import("./FwaMatchChecklistStateService"),
-        import("./FwaMatchChecklistService"),
-      ]);
-      let checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
-        cocService: {} as any,
-        guildId: tracked.guildId,
-        client: (message as { client?: Client }).client ?? ({} as Client),
-        viewType: "Bases",
-        syncMessageId: syncReferenceId,
-      });
-      let effectiveRows = checklistState.rows;
+      const checklistService = await import("./FwaMatchChecklistService");
+      // Reaction refreshes operate on the persisted tracked-message snapshot.
+      // Live-war acquisition belongs to initial publication and explicit
+      // refreshes, never to this event hot path.
+      let effectiveRows = (options?.rows ?? metadata.rows).map((row) => ({ ...row }));
       reactionObservation = await observeFwaMatchChecklistReactionCacheForRows({
         guildId: tracked.guildId,
         messageId: message.id,
@@ -4270,24 +4295,16 @@ export class TrackedMessageService {
           const persisted = await persistBasesCheckedStateForRow(row, true);
           if (persisted) {
             completionStateChanged = true;
+            completionStatusByTag.set(normalizeChecklistClanTag(row.clanTag), true);
           }
         }
       }
-      if (completionStateChanged) {
-        checklistState = await stateService.buildFwaMatchChecklistRenderStateForGuild({
-          cocService: {} as any,
-          guildId: tracked.guildId,
-          client: (message as { client?: Client }).client ?? ({} as Client),
-          viewType: "Bases",
-          syncMessageId: syncReferenceId,
-        });
-        effectiveRows = checklistState.rows;
-        finalReactionBaselines = collectFwaMatchChecklistReactionBaselines({
-          rows: effectiveRows,
-          previousRowsByTag,
-          reactionCache: effectiveReactionCache,
-          observation: reactionObservation,
-          existingBaselines: metadata.basesReactionBaselines ?? [],
+      if (completionStateChanged || completionStatusByTag.size > 0) {
+        effectiveRows = effectiveRows.map((row) => {
+          const checked = completionStatusByTag.get(normalizeChecklistClanTag(row.clanTag));
+          return checked === undefined
+            ? row
+            : applyFwaMatchChecklistBasesCompletionToRow(row, checked);
         });
       }
       const blockedReactionKeys = new Set(

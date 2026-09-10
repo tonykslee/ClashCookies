@@ -139,7 +139,10 @@ import {
   type ActiveWarSyncIdentity,
 } from "../services/ActiveWarSyncResolutionService";
 import type { ActiveWarCycleContext } from "../services/SyncCycleService";
-import { resolveActiveWarIdentityPatch } from "../services/ActiveWarIdentityReconciliationService";
+import {
+  reconcileActiveWarIdentity,
+  resolveActiveWarIdentityPatch,
+} from "../services/ActiveWarIdentityReconciliationService";
 import { isActivePollingMode } from "../services/PollingModeService";
 import {
   WarMailLifecycleService,
@@ -14666,103 +14669,15 @@ async function buildTrackedMatchOverview(
       buildActiveWarSyncIdentity({ warState });
     const liveIdentityPatch = liveIdentityPatchByClanTag.get(clanTag) ?? null;
     if (guildId && liveIdentityPatch) {
-      const currentIdentity = {
-        warId: sub?.warId ?? null,
-        warStartTime: sub?.startTime ?? null,
-        opponentTag: sub?.opponentTag ?? null,
-      };
-      const nextIdentity = {
-        warId: liveIdentityPatch.patch.warId ?? null,
-        warStartTime: liveIdentityPatch.patch.startTime,
-        opponentTag: liveIdentityPatch.patch.opponentTag,
-      };
-      const hasMetadataDiff =
-        !sub ||
-        sub.state !== liveIdentityPatch.patch.state ||
-        (sub.prepStartTime?.getTime?.() ?? null) !==
-          liveIdentityPatch.patch.prepStartTime.getTime() ||
-        (sub.endTime?.getTime?.() ?? null) !==
-          liveIdentityPatch.patch.endTime.getTime() ||
-        sanitizeClanName(String(sub.opponentName ?? "")) !==
-          liveIdentityPatch.patch.opponentName ||
-        sanitizeClanName(String(sub.clanName ?? "")) !==
-          liveIdentityPatch.patch.clanName ||
-        !compareActiveWarIdentities({
-          persisted: currentIdentity,
-          active: nextIdentity,
-        }).sameWar;
-      if (hasMetadataDiff) {
-        if (!liveIdentityPatch.sameWar) {
-          console.info(
-            `[fwa-match-identity] action=reconciled guild=${guildId} clan=#${clanTag} warStart=${liveIdentityPatch.patch.startTime.toISOString()} opponent=#${liveIdentityPatch.patch.opponentTag} source=live_coc`,
-          );
-        }
-        await prisma.currentWar.upsert({
-          where: {
-            clanTag_guildId: {
-              guildId,
-              clanTag: `#${clanTag}`,
-            },
-          },
-          create: {
-            guildId,
-            clanTag: `#${clanTag}`,
-            channelId: sub?.channelId ?? "",
-            notify: sub?.notify ?? false,
-            pingRole: sub?.pingRole ?? undefined,
-            notifyRole: sub?.notifyRole ?? null,
-            state: liveIdentityPatch.patch.state,
-            prepStartTime: liveIdentityPatch.patch.prepStartTime,
-            startTime: liveIdentityPatch.patch.startTime,
-            endTime: liveIdentityPatch.patch.endTime,
-            opponentTag: liveIdentityPatch.patch.opponentTag,
-            opponentName: liveIdentityPatch.patch.opponentName,
-            clanName: liveIdentityPatch.patch.clanName,
-            warId: liveIdentityPatch.patch.warId,
-            matchType: sub?.matchType ?? null,
-            inferredMatchType: sub?.inferredMatchType ?? true,
-            outcome: sub?.outcome ?? null,
-          },
-          update: {
-            state: liveIdentityPatch.patch.state,
-            prepStartTime: liveIdentityPatch.patch.prepStartTime,
-            startTime: liveIdentityPatch.patch.startTime,
-            endTime: liveIdentityPatch.patch.endTime,
-            opponentTag: liveIdentityPatch.patch.opponentTag,
-            opponentName: liveIdentityPatch.patch.opponentName,
-            clanName: liveIdentityPatch.patch.clanName,
-            warId: liveIdentityPatch.patch.warId,
-            matchType: liveIdentityPatch.sameWar
-              ? (sub?.matchType ?? null)
-              : null,
-            inferredMatchType: liveIdentityPatch.sameWar
-              ? (sub?.inferredMatchType ?? true)
-              : true,
-            outcome: liveIdentityPatch.sameWar ? (sub?.outcome ?? null) : null,
-            updatedAt: liveIdentityPatch.patch.updatedAt,
-          },
-        });
-        const reconciledSub = {
-          ...(sub ?? {}),
-          clanTag: `#${clanTag}`,
-          state: liveIdentityPatch.patch.state,
-          prepStartTime: liveIdentityPatch.patch.prepStartTime,
-          startTime: liveIdentityPatch.patch.startTime,
-          endTime: liveIdentityPatch.patch.endTime,
-          opponentTag: liveIdentityPatch.patch.opponentTag,
-          opponentName: liveIdentityPatch.patch.opponentName,
-          clanName: liveIdentityPatch.patch.clanName,
-          warId: liveIdentityPatch.patch.warId,
-          matchType: liveIdentityPatch.sameWar
-            ? (sub?.matchType ?? null)
-            : null,
-          inferredMatchType: liveIdentityPatch.sameWar
-            ? (sub?.inferredMatchType ?? true)
-            : true,
-          outcome: liveIdentityPatch.sameWar ? (sub?.outcome ?? null) : null,
-        } as NonNullable<typeof sub>;
-        sub = reconciledSub;
-        subByTag.set(clanTag, reconciledSub);
+      const reconciliation = await reconcileActiveWarIdentity({
+        guildId,
+        clanTag,
+        liveWar: war,
+        currentWar: sub ?? null,
+      });
+      if (reconciliation.currentWar) {
+        sub = reconciliation.currentWar as NonNullable<typeof sub>;
+        subByTag.set(clanTag, sub);
       }
     }
     const preparationStartTimeForSync =
