@@ -78,4 +78,23 @@ describe("reconcileActiveWarIdentity", () => {
     expect(result.currentWar?.matchType).toBeNull();
     expect(result.currentWar?.outcome).toBeNull();
   });
+
+  it("does not return an in-memory CurrentWar projection when persistence fails", async () => {
+    const error = new Error("database unavailable");
+    prismaMock.currentWar.upsert.mockRejectedValue(error);
+
+    await expect(
+      reconcileActiveWarIdentity({
+        guildId: "guild-1",
+        clanTag: "#ALPHA",
+        liveWar,
+        currentWar: {
+          state: "notInWar",
+          startTime: new Date("2026-09-08T18:00:00.000Z"),
+          warId: 5000,
+          opponentTag: "#OLDOPP",
+        },
+      }),
+    ).rejects.toThrow("database unavailable");
+  });
 });

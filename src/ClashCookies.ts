@@ -68,8 +68,8 @@ startHealthcheckServer({
 
 // Register listeners once before login attempts.
 interactionCreate(client, cocService);
-messageReactionAdd(client, cocService);
-messageReactionRemove(client, cocService);
+messageReactionAdd(client);
+messageReactionRemove(client);
 messageDelete(client);
 ready(client, cocService);
 

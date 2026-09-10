@@ -154,8 +154,6 @@ export async function reconcileActiveWarIdentity(input: {
   clanTag: string;
   liveWar: ActiveWarIdentityLiveWarInput | null | undefined;
   currentWar?: ActiveWarIdentityCurrentWarInput | null;
-  /** Checklist rendering may continue with the reconciled presentation row if persistence is unavailable. */
-  allowInMemoryFallback?: boolean;
 }): Promise<{
   identity: ActiveWarIdentityPatchResult | null;
   currentWar: (ActiveWarIdentityCurrentWarInput & { clanTag: string }) | null;
@@ -228,45 +226,45 @@ export async function reconcileActiveWarIdentity(input: {
   };
   try {
     const persisted = await prisma.currentWar.upsert({
-    where: {
-      clanTag_guildId: {
+      where: {
+        clanTag_guildId: {
+          guildId: input.guildId,
+          clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+        },
+      },
+      create: {
         guildId: input.guildId,
         clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
+        channelId: currentWar?.channelId ?? "",
+        notify: currentWar?.notify ?? false,
+        pingRole: currentWar?.pingRole ?? undefined,
+        notifyRole: currentWar?.notifyRole ?? null,
+        state: identity.patch.state,
+        prepStartTime: identity.patch.prepStartTime,
+        startTime: identity.patch.startTime,
+        endTime: identity.patch.endTime,
+        opponentTag: identity.patch.opponentTag,
+        opponentName: identity.patch.opponentName,
+        clanName: identity.patch.clanName,
+        warId: identity.patch.warId,
+        matchType,
+        inferredMatchType,
+        outcome,
       },
-    },
-    create: {
-      guildId: input.guildId,
-      clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
-      channelId: currentWar?.channelId ?? "",
-      notify: currentWar?.notify ?? false,
-      pingRole: currentWar?.pingRole ?? undefined,
-      notifyRole: currentWar?.notifyRole ?? null,
-      state: identity.patch.state,
-      prepStartTime: identity.patch.prepStartTime,
-      startTime: identity.patch.startTime,
-      endTime: identity.patch.endTime,
-      opponentTag: identity.patch.opponentTag,
-      opponentName: identity.patch.opponentName,
-      clanName: identity.patch.clanName,
-      warId: identity.patch.warId,
-      matchType,
-      inferredMatchType,
-      outcome,
-    },
-    update: {
-      state: identity.patch.state,
-      prepStartTime: identity.patch.prepStartTime,
-      startTime: identity.patch.startTime,
-      endTime: identity.patch.endTime,
-      opponentTag: identity.patch.opponentTag,
-      opponentName: identity.patch.opponentName,
-      clanName: identity.patch.clanName,
-      warId: identity.patch.warId,
-      matchType,
-      inferredMatchType,
-      outcome,
-      updatedAt: identity.patch.updatedAt,
-    },
+      update: {
+        state: identity.patch.state,
+        prepStartTime: identity.patch.prepStartTime,
+        startTime: identity.patch.startTime,
+        endTime: identity.patch.endTime,
+        opponentTag: identity.patch.opponentTag,
+        opponentName: identity.patch.opponentName,
+        clanName: identity.patch.clanName,
+        warId: identity.patch.warId,
+        matchType,
+        inferredMatchType,
+        outcome,
+        updatedAt: identity.patch.updatedAt,
+      },
     });
     return {
       identity,
@@ -277,9 +275,6 @@ export async function reconcileActiveWarIdentity(input: {
     console.error(
       `[fwa-match-identity] action=reconcile_persist_failed guild=${input.guildId} clan=#${normalizeTag(input.clanTag) ?? input.clanTag} source=live_coc error=${String(err instanceof Error ? err.message : err)}`,
     );
-    if (input.allowInMemoryFallback) {
-      return { identity, currentWar: reconciledCurrentWar, persisted: false };
-    }
     throw err;
   }
 }

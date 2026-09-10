@@ -376,7 +376,11 @@ describe("fwa checklist badge reaction reconciliation", () => {
           emoji: { id: "111", name: "alpha" },
           count: 1,
         },
-      } as any),
+      } as any, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
     ).resolves.toBe(true);
 
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -459,8 +463,20 @@ describe("fwa checklist badge reaction reconciliation", () => {
       ],
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(fetch).not.toHaveBeenCalled();
     expect(react).not.toHaveBeenCalled();
@@ -521,7 +537,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
       ],
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:bravo:222>");
@@ -611,7 +633,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
       reactionEntries: [],
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(react).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:alpha:111>");
@@ -654,7 +682,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
       reactFailures: ["<:alpha:111>"],
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(react).toHaveBeenCalledTimes(2);
     expect(react.mock.calls.map((call) => call[0])).toEqual(["<:alpha:111>", "<:bravo:222>"]);
@@ -796,7 +830,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
       },
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledTimes(1);
@@ -1048,7 +1088,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
       },
     });
 
-    await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message as any)).resolves.toBe(true);
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message as any, null, {
+        rows: finalRows as any,
+        scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-reconcile",
+        expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+      }),
+    ).resolves.toBe(true);
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledTimes(1);
@@ -1267,7 +1313,11 @@ describe("fwa checklist badge reaction reconciliation", () => {
             emoji: { id: "111", name: "alpha" },
             count: 1,
           },
-        } as any),
+        } as any, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-remove",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
       ).resolves.toBe(true);
 
       expect(fetch).toHaveBeenCalledTimes(1);
@@ -1277,7 +1327,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         expect.objectContaining({
           clanTag: "#PYPY",
           checked: true,
-          warId: "1001",
+          warId: 1001,
           warStartTime: new Date("2026-06-13T18:00:00.000Z"),
           opponentTag: "#OPP1",
         }),
@@ -1327,7 +1377,11 @@ describe("fwa checklist badge reaction reconciliation", () => {
             emoji: { id: "111", name: "alpha" },
             count: 1,
           },
-        } as any),
+        } as any, {
+          rows: finalRows as any,
+          scopeKey: "fwa_match_bases|guild=guild-1|clan=all|rows=ctx-remove",
+          expiresAt: new Date("2026-06-13T22:00:00.000Z"),
+        }),
       ).resolves.toBe(true);
 
       expect(fetch).toHaveBeenCalledTimes(1);

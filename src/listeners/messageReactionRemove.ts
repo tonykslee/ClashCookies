@@ -1,6 +1,5 @@
 import { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
 import { formatError } from "../helper/formatError";
-import type { CoCService } from "../services/CoCService";
 import {
   trackedMessageService,
   TRACKED_MESSAGE_FEATURE_TYPE,
@@ -33,7 +32,7 @@ async function materializeUser(user: User | PartialUser): Promise<User | null> {
   return user;
 }
 
-export default (client: Client, cocService?: CoCService): void => {
+export default (client: Client): void => {
   if (isRegistered) {
     console.warn("messageReactionRemove already registered, skipping");
     return;
@@ -89,7 +88,7 @@ export default (client: Client, cocService?: CoCService): void => {
             },
             count: fullReaction.count ?? null,
           },
-        }, { cocService });
+        });
       }
     } catch (err) {
       console.error(`messageReactionRemove failed: ${formatError(err)}`);

@@ -6,7 +6,6 @@ import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { repWorkActivityService } from "./RepWorkActivityService";
-import type { CoCService } from "./CoCService";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
@@ -208,8 +207,6 @@ export type FwaMatchChecklistRefreshOptions = {
   rows?: FwaMatchChecklistTrackedRow[];
   scopeKey?: string | null;
   expiresAt?: Date | null;
-  /** Legitimate live-war source for listener/scheduled rebuilds when rows are absent. */
-  cocService?: CoCService;
 };
 
 export type FwaMatchChecklistBasesCompletionMetadata = {
@@ -1845,6 +1842,31 @@ export function shouldApplyFwaMatchChecklistBadgeReaction(
   if (!String(row.badgeEmojiInline ?? "").trim()) return false;
   if (viewType === "Bases" && row.basesStatus === "skipped") return false;
   return true;
+}
+
+/** Apply a completion event without overriding the canonical issue/skipped precedence. */
+export function applyFwaMatchChecklistBasesCompletionToRow(
+  row: FwaMatchChecklistTrackedRow,
+  checked: boolean,
+): FwaMatchChecklistTrackedRow {
+  if (row.basesStatus === "issues" || row.basesStatus === "skipped") {
+    return { ...row };
+  }
+  const nextStatus = checked ? "all_good" : "not_checked";
+  const nextCompactCopyLine = checked
+    ? row.compactCopyLine.replace(
+        "❌ Bases not checked",
+        "✅ Bases checked and all good",
+      )
+    : row.compactCopyLine.replace(
+        "✅ Bases checked and all good",
+        "❌ Bases not checked",
+      );
+  return {
+    ...row,
+    basesStatus: nextStatus,
+    compactCopyLine: nextCompactCopyLine,
+  };
 }
 
 function findChecklistRowTagForReaction(
@@ -4206,34 +4228,11 @@ export class TrackedMessageService {
         }
       }
 
-      const [checklistService, stateService] = await Promise.all([
-        import("./FwaMatchChecklistService"),
-        options?.rows || !options?.cocService
-          ? Promise.resolve(null)
-          : import("./FwaMatchChecklistStateService"),
-      ]);
-      // The caller's rows are the authoritative snapshot for a refresh. In
-      // particular, do not rebuild Bases with an empty CoCService here: that
-      // can overwrite fresh live-war identity and match inference.
+      const checklistService = await import("./FwaMatchChecklistService");
+      // Reaction refreshes operate on the persisted tracked-message snapshot.
+      // Live-war acquisition belongs to initial publication and explicit
+      // refreshes, never to this event hot path.
       let effectiveRows = (options?.rows ?? metadata.rows).map((row) => ({ ...row }));
-      const suppliedCocService = options?.cocService;
-      if (!options?.rows && stateService && suppliedCocService) {
-        const rebuiltState = await stateService
-          .buildFwaMatchChecklistRenderStateForGuild({
-            cocService: suppliedCocService,
-            guildId: tracked.guildId,
-            client: (message as { client?: Client }).client ?? ({} as Client),
-            viewType: "Bases",
-            syncMessageId: syncReferenceId,
-          })
-          .catch((err) => {
-            console.error(
-              `[fwa_checklist_bases_refresh_state] rebuild_failed guildId=${tracked.guildId} messageId=${message.id} error=${formatError(err)}`,
-            );
-            return null;
-          });
-        if (rebuiltState) effectiveRows = rebuiltState.rows.map((row) => ({ ...row }));
-      }
       reactionObservation = await observeFwaMatchChecklistReactionCacheForRows({
         guildId: tracked.guildId,
         messageId: message.id,
@@ -4301,14 +4300,12 @@ export class TrackedMessageService {
         }
       }
       if (completionStateChanged || completionStatusByTag.size > 0) {
-        for (const row of effectiveRows) {
+        effectiveRows = effectiveRows.map((row) => {
           const checked = completionStatusByTag.get(normalizeChecklistClanTag(row.clanTag));
-          if (checked === undefined) continue;
-          row.basesStatus = checked ? "all_good" : "not_checked";
-          row.compactCopyLine = checked
-            ? row.compactCopyLine.replace(/❌ Bases not checked/g, "✅ Bases checked and all good")
-            : row.compactCopyLine.replace(/✅ Bases checked and all good/g, "❌ Bases not checked");
-        }
+          return checked === undefined
+            ? row
+            : applyFwaMatchChecklistBasesCompletionToRow(row, checked);
+        });
       }
       const blockedReactionKeys = new Set(
         finalReactionBaselines

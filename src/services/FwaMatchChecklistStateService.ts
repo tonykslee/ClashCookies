@@ -769,6 +769,8 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       startTime: true,
       endTime: true,
       opponentTag: true,
+      opponentName: true,
+      clanName: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
@@ -778,18 +780,8 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
-  const persistedSyncRows = await loadChecklistPersistedSyncRows({
-    guildId: params.guildId,
-    currentWars,
-  }).catch((err) => {
-    console.error(
-      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Bases error=${formatError(err)}`,
-    );
-    return [] as ChecklistPersistedSyncRow[];
-  });
-  const rows: FwaMatchChecklistTrackedRow[] = [];
-  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
-
+  const liveWarByTag = new Map<string, any | null>();
+  const reconciliationByTag = new Map<string, Awaited<ReturnType<typeof reconcileActiveWarIdentity>> | null>();
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
@@ -811,7 +803,6 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
             clanTag,
             liveWar: reconciliationLiveWar,
             currentWar,
-            allowInMemoryFallback: true,
           }).catch((err) => {
             console.error(
               `[fwa_checklist] current_war_identity_reconcile_failed guildId=${params.guildId} clanTag=${clanTag} error=${formatError(err)}`,
@@ -819,14 +810,32 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
             return null;
           })
         : null;
-    const activeCurrentWar = reconciliation?.currentWar ?? currentWar;
-    if (activeCurrentWar) {
-      currentWarByTag.set(clanTag, activeCurrentWar as Exclude<typeof currentWar, null>);
+    liveWarByTag.set(clanTag, liveWar);
+    reconciliationByTag.set(clanTag, reconciliation);
+    if (reconciliation?.currentWar) {
+      currentWarByTag.set(clanTag, reconciliation.currentWar as Exclude<typeof currentWar, null>);
     }
-    const effectiveCurrentWarState = normalizeWarState(activeCurrentWar?.state ?? null);
     console.debug(
       `[fwa_checklist_identity] view=Bases guildId=${params.guildId} clanTag=${clanTag} persistedState=${currentWar?.state ?? "missing"} persistedWarId=${currentWar?.warId ?? "missing"} persistedOpponent=${currentWar?.opponentTag ?? "missing"} liveState=${liveWar?.state ?? "missing"} liveWarId=${liveWar?.warId ?? "missing"} liveOpponent=${liveWar?.opponent?.tag ?? "missing"} sameWar=${reconciliation?.identity?.sameWar ?? "unavailable"} reconciled=${reconciliation?.persisted ? "persisted" : reconciliation?.identity ? "effective" : "unavailable"}`,
     );
+  }
+  const persistedSyncRows = await loadChecklistPersistedSyncRows({
+    guildId: params.guildId,
+    currentWars: Array.from(currentWarByTag.values()),
+  }).catch((err) => {
+    console.error(
+      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Bases error=${formatError(err)}`,
+    );
+    return [] as ChecklistPersistedSyncRow[];
+  });
+  const rows: FwaMatchChecklistTrackedRow[] = [];
+  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
+
+  for (const clan of trackedClans) {
+    const clanTag = normalizeChecklistClanTag(clan.tag);
+    const currentWar = currentWarByTag.get(clanTag) ?? null;
+    const activeCurrentWar = currentWar;
+    const effectiveCurrentWarState = normalizeWarState(activeCurrentWar?.state ?? null);
     const clanLabel =
       sanitizeClanName(clan.shortName) ??
       sanitizeClanName(clan.name) ??
@@ -1197,6 +1206,8 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       startTime: true,
       endTime: true,
       opponentTag: true,
+      opponentName: true,
+      clanName: true,
       matchType: true,
       inferredMatchType: true,
       outcome: true,
@@ -1206,21 +1217,8 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
-  const persistedSyncRows = await loadChecklistPersistedSyncRows({
-    guildId: params.guildId,
-    currentWars,
-  }).catch((err) => {
-    console.error(
-      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Mail error=${formatError(err)}`,
-    );
-    return [] as ChecklistPersistedSyncRow[];
-  });
-  const warMailLifecycleService = new WarMailLifecycleService();
-  const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
-  const copyLines: string[] = [];
-  const inferredByTag = new Map<string, boolean>();
-  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
-
+  const liveWarByTag = new Map<string, any | null>();
+  const reconciliationByTag = new Map<string, Awaited<ReturnType<typeof reconcileActiveWarIdentity>> | null>();
   for (const clan of trackedClans) {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
@@ -1242,7 +1240,6 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
             clanTag,
             liveWar: reconciliationLiveWar,
             currentWar,
-            allowInMemoryFallback: true,
           }).catch((err) => {
             console.error(
               `[fwa_checklist] current_war_identity_reconcile_failed guildId=${params.guildId} clanTag=${clanTag} error=${formatError(err)}`,
@@ -1250,13 +1247,36 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
             return null;
           })
         : null;
-    const effectiveCurrentWar = reconciliation?.currentWar ?? currentWar;
-    if (effectiveCurrentWar) {
-      currentWarByTag.set(clanTag, effectiveCurrentWar as Exclude<typeof currentWar, null>);
+    liveWarByTag.set(clanTag, liveWar);
+    reconciliationByTag.set(clanTag, reconciliation);
+    if (reconciliation?.currentWar) {
+      currentWarByTag.set(clanTag, reconciliation.currentWar as Exclude<typeof currentWar, null>);
     }
     console.debug(
       `[fwa_checklist_identity] view=Mail guildId=${params.guildId} clanTag=${clanTag} persistedState=${currentWar?.state ?? "missing"} persistedWarId=${currentWar?.warId ?? "missing"} persistedOpponent=${currentWar?.opponentTag ?? "missing"} liveState=${liveWar?.state ?? "missing"} liveWarId=${liveWar?.warId ?? "missing"} liveOpponent=${liveWar?.opponent?.tag ?? "missing"} sameWar=${reconciliation?.identity?.sameWar ?? "unavailable"} reconciled=${reconciliation?.persisted ? "persisted" : reconciliation?.identity ? "effective" : "unavailable"}`,
     );
+  }
+  const persistedSyncRows = await loadChecklistPersistedSyncRows({
+    guildId: params.guildId,
+    currentWars: Array.from(currentWarByTag.values()),
+  }).catch((err) => {
+    console.error(
+      `[fwa_checklist] persisted_sync_read_failed guildId=${params.guildId} view=Mail error=${formatError(err)}`,
+    );
+    return [] as ChecklistPersistedSyncRow[];
+  });
+  const warMailLifecycleService = new WarMailLifecycleService();
+  const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
+  const copyLines: string[] = [];
+  const inferredByTag = new Map<string, boolean>();
+  const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
+
+  for (const clan of trackedClans) {
+    const clanTag = normalizeChecklistClanTag(clan.tag);
+    const currentWar = currentWarByTag.get(clanTag) ?? null;
+    const liveWar = liveWarByTag.get(clanTag) ?? null;
+    const liveWarIdentity = resolveChecklistLiveWarIdentity(liveWar);
+    const effectiveCurrentWar = currentWar;
     const clanName = sanitizeClanName(clan.name) ?? `#${clanTag}`;
     const mailRenderState = resolveMailChecklistWarRenderState({
       currentWar: effectiveCurrentWar

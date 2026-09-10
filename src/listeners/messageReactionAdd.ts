@@ -1,6 +1,5 @@
 import { Client, MessageReaction, PartialMessageReaction, PartialUser, User } from "discord.js";
 import { formatError } from "../helper/formatError";
-import type { CoCService } from "../services/CoCService";
 import { FWA_BASE_SWAP_ACK_EMOJI, handleFwaBaseSwapReaction } from "../commands/Fwa";
 import {
   trackedMessageService,
@@ -34,7 +33,7 @@ async function materializeUser(user: User | PartialUser): Promise<User | null> {
   return user;
 }
 
-export default (client: Client, cocService?: CoCService): void => {
+export default (client: Client): void => {
   if (isRegistered) {
     console.warn("messageReactionAdd already registered, skipping");
     return;
@@ -101,7 +100,7 @@ export default (client: Client, cocService?: CoCService): void => {
             },
             count: fullReaction.count ?? null,
           },
-        }, { cocService });
+        });
       }
     } catch (err) {
       console.error(`messageReactionAdd failed: ${formatError(err)}`);
