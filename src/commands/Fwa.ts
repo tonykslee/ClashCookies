@@ -6084,6 +6084,10 @@ async function buildWarMailEmbedForTag(
     });
     pointsInference = toMatchTypeResolutionFromPointsInference(
       inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot, {
+        knownBlacklisted: isKnownActiveBlacklistTag(
+          await findKnownActiveBlacklistTags([opponentTag]),
+          opponentTag,
+        ),
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteCurrent || !strongOpponentEvidencePresent,
@@ -12987,6 +12991,35 @@ export const resetFwaSteadyStateLogTrackersForTest =
 export const resolveWarMailRefreshIdentityDecisionForTest =
   resolveWarMailRefreshIdentityDecision;
 
+/** Purpose: resolve active blacklist evidence for command-side match inference without changing command behavior on lookup failure. */
+async function findKnownActiveBlacklistTags(
+  tags: Iterable<string>,
+): Promise<Set<string>> {
+  const resolver = blacklistClanService.findActiveBlacklistClanTags;
+  if (typeof resolver !== "function") return new Set<string>();
+  return resolver.call(blacklistClanService, tags).catch(() => new Set<string>());
+}
+
+/** Purpose: compare command-side opponent tags with the blacklist registry's canonical #TAG set. */
+function isKnownActiveBlacklistTag(
+  activeTags: ReadonlySet<string>,
+  opponentTag: string | null | undefined,
+): boolean {
+  const canonicalTag = normalizeClashTagWithHash(opponentTag);
+  if (canonicalTag) return activeTags.has(canonicalTag);
+
+  // Keep malformed/empty candidates out while accepting legacy command-side
+  // alphanumeric tag values that are not yet in the strict tag alphabet.
+  const rawCandidate = String(opponentTag ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "");
+  if (!/^[A-Z0-9]{4,15}$/.test(rawCandidate)) return false;
+  return activeTags.has(`#${rawCandidate}`);
+}
+
+export const isKnownActiveBlacklistTagForTest = isKnownActiveBlacklistTag;
+
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
   _primaryPoints: Pick<PointsSnapshot, "activeFwa"> | null,
@@ -12996,6 +13029,7 @@ function inferMatchTypeFromPointsSnapshots(
   > | null,
   options?: {
     winnerBoxNotMarkedFwa?: boolean | null;
+    knownBlacklisted?: boolean | null;
     opponentEvidenceMissingOrNotCurrent?: boolean | null;
     currentWarState?: "preparation" | "inWar" | "notInWar" | null;
     currentWarClanAttacksUsed?: number | null;
@@ -13008,6 +13042,7 @@ function inferMatchTypeFromPointsSnapshots(
     balance: opponentPoints?.balance ?? null,
     activeFwa: opponentPoints?.activeFwa ?? null,
     notFound: opponentPoints?.notFound ?? false,
+    knownBlacklisted: options?.knownBlacklisted ?? false,
     winnerBoxNotMarkedFwa: options?.winnerBoxNotMarkedFwa ?? false,
     opponentEvidenceMissingOrNotCurrent:
       options?.opponentEvidenceMissingOrNotCurrent ?? false,
@@ -14533,6 +14568,14 @@ async function buildTrackedMatchOverview(
   );
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
+  const knownBlacklistedTags = await findKnownActiveBlacklistTags(
+    scopedTracked.flatMap((clan) => {
+      const opponentTag = normalizeTag(
+        String(warByClanTag.get(normalizeTag(clan.tag))?.opponent?.tag ?? ""),
+      );
+      return opponentTag ? [opponentTag] : [];
+    }),
+  );
   let hasAnyInferredMatchType = false;
   let syncActionAvailableCount = 0;
   const sourceOfTruthSyncLine = `Latest persisted sync: ${formatResolvedSyncDisplay(
@@ -15000,6 +15043,10 @@ async function buildTrackedMatchOverview(
       primaryPoints,
       opponentPoints,
       {
+        knownBlacklisted: isKnownActiveBlacklistTag(
+          knownBlacklistedTags,
+          opponentTag,
+        ),
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteUpdatedForAlert || !strongOpponentEvidencePresent,
@@ -19449,6 +19496,10 @@ export const Fwa: Command = {
           primary,
           opponent,
           {
+            knownBlacklisted: isKnownActiveBlacklistTag(
+              await findKnownActiveBlacklistTags([opponentTag]),
+              opponentTag,
+            ),
             winnerBoxNotMarkedFwa,
             opponentEvidenceMissingOrNotCurrent:
               !siteUpdated || !strongOpponentEvidencePresent,

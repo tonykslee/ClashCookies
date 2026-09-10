@@ -267,6 +267,59 @@ describe("fwa checklist tracked messages", () => {
     ).toBe("\u{1F4ED} | \u{1F7E2} | A vs `-` (`#OPP1`)");
   });
 
+  it.each([
+    ["FWA", null, "🔘 FWA"],
+    ["BL", null, "⚫ BL"],
+    ["MM", null, "⚪ MM"],
+  ] as const)(
+    "shows the inferred %s match type only when requested",
+    (matchType, outcome, indicator) => {
+      expect(
+        buildFwaMatchCompactCopyLine({
+          mailStatusEmoji: "📭",
+          checklist: true,
+          clanShortName: "A",
+          clanName: "Alpha",
+          opponentName: "Opponent",
+          opponentTag: "#OPP1",
+          matchType,
+          outcome,
+          showMatchTypeLabel: true,
+        }),
+      ).toBe(`📭 | ${indicator} | ☐ | A vs \`Opponent\` (\`#OPP1\`)`);
+    },
+  );
+
+  it("keeps genuinely unknown compact copy neutral even when labeling is enabled", () => {
+    expect(
+      buildFwaMatchCompactCopyLine({
+        mailStatusEmoji: "📭",
+        checklist: true,
+        clanShortName: "A",
+        clanName: "Alpha",
+        opponentName: "Opponent",
+        opponentTag: "#OPP1",
+        matchType: "UNKNOWN",
+        outcome: null,
+        showMatchTypeLabel: true,
+      }),
+    ).toBe("📭 | 🔘 | ☐ | A vs `Opponent` (`#OPP1`)");
+  });
+
+  it("keeps confirmed FWA compact copy unlabelled by default", () => {
+    expect(
+      buildFwaMatchCompactCopyLine({
+        mailStatusEmoji: "📬",
+        clanShortName: "A",
+        clanName: "Alpha",
+        opponentName: "Opponent",
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        outcome: "WIN",
+      }),
+    ).toBe("📬 | 🟢 | A vs `Opponent` (`#OPP1`)");
+  });
+
   it("normalizes checklist kinds and keeps mail and bases claim keys separate", () => {
     expect(normalizeFwaMatchChecklistKind("mail")).toBe("mail_checklist");
     expect(normalizeFwaMatchChecklistKind("mail_checklist")).toBe("mail_checklist");
@@ -4089,4 +4142,3 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 });
-

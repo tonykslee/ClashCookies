@@ -101,6 +101,34 @@ export class BlacklistClanService {
     });
   }
 
+  /** Purpose: resolve active blacklist membership for normalized clan tags in one bounded query. */
+  async findActiveBlacklistClanTags(
+    tags: Iterable<string>,
+  ): Promise<Set<string>> {
+    const normalizedTags = [
+      ...new Set(
+        [...tags]
+          .map((tag) => normalizeClanTag(tag))
+          .filter((tag): tag is string => Boolean(tag)),
+      ),
+    ];
+    if (normalizedTags.length === 0) return new Set<string>();
+
+    const rows = await prisma.blacklistClan.findMany({
+      where: {
+        active: true,
+        clanTag: { in: normalizedTags },
+      },
+      select: { clanTag: true },
+    });
+    const activeTags = new Set<string>();
+    for (const row of rows) {
+      const normalized = normalizeClanTag(row.clanTag);
+      if (normalized) activeTags.add(normalized);
+    }
+    return activeTags;
+  }
+
   async upsertBlacklistClanTags(input: {
     rawTags: string;
     sourceLabel?: string | null;

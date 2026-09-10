@@ -1,4 +1,5 @@
 import { prisma } from "../../prisma";
+import { blacklistClanService } from "../BlacklistClanService";
 import {
   chooseMatchTypeResolution,
   inferMatchTypeFromOpponentPoints,
@@ -123,6 +124,10 @@ export class WarStartPointsSyncService {
         reason: "post_war_reconciliation",
         caller: "service",
       });
+      const knownBlacklistedTags = await blacklistClanService
+        .findActiveBlacklistClanTags([opponentTag])
+        .catch(() => new Set<string>());
+      const knownBlacklisted = knownBlacklistedTags.has(opponentTag);
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
       const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
         String(primary.winnerBoxText ?? "")
@@ -152,6 +157,7 @@ export class WarStartPointsSyncService {
           balance: opp?.balance ?? null,
           activeFwa: opp?.activeFwa ?? null,
           notFound: opp?.notFound ?? false,
+          knownBlacklisted,
           winnerBoxNotMarkedFwa,
           opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
         });
@@ -240,6 +246,7 @@ export class WarStartPointsSyncService {
             balance: opponentBalance,
             activeFwa: opponentActiveFwa,
             notFound: opponentNotFound,
+            knownBlacklisted,
             winnerBoxNotMarkedFwa,
             opponentEvidenceMissingOrNotCurrent:
               !siteUpdated || !strongOpponentEvidencePresent,

@@ -15,7 +15,7 @@ import {
   resolveTrackedMessageSyncIdentity,
   normalizeTrackedMessageId,
 } from "./TrackedMessageService";
-import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
+import { resolveFwaMatchStateIndicator } from "./FwaMatchStateEmojiService";
 import { WarMailLifecycleService } from "./WarMailLifecycleService";
 import { formatError } from "../helper/formatError";
 import {
@@ -938,9 +938,10 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
         };
     const matchType = effectiveMatchState.matchType;
     const outcome = effectiveMatchState.outcome;
-    const matchStateEmoji = resolveFwaMatchStateEmoji({
+    const matchStateIndicator = resolveFwaMatchStateIndicator({
       matchType,
       outcome,
+      showMatchTypeLabel: effectiveMatchState.inferred,
     });
     const issueLink = currentBaseSwap
       ? buildDiscordMessageLink({
@@ -1037,7 +1038,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     );
     rows.push({
       clanTag,
-      compactCopyLine: `${clanLabel} | ${matchStateEmoji} | ${statusText}${effectiveMatchState.inferred ? " ⚠️" : ""}`,
+      compactCopyLine: `${clanLabel} | ${matchStateIndicator} | ${statusText}${effectiveMatchState.inferred ? " ⚠️" : ""}`,
       badgeEmojiId: clanBadge.badgeEmojiId,
       badgeEmojiName: clanBadge.badgeEmojiName,
       badgeEmojiInline: clanBadge.badgeEmojiInline,
@@ -1364,6 +1365,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       opponentTag: mailRenderState.opponentTag,
       matchType: effectiveMatchState.matchType,
       outcome: effectiveMatchState.outcome,
+      showMatchTypeLabel: effectiveMatchState.inferred,
     });
     singleViews[clanTag] = {
       liveRevisionFields: mailRenderState.liveRevisionFields,

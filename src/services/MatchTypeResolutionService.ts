@@ -11,6 +11,7 @@ export type MatchTypeResolutionSource =
   | "live_points_winner_box_not_marked_fwa"
   | "active_war_non_fwa_blacklist"
   | "active_war_non_fwa_mismatch"
+  | "known_blacklist_registry"
   | "live_points_active_fwa_yes"
   | "live_points_active_fwa_no";
 
@@ -50,6 +51,7 @@ export type OpponentPointsMatchTypeSignal = {
   balance: number | null | undefined;
   activeFwa: boolean | null | undefined;
   notFound?: boolean | null | undefined;
+  knownBlacklisted?: boolean | null | undefined;
   winnerBoxNotMarkedFwa?: boolean | null | undefined;
   opponentEvidenceMissingOrNotCurrent?: boolean | null | undefined;
   currentWarState?: "preparation" | "inWar" | "notInWar" | null | undefined;
@@ -221,6 +223,7 @@ export function inferMatchTypeFromOpponentPoints(
   const winnerBoxFallback =
     signal.winnerBoxNotMarkedFwa === true &&
     signal.opponentEvidenceMissingOrNotCurrent === true;
+  const nonFwaEvidencePresent = winnerBoxFallback || signal.notFound === true;
   if (signal.available) {
     const hasOpponentPoints =
       signal.balance !== null &&
@@ -248,8 +251,17 @@ export function inferMatchTypeFromOpponentPoints(
       }
     }
   }
+  if (signal.knownBlacklisted === true) {
+    return {
+      matchType: "BL",
+      source: "known_blacklist_registry",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    };
+  }
   const activeWarNonFwaResolution = resolveNonFwaMatchTypeFromActiveWarEvidence({
-    nonFwaEvidencePresent: winnerBoxFallback || signal.notFound === true,
+    nonFwaEvidencePresent,
     currentWarState: signal.currentWarState ?? null,
     currentWarClanAttacksUsed: signal.currentWarClanAttacksUsed ?? null,
     currentWarClanStars: signal.currentWarClanStars ?? null,
