@@ -161,4 +161,55 @@ describe("blacklist clan service", () => {
     expect(activeRows).toHaveLength(1);
     expect(activeRows[0]?.clanTag).toBe("#PYLQ0289");
   });
+
+  it("resolves normalized active blacklist tags in one query without updating rows", async () => {
+    const firstSeenAt = new Date("2026-05-19T12:00:00.000Z");
+    const lastSeenAt = new Date("2026-05-20T12:00:00.000Z");
+    rows.push(
+      {
+        clanTag: "#PYLQ0289",
+        clanName: "Alpha",
+        sourceLabel: "manual-import",
+        active: true,
+        firstSeenAt,
+        lastSeenAt,
+        createdAt: firstSeenAt,
+        updatedAt: lastSeenAt,
+      },
+      {
+        clanTag: "#PYLQ0288",
+        clanName: "Inactive",
+        sourceLabel: "manual-import",
+        active: false,
+        firstSeenAt,
+        lastSeenAt,
+        createdAt: firstSeenAt,
+        updatedAt: lastSeenAt,
+      },
+    );
+
+    const activeTags = await blacklistClanService.findActiveBlacklistClanTags([
+      "pylq0289",
+      "#PYLQ0289",
+      "#pylq0288",
+    ]);
+
+    expect(activeTags).toEqual(new Set(["#PYLQ0289"]));
+    expect(prismaMock.blacklistClan.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.blacklistClan.findMany).toHaveBeenCalledWith({
+      where: { active: true, clanTag: { in: ["#PYLQ0289", "#PYLQ0288"] } },
+      select: { clanTag: true },
+    });
+    expect(rows[0]?.lastSeenAt).toEqual(lastSeenAt);
+  });
+
+  it("does not query when no valid tags are supplied", async () => {
+    const activeTags = await blacklistClanService.findActiveBlacklistClanTags([
+      "not-a-clan-tag",
+      "   ",
+    ]);
+
+    expect(activeTags).toEqual(new Set());
+    expect(prismaMock.blacklistClan.findMany).not.toHaveBeenCalled();
+  });
 });

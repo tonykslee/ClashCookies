@@ -196,6 +196,80 @@ describe("fwa match inference from points snapshots", () => {
       syncIsFwa: false,
     });
   });
+
+  it("passes known active-blacklist evidence through the production points preparation", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      { knownBlacklisted: true },
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "known_blacklist_registry",
+      inferred: true,
+      confirmed: false,
+      syncIsFwa: false,
+    });
+  });
+
+  it("uses known active-blacklist evidence with winner-box fallback before battle evidence is sufficient", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      null,
+      {
+        knownBlacklisted: true,
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+      },
+    );
+
+    expect(inferred?.matchType).toBe("BL");
+    expect(inferred?.source).toBe("known_blacklist_registry");
+  });
+
+  it("does not use blacklist evidence without the existing non-FWA prerequisite", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      null,
+      { knownBlacklisted: true },
+    );
+
+    expect(inferred).toBeNull();
+  });
+
+  it("keeps strong current points evidence ahead of blacklist evidence", () => {
+    const fwa = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: true, notFound: true },
+      { knownBlacklisted: true },
+    );
+    const bl = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: false, notFound: true },
+      { knownBlacklisted: true },
+    );
+
+    expect(fwa).toMatchObject({
+      matchType: "FWA",
+      source: "live_points_active_fwa_yes",
+    });
+    expect(bl).toMatchObject({
+      matchType: "BL",
+      source: "live_points_active_fwa_no",
+    });
+  });
+
+  it("keeps inactive or absent blacklist evidence from changing the MM fallback", () => {
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      { knownBlacklisted: false },
+    );
+
+    expect(inferred?.matchType).toBe("MM");
+    expect(inferred?.source).toBe("live_points_clan_not_found");
+  });
 });
 
 describe("fwa match stored sync fallback", () => {

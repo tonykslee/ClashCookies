@@ -6084,6 +6084,9 @@ async function buildWarMailEmbedForTag(
     });
     pointsInference = toMatchTypeResolutionFromPointsInference(
       inferMatchTypeFromPointsSnapshots(primarySnapshot, opponentSnapshot, {
+        knownBlacklisted: (
+          await findKnownActiveBlacklistTags([opponentTag])
+        ).has(opponentTag),
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteCurrent || !strongOpponentEvidencePresent,
@@ -12987,6 +12990,15 @@ export const resetFwaSteadyStateLogTrackersForTest =
 export const resolveWarMailRefreshIdentityDecisionForTest =
   resolveWarMailRefreshIdentityDecision;
 
+/** Purpose: resolve active blacklist evidence for command-side match inference without changing command behavior on lookup failure. */
+async function findKnownActiveBlacklistTags(
+  tags: Iterable<string>,
+): Promise<Set<string>> {
+  const resolver = blacklistClanService.findActiveBlacklistClanTags;
+  if (typeof resolver !== "function") return new Set<string>();
+  return resolver.call(blacklistClanService, tags).catch(() => new Set<string>());
+}
+
 /** Purpose: infer match type strictly from opponent points-site signals. */
 function inferMatchTypeFromPointsSnapshots(
   _primaryPoints: Pick<PointsSnapshot, "activeFwa"> | null,
@@ -12996,6 +13008,7 @@ function inferMatchTypeFromPointsSnapshots(
   > | null,
   options?: {
     winnerBoxNotMarkedFwa?: boolean | null;
+    knownBlacklisted?: boolean | null;
     opponentEvidenceMissingOrNotCurrent?: boolean | null;
     currentWarState?: "preparation" | "inWar" | "notInWar" | null;
     currentWarClanAttacksUsed?: number | null;
@@ -13008,6 +13021,7 @@ function inferMatchTypeFromPointsSnapshots(
     balance: opponentPoints?.balance ?? null,
     activeFwa: opponentPoints?.activeFwa ?? null,
     notFound: opponentPoints?.notFound ?? false,
+    knownBlacklisted: options?.knownBlacklisted ?? false,
     winnerBoxNotMarkedFwa: options?.winnerBoxNotMarkedFwa ?? false,
     opponentEvidenceMissingOrNotCurrent:
       options?.opponentEvidenceMissingOrNotCurrent ?? false,
@@ -14533,6 +14547,14 @@ async function buildTrackedMatchOverview(
   );
   const copyLines: string[] = [];
   const singleViews: Record<string, MatchView> = {};
+  const knownBlacklistedTags = await findKnownActiveBlacklistTags(
+    scopedTracked.flatMap((clan) => {
+      const opponentTag = normalizeTag(
+        String(warByClanTag.get(normalizeTag(clan.tag))?.opponent?.tag ?? ""),
+      );
+      return opponentTag ? [opponentTag] : [];
+    }),
+  );
   let hasAnyInferredMatchType = false;
   let syncActionAvailableCount = 0;
   const sourceOfTruthSyncLine = `Latest persisted sync: ${formatResolvedSyncDisplay(
@@ -15000,6 +15022,7 @@ async function buildTrackedMatchOverview(
       primaryPoints,
       opponentPoints,
       {
+        knownBlacklisted: knownBlacklistedTags.has(opponentTag),
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteUpdatedForAlert || !strongOpponentEvidencePresent,
@@ -19449,6 +19472,9 @@ export const Fwa: Command = {
           primary,
           opponent,
           {
+            knownBlacklisted: (
+              await findKnownActiveBlacklistTags([opponentTag])
+            ).has(opponentTag),
             winnerBoxNotMarkedFwa,
             opponentEvidenceMissingOrNotCurrent:
               !siteUpdated || !strongOpponentEvidencePresent,
