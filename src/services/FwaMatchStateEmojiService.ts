@@ -17,3 +17,19 @@ export function resolveFwaMatchStateEmoji(
   }
   return "🔘";
 }
+
+/** Purpose: build the compact presentation indicator, optionally exposing a known inferred match type. */
+export function resolveFwaMatchStateIndicator(
+  input: FwaMatchStateEmojiInput & { showMatchTypeLabel?: boolean },
+): string {
+  const emoji = resolveFwaMatchStateEmoji(input);
+  if (
+    input.showMatchTypeLabel !== true ||
+    (input.matchType !== "FWA" &&
+      input.matchType !== "BL" &&
+      input.matchType !== "MM")
+  ) {
+    return emoji;
+  }
+  return `${emoji} ${input.matchType}`;
+}

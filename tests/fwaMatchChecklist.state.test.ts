@@ -774,7 +774,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{1F518} | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{1F518} FWA | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(state.rows[0].contextKey).not.toBeNull();
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("[fwa_checklist_identity]"));
@@ -812,7 +812,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AA} | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AA} MM | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("[fwa_checklist_identity]"));
   });
@@ -848,7 +848,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AB} | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AB} BL | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -883,7 +883,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AA} | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AA} MM | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -2594,7 +2594,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchStateInferred: true,
       });
       expect(mailState.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} FWA | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
 
       const basesState = await buildFwaMatchChecklistRenderStateForGuild({
@@ -2608,7 +2608,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchStateInferred: true,
       });
       expect(basesState.rows[0].compactCopyLine).toBe(
-        `A | ${emoji} | ❌ Bases not checked ⚠️`,
+        `A | ${emoji} FWA | ❌ Bases not checked ⚠️`,
       );
     },
   );
@@ -2641,7 +2641,17 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
       expect(state.rows[0].matchStateInferred).toBe(true);
       expect(state.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} ${matchType} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+      );
+
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        `A | ${emoji} ${matchType} | ❌ Bases not checked ⚠️`,
       );
     },
   );
@@ -2682,7 +2692,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       });
 
       expect(state.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} FWA | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
     },
   );
@@ -2740,7 +2750,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🔘 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -2773,7 +2783,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🔘 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -2818,10 +2828,10 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(mailState.rows[0].compactCopyLine).toBe(
-      "📬 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🟢 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(basesState.rows[0].compactCopyLine).toBe(
-      "A | 🟢 | ❌ Bases not checked ⚠️",
+      "A | 🟢 FWA | ❌ Bases not checked ⚠️",
     );
     expect(basesState.rows[0].basesStatus).toBe("not_checked");
   });
