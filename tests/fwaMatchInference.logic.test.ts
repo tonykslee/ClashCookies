@@ -7,6 +7,7 @@ import {
   shouldRedirectToFwaMatchForMailGateReasonForTest,
   inferMatchTypeFromPointsSnapshotsForTest,
   isKnownActiveBlacklistTagForTest,
+  resolveKnownBlacklistSourceForTest,
   resolveMatchTypeWithFallbackForTest,
   resolveMatchTypeFromStoredSyncRowForTest,
   resolveTrackedActiveWarPreparationStartTimeForTest,
@@ -286,6 +287,53 @@ describe("fwa match inference from points snapshots", () => {
 
     expect(inferred?.matchType).toBe("BL");
     expect(inferred?.source).toBe("known_blacklist_registry");
+  });
+
+  it("uses FWA war-log blacklist provenance with the same blacklist precedence", () => {
+    const source = resolveKnownBlacklistSourceForTest(
+      new Map([["#LCYQ", "known_blacklist_fwa_war_log"]]),
+      "lcyq",
+    );
+    const inferred = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: null, activeFwa: null, notFound: true },
+      {
+        knownBlacklistSource: source,
+        winnerBoxNotMarkedFwa: true,
+        opponentEvidenceMissingOrNotCurrent: true,
+        currentWarState: "inWar",
+        currentWarClanAttacksUsed: 6,
+        currentWarClanStars: 12,
+        currentWarOpponentStars: 4,
+      },
+    );
+
+    expect(inferred).toMatchObject({
+      matchType: "BL",
+      source: "known_blacklist_fwa_war_log",
+      inferred: true,
+      confirmed: false,
+    });
+
+    const activeFwa = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: true },
+      { knownBlacklistSource: source },
+    );
+    expect(activeFwa).toMatchObject({
+      matchType: "FWA",
+      source: "live_points_active_fwa_yes",
+    });
+
+    const activeBl = inferMatchTypeFromPointsSnapshotsForTest(
+      { activeFwa: true },
+      { balance: 1234, activeFwa: false },
+      { knownBlacklistSource: source },
+    );
+    expect(activeBl).toMatchObject({
+      matchType: "BL",
+      source: "live_points_active_fwa_no",
+    });
   });
 
   it("keeps known active-blacklist evidence ahead of active-war MM heuristics", () => {
