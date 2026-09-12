@@ -774,7 +774,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{1F518} FWA | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{1F518} | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(state.rows[0].contextKey).not.toBeNull();
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("[fwa_checklist_identity]"));
@@ -812,7 +812,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AA} MM | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AA} | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("[fwa_checklist_identity]"));
   });
@@ -848,7 +848,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AB} BL | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AB} | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -883,7 +883,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "\u{1F4EC} | \u{26AA} MM | A vs `Opponent` (`#OPP1`) ⚠️",
+      "\u{1F4EC} | \u{26AA} | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -2594,7 +2594,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchStateInferred: true,
       });
       expect(mailState.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} FWA | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
 
       const basesState = await buildFwaMatchChecklistRenderStateForGuild({
@@ -2608,7 +2608,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         matchStateInferred: true,
       });
       expect(basesState.rows[0].compactCopyLine).toBe(
-        `A | ${emoji} FWA | ❌ Bases not checked ⚠️`,
+        `A | ${emoji} | ❌ Bases not checked ⚠️`,
       );
     },
   );
@@ -2641,7 +2641,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
       expect(state.rows[0].matchStateInferred).toBe(true);
       expect(state.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} ${matchType} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
 
       const basesState = await buildFwaMatchChecklistRenderStateForGuild({
@@ -2651,7 +2651,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         viewType: "Bases",
       });
       expect(basesState.rows[0].compactCopyLine).toBe(
-        `A | ${emoji} ${matchType} | ❌ Bases not checked ⚠️`,
+        `A | ${emoji} | ❌ Bases not checked ⚠️`,
       );
     },
   );
@@ -2692,7 +2692,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       });
 
       expect(state.rows[0].compactCopyLine).toBe(
-        `📬 | ${emoji} FWA | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
     },
   );
@@ -2750,9 +2750,64 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "📬 | 🔘 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked ⚠️",
     );
   });
+
+  it.each([
+    ["FWA", "WIN", "🟢"],
+    ["BL", null, "⚫"],
+    ["MM", null, "⚪"],
+  ] as const)(
+    "keeps confirmed %s emoji-only without an inference warning in Mail and Bases",
+    async (matchType, outcome, emoji) => {
+      const startTime = "2026-05-13T18:00:00.000Z";
+      const cocService = configureSingleClanChecklistScenario({
+        currentWar: makeCurrentWarRow({
+          clanTag: "#PYPY",
+          warId: 1001,
+          startTimeIso: startTime,
+          opponentTag: "#OPP1",
+          matchType,
+          inferredMatchType: false,
+          outcome,
+        }),
+        liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+      }).cocService;
+
+      const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+
+      expect(mailState.rows[0].compactCopyLine).toBe(
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`)`,
+      );
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        `A | ${emoji} | ❌ Bases not checked`,
+      );
+      expect(mailState.rows[0].matchStateInferred).toBe(false);
+      expect(basesState.rows[0].matchStateInferred).toBe(false);
+    },
+  );
 
   it("rejects prior-war or prior-opponent persisted projection evidence", async () => {
     const currentStartTime = "2026-05-13T18:00:00.000Z";
@@ -2783,7 +2838,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(state.rows[0].compactCopyLine).toBe(
-      "📬 | 🔘 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
     );
   });
 
@@ -2828,10 +2883,10 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     });
 
     expect(mailState.rows[0].compactCopyLine).toBe(
-      "📬 | 🟢 FWA | A vs `Opponent` (`#OPP1`) ⚠️",
+      "📬 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
     );
     expect(basesState.rows[0].compactCopyLine).toBe(
-      "A | 🟢 FWA | ❌ Bases not checked ⚠️",
+      "A | 🟢 | ❌ Bases not checked ⚠️",
     );
     expect(basesState.rows[0].basesStatus).toBe("not_checked");
   });

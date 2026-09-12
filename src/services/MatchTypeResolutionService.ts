@@ -12,8 +12,13 @@ export type MatchTypeResolutionSource =
   | "active_war_non_fwa_blacklist"
   | "active_war_non_fwa_mismatch"
   | "known_blacklist_registry"
+  | "known_blacklist_fwa_war_log"
   | "live_points_active_fwa_yes"
   | "live_points_active_fwa_no";
+
+export type KnownBlacklistEvidenceSource =
+  | "known_blacklist_registry"
+  | "known_blacklist_fwa_war_log";
 
 export type MatchTypeResolution = {
   matchType: MatchType;
@@ -52,6 +57,7 @@ export type OpponentPointsMatchTypeSignal = {
   activeFwa: boolean | null | undefined;
   notFound?: boolean | null | undefined;
   knownBlacklisted?: boolean | null | undefined;
+  knownBlacklistSource?: KnownBlacklistEvidenceSource | null | undefined;
   winnerBoxNotMarkedFwa?: boolean | null | undefined;
   opponentEvidenceMissingOrNotCurrent?: boolean | null | undefined;
   currentWarState?: "preparation" | "inWar" | "notInWar" | null | undefined;
@@ -251,10 +257,13 @@ export function inferMatchTypeFromOpponentPoints(
       }
     }
   }
-  if (signal.knownBlacklisted === true) {
+  const knownBlacklistSource =
+    signal.knownBlacklistSource ??
+    (signal.knownBlacklisted === true ? "known_blacklist_registry" : null);
+  if (knownBlacklistSource) {
     return {
       matchType: "BL",
-      source: "known_blacklist_registry",
+      source: knownBlacklistSource,
       inferred: true,
       confirmed: false,
       syncIsFwa: false,

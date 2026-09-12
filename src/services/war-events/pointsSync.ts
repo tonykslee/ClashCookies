@@ -1,5 +1,5 @@
 import { prisma } from "../../prisma";
-import { blacklistClanService } from "../BlacklistClanService";
+import { knownBlacklistEvidenceService } from "../KnownBlacklistEvidenceService";
 import {
   chooseMatchTypeResolution,
   inferMatchTypeFromOpponentPoints,
@@ -124,10 +124,10 @@ export class WarStartPointsSyncService {
         reason: "post_war_reconciliation",
         caller: "service",
       });
-      const knownBlacklistedTags = await blacklistClanService
-        .findActiveBlacklistClanTags([opponentTag])
-        .catch(() => new Set<string>());
-      const knownBlacklisted = knownBlacklistedTags.has(opponentTag);
+      const knownBlacklistEvidence = await knownBlacklistEvidenceService
+        .resolve([opponentTag])
+        .catch(() => new Map());
+      const knownBlacklistSource = knownBlacklistEvidence.get(opponentTag) ?? null;
       const siteUpdated = primary.winnerBoxTags.map((t) => normalizeTag(t)).includes(opponentTag);
       const winnerBoxNotMarkedFwa = /not marked as an fwa match/i.test(
         String(primary.winnerBoxText ?? "")
@@ -157,7 +157,7 @@ export class WarStartPointsSyncService {
           balance: opp?.balance ?? null,
           activeFwa: opp?.activeFwa ?? null,
           notFound: opp?.notFound ?? false,
-          knownBlacklisted,
+          knownBlacklistSource,
           winnerBoxNotMarkedFwa,
           opponentEvidenceMissingOrNotCurrent: !siteUpdated || !strongOpponentEvidencePresent,
         });
@@ -246,7 +246,7 @@ export class WarStartPointsSyncService {
             balance: opponentBalance,
             activeFwa: opponentActiveFwa,
             notFound: opponentNotFound,
-            knownBlacklisted,
+            knownBlacklistSource,
             winnerBoxNotMarkedFwa,
             opponentEvidenceMissingOrNotCurrent:
               !siteUpdated || !strongOpponentEvidencePresent,
@@ -334,4 +334,3 @@ export class WarStartPointsSyncService {
     await this.settings.set(this.buildWarStartPointsJobKey(job.clanTag), JSON.stringify(job));
   }
 }
-
