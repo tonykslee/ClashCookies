@@ -12,7 +12,7 @@ import { hashMessageConfig } from "../helper/hashConfig";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { CoCService } from "./CoCService";
-import { blacklistClanService } from "./BlacklistClanService";
+import { knownBlacklistEvidenceService } from "./KnownBlacklistEvidenceService";
 import {
   ActiveWarSyncResolutionService,
   type ActiveWarSyncAssignmentResult,
@@ -5071,9 +5071,9 @@ export class WarEventLogService {
           fallbackTrackedClanTag: projectionClanTag,
         }),
       ]);
-      const knownBlacklistedTags = await blacklistClanService
-        .findActiveBlacklistClanTags([projectionOpponentTag])
-        .catch(() => new Set<string>());
+      const knownBlacklistEvidence = await knownBlacklistEvidenceService
+        .resolve([projectionOpponentTag])
+        .catch(() => new Map());
       const siteCurrent = a.winnerBoxTags
         .map((t) => normalizeTag(t))
         .includes(projectionOpponentTag);
@@ -5087,7 +5087,8 @@ export class WarEventLogService {
         balance: b.balance,
         activeFwa: b.activeFwa,
         notFound: b.notFound,
-        knownBlacklisted: knownBlacklistedTags.has(projectionOpponentTag),
+        knownBlacklistSource:
+          knownBlacklistEvidence.get(projectionOpponentTag) ?? null,
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteCurrent || !strongOpponentEvidencePresent,
