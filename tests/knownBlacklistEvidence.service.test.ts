@@ -11,6 +11,20 @@ const prismaMock = vi.hoisted(() => ({
 
 vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
 
+function feedRow(
+  opponentTag: string,
+  opponentInfo: string | null,
+  endTime: string,
+  sourceSyncedAt = endTime,
+) {
+  return {
+    opponentTag,
+    opponentInfo,
+    endTime: new Date(endTime),
+    sourceSyncedAt: new Date(sourceSyncedAt),
+  };
+}
+
 describe("KnownBlacklistEvidenceService", () => {
   let service: KnownBlacklistEvidenceService;
 
@@ -53,9 +67,9 @@ describe("KnownBlacklistEvidenceService", () => {
       { clanTag: "#PYLQ", active: false },
     ]);
     prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue([
-      { opponentTag: "lcyq", opponentInfo: "bLaCkLiStEd" },
-      { opponentTag: "#PYLQ", opponentInfo: "BLACKLISTED" },
-      { opponentTag: "#QGRJ", opponentInfo: "FWA" },
+      feedRow("lcyq", "bLaCkLiStEd", "2026-05-20T12:00:00.000Z"),
+      feedRow("#PYLQ", "BLACKLISTED", "2026-05-20T12:00:00.000Z"),
+      feedRow("#QGRJ", "FWA", "2026-05-20T12:00:00.000Z"),
     ]);
 
     const result = await service.resolve(["#LCYQ", "#PYLQ", "#QGRJ"]);
@@ -67,11 +81,79 @@ describe("KnownBlacklistEvidenceService", () => {
 
   it("allows feed evidence for a tag absent from the registry", async () => {
     prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue([
-      { opponentTag: "#LCYQ", opponentInfo: " blacklisted " },
+      feedRow("#LCYQ", " blacklisted ", "2026-05-20T12:00:00.000Z"),
     ]);
 
     await expect(service.resolve(["#LCYQ"])).resolves.toEqual(new Map([
       ["#LCYQ", "known_blacklist_fwa_war_log"],
     ]));
+  });
+
+  it.each([
+    [
+      "older Blacklisted plus newer FWA",
+      [
+        feedRow("#LCYQ", "Blacklisted", "2026-05-20T12:00:00.000Z"),
+        feedRow("#LCYQ", "FWA", "2026-05-21T12:00:00.000Z"),
+      ],
+      false,
+    ],
+    [
+      "older FWA plus newer Blacklisted",
+      [
+        feedRow("#LCYQ", "FWA", "2026-05-20T12:00:00.000Z"),
+        feedRow("#LCYQ", "bLaCkLiStEd", "2026-05-21T12:00:00.000Z"),
+      ],
+      true,
+    ],
+    [
+      "newer Friendly",
+      [
+        feedRow("#LCYQ", "Blacklisted", "2026-05-20T12:00:00.000Z"),
+        feedRow("#LCYQ", "Friendly", "2026-05-21T12:00:00.000Z"),
+      ],
+      false,
+    ],
+    [
+      "newer Unknown",
+      [
+        feedRow("#LCYQ", "Blacklisted", "2026-05-20T12:00:00.000Z"),
+        feedRow("#LCYQ", "Unknown", "2026-05-21T12:00:00.000Z"),
+      ],
+      false,
+    ],
+    [
+      "newer null classification",
+      [
+        feedRow("#LCYQ", "Blacklisted", "2026-05-20T12:00:00.000Z"),
+        feedRow("#LCYQ", null, "2026-05-21T12:00:00.000Z"),
+      ],
+      false,
+    ],
+  ] as const)("uses the latest feed classification for %s", async (_label, rows, expected) => {
+    prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue(rows);
+
+    const result = await service.resolve(["#LCYQ"]);
+
+    expect(result.has("#LCYQ")).toBe(expected);
+  });
+
+  it("lets the latest source timestamp break an end-time tie", async () => {
+    prismaMock.fwaClanWarLogCurrent.findMany.mockResolvedValue([
+      feedRow(
+        "#LCYQ",
+        "Blacklisted",
+        "2026-05-21T12:00:00.000Z",
+        "2026-05-21T12:00:00.000Z",
+      ),
+      feedRow(
+        "#LCYQ",
+        "FWA",
+        "2026-05-21T12:00:00.000Z",
+        "2026-05-21T13:00:00.000Z",
+      ),
+    ]);
+
+    await expect(service.resolve(["#LCYQ"])).resolves.toEqual(new Map());
   });
 });

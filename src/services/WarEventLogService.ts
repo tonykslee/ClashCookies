@@ -5051,13 +5051,30 @@ export class WarEventLogService {
     )
       ? Number(war?.opponent?.destructionPercentage)
       : null;
-    if (
-      gateDecision.allowed &&
-      (nextOpponentTag || normalizeTag(sub.opponentTag ?? ""))
-    ) {
-      const projectionClanTag = sub.clanTag;
-      const projectionOpponentTag =
-        nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
+    const projectionClanTag = sub.clanTag;
+    const projectionOpponentTag =
+      nextOpponentTag || normalizeTag(sub.opponentTag ?? "");
+    const knownBlacklistEvidence =
+      currentState !== "notInWar" && projectionOpponentTag
+        ? await knownBlacklistEvidenceService
+            .resolve([projectionOpponentTag])
+            .catch(() => new Map())
+        : new Map();
+    const knownBlacklistSource =
+      knownBlacklistEvidence.get(projectionOpponentTag) ?? null;
+    if (!gateDecision.allowed && knownBlacklistSource) {
+      liveOpponentResolution = inferMatchTypeFromOpponentPoints({
+        available: false,
+        balance: null,
+        activeFwa: null,
+        knownBlacklistSource,
+        currentWarState: currentState,
+        currentWarClanAttacksUsed: nextClanAttacks,
+        currentWarClanStars: nextClanStars,
+        currentWarOpponentStars: nextOpponentStars,
+      });
+    }
+    if (gateDecision.allowed && projectionOpponentTag) {
       const projectionReason =
         gateDecision.fetchReason ?? "war_event_projection";
       const [a, b] = await Promise.all([
@@ -5071,9 +5088,6 @@ export class WarEventLogService {
           fallbackTrackedClanTag: projectionClanTag,
         }),
       ]);
-      const knownBlacklistEvidence = await knownBlacklistEvidenceService
-        .resolve([projectionOpponentTag])
-        .catch(() => new Map());
       const siteCurrent = a.winnerBoxTags
         .map((t) => normalizeTag(t))
         .includes(projectionOpponentTag);
@@ -5087,8 +5101,7 @@ export class WarEventLogService {
         balance: b.balance,
         activeFwa: b.activeFwa,
         notFound: b.notFound,
-        knownBlacklistSource:
-          knownBlacklistEvidence.get(projectionOpponentTag) ?? null,
+        knownBlacklistSource,
         winnerBoxNotMarkedFwa,
         opponentEvidenceMissingOrNotCurrent:
           !siteCurrent || !strongOpponentEvidencePresent,

@@ -8,6 +8,7 @@ import {
   buildWarEndDiscrepancyFingerprintForTest,
   buildNotifyWarRefreshCustomId,
 } from "../src/services/WarEventLogService";
+import { knownBlacklistEvidenceService } from "../src/services/KnownBlacklistEvidenceService";
 
 vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
   maintenanceTransition: null,
@@ -967,6 +968,135 @@ describe("War-end expected points persistence via processSubscription", () => {
     expect(updateData?.prepStartTime).toEqual(expectedPrepStart);
     expect(updateData?.startTime).toEqual(expectedWarStart);
     expect(updateData?.endTime).toEqual(expectedWarEnd);
+  });
+});
+
+describe("WarEventLogService gate-independent blacklist evidence", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function runGateDeniedCase(input: {
+    matchType: "FWA" | "MM";
+    inferredMatchType: boolean;
+  }) {
+    const fetchSnapshot = vi.fn();
+    const service = new WarEventLogService(
+      { channels: { fetch: vi.fn() } } as unknown as Client,
+      {} as any,
+    );
+    const sub = makeSubscription({
+      matchType: input.matchType,
+      inferredMatchType: input.inferredMatchType,
+      state: "inWar",
+      opponentTag: "#LCYQ",
+    });
+    const currentWarStore = createCurrentWarStore(
+      makeCurrentWarStateFromSubscription(sub),
+    );
+    vi.spyOn(prisma, "$queryRaw").mockResolvedValue([sub] as any);
+    vi.spyOn(prisma.currentWar, "findUnique").mockImplementation(
+      currentWarStore.findUnique,
+    );
+    vi.spyOn(prisma.currentWar, "updateMany").mockImplementation(
+      currentWarStore.updateMany,
+    );
+
+    (service as any).points = { fetchSnapshot };
+    (service as any).pointsGate = {
+      evaluatePollerFetch: vi.fn().mockResolvedValue({
+        allowed: false,
+        fetchReason: "post_war_reconciliation",
+      }),
+    };
+    (service as any).pointsSync = {
+      resetWarStartPointsJob: vi.fn().mockResolvedValue(undefined),
+      maybeRunWarStartPointsCheck: vi.fn().mockResolvedValue(undefined),
+    };
+    (service as any).currentSyncs = {
+      markNeedsValidation: vi.fn().mockResolvedValue(undefined),
+      getCurrentSyncForClan: vi.fn().mockResolvedValue(null),
+    };
+    (service as any).maintenanceWindowService = {
+      observeWarFetch: vi.fn().mockResolvedValue({ maintenanceTransition: null }),
+    };
+    (service as any).getCurrentWarSnapshot = vi.fn().mockResolvedValue({
+      war: {
+        state: "inWar",
+        startTime: "2026-03-12T00:00:00.000Z",
+        endTime: "2026-03-13T00:00:00.000Z",
+        clan: { name: "Alpha", attacks: 0, stars: 0, destructionPercentage: 0 },
+        opponent: {
+          tag: "#LCYQ",
+          name: "Enemy",
+          attacks: 0,
+          stars: 0,
+          destructionPercentage: 0,
+        },
+        teamSize: 50,
+        attacksPerMember: 2,
+      },
+      observation: { kind: "success" },
+    });
+    (service as any).ensureCurrentWarId = vi.fn().mockResolvedValue(1001);
+    (service as any).syncWarAttacksFromWarSnapshot = vi.fn().mockResolvedValue(0);
+    (service as any).dispatchDetectedEvent = vi.fn().mockResolvedValue(undefined);
+    (service as any).evaluateAndDeliverLiveWarClanGoals = vi.fn().mockResolvedValue(undefined);
+    (service as any).history = {
+      resolveExactCanonicalWarEndedHistoryRow: vi.fn().mockResolvedValue(null),
+    };
+    (service as any).syncResolution = {};
+    const evidenceSpy = vi
+      .spyOn(knownBlacklistEvidenceService, "resolve")
+      .mockResolvedValue(new Map([["#LCYQ", "known_blacklist_fwa_war_log"]]));
+
+    await (service as any).processSubscription("guild-1", "#AAA111", {
+      previousSync: 10,
+      activeSync: 11,
+      resolveActiveSyncNumber: vi.fn().mockResolvedValue({
+        syncNumber: 10,
+        proposedSyncNumber: 10,
+        usable: true,
+        source: "existing_current_war",
+        shouldPersist: false,
+        persistence: "not_needed",
+        validation: null,
+        latestPersistedSyncNumber: 10,
+        activeCycleSyncNumber: 11,
+        sameWarPointsSyncNumber: null,
+        persistedSyncNumber: 10,
+        persistedRevisionAt: null,
+      }),
+    });
+
+    return { currentWarStore, fetchSnapshot, evidenceSpy };
+  }
+
+  it("uses persisted feed blacklist evidence when the points gate denies HTTP fetches", async () => {
+    const { currentWarStore, fetchSnapshot, evidenceSpy } = await runGateDeniedCase({
+      matchType: "MM",
+      inferredMatchType: true,
+    });
+
+    expect(evidenceSpy).toHaveBeenCalledWith(["#LCYQ"]);
+    expect(fetchSnapshot).not.toHaveBeenCalled();
+    expect(currentWarStore.snapshot()).toMatchObject({
+      matchType: "BL",
+      inferredMatchType: true,
+    });
+  });
+
+  it("preserves confirmed CurrentWar FWA over gate-denied blacklist evidence", async () => {
+    const { currentWarStore, fetchSnapshot } = await runGateDeniedCase({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
+
+    expect(fetchSnapshot).not.toHaveBeenCalled();
+    expect(currentWarStore.snapshot()).toMatchObject({
+      matchType: "FWA",
+      inferredMatchType: false,
+    });
   });
 });
 
