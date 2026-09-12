@@ -1,7 +1,7 @@
 import { Client, EmbedBuilder } from "discord.js";
 import { Prisma } from "@prisma/client";
 import { normalizeClanTag } from "./PlayerLinkService";
-import { resolveFwaMatchStateIndicator } from "./FwaMatchStateEmojiService";
+import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
 import { BotLogChannelService } from "./BotLogChannelService";
@@ -355,7 +355,6 @@ export function buildFwaMatchCompactCopyLine(params: {
   opponentTag: string | null | undefined;
   matchType: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null | undefined;
   outcome: "WIN" | "LOSE" | "UNKNOWN" | null | undefined;
-  showMatchTypeLabel?: boolean;
 }): string {
   const mailStatusEmoji = params.mailStatusEmoji ?? "📬";
   const clanName = resolveFwaMatchCompactClanLabel({
@@ -371,20 +370,19 @@ export function buildFwaMatchCompactCopyLine(params: {
       : opponentTagRaw
         ? sanitizeFwaMatchCopyText(`#${opponentTagRaw}`)
         : "—";
-  const matchStateIndicator = resolveFwaMatchStateIndicator({
+  const matchStateEmoji = resolveFwaMatchStateEmoji({
     matchType: params.matchType,
     outcome: params.outcome,
-    showMatchTypeLabel: params.showMatchTypeLabel,
   });
   const checklistColumn = params.checklist
     ? ` | ${params.checklistChecked ? FWA_MATCH_CHECKLIST_CHECKED_EMOJI : FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI}`
     : "";
 
   if (opponentTagInput === "-") {
-    return `${mailStatusEmoji} | ${matchStateIndicator}${checklistColumn} | ${clanName} vs \`${opponentName}\``;
+    return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\``;
   }
 
-  return `${mailStatusEmoji} | ${matchStateIndicator}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
+  return `${mailStatusEmoji} | ${matchStateEmoji}${checklistColumn} | ${clanName} vs \`${opponentName}\` (\`${opponentTag}\`)`;
 }
 
 export function buildFwaMatchChecklistContent(input: {
