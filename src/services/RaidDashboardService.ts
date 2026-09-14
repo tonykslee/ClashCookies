@@ -668,6 +668,32 @@ function calculateAttackCountFromRaidLogEntry(
   return null;
 }
 
+function calculateOffensiveAttacksFromRaidLog(
+  attackLog: ClanCapitalRaidSeason["attackLog"],
+): number | null {
+  if (!Array.isArray(attackLog) || attackLog.length <= 0) {
+    return null;
+  }
+
+  let totalAttacks = 0;
+  let sawAttackCount = false;
+  for (const entry of attackLog) {
+    if (!entry || typeof entry !== "object") continue;
+    const value = entry as Record<string, unknown>;
+    const districts = Array.isArray(value.districts)
+      ? value.districts
+          .map((district) => normalizeRaidDistrictRow(district))
+          .filter((district): district is RaidDashboardDistrictRow => district !== null)
+      : [];
+    const attackCount = calculateAttackCountFromRaidLogEntry(value, districts);
+    if (attackCount === null) continue;
+    sawAttackCount = true;
+    totalAttacks += attackCount;
+  }
+
+  return sawAttackCount ? totalAttacks : null;
+}
+
 function calculateCurrentOffensiveDistrictsDestroyed(
   attackLog: ClanCapitalRaidSeason["attackLog"],
 ): number | null {
@@ -806,7 +832,7 @@ function buildRaidDashboardMedalEstimate(input: {
     return null;
   }
 
-  if (input.isFinalized) {
+  if (input.isFinalized && input.finalizedOffensiveMedals !== null) {
     return {
       offensiveBaseValue: 0,
       offensiveMedalsPerAttack: null,
@@ -1168,11 +1194,17 @@ async function loadRaidDashboardSeasonSnapshot(input: {
 
   const attackSections = normalizeAttackSections(activeSeason);
   const defenseSections = normalizeDefenseSections(activeSeason, new Map());
+  const memberAttacksCompleted =
+    Array.isArray(activeSeason.members) && activeSeason.members.length > 0
+      ? activeSeason.members.reduce((sum, member) => sum + clampInt(member?.attacks, 0, 6), 0)
+      : null;
+  const attackLogAttacksCompleted = calculateOffensiveAttacksFromRaidLog(activeSeason.attackLog);
+  const attacksCompleted =
+    (memberAttacksCompleted ?? 0) > 0 || (attackLogAttacksCompleted ?? 0) <= 0
+      ? memberAttacksCompleted
+      : attackLogAttacksCompleted;
   const counts: RaidDashboardCountRow = {
-    attacksCompleted:
-      Array.isArray(activeSeason.members) && activeSeason.members.length > 0
-        ? activeSeason.members.reduce((sum, member) => sum + clampInt(member?.attacks, 0, 6), 0)
-        : null,
+    attacksCompleted,
     attacksMax: Array.isArray(activeSeason.members) && activeSeason.members.length > 0
       ? activeSeason.members.length * 6
       : null,
