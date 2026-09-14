@@ -998,7 +998,157 @@ describe("RaidDashboardService", () => {
     expect(drilldown).not.toMatch(/raw|capped|→|~/);
   });
 
-  it("keeps finalized zero authoritative and fails closed when finalized offense is missing", async () => {
+  it("falls back to attack-log attacks when member totals are missing", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [],
+      attackLog: [
+        {
+          attackCount: 6,
+          districtCount: 9,
+          districtsDestroyed: 1,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
+
+    expect(rows[0]?.attacksCompleted).toBe(6);
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+    expect(overview).toContain("Est. Offense ~1452");
+    expect(drilldown).toContain("Estimated medals: Offense 1452");
+  });
+
+  it("uses attack-log attacks when members explicitly report zero attacks", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const activeSeason = {
+      state: "ongoing",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 0 }],
+      attackLog: [
+        {
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              attackCount: 6,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+    };
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [activeSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    expect(rows[0]?.attacksCompleted).toBe(6);
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+  });
+
+  it("estimates finalized offense while offensiveReward is unavailable", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Alpha Raid",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+
+    const finalizedSeason = {
+      state: "ended",
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      members: [{ attacks: 6 }],
+      attackLog: [
+        {
+          attackCount: 6,
+          districts: [
+            {
+              name: "Capital Peak",
+              districtHallLevel: 10,
+              destructionPercent: 100,
+              stars: 3,
+            },
+          ],
+        },
+      ],
+      defenseLog: [],
+      defensiveReward: 340,
+    };
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async () => [finalizedSeason]),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    const drilldown = buildRaidDashboardSingleClanDescription(rows[0]!);
+
+    expect(rows[0]?.raidMedalEstimate?.source).toBe("estimated");
+    expect(rows[0]?.raidMedalEstimate?.offensiveMedalsForSixAttacks).toBe(1452);
+    expect(overview).toContain("Est. Offense ~1452 | Defense 340 | Total ~1792");
+    expect(drilldown).toContain("Estimated medals: Offense 1452 | Defense 340 | Total 1792");
+  });
+
+  it("keeps finalized zero authoritative and reports missing finalized offense as unavailable", async () => {
     expect(
       resolveRaidDashboardOffensiveMedals({ state: "ended", offensiveReward: 0 } as any),
     ).toBe(0);
