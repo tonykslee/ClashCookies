@@ -216,7 +216,15 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
-    prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      if (args?.where?.metadata && args?.data?.metadata?.messageId) {
+        await prismaMock.trackedMessage.update({
+          where: { messageId: args.data.metadata.messageId },
+          data: args.data,
+        });
+      }
+      return { count: 1 };
+    });
     prismaMock.trackedMessage.create.mockResolvedValue(undefined);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findUnique.mockResolvedValue(null);
@@ -4121,5 +4129,66 @@ describe("fwa checklist tracked messages", () => {
     expect(debugSpy).toHaveBeenCalledWith(
       expect.stringContaining("reason=bot_user"),
     );
+  });
+
+  it("serializes a scheduled refresh behind a concurrent reaction update", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    let currentMetadata: any = {
+      ...tracked.metadata,
+      kind: "mail_checklist",
+      autoRefreshClaimToken: "claim-1",
+      checkedClanTags: [],
+    };
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => ({
+      ...tracked,
+      metadata: currentMetadata,
+    }));
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      if (args.where?.metadata !== currentMetadata) return { count: 0 };
+      currentMetadata = args.data.metadata;
+      return { count: 1 };
+    });
+
+    let releaseScheduledEdit!: () => void;
+    const scheduledEditGate = new Promise<void>((resolve) => {
+      releaseScheduledEdit = resolve;
+    });
+    const edit = vi
+      .fn()
+      .mockImplementationOnce(() => scheduledEditGate)
+      .mockResolvedValue(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      react: vi.fn().mockResolvedValue(undefined),
+      edit,
+    } as any;
+    const newerRows = (tracked.metadata.rows as any[]).map((row) => ({
+      ...row,
+      compactCopyLine: "RR | 🟢 | ☐ | refreshed",
+    }));
+
+    const scheduled = trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+      rows: newerRows,
+      scopeKey: "scheduled-scope",
+      automatic: true,
+      autoRefreshClaimToken: "claim-1",
+    });
+    for (let attempt = 0; attempt < 10 && edit.mock.calls.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(edit).toHaveBeenCalledTimes(1);
+    const reaction = trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+      kind: "add",
+      reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+    });
+
+    releaseScheduledEdit();
+    await expect(scheduled).resolves.toBe(true);
+    await expect(reaction).resolves.toBe(true);
+
+    expect(currentMetadata.checkedClanTags).toHaveLength(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅");
   });
 });
