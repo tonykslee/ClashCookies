@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import axios from "axios";
+
+vi.mock("axios");
+
+const mockedAxios = vi.mocked(axios, true);
 
 const prismaMock = vi.hoisted(() => ({
   clanPointsSync: {
@@ -13,10 +18,12 @@ vi.mock("../src/prisma", () => ({
 
 import {
   buildPointsSnapshotRequestKeyForTest,
+  classifyPointsSnapshotMatchupForTest,
   clearPointsSnapshotCachesForTest,
   getClanPointsCachedForTest,
   isPointsSnapshotEligibleForOpponentForTest,
   isPointsValidationCurrentForMatchupForTest,
+  resolveCurrentMatchupBalanceForTest,
   setPointsSnapshotCacheForTest,
 } from "../src/commands/Fwa";
 import {
@@ -62,18 +69,42 @@ function blockedError(): PointsDirectFetchBlockedError {
   } as any);
 }
 
+function allowedDecision(): any {
+  return {
+    allowed: true,
+    outcome: "allowed",
+    decisionCode: "allowed_unlocked",
+    reason: "test access",
+  };
+}
+
+function buildPointsHtml(
+  primaryTag: string,
+  opponentTag: string,
+  primaryBalance = 1200,
+  opponentBalance = 980,
+): string {
+  return `<main>Sync #477 Primary (${primaryTag}) vs. Opponent (${opponentTag}) (${primaryBalance} > ${opponentBalance}) Point Balance: ${primaryBalance} Active FWA: Yes</main>`;
+}
+
+function buildClanNotFoundHtml(): string {
+  return "<main>Clan not found.</main>";
+}
+
 async function getCached(
   requiredOpponentTag?: string | null,
+  tag = "#TRACK",
+  extraOptions: Record<string, unknown> = {},
 ): Promise<any> {
   return getClanPointsCachedForTest(
     {} as any,
     {} as any,
-    "#TRACK",
+    tag,
     null,
     undefined,
     requiredOpponentTag === undefined
       ? undefined
-      : { requiredOpponentTag, fetchReason: "match_render" },
+      : { requiredOpponentTag, fetchReason: "match_render", ...extraOptions },
   );
 }
 
@@ -82,6 +113,11 @@ describe("FWA points matchup-safe cache reuse", () => {
     clearPointsSnapshotCachesForTest();
     prismaMock.clanPointsSync.findFirst.mockReset();
     prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
+    mockedAxios.get.mockReset();
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "recordObservedPointValue",
+    ).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -99,6 +135,44 @@ describe("FWA points matchup-safe cache reuse", () => {
     await expect(getCached("#OPPONENT")).resolves.toMatchObject(snapshot);
 
     expect(gateSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts a fresh scrape that proves the requested opponent", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: buildPointsHtml("TRACK", "OPPONENT"),
+    } as any);
+
+    await expect(getCached("#OPPONENT")).resolves.toMatchObject({
+      tag: "TRACK",
+      balance: 1200,
+      headerOpponentTag: "OPPONENT",
+    });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a fresh scrape for a different opponent and does not cache it", async () => {
+    const gateSpy = vi
+      .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
+      .mockResolvedValueOnce(allowedDecision())
+      .mockRejectedValueOnce(blockedError());
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: buildPointsHtml("TRACK", "OTHER", 1999, 1888),
+    } as any);
+
+    await expect(getCached("#OPPONENT")).rejects.toThrow(
+      "did not prove opponent",
+    );
+    await expect(getCached("#OPPONENT")).rejects.toBeInstanceOf(
+      PointsDirectFetchBlockedError,
+    );
+    expect(gateSpy).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a changed opponent from a still-fresh TTL snapshot", async () => {
@@ -129,6 +203,99 @@ describe("FWA points matchup-safe cache reuse", () => {
     expect(buildPointsSnapshotRequestKeyForTest("#TRACK", "#OPPONENT")).not.toBe(
       buildPointsSnapshotRequestKeyForTest("#TRACK", "#CHANGED"),
     );
+  });
+
+  it("validates a shared in-flight result before either caller accepts it", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    let resolveResponse!: (response: unknown) => void;
+    mockedAxios.get.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveResponse = resolve;
+      }) as any,
+    );
+
+    const first = getCached("#OPPONENT");
+    const second = getCached("#OPPONENT");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolveResponse({
+      status: 200,
+      data: buildPointsHtml("TRACK", "OTHER"),
+    });
+
+    const results = await Promise.allSettled([first, second]);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates a shared in-flight request when it proves the same matchup", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    let resolveResponse!: (response: unknown) => void;
+    mockedAxios.get.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveResponse = resolve;
+      }) as any,
+    );
+
+    const first = getCached("#OPPONENT");
+    const second = getCached("#OPPONENT");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolveResponse({
+      status: 200,
+      data: buildPointsHtml("TRACK", "OPPONENT"),
+    });
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an explicit direct clan_not_found result without matchup tags", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: buildClanNotFoundHtml(),
+    } as any);
+
+    await expect(getCached("#TRACK", "#OPPONENT")).resolves.toMatchObject({
+      tag: "OPPONENT",
+      lookupState: "clan_not_found",
+      notFound: true,
+      winnerBoxTags: [],
+    });
+  });
+
+  it("keeps tracked-clan fallback usable when it proves the requested matchup", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    mockedAxios.get
+      .mockResolvedValueOnce({ status: 200, data: buildClanNotFoundHtml() } as any)
+      .mockResolvedValueOnce({
+        status: 200,
+        data: buildPointsHtml("TRACK", "OPPONENT", 1200, 980),
+      } as any);
+
+    await expect(
+      getCached("#TRACK", "#OPPONENT", {
+        fallbackTrackedClanTag: "#TRACK",
+      }),
+    ).resolves.toMatchObject({
+      tag: "OPPONENT",
+      snapshotSource: "tracked_clan_fallback",
+      lookupState: "clan_not_found",
+      notFound: true,
+      balance: 980,
+    });
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
   });
 
   it("rejects incompatible stale cache data when the direct fetch is blocked", async () => {
@@ -225,5 +392,9 @@ describe("FWA points matchup-safe cache reuse", () => {
         sourceSync: 476,
       }),
     ).toBe(false);
+    expect(
+      classifyPointsSnapshotMatchupForTest(primary, "OPPONENT"),
+    ).toBe("mismatched");
+    expect(resolveCurrentMatchupBalanceForTest(primary, false)).toBeNull();
   });
 });
