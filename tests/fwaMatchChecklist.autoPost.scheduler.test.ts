@@ -37,6 +37,10 @@ vi.mock("../src/helper/dozzleLogger", () => ({
   dozzleLog: dozzleLogMock,
 }));
 
+vi.mock("../src/services/CoCService", () => ({
+  CoCService: class {},
+}));
+
 vi.mock("../src/services/PollingModeService", () => pollingModeMock);
 
 vi.mock("../src/services/fwa/matchChecklistAutoPostService", () => ({
@@ -44,6 +48,12 @@ vi.mock("../src/services/fwa/matchChecklistAutoPostService", () => ({
 }));
 
 import { FwaMatchChecklistAutoPostSchedulerService } from "../src/services/fwa/matchChecklistAutoPostSchedulerService";
+import { trackedMessageService } from "../src/services/TrackedMessageService";
+
+const findRefreshTargetsSpy = vi.spyOn(
+  trackedMessageService,
+  "findCurrentFwaMatchChecklistAutoRefreshTargets",
+);
 
 function makeClient() {
   return {
@@ -81,6 +91,7 @@ function makeTrackedSyncMessage(syncEpochSeconds: number) {
 describe("FwaMatchChecklistAutoPostSchedulerService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    findRefreshTargetsSpy.mockResolvedValue([]);
     (autoPostMock as any).__seen = new Set<string>();
     autoPostMock.postForSyncTrackedMessage.mockImplementation(async ({ viewType }: { viewType: "Mail" | "Bases" }) => {
       const resultKey = `posted:${viewType}`;
