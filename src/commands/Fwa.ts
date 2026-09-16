@@ -6032,6 +6032,7 @@ async function buildWarMailEmbedForTag(
       resolvedCurrentSyncNum,
       undefined,
       {
+        requiredOpponentTag: opponentTag,
         fetchReason,
       },
     ).catch(() => null);
@@ -6042,6 +6043,7 @@ async function buildWarMailEmbedForTag(
       resolvedCurrentSyncNum,
       undefined,
       {
+        requiredOpponentTag: normalizedTag,
         fetchReason,
         fallbackTrackedClanTag: normalizedTag,
       },
@@ -12964,6 +12966,27 @@ export const resolveForceSyncMatchupEvidenceForTest =
   resolveForceSyncMatchupEvidence;
 export const isPointsValidationCurrentForMatchupForTest =
   isPointsValidationCurrentForMatchup;
+export const isPointsSnapshotEligibleForOpponentForTest =
+  isPointsSnapshotEligibleForOpponent;
+export const buildPointsSnapshotRequestKeyForTest =
+  buildPointsSnapshotRequestKey;
+export const getClanPointsCachedForTest = getClanPointsCached;
+/** Purpose: isolate points cache state between cache behavior tests. */
+export function clearPointsSnapshotCachesForTest(): void {
+  pointsSnapshotCache.clear();
+  pointsSnapshotInFlight.clear();
+}
+/** Purpose: seed one points cache entry for deterministic cache behavior tests. */
+export function setPointsSnapshotCacheForTest(input: {
+  tag: string;
+  snapshot: PointsSnapshot;
+  expiresAtMs?: number;
+}): void {
+  pointsSnapshotCache.set(normalizeTag(input.tag), {
+    snapshot: input.snapshot,
+    expiresAtMs: input.expiresAtMs ?? Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+  });
+}
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
@@ -13890,7 +13913,7 @@ async function getPersistedPointsSnapshotFallback(
     ],
   });
   if (!row) return null;
-  return buildPointsSnapshotFromWarScopedSyncRow({
+  const snapshot = buildPointsSnapshotFromWarScopedSyncRow({
     clanTag: normalizedTag,
     row: {
       warId: row.warId ?? null,
@@ -13906,6 +13929,52 @@ async function getPersistedPointsSnapshotFallback(
       syncFetchedAt: row.syncFetchedAt,
     },
   });
+  return isPointsSnapshotEligibleForOpponent(snapshot, normalizedOpponentTag)
+    ? snapshot
+    : null;
+}
+
+/** Purpose: determine whether a points snapshot proves the requested opponent matchup. */
+function isPointsSnapshotEligibleForOpponent(
+  snapshot: PointsSnapshot | null,
+  requiredOpponentTag?: string | null,
+): boolean {
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? ""),
+  );
+  if (!normalizedOpponentTag) return true;
+  if (
+    snapshot === null ||
+    !isPointsSiteUpdatedForOpponent(snapshot, normalizedOpponentTag, null)
+  ) {
+    return false;
+  }
+
+  const snapshotTag = normalizeTag(snapshot.tag);
+  const headerPrimaryTag = normalizeTag(
+    String(snapshot.headerPrimaryTag ?? ""),
+  );
+  const headerOpponentTag = normalizeTag(
+    String(snapshot.headerOpponentTag ?? ""),
+  );
+  if (!headerPrimaryTag || !headerOpponentTag || !snapshotTag) return true;
+  return (
+    (headerPrimaryTag === snapshotTag &&
+      headerOpponentTag === normalizedOpponentTag) ||
+    (headerOpponentTag === snapshotTag &&
+      headerPrimaryTag === normalizedOpponentTag)
+  );
+}
+
+/** Purpose: keep concurrent points fetch reuse isolated to the requested matchup. */
+function buildPointsSnapshotRequestKey(
+  clanTag: string,
+  requiredOpponentTag?: string | null,
+): string {
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? ""),
+  );
+  return `${normalizeTag(clanTag)}|opponent=${normalizedOpponentTag}`;
 }
 
 async function getClanPointsCached(
@@ -13919,8 +13988,15 @@ async function getClanPointsCached(
   const normalizedTag = normalizeTag(tag);
   const reason = options?.fetchReason ?? "match_render";
   const now = Date.now();
+  const requiredOpponentTag = normalizeTag(
+    String(options?.requiredOpponentTag ?? ""),
+  );
   const cached = pointsSnapshotCache.get(normalizedTag);
-  if (cached && cached.expiresAtMs > now) {
+  if (
+    cached &&
+    cached.expiresAtMs > now &&
+    isPointsSnapshotEligibleForOpponent(cached.snapshot, requiredOpponentTag)
+  ) {
     recordFetchEvent({
       namespace: "points",
       operation: "clan_points_snapshot",
@@ -13931,9 +14007,6 @@ async function getClanPointsCached(
   }
 
   const warScopedSnapshotRaw = options?.warScopedSnapshot ?? null;
-  const requiredOpponentTag = normalizeTag(
-    String(options?.requiredOpponentTag ?? ""),
-  );
   const warScopedSnapshot =
     warScopedSnapshotRaw &&
     (!requiredOpponentTag ||
@@ -13958,7 +14031,11 @@ async function getClanPointsCached(
     return applySourceSync(warScopedSnapshot, sourceSync);
   }
 
-  const existingPending = pointsSnapshotInFlight.get(normalizedTag);
+  const requestKey = buildPointsSnapshotRequestKey(
+    normalizedTag,
+    requiredOpponentTag,
+  );
+  const existingPending = pointsSnapshotInFlight.get(requestKey);
   if (existingPending) {
     recordFetchEvent({
       namespace: "points",
@@ -13989,7 +14066,13 @@ async function getClanPointsCached(
 
       const staleSnapshot =
         pointsSnapshotCache.get(normalizedTag)?.snapshot ?? null;
-      if (staleSnapshot) {
+      if (
+        staleSnapshot &&
+        isPointsSnapshotEligibleForOpponent(
+          staleSnapshot,
+          requiredOpponentTag,
+        )
+      ) {
         pointsSnapshotCache.set(normalizedTag, {
           snapshot: staleSnapshot,
           expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
@@ -14033,9 +14116,9 @@ async function getClanPointsCached(
       throw err;
     })
     .finally(() => {
-      pointsSnapshotInFlight.delete(normalizedTag);
+      pointsSnapshotInFlight.delete(requestKey);
     });
-  pointsSnapshotInFlight.set(normalizedTag, pending);
+  pointsSnapshotInFlight.set(requestKey, pending);
   let snapshot = await pending;
   const fallbackTrackedClanTag = normalizeTag(
     String(options?.fallbackTrackedClanTag ?? ""),
@@ -15006,6 +15089,7 @@ async function buildTrackedMatchOverview(
         resolvedCurrentSyncNum,
         warLookupCache,
         {
+          requiredOpponentTag: clanTag,
           fetchReason: "match_render",
           fallbackTrackedClanTag: clanTag,
         },
