@@ -17410,6 +17410,7 @@ export const Fwa: Command = {
         checkedClanTags: checklistState.checkedClanTags,
         referenceId: checklistState.referenceId,
         expiresAt: checklistState.expiresAt,
+        expectedTrackedClanTags: checklistState.expectedTrackedClanTags,
       });
       return;
     }

@@ -109,6 +109,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
   checkedClanTags?: Iterable<string>;
   referenceId?: string | null;
   expiresAt?: Date | null;
+  expectedTrackedClanTags?: string[];
   createdAtIso?: string;
 }): Parameters<typeof trackedMessageService.createFwaMatchChecklistTrackedMessage>[0] {
   const createdAtIso = params.createdAtIso ?? new Date().toISOString();
@@ -125,6 +126,7 @@ export function buildFwaMatchChecklistTrackedMessageInput(params: {
       createdAtIso,
       scopeKey: params.scopeKey ?? null,
       checkedClanTags: params.checkedClanTags ? [...params.checkedClanTags] : [],
+      expectedTrackedClanTags: params.expectedTrackedClanTags,
       rows: params.rows.map((row) => ({ ...row })),
     },
   };
@@ -221,6 +223,7 @@ type FwaMatchChecklistPublicationInput = {
   createdByUserId: string;
   referenceId?: string | null;
   expiresAt?: Date | null;
+  expectedTrackedClanTags?: string[];
   viewType?: "Mail" | "Bases";
   onPinFailure?: (err: unknown) => void | Promise<void>;
 };
@@ -249,6 +252,7 @@ export async function finalizeFwaMatchChecklistPublication(
         createdAtIso: new Date().toISOString(),
         scopeKey: params.scopeKey ?? null,
         checkedClanTags: [],
+        expectedTrackedClanTags: params.expectedTrackedClanTags,
         rows: params.rows.map((row) => ({ ...row })),
         guildId: params.guildId,
         channelId: params.channelId,
@@ -269,6 +273,7 @@ export async function finalizeFwaMatchChecklistPublication(
         checkedClanTags: params.checkedClanTags,
         referenceId: params.referenceId ?? null,
         expiresAt: params.expiresAt ?? null,
+        expectedTrackedClanTags: params.expectedTrackedClanTags,
       }),
     );
   }
@@ -321,6 +326,7 @@ export async function postFwaMatchChecklistMessage(params: {
   checkedClanTags: Iterable<string>;
   referenceId?: string | null;
   expiresAt?: Date | null;
+  expectedTrackedClanTags?: string[];
 }): Promise<void> {
   const viewType = params.viewType ?? "Mail";
   const content =
@@ -351,6 +357,7 @@ export async function postFwaMatchChecklistMessage(params: {
     createdByUserId: params.interaction.user.id,
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? null,
+    expectedTrackedClanTags: params.expectedTrackedClanTags,
     viewType,
     onPinFailure: async (err) => {
       await params.interaction
@@ -386,6 +393,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
   createdByUserId: string;
   referenceId?: string | null;
   expiresAt?: Date | null;
+  expectedTrackedClanTags?: string[];
 }): Promise<FwaMatchChecklistPublishResult> {
   const viewType = params.viewType ?? "Mail";
   const content =
@@ -417,6 +425,7 @@ export async function publishFwaMatchChecklistMessageToChannel(params: {
     createdByUserId: params.createdByUserId,
     referenceId: params.referenceId ?? null,
     expiresAt: params.expiresAt ?? null,
+    expectedTrackedClanTags: params.expectedTrackedClanTags,
     viewType,
   })
     .then(() => true)

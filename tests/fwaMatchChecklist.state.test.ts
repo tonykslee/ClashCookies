@@ -15,6 +15,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
 }));
 
@@ -1728,6 +1729,13 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       } as any;
       return trackedMessageSnapshot;
     });
+    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ data }: any) => {
+      await prismaMock.trackedMessage.update({
+        where: { messageId: trackedMessageSnapshot.messageId },
+        data,
+      });
+      return { count: 1 };
+    });
 
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");
     const buildStateSpy = vi
@@ -1890,6 +1898,13 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
         ...(data?.metadata ? { metadata: data.metadata } : {}),
       } as any;
       return trackedMessageSnapshot;
+    });
+    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ data }: any) => {
+      await prismaMock.trackedMessage.update({
+        where: { messageId: trackedMessageSnapshot.messageId },
+        data,
+      });
+      return { count: 1 };
     });
 
     const stateServiceModule = await import("../src/services/FwaMatchChecklistStateService");

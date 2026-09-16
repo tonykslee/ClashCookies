@@ -328,6 +328,7 @@ Rules:
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.
+- FWA Mail/Bases checklist automatic refresh remains inside `FwaMatchChecklistAutoPostSchedulerService`: it resolves only active current-sync `TrackedMessage` checklist rows, persists cadence/terminal markers in checklist-owned metadata, and delegates in-place reconciliation to `TrackedMessageService`. It does not create a second scheduler, repost messages, or change publication claims.
 - `RepWorkActivityEvent` owns durable rep-work attribution snapshots only. It does not own mail lifecycle, sync claims, base-swap active state, or command telemetry.
 - Do not collapse these responsibilities into one generic table or back into config blobs.
 

@@ -136,6 +136,8 @@ export type FwaMatchChecklistTrackedRow = {
   matchType?: "FWA" | "BL" | "MM" | "SKIP" | "UNKNOWN" | null;
   /** True when the displayed match state came from unconfirmed/current or persisted inference. */
   matchStateInferred?: boolean;
+  /** Typed outcome used by automatic completion decisions; older rows may omit it. */
+  outcome?: "WIN" | "LOSE" | "UNKNOWN" | null;
   contextKey?: string | null;
   detailLines?: string[] | null;
   warId?: string | number | null;
@@ -160,6 +162,12 @@ export type FwaMatchChecklistTrackedMetadata = {
   warId?: string | number | null;
   opponentTag?: string | null;
   warStartTimeIso?: string | null;
+  /** Durable automatic-refresh cadence state. */
+  expectedTrackedClanTags?: string[];
+  autoRefreshLastAttemptAtIso?: string | null;
+  autoRefreshCompletedAtIso?: string | null;
+  autoRefreshStoppedAtIso?: string | null;
+  autoRefreshClaimToken?: string | null;
 };
 
 export type FwaMatchChecklistReactionBaseline = {
@@ -207,6 +215,56 @@ export type FwaMatchChecklistRefreshOptions = {
   rows?: FwaMatchChecklistTrackedRow[];
   scopeKey?: string | null;
   expiresAt?: Date | null;
+  expectedTrackedClanTags?: string[];
+  automatic?: boolean;
+  autoRefreshClaimToken?: string | null;
+  autoRefreshCompletedAtIso?: string | null;
+};
+
+type FwaMatchChecklistDiscordMessage = {
+  id: string;
+  partial?: boolean;
+  fetch?: () => Promise<any>;
+  react?: (emoji: string) => Promise<unknown>;
+  reactions: {
+    cache: {
+      size?: number;
+      values(): IterableIterator<{
+        emoji: { id: string | null; name: string | null };
+        count?: number | null;
+      }>;
+    };
+  };
+  edit: (payload: {
+    content: string;
+    allowedMentions?: { parse: [] };
+  }) => Promise<unknown>;
+};
+
+export type FwaMatchChecklistAutoRefreshClaim = {
+  claimed: boolean;
+  reason:
+    | "claimed"
+    | "missing_metadata"
+    | "not_due"
+    | "completed"
+    | "stopped"
+    | "expired"
+    | "concurrent_update";
+  claimToken: string | null;
+  metadata: FwaMatchChecklistTrackedMetadata | null;
+};
+
+export type FwaMatchChecklistAutoRefreshTarget = {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  referenceId: string;
+  expiresAt: Date;
+  status: (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS];
+  metadata: unknown;
+  syncIdentity: string;
+  syncEpochSeconds: number;
 };
 
 export type FwaMatchChecklistBasesCompletionMetadata = {
@@ -1153,6 +1211,12 @@ function parseFwaMatchChecklistRow(value: unknown): FwaMatchChecklistTrackedRow 
     badgeEmojiInline: badgeEmojiInline || "",
     basesStatus,
     matchStateInferred: value.matchStateInferred === true,
+    outcome:
+      String(value.outcome ?? "").trim().toUpperCase() === "WIN" ||
+      String(value.outcome ?? "").trim().toUpperCase() === "LOSE" ||
+      String(value.outcome ?? "").trim().toUpperCase() === "UNKNOWN"
+        ? (String(value.outcome).trim().toUpperCase() as "WIN" | "LOSE" | "UNKNOWN")
+        : null,
     contextKey: String(value.contextKey ?? "").trim() || null,
     detailLines: detailLines && detailLines.length > 0 ? detailLines : null,
     warId: normalizeWarIdText(value.warId as string | number | null | undefined),
@@ -1235,8 +1299,107 @@ export function parseFwaMatchChecklistMetadata(
     referenceId: String(value.referenceId ?? "").trim() || null,
     checkedClanTags,
     basesReactionBaselines,
+    expectedTrackedClanTags: Array.isArray(value.expectedTrackedClanTags)
+      ? [
+          ...new Set(
+            value.expectedTrackedClanTags
+              .map((clanTag) => normalizeChecklistClanTag(String(clanTag ?? "")))
+              .filter((clanTag): clanTag is string => Boolean(clanTag)),
+          ),
+        ]
+      : undefined,
+    autoRefreshLastAttemptAtIso: String(value.autoRefreshLastAttemptAtIso ?? "").trim() || null,
+    autoRefreshCompletedAtIso: String(value.autoRefreshCompletedAtIso ?? "").trim() || null,
+    autoRefreshStoppedAtIso: String(value.autoRefreshStoppedAtIso ?? "").trim() || null,
+    autoRefreshClaimToken: String(value.autoRefreshClaimToken ?? "").trim() || null,
     rows,
   };
+}
+
+/** Purpose: decide automatic-refresh completion from typed row state, never rendered Discord text. */
+export function assessFwaMatchChecklistCompletion(params: {
+  rows: FwaMatchChecklistTrackedRow[];
+  expectedTrackedClanTags?: string[] | null;
+}): { complete: boolean; unresolvedCount: number; reason: string } {
+  const expected = [
+    ...new Set(
+      (params.expectedTrackedClanTags ?? [])
+        .map((clanTag) => normalizeChecklistClanTag(clanTag))
+        .filter((clanTag): clanTag is string => Boolean(clanTag)),
+    ),
+  ];
+  if (expected.length === 0) {
+    return { complete: false, unresolvedCount: 1, reason: "missing_expected_roster" };
+  }
+
+  const rowsByTag = new Map<string, FwaMatchChecklistTrackedRow>();
+  for (const row of params.rows) {
+    const clanTag = normalizeChecklistClanTag(row.clanTag);
+    if (clanTag && !rowsByTag.has(clanTag)) rowsByTag.set(clanTag, row);
+  }
+  let unresolvedCount = 0;
+  for (const clanTag of expected) {
+    const row = rowsByTag.get(clanTag);
+    if (!row) {
+      unresolvedCount += 1;
+      continue;
+    }
+    const opponentTag = normalizeChecklistClanTag(row.opponentTag ?? "");
+    const hasActualOpponent = Boolean(
+      opponentTag &&
+        !["-", "?", "UNKNOWN", "NONE", "NULL", "N/A", "NA"].includes(opponentTag),
+    );
+    const warId = normalizeWarIdText(row.warId ?? null);
+    const warStartTimeMs = row.warStartTimeIso ? Date.parse(row.warStartTimeIso) : NaN;
+    const hasValidWarIdentity = Boolean(warId || Number.isFinite(warStartTimeMs));
+    const matchType = String(row.matchType ?? "").trim().toUpperCase();
+    const resolvedMatchType = matchType === "FWA" || matchType === "BL" || matchType === "MM";
+    const outcome = String(row.outcome ?? "").trim().toUpperCase();
+    const resolvedOutcome = outcome === "WIN" || outcome === "LOSE";
+    const resolved =
+      hasActualOpponent &&
+      hasValidWarIdentity &&
+      resolvedMatchType &&
+      (matchType === "BL" || matchType === "MM" || resolvedOutcome);
+    if (!resolved) unresolvedCount += 1;
+  }
+  const rowCoverageMatches =
+    rowsByTag.size === expected.length && expected.every((clanTag) => rowsByTag.has(clanTag));
+  if (!rowCoverageMatches) {
+    unresolvedCount += Math.max(0, rowsByTag.size - expected.length);
+  }
+  return {
+    complete: rowCoverageMatches && unresolvedCount === 0,
+    unresolvedCount,
+    reason: rowCoverageMatches ? "typed_rows_unresolved" : "incomplete_row_coverage",
+  };
+}
+
+/** Purpose: compare render-relevant typed checklist state while ignoring reaction acknowledgments. */
+export function areFwaMatchChecklistRowsEqual(
+  currentRows: FwaMatchChecklistTrackedRow[],
+  nextRows: FwaMatchChecklistTrackedRow[],
+): boolean {
+  if (currentRows.length !== nextRows.length) return false;
+  const normalize = (row: FwaMatchChecklistTrackedRow) => ({
+    clanTag: normalizeChecklistClanTag(row.clanTag),
+    compactCopyLine: row.compactCopyLine,
+    badgeEmojiId: row.badgeEmojiId ?? null,
+    badgeEmojiName: row.badgeEmojiName ?? null,
+    badgeEmojiInline: row.badgeEmojiInline ?? "",
+    basesStatus: row.basesStatus ?? null,
+    matchType: row.matchType ?? null,
+    matchStateInferred: row.matchStateInferred === true,
+    outcome: row.outcome ?? null,
+    contextKey: row.contextKey ?? null,
+    detailLines: row.detailLines ?? null,
+    warId: normalizeWarIdText(row.warId ?? null),
+    opponentTag: normalizeChecklistClanTag(row.opponentTag ?? "") || null,
+    warStartTimeIso: row.warStartTimeIso ?? null,
+  });
+  return currentRows.every((row, index) =>
+    JSON.stringify(normalize(row)) === JSON.stringify(normalize(nextRows[index])),
+  );
 }
 
 type FwaMatchChecklistReactionCacheEntry = {
@@ -1883,6 +2046,44 @@ function findChecklistRowTagForReaction(
 }
 
 export class TrackedMessageService {
+  private readonly fwaChecklistRefreshLocks = new Map<string, Promise<void>>();
+
+  /** Purpose: serialize refresh ownership for one tracked checklist within this runtime. */
+  private async withFwaChecklistRefreshLock<T>(
+    messageId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.fwaChecklistRefreshLocks.get(messageId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.fwaChecklistRefreshLocks.set(messageId, current);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.fwaChecklistRefreshLocks.get(messageId) === current) {
+        this.fwaChecklistRefreshLocks.delete(messageId);
+      }
+    }
+  }
+
+  /** Purpose: revalidate a scheduled claim immediately before its Discord side effect. */
+  private async stillOwnsFwaChecklistRefreshClaim(params: {
+    trackedMessageId: string;
+    claimToken: string;
+  }): Promise<boolean> {
+    const tracked = await prisma.trackedMessage.findUnique({
+      where: { id: params.trackedMessageId },
+      select: { status: true, metadata: true },
+    });
+    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
+    const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
+    return metadata?.autoRefreshClaimToken === params.claimToken;
+  }
+
   async createFwaBaseSwapTrackedMessages(params: {
     guildId: string;
     clanTag: string;
@@ -2720,6 +2921,9 @@ export class TrackedMessageService {
     id: string;
     messageId: string;
     referenceId: string | null;
+    guildId: string;
+    channelId: string;
+    expiresAt: Date | null;
     status: (typeof TRACKED_MESSAGE_STATUS)[keyof typeof TRACKED_MESSAGE_STATUS];
     metadata: unknown;
   } | null> {
@@ -2737,8 +2941,11 @@ export class TrackedMessageService {
       orderBy: [{ createdAt: "desc" }],
       select: {
         id: true,
+        guildId: true,
+        channelId: true,
         messageId: true,
         referenceId: true,
+        expiresAt: true,
         status: true,
         metadata: true,
       },
@@ -2750,14 +2957,224 @@ export class TrackedMessageService {
       if (metadata.kind !== kind) continue;
       return {
         id: row.id,
+        guildId: row.guildId,
+        channelId: row.channelId,
         messageId: row.messageId,
         referenceId: row.referenceId ?? null,
+        expiresAt: row.expiresAt ?? null,
         status: row.status,
         metadata: row.metadata,
       };
     }
 
     return null;
+  }
+
+  /** Purpose: bulk-discover active checklist targets owned by each guild's latest legitimate sync root. */
+  async findCurrentFwaMatchChecklistAutoRefreshTargets(
+    nowMs: number = Date.now(),
+  ): Promise<FwaMatchChecklistAutoRefreshTarget[]> {
+    const checklistRows = await prisma.trackedMessage.findMany({
+      where: {
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: { not: null },
+        expiresAt: { gt: new Date(nowMs) },
+      },
+      orderBy: [{ createdAt: "asc" }],
+      take: 1000,
+      select: {
+        guildId: true,
+        channelId: true,
+        messageId: true,
+        referenceId: true,
+        expiresAt: true,
+        status: true,
+        metadata: true,
+      },
+    });
+    if (checklistRows.length === 0) return [];
+
+    const guildIds = [...new Set(checklistRows.map((row) => row.guildId).filter(Boolean))];
+    const rootRows = await prisma.trackedMessage.findMany({
+      where: {
+        guildId: { in: guildIds },
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST as any,
+        referenceId: null,
+        status: { in: [TRACKED_MESSAGE_STATUS.ACTIVE, TRACKED_MESSAGE_STATUS.EXPIRED] },
+        createdAt: { lte: new Date(nowMs) },
+      },
+      orderBy: [{ createdAt: "desc" }, { messageId: "desc" }],
+      take: 2000,
+      select: {
+        guildId: true,
+        messageId: true,
+        createdAt: true,
+        metadata: true,
+      },
+    });
+    const latestRootByGuild = new Map<
+      string,
+      { messageId: string; syncEpochSeconds: number; createdAt: Date }
+    >();
+    for (const root of rootRows) {
+      const metadata = parseSyncTimeMetadata(root.metadata);
+      if (!metadata) continue;
+      const current = latestRootByGuild.get(root.guildId);
+      if (
+        !current ||
+        root.createdAt.getTime() > current.createdAt.getTime() ||
+        (root.createdAt.getTime() === current.createdAt.getTime() &&
+          root.messageId > current.messageId)
+      ) {
+        latestRootByGuild.set(root.guildId, {
+          messageId: root.messageId,
+          syncEpochSeconds: metadata.syncEpochSeconds,
+          createdAt: root.createdAt,
+        });
+      }
+    }
+
+    return checklistRows.flatMap((row) => {
+      const referenceId = normalizeTrackedMessageId(row.referenceId ?? null);
+      const latestRoot = referenceId ? latestRootByGuild.get(row.guildId) : null;
+      if (
+        !referenceId ||
+        !latestRoot ||
+        latestRoot.messageId !== referenceId ||
+        !(row.expiresAt instanceof Date) ||
+        !Number.isFinite(row.expiresAt.getTime())
+      ) {
+        return [];
+      }
+      return [{
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        referenceId,
+        expiresAt: row.expiresAt,
+        status: row.status,
+        metadata: row.metadata,
+        syncIdentity: latestRoot.messageId,
+        syncEpochSeconds: latestRoot.syncEpochSeconds,
+      }];
+    });
+  }
+
+  /** Purpose: atomically claim one persisted automatic-refresh interval without holding a network transaction. */
+  async claimFwaMatchChecklistAutoRefresh(params: {
+    messageId: string;
+    nowMs: number;
+    safetyCutoffAtMs: number;
+    intervalMs: number;
+  }): Promise<FwaMatchChecklistAutoRefreshClaim> {
+    const tracked = await prisma.trackedMessage.findUnique({
+      where: { messageId: params.messageId },
+    });
+    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) {
+      return { claimed: false, reason: "expired", claimToken: null, metadata: null };
+    }
+    if (!(tracked.expiresAt instanceof Date) || tracked.expiresAt.getTime() <= params.nowMs) {
+      return { claimed: false, reason: "expired", claimToken: null, metadata: null };
+    }
+    const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
+    if (!metadata) {
+      return { claimed: false, reason: "missing_metadata", claimToken: null, metadata: null };
+    }
+    if (metadata.autoRefreshCompletedAtIso) {
+      return { claimed: false, reason: "completed", claimToken: null, metadata };
+    }
+    if (metadata.autoRefreshStoppedAtIso) {
+      return { claimed: false, reason: "stopped", claimToken: null, metadata };
+    }
+    if (params.nowMs >= params.safetyCutoffAtMs) {
+      const stoppedAtIso = new Date(params.nowMs).toISOString();
+      const stoppedMetadata: FwaMatchChecklistTrackedMetadata = {
+        ...metadata,
+        autoRefreshStoppedAtIso: stoppedAtIso,
+        autoRefreshClaimToken: null,
+      };
+      await prisma.trackedMessage
+        .updateMany({
+          where: {
+            id: tracked.id,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            metadata: tracked.metadata as any,
+          },
+          data: { metadata: stoppedMetadata as any },
+        })
+        .catch(() => undefined);
+      return { claimed: false, reason: "stopped", claimToken: null, metadata };
+    }
+    const anchorMs = Date.parse(metadata.createdAtIso);
+    if (!Number.isFinite(anchorMs)) {
+      return { claimed: false, reason: "missing_metadata", claimToken: null, metadata };
+    }
+    const elapsedMs = params.nowMs - anchorMs;
+    if (elapsedMs < params.intervalMs) {
+      return { claimed: false, reason: "not_due", claimToken: null, metadata };
+    }
+    const cadenceSlotAtMs = anchorMs + Math.floor(elapsedMs / params.intervalMs) * params.intervalMs;
+    const lastAttemptMs = metadata.autoRefreshLastAttemptAtIso
+      ? Date.parse(metadata.autoRefreshLastAttemptAtIso)
+      : NaN;
+    if (Number.isFinite(lastAttemptMs) && lastAttemptMs >= cadenceSlotAtMs) {
+      return { claimed: false, reason: "not_due", claimToken: null, metadata };
+    }
+
+    const claimToken = `fwa-checklist-auto-refresh:${params.messageId}:${params.nowMs}:${Math.random().toString(36).slice(2)}`;
+    const nextMetadata: FwaMatchChecklistTrackedMetadata = {
+      ...metadata,
+      autoRefreshLastAttemptAtIso: new Date(params.nowMs).toISOString(),
+      autoRefreshClaimToken: claimToken,
+    };
+    const claimed = await prisma.trackedMessage.updateMany({
+      where: {
+        id: tracked.id,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        expiresAt: { gt: new Date(params.nowMs) },
+        metadata: tracked.metadata as any,
+      },
+      data: { metadata: nextMetadata as any },
+    });
+    if (claimed.count !== 1) {
+      return { claimed: false, reason: "concurrent_update", claimToken: null, metadata };
+    }
+    return { claimed: true, reason: "claimed", claimToken, metadata: nextMetadata };
+  }
+
+  /** Purpose: persist automatic-refresh completion/stop state only if this worker still owns its claim. */
+  async finalizeFwaMatchChecklistAutoRefresh(params: {
+    messageId: string;
+    claimToken: string;
+    expectedTrackedClanTags?: string[] | null;
+    completedAtIso?: string | null;
+    stoppedAtIso?: string | null;
+  }): Promise<boolean> {
+    const tracked = await prisma.trackedMessage.findUnique({
+      where: { messageId: params.messageId },
+    });
+    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
+    const metadata = parseFwaMatchChecklistMetadata(tracked.metadata);
+    if (!metadata || metadata.autoRefreshClaimToken !== params.claimToken) return false;
+    const nextMetadata: FwaMatchChecklistTrackedMetadata = {
+      ...metadata,
+      autoRefreshClaimToken: null,
+      ...(params.expectedTrackedClanTags
+        ? { expectedTrackedClanTags: params.expectedTrackedClanTags }
+        : {}),
+      ...(params.completedAtIso ? { autoRefreshCompletedAtIso: params.completedAtIso } : {}),
+      ...(params.stoppedAtIso ? { autoRefreshStoppedAtIso: params.stoppedAtIso } : {}),
+    };
+    const updated = await prisma.trackedMessage.updateMany({
+      where: {
+        id: tracked.id,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        metadata: tracked.metadata as any,
+      },
+      data: { metadata: nextMetadata as any },
+    });
+    return updated.count === 1;
   }
 
   async claimFwaBasesChecklistReminderMarker(params: {
@@ -3843,27 +4260,22 @@ export class TrackedMessageService {
     return true;
   }
 
-  async refreshFwaMatchChecklistMessage(message: {
-    id: string;
-    partial?: boolean;
-    fetch?: () => Promise<any>;
-    react?: (emoji: string) => Promise<unknown>;
-    reactions: {
-      cache: {
-        size?: number;
-        values(): IterableIterator<{
-          emoji: { id: string | null; name: string | null };
-          count?: number | null;
-        }>;
-      };
-    };
-    edit: (payload: {
-      content: string;
-      allowedMentions?: { parse: [] };
-    }) => Promise<unknown>;
-  },
-  change?: FwaMatchChecklistReactionChange | null,
-  options?: FwaMatchChecklistRefreshOptions,
+  /** Purpose: serialize and refresh one checklist without allowing stale metadata to win. */
+  async refreshFwaMatchChecklistMessage(
+    message: FwaMatchChecklistDiscordMessage,
+    change?: FwaMatchChecklistReactionChange | null,
+    options?: FwaMatchChecklistRefreshOptions,
+  ): Promise<boolean> {
+    return this.withFwaChecklistRefreshLock(message.id, () =>
+      this.refreshFwaMatchChecklistMessageUnlocked(message, change, options),
+    );
+  }
+
+  /** Purpose: execute a checklist refresh while holding the per-message ownership lock. */
+  private async refreshFwaMatchChecklistMessageUnlocked(
+    message: FwaMatchChecklistDiscordMessage,
+    change?: FwaMatchChecklistReactionChange | null,
+    options?: FwaMatchChecklistRefreshOptions,
   ): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({
       where: { messageId: message.id },
@@ -3887,12 +4299,22 @@ export class TrackedMessageService {
       return false;
     }
 
+    if (
+      options?.automatic === true &&
+      (!options.autoRefreshClaimToken ||
+        metadata.autoRefreshClaimToken !== options.autoRefreshClaimToken)
+    ) {
+      return false;
+    }
+
     const viewType = resolveFwaMatchChecklistViewType(tracked.metadata);
     const reconcileSource: FwaMatchChecklistReconcileSource = change
       ? "listener"
-      : options?.rows
-        ? "button"
-        : "scheduled";
+      : options?.automatic
+        ? "scheduled"
+        : options?.rows
+          ? "button"
+          : "scheduled";
     if (viewType === "Bases") {
       const syncReferenceId = normalizeTrackedMessageId(tracked.referenceId ?? null);
       let reactionObservation: FwaChecklistReactionObservation = {
@@ -4320,26 +4742,52 @@ export class TrackedMessageService {
       const content = checklistService.buildFwaMatchBasesMessageContent({
         rows: effectiveRows,
       });
-      const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
-        tracked.expiresAt ?? null,
-        options?.expiresAt ?? null,
-      );
+      const extendedExpiresAt = options?.automatic
+        ? null
+        : resolveExtendedChecklistExpiresAt(
+            tracked.expiresAt ?? null,
+            options?.expiresAt ?? null,
+          );
+      if (
+        options?.automatic &&
+        options.autoRefreshClaimToken &&
+        !(await this.stillOwnsFwaChecklistRefreshClaim({
+          trackedMessageId: tracked.id,
+          claimToken: options.autoRefreshClaimToken,
+        }))
+      ) {
+        console.warn(
+          `[tracked-message] fwa checklist refresh lost ownership guild=${tracked.guildId} messageId=${message.id} view=Bases reason=claim_changed_before_edit`,
+        );
+        return false;
+      }
       await message.edit({
         content,
         allowedMentions: { parse: [] },
       });
-      await prisma.trackedMessage.update({
-        where: { messageId: message.id },
+      const persisted = await prisma.trackedMessage.updateMany({
+        where: {
+          id: tracked.id,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          metadata: tracked.metadata as any,
+        },
         data: {
           ...(extendedExpiresAt ? { expiresAt: extendedExpiresAt } : {}),
           metadata: {
+            ...metadata,
             kind: "bases_checklist",
-            createdByUserId: metadata.createdByUserId,
-            createdAtIso: metadata.createdAtIso,
             scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
             referenceId: tracked.referenceId ?? null,
             checkedClanTags: [],
             basesReactionBaselines: finalReactionBaselines,
+            expectedTrackedClanTags:
+              options?.expectedTrackedClanTags ?? metadata.expectedTrackedClanTags,
+            autoRefreshClaimToken: options?.automatic
+              ? metadata.autoRefreshClaimToken
+              : null,
+            ...(options?.autoRefreshCompletedAtIso
+              ? { autoRefreshCompletedAtIso: options.autoRefreshCompletedAtIso }
+              : {}),
             rows: effectiveRows.map((row) => ({ ...row })),
             guildId: tracked.guildId,
             channelId: tracked.channelId,
@@ -4348,6 +4796,12 @@ export class TrackedMessageService {
           } as any,
         },
       });
+      if (persisted.count !== 1) {
+        console.warn(
+          `[tracked-message] fwa checklist refresh lost ownership guild=${tracked.guildId} messageId=${message.id} view=Bases reason=metadata_changed`,
+        );
+        return false;
+      }
       await reconcileChecklistBadgeReactions({
         guildId: tracked.guildId,
         messageId: message.id,
@@ -4453,28 +4907,66 @@ export class TrackedMessageService {
       rows: effectiveRows,
       checkedClanTags: reactedTags,
     });
-    const extendedExpiresAt = resolveExtendedChecklistExpiresAt(
-      tracked.expiresAt ?? null,
-      options?.expiresAt ?? null,
-    );
+    const extendedExpiresAt = options?.automatic
+      ? null
+      : resolveExtendedChecklistExpiresAt(
+          tracked.expiresAt ?? null,
+          options?.expiresAt ?? null,
+        );
+    if (
+      options?.automatic &&
+      options.autoRefreshClaimToken &&
+      !(await this.stillOwnsFwaChecklistRefreshClaim({
+        trackedMessageId: tracked.id,
+        claimToken: options.autoRefreshClaimToken,
+      }))
+    ) {
+      console.warn(
+        `[tracked-message] fwa checklist refresh lost ownership guild=${tracked.guildId} messageId=${message.id} view=Mail reason=claim_changed_before_edit`,
+      );
+      return false;
+    }
     await message.edit({
       content,
       allowedMentions: { parse: [] },
     });
-    await prisma.trackedMessage.update({
-      where: { messageId: message.id },
+    const persisted = await prisma.trackedMessage.updateMany({
+      where: {
+        id: tracked.id,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        metadata: tracked.metadata as any,
+      },
       data: {
         ...(extendedExpiresAt ? { expiresAt: extendedExpiresAt } : {}),
         metadata: {
+          ...metadata,
           createdByUserId: metadata.createdByUserId,
           createdAtIso: metadata.createdAtIso,
           scopeKey: options?.scopeKey ?? metadata.scopeKey ?? null,
           referenceId: tracked.referenceId ?? null,
           checkedClanTags: [...reactedTags],
+          expectedTrackedClanTags:
+            options?.expectedTrackedClanTags ?? metadata.expectedTrackedClanTags,
+          autoRefreshClaimToken: options?.automatic
+            ? metadata.autoRefreshClaimToken
+            : null,
+          ...(options?.autoRefreshCompletedAtIso
+            ? { autoRefreshCompletedAtIso: options.autoRefreshCompletedAtIso }
+            : {}),
           rows: effectiveRows.map((row) => ({ ...row })),
+          guildId: tracked.guildId,
+          channelId: tracked.channelId,
+          messageId: tracked.messageId,
+          clanTag: tracked.clanTag ?? null,
         } as any,
       },
     });
+    if (persisted.count !== 1) {
+      console.warn(
+        `[tracked-message] fwa checklist refresh lost ownership guild=${tracked.guildId} messageId=${message.id} view=Mail reason=metadata_changed`,
+      );
+      return false;
+    }
     await reconcileChecklistBadgeReactions({
       guildId: tracked.guildId,
       messageId: message.id,
