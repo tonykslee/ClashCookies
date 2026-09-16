@@ -34,6 +34,11 @@ type ChecklistDestinationChannel = {
 
 type CoCServiceFactory = () => CoCService;
 
+export type FwaMatchChecklistAutoPostContext = {
+  cocService?: CoCService;
+  warLookupCache?: Map<string, Promise<any> | any>;
+};
+
 const CHECKLIST_VIEW_TYPES: ChecklistViewType[] = ["Mail", "Bases"];
 const BASES_CHECKLIST_READY_GRACE_MS = 15 * 60 * 1000;
 
@@ -95,6 +100,7 @@ export class FwaMatchChecklistAutoPostService {
     createdByUserId?: string | null;
     viewType?: ChecklistViewType;
     nowMs?: number;
+    context?: FwaMatchChecklistAutoPostContext;
   }): Promise<{ posted: number; skipped: number; failed: number }> {
     const guildId = String(params.tracked.guildId ?? "").trim();
     const syncMessageId = String(params.tracked.messageId ?? "").trim();
@@ -248,7 +254,7 @@ export class FwaMatchChecklistAutoPostService {
       return { posted, skipped, failed };
     }
 
-    let cocService: CoCService | null = null;
+    let cocService: CoCService | null = params.context?.cocService ?? null;
     const getCocService = (): CoCService => {
       cocService ??= this.cocServiceFactory();
       return cocService;
@@ -262,9 +268,11 @@ export class FwaMatchChecklistAutoPostService {
           cocService: getCocService(),
           guildId,
           client: params.client,
-          warLookupCache: new Map(),
+          warLookupCache: params.context?.warLookupCache ?? new Map(),
           viewType,
+          syncMessageId,
           fallbackExpiresAt: params.tracked.fallbackExpiresAt ?? null,
+          nowMs,
         });
       } catch (err) {
         await releaseChecklistPublicationClaim({ claim });
@@ -308,6 +316,7 @@ export class FwaMatchChecklistAutoPostService {
         clanTag: null,
         scopeKey: state.scopeKey,
         checkedClanTags: state.checkedClanTags,
+        expectedTrackedClanTags: state.expectedTrackedClanTags,
         createdByUserId: String(params.createdByUserId ?? "system").trim() || "system",
         referenceId: syncMessageId,
         expiresAt: state.expiresAt ?? params.tracked.expiresAt ?? null,

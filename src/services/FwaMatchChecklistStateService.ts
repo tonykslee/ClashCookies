@@ -71,6 +71,7 @@ export type FwaMatchChecklistRenderState = {
   referenceId: string | null;
   expiresAt: Date | null;
   emptyMessage: string | null;
+  expectedTrackedClanTags?: string[];
 };
 
 const MAILBOX_SENT_EMOJI = "📬";
@@ -834,8 +835,9 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   warLookupCache?: Map<string, Promise<any> | any>;
   syncMessageId?: string | null;
   fallbackExpiresAt?: Date | null;
+  nowMs?: number;
 }): Promise<FwaMatchChecklistRenderState> {
-  const now = new Date();
+  const now = new Date(params.nowMs ?? Date.now());
   const overrideSyncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
   const latestActiveSyncPost = overrideSyncIdentity
     ? null
@@ -866,10 +868,11 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       checkedClanTags: [],
       referenceId: currentSyncIdentity,
       expiresAt: buildFallbackChecklistExpiresAt({
-        nowMs: Date.now(),
+        nowMs: params.nowMs ?? Date.now(),
         fallbackExpiresAt: params.fallbackExpiresAt ?? null,
       }),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
+      expectedTrackedClanTags: [],
     };
   }
 
@@ -1176,6 +1179,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       basesStatus,
       matchType,
       matchStateInferred: effectiveMatchState.inferred,
+      outcome,
       warId: activeCurrentWar?.warId ?? null,
       opponentTag: activeCurrentWar?.opponentTag ?? null,
       warStartTimeIso: activeCurrentWar?.startTime ? activeCurrentWar.startTime.toISOString() : null,
@@ -1204,10 +1208,11 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     expiresAt: resolveChecklistExpiresAt({
       warTimingCandidates: checklistExpiresAtCandidates,
       fallbackExpiresAt: params.fallbackExpiresAt ?? null,
-      nowMs: Date.now(),
+      nowMs: params.nowMs ?? Date.now(),
       logPrefix: `[fwa checklist state] view=Bases guild=${params.guildId}`,
     }),
     emptyMessage: null,
+    expectedTrackedClanTags: trackedClans.map((clan) => normalizeChecklistClanTag(clan.tag)),
   };
 }
 
@@ -1291,6 +1296,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   viewType?: FwaMatchChecklistViewType;
   syncMessageId?: string | null;
   fallbackExpiresAt?: Date | null;
+  nowMs?: number;
 }): Promise<FwaMatchChecklistRenderState> {
   if ((params.viewType ?? "Mail") === "Bases") {
     return buildFwaMatchBasesRenderStateForGuild({
@@ -1300,12 +1306,17 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       warLookupCache: params.warLookupCache,
       syncMessageId: params.syncMessageId ?? null,
       fallbackExpiresAt: params.fallbackExpiresAt ?? null,
+      nowMs: params.nowMs,
     });
   }
-  const latestActiveSyncPost = await trackedMessageService
-    .resolveLatestActiveSyncPost(params.guildId)
-    .catch(() => null);
-  const currentSyncIdentity = resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
+  const overrideSyncIdentity = normalizeTrackedMessageId(params.syncMessageId ?? null);
+  const latestActiveSyncPost = overrideSyncIdentity
+    ? null
+    : await trackedMessageService
+        .resolveLatestActiveSyncPost(params.guildId)
+        .catch(() => null);
+  const currentSyncIdentity =
+    overrideSyncIdentity ?? resolveTrackedMessageSyncIdentity(latestActiveSyncPost);
   const trackedClans = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, clanBadge: true, name: true, shortName: true },
@@ -1322,10 +1333,11 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       checkedClanTags: [],
       referenceId: currentSyncIdentity,
       expiresAt: buildFallbackChecklistExpiresAt({
-        nowMs: Date.now(),
+        nowMs: params.nowMs ?? Date.now(),
         fallbackExpiresAt: params.fallbackExpiresAt ?? null,
       }),
       emptyMessage: "No tracked clans configured. Use `/clan configure` first.",
+      expectedTrackedClanTags: [],
     };
   }
 
@@ -1403,6 +1415,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const singleViews: Record<string, FwaMatchChecklistSingleView> = {};
   const copyLines: string[] = [];
   const inferredByTag = new Map<string, boolean>();
+  const outcomeByTag = new Map<string, "WIN" | "LOSE" | "UNKNOWN" | null>();
   const checklistExpiresAtCandidates: ChecklistExpiryCandidate[] = [];
 
   for (const clan of trackedClans) {
@@ -1514,6 +1527,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       liveRevisionFields: mailRenderState.liveRevisionFields,
     };
     inferredByTag.set(clanTag, effectiveMatchState.inferred);
+    outcomeByTag.set(clanTag, effectiveMatchState.outcome);
     copyLines.push(
       `${compactCopyLine}${effectiveMatchState.inferred ? " ⚠️" : ""}`,
     );
@@ -1529,6 +1543,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   }).map((row) => ({
     ...row,
     matchStateInferred: inferredByTag.get(normalizeChecklistClanTag(row.clanTag)) === true,
+    outcome: outcomeByTag.get(normalizeChecklistClanTag(row.clanTag)) ?? null,
   }));
   const scopeKey = buildFwaMatchChecklistScopeKey({
     guildId: params.guildId,
@@ -1550,9 +1565,10 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
     expiresAt: resolveChecklistExpiresAt({
       warTimingCandidates: checklistExpiresAtCandidates,
       fallbackExpiresAt: params.fallbackExpiresAt ?? null,
-      nowMs: Date.now(),
+      nowMs: params.nowMs ?? Date.now(),
       logPrefix: `[fwa checklist state] view=Mail guild=${params.guildId}`,
     }),
     emptyMessage: null,
+    expectedTrackedClanTags: trackedClans.map((clan) => normalizeChecklistClanTag(clan.tag)),
   };
 }
