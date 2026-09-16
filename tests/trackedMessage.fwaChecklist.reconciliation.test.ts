@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
   trackedClan: {
     findMany: vi.fn(),
@@ -298,6 +299,13 @@ describe("fwa checklist badge reaction reconciliation", () => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ data }: any) => {
+      await prismaMock.trackedMessage.update({
+        where: { messageId: data?.metadata?.messageId ?? "checklist-message-1" },
+        data,
+      });
+      return { count: 1 };
+    });
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(

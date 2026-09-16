@@ -6,13 +6,13 @@ import { CoCService } from "../CoCService";
 import {
   assessFwaMatchChecklistCompletion,
   areFwaMatchChecklistRowsEqual,
-  normalizeFwaMatchChecklistKind,
   parseSyncTimeMetadata,
   parseFwaMatchChecklistMetadata,
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
   trackedMessageService,
 } from "../TrackedMessageService";
+import type { FwaMatchChecklistAutoRefreshTarget } from "../TrackedMessageService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../FwaMatchChecklistStateService";
 import {
   isMirrorPollingMode,
@@ -30,15 +30,6 @@ export const FWA_MATCH_CHECKLIST_AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 export const FWA_MATCH_CHECKLIST_AUTO_REFRESH_SAFETY_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 type ChecklistViewType = "Mail" | "Bases";
-type CurrentSyncPost = {
-  guildId: string;
-  channelId: string;
-  messageId: string;
-  expiresAt: Date | null;
-  metadata: unknown;
-  createdAt: Date;
-};
-
 export type FwaMatchChecklistAutoPostSchedulerStartResult =
   | { started: true }
   | { started: false; reason: "already_started" | "mirror" | "staging" };
@@ -194,18 +185,6 @@ export class FwaMatchChecklistAutoPostSchedulerService {
       let posted = 0;
       let skipped = 0;
       let failed = 0;
-      const currentSyncByGuild = new Map<string, CurrentSyncPost>();
-      for (const syncPost of syncPosts) {
-        const current = currentSyncByGuild.get(syncPost.guildId);
-        if (
-          !current ||
-          syncPost.createdAt.getTime() > current.createdAt.getTime() ||
-          (syncPost.createdAt.getTime() === current.createdAt.getTime() &&
-            syncPost.messageId > current.messageId)
-        ) {
-          currentSyncByGuild.set(syncPost.guildId, syncPost);
-        }
-      }
       const refreshContext: FwaMatchChecklistAutoPostContext = {
         cocService: new CoCService(),
         warLookupCache: new Map(),
@@ -273,8 +252,16 @@ export class FwaMatchChecklistAutoPostSchedulerService {
         }
       }
 
+      const refreshTargets = await trackedMessageService
+        .findCurrentFwaMatchChecklistAutoRefreshTargets(nowMs)
+        .catch((err) => {
+          dozzleLog.error(
+            `[fwa-checklist-auto-refresh] event=failed result=failed reason=target_discovery error=${formatError(err)}`,
+          );
+          return [] as FwaMatchChecklistAutoRefreshTarget[];
+        });
       await this.refreshCurrentSyncChecklists({
-        currentSyncByGuild,
+        refreshTargets,
         nowMs,
         context: refreshContext,
       });
@@ -295,40 +282,21 @@ export class FwaMatchChecklistAutoPostSchedulerService {
 
   /** Purpose: refresh only due, current-sync checklist posts and isolate each view's failures. */
   private async refreshCurrentSyncChecklists(params: {
-    currentSyncByGuild: Map<string, CurrentSyncPost>;
+    refreshTargets: FwaMatchChecklistAutoRefreshTarget[];
     nowMs: number;
     context: FwaMatchChecklistAutoPostContext;
   }): Promise<void> {
-    for (const [guildId, syncPost] of params.currentSyncByGuild.entries()) {
-      const syncIdentity = String(syncPost.messageId ?? "").trim();
-      const syncMetadata = parseSyncTimeMetadata(syncPost.metadata);
-      if (!syncIdentity || !syncMetadata) continue;
+    for (const target of params.refreshTargets) {
+      const guildId = target.guildId;
+      const syncIdentity = target.syncIdentity;
       const safetyCutoffAtMs =
-        syncMetadata.syncEpochSeconds * 1000 + FWA_MATCH_CHECKLIST_AUTO_REFRESH_SAFETY_WINDOW_MS;
-
-      for (const viewType of ["Mail", "Bases"] as const) {
-        const target = await trackedMessageService
-          .findFwaMatchChecklistPublicationBySyncReference({
-            guildId,
-            syncMessageId: syncIdentity,
-            viewType,
-          })
-          .catch(() => null);
-        const targetMetadata = target ? parseFwaMatchChecklistMetadata(target.metadata) : null;
-        if (
-          !target ||
-          target.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
-          !targetMetadata ||
-          !isValidFutureExpiry(target.expiresAt, params.nowMs)
-        ) {
-          continue;
-        }
-        if (
-          normalizeFwaMatchChecklistKind(targetMetadata.kind) !==
-          (viewType === "Mail" ? "mail_checklist" : "bases_checklist")
-        ) {
-          continue;
-        }
+        target.syncEpochSeconds * 1000 + FWA_MATCH_CHECKLIST_AUTO_REFRESH_SAFETY_WINDOW_MS;
+      const targetMetadata = parseFwaMatchChecklistMetadata(target.metadata);
+      if (
+        !targetMetadata?.kind ||
+        !isValidFutureExpiry(target.expiresAt, params.nowMs)
+      ) continue;
+      const viewType = targetMetadata.kind === "bases_checklist" ? "Bases" : "Mail";
 
         const claim = await trackedMessageService
           .claimFwaMatchChecklistAutoRefresh({
@@ -476,7 +444,6 @@ export class FwaMatchChecklistAutoPostSchedulerService {
           unresolvedCount: completion.unresolvedCount,
           changed: true,
         });
-      }
     }
   }
 }
