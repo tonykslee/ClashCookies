@@ -2851,6 +2851,16 @@ type PointsSnapshot = {
 type PointsSnapshotCacheEntry = {
   snapshot: PointsSnapshot;
   expiresAtMs: number;
+  requestContext?: PointsSnapshotRequestContext | null;
+};
+
+type PointsSnapshotRequestContext = {
+  guildId?: string | null;
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+  currentSyncNumber?: number | null;
+  sourceSyncNumber?: number | null;
 };
 
 type SyncValidationState = {
@@ -6034,6 +6044,14 @@ async function buildWarMailEmbedForTag(
       {
         requiredOpponentTag: opponentTag,
         fetchReason,
+        warContext: {
+          guildId,
+          warId: warIdForSync,
+          warStartTime: warStartTimeForSync,
+          opponentTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
     opponentSnapshot = await getClanPointsCached(
@@ -6046,6 +6064,14 @@ async function buildWarMailEmbedForTag(
         requiredOpponentTag: normalizedTag,
         fetchReason,
         fallbackTrackedClanTag: normalizedTag,
+        warContext: {
+          guildId,
+          warId: warIdForSync,
+          warStartTime: warStartTimeForSync,
+          opponentTag: normalizedTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
     primaryBalance = primarySnapshot?.balance ?? null;
@@ -12998,10 +13024,12 @@ export function setPointsSnapshotCacheForTest(input: {
   tag: string;
   snapshot: PointsSnapshot;
   expiresAtMs?: number;
+  requestContext?: PointsSnapshotRequestContext | null;
 }): void {
   pointsSnapshotCache.set(normalizeTag(input.tag), {
     snapshot: input.snapshot,
     expiresAtMs: input.expiresAtMs ?? Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+    requestContext: normalizePointsSnapshotRequestContext(input.requestContext),
   });
 }
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
@@ -13795,6 +13823,7 @@ type ClanPointsFetchOptions = {
   fetchReason?: PointsApiFetchReason;
   warScopedSnapshot?: PointsSnapshot | null;
   fallbackTrackedClanTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
 };
 
 type WarScopedSyncReuseDbRow = WarScopedSyncReuseRow & {
@@ -13899,9 +13928,75 @@ function resolveWarScopedSnapshotForMatch(input: {
 async function getPersistedPointsSnapshotFallback(
   clanTag: string,
   requiredOpponentTag?: string | null,
+  warContext?: PointsSnapshotRequestContext | null,
 ): Promise<PointsSnapshot | null> {
   const normalizedTag = normalizeTag(clanTag);
-  const normalizedOpponentTag = normalizeTag(String(requiredOpponentTag ?? ""));
+  const normalizedContext = normalizePointsSnapshotRequestContext(warContext);
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? normalizedContext?.opponentTag ?? ""),
+  );
+  if (normalizedOpponentTag && hasWarIdentity(normalizedContext)) {
+    if (!normalizedContext?.guildId) return null;
+    const warIdentityFilters = [
+      normalizedContext.warStartTime
+        ? { warStartTime: normalizedContext.warStartTime }
+        : null,
+      normalizedContext.warId
+        ? { warId: String(normalizedContext.warId) }
+        : null,
+    ].filter(
+      (clause): clause is NonNullable<typeof clause> => clause !== null,
+    );
+    if (warIdentityFilters.length === 0) return null;
+
+    const rows = await prisma.clanPointsSync.findMany({
+      where: {
+        guildId: normalizedContext.guildId,
+        clanTag: `#${normalizedTag}`,
+        opponentTag: `#${normalizedOpponentTag}`,
+        needsValidation: false,
+        OR: warIdentityFilters,
+      },
+      select: {
+        warId: true,
+        warStartTime: true,
+        syncNum: true,
+        lastKnownSyncNumber: true,
+        opponentTag: true,
+        clanPoints: true,
+        opponentPoints: true,
+        isFwa: true,
+        needsValidation: true,
+        lastSuccessfulPointsApiFetchAt: true,
+        syncFetchedAt: true,
+      },
+      orderBy: [
+        { warStartTime: "desc" },
+        { syncFetchedAt: "desc" },
+        { updatedAt: "desc" },
+      ],
+    });
+    const reusableRow = selectWarScopedReuseRow({
+      rows,
+      warId: normalizedContext.warId
+        ? String(normalizedContext.warId)
+        : null,
+      warStartTime: normalizedContext.warStartTime ?? null,
+      opponentTag: normalizedOpponentTag,
+      currentSyncNumber: normalizedContext.currentSyncNumber ?? null,
+      sourceSyncNumber: normalizedContext.sourceSyncNumber ?? null,
+    });
+    if (!reusableRow) return null;
+    return buildPointsSnapshotFromWarScopedSyncRow({
+      clanTag: normalizedTag,
+      row: reusableRow,
+    });
+  }
+
+  // Non-war callers retain the historical latest-row behavior. A scoped
+  // matchup request without an established active identity must not turn a
+  // historical row into current-war evidence.
+  if (normalizedOpponentTag) return null;
   const row = await prisma.clanPointsSync.findFirst({
     where: {
       clanTag: `#${normalizedTag}`,
@@ -13946,9 +14041,7 @@ async function getPersistedPointsSnapshotFallback(
       syncFetchedAt: row.syncFetchedAt,
     },
   });
-  return isPointsSnapshotEligibleForOpponent(snapshot, normalizedOpponentTag)
-    ? snapshot
-    : null;
+  return snapshot;
 }
 
 /** Purpose: determine whether a points snapshot proves the requested opponent matchup. */
@@ -14007,31 +14100,159 @@ function isPointsSnapshotEligibleForOpponent(
     "mismatched";
 }
 
+/** Purpose: normalize the active-war and sync context attached to a points request. */
+function normalizePointsSnapshotRequestContext(
+  context?: PointsSnapshotRequestContext | null,
+): PointsSnapshotRequestContext | null {
+  if (!context) return null;
+  const warId =
+    context.warId !== null &&
+    context.warId !== undefined &&
+    String(context.warId).trim().length > 0
+      ? String(context.warId).trim()
+      : null;
+  const warStartTime =
+    context.warStartTime instanceof Date &&
+    Number.isFinite(context.warStartTime.getTime())
+      ? context.warStartTime
+      : null;
+  const opponentTag = normalizeTag(String(context.opponentTag ?? "")) || null;
+  const toSync = (value: number | null | undefined): number | null =>
+    value !== null && value !== undefined && Number.isFinite(value)
+      ? Math.trunc(value)
+      : null;
+  return {
+    guildId: context.guildId?.trim() || null,
+    warId,
+    warStartTime,
+    opponentTag,
+    currentSyncNumber: toSync(context.currentSyncNumber),
+    sourceSyncNumber: toSync(context.sourceSyncNumber),
+  };
+}
+
+/** Purpose: require an established active-war identity before using persisted matchup history. */
+function hasWarIdentity(
+  context: PointsSnapshotRequestContext | null | undefined,
+): boolean {
+  return Boolean(context?.warStartTime || context?.warId);
+}
+
+/** Purpose: compare war identity using the same start-time-first, war-ID fallback used by persisted reuse. */
+function isSamePointsWarContext(
+  stored: PointsSnapshotRequestContext | null | undefined,
+  requested: PointsSnapshotRequestContext | null | undefined,
+): boolean {
+  if (!stored || !requested) return false;
+  if (stored.warStartTime && requested.warStartTime) {
+    return stored.warStartTime.getTime() === requested.warStartTime.getTime();
+  }
+  if (stored.warId && requested.warId) {
+    return stored.warId === requested.warId;
+  }
+  return false;
+}
+
+/** Purpose: use only sync evidence present in a raw points snapshot for active-war cache reuse. */
+function isPointsSnapshotSyncCompatible(
+  snapshot: PointsSnapshot,
+  context: PointsSnapshotRequestContext,
+): boolean {
+  const observedSync =
+    snapshot.winnerBoxSync !== null &&
+    snapshot.winnerBoxSync !== undefined &&
+    Number.isFinite(snapshot.winnerBoxSync)
+      ? Math.trunc(snapshot.winnerBoxSync)
+      : snapshot.effectiveSync !== null &&
+          snapshot.effectiveSync !== undefined &&
+          Number.isFinite(snapshot.effectiveSync)
+        ? Math.trunc(snapshot.effectiveSync)
+        : null;
+  if (context.currentSyncNumber !== null && context.currentSyncNumber !== undefined) {
+    return observedSync === context.currentSyncNumber;
+  }
+  return (
+    observedSync !== null &&
+    context.sourceSyncNumber !== null &&
+    context.sourceSyncNumber !== undefined &&
+    observedSync > context.sourceSyncNumber
+  );
+}
+
+/** Purpose: validate matchup, war identity, and sync before reusing any cached snapshot. */
+function isPointsSnapshotEligibleForRequest(input: {
+  snapshot: PointsSnapshot | null;
+  requiredOpponentTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
+  storedContext?: PointsSnapshotRequestContext | null;
+}): boolean {
+  const context = normalizePointsSnapshotRequestContext(input.warContext);
+  const requiredOpponentTag = normalizeTag(
+    String(input.requiredOpponentTag ?? context?.opponentTag ?? ""),
+  );
+  const matchup = classifyPointsSnapshotMatchup(
+    input.snapshot,
+    requiredOpponentTag,
+  );
+  if (matchup === "mismatched") return false;
+  if (!context || !hasWarIdentity(context)) return true;
+  // Not-found is evidence about the requested page, not a points balance. It
+  // remains available for the existing inference/fallback path.
+  if (matchup === "clan_not_found") return true;
+  if (
+    input.storedContext &&
+    (!isSamePointsWarContext(input.storedContext, context) ||
+      (context?.currentSyncNumber !== null &&
+        context?.currentSyncNumber !== undefined &&
+        input.storedContext.currentSyncNumber !== context.currentSyncNumber))
+  ) {
+    return false;
+  }
+  return (
+    input.snapshot !== null &&
+    isPointsSnapshotSyncCompatible(input.snapshot, context)
+  );
+}
+
 /** Purpose: reject a successfully fetched snapshot that does not prove the requested matchup before caching it. */
 function validateFetchedPointsSnapshot(
   snapshot: PointsSnapshot,
   clanTag: string,
   requiredOpponentTag: string,
+  warContext?: PointsSnapshotRequestContext | null,
 ): PointsSnapshot {
   const eligibility = classifyPointsSnapshotMatchup(
     snapshot,
     requiredOpponentTag,
   );
-  if (eligibility !== "mismatched") return snapshot;
+  if (
+    eligibility !== "mismatched" &&
+    isPointsSnapshotEligibleForRequest({
+      snapshot,
+      requiredOpponentTag,
+      warContext,
+    })
+  ) {
+    return snapshot;
+  }
+  const rejectionCode =
+    eligibility === "mismatched" ? "MATCHUP_MISMATCH" : "WAR_SYNC_MISMATCH";
   recordFetchEvent({
     namespace: "points",
     operation: "clan_points_snapshot",
     source: "web",
-    detail: `tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=matchup_mismatch`,
+    detail: `tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=${rejectionCode.toLowerCase()}`,
     status: "failure",
     errorCategory: "validation",
-    errorCode: "MATCHUP_MISMATCH",
+    errorCode: rejectionCode,
   });
   console.info(
-    `[points-fetch] source=web tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=matchup_mismatch`,
+    `[points-fetch] source=web tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=${rejectionCode.toLowerCase()}`,
   );
   throw new Error(
-    `Points snapshot for #${clanTag} did not prove opponent #${requiredOpponentTag}.`,
+    eligibility === "mismatched"
+      ? `Points snapshot for #${clanTag} did not prove opponent #${requiredOpponentTag}.`
+      : `Points snapshot for #${clanTag} did not prove the active war sync for opponent #${requiredOpponentTag}.`,
   );
 }
 
@@ -14127,6 +14348,7 @@ async function resolveTrackedClanFallbackSnapshot(input: {
   warLookupCache?: WarLookupCache;
   reason: PointsApiFetchReason;
   fallbackTrackedClanTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
   snapshot: PointsSnapshot;
 }): Promise<PointsSnapshot> {
   const fallbackTrackedClanTag = normalizeTag(
@@ -14146,7 +14368,15 @@ async function resolveTrackedClanFallbackSnapshot(input: {
     fallbackTrackedClanTag,
     input.sourceSync,
     input.warLookupCache,
-    { fetchReason: input.reason },
+    {
+      fetchReason: input.reason,
+      warContext: input.warContext
+        ? {
+            ...input.warContext,
+            opponentTag: input.requestedClanTag,
+          }
+        : null,
+    },
   ).catch(() => null);
   const fallback = buildOpponentSnapshotFromTrackedClanFallback({
     requestedOpponentTag: input.requestedClanTag,
@@ -14179,11 +14409,19 @@ async function resolveTrackedClanFallbackSnapshot(input: {
 function buildPointsSnapshotRequestKey(
   clanTag: string,
   requiredOpponentTag?: string | null,
+  warContext?: PointsSnapshotRequestContext | null,
 ): string {
+  const context = normalizePointsSnapshotRequestContext(warContext);
   const normalizedOpponentTag = normalizeTag(
-    String(requiredOpponentTag ?? ""),
+    String(requiredOpponentTag ?? context?.opponentTag ?? ""),
   );
-  return `${normalizeTag(clanTag)}|opponent=${normalizedOpponentTag}`;
+  const warStart = context?.warStartTime?.getTime() ?? "";
+  const sourceSync =
+    context?.currentSyncNumber === null ||
+    context?.currentSyncNumber === undefined
+      ? context?.sourceSyncNumber ?? ""
+      : "";
+  return `${normalizeTag(clanTag)}|opponent=${normalizedOpponentTag}|guild=${context?.guildId ?? ""}|war=${context?.warId ?? ""}|start=${warStart}|current=${context?.currentSyncNumber ?? ""}|source=${sourceSync}`;
 }
 
 async function getClanPointsCached(
@@ -14197,14 +14435,22 @@ async function getClanPointsCached(
   const normalizedTag = normalizeTag(tag);
   const reason = options?.fetchReason ?? "match_render";
   const now = Date.now();
+  const warContext = normalizePointsSnapshotRequestContext(
+    options?.warContext,
+  );
   const requiredOpponentTag = normalizeTag(
-    String(options?.requiredOpponentTag ?? ""),
+    String(options?.requiredOpponentTag ?? warContext?.opponentTag ?? ""),
   );
   const cached = pointsSnapshotCache.get(normalizedTag);
   if (
     cached &&
     cached.expiresAtMs > now &&
-    isPointsSnapshotEligibleForOpponent(cached.snapshot, requiredOpponentTag)
+    isPointsSnapshotEligibleForRequest({
+      snapshot: cached.snapshot,
+      requiredOpponentTag,
+      warContext,
+      storedContext: cached.requestContext,
+    })
   ) {
     recordFetchEvent({
       namespace: "points",
@@ -14218,9 +14464,12 @@ async function getClanPointsCached(
   const warScopedSnapshotRaw = options?.warScopedSnapshot ?? null;
   const warScopedSnapshot =
     warScopedSnapshotRaw &&
-    (!requiredOpponentTag ||
-      normalizeTag(String(warScopedSnapshotRaw.headerOpponentTag ?? "")) ===
-        requiredOpponentTag)
+    isPointsSnapshotEligibleForRequest({
+      snapshot: warScopedSnapshotRaw,
+      requiredOpponentTag,
+      warContext,
+      storedContext: warContext,
+    })
       ? warScopedSnapshotRaw
       : null;
   if (warScopedSnapshot) {
@@ -14233,6 +14482,7 @@ async function getClanPointsCached(
     pointsSnapshotCache.set(normalizedTag, {
       snapshot: warScopedSnapshot,
       expiresAtMs: now + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      requestContext: warContext,
     });
     console.info(
       `[points-fetch] source=persisted tag=${normalizedTag} reason=${reason} reuse=war_scoped_persisted`,
@@ -14243,6 +14493,7 @@ async function getClanPointsCached(
   const requestKey = buildPointsSnapshotRequestKey(
     normalizedTag,
     requiredOpponentTag,
+    warContext,
   );
   const existingPending = pointsSnapshotInFlight.get(requestKey);
   if (existingPending) {
@@ -14256,6 +14507,7 @@ async function getClanPointsCached(
       await existingPending,
       normalizedTag,
       requiredOpponentTag,
+      warContext,
     );
     const resolvedSnapshot = await resolveTrackedClanFallbackSnapshot({
       settings: _settings,
@@ -14265,12 +14517,14 @@ async function getClanPointsCached(
       warLookupCache: _warLookupCache,
       reason,
       fallbackTrackedClanTag: options?.fallbackTrackedClanTag,
+      warContext,
       snapshot,
     });
     if (resolvedSnapshot !== snapshot) {
       pointsSnapshotCache.set(normalizedTag, {
         snapshot: resolvedSnapshot,
         expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        requestContext: warContext,
       });
     }
     return applySourceSync(resolvedSnapshot, sourceSync);
@@ -14288,10 +14542,12 @@ async function getClanPointsCached(
         snapshot,
         normalizedTag,
         requiredOpponentTag,
+        warContext,
       );
       pointsSnapshotCache.set(normalizedTag, {
         snapshot: validatedSnapshot,
         expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        requestContext: warContext,
       });
       return validatedSnapshot;
     })
@@ -14302,14 +14558,17 @@ async function getClanPointsCached(
         pointsSnapshotCache.get(normalizedTag)?.snapshot ?? null;
       if (
         staleSnapshot &&
-        isPointsSnapshotEligibleForOpponent(
-          staleSnapshot,
+        isPointsSnapshotEligibleForRequest({
+          snapshot: staleSnapshot,
           requiredOpponentTag,
-        )
+          warContext,
+          storedContext: pointsSnapshotCache.get(normalizedTag)?.requestContext,
+        })
       ) {
         pointsSnapshotCache.set(normalizedTag, {
           snapshot: staleSnapshot,
           expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+          requestContext: warContext,
         });
         recordFetchEvent({
           namespace: "points",
@@ -14326,11 +14585,13 @@ async function getClanPointsCached(
       const persistedSnapshot = await getPersistedPointsSnapshotFallback(
         normalizedTag,
         requiredOpponentTag || null,
+        warContext,
       );
       if (persistedSnapshot) {
         pointsSnapshotCache.set(normalizedTag, {
           snapshot: persistedSnapshot,
           expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+          requestContext: warContext,
         });
         recordFetchEvent({
           namespace: "points",
@@ -14362,6 +14623,7 @@ async function getClanPointsCached(
     warLookupCache: _warLookupCache,
     reason,
     fallbackTrackedClanTag: options?.fallbackTrackedClanTag,
+    warContext,
     snapshot,
   });
   if (resolvedSnapshot !== snapshot) {
@@ -14369,6 +14631,7 @@ async function getClanPointsCached(
     pointsSnapshotCache.set(normalizedTag, {
       snapshot,
       expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      requestContext: warContext,
     });
   }
   return applySourceSync(snapshot, sourceSync);
@@ -15256,6 +15519,14 @@ async function buildTrackedMatchOverview(
         requiredOpponentTag: opponentTag,
         fetchReason: "match_render",
         warScopedSnapshot,
+        warContext: {
+          guildId,
+          warId: warIdForReuse,
+          warStartTime: warStartTimeForReuse,
+          opponentTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
     let opponentPoints: PointsSnapshot | null = null;
@@ -15296,6 +15567,14 @@ async function buildTrackedMatchOverview(
           requiredOpponentTag: clanTag,
           fetchReason: "match_render",
           fallbackTrackedClanTag: clanTag,
+          warContext: {
+            guildId,
+            warId: warIdForReuse,
+            warStartTime: warStartTimeForReuse,
+            opponentTag: clanTag,
+            currentSyncNumber: resolvedCurrentSyncNum,
+            sourceSyncNumber: sourceSync,
+          },
         },
       ).catch(() => null);
     }
@@ -19079,7 +19358,17 @@ export const Fwa: Command = {
             trackedTag,
             resolvedCurrentSync,
             warLookupCache,
-            { fetchReason: "points_command" },
+            {
+              fetchReason: "points_command",
+              warContext: {
+                guildId: interaction.guildId,
+                warId: syncIdentity.warId,
+                warStartTime: syncIdentity.warStartTime,
+                opponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
+                currentSyncNumber: resolvedCurrentSync,
+                sourceSyncNumber: sourceSync,
+              },
+            },
           );
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
@@ -20511,7 +20800,17 @@ export const Fwa: Command = {
         tag,
         resolvedCurrentSync,
         warLookupCache,
-        { fetchReason: "points_command" },
+        {
+          fetchReason: "points_command",
+          warContext: {
+            guildId: interaction.guildId,
+            warId: syncIdentity.warId,
+            warStartTime: syncIdentity.warStartTime,
+            opponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
+            currentSyncNumber: resolvedCurrentSync,
+            sourceSyncNumber: sourceSync,
+          },
+        },
       );
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {
