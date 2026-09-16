@@ -37,6 +37,9 @@ describe("reconcileActiveWarIdentity", () => {
         matchType: "FWA",
         inferredMatchType: true,
         outcome: "WIN",
+        fwaPoints: 1200,
+        opponentFwaPoints: 980,
+        warStartFwaPoints: 1200,
       },
     });
 
@@ -48,6 +51,9 @@ describe("reconcileActiveWarIdentity", () => {
       inferredMatchType: true,
       outcome: "WIN",
     });
+    expect(call.update).not.toHaveProperty("fwaPoints");
+    expect(call.update).not.toHaveProperty("opponentFwaPoints");
+    expect(call.update).not.toHaveProperty("warStartFwaPoints");
   });
 
   it("clears prior match evidence for a genuinely new war", async () => {
@@ -63,6 +69,9 @@ describe("reconcileActiveWarIdentity", () => {
         matchType: "FWA",
         inferredMatchType: false,
         outcome: "LOSE",
+        fwaPoints: 1200,
+        opponentFwaPoints: 980,
+        warStartFwaPoints: 1200,
       },
     });
 
@@ -73,6 +82,9 @@ describe("reconcileActiveWarIdentity", () => {
       matchType: null,
       inferredMatchType: true,
       outcome: null,
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      warStartFwaPoints: null,
     });
     expect(result.identity?.sameWar).toBe(false);
     expect(result.currentWar?.matchType).toBeNull();

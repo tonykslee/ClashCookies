@@ -12982,6 +12982,9 @@ export const classifyPointsSnapshotMatchupForTest =
   classifyPointsSnapshotMatchup;
 export const resolveCurrentMatchupBalanceForTest =
   resolveCurrentMatchupBalance;
+export const canPreserveCurrentWarPointsForActiveWarForTest =
+  canPreserveCurrentWarPointsForActiveWar;
+export const buildCurrentWarPointsUpdateForTest = buildCurrentWarPointsUpdate;
 export const buildPointsSnapshotRequestKeyForTest =
   buildPointsSnapshotRequestKey;
 export const getClanPointsCachedForTest = getClanPointsCached;
@@ -14046,6 +14049,73 @@ function resolveCurrentMatchupBalance(
     return null;
   }
   return Math.trunc(snapshot.balance);
+}
+
+/** Purpose: preserve CurrentWar point materialization only for a proven same-war row. */
+function canPreserveCurrentWarPointsForActiveWar(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+}): boolean {
+  if (
+    !input.currentWar ||
+    !(input.currentWar.startTime instanceof Date) ||
+    !input.activeWarStartTime ||
+    !input.activeOpponentTag
+  ) {
+    return false;
+  }
+  return compareActiveWarIdentities({
+    persisted: {
+      warId: input.currentWar.warId ?? null,
+      warStartTime: input.currentWar.startTime,
+      opponentTag: input.currentWar.opponentTag ?? null,
+    },
+    active: {
+      warId: input.activeWarId,
+      warStartTime: input.activeWarStartTime,
+      opponentTag: input.activeOpponentTag,
+    },
+  }).sameWar;
+}
+
+/** Purpose: build the CurrentWar point write without allowing unavailable evidence to erase a proven same-war value. */
+function buildCurrentWarPointsUpdate(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+  currentPrimaryBalance: number | null;
+  currentOpponentBalance: number | null;
+}): {
+  fwaPoints: number | null | undefined;
+  opponentFwaPoints: number | null | undefined;
+  warStartFwaPoints: { set: number } | undefined;
+} {
+  const preserveCurrentWarPoints =
+    input.currentPrimaryBalance === null &&
+    input.currentOpponentBalance === null &&
+    canPreserveCurrentWarPointsForActiveWar(input);
+  return {
+    fwaPoints: preserveCurrentWarPoints ? undefined : input.currentPrimaryBalance,
+    opponentFwaPoints: preserveCurrentWarPoints
+      ? undefined
+      : input.currentOpponentBalance,
+    warStartFwaPoints: preserveCurrentWarPoints
+      ? undefined
+      : input.currentPrimaryBalance !== null
+        ? { set: input.currentPrimaryBalance }
+        : undefined,
+  };
 }
 
 /** Purpose: preserve explicit opponent-not-found handling by deriving a proven snapshot from the tracked clan page. */
@@ -15392,6 +15462,21 @@ async function buildTrackedMatchOverview(
       currentWarOutcomeConfirmed: appliedResolution.confirmed === true,
       projectedOutcome: derivedOutcome,
     });
+    const currentWarPointsUpdate = buildCurrentWarPointsUpdate({
+      currentWar: sub,
+      activeWarId: warIdForReuse,
+      activeWarStartTime: warStartTimeForReuse,
+      activeOpponentTag: opponentTag,
+      currentPrimaryBalance,
+      currentOpponentBalance,
+    });
+    const preserveCurrentWarPoints =
+      currentWarPointsUpdate.fwaPoints === undefined;
+    if (preserveCurrentWarPoints) {
+      console.debug(
+        `[fwa-points-materialization] action=preserve_same_war_points clan=#${clanTag} opponent=#${opponentTag} reason=no_current_evidence`,
+      );
+    }
     if (guildId) {
       await prisma.currentWar.upsert({
         where: {
@@ -15416,13 +15501,8 @@ async function buildTrackedMatchOverview(
         update: {
           matchType: matchType,
           inferredMatchType,
-          fwaPoints: currentPrimaryBalance,
-          opponentFwaPoints: currentOpponentBalance,
+          ...currentWarPointsUpdate,
           outcome: liveExpectedOutcome,
-          warStartFwaPoints:
-            currentPrimaryBalance !== null
-              ? { set: currentPrimaryBalance }
-              : undefined,
           warEndFwaPoints: undefined,
         },
       });

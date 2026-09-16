@@ -50,6 +50,9 @@ export type ActiveWarIdentityCurrentWarInput = {
   matchType?: string | null;
   inferredMatchType?: boolean | null;
   outcome?: string | null;
+  fwaPoints?: number | null;
+  opponentFwaPoints?: number | null;
+  warStartFwaPoints?: number | null;
 };
 
 export type ResolveActiveWarIdentityPatchInput = {
@@ -209,6 +212,13 @@ export async function reconcileActiveWarIdentity(input: {
   const matchType = (identity.sameWar ? (currentWar?.matchType ?? null) : null) as any;
   const inferredMatchType = identity.sameWar ? (currentWar?.inferredMatchType ?? true) : true;
   const outcome = identity.sameWar ? (currentWar?.outcome ?? null) : null;
+  const fwaPoints = identity.sameWar ? (currentWar?.fwaPoints ?? null) : null;
+  const opponentFwaPoints = identity.sameWar
+    ? (currentWar?.opponentFwaPoints ?? null)
+    : null;
+  const warStartFwaPoints = identity.sameWar
+    ? (currentWar?.warStartFwaPoints ?? null)
+    : null;
   const reconciledCurrentWar = {
     ...(currentWar ?? {}),
     clanTag: `#${normalizeTag(input.clanTag) ?? input.clanTag}`,
@@ -223,6 +233,9 @@ export async function reconcileActiveWarIdentity(input: {
     matchType,
     inferredMatchType,
     outcome,
+    fwaPoints,
+    opponentFwaPoints,
+    warStartFwaPoints,
   };
   try {
     const persisted = await prisma.currentWar.upsert({
@@ -263,6 +276,13 @@ export async function reconcileActiveWarIdentity(input: {
         matchType,
         inferredMatchType,
         outcome,
+        ...(identity.sameWar
+          ? {}
+          : {
+              fwaPoints: null,
+              opponentFwaPoints: null,
+              warStartFwaPoints: null,
+            }),
         updatedAt: identity.patch.updatedAt,
       },
     });

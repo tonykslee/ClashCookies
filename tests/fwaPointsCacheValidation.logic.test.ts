@@ -18,6 +18,8 @@ vi.mock("../src/prisma", () => ({
 
 import {
   buildPointsSnapshotRequestKeyForTest,
+  buildCurrentWarPointsUpdateForTest,
+  canPreserveCurrentWarPointsForActiveWarForTest,
   classifyPointsSnapshotMatchupForTest,
   clearPointsSnapshotCachesForTest,
   getClanPointsCachedForTest,
@@ -396,5 +398,81 @@ describe("FWA points matchup-safe cache reuse", () => {
       classifyPointsSnapshotMatchupForTest(primary, "OPPONENT"),
     ).toBe("mismatched");
     expect(resolveCurrentMatchupBalanceForTest(primary, false)).toBeNull();
+  });
+
+  it("only preserves unavailable CurrentWar points for the exact active identity", () => {
+    const sameWar = {
+      warId: 5001,
+      startTime: new Date("2026-09-09T18:00:00.000Z"),
+      opponentTag: "#OPPONENT",
+    };
+
+    expect(
+      canPreserveCurrentWarPointsForActiveWarForTest({
+        currentWar: sameWar,
+        activeWarId: 5001,
+        activeWarStartTime: new Date("2026-09-09T18:00:00.000Z"),
+        activeOpponentTag: "#OPPONENT",
+      }),
+    ).toBe(true);
+    expect(
+      canPreserveCurrentWarPointsForActiveWarForTest({
+        currentWar: sameWar,
+        activeWarId: 5002,
+        activeWarStartTime: new Date("2026-09-10T18:00:00.000Z"),
+        activeOpponentTag: "#NEWOPPONENT",
+      }),
+    ).toBe(false);
+    expect(
+      canPreserveCurrentWarPointsForActiveWarForTest({
+        currentWar: null,
+        activeWarId: 5001,
+        activeWarStartTime: new Date("2026-09-09T18:00:00.000Z"),
+        activeOpponentTag: "#OPPONENT",
+      }),
+    ).toBe(false);
+
+    expect(
+      buildCurrentWarPointsUpdateForTest({
+        currentWar: sameWar,
+        activeWarId: 5001,
+        activeWarStartTime: new Date("2026-09-09T18:00:00.000Z"),
+        activeOpponentTag: "#OPPONENT",
+        currentPrimaryBalance: null,
+        currentOpponentBalance: null,
+      }),
+    ).toEqual({
+      fwaPoints: undefined,
+      opponentFwaPoints: undefined,
+      warStartFwaPoints: undefined,
+    });
+    expect(
+      buildCurrentWarPointsUpdateForTest({
+        currentWar: sameWar,
+        activeWarId: 5002,
+        activeWarStartTime: new Date("2026-09-10T18:00:00.000Z"),
+        activeOpponentTag: "#NEWOPPONENT",
+        currentPrimaryBalance: null,
+        currentOpponentBalance: null,
+      }),
+    ).toEqual({
+      fwaPoints: null,
+      opponentFwaPoints: null,
+      warStartFwaPoints: undefined,
+    });
+    expect(
+      buildCurrentWarPointsUpdateForTest({
+        currentWar: null,
+        activeWarId: 5001,
+        activeWarStartTime: new Date("2026-09-09T18:00:00.000Z"),
+        activeOpponentTag: "#OPPONENT",
+        currentPrimaryBalance: 1300,
+        currentOpponentBalance: 1100,
+      }),
+    ).toEqual({
+      fwaPoints: 1300,
+      opponentFwaPoints: 1100,
+      warStartFwaPoints: { set: 1300 },
+    });
   });
 });
