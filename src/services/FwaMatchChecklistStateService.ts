@@ -311,18 +311,38 @@ function resolveCorroboratedCurrentWarProjection(input: {
     fwaPoints?: number | null;
     opponentFwaPoints?: number | null;
   } | null;
-  activeWar: {
+  liveWar: {
     warId?: number | string | null;
     startTime?: Date | null;
     opponentTag?: string | null;
+    state?: "preparation" | "inWar" | null;
   } | null;
 }): { outcome: "WIN" | "LOSE" | null; reason: string } {
   const currentOutcome = normalizeOutcome(input.currentWar?.outcome ?? null);
   if (currentOutcome !== "WIN" && currentOutcome !== "LOSE") {
     return { outcome: null, reason: "current_outcome_not_win_lose" };
   }
-  if (!input.currentWar || !input.activeWar || !input.clanTag) {
-    return { outcome: null, reason: "identity_unverified" };
+  if (!input.currentWar || !input.liveWar || !input.clanTag) {
+    return { outcome: null, reason: "live_identity_missing" };
+  }
+  if (input.liveWar.state !== "preparation" && input.liveWar.state !== "inWar") {
+    return { outcome: null, reason: "live_identity_invalid" };
+  }
+  const currentStartMs =
+    input.currentWar.startTime instanceof Date &&
+    Number.isFinite(input.currentWar.startTime.getTime())
+      ? input.currentWar.startTime.getTime()
+      : null;
+  const liveStartMs =
+    input.liveWar.startTime instanceof Date &&
+    Number.isFinite(input.liveWar.startTime.getTime())
+      ? input.liveWar.startTime.getTime()
+      : null;
+  if (currentStartMs === null || liveStartMs === null) {
+    return { outcome: null, reason: "live_identity_missing" };
+  }
+  if (currentStartMs !== liveStartMs) {
+    return { outcome: null, reason: "identity_conflict" };
   }
   const identity = compareActiveWarIdentities({
     persisted: {
@@ -331,9 +351,9 @@ function resolveCorroboratedCurrentWarProjection(input: {
       opponentTag: input.currentWar.opponentTag ?? null,
     },
     active: {
-      warId: input.activeWar.warId ?? null,
-      warStartTime: input.activeWar.startTime ?? null,
-      opponentTag: input.activeWar.opponentTag ?? null,
+      warId: input.liveWar.warId ?? null,
+      warStartTime: input.liveWar.startTime ?? null,
+      opponentTag: input.liveWar.opponentTag ?? null,
     },
   });
   if (!identity.sameWar) {
@@ -341,7 +361,7 @@ function resolveCorroboratedCurrentWarProjection(input: {
   }
   const projectedOutcome = deriveFwaProjectedOutcomeFromPreparedSync({
     clanTag: input.clanTag,
-    opponentTag: input.activeWar.opponentTag ?? input.currentWar.opponentTag ?? "",
+    opponentTag: input.liveWar.opponentTag ?? input.currentWar.opponentTag ?? "",
     clanPoints: input.currentWar.fwaPoints ?? null,
     opponentPoints: input.currentWar.opponentFwaPoints ?? null,
     syncNum: null,
@@ -378,6 +398,12 @@ function resolveChecklistEffectiveMatchState(input: {
     opponentFwaPoints?: number | null;
   } | null;
   activeWar: {
+    warId?: number | string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    state?: "preparation" | "inWar" | null;
+  } | null;
+  projectionWar?: {
     warId?: number | string | null;
     startTime?: Date | null;
     opponentTag?: string | null;
@@ -426,11 +452,12 @@ function resolveChecklistEffectiveMatchState(input: {
       ? "UNKNOWN"
       : currentMatchType);
   const currentWarProjection =
-    matchType === "FWA" && effectiveResolution?.confirmed !== true
+    normalizeMatchType(input.currentWar?.matchType ?? null) === "FWA" &&
+    effectiveResolution?.confirmed !== true
       ? resolveCorroboratedCurrentWarProjection({
           clanTag: input.clanTag,
           currentWar: input.currentWar,
-          activeWar,
+          liveWar: input.projectionWar ?? null,
         })
       : { outcome: null, reason: "confirmed_current_outcome" };
   if (
@@ -923,6 +950,22 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
     const clanTag = normalizeChecklistClanTag(clan.tag);
     const currentWar = currentWarByTag.get(clanTag) ?? null;
     const activeCurrentWar = currentWar;
+    const liveWar = liveWarByTag.get(clanTag) ?? null;
+    const liveWarIdentity = resolveChecklistLiveWarIdentity(liveWar);
+    const liveProjectionWar: {
+      warId: number | string | null;
+      startTime: Date | null;
+      opponentTag: string | null;
+      state: "preparation" | "inWar";
+    } | null =
+      liveWarIdentity?.state === "preparation" || liveWarIdentity?.state === "inWar"
+        ? {
+            warId: liveWarIdentity.warId,
+            startTime: liveWarIdentity.startTime,
+            opponentTag: liveWarIdentity.opponentTag,
+            state: liveWarIdentity.state === "inWar" ? "inWar" : "preparation",
+          }
+        : null;
     const effectiveCurrentWarState = normalizeWarState(activeCurrentWar?.state ?? null);
     const clanLabel =
       sanitizeClanName(clan.shortName) ??
@@ -1012,6 +1055,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
               : "preparation",
           }
         : null,
+      projectionWar: liveProjectionWar,
       storedSyncRow: persistedSyncRow,
     });
     const issueSummary = currentBaseSwap
@@ -1428,6 +1472,15 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
               liveWarIdentity?.state === "inWar" ? "inWar" : "preparation",
           }
         : null,
+      projectionWar:
+        liveWarIdentity?.state === "preparation" || liveWarIdentity?.state === "inWar"
+          ? {
+              warId: liveWarIdentity.warId,
+              startTime: liveWarIdentity.startTime,
+              opponentTag: liveWarIdentity.opponentTag,
+              state: liveWarIdentity.state === "inWar" ? "inWar" : "preparation",
+            }
+          : null,
       storedSyncRow: persistedSyncRow,
     });
     checklistExpiresAtCandidates.push(...mailRenderState.timingCandidates);
