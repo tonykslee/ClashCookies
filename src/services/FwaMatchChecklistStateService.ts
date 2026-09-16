@@ -19,6 +19,8 @@ import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { WarMailLifecycleService } from "./WarMailLifecycleService";
 import { formatError } from "../helper/formatError";
 import {
+  compareActiveWarIdentities,
+  deriveFwaProjectedOutcomeFromPreparedSync,
   resolveFwaOutcomeFromPreparedEvidence,
   resolveMatchTypeWithPreparedStoredSync,
   type PreparedStoredSyncMatchRow,
@@ -298,6 +300,70 @@ function normalizeChecklistWarId(value: number | string | null | undefined): num
   return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
 }
 
+/** Purpose: accept a persisted inferred FWA outcome only when current-war points corroborate it exactly. */
+function resolveCorroboratedCurrentWarProjection(input: {
+  clanTag?: string | null;
+  currentWar: {
+    warId?: number | string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    outcome?: string | null;
+    fwaPoints?: number | null;
+    opponentFwaPoints?: number | null;
+  } | null;
+  activeWar: {
+    warId?: number | string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null;
+}): { outcome: "WIN" | "LOSE" | null; reason: string } {
+  const currentOutcome = normalizeOutcome(input.currentWar?.outcome ?? null);
+  if (currentOutcome !== "WIN" && currentOutcome !== "LOSE") {
+    return { outcome: null, reason: "current_outcome_not_win_lose" };
+  }
+  if (!input.currentWar || !input.activeWar || !input.clanTag) {
+    return { outcome: null, reason: "identity_unverified" };
+  }
+  const identity = compareActiveWarIdentities({
+    persisted: {
+      warId: input.currentWar.warId ?? null,
+      warStartTime: input.currentWar.startTime ?? null,
+      opponentTag: input.currentWar.opponentTag ?? null,
+    },
+    active: {
+      warId: input.activeWar.warId ?? null,
+      warStartTime: input.activeWar.startTime ?? null,
+      opponentTag: input.activeWar.opponentTag ?? null,
+    },
+  });
+  if (!identity.sameWar) {
+    return { outcome: null, reason: "identity_conflict" };
+  }
+  const projectedOutcome = deriveFwaProjectedOutcomeFromPreparedSync({
+    clanTag: input.clanTag,
+    opponentTag: input.activeWar.opponentTag ?? input.currentWar.opponentTag ?? "",
+    clanPoints: input.currentWar.fwaPoints ?? null,
+    opponentPoints: input.currentWar.opponentFwaPoints ?? null,
+    syncNum: null,
+  });
+  if (projectedOutcome === null) {
+    const clanPoints = input.currentWar.fwaPoints;
+    const opponentPoints = input.currentWar.opponentFwaPoints;
+    if (
+      Number.isFinite(clanPoints) &&
+      Number.isFinite(opponentPoints) &&
+      clanPoints === opponentPoints
+    ) {
+      return { outcome: null, reason: "equal_points_without_sync_number" };
+    }
+    return { outcome: null, reason: "points_unavailable" };
+  }
+  if (projectedOutcome !== currentOutcome) {
+    return { outcome: null, reason: "outcome_points_conflict" };
+  }
+  return { outcome: projectedOutcome, reason: "corroborated" };
+}
+
 function resolveChecklistEffectiveMatchState(input: {
   clanTag?: string | null;
   currentWar: {
@@ -308,6 +374,8 @@ function resolveChecklistEffectiveMatchState(input: {
     matchType?: string | null;
     inferredMatchType?: boolean | null;
     outcome?: string | null;
+    fwaPoints?: number | null;
+    opponentFwaPoints?: number | null;
   } | null;
   activeWar: {
     warId?: number | string | null;
@@ -357,12 +425,30 @@ function resolveChecklistEffectiveMatchState(input: {
     (input.currentWar?.inferredMatchType === true && !hasSafeActiveWarIdentity
       ? "UNKNOWN"
       : currentMatchType);
+  const currentWarProjection =
+    matchType === "FWA" && effectiveResolution?.confirmed !== true
+      ? resolveCorroboratedCurrentWarProjection({
+          clanTag: input.clanTag,
+          currentWar: input.currentWar,
+          activeWar,
+        })
+      : { outcome: null, reason: "confirmed_current_outcome" };
+  if (
+    matchType === "FWA" &&
+    effectiveResolution?.confirmed !== true &&
+    currentWarProjection.reason !== "corroborated"
+  ) {
+    console.debug(
+      `[fwa_checklist_outcome_projection] clanTag=${normalizeChecklistClanTag(input.clanTag ?? "") || "unknown"} reason=${currentWarProjection.reason}`,
+    );
+  }
   return {
     matchType,
     outcome: resolveFwaOutcomeFromPreparedEvidence({
       matchType,
       currentOutcome: input.currentWar?.outcome ?? null,
       currentOutcomeConfirmed: effectiveResolution?.confirmed === true,
+      projectedOutcome: currentWarProjection.outcome,
       clanTag: input.clanTag ?? null,
       opponentTag: activeWar?.opponentTag ?? input.currentWar?.opponentTag ?? null,
       storedSyncRow: input.storedSyncRow ?? null,
@@ -774,6 +860,8 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       matchType: true,
       inferredMatchType: true,
       outcome: true,
+      fwaPoints: true,
+      opponentFwaPoints: true,
       state: true,
     },
   });
@@ -1211,6 +1299,8 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
       matchType: true,
       inferredMatchType: true,
       outcome: true,
+      fwaPoints: true,
+      opponentFwaPoints: true,
       state: true,
     },
   });
@@ -1325,6 +1415,8 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
             matchType: effectiveCurrentWar.matchType ?? null,
             inferredMatchType: effectiveCurrentWar.inferredMatchType ?? null,
             outcome: effectiveCurrentWar.outcome ?? null,
+            fwaPoints: effectiveCurrentWar.fwaPoints ?? null,
+            opponentFwaPoints: effectiveCurrentWar.opponentFwaPoints ?? null,
           }
         : null,
       activeWar: mailRenderState.fresh

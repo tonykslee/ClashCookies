@@ -499,9 +499,9 @@ export function resolveFwaOutcomeFromPreparedEvidence(input: {
       : null;
   return (
     confirmedCurrentOutcome ??
-    projectedOutcome ??
     storedOutcome ??
     preparedProjection ??
+    projectedOutcome ??
     "UNKNOWN"
   );
 }

@@ -103,6 +103,8 @@ function makeCurrentWarRow(params: {
   matchType?: string | null;
   inferredMatchType?: boolean | null;
   outcome?: string | null;
+  fwaPoints?: number | null;
+  opponentFwaPoints?: number | null;
 }) {
   return {
     clanTag: params.clanTag,
@@ -114,6 +116,8 @@ function makeCurrentWarRow(params: {
     matchType: params.matchType ?? "FWA",
     inferredMatchType: params.inferredMatchType ?? null,
     outcome: params.outcome ?? null,
+    fwaPoints: params.fwaPoints ?? null,
+    opponentFwaPoints: params.opponentFwaPoints ?? null,
     state: params.state ?? "preparation",
   } as any;
 }
@@ -2694,6 +2698,60 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       expect(state.rows[0].compactCopyLine).toBe(
         `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
       );
+
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        `A | ${emoji} | ❌ Bases not checked ⚠️`,
+      );
+    },
+  );
+
+  it.each([
+    ["WIN", 101, 99, "🟢"],
+    ["LOSE", 99, 101, "🔴"],
+  ] as const)(
+    "uses a corroborated inferred CurrentWar projection in both checklist views (%s)",
+    async (outcome, fwaPoints, opponentFwaPoints, emoji) => {
+      const startTime = "2026-05-13T18:00:00.000Z";
+      const cocService = configureSingleClanChecklistScenario({
+        currentWar: makeCurrentWarRow({
+          clanTag: "#PYPY",
+          warId: 1001,
+          startTimeIso: startTime,
+          opponentTag: "#OPP1",
+          matchType: "FWA",
+          inferredMatchType: true,
+          outcome,
+          fwaPoints,
+          opponentFwaPoints,
+        }),
+        liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+      }).cocService;
+
+      const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+
+      expect(mailState.rows[0].compactCopyLine).toBe(
+        `📬 | ${emoji} | A vs \`Opponent\` (\`#OPP1\`) ⚠️`,
+      );
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        `A | ${emoji} | ❌ Bases not checked ⚠️`,
+      );
     },
   );
 
@@ -2725,6 +2783,129 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     );
     expect(state.rows[0].compactCopyLine).not.toContain("⚠️");
   });
+
+  it("keeps validated same-war sync outcome ahead of a provisional CurrentWar projection in Mail and Bases", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+        outcome: "LOSE",
+        fwaPoints: 90,
+        opponentFwaPoints: 100,
+      }),
+      liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+      persistedSyncRows: [
+        makePersistedSyncRow({ startTimeIso: startTime, outcome: "WIN" }),
+      ],
+    }).cocService;
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+  });
+
+  it("rejects a conflicting inferred CurrentWar outcome and points in Mail and Bases", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+        outcome: "WIN",
+        fwaPoints: 90,
+        opponentFwaPoints: 100,
+      }),
+      liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+    }).cocService;
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked ⚠️",
+    );
+  });
+
+  it.each([
+    ["rollover-cleared outcome with leftover old points", null, 101, 99],
+    ["equal points without authoritative parity", "WIN", 100, 100],
+  ] as const)(
+    "keeps %s UNKNOWN in Mail and Bases",
+    async (_reason, outcome, fwaPoints, opponentFwaPoints) => {
+      const startTime = "2026-05-13T18:00:00.000Z";
+      const cocService = configureSingleClanChecklistScenario({
+        currentWar: makeCurrentWarRow({
+          clanTag: "#PYPY",
+          warId: 1001,
+          startTimeIso: startTime,
+          opponentTag: "#OPP1",
+          matchType: "FWA",
+          inferredMatchType: true,
+          outcome,
+          fwaPoints,
+          opponentFwaPoints,
+        }),
+        liveWar: makeLiveWarSnapshot({ startTimeIso: startTime, opponentTag: "#OPP1" }),
+      }).cocService;
+
+      const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Mail",
+      });
+      const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+        cocService,
+        guildId: "guild-1",
+        client: {} as any,
+        viewType: "Bases",
+      });
+
+      expect(mailState.rows[0].compactCopyLine).toBe(
+        "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+      );
+      expect(basesState.rows[0].compactCopyLine).toBe(
+        "A | 🔘 | ❌ Bases not checked ⚠️",
+      );
+    },
+  );
 
   it("renders unresolved inferred FWA as neutral instead of fabricating an outcome", async () => {
     const startTime = "2026-05-13T18:00:00.000Z";
@@ -2839,6 +3020,16 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
 
     expect(state.rows[0].compactCopyLine).toBe(
       "📬 | 🔘 | A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+    });
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked ⚠️",
     );
   });
 
