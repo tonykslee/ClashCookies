@@ -135,6 +135,7 @@ type BalanceCandidate = {
   needsValidation: boolean;
   pointRow?: PointsSyncReadRow;
   isOpponentObservation?: boolean;
+  baselineUnresolvedReason?: string | null;
 };
 
 /** Purpose: normalize a finite persisted number to an integer without turning null into zero. */
@@ -249,15 +250,18 @@ function canComputeDefinitiveBlDelta(row: WarHistoryReadRow, teamSize: number | 
   return finiteNumber(row.clanDestruction) !== null;
 }
 
-/** Purpose: use the most recent successful points fetch as lifecycle evidence. */
-function pointObservationTime(row: PointsSyncReadRow): Date | null {
-  if (validDate(row.lastSuccessfulPointsApiFetchAt)) return row.lastSuccessfulPointsApiFetchAt;
-  return validDate(row.syncFetchedAt) ? row.syncFetchedAt : null;
+/** Purpose: permit a persisted endpoint only when its result evidence can establish that the war ended. */
+function hasVerifiedPointsCheckpoint(row: WarHistoryReadRow): boolean {
+  if (finiteInt(row.pointsAfterWar) === null) return false;
+  const matchType = parseMatchType(row.matchType);
+  if (matchType === null || matchType === "MM") return matchType === "MM";
+  return independentlyVerifiedActualOutcome(row) !== null;
 }
 
 /** Purpose: identify BL rows whose perfect-war rule may need archived team-size evidence. */
 function needsTeamSizeEvidence(row: WarHistoryReadRow): boolean {
-  return parseMatchType(row.matchType) === "BL" && independentlyVerifiedActualOutcome(row) !== "WIN" &&
+  return parseMatchType(row.matchType) === "BL" && independentlyVerifiedActualOutcome(row) !== null &&
+    independentlyVerifiedActualOutcome(row) !== "WIN" &&
     finiteInt(row.clanStars) !== null && finiteNumber(row.clanDestruction) !== null;
 }
 
@@ -488,6 +492,8 @@ export class PointsEstimateResolverService {
       }
 
       const historyForClan = historyRows.filter((row) => sameTag(row.clanTag, clanTag));
+      const lookupRows = historyForClan.filter(needsTeamSizeEvidence);
+      const lookupTeamSizes = await this.loadTeamSizes(lookupRows);
       const historyBaseline = pointBaseline ?? this.chooseHistoryBaseline({
         clanTag,
         historyRows: historyForClan,
@@ -499,8 +505,6 @@ export class PointsEstimateResolverService {
         return empty("no_safe_persisted_baseline", syncNumber, resolvedSync.source);
       }
 
-      const lookupRows = historyForClan.filter(needsTeamSizeEvidence);
-      const lookupTeamSizes = await this.loadTeamSizes(lookupRows);
       const baselineResolution = this.resolveObservedBaseline({
         baseline: historyBaseline,
         historyRows: historyForClan,
@@ -645,7 +649,12 @@ export class PointsEstimateResolverService {
       observedAt: row.warEndTime,
       kind: "derived",
     };
-    return { balance, baseline, needsValidation: true };
+    return {
+      balance,
+      baseline,
+      needsValidation: true,
+      baselineUnresolvedReason: hasVerifiedPointsCheckpoint(row) ? null : "history_actual_result_unconfirmed",
+    };
   }
 
   /** Purpose: reconcile an observed baseline with its own completed war exactly once. */
@@ -657,7 +666,13 @@ export class PointsEstimateResolverService {
   }): { baseline: BalanceCandidate; appliedWarIds: number[]; unresolvedReason: string | null } {
     const baseline = input.baseline;
     const pointRow = baseline.pointRow;
-    if (!pointRow) return { baseline, appliedWarIds: [], unresolvedReason: null };
+    if (!pointRow) {
+      return {
+        baseline,
+        appliedWarIds: [],
+        unresolvedReason: baseline.baselineUnresolvedReason ?? null,
+      };
+    }
 
     if (sameWarIdentity(pointRow, input.activeWar)) {
       return baseline.needsValidation
@@ -676,17 +691,17 @@ export class PointsEstimateResolverService {
       return { baseline, appliedWarIds: [], unresolvedReason: "baseline_war_history_unavailable" };
     }
 
-    const observedAt = pointObservationTime(pointRow);
-    if (!observedAt) {
-      return { baseline, appliedWarIds: [], unresolvedReason: "baseline_lifecycle_unavailable" };
+    const persistedAfter = finiteInt(completedBaseline.pointsAfterWar);
+    const matchType = parseMatchType(completedBaseline.matchType);
+    const actualOutcome = independentlyVerifiedActualOutcome(completedBaseline);
+    const checkpointVerified = hasVerifiedPointsCheckpoint(completedBaseline);
+    if (!matchType || (matchType !== "MM" && actualOutcome === null)) {
+      return { baseline, appliedWarIds: [], unresolvedReason: "history_actual_result_unconfirmed" };
     }
-    if (observedAt.getTime() >= completedBaseline.warEndTime!.getTime()) {
-      // This checkpoint is already post-war; applying the result again would
-      // double-count the baseline war.
-      return { baseline, appliedWarIds: [], unresolvedReason: null };
+    if (persistedAfter !== null && !checkpointVerified) {
+      return { baseline, appliedWarIds: [], unresolvedReason: "history_actual_result_unconfirmed" };
     }
 
-    const persistedAfter = finiteInt(completedBaseline.pointsAfterWar);
     const completedSync = finiteInt(completedBaseline.syncNumber);
     const reconciledBaseline = {
       ...baseline,
@@ -696,7 +711,33 @@ export class PointsEstimateResolverService {
         observedAt: completedBaseline.warEndTime,
       },
     };
+    const teamSize = input.lookupTeamSizes.get(completedBaseline.warId) ?? null;
+    const canCompute = matchType === "MM" || canComputeDefinitiveBlDelta(completedBaseline, teamSize);
+    let calculatedAfter: number | null = null;
+    if (canCompute) {
+      const delta = computeWarPointsDeltaForTest({
+        matchType,
+        before: baseline.balance,
+        after: null,
+        finalResult: historyResult(completedBaseline),
+        teamSize,
+      });
+      if (delta !== null && Number.isFinite(delta)) calculatedAfter = baseline.balance + Math.trunc(delta);
+    }
+
     if (persistedAfter !== null) {
+      // Equality with a verified endpoint proves that the observed value is
+      // already post-war. Otherwise a computable pre-war balance must agree
+      // with the endpoint before the baseline war can be applied.
+      if (baseline.balance === persistedAfter) {
+        return { baseline, appliedWarIds: [], unresolvedReason: null };
+      }
+      if (calculatedAfter !== null && calculatedAfter !== persistedAfter) {
+        return { baseline, appliedWarIds: [], unresolvedReason: "history_checkpoint_conflict" };
+      }
+      if (calculatedAfter === null && matchType !== "BL") {
+        return { baseline, appliedWarIds: [], unresolvedReason: "baseline_end_balance_unavailable" };
+      }
       return {
         baseline: { ...reconciledBaseline, balance: persistedAfter },
         appliedWarIds: [completedBaseline.warId],
@@ -704,30 +745,15 @@ export class PointsEstimateResolverService {
       };
     }
 
-    const matchType = parseMatchType(completedBaseline.matchType);
-    const actualOutcome = independentlyVerifiedActualOutcome(completedBaseline);
-    const teamSize = input.lookupTeamSizes.get(completedBaseline.warId) ?? null;
-    if (!matchType || (matchType !== "MM" && actualOutcome === null) ||
-      (matchType === "BL" && !canComputeDefinitiveBlDelta(completedBaseline, teamSize))) {
-      const unresolvedReason = actualOutcome === null
-        ? "history_actual_result_unconfirmed"
-        : matchType === "BL"
-          ? "history_delta_input_incomplete"
-          : "baseline_end_balance_unavailable";
-      return { baseline, appliedWarIds: [], unresolvedReason };
-    }
-    const delta = computeWarPointsDeltaForTest({
-      matchType,
-      before: baseline.balance,
-      after: null,
-      finalResult: historyResult(completedBaseline),
-      teamSize,
-    });
-    if (delta === null || !Number.isFinite(delta)) {
-      return { baseline, appliedWarIds: [], unresolvedReason: "baseline_end_balance_unavailable" };
+    if (calculatedAfter === null) {
+      return {
+        baseline,
+        appliedWarIds: [],
+        unresolvedReason: matchType === "BL" ? "history_delta_input_incomplete" : "baseline_end_balance_unavailable",
+      };
     }
     return {
-      baseline: { ...reconciledBaseline, balance: baseline.balance + Math.trunc(delta) },
+      baseline: { ...reconciledBaseline, balance: calculatedAfter },
       appliedWarIds: [completedBaseline.warId],
       unresolvedReason: null,
     };
@@ -775,26 +801,39 @@ export class PointsEstimateResolverService {
       const matchType = parseMatchType(row.matchType);
       const actualOutcome = independentlyVerifiedActualOutcome(row);
       if (!matchType || (matchType !== "MM" && actualOutcome === null)) {
-        if (finiteInt(row.pointsAfterWar) !== null) {
-          balance = finiteInt(row.pointsAfterWar)!;
-          appliedWarIds.push(row.warId);
-          lastSync = rowSync ?? lastSync;
-          continue;
-        }
         stoppedReason = "history_actual_result_unconfirmed";
         break;
       }
       const teamSize = input.lookupTeamSizes.get(row.warId) ?? null;
       const persistedAfter = finiteInt(row.pointsAfterWar);
-      if (matchType === "BL" && !canComputeDefinitiveBlDelta(row, teamSize)) {
-        if (persistedAfter === null) {
-          stoppedReason = "history_delta_input_incomplete";
+      const canCompute = matchType === "MM" || canComputeDefinitiveBlDelta(row, teamSize);
+      if (persistedAfter !== null) {
+        if (canCompute) {
+          const delta = computeWarPointsDeltaForTest({
+            matchType,
+            before: balance,
+            after: null,
+            finalResult: historyResult(row),
+            teamSize,
+          });
+          if (delta === null || !Number.isFinite(delta) || balance + Math.trunc(delta) !== persistedAfter) {
+            stoppedReason = "history_checkpoint_conflict";
+            break;
+          }
+        } else if (matchType !== "BL") {
+          stoppedReason = "history_delta_unavailable";
           break;
         }
+        // A checkpoint with independently verified result evidence is safe
+        // even when BL's award inputs are incomplete.
         balance = persistedAfter;
         appliedWarIds.push(row.warId);
         lastSync = rowSync ?? lastSync;
         continue;
+      }
+      if (!canCompute) {
+        stoppedReason = "history_delta_input_incomplete";
+        break;
       }
       const delta = computeWarPointsDeltaForTest({
         matchType,
@@ -808,7 +847,7 @@ export class PointsEstimateResolverService {
         break;
       }
       const expectedAfter = balance + Math.trunc(delta);
-      balance = persistedAfter ?? expectedAfter;
+      balance = expectedAfter;
       appliedWarIds.push(row.warId);
       lastSync = rowSync ?? lastSync;
     }
