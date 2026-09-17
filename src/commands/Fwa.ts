@@ -14185,6 +14185,7 @@ function isPointsSnapshotEligibleForRequest(input: {
   requiredOpponentTag?: string | null;
   warContext?: PointsSnapshotRequestContext | null;
   storedContext?: PointsSnapshotRequestContext | null;
+  allowFreshNotFound?: boolean;
 }): boolean {
   const context = normalizePointsSnapshotRequestContext(input.warContext);
   const requiredOpponentTag = normalizeTag(
@@ -14196,17 +14197,24 @@ function isPointsSnapshotEligibleForRequest(input: {
   );
   if (matchup === "mismatched") return false;
   if (!context || !hasWarIdentity(context)) return true;
-  // Not-found is evidence about the requested page, not a points balance. It
-  // remains available for the existing inference/fallback path.
-  if (matchup === "clan_not_found") return true;
   if (
     input.storedContext &&
     (!isSamePointsWarContext(input.storedContext, context) ||
+      (normalizeTag(String(input.storedContext.opponentTag ?? "")) &&
+        requiredOpponentTag &&
+        normalizeTag(String(input.storedContext.opponentTag ?? "")) !==
+          requiredOpponentTag) ||
       (context?.currentSyncNumber !== null &&
         context?.currentSyncNumber !== undefined &&
         input.storedContext.currentSyncNumber !== context.currentSyncNumber))
   ) {
     return false;
+  }
+  // A direct fetch may prove that the requested page is absent without
+  // carrying war/sync tags. Reused not-found evidence must still be scoped to
+  // the active war and compatible sync before it can influence inference.
+  if (matchup === "clan_not_found") {
+    return input.allowFreshNotFound === true || input.storedContext != null;
   }
   return (
     input.snapshot !== null &&
@@ -14231,6 +14239,7 @@ function validateFetchedPointsSnapshot(
       snapshot,
       requiredOpponentTag,
       warContext,
+      allowFreshNotFound: true,
     })
   ) {
     return snapshot;
@@ -19360,14 +19369,6 @@ export const Fwa: Command = {
             warLookupCache,
             {
               fetchReason: "points_command",
-              warContext: {
-                guildId: interaction.guildId,
-                warId: syncIdentity.warId,
-                warStartTime: syncIdentity.warStartTime,
-                opponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
-                currentSyncNumber: resolvedCurrentSync,
-                sourceSyncNumber: sourceSync,
-              },
             },
           );
           if (result.balance === null || Number.isNaN(result.balance)) {
@@ -20802,14 +20803,6 @@ export const Fwa: Command = {
         warLookupCache,
         {
           fetchReason: "points_command",
-          warContext: {
-            guildId: interaction.guildId,
-            warId: syncIdentity.warId,
-            warStartTime: syncIdentity.warStartTime,
-            opponentTag: normalizeTag(String(war?.opponent?.tag ?? "")),
-            currentSyncNumber: resolvedCurrentSync,
-            sourceSyncNumber: sourceSync,
-          },
         },
       );
       const balance = result.balance;
