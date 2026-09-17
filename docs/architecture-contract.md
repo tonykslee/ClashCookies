@@ -272,6 +272,9 @@ Rules:
 - `ClanPointsSync` is the single source of truth for points.fwafarm sync metadata.
 - `/fwa match` validation must read from `ClanPointsSync` first.
 - Do not reintroduce `TrackedClan.pointsScrape`-style ownership.
+- `PointsEstimateResolverService` is a read-only, DB-first consumer for internal active-war point estimates. It does not own points, alter `ClanPointsSync`, allocate or persist `SyncCycle`, call points.fwafarm, pass through `PointsDirectFetchGateService`, or change `/fwa match` rendering.
+- Estimate precedence is exact validated same-war `ClanPointsSync` evidence for the requested tag, then a correctly attributed validated same-war opponent balance, then a last-known persisted observation followed by each completed canonical `ClanWarHistory` delta in chronological order. If a canonical actual result, required rule input, or contiguous sync identity is missing, reconstruction stops and returns the last safe observed/derived value; it never treats `expectedOutcome` as an actual result or crosses an unresolved history gap as certain.
+- Estimates are explicitly distinct from confirmed current-matchup evidence. A delayed points-site page may leave the public matchup gate unchanged while this internal consumer remains useful from persisted history; unavailable evidence remains `balance: null`.
 
 ## 5) Feed ingestion ownership
 
