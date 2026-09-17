@@ -193,9 +193,32 @@ function normalizeActualOutcome(value: unknown): "WIN" | "LOSE" | "TIE" | null {
   return normalized === "WIN" || normalized === "LOSE" || normalized === "TIE" ? normalized : null;
 }
 
+/** Purpose: derive an outcome only from complete, independently corroborating score evidence. */
+function deriveScoreOutcome(row: WarHistoryReadRow): "WIN" | "LOSE" | "TIE" | null {
+  const clanStars = finiteInt(row.clanStars);
+  const opponentStars = finiteInt(row.opponentStars);
+  if (clanStars === null || opponentStars === null) return null;
+  if (clanStars !== opponentStars) return clanStars > opponentStars ? "WIN" : "LOSE";
+  const clanDestruction = finiteNumber(row.clanDestruction);
+  const opponentDestruction = finiteNumber(row.opponentDestruction);
+  if (clanDestruction === null || opponentDestruction === null) return null;
+  if (clanDestruction !== opponentDestruction) return clanDestruction > opponentDestruction ? "WIN" : "LOSE";
+  return "TIE";
+}
+
+/** Purpose: reject actual outcomes that can only be an expected-outcome fallback from the writer. */
+function independentlyVerifiedActualOutcome(row: WarHistoryReadRow): "WIN" | "LOSE" | "TIE" | null {
+  const actual = normalizeActualOutcome(row.actualOutcome);
+  if (actual === null) return null;
+  const scoreOutcome = deriveScoreOutcome(row);
+  if (scoreOutcome !== null) return scoreOutcome === actual ? actual : null;
+  const expected = normalizeActualOutcome(row.expectedOutcome);
+  return expected !== null && expected === actual ? null : actual;
+}
+
 /** Purpose: translate canonical ended-war fields into the shared rule-engine result shape. */
 function historyResult(row: WarHistoryReadRow): WarEndResultSnapshot {
-  const actualOutcome = normalizeActualOutcome(row.actualOutcome);
+  const actualOutcome = independentlyVerifiedActualOutcome(row);
   return {
     clanStars: finiteInt(row.clanStars),
     opponentStars: finiteInt(row.opponentStars),
@@ -215,13 +238,14 @@ function finiteNumber(value: unknown): number | null {
 
 /** Purpose: prevent the shared BL rule from deciding an award when missing inputs could change it. */
 function canComputeDefinitiveBlDelta(row: WarHistoryReadRow, teamSize: number | null): boolean {
-  const outcome = normalizeActualOutcome(row.actualOutcome);
+  const outcome = independentlyVerifiedActualOutcome(row);
   if (outcome === "WIN") return true;
   const stars = finiteInt(row.clanStars);
   // Missing stars can still hide a perfect war, even when destruction is known.
   if (stars === null) return false;
   const perfect = teamSize === 50 ? stars === 150 : teamSize === 45 ? stars === 135 : false;
   if (perfect) return true;
+  if (teamSize === null && (stars === 150 || stars === 135)) return false;
   return finiteNumber(row.clanDestruction) !== null;
 }
 
@@ -233,7 +257,7 @@ function pointObservationTime(row: PointsSyncReadRow): Date | null {
 
 /** Purpose: identify BL rows whose perfect-war rule may need archived team-size evidence. */
 function needsTeamSizeEvidence(row: WarHistoryReadRow): boolean {
-  return parseMatchType(row.matchType) === "BL" && normalizeActualOutcome(row.actualOutcome) !== "WIN" &&
+  return parseMatchType(row.matchType) === "BL" && independentlyVerifiedActualOutcome(row) !== "WIN" &&
     finiteInt(row.clanStars) !== null && finiteNumber(row.clanDestruction) !== null;
 }
 
@@ -244,9 +268,11 @@ function matchesBaselineHistory(
 ): boolean {
   const pointRow = baseline.pointRow;
   if (!pointRow || !sameTag(row.clanTag, baseline.baseline.clanTag)) return false;
-  const pointWarId = String(pointRow.warId ?? "").trim();
-  if (pointWarId && row.warId !== null) return String(row.warId) === pointWarId;
-  return sameDate(row.warStartTime, baseline.baseline.warStartTime);
+  if (!sameDate(row.warStartTime, baseline.baseline.warStartTime)) return false;
+  const expectedOpponent = baseline.isOpponentObservation ? pointRow.clanTag : pointRow.opponentTag;
+  const normalizedExpectedOpponent = normalizeTag(expectedOpponent ?? "");
+  const normalizedHistoryOpponent = normalizeTag(row.opponentTag ?? "");
+  return Boolean(normalizedExpectedOpponent) && normalizedExpectedOpponent === normalizedHistoryOpponent;
 }
 
 /** Purpose: read compatibility team-size metadata needed only for the existing BL perfect-war rule. */
@@ -392,7 +418,7 @@ export class PointsEstimateResolverService {
           checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
           warStartTime: row.warStartTime,
         }, input.activeWar, syncNumber))
-        .filter((row) => finiteInt(row.syncNum) === syncNumber || syncNumber === null)
+        .filter((row) => syncNumber !== null && finiteInt(row.syncNum) === syncNumber)
         .map((row) => ({ balance: finiteInt(row.clanPoints), row }))
         .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
         .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime());
@@ -433,7 +459,7 @@ export class PointsEstimateResolverService {
           checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
           warStartTime: row.warStartTime,
         }, input.activeWar, syncNumber))
-        .filter((row) => finiteInt(row.syncNum) === syncNumber || syncNumber === null)
+        .filter((row) => syncNumber !== null && finiteInt(row.syncNum) === syncNumber)
         .map((row) => ({ balance: finiteInt(row.opponentPoints), row }))
         .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
         .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime())[0];
@@ -488,7 +514,9 @@ export class PointsEstimateResolverService {
         activeSyncNumber: syncNumber,
         lookupTeamSizes,
         initialAppliedWarIds: baselineResolution.appliedWarIds,
-        baselineUnresolvedReason: baselineResolution.unresolvedReason,
+        baselineUnresolvedReason: resolvedSync.conflict
+          ? "sync_evidence_conflict"
+          : baselineResolution.unresolvedReason,
       });
       const result = {
         ...reconstruction,
@@ -601,7 +629,6 @@ export class PointsEstimateResolverService {
     const candidates = input.historyRows
       .filter((row) => validDate(row.warEndTime) && row.warEndTime!.getTime() < input.activeWar.warStartTime.getTime())
       .filter((row) => finiteInt(row.pointsAfterWar) !== null && parseMatchType(row.matchType) !== null)
-      .filter((row) => normalizeActualOutcome(row.actualOutcome) !== null || parseMatchType(row.matchType) === "MM")
       .filter((row) => isBeforeActiveWar(row, input.activeWar, input.activeSyncNumber))
       .filter((row) => input.activeSyncNumber === null || row.syncNumber === null || row.syncNumber < input.activeSyncNumber)
       .sort((left, right) => (right.syncNumber ?? Number.MIN_SAFE_INTEGER) - (left.syncNumber ?? Number.MIN_SAFE_INTEGER) || right.warStartTime.getTime() - left.warStartTime.getTime());
@@ -644,13 +671,9 @@ export class PointsEstimateResolverService {
       row.warEndTime!.getTime() < input.activeWar.warStartTime.getTime(),
     );
     if (!completedBaseline) {
-      // An opponent observation has no authority to borrow the tracked clan's
-      // delta. Keep its value for diagnostics, but never project it as current.
-      if (baseline.isOpponentObservation && baseline.baseline.warStartTime &&
-        baseline.baseline.warStartTime.getTime() < input.activeWar.warStartTime.getTime()) {
-        return { baseline, appliedWarIds: [], unresolvedReason: "baseline_opponent_end_unavailable" };
-      }
-      return { baseline, appliedWarIds: [], unresolvedReason: null };
+      // Adjacent sync numbers do not prove that this historical war was
+      // accounted for. Keep the observed value, but fail closed for projection.
+      return { baseline, appliedWarIds: [], unresolvedReason: "baseline_war_history_unavailable" };
     }
 
     const observedAt = pointObservationTime(pointRow);
@@ -664,20 +687,34 @@ export class PointsEstimateResolverService {
     }
 
     const persistedAfter = finiteInt(completedBaseline.pointsAfterWar);
+    const completedSync = finiteInt(completedBaseline.syncNumber);
+    const reconciledBaseline = {
+      ...baseline,
+      baseline: {
+        ...baseline.baseline,
+        syncNumber: completedSync ?? baseline.baseline.syncNumber,
+        observedAt: completedBaseline.warEndTime,
+      },
+    };
     if (persistedAfter !== null) {
       return {
-        baseline: { ...baseline, balance: persistedAfter },
+        baseline: { ...reconciledBaseline, balance: persistedAfter },
         appliedWarIds: [completedBaseline.warId],
         unresolvedReason: null,
       };
     }
 
     const matchType = parseMatchType(completedBaseline.matchType);
-    const actualOutcome = normalizeActualOutcome(completedBaseline.actualOutcome);
+    const actualOutcome = independentlyVerifiedActualOutcome(completedBaseline);
     const teamSize = input.lookupTeamSizes.get(completedBaseline.warId) ?? null;
     if (!matchType || (matchType !== "MM" && actualOutcome === null) ||
       (matchType === "BL" && !canComputeDefinitiveBlDelta(completedBaseline, teamSize))) {
-      return { baseline, appliedWarIds: [], unresolvedReason: "baseline_end_balance_unavailable" };
+      const unresolvedReason = actualOutcome === null
+        ? "history_actual_result_unconfirmed"
+        : matchType === "BL"
+          ? "history_delta_input_incomplete"
+          : "baseline_end_balance_unavailable";
+      return { baseline, appliedWarIds: [], unresolvedReason };
     }
     const delta = computeWarPointsDeltaForTest({
       matchType,
@@ -690,7 +727,7 @@ export class PointsEstimateResolverService {
       return { baseline, appliedWarIds: [], unresolvedReason: "baseline_end_balance_unavailable" };
     }
     return {
-      baseline: { ...baseline, balance: baseline.balance + Math.trunc(delta) },
+      baseline: { ...reconciledBaseline, balance: baseline.balance + Math.trunc(delta) },
       appliedWarIds: [completedBaseline.warId],
       unresolvedReason: null,
     };
@@ -736,8 +773,14 @@ export class PointsEstimateResolverService {
         break;
       }
       const matchType = parseMatchType(row.matchType);
-      const actualOutcome = normalizeActualOutcome(row.actualOutcome);
+      const actualOutcome = independentlyVerifiedActualOutcome(row);
       if (!matchType || (matchType !== "MM" && actualOutcome === null)) {
+        if (finiteInt(row.pointsAfterWar) !== null) {
+          balance = finiteInt(row.pointsAfterWar)!;
+          appliedWarIds.push(row.warId);
+          lastSync = rowSync ?? lastSync;
+          continue;
+        }
         stoppedReason = "history_actual_result_unconfirmed";
         break;
       }
@@ -831,7 +874,7 @@ export class PointsEstimateResolverService {
     pointRows: PointsSyncReadRow[];
     clanTag: string;
     opponentTag: string;
-  }): Promise<{ syncNumber: number | null; source: PointsEstimateResult["syncNumberSource"] }> {
+  }): Promise<{ syncNumber: number | null; source: PointsEstimateResult["syncNumberSource"]; conflict?: boolean }> {
     const supplied = finiteInt(input.input.activeWar.syncNumber);
     if (supplied !== null && supplied > 0) return { syncNumber: supplied, source: "caller_context" };
 
@@ -894,7 +937,7 @@ export class PointsEstimateResolverService {
       }
     }
     if (sameWarSync !== null) return { syncNumber: sameWarSync, source: "same_war_points" };
-    return { syncNumber: null, source: "unavailable" };
+    return { syncNumber: null, source: "unavailable", conflict: validatedSameWarSyncs.length > 1 };
   }
 
   /** Purpose: emit one bounded diagnostic for a chosen estimate source or unavailable reason. */
