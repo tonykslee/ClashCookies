@@ -14188,6 +14188,7 @@ function isPointsSnapshotEligibleForRequest(input: {
   allowFreshNotFound?: boolean;
 }): boolean {
   const context = normalizePointsSnapshotRequestContext(input.warContext);
+  const scopedRequest = input.warContext !== null && input.warContext !== undefined;
   const requiredOpponentTag = normalizeTag(
     String(input.requiredOpponentTag ?? context?.opponentTag ?? ""),
   );
@@ -14196,7 +14197,21 @@ function isPointsSnapshotEligibleForRequest(input: {
     requiredOpponentTag,
   );
   if (matchup === "mismatched") return false;
-  if (!context || !hasWarIdentity(context)) return true;
+  if (!context) return true;
+  // A supplied context with no active-war identity is still scoped. Only a
+  // fresh direct not-found fetch may proceed without historical provenance;
+  // cached and stale reuse must fail closed.
+  if (!hasWarIdentity(context)) {
+    return (
+      scopedRequest &&
+      input.storedContext === undefined &&
+      input.allowFreshNotFound === true &&
+      matchup === "clan_not_found"
+    );
+  }
+  // A scoped cache/stale entry created by an unscoped points read has no
+  // provenance tying it to this active war.
+  if (scopedRequest && input.storedContext === null) return false;
   if (
     input.storedContext &&
     (!isSamePointsWarContext(input.storedContext, context) ||
@@ -14206,7 +14221,12 @@ function isPointsSnapshotEligibleForRequest(input: {
           requiredOpponentTag) ||
       (context?.currentSyncNumber !== null &&
         context?.currentSyncNumber !== undefined &&
-        input.storedContext.currentSyncNumber !== context.currentSyncNumber))
+        input.storedContext.currentSyncNumber !== context.currentSyncNumber) ||
+      (context?.currentSyncNumber === null &&
+        context?.sourceSyncNumber !== null &&
+        context?.sourceSyncNumber !== undefined &&
+        input.storedContext.currentSyncNumber === null &&
+        input.storedContext.sourceSyncNumber !== context.sourceSyncNumber))
   ) {
     return false;
   }
@@ -14457,8 +14477,8 @@ async function getClanPointsCached(
     isPointsSnapshotEligibleForRequest({
       snapshot: cached.snapshot,
       requiredOpponentTag,
-      warContext,
-      storedContext: cached.requestContext,
+      warContext: options?.warContext,
+      storedContext: cached.requestContext ?? null,
     })
   ) {
     recordFetchEvent({
@@ -14476,7 +14496,7 @@ async function getClanPointsCached(
     isPointsSnapshotEligibleForRequest({
       snapshot: warScopedSnapshotRaw,
       requiredOpponentTag,
-      warContext,
+      warContext: options?.warContext,
       storedContext: warContext,
     })
       ? warScopedSnapshotRaw
@@ -14570,8 +14590,9 @@ async function getClanPointsCached(
         isPointsSnapshotEligibleForRequest({
           snapshot: staleSnapshot,
           requiredOpponentTag,
-          warContext,
-          storedContext: pointsSnapshotCache.get(normalizedTag)?.requestContext,
+          warContext: options?.warContext,
+          storedContext:
+            pointsSnapshotCache.get(normalizedTag)?.requestContext ?? null,
         })
       ) {
         pointsSnapshotCache.set(normalizedTag, {

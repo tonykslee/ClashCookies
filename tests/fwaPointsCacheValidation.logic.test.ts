@@ -299,6 +299,64 @@ describe("FWA points matchup-safe cache reuse", () => {
     ).rejects.toBeInstanceOf(PointsDirectFetchBlockedError);
   });
 
+  it("rejects historical balances and not-found evidence when scoped war identity is unresolved", async () => {
+    const gateSpy = vi
+      .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
+      .mockRejectedValue(blockedError());
+    const unresolvedContext = {
+      guildId: "guild-1",
+      opponentTag: "#OPPONENT",
+      currentSyncNumber: 478,
+      sourceSyncNumber: 477,
+    };
+    setPointsSnapshotCacheForTest({
+      tag: "TRACK",
+      snapshot: buildSnapshot(),
+    });
+
+    await expect(
+      getCached("#OPPONENT", "#TRACK", {
+        warContext: unresolvedContext,
+      }),
+    ).rejects.toBeInstanceOf(PointsDirectFetchBlockedError);
+
+    clearPointsSnapshotCachesForTest();
+    setPointsSnapshotCacheForTest({
+      tag: "TRACK",
+      snapshot: buildClanNotFoundSnapshot(),
+    });
+    await expect(
+      getCached("#OPPONENT", "#TRACK", {
+        warContext: unresolvedContext,
+      }),
+    ).rejects.toBeInstanceOf(PointsDirectFetchBlockedError);
+    expect(gateSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an unscoped historical cache entry for a scoped active-war request", async () => {
+    const gateSpy = vi
+      .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
+      .mockRejectedValue(blockedError());
+    setPointsSnapshotCacheForTest({
+      tag: "TRACK",
+      snapshot: buildSnapshot(),
+    });
+
+    await expect(
+      getCached("#OPPONENT", "#TRACK", {
+        warContext: {
+          guildId: "guild-1",
+          warId: "123",
+          warStartTime: new Date("2026-03-08T00:00:00.000Z"),
+          opponentTag: "#OPPONENT",
+          currentSyncNumber: 477,
+          sourceSyncNumber: 476,
+        },
+      }),
+    ).rejects.toBeInstanceOf(PointsDirectFetchBlockedError);
+    expect(gateSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("does not reuse an in-flight request for another matchup", async () => {
     const gateSpy = vi
       .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
@@ -453,6 +511,31 @@ describe("FWA points matchup-safe cache reuse", () => {
     });
   });
 
+  it("keeps a fresh direct clan_not_found usable when scoped war identity is unresolved", async () => {
+    vi.spyOn(
+      PointsDirectFetchGateService.prototype,
+      "evaluateFetchAccess",
+    ).mockResolvedValue(allowedDecision());
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: buildClanNotFoundHtml(),
+    } as any);
+
+    await expect(
+      getCached("#TRACK", "#OPPONENT", {
+        warContext: {
+          guildId: "guild-1",
+          opponentTag: "#TRACK",
+          currentSyncNumber: 478,
+          sourceSyncNumber: 477,
+        },
+      }),
+    ).resolves.toMatchObject({
+      lookupState: "clan_not_found",
+      notFound: true,
+    });
+  });
+
   it("reuses cached clan_not_found only for the same war and sync context", async () => {
     const gateSpy = vi
       .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
@@ -567,6 +650,14 @@ describe("FWA points matchup-safe cache reuse", () => {
     await expect(
       getCached("#TRACK", "#OPPONENT", {
         fallbackTrackedClanTag: "#TRACK",
+        warContext: {
+          guildId: "guild-1",
+          warId: "123",
+          warStartTime: new Date("2026-03-08T00:00:00.000Z"),
+          opponentTag: "#TRACK",
+          currentSyncNumber: 477,
+          sourceSyncNumber: 476,
+        },
       }),
     ).resolves.toMatchObject({
       tag: "OPPONENT",
