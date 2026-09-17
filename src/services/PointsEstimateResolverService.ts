@@ -160,6 +160,12 @@ function sameDate(left: Date | null | undefined, right: Date | null | undefined)
   return validDate(left) && validDate(right) && left.getTime() === right.getTime();
 }
 
+/** Purpose: choose the persisted timestamp that describes a successful points observation. */
+function observationFetchedAt(row: PointsSyncReadRow): Date | null {
+  if (validDate(row.lastSuccessfulPointsApiFetchAt)) return row.lastSuccessfulPointsApiFetchAt;
+  return null;
+}
+
 /** Purpose: match a persisted war row to an active identity using war ID or exact start time. */
 function sameWar(
   row: { warId: string | number | null; warStartTime: Date },
@@ -277,6 +283,19 @@ function matchesBaselineHistory(
   const normalizedExpectedOpponent = normalizeTag(expectedOpponent ?? "");
   const normalizedHistoryOpponent = normalizeTag(row.opponentTag ?? "");
   return Boolean(normalizedExpectedOpponent) && normalizedExpectedOpponent === normalizedHistoryOpponent;
+}
+
+/** Purpose: prove an observed baseline is pre-war without confusing a delayed fetch with old points. */
+function isProvenPreWarObservation(
+  pointRow: PointsSyncReadRow,
+  completedBaseline: WarHistoryReadRow,
+): boolean {
+  if (!validDate(completedBaseline.warEndTime)) return false;
+  const observedAt = observationFetchedAt(pointRow);
+  const pointSync = finiteInt(pointRow.lastKnownSyncNumber) ?? finiteInt(pointRow.syncNum);
+  const historySync = finiteInt(completedBaseline.syncNumber);
+  return observedAt !== null && observedAt.getTime() < completedBaseline.warEndTime.getTime() &&
+    pointSync !== null && historySync !== null && pointSync === historySync;
 }
 
 /** Purpose: read compatibility team-size metadata needed only for the existing BL perfect-war rule. */
@@ -721,6 +740,7 @@ export class PointsEstimateResolverService {
     };
     const teamSize = input.lookupTeamSizes.get(completedBaseline.warId) ?? null;
     const canCompute = canComputeHistoryDelta(completedBaseline, teamSize);
+    const provenPreWarObservation = isProvenPreWarObservation(pointRow, completedBaseline);
     let calculatedAfter: number | null = null;
     if (canCompute) {
       const delta = computeWarPointsDeltaForTest({
@@ -744,6 +764,9 @@ export class PointsEstimateResolverService {
       if (calculatedAfter === null) {
         return { baseline, appliedWarIds: [], unresolvedReason: "history_checkpoint_unverified" };
       }
+      if (!provenPreWarObservation) {
+        return { baseline, appliedWarIds: [], unresolvedReason: "baseline_prewar_provenance_unavailable" };
+      }
       if (calculatedAfter === baseline.balance) {
         return { baseline, appliedWarIds: [], unresolvedReason: null };
       }
@@ -752,6 +775,10 @@ export class PointsEstimateResolverService {
         appliedWarIds: [completedBaseline.warId],
         unresolvedReason: null,
       };
+    }
+
+    if (!provenPreWarObservation) {
+      return { baseline, appliedWarIds: [], unresolvedReason: "baseline_prewar_provenance_unavailable" };
     }
 
     if (calculatedAfter === null) {
