@@ -14234,6 +14234,17 @@ function isPointsSnapshotEligibleForRequest(input: {
   // carrying war/sync tags. Reused not-found evidence must still be scoped to
   // the active war and compatible sync before it can influence inference.
   if (matchup === "clan_not_found") {
+    if (
+      input.storedContext &&
+      context.currentSyncNumber === null &&
+      context.sourceSyncNumber !== null &&
+      context.sourceSyncNumber !== undefined &&
+      input.storedContext.currentSyncNumber !== null &&
+      input.storedContext.currentSyncNumber !== undefined &&
+      input.storedContext.currentSyncNumber <= context.sourceSyncNumber
+    ) {
+      return false;
+    }
     return input.allowFreshNotFound === true || input.storedContext != null;
   }
   return (

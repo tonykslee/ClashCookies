@@ -560,6 +560,66 @@ describe("FWA points matchup-safe cache reuse", () => {
     expect(gateSpy).not.toHaveBeenCalled();
   });
 
+  it("rejects cached clan_not_found when stored current sync is not ahead of the requested source sync", async () => {
+    const gateSpy = vi
+      .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
+      .mockRejectedValue(blockedError());
+    const storedContext = {
+      guildId: "guild-1",
+      warId: "123",
+      warStartTime: new Date("2026-03-08T00:00:00.000Z"),
+      opponentTag: "#TRACK",
+      currentSyncNumber: 478,
+      sourceSyncNumber: 477,
+    };
+    setPointsSnapshotCacheForTest({
+      tag: "OPPONENT",
+      snapshot: buildClanNotFoundSnapshot(),
+      requestContext: storedContext,
+    });
+
+    await expect(
+      getCached("#TRACK", "#OPPONENT", {
+        warContext: {
+          ...storedContext,
+          currentSyncNumber: null,
+          sourceSyncNumber: 478,
+        },
+      }),
+    ).rejects.toBeInstanceOf(PointsDirectFetchBlockedError);
+    expect(gateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses cached clan_not_found when stored current sync is ahead of the requested source sync", async () => {
+    const gateSpy = vi
+      .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
+      .mockRejectedValue(blockedError());
+    const storedContext = {
+      guildId: "guild-1",
+      warId: "123",
+      warStartTime: new Date("2026-03-08T00:00:00.000Z"),
+      opponentTag: "#TRACK",
+      currentSyncNumber: 478,
+      sourceSyncNumber: 477,
+    };
+    setPointsSnapshotCacheForTest({
+      tag: "OPPONENT",
+      snapshot: buildClanNotFoundSnapshot(),
+      requestContext: storedContext,
+    });
+
+    await expect(
+      getCached("#TRACK", "#OPPONENT", {
+        warContext: {
+          ...storedContext,
+          currentSyncNumber: null,
+          sourceSyncNumber: 477,
+        },
+      }),
+    ).resolves.toMatchObject({ notFound: true });
+    expect(gateSpy).not.toHaveBeenCalled();
+  });
+
   it("rejects cached clan_not_found from a different war or incompatible sync", async () => {
     const gateSpy = vi
       .spyOn(PointsDirectFetchGateService.prototype, "evaluateFetchAccess")
