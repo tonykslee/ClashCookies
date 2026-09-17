@@ -343,7 +343,7 @@ describe("PointsEstimateResolverService", () => {
     expect(result).toMatchObject({ balance: 99, projectionSafe: true, coverage: "complete_reconstruction" });
   });
 
-  it("uses a safe persisted BL checkpoint when rule inputs are incomplete", async () => {
+  it("does not trust a history checkpoint when BL inputs cannot verify its numeric endpoint", async () => {
     const db = makeDb(
       [point()],
       [history({ matchType: "BL", actualOutcome: "LOSE", clanDestruction: null, pointsAfterWar: 105 })],
@@ -356,10 +356,11 @@ describe("PointsEstimateResolverService", () => {
     });
 
     expect(result).toMatchObject({
-      balance: 105,
-      appliedWarIds: [1],
-      coverage: "complete_reconstruction",
-      projectionSafe: true,
+      balance: 100,
+      appliedWarIds: [],
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_checkpoint_unverified",
     });
   });
 
@@ -375,8 +376,9 @@ describe("PointsEstimateResolverService", () => {
       activeWar: active(),
     });
 
-    expect(result.balance).toBe(106);
-    expect(result.projectionSafe).toBe(true);
+    expect(result.balance).toBe(100);
+    expect(result.projectionSafe).toBe(false);
+    expect(result.reason).toBe("history_checkpoint_unverified");
   });
 
   it("stops BL reconstruction when missing inputs have no safe persisted checkpoint", async () => {
@@ -770,7 +772,7 @@ describe("PointsEstimateResolverService", () => {
     });
   });
 
-  it("does not reapply a baseline war when the observed checkpoint is post-war", async () => {
+  it("does not double-decrement an apparent post-war balance without independent provenance", async () => {
     const baselineStart = previousStart(48);
     const db = makeDb(
       [point({
@@ -800,7 +802,51 @@ describe("PointsEstimateResolverService", () => {
       activeWar: active({ syncNumber: 102 }),
     });
 
-    expect(result).toMatchObject({ balance: 99, projectionSafe: true, appliedWarIds: [] });
+    expect(result).toMatchObject({
+      balance: 99,
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      appliedWarIds: [],
+      reason: "history_checkpoint_conflict",
+    });
+  });
+
+  it("rejects an equal stale checkpoint instead of treating it as post-war proof", async () => {
+    const baselineStart = previousStart(48);
+    const db = makeDb(
+      [point({
+        warId: "game-war-stale-checkpoint",
+        warStartTime: baselineStart,
+        syncNum: 101,
+        lastKnownSyncNumber: 101,
+        clanPoints: 100,
+        lastKnownPoints: 100,
+        opponentTag: "#OPP",
+        syncFetchedAt: previousStart(12),
+        lastSuccessfulPointsApiFetchAt: previousStart(12),
+      })],
+      [history({
+        warId: 50102,
+        syncNumber: 101,
+        warStartTime: baselineStart,
+        warEndTime: previousStart(24),
+        pointsAfterWar: 100,
+        actualOutcome: "WIN",
+      })],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active({ syncNumber: 102 }),
+    });
+
+    expect(result).toMatchObject({
+      balance: 100,
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_checkpoint_conflict",
+    });
   });
 
   it("does not invent an opponent projection without the opponent's baseline history", async () => {
@@ -1163,6 +1209,70 @@ describe("PointsEstimateResolverService", () => {
       coverage: "last_known_unresolved_history",
       projectionSafe: false,
       reason: "history_actual_result_unconfirmed",
+    });
+  });
+
+  it("does not treat a history-only checkpoint as a balance anchor even with a verified result", async () => {
+    const db = makeDb([], [history({
+      warId: 70302,
+      syncNumber: 101,
+      warStartTime: previousStart(48),
+      warEndTime: previousStart(24),
+      actualOutcome: "WIN",
+      pointsAfterWar: 100,
+    })]);
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active({ syncNumber: 102 }),
+    });
+
+    expect(result).toMatchObject({
+      balance: 100,
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_checkpoint_unverified",
+    });
+  });
+
+  it("applies the same checkpoint provenance rules to an opponent observation", async () => {
+    const baselineStart = previousStart(48);
+    const db = makeDb(
+      [point({
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        warId: "game-war-opponent-stale-checkpoint",
+        warStartTime: baselineStart,
+        syncNum: 101,
+        lastKnownSyncNumber: 101,
+        opponentPoints: 100,
+        syncFetchedAt: previousStart(12),
+        lastSuccessfulPointsApiFetchAt: previousStart(12),
+      })],
+      [history({
+        warId: 70303,
+        syncNumber: 101,
+        warStartTime: baselineStart,
+        warEndTime: previousStart(24),
+        clanTag: "#OPP",
+        opponentTag: "#HOME",
+        pointsAfterWar: 100,
+        actualOutcome: "WIN",
+      })],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#OPP",
+      activeWar: active({ syncNumber: 102, trackedClanTag: "#HOME" }),
+    });
+
+    expect(result).toMatchObject({
+      balance: 100,
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_checkpoint_conflict",
     });
   });
 

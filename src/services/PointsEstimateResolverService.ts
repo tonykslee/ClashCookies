@@ -258,14 +258,6 @@ function canComputeHistoryDelta(row: WarHistoryReadRow, teamSize: number | null)
   return matchType === "BL" && canComputeDefinitiveBlDelta(row, teamSize);
 }
 
-/** Purpose: permit a persisted endpoint only when its result evidence can establish that the war ended. */
-function hasVerifiedPointsCheckpoint(row: WarHistoryReadRow): boolean {
-  if (finiteInt(row.pointsAfterWar) === null) return false;
-  const matchType = parseMatchType(row.matchType);
-  if (matchType === null || matchType === "MM") return matchType === "MM";
-  return independentlyVerifiedActualOutcome(row) !== null;
-}
-
 /** Purpose: identify BL rows whose perfect-war rule may need archived team-size evidence. */
 function needsTeamSizeEvidence(row: WarHistoryReadRow): boolean {
   return parseMatchType(row.matchType) === "BL" && independentlyVerifiedActualOutcome(row) !== null &&
@@ -658,11 +650,17 @@ export class PointsEstimateResolverService {
       observedAt: row.warEndTime,
       kind: "derived",
     };
+    const hasVerifiedResult = parseMatchType(row.matchType) === "MM" || independentlyVerifiedActualOutcome(row) !== null;
     return {
       balance,
       baseline,
       needsValidation: true,
-      baselineUnresolvedReason: hasVerifiedPointsCheckpoint(row) ? null : "history_actual_result_unconfirmed",
+      // A history row has no field proving that pointsAfterWar came from a
+      // trustworthy balance anchor. Result evidence proves the outcome only;
+      // it cannot by itself prove the website-derived numeric checkpoint.
+      baselineUnresolvedReason: hasVerifiedResult
+        ? "history_checkpoint_unverified"
+        : "history_actual_result_unconfirmed",
     };
   }
 
@@ -708,11 +706,7 @@ export class PointsEstimateResolverService {
     const persistedAfter = finiteInt(completedBaseline.pointsAfterWar);
     const matchType = parseMatchType(completedBaseline.matchType);
     const actualOutcome = independentlyVerifiedActualOutcome(completedBaseline);
-    const checkpointVerified = hasVerifiedPointsCheckpoint(completedBaseline);
     if (!matchType || (matchType !== "MM" && actualOutcome === null)) {
-      return { baseline, appliedWarIds: [], unresolvedReason: "history_actual_result_unconfirmed" };
-    }
-    if (persistedAfter !== null && !checkpointVerified) {
       return { baseline, appliedWarIds: [], unresolvedReason: "history_actual_result_unconfirmed" };
     }
 
@@ -740,17 +734,18 @@ export class PointsEstimateResolverService {
     }
 
     if (persistedAfter !== null) {
-      // Equality with a verified endpoint proves that the observed value is
-      // already post-war. Otherwise a computable pre-war balance must agree
-      // with the endpoint before the baseline war can be applied.
-      if (baseline.balance === persistedAfter) {
-        return { baseline, appliedWarIds: [], unresolvedReason: null };
-      }
+      // Treat the observed row as the pre-war anchor and independently
+      // calculate the endpoint. This rejects stale equal checkpoints. If the
+      // row was already post-war but has no independent post-war marker, the
+      // disagreement remains unresolved rather than being decremented again.
       if (calculatedAfter !== null && calculatedAfter !== persistedAfter) {
         return { baseline, appliedWarIds: [], unresolvedReason: "history_checkpoint_conflict" };
       }
-      if (calculatedAfter === null && matchType !== "BL") {
-        return { baseline, appliedWarIds: [], unresolvedReason: "baseline_end_balance_unavailable" };
+      if (calculatedAfter === null) {
+        return { baseline, appliedWarIds: [], unresolvedReason: "history_checkpoint_unverified" };
+      }
+      if (calculatedAfter === baseline.balance) {
+        return { baseline, appliedWarIds: [], unresolvedReason: null };
       }
       return {
         baseline: { ...reconciledBaseline, balance: persistedAfter },
@@ -834,12 +829,13 @@ export class PointsEstimateResolverService {
             stoppedReason = "history_checkpoint_conflict";
             break;
           }
-        } else if (matchType !== "BL") {
-          stoppedReason = "history_delta_unavailable";
+        } else {
+          // pointsAfterWar has no independent numeric provenance in the
+          // history row. A verified outcome cannot authorize crossing an
+          // otherwise uncomputable checkpoint.
+          stoppedReason = "history_checkpoint_unverified";
           break;
         }
-        // A checkpoint with independently verified result evidence is safe
-        // even when BL's award inputs are incomplete.
         balance = persistedAfter;
         appliedWarIds.push(row.warId);
         lastSync = rowSync ?? lastSync;
