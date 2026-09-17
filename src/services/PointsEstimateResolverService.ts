@@ -98,6 +98,11 @@ export type PointsEstimateSource =
   | "last_known_derived"
   | "unavailable";
 
+export type PointsEstimateCoverage =
+  | "complete_reconstruction"
+  | "last_known_unresolved_history"
+  | "no_usable_balance";
+
 export type PointsEstimateResult = {
   balance: number | null;
   source: PointsEstimateSource;
@@ -105,6 +110,8 @@ export type PointsEstimateResult = {
   baseline: PointsEstimateBaseline | null;
   isEstimate: boolean;
   isValidatedCurrentMatchupEvidence: boolean;
+  coverage: PointsEstimateCoverage;
+  projectionSafe: boolean;
   syncNumber: number | null;
   syncNumberSource:
     | "caller_context"
@@ -156,21 +163,20 @@ function sameWar(
   activeWar: PointsEstimateActiveWarContext,
 ): boolean {
   const activeWarId = String(activeWar.warId ?? "").trim();
-  const byId = activeWarId.length > 0 && row.warId !== null && String(row.warId) === activeWarId;
+  if (activeWarId.length > 0 && row.warId !== null) return String(row.warId) === activeWarId;
   const byStart = sameDate(row.warStartTime, activeWar.warStartTime);
-  return byId || byStart;
+  return byStart;
 }
 
 /** Purpose: reject point observations that belong to a later sync or war. */
 function isBeforeActiveWar(
-  row: { syncNumber: number | null; warStartTime: Date },
+  row: { syncNumber: number | null; warStartTime: Date; checkpointSyncNumber?: number | null },
   activeWar: PointsEstimateActiveWarContext,
   activeSyncNumber: number | null,
 ): boolean {
-  if (activeSyncNumber !== null && row.syncNumber !== null) {
-    return row.syncNumber <= activeSyncNumber;
-  }
-  return validDate(row.warStartTime) && row.warStartTime.getTime() <= activeWar.warStartTime.getTime();
+  if (!validDate(row.warStartTime) || row.warStartTime.getTime() > activeWar.warStartTime.getTime()) return false;
+  const checkpointSyncNumber = row.checkpointSyncNumber ?? row.syncNumber;
+  return activeSyncNumber === null || checkpointSyncNumber === null || checkpointSyncNumber <= activeSyncNumber;
 }
 
 /** Purpose: accept only match types whose point rules are implemented by the shared core. */
@@ -191,13 +197,29 @@ function historyResult(row: WarHistoryReadRow): WarEndResultSnapshot {
   return {
     clanStars: finiteInt(row.clanStars),
     opponentStars: finiteInt(row.opponentStars),
-    clanDestruction: Number.isFinite(Number(row.clanDestruction)) ? Number(row.clanDestruction) : null,
-    opponentDestruction: Number.isFinite(Number(row.opponentDestruction))
-      ? Number(row.opponentDestruction)
-      : null,
+    clanDestruction: finiteNumber(row.clanDestruction),
+    opponentDestruction: finiteNumber(row.opponentDestruction),
     warEndTime: validDate(row.warEndTime) ? row.warEndTime : null,
     resultLabel: actualOutcome ?? "UNKNOWN",
   };
+}
+
+/** Purpose: normalize a persisted numeric value while preserving missing values as null. */
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/** Purpose: prevent the shared BL rule from deciding an award when missing inputs could change it. */
+function canComputeDefinitiveBlDelta(row: WarHistoryReadRow, teamSize: number | null): boolean {
+  const outcome = normalizeActualOutcome(row.actualOutcome);
+  if (outcome === "WIN") return true;
+  const stars = finiteInt(row.clanStars);
+  const perfect = teamSize === 50 ? stars === 150 : teamSize === 45 ? stars === 135 : false;
+  if (perfect) return true;
+  if (teamSize === null && (stars === 150 || stars === 135)) return false;
+  return finiteNumber(row.clanDestruction) !== null;
 }
 
 /** Purpose: read compatibility team-size metadata needed only for the existing BL perfect-war rule. */
@@ -246,6 +268,8 @@ export class PointsEstimateResolverService {
       baseline: null,
       isEstimate: true,
       isValidatedCurrentMatchupEvidence: false,
+      coverage: "no_usable_balance",
+      projectionSafe: false,
       syncNumber,
       syncNumberSource,
       appliedWarIds: [],
@@ -258,163 +282,202 @@ export class PointsEstimateResolverService {
 
     let pointRows: PointsSyncReadRow[] = [];
     let historyRows: WarHistoryReadRow[] = [];
+    const trackedClanTag = normalizeTag(input.activeWar.trackedClanTag ?? opponentTag);
     try {
-      const [rawPointRows, rawHistoryRows] = await Promise.all([
-        this.db.clanPointsSync.findMany({
-          where: { guildId: input.guildId },
-          select: {
-            clanTag: true,
-            warId: true,
-            warStartTime: true,
-            syncNum: true,
-            opponentTag: true,
-            clanPoints: true,
-            opponentPoints: true,
-            outcome: true,
-            isFwa: true,
-            syncFetchedAt: true,
-            lastSuccessfulPointsApiFetchAt: true,
-            needsValidation: true,
-            lastKnownPoints: true,
-            lastKnownMatchType: true,
-            lastKnownOutcome: true,
-            lastKnownSyncNumber: true,
-          },
-          orderBy: [{ syncNum: "asc" }, { syncFetchedAt: "asc" }],
-        }),
-        this.db.clanWarHistory.findMany({
-          where: {
-            OR: [{ clanTag }, { opponentTag }],
-          },
-          select: {
-            warId: true,
-            syncNumber: true,
-            matchType: true,
-            clanStars: true,
-            clanDestruction: true,
-            opponentStars: true,
-            opponentDestruction: true,
-            pointsAfterWar: true,
-            expectedOutcome: true,
-            actualOutcome: true,
-            warStartTime: true,
-            warEndTime: true,
-            clanTag: true,
-            opponentTag: true,
-          },
-          orderBy: [{ syncNumber: "asc" }, { warStartTime: "asc" }, { warId: "asc" }],
-        }),
-      ]);
+      const rawPointRows = await this.db.clanPointsSync.findMany({
+        where: {
+          guildId: input.guildId,
+          OR: [
+            { clanTag },
+            { clanTag: trackedClanTag, opponentTag: clanTag },
+          ],
+        },
+        select: {
+          clanTag: true,
+          warId: true,
+          warStartTime: true,
+          syncNum: true,
+          opponentTag: true,
+          clanPoints: true,
+          opponentPoints: true,
+          outcome: true,
+          isFwa: true,
+          syncFetchedAt: true,
+          lastSuccessfulPointsApiFetchAt: true,
+          needsValidation: true,
+          lastKnownPoints: true,
+          lastKnownMatchType: true,
+          lastKnownOutcome: true,
+          lastKnownSyncNumber: true,
+        },
+        orderBy: [{ syncNum: "asc" }, { syncFetchedAt: "asc" }],
+      });
       pointRows = rawPointRows as PointsSyncReadRow[];
+
+      const resolvedSync = await this.resolveSyncNumber({ input, pointRows, clanTag, opponentTag });
+      const historyLowerBound = pointRows
+        .filter((row) =>
+          (sameTag(row.clanTag, clanTag)
+            ? finiteInt(row.lastKnownPoints) ?? finiteInt(row.clanPoints)
+            : sameTag(row.clanTag, trackedClanTag) && sameTag(row.opponentTag, clanTag)
+              ? finiteInt(row.opponentPoints)
+              : null) !== null,
+        )
+        .filter((row) => isBeforeActiveWar({
+          syncNumber: finiteInt(row.syncNum),
+          checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
+          warStartTime: row.warStartTime,
+        }, input.activeWar, resolvedSync.syncNumber))
+        .map((row) => row.warStartTime)
+        .filter(validDate)
+        .sort((left, right) => left.getTime() - right.getTime())[0];
+      const historyWhere: Record<string, unknown> = {
+        clanTag,
+        warEndTime: { not: null },
+        warStartTime: {
+          ...(historyLowerBound ? { gte: historyLowerBound } : {}),
+          lt: input.activeWar.warStartTime,
+        },
+      };
+      const rawHistoryRows = await this.db.clanWarHistory.findMany({
+        where: historyWhere,
+        select: {
+          warId: true,
+          syncNumber: true,
+          matchType: true,
+          clanStars: true,
+          clanDestruction: true,
+          opponentStars: true,
+          opponentDestruction: true,
+          pointsAfterWar: true,
+          expectedOutcome: true,
+          actualOutcome: true,
+          warStartTime: true,
+          warEndTime: true,
+          clanTag: true,
+          opponentTag: true,
+        },
+        orderBy: [{ syncNumber: "asc" }, { warStartTime: "asc" }, { warId: "asc" }],
+      });
       historyRows = rawHistoryRows as WarHistoryReadRow[];
+
+      const syncNumber = resolvedSync.syncNumber;
+
+      const sameWarOwn = pointRows
+        .filter((row) => sameTag(row.clanTag, clanTag) && sameWar(row, input.activeWar))
+        .filter((row) => sameTag(row.opponentTag, opponentTag) && row.needsValidation === false)
+        .filter((row) => isBeforeActiveWar({
+          syncNumber: finiteInt(row.syncNum),
+          checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
+          warStartTime: row.warStartTime,
+        }, input.activeWar, syncNumber))
+        .filter((row) => finiteInt(row.syncNum) === syncNumber || syncNumber === null)
+        .map((row) => ({ balance: finiteInt(row.clanPoints), row }))
+        .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
+        .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime());
+      const direct = sameWarOwn[0];
+      if (direct) {
+        const baseline = this.baselineFromPointRow({
+          clanTag,
+          sourceClanTag: clanTag,
+          row: direct.row,
+          balance: direct.balance,
+        });
+        this.logChosenSource(clanTag, "validated_same_war", "validated_same_war", syncNumber);
+        return {
+          balance: direct.balance,
+          source: "validated_same_war",
+          provenance: baseline,
+          baseline,
+          isEstimate: false,
+          isValidatedCurrentMatchupEvidence: true,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber,
+          syncNumberSource: resolvedSync.source,
+          appliedWarIds: [],
+          reason: "validated_same_war_points_sync",
+        };
+      }
+
+      const sameWarOpponent = pointRows
+        .filter(
+          (row) =>
+            sameTag(row.clanTag, trackedClanTag) &&
+            sameTag(row.opponentTag, clanTag),
+        )
+        .filter((row) => sameWar(row, input.activeWar) && row.needsValidation === false)
+        .filter((row) => isBeforeActiveWar({
+          syncNumber: finiteInt(row.syncNum),
+          checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
+          warStartTime: row.warStartTime,
+        }, input.activeWar, syncNumber))
+        .filter((row) => finiteInt(row.syncNum) === syncNumber || syncNumber === null)
+        .map((row) => ({ balance: finiteInt(row.opponentPoints), row }))
+        .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
+        .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime())[0];
+      if (sameWarOpponent) {
+        const baseline = this.baselineFromPointRow({
+          clanTag,
+          sourceClanTag: sameWarOpponent.row.clanTag,
+          row: sameWarOpponent.row,
+          balance: sameWarOpponent.balance,
+        });
+        this.logChosenSource(clanTag, "validated_same_war_opponent_observation", "validated_same_war_opponent_observation", syncNumber);
+        return {
+          balance: sameWarOpponent.balance,
+          source: "validated_same_war_opponent_observation",
+          provenance: baseline,
+          baseline,
+          isEstimate: false,
+          isValidatedCurrentMatchupEvidence: true,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber,
+          syncNumberSource: resolvedSync.source,
+          appliedWarIds: [],
+          reason: "validated_same_war_opponent_points_observation",
+        };
+      }
+
+      const historyForClan = historyRows.filter((row) => sameTag(row.clanTag, clanTag));
+      const baselineCandidate = this.choosePointBaseline({
+        clanTag,
+        opponentTag,
+        pointRows,
+        activeWar: input.activeWar,
+        activeSyncNumber: syncNumber,
+      });
+      const historyBaseline = baselineCandidate ?? this.chooseHistoryBaseline({
+        clanTag,
+        historyRows: historyForClan,
+        activeWar: input.activeWar,
+        activeSyncNumber: syncNumber,
+      });
+      if (!historyBaseline) {
+        this.logChosenSource(clanTag, "unavailable", "no_safe_baseline", syncNumber);
+        return empty("no_safe_persisted_baseline", syncNumber, resolvedSync.source);
+      }
+
+      const lookupTeamSizes = await this.loadTeamSizes(historyForClan);
+      const reconstruction = this.reconstructFromHistory({
+        baseline: historyBaseline,
+        historyRows: historyForClan,
+        activeWar: input.activeWar,
+        activeSyncNumber: syncNumber,
+        lookupTeamSizes,
+      });
+      const result = {
+        ...reconstruction,
+        syncNumber,
+        syncNumberSource: resolvedSync.source,
+      };
+      this.logChosenSource(clanTag, result.source, result.reason, syncNumber);
+      return result;
     } catch (error) {
       dozzleLog.warn(`[points-estimate] event=resolve outcome=read_failed clan_tag=${clanTag} error=${String(error)}`);
       return empty("database_read_failed");
     }
-
-    const sameWarOwn = pointRows
-      .filter((row) => sameTag(row.clanTag, clanTag) && sameWar(row, input.activeWar))
-      .filter((row) => sameTag(row.opponentTag, opponentTag) && row.needsValidation === false)
-      .map((row) => ({ balance: finiteInt(row.clanPoints), row }))
-      .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
-      .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime());
-    const direct = sameWarOwn[0];
-    if (direct) {
-      const baseline = this.baselineFromPointRow({
-        clanTag,
-        sourceClanTag: clanTag,
-        row: direct.row,
-        balance: direct.balance,
-      });
-      const syncNumber = finiteInt(direct.row.syncNum);
-      this.logChosenSource(clanTag, "validated_same_war", "validated_same_war", syncNumber);
-      return {
-        balance: direct.balance,
-        source: "validated_same_war",
-        provenance: baseline,
-        baseline,
-        isEstimate: false,
-        isValidatedCurrentMatchupEvidence: true,
-        syncNumber,
-        syncNumberSource: "same_war_points",
-        appliedWarIds: [],
-        reason: "validated_same_war_points_sync",
-      };
-    }
-
-    const sameWarOpponent = pointRows
-      .filter(
-        (row) =>
-          sameTag(row.clanTag, input.activeWar.trackedClanTag ?? opponentTag) &&
-          sameTag(row.opponentTag, clanTag),
-      )
-      .filter((row) => sameWar(row, input.activeWar) && row.needsValidation === false)
-      .map((row) => ({ balance: finiteInt(row.opponentPoints), row }))
-      .filter((candidate): candidate is { balance: number; row: PointsSyncReadRow } => candidate.balance !== null)
-      .sort((left, right) => right.row.syncFetchedAt.getTime() - left.row.syncFetchedAt.getTime())[0];
-    if (sameWarOpponent) {
-      const baseline = this.baselineFromPointRow({
-        clanTag,
-        sourceClanTag: sameWarOpponent.row.clanTag,
-        row: sameWarOpponent.row,
-        balance: sameWarOpponent.balance,
-      });
-      const syncNumber = finiteInt(sameWarOpponent.row.syncNum);
-      this.logChosenSource(clanTag, "validated_same_war_opponent_observation", "validated_same_war_opponent_observation", syncNumber);
-      return {
-        balance: sameWarOpponent.balance,
-        source: "validated_same_war_opponent_observation",
-        provenance: baseline,
-        baseline,
-        isEstimate: false,
-        isValidatedCurrentMatchupEvidence: true,
-        syncNumber,
-        syncNumberSource: "same_war_points",
-        appliedWarIds: [],
-        reason: "validated_same_war_opponent_points_observation",
-      };
-    }
-
-    const resolvedSync = await this.resolveSyncNumber({
-      input,
-      pointRows,
-      clanTag,
-      opponentTag,
-    });
-    const historyForClan = historyRows.filter((row) => sameTag(row.clanTag, clanTag));
-    const baselineCandidate = this.choosePointBaseline({
-      clanTag,
-      opponentTag,
-      pointRows,
-      activeWar: input.activeWar,
-      activeSyncNumber: resolvedSync.syncNumber,
-    });
-    const historyBaseline = baselineCandidate ?? this.chooseHistoryBaseline({
-      clanTag,
-      historyRows: historyForClan,
-      activeWar: input.activeWar,
-      activeSyncNumber: resolvedSync.syncNumber,
-    });
-    if (!historyBaseline) {
-      this.logChosenSource(clanTag, "unavailable", "no_safe_baseline", resolvedSync.syncNumber);
-      return empty("no_safe_persisted_baseline", resolvedSync.syncNumber, resolvedSync.source);
-    }
-
-    const lookupTeamSizes = await this.loadTeamSizes(historyForClan);
-    const reconstruction = this.reconstructFromHistory({
-      baseline: historyBaseline,
-      historyRows: historyForClan,
-      activeWar: input.activeWar,
-      activeSyncNumber: resolvedSync.syncNumber,
-      lookupTeamSizes,
-    });
-    const result = {
-      ...reconstruction,
-      syncNumber: resolvedSync.syncNumber,
-      syncNumberSource: resolvedSync.source,
-    };
-    this.logChosenSource(clanTag, result.source, result.reason, resolvedSync.syncNumber);
-    return result;
   }
 
   /** Purpose: compatibility alias for callers that prefer estimate terminology. */
@@ -478,7 +541,11 @@ export class PointsEstimateResolverService {
         sameTag(row.clanTag, input.activeWar.trackedClanTag ?? input.activeWar.opponentTag) &&
         sameTag(row.opponentTag, input.clanTag);
       if (!own && !opponentObservation) continue;
-      if (!isBeforeActiveWar({ syncNumber: finiteInt(row.syncNum), warStartTime: row.warStartTime }, input.activeWar, input.activeSyncNumber)) continue;
+      if (!isBeforeActiveWar({
+        syncNumber: finiteInt(row.syncNum),
+        checkpointSyncNumber: finiteInt(row.lastKnownSyncNumber),
+        warStartTime: row.warStartTime,
+      }, input.activeWar, input.activeSyncNumber)) continue;
       const balance = own ? finiteInt(row.lastKnownPoints) ?? finiteInt(row.clanPoints) : finiteInt(row.opponentPoints);
       if (balance === null) continue;
       const syncNumber = finiteInt(row.lastKnownSyncNumber) ?? finiteInt(row.syncNum) ?? Number.MIN_SAFE_INTEGER;
@@ -504,6 +571,7 @@ export class PointsEstimateResolverService {
       .filter((row) => validDate(row.warEndTime) && row.warEndTime!.getTime() < input.activeWar.warStartTime.getTime())
       .filter((row) => finiteInt(row.pointsAfterWar) !== null && parseMatchType(row.matchType) !== null)
       .filter((row) => normalizeActualOutcome(row.actualOutcome) !== null || parseMatchType(row.matchType) === "MM")
+      .filter((row) => isBeforeActiveWar(row, input.activeWar, input.activeSyncNumber))
       .filter((row) => input.activeSyncNumber === null || row.syncNumber === null || row.syncNumber < input.activeSyncNumber)
       .sort((left, right) => (right.syncNumber ?? Number.MIN_SAFE_INTEGER) - (left.syncNumber ?? Number.MIN_SAFE_INTEGER) || right.warStartTime.getTime() - left.warStartTime.getTime());
     const row = candidates[0];
@@ -538,9 +606,11 @@ export class PointsEstimateResolverService {
     const rows = sortByEvidence(input.historyRows).filter((row) => {
       if (!validDate(row.warEndTime) || row.warEndTime!.getTime() >= input.activeWar.warStartTime.getTime()) return false;
       if (sameWar(row, input.activeWar)) return false;
+      const baselineStart = input.baseline.baseline.warStartTime;
+      if (!validDate(baselineStart) || row.warStartTime.getTime() <= baselineStart.getTime()) return false;
       const rowSync = finiteInt(row.syncNumber);
+      if (input.activeSyncNumber !== null && rowSync !== null && rowSync >= input.activeSyncNumber) return false;
       if (lastSync !== null && rowSync !== null && rowSync <= lastSync) return false;
-      if (lastSync === null && row.warStartTime.getTime() <= (input.baseline.baseline.warStartTime?.getTime() ?? 0)) return false;
       return true;
     });
 
@@ -563,19 +633,30 @@ export class PointsEstimateResolverService {
         stoppedReason = "history_actual_result_unconfirmed";
         break;
       }
+      const teamSize = input.lookupTeamSizes.get(row.warId) ?? null;
+      const persistedAfter = finiteInt(row.pointsAfterWar);
+      if (matchType === "BL" && !canComputeDefinitiveBlDelta(row, teamSize)) {
+        if (persistedAfter === null) {
+          stoppedReason = "history_delta_input_incomplete";
+          break;
+        }
+        balance = persistedAfter;
+        appliedWarIds.push(row.warId);
+        lastSync = rowSync ?? lastSync;
+        continue;
+      }
       const delta = computeWarPointsDeltaForTest({
         matchType,
         before: balance,
         after: null,
         finalResult: historyResult(row),
-        teamSize: input.lookupTeamSizes.get(row.warId) ?? null,
+        teamSize,
       });
       if (delta === null || !Number.isFinite(delta)) {
         stoppedReason = "history_delta_unavailable";
         break;
       }
       const expectedAfter = balance + Math.trunc(delta);
-      const persistedAfter = finiteInt(row.pointsAfterWar);
       balance = persistedAfter ?? expectedAfter;
       appliedWarIds.push(row.warId);
       lastSync = rowSync ?? lastSync;
@@ -584,7 +665,11 @@ export class PointsEstimateResolverService {
     if (!stoppedReason && input.activeSyncNumber !== null && lastSync !== null && input.activeSyncNumber > lastSync + 1) {
       stoppedReason = "history_sync_gap_after_last_row";
     }
-    const fullyReconstructed = stoppedReason === null;
+    const fullyReconstructed =
+      stoppedReason === null &&
+      input.activeSyncNumber !== null &&
+      lastSync !== null &&
+      input.activeSyncNumber <= lastSync + 1;
     const source: PointsEstimateSource =
       appliedWarIds.length > 0
         ? fullyReconstructed
@@ -600,6 +685,8 @@ export class PointsEstimateResolverService {
       baseline: input.baseline.baseline,
       isEstimate: true,
       isValidatedCurrentMatchupEvidence: false,
+      coverage: fullyReconstructed ? "complete_reconstruction" : "last_known_unresolved_history",
+      projectionSafe: fullyReconstructed,
       syncNumber: input.activeSyncNumber,
       syncNumberSource: "unavailable",
       appliedWarIds,
@@ -706,5 +793,6 @@ export class PointsEstimateResolverService {
 /** Purpose: match a points-sync row to active identity without relying on an external site identity. */
 function sameWarIdentity(row: PointsSyncReadRow, activeWar: PointsEstimateActiveWarContext): boolean {
   const activeWarId = String(activeWar.warId ?? "").trim();
-  return (activeWarId && row.warId !== null && String(row.warId) === activeWarId) || sameDate(row.warStartTime, activeWar.warStartTime);
+  if (activeWarId.length > 0 && row.warId !== null) return String(row.warId) === activeWarId;
+  return sameDate(row.warStartTime, activeWar.warStartTime);
 }

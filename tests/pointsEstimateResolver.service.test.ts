@@ -103,6 +103,116 @@ describe("PointsEstimateResolverService", () => {
     });
   });
 
+  it("does not confirm same-war evidence from a different sync", async () => {
+    const db = makeDb([
+      point({
+        warId: "active-war",
+        warStartTime: activeStart,
+        syncNum: 101,
+        lastKnownSyncNumber: 101,
+        opponentTag: "#OPP",
+        needsValidation: false,
+      }),
+    ]);
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active({ syncNumber: 102, trackedClanTag: "#HOME" }),
+    });
+
+    expect(result.isValidatedCurrentMatchupEvidence).toBe(false);
+    expect(result.source).not.toBe("validated_same_war");
+  });
+
+  it("does not confirm a same-war opponent observation from a different sync", async () => {
+    const db = makeDb([
+      point({
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        warId: "active-war",
+        warStartTime: activeStart,
+        syncNum: 101,
+        lastKnownSyncNumber: 101,
+        opponentPoints: 177,
+        needsValidation: false,
+      }),
+    ]);
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#OPP",
+      activeWar: active({ syncNumber: 102, trackedClanTag: "#HOME" }),
+    });
+
+    expect(result.isValidatedCurrentMatchupEvidence).toBe(false);
+    expect(result.source).not.toBe("validated_same_war_opponent_observation");
+  });
+
+  it("rejects a future-dated points row even when its sync number is older", async () => {
+    const db = makeDb([
+      point({
+        warId: "active-war",
+        warStartTime: new Date(activeStart.getTime() + 60 * 60 * 1000),
+        syncNum: 101,
+        lastKnownSyncNumber: 101,
+        needsValidation: false,
+      }),
+    ]);
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active({ syncNumber: 102 }),
+    });
+
+    expect(result).toMatchObject({
+      balance: null,
+      source: "unavailable",
+      coverage: "no_usable_balance",
+    });
+  });
+
+  it("excludes null-sync history before the baseline but stops on null-sync history after it", async () => {
+    const db = makeDb(
+      [point()],
+      [
+        history({ warId: 0, syncNumber: null, warStartTime: previousStart(72), warEndTime: previousStart(70) }),
+        history({ warId: 1, syncNumber: null, warStartTime: previousStart(24), warEndTime: previousStart(20) }),
+      ],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active(),
+    });
+
+    expect(result).toMatchObject({
+      balance: 100,
+      appliedWarIds: [],
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_sync_number_missing",
+    });
+  });
+
+  it("does not let a last-known sync beyond the active sync become a baseline", async () => {
+    const db = makeDb([point({ syncNum: 100, lastKnownSyncNumber: 103 })]);
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active({ syncNumber: 102 }),
+    });
+
+    expect(result).toMatchObject({
+      balance: null,
+      source: "unavailable",
+      coverage: "no_usable_balance",
+    });
+  });
+
   it("reconstructs a useful estimate while the website is still on the previous matchup", async () => {
     const db = makeDb([point()], [history()]);
     const result = await new PointsEstimateResolverService(db).resolveForClan({
@@ -116,6 +226,8 @@ describe("PointsEstimateResolverService", () => {
       source: "history_reconstruction",
       isEstimate: true,
       isValidatedCurrentMatchupEvidence: false,
+      coverage: "complete_reconstruction",
+      projectionSafe: true,
       syncNumber: 102,
       appliedWarIds: [1],
       reason: "completed_history_deltas_applied",
@@ -145,6 +257,63 @@ describe("PointsEstimateResolverService", () => {
     });
 
     expect(result.balance).toBe(100 + delta);
+  });
+
+  it("uses a safe persisted BL checkpoint when rule inputs are incomplete", async () => {
+    const db = makeDb(
+      [point()],
+      [history({ matchType: "BL", actualOutcome: "LOSE", clanDestruction: null, pointsAfterWar: 105 })],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active(),
+    });
+
+    expect(result).toMatchObject({
+      balance: 105,
+      appliedWarIds: [1],
+      coverage: "complete_reconstruction",
+      projectionSafe: true,
+    });
+  });
+
+  it("does not infer a BL award when missing team size could change a perfect-war result", async () => {
+    const db = makeDb(
+      [point()],
+      [history({ matchType: "BL", actualOutcome: "LOSE", clanStars: 150, clanDestruction: null, pointsAfterWar: 106 })],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active(),
+    });
+
+    expect(result.balance).toBe(106);
+    expect(result.projectionSafe).toBe(true);
+  });
+
+  it("stops BL reconstruction when missing inputs have no safe persisted checkpoint", async () => {
+    const db = makeDb(
+      [point()],
+      [history({ matchType: "BL", actualOutcome: "LOSE", clanDestruction: null, pointsAfterWar: null })],
+    );
+
+    const result = await new PointsEstimateResolverService(db).resolveForClan({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      activeWar: active(),
+    });
+
+    expect(result).toMatchObject({
+      balance: 100,
+      source: "last_known_observed",
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
+      reason: "history_delta_input_incomplete",
+    });
   });
 
   it("applies multiple completed wars once and does not double-apply persisted checkpoints", async () => {
@@ -178,6 +347,8 @@ describe("PointsEstimateResolverService", () => {
       source: "last_known_observed",
       isEstimate: true,
       appliedWarIds: [],
+      coverage: "last_known_unresolved_history",
+      projectionSafe: false,
       reason: "history_actual_result_unconfirmed",
     });
   });
@@ -233,6 +404,7 @@ describe("PointsEstimateResolverService", () => {
       source: "last_known_observed",
       reason: "history_sync_gap",
     });
+    expect(result.projectionSafe).toBe(false);
   });
 
   it("is DB-first and read-only: it performs no writes, web calls, or sync allocation", async () => {
@@ -248,6 +420,19 @@ describe("PointsEstimateResolverService", () => {
     expect(db.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
     expect(db.syncCycle.findFirst).not.toHaveBeenCalled();
     expect(db.warLookup.findMany).not.toHaveBeenCalled();
+    expect(db.clanPointsSync.findMany.mock.calls[0][0].where).toMatchObject({
+      guildId: "guild-1",
+      OR: [
+        { clanTag: "#H0ME" },
+        { clanTag: "#0PP", opponentTag: "#H0ME" },
+      ],
+    });
+    expect(db.clanWarHistory.findMany.mock.calls[0][0].where).toMatchObject({
+      clanTag: "#H0ME",
+      warEndTime: { not: null },
+      warStartTime: { lt: activeStart },
+    });
+    expect(db.clanWarHistory.findMany.mock.calls[0][0].where.OR).toBeUndefined();
     expect((db as Record<string, unknown>).create).toBeUndefined();
     expect((db as Record<string, unknown>).update).toBeUndefined();
   });
