@@ -3251,6 +3251,132 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the reconciled war identity for the first Mail and Bases projection render", async () => {
+    const oldStartTime = "2026-05-12T18:00:00.000Z";
+    const liveStartTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: oldStartTime,
+        prepStartTimeIso: "2026-05-11T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: liveStartTime,
+        opponentTag: "#NEWOPP",
+        warId: 2002,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: liveStartTime,
+          warId: 2002,
+          opponentTag: "#NEWOPP",
+          syncNum: 102,
+          outcome: "LOSE",
+          lastKnownOutcome: "LOSE",
+        }),
+      ],
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#NEWOPP`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+    expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
+    expect(prismaMock.currentWar.upsert.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            update: expect.objectContaining({
+              startTime: new Date(liveStartTime),
+              opponentTag: "NEWOPP",
+              fwaPoints: null,
+              opponentFwaPoints: null,
+            }),
+          }),
+        ],
+      ]),
+    );
+  });
+
+  it("projects a newly created reconciled CurrentWar without a prior row", async () => {
+    const liveStartTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: liveStartTime,
+        opponentTag: "#NEWOPP",
+        warId: 2002,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: liveStartTime,
+          warId: 2002,
+          opponentTag: "#NEWOPP",
+          syncNum: 102,
+          outcome: "LOSE",
+          lastKnownOutcome: "LOSE",
+        }),
+      ],
+    }).cocService;
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#NEWOPP`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+    expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
+    expect(prismaMock.currentWar.upsert).toHaveBeenCalled();
+  });
+
   it("does not project Bases when reconciliation is unavailable for a different live war", async () => {
     const persistedStart = "2026-05-13T18:00:00.000Z";
     const cocService = configureSingleClanChecklistScenario({
