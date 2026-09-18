@@ -6035,8 +6035,38 @@ async function buildWarMailEmbedForTag(
     }
   }
 
-  let primaryBalance: number | null = null;
-  let opponentBalance: number | null = null;
+  const currentWarStoredIdentitySafe = canPreserveCurrentWarPointsForActiveWar({
+    currentWar: currentWarForRender,
+    activeWarId: warIdForSync,
+    activeWarStartTime: warStartTimeForSync,
+    activeOpponentTag: effectiveOpponentTag || null,
+  });
+  const syncStoredIdentitySafe =
+    syncRow !== null &&
+    canPreserveCurrentWarPointsForActiveWar({
+      currentWar: {
+        warId: syncRow.warId ?? null,
+        startTime: syncRow.warStartTime ?? null,
+        opponentTag: syncRow.opponentTag ?? null,
+      },
+      activeWarId: warIdForSync,
+      activeWarStartTime: warStartTimeForSync,
+      activeOpponentTag: effectiveOpponentTag || null,
+    });
+  const storedPrimaryBalance = currentWarStoredIdentitySafe
+    ? (currentWarRenderState.fwaPoints ??
+      (syncStoredIdentitySafe ? (syncRow?.clanPoints ?? null) : null))
+    : syncStoredIdentitySafe
+      ? syncRow?.clanPoints ?? null
+      : null;
+  const storedOpponentBalance = currentWarStoredIdentitySafe
+    ? (currentWarRenderState.opponentFwaPoints ??
+      (syncStoredIdentitySafe ? (syncRow?.opponentPoints ?? null) : null))
+    : syncStoredIdentitySafe
+      ? syncRow?.opponentPoints ?? null
+      : null;
+  let validatedPrimaryBalance: number | null = null;
+  let validatedOpponentBalance: number | null = null;
   let primarySnapshot: PointsSnapshot | null = null;
   let opponentSnapshot: PointsSnapshot | null = null;
   let pointsInference: MatchTypeResolution | null = null;
@@ -6080,15 +6110,6 @@ async function buildWarMailEmbedForTag(
         },
       },
     ).catch(() => null);
-    primaryBalance = primarySnapshot?.balance ?? null;
-    opponentBalance = opponentSnapshot?.balance ?? null;
-  } else {
-    primaryBalance =
-      currentWarRenderState.fwaPoints ?? syncRow?.clanPoints ?? null;
-    opponentBalance =
-      currentWarRenderState.opponentFwaPoints ??
-      syncRow?.opponentPoints ??
-      null;
   }
   const siteCurrentFromPrimary = Boolean(
     opponentTag &&
@@ -6104,15 +6125,21 @@ async function buildWarMailEmbedForTag(
       })
     : false;
   if (opponentTag) {
-    primaryBalance = resolveCurrentMatchupBalance(
+    validatedPrimaryBalance = resolveCurrentMatchupBalance(
       primarySnapshot,
       siteCurrent,
     );
-    opponentBalance = resolveCurrentMatchupBalance(
+    validatedOpponentBalance = resolveCurrentMatchupBalance(
       opponentSnapshot,
       siteCurrent,
     );
   }
+  const storedPointsFallbackAvailable =
+    options?.routine === true &&
+    (!routineDecision.allowed ||
+      (primarySnapshot === null && opponentSnapshot === null)) &&
+    storedPrimaryBalance !== null &&
+    storedOpponentBalance !== null;
   if (opponentTag) {
     const knownBlacklistEvidence = await findKnownBlacklistEvidence([opponentTag]);
     const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(
@@ -6239,8 +6266,8 @@ async function buildWarMailEmbedForTag(
     const derivedOutcome = deriveProjectedOutcome(
       normalizedTag,
       opponentTag,
-      primaryBalance,
-      opponentBalance,
+      validatedPrimaryBalance,
+      validatedOpponentBalance,
       finalResolvedCurrentSyncNum,
     );
     outcome = resolveFwaOutcomeFromCurrentWarState({
@@ -6456,6 +6483,13 @@ async function buildWarMailEmbedForTag(
     value: warStatsLines.join("\n"),
     inline: false,
   });
+  if (storedPointsFallbackAvailable) {
+    embed.addFields({
+      name: "Stored Points",
+      value: `${storedPrimaryBalance} - ${storedOpponentBalance} (current points unavailable)`,
+      inline: true,
+    });
+  }
   if (unavailableReasons.length > 0) {
     embed.addFields({
       name: "Warnings",
@@ -6489,6 +6523,8 @@ async function buildWarMailEmbedForTag(
     renderResult,
   };
 }
+
+export const buildWarMailEmbedForTagForTest = buildWarMailEmbedForTag;
 
 type FwaMailConfirmExpectedIdentity = Readonly<{
   guildId: string;
@@ -15943,7 +15979,10 @@ async function buildTrackedMatchOverview(
     });
     const displayPrimaryBalance = displayState.primaryBalance;
     const displayOpponentBalance = displayState.opponentBalance;
-    const hasPrimaryPoints = displayPrimaryBalance !== null;
+    const hasPrimarySnapshot =
+      primaryPoints !== null &&
+      primaryPoints.balance !== null &&
+      Number.isFinite(primaryPoints.balance);
     const usesEstimatedProjection = displayState.estimated;
     const usesDisplayOnlyProjection = displayState.displayOnlyFallback;
     const projectionWarningLine = displayState.warningLine;
@@ -16104,6 +16143,8 @@ async function buildTrackedMatchOverview(
       mailRevisionDecision.effectiveRevisionFields?.matchType === "MM"
         ? mailRevisionDecision.effectiveRevisionFields.matchType
         : matchType;
+    const usesFwaDisplayOnlyProjection =
+      effectiveMatchType === "FWA" && usesDisplayOnlyProjection;
     const projectedFwaOutcome =
       toWinLoseOutcome(liveExpectedOutcome) ?? toWinLoseOutcome(derivedOutcome);
     const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
@@ -16344,7 +16385,7 @@ async function buildTrackedMatchOverview(
         )
         .addFields(
           {
-            name: usesDisplayOnlyProjection
+            name: usesFwaDisplayOnlyProjection
               ? usesEstimatedProjection
                 ? "Estimated Points"
                 : "Persisted Points"
@@ -16354,8 +16395,8 @@ async function buildTrackedMatchOverview(
                 ? displayPrimaryBalance !== null && displayOpponentBalance !== null
                   ? `${clanName}: **${displayPrimaryBalance}**${clanWinnerMarker}\n${opponentName}: **${displayOpponentBalance}**${opponentWinnerMarker}`
                   : "Unavailable on both clans."
-                : hasPrimaryPoints
-                  ? `${clanName}: **${primaryPoints!.balance}**`
+                : hasPrimarySnapshot
+                  ? `${clanName}: **${primaryPoints?.balance}**`
                   : "Unavailable",
             inline: true,
           },
