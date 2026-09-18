@@ -77,6 +77,7 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
+  resolveSafeFwaPointsProjectionForTest,
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 
@@ -187,6 +188,98 @@ describe("/fwa match response normalization", () => {
       removedCount: 0,
       summaryLines: ["profile summary"],
     });
+  });
+
+  it("accepts only a complete same-sync persisted projection for display", async () => {
+    const resolveMatchup = vi.fn().mockResolvedValue({
+      clan: {
+        balance: 99,
+        coverage: "complete_reconstruction",
+        projectionSafe: true,
+        syncNumber: 102,
+        isEstimate: true,
+      },
+      opponent: {
+        balance: 101,
+        coverage: "complete_reconstruction",
+        projectionSafe: true,
+        syncNumber: 102,
+        isEstimate: true,
+      },
+    });
+
+    await expect(
+      resolveSafeFwaPointsProjectionForTest({
+        guildId: "guild-1",
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        activeWar: {
+          trackedClanTag: "#HOME",
+          warId: "game-war-102",
+          warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+          syncNumber: 102,
+          matchType: "FWA",
+          inferredMatchType: true,
+          warState: "inWar",
+        },
+        resolver: { resolveMatchup } as any,
+      }),
+    ).resolves.toEqual({
+      clanBalance: 99,
+      opponentBalance: 101,
+      estimated: true,
+    });
+    expect(resolveMatchup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unsafe coverage", { coverage: "last_known_unresolved_history", projectionSafe: false }, null],
+    ["different sync", { coverage: "complete_reconstruction", projectionSafe: true, syncNumber: 101 }, null],
+  ])("rejects a projection with %s", async (_label, override, expected) => {
+    const resolveMatchup = vi.fn().mockResolvedValue({
+      clan: { balance: 99, coverage: "complete_reconstruction", projectionSafe: true, syncNumber: 102, isEstimate: true, ...override },
+      opponent: { balance: 101, coverage: "complete_reconstruction", projectionSafe: true, syncNumber: 102, isEstimate: true },
+    });
+
+    await expect(
+      resolveSafeFwaPointsProjectionForTest({
+        guildId: "guild-1",
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        activeWar: {
+          trackedClanTag: "#HOME",
+          warId: "game-war-102",
+          warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+          syncNumber: 102,
+          matchType: "FWA",
+          inferredMatchType: true,
+          warState: "inWar",
+        },
+        resolver: { resolveMatchup } as any,
+      }),
+    ).resolves.toBe(expected);
+  });
+
+  it("does not resolve a projection when active sync identity is missing", async () => {
+    const resolveMatchup = vi.fn();
+    const result = await resolveSafeFwaPointsProjectionForTest({
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      opponentTag: "#OPP",
+      activeWar: {
+        trackedClanTag: "#HOME",
+        warId: "game-war-102",
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        syncNumber: null,
+        matchType: "FWA",
+        inferredMatchType: true,
+        warState: "inWar",
+      },
+      resolver: { resolveMatchup } as any,
+    });
+
+    expect(result).toBeNull();
+    expect(resolveMatchup).not.toHaveBeenCalled();
   });
 
   it("normalizes copy-paste into public visibility", () => {
