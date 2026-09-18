@@ -466,6 +466,8 @@ export function resolveFwaOutcomeFromPreparedEvidence(input: {
   currentOutcome?: string | null;
   currentOutcomeConfirmed?: boolean;
   projectedOutcome?: string | null;
+  /** True only when both balances were independently accepted for the live sync. */
+  projectedOutcomeIsSafeCurrentSync?: boolean;
   clanTag?: string | null;
   opponentTag?: string | null;
   storedSyncRow?: Pick<
@@ -499,6 +501,7 @@ export function resolveFwaOutcomeFromPreparedEvidence(input: {
       : null;
   return (
     confirmedCurrentOutcome ??
+    (input.projectedOutcomeIsSafeCurrentSync === true ? projectedOutcome : null) ??
     storedOutcome ??
     preparedProjection ??
     projectedOutcome ??

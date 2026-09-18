@@ -156,6 +156,7 @@ import { PointsSyncService } from "../services/PointsSyncService";
 import {
   chooseMatchTypeResolution,
   compareActiveWarIdentities,
+  deriveFwaProjectedOutcomeFromPreparedSync,
   inferMatchTypeFromOpponentPoints,
   resolveCurrentWarMatchTypeSignal,
   resolveMatchTypeFromStoredSyncRow,
@@ -166,6 +167,12 @@ import {
   type MatchTypeResolution,
   type MatchTypeResolutionSource,
 } from "../services/MatchTypeResolutionService";
+import {
+  PointsEstimateResolverService,
+  resolveSafeFwaPointsProjectionFromMatchup,
+  type PointsEstimateResult,
+  type ResolvedFwaPointsMatchup,
+} from "../services/PointsEstimateResolverService";
 import { knownBlacklistEvidenceService } from "../services/KnownBlacklistEvidenceService";
 import {
   PointsDirectFetchGateService,
@@ -243,7 +250,7 @@ import {
   getWinnerMarkerForSide,
   limitDiscordContent,
 } from "./fwa/matchUtils";
-import { compareTagsForTiebreak, getSyncMode } from "../helper/fwaProjection";
+import { getSyncMode } from "../helper/fwaProjection";
 import {
   resolveWarMailEmbedColor,
   type WarMailExpectedOutcome,
@@ -305,6 +312,7 @@ const MAILBOX_NOT_SENT_EMOJI = "📭";
 const postedMessageService = new PostedMessageService();
 const warMailLifecycleService = new WarMailLifecycleService();
 const pointsSyncService = new PointsSyncService();
+const pointsEstimateResolver = new PointsEstimateResolverService();
 const activeWarSyncResolutionService = new ActiveWarSyncResolutionService(
   pointsSyncService,
 );
@@ -2851,6 +2859,16 @@ type PointsSnapshot = {
 type PointsSnapshotCacheEntry = {
   snapshot: PointsSnapshot;
   expiresAtMs: number;
+  requestContext?: PointsSnapshotRequestContext | null;
+};
+
+type PointsSnapshotRequestContext = {
+  guildId?: string | null;
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+  currentSyncNumber?: number | null;
+  sourceSyncNumber?: number | null;
 };
 
 type SyncValidationState = {
@@ -3411,6 +3429,36 @@ function resolveRoutineBlockedPointsFetchSkipLogLevel(params: {
 function resetFwaSteadyStateLogTrackers(): void {
   fwaMatchTypeResolutionLogGate.clear();
   fwaRoutinePointsSkipLogGate.clear();
+  fwaMailOutcomeResolutionLogGate.clear();
+}
+
+type FwaMailOutcomeSource =
+  | "confirmed_current_war"
+  | "validated_current_website"
+  | "safe_persisted_projection"
+  | "unresolved";
+
+/** Purpose: emit one bounded diagnostic when the active FWA mail outcome source changes. */
+function logFwaMailOutcomeResolution(params: {
+  stage: "overview" | "mail_embed";
+  guildId: string | null | undefined;
+  clanTag: string;
+  opponentTag: string | null | undefined;
+  warId: string | number | null | undefined;
+  syncNumber: number | null | undefined;
+  source: FwaMailOutcomeSource;
+  outcome: "WIN" | "LOSE" | "UNKNOWN";
+}): void {
+  const identity = `fwa-mail-outcome|stage=${params.stage}|guild=${params.guildId ?? "none"}|clan=${normalizeTag(params.clanTag)}|war=${normalizeWarIdText(params.warId) ?? "unknown"}`;
+  const signature = `source=${params.source}|outcome=${params.outcome}|sync=${params.syncNumber ?? "unknown"}|opponent=${normalizeTag(String(params.opponentTag ?? ""))}`;
+  const level = resolveSteadyStateLogLevel({
+    gate: fwaMailOutcomeResolutionLogGate,
+    identity,
+    signature,
+  });
+  const line = `[fwa-mail-outcome] stage=${params.stage} guild=${params.guildId ?? "none"} clan=#${normalizeTag(params.clanTag)} opponent=#${normalizeTag(String(params.opponentTag ?? "")) || "unknown"} war_id=${normalizeWarIdText(params.warId) ?? "unknown"} sync=${params.syncNumber ?? "unknown"} source=${params.source} outcome=${params.outcome}`;
+  if (level === "info") console.info(line);
+  else console.debug(line);
 }
 
 /** Purpose: emit structured logs for match-type source/inference/confirmation decisions. */
@@ -3546,6 +3594,7 @@ const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
 const fwaMatchTypeResolutionLogGate = new SteadyStateLogGate();
 const fwaRoutinePointsSkipLogGate = new SteadyStateLogGate();
+const fwaMailOutcomeResolutionLogGate = new SteadyStateLogGate();
 
 export function setFwaBaseSwapSplitPostPayloadForTest(
   key: string,
@@ -5740,6 +5789,10 @@ async function buildWarMailEmbedForTag(
     targetedWarReconcileClient?: Client | null;
     activeCycleSyncNumber?: number | null;
     activeCycleConflict?: boolean;
+    pointsEstimateResolver?: Pick<
+      PointsEstimateResolverService,
+      "resolveMatchup"
+    >;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -6019,8 +6072,38 @@ async function buildWarMailEmbedForTag(
     }
   }
 
-  let primaryBalance: number | null = null;
-  let opponentBalance: number | null = null;
+  const currentWarStoredIdentitySafe = canPreserveCurrentWarPointsForActiveWar({
+    currentWar: currentWarForRender,
+    activeWarId: warIdForSync,
+    activeWarStartTime: warStartTimeForSync,
+    activeOpponentTag: effectiveOpponentTag || null,
+  });
+  const syncStoredIdentitySafe =
+    syncRow !== null &&
+    canPreserveCurrentWarPointsForActiveWar({
+      currentWar: {
+        warId: syncRow.warId ?? null,
+        startTime: syncRow.warStartTime ?? null,
+        opponentTag: syncRow.opponentTag ?? null,
+      },
+      activeWarId: warIdForSync,
+      activeWarStartTime: warStartTimeForSync,
+      activeOpponentTag: effectiveOpponentTag || null,
+    });
+  const storedPrimaryBalance = currentWarStoredIdentitySafe
+    ? (currentWarRenderState.fwaPoints ??
+      (syncStoredIdentitySafe ? (syncRow?.clanPoints ?? null) : null))
+    : syncStoredIdentitySafe
+      ? syncRow?.clanPoints ?? null
+      : null;
+  const storedOpponentBalance = currentWarStoredIdentitySafe
+    ? (currentWarRenderState.opponentFwaPoints ??
+      (syncStoredIdentitySafe ? (syncRow?.opponentPoints ?? null) : null))
+    : syncStoredIdentitySafe
+      ? syncRow?.opponentPoints ?? null
+      : null;
+  let validatedPrimaryBalance: number | null = null;
+  let validatedOpponentBalance: number | null = null;
   let primarySnapshot: PointsSnapshot | null = null;
   let opponentSnapshot: PointsSnapshot | null = null;
   let pointsInference: MatchTypeResolution | null = null;
@@ -6032,7 +6115,16 @@ async function buildWarMailEmbedForTag(
       resolvedCurrentSyncNum,
       undefined,
       {
+        requiredOpponentTag: opponentTag,
         fetchReason,
+        warContext: {
+          guildId,
+          warId: warIdForSync,
+          warStartTime: warStartTimeForSync,
+          opponentTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
     opponentSnapshot = await getClanPointsCached(
@@ -6042,19 +6134,19 @@ async function buildWarMailEmbedForTag(
       resolvedCurrentSyncNum,
       undefined,
       {
+        requiredOpponentTag: normalizedTag,
         fetchReason,
         fallbackTrackedClanTag: normalizedTag,
+        warContext: {
+          guildId,
+          warId: warIdForSync,
+          warStartTime: warStartTimeForSync,
+          opponentTag: normalizedTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
-    primaryBalance = primarySnapshot?.balance ?? null;
-    opponentBalance = opponentSnapshot?.balance ?? null;
-  } else {
-    primaryBalance =
-      currentWarRenderState.fwaPoints ?? syncRow?.clanPoints ?? null;
-    opponentBalance =
-      currentWarRenderState.opponentFwaPoints ??
-      syncRow?.opponentPoints ??
-      null;
   }
   const siteCurrentFromPrimary = Boolean(
     opponentTag &&
@@ -6069,6 +6161,21 @@ async function buildWarMailEmbedForTag(
         sourceSync,
       })
     : false;
+  if (opponentTag) {
+    validatedPrimaryBalance = resolveCurrentMatchupBalance(
+      primarySnapshot,
+      siteCurrent,
+    );
+    validatedOpponentBalance = resolveCurrentMatchupBalance(
+      opponentSnapshot,
+      siteCurrent,
+    );
+  }
+  const storedPointsFallbackAvailable =
+    options?.routine === true &&
+    !siteCurrent &&
+    storedPrimaryBalance !== null &&
+    storedOpponentBalance !== null;
   if (opponentTag) {
     const knownBlacklistEvidence = await findKnownBlacklistEvidence([opponentTag]);
     const winnerBoxNotMarkedFwa = hasWinnerBoxNotMarkedFwaSignal(
@@ -6192,18 +6299,70 @@ async function buildWarMailEmbedForTag(
       warStartTime: warStartTimeForSync,
       activeCycleConflict: activeWarSyncConflict,
     });
+    const safeFwaPointsProjection =
+      !siteCurrent && matchType === "FWA" && warStartTimeForSync
+        ? await resolveSafeFwaPointsProjection({
+            guildId,
+            clanTag: normalizedTag,
+            opponentTag,
+            activeWar: {
+              trackedClanTag: normalizedTag,
+              warId: warIdForSync,
+              warStartTime: warStartTimeForSync,
+              prepStartTime: preparationStartTimeForSync,
+              syncNumber: finalResolvedCurrentSyncNum,
+              matchType,
+              inferredMatchType,
+              warState,
+            },
+            resolver: options?.pointsEstimateResolver,
+          }).catch((error) => {
+            console.debug(
+              `[fwa-points-estimate] stage=mail_embed outcome=unavailable clan=#${normalizedTag} opponent=#${opponentTag} error=${String(error)}`,
+            );
+            return null;
+          })
+        : null;
+    const safeProjectedOutcome = safeFwaPointsProjection
+      ? deriveProjectedOutcome(
+          normalizedTag,
+          opponentTag,
+          safeFwaPointsProjection.clanBalance,
+          safeFwaPointsProjection.opponentBalance,
+          finalResolvedCurrentSyncNum,
+        )
+      : null;
     const derivedOutcome = deriveProjectedOutcome(
       normalizedTag,
       opponentTag,
-      primaryBalance,
-      opponentBalance,
+      validatedPrimaryBalance,
+      validatedOpponentBalance,
       finalResolvedCurrentSyncNum,
     );
     outcome = resolveFwaOutcomeFromCurrentWarState({
       matchType,
       currentWarOutcome: currentWarRenderState.outcome,
       currentWarOutcomeConfirmed: appliedResolution?.confirmed === true,
-      projectedOutcome: derivedOutcome,
+      projectedOutcome: siteCurrent ? derivedOutcome : safeProjectedOutcome,
+    });
+    const outcomeSource: FwaMailOutcomeSource =
+      appliedResolution?.confirmed === true &&
+      toWinLoseOutcome(currentWarRenderState.outcome) !== null
+        ? "confirmed_current_war"
+        : siteCurrent && toWinLoseOutcome(outcome) !== null
+          ? "validated_current_website"
+          : safeProjectedOutcome !== null
+            ? "safe_persisted_projection"
+            : "unresolved";
+    logFwaMailOutcomeResolution({
+      stage: "mail_embed",
+      guildId,
+      clanTag: normalizedTag,
+      opponentTag,
+      warId: warIdForSync,
+      syncNumber: finalResolvedCurrentSyncNum,
+      source: outcomeSource,
+      outcome: toWinLoseOutcome(outcome) ?? "UNKNOWN",
     });
     if (
       siteCurrent &&
@@ -6412,6 +6571,13 @@ async function buildWarMailEmbedForTag(
     value: warStatsLines.join("\n"),
     inline: false,
   });
+  if (storedPointsFallbackAvailable) {
+    embed.addFields({
+      name: "Stored Points",
+      value: `${storedPrimaryBalance} - ${storedOpponentBalance} (current points unavailable)`,
+      inline: true,
+    });
+  }
   if (unavailableReasons.length > 0) {
     embed.addFields({
       name: "Warnings",
@@ -6445,6 +6611,8 @@ async function buildWarMailEmbedForTag(
     renderResult,
   };
 }
+
+export const buildWarMailEmbedForTagForTest = buildWarMailEmbedForTag;
 
 type FwaMailConfirmExpectedIdentity = Readonly<{
   guildId: string;
@@ -12964,6 +13132,36 @@ export const resolveForceSyncMatchupEvidenceForTest =
   resolveForceSyncMatchupEvidence;
 export const isPointsValidationCurrentForMatchupForTest =
   isPointsValidationCurrentForMatchup;
+export const isPointsSnapshotEligibleForOpponentForTest =
+  isPointsSnapshotEligibleForOpponent;
+export const classifyPointsSnapshotMatchupForTest =
+  classifyPointsSnapshotMatchup;
+export const resolveCurrentMatchupBalanceForTest =
+  resolveCurrentMatchupBalance;
+export const canPreserveCurrentWarPointsForActiveWarForTest =
+  canPreserveCurrentWarPointsForActiveWar;
+export const buildCurrentWarPointsUpdateForTest = buildCurrentWarPointsUpdate;
+export const buildPointsSnapshotRequestKeyForTest =
+  buildPointsSnapshotRequestKey;
+export const getClanPointsCachedForTest = getClanPointsCached;
+/** Purpose: isolate points cache state between cache behavior tests. */
+export function clearPointsSnapshotCachesForTest(): void {
+  pointsSnapshotCache.clear();
+  pointsSnapshotInFlight.clear();
+}
+/** Purpose: seed one points cache entry for deterministic cache behavior tests. */
+export function setPointsSnapshotCacheForTest(input: {
+  tag: string;
+  snapshot: PointsSnapshot;
+  expiresAtMs?: number;
+  requestContext?: PointsSnapshotRequestContext | null;
+}): void {
+  pointsSnapshotCache.set(normalizeTag(input.tag), {
+    snapshot: input.snapshot,
+    expiresAtMs: input.expiresAtMs ?? Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+    requestContext: normalizePointsSnapshotRequestContext(input.requestContext),
+  });
+}
 export const shouldHydrateAlliancePayloadForTest = shouldHydrateAlliancePayload;
 export const resolveCurrentWarSyncIdentityForTest =
   resolveCurrentWarSyncIdentity;
@@ -13755,6 +13953,7 @@ type ClanPointsFetchOptions = {
   fetchReason?: PointsApiFetchReason;
   warScopedSnapshot?: PointsSnapshot | null;
   fallbackTrackedClanTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
 };
 
 type WarScopedSyncReuseDbRow = WarScopedSyncReuseRow & {
@@ -13859,9 +14058,75 @@ function resolveWarScopedSnapshotForMatch(input: {
 async function getPersistedPointsSnapshotFallback(
   clanTag: string,
   requiredOpponentTag?: string | null,
+  warContext?: PointsSnapshotRequestContext | null,
 ): Promise<PointsSnapshot | null> {
   const normalizedTag = normalizeTag(clanTag);
-  const normalizedOpponentTag = normalizeTag(String(requiredOpponentTag ?? ""));
+  const normalizedContext = normalizePointsSnapshotRequestContext(warContext);
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? normalizedContext?.opponentTag ?? ""),
+  );
+  if (normalizedOpponentTag && hasWarIdentity(normalizedContext)) {
+    if (!normalizedContext?.guildId) return null;
+    const warIdentityFilters = [
+      normalizedContext.warStartTime
+        ? { warStartTime: normalizedContext.warStartTime }
+        : null,
+      normalizedContext.warId
+        ? { warId: String(normalizedContext.warId) }
+        : null,
+    ].filter(
+      (clause): clause is NonNullable<typeof clause> => clause !== null,
+    );
+    if (warIdentityFilters.length === 0) return null;
+
+    const rows = await prisma.clanPointsSync.findMany({
+      where: {
+        guildId: normalizedContext.guildId,
+        clanTag: `#${normalizedTag}`,
+        opponentTag: `#${normalizedOpponentTag}`,
+        needsValidation: false,
+        OR: warIdentityFilters,
+      },
+      select: {
+        warId: true,
+        warStartTime: true,
+        syncNum: true,
+        lastKnownSyncNumber: true,
+        opponentTag: true,
+        clanPoints: true,
+        opponentPoints: true,
+        isFwa: true,
+        needsValidation: true,
+        lastSuccessfulPointsApiFetchAt: true,
+        syncFetchedAt: true,
+      },
+      orderBy: [
+        { warStartTime: "desc" },
+        { syncFetchedAt: "desc" },
+        { updatedAt: "desc" },
+      ],
+    });
+    const reusableRow = selectWarScopedReuseRow({
+      rows,
+      warId: normalizedContext.warId
+        ? String(normalizedContext.warId)
+        : null,
+      warStartTime: normalizedContext.warStartTime ?? null,
+      opponentTag: normalizedOpponentTag,
+      currentSyncNumber: normalizedContext.currentSyncNumber ?? null,
+      sourceSyncNumber: normalizedContext.sourceSyncNumber ?? null,
+    });
+    if (!reusableRow) return null;
+    return buildPointsSnapshotFromWarScopedSyncRow({
+      clanTag: normalizedTag,
+      row: reusableRow,
+    });
+  }
+
+  // Non-war callers retain the historical latest-row behavior. A scoped
+  // matchup request without an established active identity must not turn a
+  // historical row into current-war evidence.
+  if (normalizedOpponentTag) return null;
   const row = await prisma.clanPointsSync.findFirst({
     where: {
       clanTag: `#${normalizedTag}`,
@@ -13890,7 +14155,7 @@ async function getPersistedPointsSnapshotFallback(
     ],
   });
   if (!row) return null;
-  return buildPointsSnapshotFromWarScopedSyncRow({
+  const snapshot = buildPointsSnapshotFromWarScopedSyncRow({
     clanTag: normalizedTag,
     row: {
       warId: row.warId ?? null,
@@ -13906,6 +14171,489 @@ async function getPersistedPointsSnapshotFallback(
       syncFetchedAt: row.syncFetchedAt,
     },
   });
+  return snapshot;
+}
+
+/** Purpose: determine whether a points snapshot proves the requested opponent matchup. */
+type PointsSnapshotMatchupEligibility =
+  | "matchup_current"
+  | "clan_not_found"
+  | "mismatched";
+
+/** Purpose: classify whether a snapshot can satisfy a requested matchup without treating not-found as matchup proof. */
+function classifyPointsSnapshotMatchup(
+  snapshot: PointsSnapshot | null,
+  requiredOpponentTag?: string | null,
+): PointsSnapshotMatchupEligibility {
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? ""),
+  );
+  if (!normalizedOpponentTag) return "matchup_current";
+  if (snapshot === null) return "mismatched";
+  if (
+    snapshot.snapshotSource === "direct" &&
+    snapshot.lookupState === "clan_not_found" &&
+    snapshot.notFound === true
+  ) {
+    return "clan_not_found";
+  }
+  if (!isPointsSiteUpdatedForOpponent(snapshot, normalizedOpponentTag, null)) {
+    return "mismatched";
+  }
+
+  const snapshotTag = normalizeTag(snapshot.tag);
+  const headerPrimaryTag = normalizeTag(
+    String(snapshot.headerPrimaryTag ?? ""),
+  );
+  const headerOpponentTag = normalizeTag(
+    String(snapshot.headerOpponentTag ?? ""),
+  );
+  if (!headerPrimaryTag || !headerOpponentTag || !snapshotTag) {
+    return "matchup_current";
+  }
+  return (
+    (headerPrimaryTag === snapshotTag &&
+      headerOpponentTag === normalizedOpponentTag) ||
+    (headerOpponentTag === snapshotTag &&
+      headerPrimaryTag === normalizedOpponentTag)
+  )
+    ? "matchup_current"
+    : "mismatched";
+}
+
+/** Purpose: determine whether a points snapshot can be reused for the requested opponent. */
+function isPointsSnapshotEligibleForOpponent(
+  snapshot: PointsSnapshot | null,
+  requiredOpponentTag?: string | null,
+): boolean {
+  return classifyPointsSnapshotMatchup(snapshot, requiredOpponentTag) !==
+    "mismatched";
+}
+
+/** Purpose: normalize the active-war and sync context attached to a points request. */
+function normalizePointsSnapshotRequestContext(
+  context?: PointsSnapshotRequestContext | null,
+): PointsSnapshotRequestContext | null {
+  if (!context) return null;
+  const warId =
+    context.warId !== null &&
+    context.warId !== undefined &&
+    String(context.warId).trim().length > 0
+      ? String(context.warId).trim()
+      : null;
+  const warStartTime =
+    context.warStartTime instanceof Date &&
+    Number.isFinite(context.warStartTime.getTime())
+      ? context.warStartTime
+      : null;
+  const opponentTag = normalizeTag(String(context.opponentTag ?? "")) || null;
+  const toSync = (value: number | null | undefined): number | null =>
+    value !== null && value !== undefined && Number.isFinite(value)
+      ? Math.trunc(value)
+      : null;
+  return {
+    guildId: context.guildId?.trim() || null,
+    warId,
+    warStartTime,
+    opponentTag,
+    currentSyncNumber: toSync(context.currentSyncNumber),
+    sourceSyncNumber: toSync(context.sourceSyncNumber),
+  };
+}
+
+/** Purpose: require an established active-war identity before using persisted matchup history. */
+function hasWarIdentity(
+  context: PointsSnapshotRequestContext | null | undefined,
+): boolean {
+  return Boolean(context?.warStartTime || context?.warId);
+}
+
+/** Purpose: compare war identity using the same start-time-first, war-ID fallback used by persisted reuse. */
+function isSamePointsWarContext(
+  stored: PointsSnapshotRequestContext | null | undefined,
+  requested: PointsSnapshotRequestContext | null | undefined,
+): boolean {
+  if (!stored || !requested) return false;
+  if (stored.warStartTime && requested.warStartTime) {
+    return stored.warStartTime.getTime() === requested.warStartTime.getTime();
+  }
+  if (stored.warId && requested.warId) {
+    return stored.warId === requested.warId;
+  }
+  return false;
+}
+
+/** Purpose: use only sync evidence present in a raw points snapshot for active-war cache reuse. */
+function isPointsSnapshotSyncCompatible(
+  snapshot: PointsSnapshot,
+  context: PointsSnapshotRequestContext,
+): boolean {
+  const observedSync =
+    snapshot.winnerBoxSync !== null &&
+    snapshot.winnerBoxSync !== undefined &&
+    Number.isFinite(snapshot.winnerBoxSync)
+      ? Math.trunc(snapshot.winnerBoxSync)
+      : snapshot.effectiveSync !== null &&
+          snapshot.effectiveSync !== undefined &&
+          Number.isFinite(snapshot.effectiveSync)
+        ? Math.trunc(snapshot.effectiveSync)
+        : null;
+  if (context.currentSyncNumber !== null && context.currentSyncNumber !== undefined) {
+    return observedSync === context.currentSyncNumber;
+  }
+  return (
+    observedSync !== null &&
+    context.sourceSyncNumber !== null &&
+    context.sourceSyncNumber !== undefined &&
+    observedSync > context.sourceSyncNumber
+  );
+}
+
+/** Purpose: validate matchup, war identity, and sync before reusing any cached snapshot. */
+function isPointsSnapshotEligibleForRequest(input: {
+  snapshot: PointsSnapshot | null;
+  requiredOpponentTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
+  storedContext?: PointsSnapshotRequestContext | null;
+  allowFreshNotFound?: boolean;
+}): boolean {
+  const context = normalizePointsSnapshotRequestContext(input.warContext);
+  const scopedRequest = input.warContext !== null && input.warContext !== undefined;
+  const requiredOpponentTag = normalizeTag(
+    String(input.requiredOpponentTag ?? context?.opponentTag ?? ""),
+  );
+  const matchup = classifyPointsSnapshotMatchup(
+    input.snapshot,
+    requiredOpponentTag,
+  );
+  if (matchup === "mismatched") return false;
+  if (!context) return true;
+  // A supplied context with no active-war identity is still scoped. Only a
+  // fresh direct not-found fetch may proceed without historical provenance;
+  // cached and stale reuse must fail closed.
+  if (!hasWarIdentity(context)) {
+    return (
+      scopedRequest &&
+      input.storedContext === undefined &&
+      input.allowFreshNotFound === true &&
+      matchup === "clan_not_found"
+    );
+  }
+  // A scoped cache/stale entry created by an unscoped points read has no
+  // provenance tying it to this active war.
+  if (scopedRequest && input.storedContext === null) return false;
+  if (
+    input.storedContext &&
+    (!isSamePointsWarContext(input.storedContext, context) ||
+      (normalizeTag(String(input.storedContext.opponentTag ?? "")) &&
+        requiredOpponentTag &&
+        normalizeTag(String(input.storedContext.opponentTag ?? "")) !==
+          requiredOpponentTag) ||
+      (context?.currentSyncNumber !== null &&
+        context?.currentSyncNumber !== undefined &&
+        input.storedContext.currentSyncNumber !== context.currentSyncNumber) ||
+      (context?.currentSyncNumber === null &&
+        context?.sourceSyncNumber !== null &&
+        context?.sourceSyncNumber !== undefined &&
+        input.storedContext.currentSyncNumber === null &&
+        input.storedContext.sourceSyncNumber !== context.sourceSyncNumber))
+  ) {
+    return false;
+  }
+  // A direct fetch may prove that the requested page is absent without
+  // carrying war/sync tags. Reused not-found evidence must still be scoped to
+  // the active war and compatible sync before it can influence inference.
+  if (matchup === "clan_not_found") {
+    if (
+      input.storedContext &&
+      context.currentSyncNumber === null &&
+      context.sourceSyncNumber !== null &&
+      context.sourceSyncNumber !== undefined &&
+      input.storedContext.currentSyncNumber !== null &&
+      input.storedContext.currentSyncNumber !== undefined &&
+      input.storedContext.currentSyncNumber <= context.sourceSyncNumber
+    ) {
+      return false;
+    }
+    return input.allowFreshNotFound === true || input.storedContext != null;
+  }
+  return (
+    input.snapshot !== null &&
+    isPointsSnapshotSyncCompatible(input.snapshot, context)
+  );
+}
+
+/** Purpose: reject a successfully fetched snapshot that does not prove the requested matchup before caching it. */
+function validateFetchedPointsSnapshot(
+  snapshot: PointsSnapshot,
+  clanTag: string,
+  requiredOpponentTag: string,
+  warContext?: PointsSnapshotRequestContext | null,
+): PointsSnapshot {
+  const eligibility = classifyPointsSnapshotMatchup(
+    snapshot,
+    requiredOpponentTag,
+  );
+  if (
+    eligibility !== "mismatched" &&
+    isPointsSnapshotEligibleForRequest({
+      snapshot,
+      requiredOpponentTag,
+      warContext,
+      allowFreshNotFound: true,
+    })
+  ) {
+    return snapshot;
+  }
+  const rejectionCode =
+    eligibility === "mismatched" ? "MATCHUP_MISMATCH" : "WAR_SYNC_MISMATCH";
+  recordFetchEvent({
+    namespace: "points",
+    operation: "clan_points_snapshot",
+    source: "web",
+    detail: `tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=${rejectionCode.toLowerCase()}`,
+    status: "failure",
+    errorCategory: "validation",
+    errorCode: rejectionCode,
+  });
+  console.info(
+    `[points-fetch] source=web tag=${clanTag} required_opponent=${requiredOpponentTag} rejected=${rejectionCode.toLowerCase()}`,
+  );
+  throw new Error(
+    eligibility === "mismatched"
+      ? `Points snapshot for #${clanTag} did not prove opponent #${requiredOpponentTag}.`
+      : `Points snapshot for #${clanTag} did not prove the active war sync for opponent #${requiredOpponentTag}.`,
+  );
+}
+
+/** Purpose: suppress balances unless the points snapshots prove the current matchup. */
+function resolveCurrentMatchupBalance(
+  snapshot: Pick<PointsSnapshot, "balance"> | null,
+  siteCurrent: boolean,
+): number | null {
+  if (
+    !siteCurrent ||
+    snapshot === null ||
+    snapshot.balance === null ||
+    !Number.isFinite(snapshot.balance)
+  ) {
+    return null;
+  }
+  return Math.trunc(snapshot.balance);
+}
+
+/** Purpose: preserve CurrentWar point materialization only for a proven same-war row. */
+function canPreserveCurrentWarPointsForActiveWar(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+}): boolean {
+  if (
+    !input.currentWar ||
+    !(input.currentWar.startTime instanceof Date) ||
+    !input.activeWarStartTime ||
+    !input.activeOpponentTag
+  ) {
+    return false;
+  }
+  return compareActiveWarIdentities({
+    persisted: {
+      warId: input.currentWar.warId ?? null,
+      warStartTime: input.currentWar.startTime,
+      opponentTag: input.currentWar.opponentTag ?? null,
+    },
+    active: {
+      warId: input.activeWarId,
+      warStartTime: input.activeWarStartTime,
+      opponentTag: input.activeOpponentTag,
+    },
+  }).sameWar;
+}
+
+/** Purpose: build the CurrentWar point write without allowing unavailable evidence to erase a proven same-war value. */
+function buildCurrentWarPointsUpdate(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+  currentPrimaryBalance: number | null;
+  currentOpponentBalance: number | null;
+}): {
+  fwaPoints: number | null | undefined;
+  opponentFwaPoints: number | null | undefined;
+  warStartFwaPoints: { set: number } | undefined;
+} {
+  const preserveCurrentWarPoints =
+    input.currentPrimaryBalance === null &&
+    input.currentOpponentBalance === null &&
+    canPreserveCurrentWarPointsForActiveWar(input);
+  return {
+    fwaPoints: preserveCurrentWarPoints ? undefined : input.currentPrimaryBalance,
+    opponentFwaPoints: preserveCurrentWarPoints
+      ? undefined
+      : input.currentOpponentBalance,
+    warStartFwaPoints: preserveCurrentWarPoints
+      ? undefined
+      : input.currentPrimaryBalance !== null
+        ? { set: input.currentPrimaryBalance }
+        : undefined,
+  };
+}
+
+/** Purpose: retain already-loaded same-war balances for diagnostics after a resolver read failure. */
+function resolveFwaStoredParticipantEvidence(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    fwaPoints?: number | null;
+    opponentFwaPoints?: number | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+  sameWarSyncRow: WarScopedSyncReuseRow | null;
+}): {
+  clan: FwaStoredParticipantEvidence;
+  opponent: FwaStoredParticipantEvidence;
+} {
+  const empty = (): FwaStoredParticipantEvidence => ({
+    balance: null,
+    label: null,
+  });
+  const clan = empty();
+  const opponent = empty();
+  const isFiniteBalance = (value: number | null | undefined): value is number =>
+    value !== null && value !== undefined && Number.isFinite(Number(value));
+
+  if (
+    canPreserveCurrentWarPointsForActiveWar({
+      currentWar: input.currentWar,
+      activeWarId: input.activeWarId,
+      activeWarStartTime: input.activeWarStartTime,
+      activeOpponentTag: input.activeOpponentTag,
+    })
+  ) {
+    if (isFiniteBalance(input.currentWar?.fwaPoints)) {
+      clan.balance = Math.trunc(Number(input.currentWar.fwaPoints));
+      clan.label = "Last known, stored CurrentWar";
+    }
+    if (isFiniteBalance(input.currentWar?.opponentFwaPoints)) {
+      opponent.balance = Math.trunc(Number(input.currentWar.opponentFwaPoints));
+      opponent.label = "Last known, stored CurrentWar";
+    }
+  }
+
+  const row = input.sameWarSyncRow;
+  if (row && !row.needsValidation) {
+    const syncLabel = Number.isFinite(Number(row.syncNum))
+      ? `, sync #${Math.trunc(Number(row.syncNum))}`
+      : "";
+    if (clan.balance === null && isFiniteBalance(row.clanPoints)) {
+      clan.balance = Math.trunc(Number(row.clanPoints));
+      clan.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+    if (opponent.balance === null && isFiniteBalance(row.opponentPoints)) {
+      opponent.balance = Math.trunc(Number(row.opponentPoints));
+      opponent.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+  }
+
+  return { clan, opponent };
+}
+
+/** Purpose: preserve explicit opponent-not-found handling by deriving a proven snapshot from the tracked clan page. */
+async function resolveTrackedClanFallbackSnapshot(input: {
+  settings: SettingsService;
+  cocService: CoCService;
+  requestedClanTag: string;
+  sourceSync: number | null;
+  warLookupCache?: WarLookupCache;
+  reason: PointsApiFetchReason;
+  fallbackTrackedClanTag?: string | null;
+  warContext?: PointsSnapshotRequestContext | null;
+  snapshot: PointsSnapshot;
+}): Promise<PointsSnapshot> {
+  const fallbackTrackedClanTag = normalizeTag(
+    String(input.fallbackTrackedClanTag ?? ""),
+  );
+  if (
+    !input.snapshot.notFound ||
+    !fallbackTrackedClanTag ||
+    fallbackTrackedClanTag === input.requestedClanTag
+  ) {
+    return input.snapshot;
+  }
+
+  const trackedSnapshot = await getClanPointsCached(
+    input.settings,
+    input.cocService,
+    fallbackTrackedClanTag,
+    input.sourceSync,
+    input.warLookupCache,
+    {
+      fetchReason: input.reason,
+      warContext: input.warContext
+        ? {
+            ...input.warContext,
+            opponentTag: input.requestedClanTag,
+          }
+        : null,
+    },
+  ).catch(() => null);
+  const fallback = buildOpponentSnapshotFromTrackedClanFallback({
+    requestedOpponentTag: input.requestedClanTag,
+    trackedClanTag: fallbackTrackedClanTag,
+    trackedSnapshot,
+  });
+  console.info(
+    `[fwa-points-fallback] path=tracked_clan_page requested=#${input.requestedClanTag} tracked=#${fallbackTrackedClanTag} extracted_opponent=${fallback.extractedOpponentTag ? `#${fallback.extractedOpponentTag}` : "unknown"} current=${fallback.currentForWar ? "1" : "0"} applied=${fallback.snapshot ? "1" : "0"}`,
+  );
+  if (!fallback.snapshot) {
+    recordFetchEvent({
+      namespace: "points",
+      operation: "clan_points_snapshot",
+      source: "fallback_cache",
+      detail: `tag=${input.requestedClanTag} reason=${input.reason} fallback=tracked_clan_page current=0`,
+    });
+    return input.snapshot;
+  }
+
+  recordFetchEvent({
+    namespace: "points",
+    operation: "clan_points_snapshot",
+    source: "fallback_cache",
+    detail: `tag=${input.requestedClanTag} reason=${input.reason} fallback=tracked_clan_page current=1`,
+  });
+  return fallback.snapshot;
+}
+
+/** Purpose: keep concurrent points fetch reuse isolated to the requested matchup. */
+function buildPointsSnapshotRequestKey(
+  clanTag: string,
+  requiredOpponentTag?: string | null,
+  warContext?: PointsSnapshotRequestContext | null,
+): string {
+  const context = normalizePointsSnapshotRequestContext(warContext);
+  const normalizedOpponentTag = normalizeTag(
+    String(requiredOpponentTag ?? context?.opponentTag ?? ""),
+  );
+  const warStart = context?.warStartTime?.getTime() ?? "";
+  const sourceSync =
+    context?.currentSyncNumber === null ||
+    context?.currentSyncNumber === undefined
+      ? context?.sourceSyncNumber ?? ""
+      : "";
+  return `${normalizeTag(clanTag)}|opponent=${normalizedOpponentTag}|guild=${context?.guildId ?? ""}|war=${context?.warId ?? ""}|start=${warStart}|current=${context?.currentSyncNumber ?? ""}|source=${sourceSync}`;
 }
 
 async function getClanPointsCached(
@@ -13919,8 +14667,23 @@ async function getClanPointsCached(
   const normalizedTag = normalizeTag(tag);
   const reason = options?.fetchReason ?? "match_render";
   const now = Date.now();
+  const warContext = normalizePointsSnapshotRequestContext(
+    options?.warContext,
+  );
+  const requiredOpponentTag = normalizeTag(
+    String(options?.requiredOpponentTag ?? warContext?.opponentTag ?? ""),
+  );
   const cached = pointsSnapshotCache.get(normalizedTag);
-  if (cached && cached.expiresAtMs > now) {
+  if (
+    cached &&
+    cached.expiresAtMs > now &&
+    isPointsSnapshotEligibleForRequest({
+      snapshot: cached.snapshot,
+      requiredOpponentTag,
+      warContext: options?.warContext,
+      storedContext: cached.requestContext ?? null,
+    })
+  ) {
     recordFetchEvent({
       namespace: "points",
       operation: "clan_points_snapshot",
@@ -13931,14 +14694,14 @@ async function getClanPointsCached(
   }
 
   const warScopedSnapshotRaw = options?.warScopedSnapshot ?? null;
-  const requiredOpponentTag = normalizeTag(
-    String(options?.requiredOpponentTag ?? ""),
-  );
   const warScopedSnapshot =
     warScopedSnapshotRaw &&
-    (!requiredOpponentTag ||
-      normalizeTag(String(warScopedSnapshotRaw.headerOpponentTag ?? "")) ===
-        requiredOpponentTag)
+    isPointsSnapshotEligibleForRequest({
+      snapshot: warScopedSnapshotRaw,
+      requiredOpponentTag,
+      warContext: options?.warContext,
+      storedContext: warContext,
+    })
       ? warScopedSnapshotRaw
       : null;
   if (warScopedSnapshot) {
@@ -13951,6 +14714,7 @@ async function getClanPointsCached(
     pointsSnapshotCache.set(normalizedTag, {
       snapshot: warScopedSnapshot,
       expiresAtMs: now + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      requestContext: warContext,
     });
     console.info(
       `[points-fetch] source=persisted tag=${normalizedTag} reason=${reason} reuse=war_scoped_persisted`,
@@ -13958,7 +14722,12 @@ async function getClanPointsCached(
     return applySourceSync(warScopedSnapshot, sourceSync);
   }
 
-  const existingPending = pointsSnapshotInFlight.get(normalizedTag);
+  const requestKey = buildPointsSnapshotRequestKey(
+    normalizedTag,
+    requiredOpponentTag,
+    warContext,
+  );
+  const existingPending = pointsSnapshotInFlight.get(requestKey);
   if (existingPending) {
     recordFetchEvent({
       namespace: "points",
@@ -13966,8 +14735,31 @@ async function getClanPointsCached(
       source: "fallback_cache",
       detail: `tag=${normalizedTag} reason=${reason}`,
     });
-    const snapshot = await existingPending;
-    return applySourceSync(snapshot, sourceSync);
+    const snapshot = validateFetchedPointsSnapshot(
+      await existingPending,
+      normalizedTag,
+      requiredOpponentTag,
+      warContext,
+    );
+    const resolvedSnapshot = await resolveTrackedClanFallbackSnapshot({
+      settings: _settings,
+      cocService: _cocService,
+      requestedClanTag: normalizedTag,
+      sourceSync,
+      warLookupCache: _warLookupCache,
+      reason,
+      fallbackTrackedClanTag: options?.fallbackTrackedClanTag,
+      warContext,
+      snapshot,
+    });
+    if (resolvedSnapshot !== snapshot) {
+      pointsSnapshotCache.set(normalizedTag, {
+        snapshot: resolvedSnapshot,
+        expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        requestContext: warContext,
+      });
+    }
+    return applySourceSync(resolvedSnapshot, sourceSync);
   }
 
   recordFetchEvent({
@@ -13978,21 +14770,38 @@ async function getClanPointsCached(
   });
   const pending = scrapeClanPoints(normalizedTag, reason)
     .then((snapshot) => {
-      pointsSnapshotCache.set(normalizedTag, {
+      const validatedSnapshot = validateFetchedPointsSnapshot(
         snapshot,
+        normalizedTag,
+        requiredOpponentTag,
+        warContext,
+      );
+      pointsSnapshotCache.set(normalizedTag, {
+        snapshot: validatedSnapshot,
         expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+        requestContext: warContext,
       });
-      return snapshot;
+      return validatedSnapshot;
     })
     .catch(async (err) => {
       if (!isPointsDirectFetchBlockedError(err)) throw err;
 
       const staleSnapshot =
         pointsSnapshotCache.get(normalizedTag)?.snapshot ?? null;
-      if (staleSnapshot) {
+      if (
+        staleSnapshot &&
+        isPointsSnapshotEligibleForRequest({
+          snapshot: staleSnapshot,
+          requiredOpponentTag,
+          warContext: options?.warContext,
+          storedContext:
+            pointsSnapshotCache.get(normalizedTag)?.requestContext ?? null,
+        })
+      ) {
         pointsSnapshotCache.set(normalizedTag, {
           snapshot: staleSnapshot,
           expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+          requestContext: warContext,
         });
         recordFetchEvent({
           namespace: "points",
@@ -14009,11 +14818,13 @@ async function getClanPointsCached(
       const persistedSnapshot = await getPersistedPointsSnapshotFallback(
         normalizedTag,
         requiredOpponentTag || null,
+        warContext,
       );
       if (persistedSnapshot) {
         pointsSnapshotCache.set(normalizedTag, {
           snapshot: persistedSnapshot,
           expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+          requestContext: warContext,
         });
         recordFetchEvent({
           namespace: "points",
@@ -14033,56 +14844,28 @@ async function getClanPointsCached(
       throw err;
     })
     .finally(() => {
-      pointsSnapshotInFlight.delete(normalizedTag);
+      pointsSnapshotInFlight.delete(requestKey);
     });
-  pointsSnapshotInFlight.set(normalizedTag, pending);
+  pointsSnapshotInFlight.set(requestKey, pending);
   let snapshot = await pending;
-  const fallbackTrackedClanTag = normalizeTag(
-    String(options?.fallbackTrackedClanTag ?? ""),
-  );
-  if (
-    snapshot.notFound &&
-    fallbackTrackedClanTag &&
-    fallbackTrackedClanTag !== normalizedTag
-  ) {
-    const trackedSnapshot = await getClanPointsCached(
-      _settings,
-      _cocService,
-      fallbackTrackedClanTag,
-      sourceSync,
-      _warLookupCache,
-      {
-        fetchReason: reason,
-      },
-    ).catch(() => null);
-    const fallback = buildOpponentSnapshotFromTrackedClanFallback({
-      requestedOpponentTag: normalizedTag,
-      trackedClanTag: fallbackTrackedClanTag,
-      trackedSnapshot,
+  const resolvedSnapshot = await resolveTrackedClanFallbackSnapshot({
+    settings: _settings,
+    cocService: _cocService,
+    requestedClanTag: normalizedTag,
+    sourceSync,
+    warLookupCache: _warLookupCache,
+    reason,
+    fallbackTrackedClanTag: options?.fallbackTrackedClanTag,
+    warContext,
+    snapshot,
+  });
+  if (resolvedSnapshot !== snapshot) {
+    snapshot = resolvedSnapshot;
+    pointsSnapshotCache.set(normalizedTag, {
+      snapshot,
+      expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
+      requestContext: warContext,
     });
-    console.info(
-      `[fwa-points-fallback] path=tracked_clan_page requested=#${normalizedTag} tracked=#${fallbackTrackedClanTag} extracted_opponent=${fallback.extractedOpponentTag ? `#${fallback.extractedOpponentTag}` : "unknown"} current=${fallback.currentForWar ? "1" : "0"} applied=${fallback.snapshot ? "1" : "0"}`,
-    );
-    if (fallback.snapshot) {
-      snapshot = fallback.snapshot;
-      pointsSnapshotCache.set(normalizedTag, {
-        snapshot,
-        expiresAtMs: Date.now() + POINTS_SNAPSHOT_CACHE_TTL_MS,
-      });
-      recordFetchEvent({
-        namespace: "points",
-        operation: "clan_points_snapshot",
-        source: "fallback_cache",
-        detail: `tag=${normalizedTag} reason=${reason} fallback=tracked_clan_page current=1`,
-      });
-    } else {
-      recordFetchEvent({
-        namespace: "points",
-        operation: "clan_points_snapshot",
-        source: "fallback_cache",
-        detail: `tag=${normalizedTag} reason=${reason} fallback=tracked_clan_page current=0`,
-      });
-    }
   }
   return applySourceSync(snapshot, sourceSync);
 }
@@ -14103,24 +14886,353 @@ function deriveProjectedOutcome(
   opponentPoints: number | null,
   syncNumber: number | null,
 ): "WIN" | "LOSE" | null {
+  return deriveFwaProjectedOutcomeFromPreparedSync({
+    clanTag,
+    opponentTag,
+    clanPoints,
+    opponentPoints,
+    syncNum: syncNumber,
+  });
+}
+
+type SafeFwaPointsProjection = {
+  clanBalance: number;
+  opponentBalance: number;
+  syncNumber?: number;
+  estimated: boolean;
+};
+
+type FwaPointsParticipantDisplayKind =
+  | "current"
+  | "estimated"
+  | "persisted"
+  | "last_known"
+  | "unavailable";
+
+type FwaPointsParticipantDisplay = {
+  balance: number | null;
+  kind: FwaPointsParticipantDisplayKind;
+  label: string | null;
+  anchorSyncNumber: number | null;
+};
+
+type FwaStoredParticipantEvidence = {
+  balance: number | null;
+  label: string | null;
+};
+
+type FwaPointsMatchupEvidence = {
+  matchup: ResolvedFwaPointsMatchup;
+  safeProjection: SafeFwaPointsProjection | null;
+};
+
+type FwaPointsProjectionInput = {
+  guildId: string | null;
+  clanTag: string;
+  opponentTag: string;
+  activeWar: {
+    trackedClanTag: string;
+    warId: string | number | null;
+    warStartTime: Date;
+    prepStartTime?: Date | null;
+    syncNumber: number | null;
+    matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+    inferredMatchType: boolean | null;
+    warState: "preparation" | "inWar" | "notInWar";
+  };
+  resolver?: Pick<PointsEstimateResolverService, "resolveMatchup">;
+};
+
+function toFiniteDisplayBalance(value: number | null): number | null {
+  return value !== null && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+function resolveFwaParticipantDisplay(input: {
+  currentBalance: number | null;
+  result: PointsEstimateResult | null;
+  siteUpdatedForAlert: boolean;
+  activeSyncNumber: number | null;
+  storedEvidence?: FwaStoredParticipantEvidence | null;
+}): FwaPointsParticipantDisplay {
+  const currentBalance = toFiniteDisplayBalance(input.currentBalance);
+  if (input.siteUpdatedForAlert && currentBalance !== null) {
+    return {
+      balance: currentBalance,
+      kind: "current",
+      label: null,
+      anchorSyncNumber: null,
+    };
+  }
+
+  const resultBalance = toFiniteDisplayBalance(input.result?.balance ?? null);
+  const anchorSyncNumber =
+    input.result?.baseline?.syncNumber ??
+    input.result?.provenance?.syncNumber ??
+    null;
+  const resultSyncNumber = input.result?.syncNumber ?? null;
+  const syncAligned =
+    input.activeSyncNumber !== null &&
+    resultSyncNumber !== null &&
+    resultSyncNumber === input.activeSyncNumber;
   if (
-    clanPoints === null ||
-    opponentPoints === null ||
-    Number.isNaN(clanPoints) ||
-    Number.isNaN(opponentPoints)
+    input.result &&
+    resultBalance !== null &&
+    input.result.projectionSafe === true &&
+    input.result.coverage === "complete_reconstruction" &&
+    syncAligned
+  ) {
+    const estimated = input.result.isEstimate === true;
+    return {
+      balance: resultBalance,
+      kind: estimated ? "estimated" : "persisted",
+      label: estimated ? "Estimated" : "Persisted",
+      anchorSyncNumber,
+    };
+  }
+
+  if (
+    input.result &&
+    resultBalance !== null &&
+    input.result.coverage === "last_known_unresolved_history"
+  ) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "history incomplete";
+    return {
+      balance: resultBalance,
+      kind: "last_known",
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  if (input.result && resultBalance !== null) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "projection not safe";
+    return {
+      balance: resultBalance,
+      kind: "last_known",
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  const storedBalance = toFiniteDisplayBalance(
+    input.storedEvidence?.balance ?? null,
+  );
+  if (storedBalance !== null) {
+    return {
+      balance: storedBalance,
+      kind: "last_known",
+      label: input.storedEvidence?.label ?? "Last known, diagnostic",
+      anchorSyncNumber: null,
+    };
+  }
+
+  return {
+    balance: null,
+    kind: "unavailable",
+    label: null,
+    anchorSyncNumber,
+  };
+}
+
+function formatFwaParticipantDisplay(
+  name: string,
+  participant: FwaPointsParticipantDisplay,
+): string {
+  if (participant.balance === null) {
+    return `${name}: unavailable`;
+  }
+  return participant.label
+    ? `${name}: ${participant.balance} (${participant.label})`
+    : `${name}: ${participant.balance}`;
+}
+
+function hasFiniteFwaBalance(
+  participant: FwaPointsParticipantDisplay,
+): boolean {
+  return participant.balance !== null && Number.isFinite(participant.balance);
+}
+
+async function resolveFwaPointsMatchupEvidence(
+  input: FwaPointsProjectionInput,
+): Promise<FwaPointsMatchupEvidence | null> {
+  if (
+    !input.guildId ||
+    input.activeWar.matchType !== "FWA"
   ) {
     return null;
   }
-  if (clanPoints > opponentPoints) return "WIN";
-  if (clanPoints < opponentPoints) return "LOSE";
-  if (syncNumber === null) return null;
-  const mode = getSyncMode(syncNumber);
-  if (!mode) return null;
-  const cmp = compareTagsForTiebreak(clanTag, opponentTag);
-  if (cmp === 0) return null;
-  const wins = mode === "low" ? cmp < 0 : cmp > 0;
-  return wins ? "WIN" : "LOSE";
+
+  const matchup = await (input.resolver ?? pointsEstimateResolver).resolveMatchup({
+    guildId: input.guildId,
+    clanTag: input.clanTag,
+    activeWar: {
+      trackedClanTag: input.activeWar.trackedClanTag,
+      warId: input.activeWar.warId,
+      warStartTime: input.activeWar.warStartTime,
+      prepStartTime: input.activeWar.prepStartTime ?? null,
+      opponentTag: input.opponentTag,
+      syncNumber: input.activeWar.syncNumber,
+      matchType: input.activeWar.matchType,
+      inferredMatchType: input.activeWar.inferredMatchType,
+      warState: input.activeWar.warState,
+    },
+  });
+  return {
+    matchup,
+    safeProjection:
+      input.activeWar.syncNumber === null
+        ? null
+        : resolveSafeFwaPointsProjectionFromMatchup({
+            matchup,
+            syncNumber: input.activeWar.syncNumber,
+          }),
+  };
 }
+
+/** Purpose: preserve CurrentWar lifecycle state while keeping estimates display-only. */
+function resolveCurrentWarOutcomeForPersistence(input: {
+  displayOnlyProjection: boolean;
+  liveExpectedOutcome: "WIN" | "LOSE" | null;
+}): "WIN" | "LOSE" | null | undefined {
+  return input.displayOnlyProjection && input.liveExpectedOutcome === null
+    ? undefined
+    : input.liveExpectedOutcome;
+}
+
+export const resolveCurrentWarOutcomeForPersistenceForTest =
+  resolveCurrentWarOutcomeForPersistence;
+
+/** Purpose: accept only a complete, same-sync DB projection for the active FWA matchup. */
+async function resolveSafeFwaPointsProjection(
+  input: FwaPointsProjectionInput,
+): Promise<SafeFwaPointsProjection | null> {
+  if (input.activeWar.syncNumber === null) return null;
+  const evidence = await resolveFwaPointsMatchupEvidence(input);
+  return evidence?.safeProjection ?? null;
+}
+
+export const resolveSafeFwaPointsProjectionForTest =
+  resolveSafeFwaPointsProjection;
+
+type FwaMatchDisplayState = {
+  primaryBalance: number | null;
+  opponentBalance: number | null;
+  primaryDisplay: FwaPointsParticipantDisplay;
+  opponentDisplay: FwaPointsParticipantDisplay;
+  estimated: boolean;
+  displayOnlyFallback: boolean;
+  warningLine: string | null;
+  projectedOutcome: "WIN" | "LOSE" | null;
+};
+
+/** Purpose: keep alliance and single-clan views on one estimated display decision. */
+function resolveFwaMatchDisplayState(input: {
+  clanTag: string;
+  opponentTag: string;
+  syncNumber: number | null;
+  currentPrimaryBalance: number | null;
+  currentOpponentBalance: number | null;
+  matchupEvidence?: FwaPointsMatchupEvidence | null;
+  safeProjection: SafeFwaPointsProjection | null;
+  storedEvidence?: {
+    clan: FwaStoredParticipantEvidence;
+    opponent: FwaStoredParticipantEvidence;
+  } | null;
+  siteUpdatedForAlert: boolean;
+}): FwaMatchDisplayState {
+  const matchup =
+    input.matchupEvidence?.matchup ??
+    (input.safeProjection
+      ? {
+          clan: {
+            balance: input.safeProjection.clanBalance,
+            isEstimate: input.safeProjection.estimated,
+            projectionSafe: true,
+            coverage: "complete_reconstruction",
+            syncNumber: input.safeProjection.syncNumber ?? input.syncNumber,
+          } as PointsEstimateResult,
+          opponent: {
+            balance: input.safeProjection.opponentBalance,
+            isEstimate: input.safeProjection.estimated,
+            projectionSafe: true,
+            coverage: "complete_reconstruction",
+            syncNumber: input.safeProjection.syncNumber ?? input.syncNumber,
+          } as PointsEstimateResult,
+        }
+      : null);
+  const primaryDisplay = resolveFwaParticipantDisplay({
+    currentBalance: input.currentPrimaryBalance,
+    result: matchup?.clan ?? null,
+    siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.clan ?? null,
+  });
+  const opponentDisplay = resolveFwaParticipantDisplay({
+    currentBalance: input.currentOpponentBalance,
+    result: matchup?.opponent ?? null,
+    siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.opponent ?? null,
+  });
+  const primaryBalance = primaryDisplay.balance;
+  const opponentBalance = opponentDisplay.balance;
+  const estimated =
+    primaryDisplay.kind === "estimated" || opponentDisplay.kind === "estimated";
+  const displayOnlyFallback =
+    input.siteUpdatedForAlert === false &&
+    (primaryDisplay.kind !== "unavailable" ||
+      opponentDisplay.kind !== "unavailable");
+  const hasPartialDiagnostic =
+    primaryDisplay.kind === "last_known" ||
+    opponentDisplay.kind === "last_known" ||
+    primaryDisplay.kind === "unavailable" ||
+    opponentDisplay.kind === "unavailable";
+  return {
+    primaryBalance,
+    opponentBalance,
+    primaryDisplay,
+    opponentDisplay,
+    estimated,
+    displayOnlyFallback,
+    warningLine: displayOnlyFallback && hasPartialDiagnostic
+      ? ":warning: Some points are last known or unavailable; diagnostic only, not a current matchup projection."
+      : displayOnlyFallback
+        ? estimated
+          ? ":warning: Points projected from persisted evidence; not current points.fwafarm data."
+          : ":warning: Points from persisted fallback evidence; not current points.fwafarm data."
+      : null,
+    projectedOutcome: input.safeProjection
+      ? deriveProjectedOutcome(
+          input.clanTag,
+          input.opponentTag,
+          input.safeProjection.clanBalance,
+          input.safeProjection.opponentBalance,
+          input.safeProjection.syncNumber ?? input.syncNumber,
+        )
+      : input.siteUpdatedForAlert
+        ? deriveProjectedOutcome(
+            input.clanTag,
+            input.opponentTag,
+            primaryBalance,
+            opponentBalance,
+            input.syncNumber,
+          )
+        : null,
+  };
+}
+
+export const resolveFwaMatchDisplayStateForTest =
+  resolveFwaMatchDisplayState;
 
 async function _buildLastWarMatchOverview(
   clanTag: string,
@@ -14240,6 +15352,15 @@ async function buildTrackedMatchOverview(
     mailStatusDebugEnabled?: boolean;
     revisionDraftByTag?: Record<string, MatchRevisionFields>;
     compactChecklist?: boolean;
+    pointsEstimateResolver?: Pick<
+      PointsEstimateResolverService,
+      "resolveMatchup"
+    >;
+    pointsSnapshotProvider?: (
+      tag: string,
+      sourceSync: number | null,
+      fetchOptions?: ClanPointsFetchOptions,
+    ) => Promise<PointsSnapshot>;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -14959,16 +16080,40 @@ async function buildTrackedMatchOverview(
       currentSyncNumber: resolvedCurrentSyncNum,
       sourceSyncNumber: sourceSync,
     });
-    const primaryPoints = await getClanPointsCached(
-      settings,
-      cocService,
+    const loadMatchPointsSnapshot = (
+      requestedTag: string,
+      requestedSourceSync: number | null,
+      fetchOptions?: ClanPointsFetchOptions,
+    ): Promise<PointsSnapshot> =>
+      options?.pointsSnapshotProvider
+        ? options.pointsSnapshotProvider(
+            requestedTag,
+            requestedSourceSync,
+            fetchOptions,
+          )
+        : getClanPointsCached(
+            settings,
+            cocService,
+            requestedTag,
+            requestedSourceSync,
+            warLookupCache,
+            fetchOptions,
+          );
+    const primaryPoints = await loadMatchPointsSnapshot(
       clanTag,
       resolvedCurrentSyncNum,
-      warLookupCache,
       {
         requiredOpponentTag: opponentTag,
         fetchReason: "match_render",
         warScopedSnapshot,
+        warContext: {
+          guildId,
+          warId: warIdForReuse,
+          warStartTime: warStartTimeForReuse,
+          opponentTag,
+          currentSyncNumber: resolvedCurrentSyncNum,
+          sourceSyncNumber: sourceSync,
+        },
       },
     ).catch(() => null);
     let opponentPoints: PointsSnapshot | null = null;
@@ -14999,26 +16144,24 @@ async function buildTrackedMatchOverview(
     const needsLiveOpponentResolution =
       fallbackResolution.confirmedCurrent === null;
     if (!opponentPoints || needsLiveOpponentResolution) {
-      opponentPoints = await getClanPointsCached(
-        settings,
-        cocService,
+      opponentPoints = await loadMatchPointsSnapshot(
         opponentTag,
         resolvedCurrentSyncNum,
-        warLookupCache,
         {
+          requiredOpponentTag: clanTag,
           fetchReason: "match_render",
           fallbackTrackedClanTag: clanTag,
+          warContext: {
+            guildId,
+            warId: warIdForReuse,
+            warStartTime: warStartTimeForReuse,
+            opponentTag: clanTag,
+            currentSyncNumber: resolvedCurrentSyncNum,
+            sourceSyncNumber: sourceSync,
+          },
         },
       ).catch(() => null);
     }
-    const hasPrimaryPoints =
-      primaryPoints?.balance !== null &&
-      primaryPoints?.balance !== undefined &&
-      !Number.isNaN(primaryPoints.balance);
-    const hasOpponentPoints =
-      opponentPoints?.balance !== null &&
-      opponentPoints?.balance !== undefined &&
-      !Number.isNaN(opponentPoints.balance);
     const siteSyncObservedForWrite = resolveObservedSyncNumberForMatchup({
       primarySnapshot: primaryPoints,
       opponentSnapshot: opponentPoints,
@@ -15037,6 +16180,14 @@ async function buildTrackedMatchOverview(
       opponentTag,
       sourceSync: trackedFreshSourceSync,
     });
+    const currentPrimaryBalance = resolveCurrentMatchupBalance(
+      primaryPoints,
+      siteUpdatedForAlert,
+    );
+    const currentOpponentBalance = resolveCurrentMatchupBalance(
+      opponentPoints,
+      siteUpdatedForAlert,
+    );
     if (
       siteUpdatedForAlert &&
       !siteUpdatedFromPrimaryEvidence &&
@@ -15159,19 +16310,91 @@ async function buildTrackedMatchOverview(
         canonicalActiveCycleAfterInference?.source === "active_war_ambiguous",
     });
     clanSyncLine = formatResolvedSyncDisplay(finalResolvedCurrentSyncNum);
-    const derivedOutcome = deriveProjectedOutcome(
+    const estimateWarStartTime =
+      warStartTimeForReuse ?? syncIdentity.warStartTime;
+    const fwaPointsMatchupEvidence =
+      !siteUpdatedForAlert && matchType === "FWA" && estimateWarStartTime
+        ? await resolveFwaPointsMatchupEvidence({
+            guildId,
+            clanTag,
+            opponentTag,
+            activeWar: {
+              trackedClanTag: clanTag,
+              warId: warIdForReuse,
+              warStartTime: estimateWarStartTime,
+              prepStartTime: preparationStartTimeForSync,
+              syncNumber: finalResolvedCurrentSyncNum,
+              matchType,
+              inferredMatchType,
+              warState,
+            },
+            resolver: options?.pointsEstimateResolver,
+          }).catch((error) => {
+            console.debug(
+              `[fwa-points-estimate] stage=alliance_view outcome=unavailable clan=#${clanTag} opponent=#${opponentTag} error=${String(error)}`,
+            );
+            return null;
+          })
+        : null;
+    const safeFwaPointsProjection =
+      fwaPointsMatchupEvidence?.safeProjection ?? null;
+    const storedFwaParticipantEvidence =
+      !siteUpdatedForAlert
+        ? resolveFwaStoredParticipantEvidence({
+            currentWar: sub,
+            activeWarId: warIdForReuse,
+            activeWarStartTime: warStartTimeForReuse,
+            activeOpponentTag: opponentTag,
+            sameWarSyncRow: confirmedCurrentWarSyncRow,
+          })
+        : null;
+    const displayState = resolveFwaMatchDisplayState({
       clanTag,
       opponentTag,
-      primaryPoints?.balance ?? null,
-      opponentPoints?.balance ?? null,
-      finalResolvedCurrentSyncNum,
-    );
+      syncNumber: finalResolvedCurrentSyncNum,
+      currentPrimaryBalance,
+      currentOpponentBalance,
+      matchupEvidence: fwaPointsMatchupEvidence,
+      safeProjection: safeFwaPointsProjection,
+      storedEvidence: storedFwaParticipantEvidence,
+      siteUpdatedForAlert,
+    });
+    const displayPrimaryBalance = displayState.primaryBalance;
+    const displayOpponentBalance = displayState.opponentBalance;
+    const hasPrimarySnapshot =
+      primaryPoints !== null &&
+      primaryPoints.balance !== null &&
+      Number.isFinite(primaryPoints.balance);
+    const usesEstimatedProjection = displayState.estimated;
+    const usesDisplayOnlyProjection = displayState.displayOnlyFallback;
+    const projectionWarningLine = displayState.warningLine;
+    const derivedOutcome = displayState.projectedOutcome;
     const liveExpectedOutcome = resolveFwaOutcomeFromCurrentWarState({
       matchType,
       currentWarOutcome: sub?.outcome as "WIN" | "LOSE" | null | undefined,
       currentWarOutcomeConfirmed: appliedResolution.confirmed === true,
-      projectedOutcome: derivedOutcome,
+      projectedOutcome: usesDisplayOnlyProjection ? null : derivedOutcome,
     });
+    const persistedCurrentWarOutcome =
+      resolveCurrentWarOutcomeForPersistence({
+        displayOnlyProjection: usesDisplayOnlyProjection,
+        liveExpectedOutcome,
+      });
+    const currentWarPointsUpdate = buildCurrentWarPointsUpdate({
+      currentWar: sub,
+      activeWarId: warIdForReuse,
+      activeWarStartTime: warStartTimeForReuse,
+      activeOpponentTag: opponentTag,
+      currentPrimaryBalance,
+      currentOpponentBalance,
+    });
+    const preserveCurrentWarPoints =
+      currentWarPointsUpdate.fwaPoints === undefined;
+    if (preserveCurrentWarPoints) {
+      console.debug(
+        `[fwa-points-materialization] action=preserve_same_war_points clan=#${clanTag} opponent=#${opponentTag} reason=no_current_evidence`,
+      );
+    }
     if (guildId) {
       await prisma.currentWar.upsert({
         where: {
@@ -15187,51 +16410,30 @@ async function buildTrackedMatchOverview(
           channelId: "",
           matchType: matchType,
           inferredMatchType,
-          fwaPoints:
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? primaryPoints.balance
-              : null,
-          opponentFwaPoints:
-            opponentPoints?.balance !== null &&
-            opponentPoints?.balance !== undefined
-              ? opponentPoints.balance
-              : null,
-          outcome: liveExpectedOutcome,
-          warStartFwaPoints:
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? primaryPoints.balance
-              : null,
+          fwaPoints: currentPrimaryBalance,
+          opponentFwaPoints: currentOpponentBalance,
+          outcome: usesDisplayOnlyProjection ? null : liveExpectedOutcome,
+          warStartFwaPoints: currentPrimaryBalance,
           warEndFwaPoints: null,
         },
         update: {
           matchType: matchType,
           inferredMatchType,
-          fwaPoints:
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? primaryPoints.balance
-              : null,
-          opponentFwaPoints:
-            opponentPoints?.balance !== null &&
-            opponentPoints?.balance !== undefined
-              ? opponentPoints.balance
-              : null,
-          outcome: liveExpectedOutcome,
-          warStartFwaPoints:
-            primaryPoints?.balance !== null &&
-            primaryPoints?.balance !== undefined
-              ? { set: primaryPoints.balance }
-              : undefined,
+          ...currentWarPointsUpdate,
+          outcome: persistedCurrentWarOutcome,
           warEndFwaPoints: undefined,
         },
       });
     }
+    const hasBothDisplayedBalances =
+      hasFiniteFwaBalance(displayState.primaryDisplay) &&
+      hasFiniteFwaBalance(displayState.opponentDisplay);
     const pointsLine =
-      hasPrimaryPoints && hasOpponentPoints
-        ? `Points: ${primaryPoints.balance} - ${opponentPoints!.balance}`
-        : "Points: unavailable";
+      hasBothDisplayedBalances && safeFwaPointsProjection !== null
+        ? `${usesEstimatedProjection ? "Estimated points" : "Persisted points"}: ${displayPrimaryBalance} - ${displayOpponentBalance}`
+        : hasBothDisplayedBalances && !usesDisplayOnlyProjection
+          ? `Points: ${displayPrimaryBalance} - ${displayOpponentBalance}`
+          : `Points:\n${formatFwaParticipantDisplay(clanName, displayState.primaryDisplay)}\n${formatFwaParticipantDisplay(opponentName, displayState.opponentDisplay)}`;
     const verifyLink = `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`;
     const warStartTimeForSync = warStartTimeForReuse;
     await persistClanPointsSyncIfCurrent({
@@ -15242,8 +16444,8 @@ async function buildTrackedMatchOverview(
       siteCurrent: siteUpdatedForAlert,
       syncNum: siteSyncObservedForWrite,
       opponentTag,
-      clanPoints: primaryPoints?.balance ?? null,
-      opponentPoints: opponentPoints?.balance ?? null,
+      clanPoints: currentPrimaryBalance,
+      opponentPoints: currentOpponentBalance,
       outcome: derivedOutcome,
       isFwa: syncIsFwaSignal,
       fetchedAtMs: primaryPoints?.fetchedAtMs ?? null,
@@ -15294,6 +16496,38 @@ async function buildTrackedMatchOverview(
       matchType === "FWA" || matchType === "BL" || matchType === "MM"
         ? matchType
         : "UNKNOWN";
+    const hasConfirmedCurrentOutcome =
+      appliedResolution.confirmed === true &&
+      toWinLoseOutcome(sub?.outcome as "WIN" | "LOSE" | null | undefined) !==
+        null;
+    const safeProjectedMailOutcome =
+      usesDisplayOnlyProjection &&
+      matchType === "FWA" &&
+      !hasConfirmedCurrentOutcome
+        ? toWinLoseOutcome(derivedOutcome)
+        : null;
+    const mailOutcomeForDecision =
+      safeProjectedMailOutcome ?? toWinLoseOutcome(liveExpectedOutcome);
+    const mailOutcomeSource: FwaMailOutcomeSource =
+      appliedResolution.confirmed === true &&
+      toWinLoseOutcome(sub?.outcome as "WIN" | "LOSE" | null | undefined) !==
+        null
+        ? "confirmed_current_war"
+        : siteUpdatedForAlert && mailOutcomeForDecision !== null
+          ? "validated_current_website"
+          : safeProjectedMailOutcome !== null
+            ? "safe_persisted_projection"
+            : "unresolved";
+    logFwaMailOutcomeResolution({
+      stage: "overview",
+      guildId,
+      clanTag,
+      opponentTag,
+      warId: warIdForReuse,
+      syncNumber: finalResolvedCurrentSyncNum,
+      source: mailOutcomeSource,
+      outcome: mailOutcomeForDecision ?? "UNKNOWN",
+    });
     const mailRevisionDecision =
       await resolveMailRevisionDecisionForRenderedState({
         client: client ?? null,
@@ -15308,7 +16542,7 @@ async function buildTrackedMatchOverview(
         matchType: matchTypeForMailDecision,
         expectedOutcome:
           matchTypeForMailDecision === "FWA"
-            ? (liveExpectedOutcome ?? "UNKNOWN")
+            ? (mailOutcomeForDecision ?? "UNKNOWN")
             : null,
         draft: revisionDraftByTag[clanTag] ?? null,
       });
@@ -15326,6 +16560,8 @@ async function buildTrackedMatchOverview(
       mailRevisionDecision.effectiveRevisionFields?.matchType === "MM"
         ? mailRevisionDecision.effectiveRevisionFields.matchType
         : matchType;
+    const usesFwaDisplayOnlyProjection =
+      effectiveMatchType === "FWA" && usesDisplayOnlyProjection;
     const projectedFwaOutcome =
       toWinLoseOutcome(liveExpectedOutcome) ?? toWinLoseOutcome(derivedOutcome);
     const effectiveExpectedOutcome = resolveEffectiveFwaOutcome({
@@ -15444,6 +16680,7 @@ async function buildTrackedMatchOverview(
         embed.addFields({
           name: matchHeader,
           value: [
+            projectionWarningLine,
             pointsLine,
             pointsSyncStatus,
             storedSyncSummary.stateLine,
@@ -15507,6 +16744,7 @@ async function buildTrackedMatchOverview(
       pointsSyncStatus,
       storedSyncSummary.stateLine,
       ...inferredWarningLines,
+      projectionWarningLine ?? "",
       mailBlockedReasonLine ?? "",
       mailLifecycleStatusLine,
       `Match Type: **${effectiveMatchType}${effectiveInferredMatchType ? " :warning:" : ""}**${
@@ -15564,14 +16802,20 @@ async function buildTrackedMatchOverview(
         )
         .addFields(
           {
-            name: singleClanLinks.pointsFieldName,
+            name: usesFwaDisplayOnlyProjection && safeFwaPointsProjection !== null
+              ? usesEstimatedProjection
+                ? "Estimated Points"
+                : "Persisted Points"
+              : singleClanLinks.pointsFieldName,
             value:
               effectiveMatchType === "FWA"
-                ? hasPrimaryPoints && hasOpponentPoints
-                  ? `${clanName}: **${primaryPoints!.balance}**${clanWinnerMarker}\n${opponentName}: **${opponentPoints!.balance}**${opponentWinnerMarker}`
-                  : "Unavailable on both clans."
-                : hasPrimaryPoints
-                  ? `${clanName}: **${primaryPoints!.balance}**`
+                ? safeFwaPointsProjection !== null &&
+                  displayPrimaryBalance !== null &&
+                  displayOpponentBalance !== null
+                  ? `${clanName}: **${displayPrimaryBalance}**${clanWinnerMarker}\n${opponentName}: **${displayOpponentBalance}**${opponentWinnerMarker}`
+                  : `${formatFwaParticipantDisplay(clanName, displayState.primaryDisplay)}\n${formatFwaParticipantDisplay(opponentName, displayState.opponentDisplay)}`
+                : hasPrimarySnapshot
+                  ? `${clanName}: **${primaryPoints?.balance}**`
                   : "Unavailable",
             inline: true,
           },
@@ -15641,6 +16885,8 @@ async function buildTrackedMatchOverview(
     singleViews,
   };
 }
+
+export const buildTrackedMatchOverviewForTest = buildTrackedMatchOverview;
 
 export async function runForceSyncDataCommand(
   interaction: ChatInputCommandInteraction,
@@ -18800,7 +20046,9 @@ export const Fwa: Command = {
             trackedTag,
             resolvedCurrentSync,
             warLookupCache,
-            { fetchReason: "points_command" },
+            {
+              fetchReason: "points_command",
+            },
           );
           if (result.balance === null || Number.isNaN(result.balance)) {
             failedCount += 1;
@@ -20232,7 +21480,9 @@ export const Fwa: Command = {
         tag,
         resolvedCurrentSync,
         warLookupCache,
-        { fetchReason: "points_command" },
+        {
+          fetchReason: "points_command",
+        },
       );
       const balance = result.balance;
       if (balance === null || Number.isNaN(balance)) {

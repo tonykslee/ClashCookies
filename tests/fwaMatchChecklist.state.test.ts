@@ -11,6 +11,13 @@ const prismaMock = vi.hoisted(() => ({
   clanPointsSync: {
     findMany: vi.fn(),
   },
+  syncCycle: {
+    findMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
+  scheduledSyncPost: {
+    findMany: vi.fn(),
+  },
   trackedMessage: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -204,6 +211,59 @@ function configureSingleClanChecklistScenario(params: {
     null as any,
   );
   return { cocService: { getCurrentWar: vi.fn().mockResolvedValue(params.liveWar) } as any };
+}
+
+function configureActiveChecklistChronology() {
+  prismaMock.syncCycle.findMany.mockResolvedValue([
+    {
+      guildId: "guild-1",
+      syncNumber: 101,
+      syncTime: new Date("2026-05-11T18:00:00.000Z"),
+      resolutionSource: "ACTIVE_WAR_CONFIRMED",
+    },
+  ] as any);
+  prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+    {
+      id: "sync-102",
+      syncTime: new Date("2026-05-12T18:00:00.000Z"),
+      status: "POSTED",
+    },
+  ]);
+}
+
+function makeSafeChecklistProjectionResolver() {
+  return {
+    resolveMatchup: vi.fn().mockResolvedValue({
+      clan: {
+        balance: 101,
+        source: "validated_same_war",
+        provenance: null,
+        baseline: null,
+        isEstimate: false,
+        isValidatedCurrentMatchupEvidence: true,
+        coverage: "complete_reconstruction",
+        projectionSafe: true,
+        syncNumber: 102,
+        syncNumberSource: "caller_context",
+        appliedWarIds: [],
+        reason: "validated_same_war_points_sync",
+      },
+      opponent: {
+        balance: 99,
+        source: "validated_same_war",
+        provenance: null,
+        baseline: null,
+        isEstimate: false,
+        isValidatedCurrentMatchupEvidence: true,
+        coverage: "complete_reconstruction",
+        projectionSafe: true,
+        syncNumber: 102,
+        syncNumberSource: "caller_context",
+        appliedWarIds: [],
+        reason: "validated_same_war_points_sync",
+      },
+    }),
+  };
 }
 
 function makeJuly15TrackedClansForPublicationSnapshot() {
@@ -681,6 +741,9 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       },
     ]);
     prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
+    prismaMock.syncCycle.findMany.mockResolvedValue([]);
+    prismaMock.syncCycle.findFirst.mockResolvedValue(null);
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestRelevantSyncPostForClanWar").mockResolvedValue(
       null as any,
@@ -3066,6 +3129,521 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(basesState.rows[0].compactCopyLine).toBe(
       "A | 🔘 | ❌ Bases not checked ⚠️",
     );
+  });
+
+  it("uses a safe current-sync projection in Mail and Bases without persisting it", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const currentWar = {
+      ...makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: null,
+      }),
+    };
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar,
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        warId: 1001,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: startTime,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          syncNum: 102,
+          outcome: "LOSE",
+          lastKnownOutcome: "LOSE",
+        }),
+      ],
+    }).cocService;
+    prismaMock.syncCycle.findMany.mockResolvedValue([
+      {
+        guildId: "guild-1",
+        syncNumber: 101,
+        syncTime: new Date("2026-05-11T18:00:00.000Z"),
+        resolutionSource: "ACTIVE_WAR_CONFIRMED",
+      },
+    ] as any);
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+      {
+        id: "sync-102",
+        syncTime: new Date("2026-05-12T18:00:00.000Z"),
+        status: "POSTED",
+      },
+    ]);
+    const projectionResolver = {
+      resolveMatchup: vi.fn().mockResolvedValue({
+        clan: {
+          balance: 101,
+          source: "validated_same_war",
+          provenance: null,
+          baseline: null,
+          isEstimate: false,
+          isValidatedCurrentMatchupEvidence: true,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber: 102,
+          syncNumberSource: "caller_context",
+          appliedWarIds: [],
+          reason: "validated_same_war_points_sync",
+        },
+        opponent: {
+          balance: 99,
+          source: "validated_same_war",
+          provenance: null,
+          baseline: null,
+          isEstimate: false,
+          isValidatedCurrentMatchupEvidence: true,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber: 102,
+          syncNumberSource: "caller_context",
+          appliedWarIds: [],
+          reason: "validated_same_war_points_sync",
+        },
+      }),
+    };
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+    expect(mailState.rows[0].outcome).toBe("WIN");
+    expect(basesState.rows[0].outcome).toBe("WIN");
+    expect(mailState.rows[0].matchStateInferred).toBe(false);
+    expect(basesState.rows[0].matchStateInferred).toBe(false);
+    expect(
+      prismaMock.currentWar.upsert.mock.calls.every(
+        ([args]) => args.update?.outcome === null && args.update?.fwaPoints === undefined,
+      ),
+    ).toBe(true);
+    expect(
+      prismaMock.currentWar.findMany.mock.calls.every(
+        ([args]) => !("syncNumber" in args.select) && !("syncNum" in args.select),
+      ),
+    ).toBe(true);
+    expect(prismaMock.syncCycle.findMany).toHaveBeenCalled();
+    expect(prismaMock.scheduledSyncPost.findMany).toHaveBeenCalled();
+    expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the reconciled war identity for the first Mail and Bases projection render", async () => {
+    const oldStartTime = "2026-05-12T18:00:00.000Z";
+    const liveStartTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: oldStartTime,
+        prepStartTimeIso: "2026-05-11T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: liveStartTime,
+        opponentTag: "#NEWOPP",
+        warId: 2002,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: liveStartTime,
+          warId: 2002,
+          opponentTag: "#NEWOPP",
+          syncNum: 102,
+          outcome: "LOSE",
+          lastKnownOutcome: "LOSE",
+        }),
+      ],
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#NEWOPP`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+    expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
+    expect(prismaMock.currentWar.upsert.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            update: expect.objectContaining({
+              startTime: new Date(liveStartTime),
+              opponentTag: "NEWOPP",
+              fwaPoints: null,
+              opponentFwaPoints: null,
+            }),
+          }),
+        ],
+      ]),
+    );
+  });
+
+  it("projects a newly created reconciled CurrentWar without a prior row", async () => {
+    const liveStartTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: liveStartTime,
+        opponentTag: "#NEWOPP",
+        warId: 2002,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: liveStartTime,
+          warId: 2002,
+          opponentTag: "#NEWOPP",
+          syncNum: 102,
+          outcome: "LOSE",
+          lastKnownOutcome: "LOSE",
+        }),
+      ],
+    }).cocService;
+    prismaMock.currentWar.findMany.mockResolvedValue([]);
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toBe(
+      "📬 | 🟢 | A vs `Opponent` (`#NEWOPP`) ⚠️",
+    );
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked ⚠️",
+    );
+    expect(projectionResolver.resolveMatchup).toHaveBeenCalledTimes(2);
+    expect(prismaMock.currentWar.upsert).toHaveBeenCalled();
+  });
+
+  it("does not project Bases when reconciliation is unavailable for a different live war", async () => {
+    const persistedStart = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: persistedStart,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: {
+        startTime: toClashApiTime("2026-05-14T18:00:00.000Z"),
+        warId: 2002,
+        opponent: { tag: "#NEWOPP" },
+        state: "preparation",
+      },
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked",
+    );
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the live war has the same start but a different opponent", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OLDOPP",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: {
+        startTime: toClashApiTime(startTime),
+        warId: 1001,
+        opponent: { tag: "#NEWOPP" },
+        state: "preparation",
+      },
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked",
+    );
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when start and opponent match but persisted and live war IDs conflict", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: {
+        startTime: toClashApiTime(startTime),
+        warId: 2002,
+        opponent: { tag: "#OPP1" },
+        state: "preparation",
+      },
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked",
+    );
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve sync or points projection after a confirmed outcome", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: "WIN",
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        warId: 1001,
+      }),
+    }).cocService;
+    configureActiveChecklistChronology();
+    const projectionResolver = makeSafeChecklistProjectionResolver();
+    const activeSyncResolver = {
+      resolveActiveWarSyncFromCanonicalCycle: vi.fn(),
+    };
+
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+      activeWarSyncResolution: activeSyncResolver,
+    });
+
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🟢 | ❌ Bases not checked",
+    );
+    expect(activeSyncResolver.resolveActiveWarSyncFromCanonicalCycle).not.toHaveBeenCalled();
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when active chronology cannot resolve a checklist sync", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        warId: 1001,
+      }),
+    }).cocService;
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+      {
+        id: "sync-102",
+        syncTime: new Date("2026-05-12T18:00:00.000Z"),
+        status: "POSTED",
+      },
+    ]);
+
+    const projectionResolver = { resolveMatchup: vi.fn() };
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toMatch(
+      / \| 🔘 \| A vs `Opponent` \(`#OPP1`\)$/,
+    );
+    expect(mailState.rows[0].outcome).toBe("UNKNOWN");
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked",
+    );
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-war points sync that conflicts with active chronology", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        prepStartTimeIso: "2026-05-12T18:00:00.000Z",
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: false,
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        warId: 1001,
+      }),
+      persistedSyncRows: [
+        makePersistedSyncRow({
+          startTimeIso: startTime,
+          warId: 1001,
+          opponentTag: "#OPP1",
+          syncNum: 101,
+        }),
+      ],
+    }).cocService;
+    prismaMock.syncCycle.findMany.mockResolvedValue([
+      {
+        guildId: "guild-1",
+        syncNumber: 101,
+        syncTime: new Date("2026-05-11T18:00:00.000Z"),
+        resolutionSource: "ACTIVE_WAR_CONFIRMED",
+      },
+    ] as any);
+    prismaMock.scheduledSyncPost.findMany.mockResolvedValue([
+      {
+        id: "sync-102",
+        syncTime: new Date("2026-05-12T18:00:00.000Z"),
+        status: "POSTED",
+      },
+    ]);
+
+    const projectionResolver = { resolveMatchup: vi.fn() };
+    const mailState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      pointsEstimateResolver: projectionResolver,
+    });
+    const basesState = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Bases",
+      pointsEstimateResolver: projectionResolver,
+    });
+
+    expect(mailState.rows[0].compactCopyLine).toMatch(
+      / \| 🔘 \| A vs `Opponent` \(`#OPP1`\)$/,
+    );
+    expect(mailState.rows[0].outcome).toBe("UNKNOWN");
+    expect(basesState.rows[0].compactCopyLine).toBe(
+      "A | 🔘 | ❌ Bases not checked",
+    );
+    expect(projectionResolver.resolveMatchup).not.toHaveBeenCalled();
   });
 
   it.each([
