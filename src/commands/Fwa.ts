@@ -14715,6 +14715,19 @@ type SafeFwaPointsProjection = {
   estimated: boolean;
 };
 
+/** Purpose: preserve CurrentWar lifecycle state while keeping estimates display-only. */
+function resolveCurrentWarOutcomeForPersistence(input: {
+  estimatedProjection: boolean;
+  liveExpectedOutcome: "WIN" | "LOSE" | null;
+}): "WIN" | "LOSE" | null | undefined {
+  return input.estimatedProjection && input.liveExpectedOutcome === null
+    ? undefined
+    : input.liveExpectedOutcome;
+}
+
+export const resolveCurrentWarOutcomeForPersistenceForTest =
+  resolveCurrentWarOutcomeForPersistence;
+
 /** Purpose: accept only a complete, same-sync DB projection for the active FWA matchup. */
 async function resolveSafeFwaPointsProjection(input: {
   guildId: string | null;
@@ -14773,6 +14786,48 @@ async function resolveSafeFwaPointsProjection(input: {
 
 export const resolveSafeFwaPointsProjectionForTest =
   resolveSafeFwaPointsProjection;
+
+type FwaMatchDisplayState = {
+  primaryBalance: number | null;
+  opponentBalance: number | null;
+  estimated: boolean;
+  warningLine: string | null;
+  projectedOutcome: "WIN" | "LOSE" | null;
+};
+
+/** Purpose: keep alliance and single-clan views on one estimated display decision. */
+function resolveFwaMatchDisplayState(input: {
+  clanTag: string;
+  opponentTag: string;
+  syncNumber: number | null;
+  currentPrimaryBalance: number | null;
+  currentOpponentBalance: number | null;
+  safeProjection: SafeFwaPointsProjection | null;
+}): FwaMatchDisplayState {
+  const primaryBalance =
+    input.safeProjection?.clanBalance ?? input.currentPrimaryBalance;
+  const opponentBalance =
+    input.safeProjection?.opponentBalance ?? input.currentOpponentBalance;
+  const estimated = input.safeProjection?.estimated === true;
+  return {
+    primaryBalance,
+    opponentBalance,
+    estimated,
+    warningLine: estimated
+      ? ":warning: Points projected from persisted evidence; not current points.fwafarm data."
+      : null,
+    projectedOutcome: deriveProjectedOutcome(
+      input.clanTag,
+      input.opponentTag,
+      primaryBalance,
+      opponentBalance,
+      input.syncNumber,
+    ),
+  };
+}
+
+export const resolveFwaMatchDisplayStateForTest =
+  resolveFwaMatchDisplayState;
 
 async function _buildLastWarMatchOverview(
   clanTag: string,
@@ -15853,30 +15908,31 @@ async function buildTrackedMatchOverview(
             return null;
           })
         : null;
-    const displayPrimaryBalance =
-      safeFwaPointsProjection?.clanBalance ?? currentPrimaryBalance;
-    const displayOpponentBalance =
-      safeFwaPointsProjection?.opponentBalance ?? currentOpponentBalance;
-    const hasPrimaryPoints = displayPrimaryBalance !== null;
-    const usesEstimatedProjection =
-      safeFwaPointsProjection?.estimated === true;
-    const usesSafePersistedProjection = safeFwaPointsProjection !== null;
-    const projectionWarningLine = usesEstimatedProjection
-      ? ":warning: Points projected from persisted evidence; not current points.fwafarm data."
-      : null;
-    const derivedOutcome = deriveProjectedOutcome(
+    const displayState = resolveFwaMatchDisplayState({
       clanTag,
       opponentTag,
-      displayPrimaryBalance,
-      displayOpponentBalance,
-      finalResolvedCurrentSyncNum,
-    );
+      syncNumber: finalResolvedCurrentSyncNum,
+      currentPrimaryBalance,
+      currentOpponentBalance,
+      safeProjection: safeFwaPointsProjection,
+    });
+    const displayPrimaryBalance = displayState.primaryBalance;
+    const displayOpponentBalance = displayState.opponentBalance;
+    const hasPrimaryPoints = displayPrimaryBalance !== null;
+    const usesEstimatedProjection = displayState.estimated;
+    const projectionWarningLine = displayState.warningLine;
+    const derivedOutcome = displayState.projectedOutcome;
     const liveExpectedOutcome = resolveFwaOutcomeFromCurrentWarState({
       matchType,
       currentWarOutcome: sub?.outcome as "WIN" | "LOSE" | null | undefined,
       currentWarOutcomeConfirmed: appliedResolution.confirmed === true,
       projectedOutcome: usesEstimatedProjection ? null : derivedOutcome,
     });
+    const persistedCurrentWarOutcome =
+      resolveCurrentWarOutcomeForPersistence({
+        estimatedProjection: usesEstimatedProjection,
+        liveExpectedOutcome,
+      });
     const currentWarPointsUpdate = buildCurrentWarPointsUpdate({
       currentWar: sub,
       activeWarId: warIdForReuse,
@@ -15892,7 +15948,7 @@ async function buildTrackedMatchOverview(
         `[fwa-points-materialization] action=preserve_same_war_points clan=#${clanTag} opponent=#${opponentTag} reason=no_current_evidence`,
       );
     }
-    if (guildId && siteUpdatedForAlert && !usesSafePersistedProjection) {
+    if (guildId) {
       await prisma.currentWar.upsert({
         where: {
           clanTag_guildId: {
@@ -15909,7 +15965,7 @@ async function buildTrackedMatchOverview(
           inferredMatchType,
           fwaPoints: currentPrimaryBalance,
           opponentFwaPoints: currentOpponentBalance,
-          outcome: liveExpectedOutcome,
+          outcome: usesEstimatedProjection ? null : liveExpectedOutcome,
           warStartFwaPoints: currentPrimaryBalance,
           warEndFwaPoints: null,
         },
@@ -15917,7 +15973,7 @@ async function buildTrackedMatchOverview(
           matchType: matchType,
           inferredMatchType,
           ...currentWarPointsUpdate,
-          outcome: liveExpectedOutcome,
+          outcome: persistedCurrentWarOutcome,
           warEndFwaPoints: undefined,
         },
       });

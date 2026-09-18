@@ -77,6 +77,8 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 import {
   Fwa,
   normalizeFwaMatchResponseModeForTest,
+  resolveCurrentWarOutcomeForPersistenceForTest,
+  resolveFwaMatchDisplayStateForTest,
   resolveSafeFwaPointsProjectionForTest,
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
@@ -280,6 +282,66 @@ describe("/fwa match response normalization", () => {
 
     expect(result).toBeNull();
     expect(resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["stale site without estimate", false, "WIN", "WIN"],
+    ["validated site", false, "LOSE", "LOSE"],
+    ["estimated display with no confirmed outcome", true, null, undefined],
+    ["estimated display with confirmed outcome", true, "WIN", "WIN"],
+  ])(
+    "keeps CurrentWar outcome persistence separate for %s",
+    (_label, estimatedProjection, liveExpectedOutcome, expected) => {
+      expect(
+        resolveCurrentWarOutcomeForPersistenceForTest({
+          estimatedProjection,
+          liveExpectedOutcome,
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("uses one display state for estimated balances, winner, and warning", () => {
+    expect(
+      resolveFwaMatchDisplayStateForTest({
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        syncNumber: 102,
+        currentPrimaryBalance: null,
+        currentOpponentBalance: null,
+        safeProjection: {
+          clanBalance: 101,
+          opponentBalance: 99,
+          estimated: true,
+        },
+      }),
+    ).toEqual({
+      primaryBalance: 101,
+      opponentBalance: 99,
+      estimated: true,
+      warningLine:
+        ":warning: Points projected from persisted evidence; not current points.fwafarm data.",
+      projectedOutcome: "WIN",
+    });
+  });
+
+  it("does not project a winner when the estimate is unresolved", () => {
+    expect(
+      resolveFwaMatchDisplayStateForTest({
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        syncNumber: 102,
+        currentPrimaryBalance: null,
+        currentOpponentBalance: null,
+        safeProjection: null,
+      }),
+    ).toEqual({
+      primaryBalance: null,
+      opponentBalance: null,
+      estimated: false,
+      warningLine: null,
+      projectedOutcome: null,
+    });
   });
 
   it("normalizes copy-paste into public visibility", () => {
