@@ -4273,4 +4273,272 @@ describe("fwa checklist tracked messages", () => {
     );
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("#B1");
   });
+
+  it("keeps war identity-dependent row fields from different wars together after a CAS conflict", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    const baseRow = {
+      ...(tracked.metadata.rows as any[])[0],
+      compactCopyLine: "📬 | 🟢 | ☐ | RR vs `Old` (`#OLD`)",
+      matchType: "FWA",
+      outcome: "WIN",
+      basesStatus: "all_good",
+      contextKey: "war-old",
+      warId: 1001,
+      opponentTag: "#OLD",
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    };
+    const latestRow = {
+      ...baseRow,
+      compactCopyLine: "📬 | 🟢 | ☐ | RR vs `New` (`#NEW`)",
+      contextKey: "war-new",
+      warId: 2002,
+      opponentTag: "#NEW",
+      warStartTimeIso: "2026-05-14T18:00:00.000Z",
+    };
+    const overlappingRefreshRow = {
+      ...latestRow,
+      compactCopyLine: "📭 | 🔴 | ☐ | RR vs `New` (`#NEW`)",
+      matchType: "BL",
+      outcome: "LOSE",
+      basesStatus: "issues",
+    };
+    const staleTracked = {
+      ...tracked,
+      metadata: {
+        ...tracked.metadata,
+        rows: [baseRow, ...(tracked.metadata.rows as any[]).slice(1)],
+      },
+    } as any;
+    const latestTracked = {
+      ...staleTracked,
+      metadata: {
+        ...staleTracked.metadata,
+        rows: [latestRow, ...(staleTracked.metadata.rows as any[]).slice(1)],
+      },
+    } as any;
+    let currentTracked = staleTracked;
+    let updateAttempts = 0;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      updateAttempts += 1;
+      if (updateAttempts === 1) {
+        currentTracked = latestTracked;
+        return { count: 0 };
+      }
+      currentTracked = { ...currentTracked, metadata: args.data.metadata };
+      return { count: 1 };
+    });
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+        rows: [overlappingRefreshRow, ...(tracked.metadata.rows as any[]).slice(1)],
+      }),
+    ).resolves.toBe(true);
+
+    expect(currentTracked.metadata.rows[0]).toMatchObject({
+      compactCopyLine: latestRow.compactCopyLine,
+      matchType: latestRow.matchType,
+      outcome: latestRow.outcome,
+      basesStatus: latestRow.basesStatus,
+      contextKey: latestRow.contextKey,
+      warId: String(latestRow.warId),
+      opponentTag: latestRow.opponentTag,
+      warStartTimeIso: latestRow.warStartTimeIso,
+    });
+    expect(currentTracked.metadata.rows[0]).not.toMatchObject({
+      matchType: overlappingRefreshRow.matchType,
+      outcome: overlappingRefreshRow.outcome,
+      basesStatus: overlappingRefreshRow.basesStatus,
+    });
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("#NEW");
+  });
+
+  it("restores the latest persisted content after bounded CAS retries are exhausted", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    const persistedRows = (tracked.metadata.rows as any[]).map((row) => ({
+      ...row,
+      compactCopyLine: `${row.compactCopyLine} persisted`,
+    }));
+    const staleTracked = {
+      ...tracked,
+      metadata: { ...tracked.metadata, rows: persistedRows },
+    } as any;
+    let currentTracked = staleTracked;
+    let allowLaterReaction = false;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      if (!allowLaterReaction) return { count: 0 };
+      currentTracked = { ...currentTracked, metadata: args.data.metadata };
+      return { count: 1 };
+    });
+    const refreshRows = persistedRows.map((row) => ({
+      ...row,
+      compactCopyLine: `${row.compactCopyLine} unpersisted`,
+    }));
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, { rows: refreshRows as any }),
+    ).resolves.toBe(false);
+
+    expect(currentTracked.metadata.rows[0].compactCopyLine).toContain("persisted");
+    expect(currentTracked.metadata.rows[0].compactCopyLine).not.toContain("unpersisted");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("persisted");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("unpersisted");
+
+    allowLaterReaction = true;
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+        kind: "add",
+        reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+      }),
+    ).resolves.toBe(true);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("persisted");
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("unpersisted");
+  });
+
+  it("recovers the latest persisted content when a reconciliation Discord edit fails", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    const persistedRows = tracked.metadata.rows as any[];
+    const staleTracked = { ...tracked, metadata: { ...tracked.metadata, rows: persistedRows } } as any;
+    let currentTracked = staleTracked;
+    let updateAttempts = 0;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      updateAttempts += 1;
+      if (updateAttempts === 1) return { count: 0 };
+      currentTracked = { ...currentTracked, metadata: args.data.metadata };
+      return { count: 1 };
+    });
+    const edit = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("reconciliation edit failed"))
+      .mockResolvedValueOnce(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      edit,
+    } as any;
+    const refreshRows = persistedRows.map((row) => ({
+      ...row,
+      compactCopyLine: `${row.compactCopyLine} unpersisted`,
+    }));
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, { rows: refreshRows as any }),
+    ).resolves.toBe(false);
+
+    expect(edit).toHaveBeenCalledTimes(3);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("Bravo");
+    expect(currentTracked.metadata.rows).toEqual(persistedRows);
+  });
+
+  it("does not overwrite a newer automatic-refresh claim during reconciliation", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    tracked.metadata = {
+      ...tracked.metadata,
+      kind: "mail_checklist",
+      autoRefreshClaimToken: "claim-old",
+    };
+    let currentTracked: any = tracked;
+    let updateAttempts = 0;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      updateAttempts += 1;
+      if (updateAttempts === 1) {
+        currentTracked = {
+          ...currentTracked,
+          metadata: {
+            ...currentTracked.metadata,
+            autoRefreshClaimToken: "claim-new",
+            autoRefreshLastAttemptAtIso: "2026-05-13T18:02:00.000Z",
+          },
+        };
+        return { count: 0 };
+      }
+      currentTracked = { ...currentTracked, metadata: args.data.metadata };
+      return { count: 1 };
+    });
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+        rows: tracked.metadata.rows as any,
+        automatic: true,
+        autoRefreshClaimToken: "claim-old",
+      }),
+    ).resolves.toBe(false);
+
+    expect(updateAttempts).toBe(1);
+    expect(currentTracked.metadata.autoRefreshClaimToken).toBe("claim-new");
+    expect(edit).toHaveBeenCalledTimes(1);
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+        kind: "add",
+        reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+      }),
+    ).resolves.toBe(true);
+    expect(currentTracked.metadata.autoRefreshClaimToken).toBe("claim-new");
+  });
+
+  it.each([TRACKED_MESSAGE_STATUS.EXPIRED, TRACKED_MESSAGE_STATUS.REPLACED])(
+    "does not recover or refresh a checklist that became %s during reconciliation",
+    async (status) => {
+      const tracked = makeTrackedChecklistRow();
+      tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+      let currentTracked: any = tracked;
+      let updateAttempts = 0;
+      prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+      prismaMock.trackedMessage.updateMany.mockImplementation(async () => {
+        updateAttempts += 1;
+        currentTracked = { ...currentTracked, status };
+        return { count: 0 };
+      });
+      const edit = vi.fn().mockResolvedValue(undefined);
+      const message = {
+        id: tracked.messageId,
+        reactions: { cache: { values: function* () { yield* []; } } },
+        edit,
+      } as any;
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+          rows: tracked.metadata.rows as any,
+        }),
+      ).resolves.toBe(false);
+
+      expect(updateAttempts).toBe(1);
+      expect(currentTracked.status).toBe(status);
+      expect(edit).toHaveBeenCalledTimes(1);
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+          kind: "add",
+          reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+        }),
+      ).resolves.toBe(false);
+      expect(edit).toHaveBeenCalledTimes(1);
+    },
+  );
 });
