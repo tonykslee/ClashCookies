@@ -14753,7 +14753,7 @@ async function resolveSafeFwaPointsProjection(input: {
     return null;
   }
 
-  return resolveSafeFwaPointsProjectionFromService({
+  const projection = await resolveSafeFwaPointsProjectionFromService({
     resolver: input.resolver ?? pointsEstimateResolver,
     guildId: input.guildId,
     clanTag: input.clanTag,
@@ -14770,6 +14770,12 @@ async function resolveSafeFwaPointsProjection(input: {
       warState: input.activeWar.warState,
     },
   });
+  if (!projection) return null;
+  return {
+    clanBalance: projection.clanBalance,
+    opponentBalance: projection.opponentBalance,
+    estimated: projection.estimated,
+  };
 }
 
 export const resolveSafeFwaPointsProjectionForTest =
