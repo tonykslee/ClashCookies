@@ -167,6 +167,8 @@ function configureRoutineMailRenderFixture(params?: {
   primaryWinnerBoxSync?: number;
   opponentWinnerBoxSync?: number;
   includeOpponentSnapshot?: boolean;
+  currentWarOutcome?: "WIN" | "LOSE" | null;
+  inferredMatchType?: boolean;
   currentWarIdentity?: {
     warId?: string;
     startTime?: Date;
@@ -189,8 +191,8 @@ function configureRoutineMailRenderFixture(params?: {
     opponentName: "Opponent",
     clanName: "Home",
     matchType: "FWA",
-    inferredMatchType: false,
-    outcome: null,
+    inferredMatchType: params?.inferredMatchType ?? false,
+    outcome: params?.currentWarOutcome ?? null,
     fwaPoints: 100,
     opponentFwaPoints: 98,
     clanStars: null,
@@ -304,6 +306,35 @@ function configureRoutineMailRenderFixture(params?: {
         opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
       }),
     },
+  };
+}
+
+function makeSafeFwaPointsResolver(params?: {
+  syncNumber?: number;
+  clanBalance?: number | null;
+  opponentBalance?: number | null;
+  projectionSafe?: boolean;
+  coverage?: "complete_reconstruction" | "last_known_unresolved_history";
+}) {
+  const syncNumber = params?.syncNumber ?? 102;
+  return {
+    resolveMatchup: vi.fn().mockResolvedValue({
+      clan: {
+        balance: params?.clanBalance === undefined ? 101 : params.clanBalance,
+        coverage: params?.coverage ?? "complete_reconstruction",
+        projectionSafe: params?.projectionSafe ?? true,
+        syncNumber,
+        isEstimate: true,
+      },
+      opponent: {
+        balance:
+          params?.opponentBalance === undefined ? 99 : params.opponentBalance,
+        coverage: params?.coverage ?? "complete_reconstruction",
+        projectionSafe: params?.projectionSafe ?? true,
+        syncNumber,
+        isEstimate: true,
+      },
+    }),
   };
 }
 
@@ -564,7 +595,7 @@ describe("/fwa match response normalization", () => {
       syncFetchedAt: new Date("2026-05-13T19:00:00.000Z"),
     });
     prismaMock.trackedClan.findMany.mockResolvedValue([
-      { tag: "#HOME", name: "Home", shortName: "H", mailChannelId: null },
+      { tag: "#HOME", name: "Home", shortName: "H", mailChannelId: "mail-1" },
     ]);
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
@@ -693,8 +724,8 @@ describe("/fwa match response normalization", () => {
     expect(result.embed.toJSON().fields?.[0]?.value).toContain(
       "Outcome: **WIN**",
     );
-    expect(view.effectiveRevisionFields?.expectedOutcome).toBe("UNKNOWN");
-    expect(view.mailAction?.enabled).toBe(false);
+    expect(view.effectiveRevisionFields?.expectedOutcome).toBe("WIN");
+    expect(view.mailAction?.enabled).toBe(true);
     const overviewUpsert = prismaMock.currentWar.upsert.mock.calls.at(-1)?.[0];
     expect(overviewUpsert).toEqual(
       expect.objectContaining({
@@ -832,7 +863,7 @@ describe("/fwa match response normalization", () => {
     },
   );
 
-  it("retains same-war stored points for a blocked routine mail render without deriving an outcome", async () => {
+  it("uses a safe same-war projection for a blocked routine mail render", async () => {
     const warStartTime = new Date("2026-05-13T18:00:00.000Z");
     const currentWar = {
       guildId: "guild-1",
@@ -897,7 +928,13 @@ describe("/fwa match response normalization", () => {
       } as any,
       "guild-1",
       "#HOME",
-      { routine: true, fetchReason: "mail_refresh" },
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: makeSafeFwaPointsResolver({
+          syncNumber: 102,
+        }) as any,
+      },
     );
 
     expect(result.embed.toJSON().fields).toEqual(
@@ -908,8 +945,9 @@ describe("/fwa match response normalization", () => {
         }),
       ]),
     );
-    expect(result.expectedOutcome).toBe("UNKNOWN");
-    expect(result.renderResult.kind).toBe("unresolved_fwa_expected_outcome");
+    expect(result.expectedOutcome).toBe("WIN");
+    expect(result.renderResult.kind).toBe("resolved_fwa");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
   });
 
   it("does not display stored points from a stale war identity during a blocked mail render", async () => {
@@ -1002,15 +1040,21 @@ describe("/fwa match response normalization", () => {
       cocService as any,
       "guild-1",
       "#HOME",
-      { routine: true, fetchReason: "mail_refresh" },
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: makeSafeFwaPointsResolver({
+          syncNumber: 103,
+        }) as any,
+      },
     );
 
     expect(axiosGet).toHaveBeenCalledTimes(1);
     expect(result.embed.toJSON().fields).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
     );
-    expect(result.expectedOutcome).toBe("UNKNOWN");
-    expect(result.mailRevisionDecision.mailBlockedReason).toBeTruthy();
+    expect(result.expectedOutcome).toBe("WIN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
     expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
     axiosGet.mockRestore();
   });
@@ -1024,14 +1068,20 @@ describe("/fwa match response normalization", () => {
       cocService as any,
       "guild-1",
       "#HOME",
-      { routine: true, fetchReason: "mail_refresh" },
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: makeSafeFwaPointsResolver({
+          syncNumber: 103,
+        }) as any,
+      },
     );
 
     expect(result.embed.toJSON().fields).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
     );
-    expect(result.expectedOutcome).toBe("UNKNOWN");
-    expect(result.mailRevisionDecision.mailBlockedReason).toBeTruthy();
+    expect(result.expectedOutcome).toBe("WIN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
     expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
   });
 
@@ -1040,16 +1090,178 @@ describe("/fwa match response normalization", () => {
       primaryWinnerBoxSync: 103,
       opponentWinnerBoxSync: 103,
     });
+    const resolver = makeSafeFwaPointsResolver({ syncNumber: 103 });
 
     const result = await buildWarMailEmbedForTagForTest(
       cocService as any,
       "guild-1",
       "#HOME",
-      { routine: true, fetchReason: "mail_refresh" },
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: resolver as any,
+      },
     );
 
     expect(result.embed.toJSON().fields).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
+    );
+    expect(result.expectedOutcome).toBe("WIN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
+    expect(resolver.resolveMatchup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "WIN from unequal projected points",
+      clanBalance: 101,
+      opponentBalance: 99,
+      expectedOutcome: "WIN" as const,
+      currentSyncNumber: 103,
+    },
+    {
+      name: "LOSE from unequal projected points",
+      clanBalance: 99,
+      opponentBalance: 101,
+      expectedOutcome: "LOSE" as const,
+      currentSyncNumber: 103,
+    },
+    {
+      name: "WIN from a low-sync equal-point tiebreak",
+      clanBalance: 100,
+      opponentBalance: 100,
+      expectedOutcome: "WIN" as const,
+      currentSyncNumber: 103,
+    },
+    {
+      name: "LOSE from a high-sync equal-point tiebreak",
+      clanBalance: 100,
+      opponentBalance: 100,
+      expectedOutcome: "LOSE" as const,
+      currentSyncNumber: 104,
+    },
+  ])("allows a complete stale-site projection to resolve mail: $name", async (scenario) => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      currentSyncNumber: scenario.currentSyncNumber,
+      sourceSyncNumber: scenario.currentSyncNumber + 1,
+    });
+    const resolver = makeSafeFwaPointsResolver({
+      syncNumber: scenario.currentSyncNumber,
+      clanBalance: scenario.clanBalance,
+      opponentBalance: scenario.opponentBalance,
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: resolver as any,
+      },
+    );
+
+    expect(result.expectedOutcome).toBe(scenario.expectedOutcome);
+    expect(result.renderResult).toEqual({
+      kind: "resolved_fwa",
+      matchType: "FWA",
+      expectedOutcome: scenario.expectedOutcome,
+    });
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
+    expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
+    expect(resolver.resolveMatchup).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a confirmed current-war outcome ahead of a conflicting safe projection", async () => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      sourceSyncNumber: 104,
+      currentWarOutcome: "LOSE",
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: makeSafeFwaPointsResolver({
+          syncNumber: 103,
+          clanBalance: 101,
+          opponentBalance: 99,
+        }) as any,
+      },
+    );
+
+    expect(result.expectedOutcome).toBe("LOSE");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeNull();
+  });
+
+  it("keeps safe outcome projection behind the inferred-match-type gate", async () => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      sourceSyncNumber: 104,
+      inferredMatchType: true,
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: makeSafeFwaPointsResolver({
+          syncNumber: 103,
+        }) as any,
+      },
+    );
+
+    expect(result.expectedOutcome).toBe("WIN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toContain(
+      "Match type is inferred",
+    );
+  });
+
+  it.each([
+    {
+      name: "unresolved history coverage",
+      resolver: makeSafeFwaPointsResolver({
+        syncNumber: 103,
+        projectionSafe: false,
+        coverage: "last_known_unresolved_history",
+      }),
+    },
+    {
+      name: "conflicting active sync",
+      resolver: makeSafeFwaPointsResolver({ syncNumber: 102 }),
+    },
+    {
+      name: "missing clan balance",
+      resolver: makeSafeFwaPointsResolver({
+        syncNumber: 103,
+        clanBalance: null,
+      }),
+    },
+  ])("does not authorize mail from $name", async ({ resolver }) => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      sourceSyncNumber: 104,
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      {
+        routine: true,
+        fetchReason: "mail_refresh",
+        pointsEstimateResolver: resolver as any,
+      },
+    );
+
+    expect(result.expectedOutcome).toBe("UNKNOWN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toContain(
+      "outcome is unresolved",
     );
   });
 
