@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import axios from "axios";
 
 const blacklistClanServiceMock = vi.hoisted(() => ({
   upsertBlacklistClanTags: vi.fn(),
@@ -33,10 +34,12 @@ const fwaMatchChecklistStateServiceMock = vi.hoisted(() => ({
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  $executeRaw: vi.fn(),
   clanPointsSync: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
     findUnique: vi.fn(),
+    upsert: vi.fn(),
   },
   trackedClan: {
     findFirst: vi.fn(),
@@ -50,6 +53,9 @@ const prismaMock = vi.hoisted(() => ({
     upsert: vi.fn(),
   },
   warMailLifecycle: {
+    findFirst: vi.fn(),
+  },
+  clanWarPlan: {
     findFirst: vi.fn(),
   },
   trackedMessage: {
@@ -84,10 +90,13 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 import {
   Fwa,
   buildTrackedMatchOverviewForTest,
+  buildWarMailEmbedForTagForTest,
+  clearPointsSnapshotCachesForTest,
   normalizeFwaMatchResponseModeForTest,
   resolveCurrentWarOutcomeForPersistenceForTest,
   resolveFwaMatchDisplayStateForTest,
   resolveSafeFwaPointsProjectionForTest,
+  setPointsSnapshotCacheForTest,
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 
@@ -152,13 +161,162 @@ function makeMatchInteraction(params: {
   return { interaction, deferReply, editReply };
 }
 
+function configureRoutineMailRenderFixture(params?: {
+  currentSyncNumber?: number;
+  sourceSyncNumber?: number;
+  primaryWinnerBoxSync?: number;
+  opponentWinnerBoxSync?: number;
+  includeOpponentSnapshot?: boolean;
+  currentWarIdentity?: {
+    warId?: string;
+    startTime?: Date;
+    opponentTag?: string;
+  };
+}) {
+  const warStartTime = new Date("2026-05-13T18:00:00.000Z");
+  const currentSyncNumber = params?.currentSyncNumber ?? 103;
+  const sourceSyncNumber = params?.sourceSyncNumber ?? 102;
+  const identity = params?.currentWarIdentity ?? {};
+  const currentWar = {
+    guildId: "guild-1",
+    clanTag: "#HOME",
+    warId: identity.warId ?? "7001",
+    startTime: identity.startTime ?? warStartTime,
+    opponentTag: identity.opponentTag ?? "#OPP",
+    state: "inWar",
+    prepStartTime: new Date("2026-05-12T18:00:00.000Z"),
+    endTime: new Date("2026-05-14T18:00:00.000Z"),
+    opponentName: "Opponent",
+    clanName: "Home",
+    matchType: "FWA",
+    inferredMatchType: false,
+    outcome: null,
+    fwaPoints: 100,
+    opponentFwaPoints: 98,
+    clanStars: null,
+    opponentStars: null,
+    clanDestruction: null,
+    opponentDestruction: null,
+    updatedAt: new Date("2026-05-14T18:01:00.000Z"),
+  };
+  const syncRow = {
+    guildId: "guild-1",
+    clanTag: "#HOME",
+    warId: currentWar.warId,
+    warStartTime: currentWar.startTime,
+    syncNum: currentSyncNumber,
+    lastKnownSyncNumber: currentSyncNumber,
+    lastKnownMatchType: "FWA",
+    lastKnownOutcome: null,
+    opponentTag: currentWar.opponentTag,
+    clanPoints: null,
+    opponentPoints: null,
+    isFwa: true,
+    needsValidation: false,
+    confirmedByClanMail: false,
+    lastSuccessfulPointsApiFetchAt: new Date("2026-05-14T18:01:00.000Z"),
+    syncFetchedAt: new Date("2026-05-14T18:01:00.000Z"),
+    updatedAt: new Date("2026-05-14T18:01:00.000Z"),
+  };
+  const sourceSyncRow = {
+    ...syncRow,
+    syncNum: sourceSyncNumber,
+    lastKnownSyncNumber: sourceSyncNumber,
+    needsValidation: true,
+  };
+  prismaMock.$queryRaw.mockResolvedValue([
+    { tag: "#HOME", name: "Home", mailChannelId: "mail-1", clanRoleId: null },
+  ]);
+  prismaMock.currentWar.findUnique.mockResolvedValue(currentWar);
+  prismaMock.currentWar.findFirst.mockResolvedValue(currentWar);
+  prismaMock.clanPointsSync.findUnique.mockResolvedValue(syncRow);
+  prismaMock.clanPointsSync.findFirst.mockResolvedValue(sourceSyncRow);
+  prismaMock.trackedClan.findUnique.mockResolvedValue({ mailConfig: null });
+
+  const snapshot = (tag: string, opponentTag: string, winnerBoxSync: number, balance: number) => ({
+    version: 5,
+    tag,
+    url: `https://points.fwafarm.com/clan?tag=${tag.replace(/^#/, "")}`,
+    snapshotSource: "direct",
+    lookupState: "ok",
+    balance,
+    clanName: tag === "#HOME" ? "Home" : "Opponent",
+    activeFwa: true,
+    notFound: false,
+    winnerBoxText: null,
+    winnerBoxTags: [tag, opponentTag],
+    winnerBoxSync,
+    effectiveSync: winnerBoxSync,
+    syncMode: "high",
+    winnerBoxHasTag: true,
+    headerPrimaryTag: tag,
+    headerOpponentTag: opponentTag,
+    headerPrimaryBalance: balance,
+    headerOpponentBalance: tag === "#HOME" ? 98 : 100,
+    warEndMs: null,
+    lastWarCheckAtMs: null,
+    fetchedAtMs: Date.now(),
+    refreshedForWarEndMs: null,
+  });
+  const requestContext = {
+    guildId: "guild-1",
+    warId: currentWar.warId,
+    warStartTime: currentWar.startTime,
+    opponentTag: currentWar.opponentTag,
+    currentSyncNumber,
+    sourceSyncNumber,
+  };
+  setPointsSnapshotCacheForTest({
+    tag: "#HOME",
+    snapshot: snapshot(
+      "#HOME",
+      "#OPP",
+      params?.primaryWinnerBoxSync ?? currentSyncNumber,
+      100,
+    ) as any,
+    requestContext,
+  });
+  if (params?.includeOpponentSnapshot !== false) {
+    setPointsSnapshotCacheForTest({
+      tag: "#OPP",
+      snapshot: snapshot(
+        "#OPP",
+        "#HOME",
+        params?.opponentWinnerBoxSync ?? currentSyncNumber,
+        98,
+      ) as any,
+      requestContext: {
+        ...requestContext,
+        opponentTag: "#HOME",
+      },
+    });
+  }
+
+  return {
+    warStartTime,
+    cocService: {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        startTime: "20260513T180000.000Z",
+        preparationStartTime: "20260512T180000.000Z",
+        endTime: "20260514T180000.000Z",
+        clan: { tag: "#HOME", name: "Home", stars: 0, attacks: 0 },
+        opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
+      }),
+    },
+  };
+}
+
 describe("/fwa match response normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearPointsSnapshotCachesForTest();
     prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$executeRaw.mockResolvedValue(1);
     prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
     prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
     prismaMock.clanPointsSync.findUnique.mockResolvedValue(null);
+    prismaMock.clanPointsSync.upsert.mockResolvedValue({});
     prismaMock.trackedClan.findFirst.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -167,6 +325,7 @@ describe("/fwa match response normalization", () => {
     prismaMock.currentWar.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.upsert.mockResolvedValue({});
     prismaMock.warMailLifecycle.findFirst.mockResolvedValue(null);
+    prismaMock.clanWarPlan.findFirst.mockResolvedValue(null);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
@@ -554,6 +713,344 @@ describe("/fwa match response normalization", () => {
       }),
     );
     expect(resolver.resolveMatchup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["BL", "MM"] as const)(
+    "does not render a safe FWA projection as %s points when the website snapshot is missing",
+    async (revisionMatchType) => {
+      const warStartTime = new Date("2026-05-13T18:00:00.000Z");
+      prismaMock.trackedClan.findMany.mockResolvedValue([
+        { tag: "#HOME", name: "Home", shortName: "H", mailChannelId: null },
+      ]);
+      prismaMock.currentWar.findMany.mockResolvedValue([
+        {
+          clanTag: "#HOME",
+          warId: "7001",
+          startTime: warStartTime,
+          opponentTag: "#OPP",
+          state: "inWar",
+          prepStartTime: new Date("2026-05-12T18:00:00.000Z"),
+          endTime: null,
+          opponentName: "Opponent",
+          clanName: "Home",
+          channelId: "channel-1",
+          notify: false,
+          pingRole: false,
+          notifyRole: false,
+          matchType: "FWA",
+          inferredMatchType: false,
+          outcome: null,
+          fwaPoints: 100,
+          opponentFwaPoints: 98,
+        },
+      ]);
+      prismaMock.clanPointsSync.findMany.mockResolvedValue([
+        {
+          clanTag: "#HOME",
+          warId: "7001",
+          warStartTime: warStartTime,
+          syncNum: 102,
+          lastKnownSyncNumber: 102,
+          lastKnownMatchType: "FWA",
+          opponentTag: "#OPP",
+          clanPoints: 100,
+          opponentPoints: 98,
+          isFwa: true,
+          needsValidation: false,
+          lastSuccessfulPointsApiFetchAt: new Date("2026-05-13T19:00:00.000Z"),
+          syncFetchedAt: new Date("2026-05-13T19:00:00.000Z"),
+        },
+      ]);
+
+      const resolver = {
+        resolveMatchup: vi.fn().mockResolvedValue({
+          clan: {
+            balance: 101,
+            coverage: "complete_reconstruction",
+            projectionSafe: true,
+            syncNumber: 102,
+            isEstimate: true,
+          },
+          opponent: {
+            balance: 99,
+            coverage: "complete_reconstruction",
+            projectionSafe: true,
+            syncNumber: 102,
+            isEstimate: true,
+          },
+        }),
+      };
+      const cocService = {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "inWar",
+          startTime: "20260513T180000.000Z",
+          preparationStartTime: "20260512T180000.000Z",
+          endTime: null,
+          clan: { tag: "#HOME", name: "Home", stars: 0, attacks: 0 },
+          opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
+        }),
+      };
+
+      const result = await buildTrackedMatchOverviewForTest(
+        cocService as any,
+        102,
+        "guild-1",
+        undefined,
+        null,
+        {
+          includeActualSheet: false,
+          pointsEstimateResolver: resolver as any,
+          revisionDraftByTag: {
+            HOME: {
+              warId: "7001",
+              opponentTag: "#OPP",
+              matchType: revisionMatchType,
+              expectedOutcome: null,
+            },
+          },
+          pointsSnapshotProvider: vi.fn(async () => null as any),
+        },
+      );
+
+      const view = result.singleViews.HOME;
+      expect(view.embed.toJSON().fields).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "Points",
+            value: "Unavailable",
+          }),
+        ]),
+      );
+      expect(view.embed.toJSON().fields).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: expect.stringMatching(/Estimated|Persisted/),
+          }),
+        ]),
+      );
+      expect(resolver.resolveMatchup).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retains same-war stored points for a blocked routine mail render without deriving an outcome", async () => {
+    const warStartTime = new Date("2026-05-13T18:00:00.000Z");
+    const currentWar = {
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      warId: "7001",
+      startTime: warStartTime,
+      opponentTag: "#OPP",
+      state: "inWar",
+      prepStartTime: new Date("2026-05-12T18:00:00.000Z"),
+      endTime: new Date("2026-05-14T18:00:00.000Z"),
+      opponentName: "Opponent",
+      clanName: "Home",
+      matchType: "FWA",
+      inferredMatchType: false,
+      outcome: null,
+      fwaPoints: 100,
+      opponentFwaPoints: 98,
+      clanStars: null,
+      opponentStars: null,
+      clanDestruction: null,
+      opponentDestruction: null,
+      updatedAt: new Date("2026-05-14T18:01:00.000Z"),
+    };
+    const syncRow = {
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      warId: "7001",
+      warStartTime,
+      syncNum: 102,
+      lastKnownSyncNumber: 102,
+      lastKnownMatchType: "FWA",
+      lastKnownOutcome: null,
+      opponentTag: "#OPP",
+      clanPoints: 100,
+      opponentPoints: 98,
+      isFwa: true,
+      needsValidation: false,
+      confirmedByClanMail: false,
+      lastSuccessfulPointsApiFetchAt: new Date("2026-05-14T18:01:00.000Z"),
+      syncFetchedAt: new Date("2026-05-14T18:01:00.000Z"),
+      updatedAt: new Date("2026-05-14T18:01:00.000Z"),
+    };
+    prismaMock.$queryRaw.mockResolvedValue([
+      { tag: "#HOME", name: "Home", mailChannelId: "mail-1", clanRoleId: null },
+    ]);
+    prismaMock.currentWar.findUnique.mockResolvedValue(currentWar);
+    prismaMock.currentWar.findFirst.mockResolvedValue(currentWar);
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue(syncRow);
+    prismaMock.clanPointsSync.findFirst.mockResolvedValue(syncRow);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ mailConfig: null });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "inWar",
+          startTime: "20260513T180000.000Z",
+          preparationStartTime: "20260512T180000.000Z",
+          endTime: "20260514T180000.000Z",
+          clan: { tag: "#HOME", name: "Home", stars: 0, attacks: 0 },
+          opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
+        }),
+      } as any,
+      "guild-1",
+      "#HOME",
+      { routine: true, fetchReason: "mail_refresh" },
+    );
+
+    expect(result.embed.toJSON().fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Stored Points",
+          value: "100 - 98 (current points unavailable)",
+        }),
+      ]),
+    );
+    expect(result.expectedOutcome).toBe("UNKNOWN");
+    expect(result.renderResult.kind).toBe("unresolved_fwa_expected_outcome");
+  });
+
+  it("does not display stored points from a stale war identity during a blocked mail render", async () => {
+    const staleWarStartTime = new Date("2026-05-12T18:00:00.000Z");
+    const currentWar = {
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      warId: "6001",
+      startTime: staleWarStartTime,
+      opponentTag: "#OLDOPP",
+      state: "inWar",
+      prepStartTime: new Date("2026-05-11T18:00:00.000Z"),
+      endTime: new Date("2026-05-13T18:00:00.000Z"),
+      opponentName: "Old Opponent",
+      clanName: "Home",
+      matchType: "FWA",
+      inferredMatchType: false,
+      outcome: null,
+      fwaPoints: 100,
+      opponentFwaPoints: 98,
+      clanStars: null,
+      opponentStars: null,
+      clanDestruction: null,
+      opponentDestruction: null,
+      updatedAt: new Date("2026-05-13T18:01:00.000Z"),
+    };
+    const syncRow = {
+      guildId: "guild-1",
+      clanTag: "#HOME",
+      warId: "6001",
+      warStartTime: staleWarStartTime,
+      syncNum: 101,
+      lastKnownSyncNumber: 101,
+      lastKnownMatchType: "FWA",
+      lastKnownOutcome: null,
+      opponentTag: "#OLDOPP",
+      clanPoints: 100,
+      opponentPoints: 98,
+      isFwa: true,
+      needsValidation: false,
+      confirmedByClanMail: false,
+      lastSuccessfulPointsApiFetchAt: new Date("2026-05-13T18:01:00.000Z"),
+      syncFetchedAt: new Date("2026-05-13T18:01:00.000Z"),
+      updatedAt: new Date("2026-05-13T18:01:00.000Z"),
+    };
+    prismaMock.$queryRaw.mockResolvedValue([
+      { tag: "#HOME", name: "Home", mailChannelId: "mail-1", clanRoleId: null },
+    ]);
+    prismaMock.currentWar.findUnique.mockResolvedValue(currentWar);
+    prismaMock.currentWar.findFirst.mockResolvedValue(currentWar);
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue(syncRow);
+    prismaMock.clanPointsSync.findFirst.mockResolvedValue(syncRow);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ mailConfig: null });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      {
+        getCurrentWar: vi.fn().mockResolvedValue({
+          state: "inWar",
+          startTime: "20260513T180000.000Z",
+          preparationStartTime: "20260512T180000.000Z",
+          endTime: "20260514T180000.000Z",
+          clan: { tag: "#HOME", name: "Home", stars: 0, attacks: 0 },
+          opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
+        }),
+      } as any,
+      "guild-1",
+      "#HOME",
+      { routine: true, fetchReason: "mail_refresh" },
+    );
+
+    expect(result.embed.toJSON().fields).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Stored Points" }),
+      ]),
+    );
+    expect(result.expectedOutcome).toBeNull();
+    expect(result.renderResult.kind).not.toBe("resolved_fwa_expected_outcome");
+  });
+
+  it("shows stored points when only one routine website snapshot is available and currentness is false", async () => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      includeOpponentSnapshot: false,
+      sourceSyncNumber: 104,
+    });
+    const axiosGet = vi
+      .spyOn(axios, "get")
+      .mockResolvedValue({ status: 400, data: "" } as any);
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      { routine: true, fetchReason: "mail_refresh" },
+    );
+
+    expect(axiosGet).toHaveBeenCalledTimes(1);
+    expect(result.embed.toJSON().fields).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
+    );
+    expect(result.expectedOutcome).toBe("UNKNOWN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeTruthy();
+    expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
+    axiosGet.mockRestore();
+  });
+
+  it("shows stored points when both website snapshots are present but stale", async () => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      sourceSyncNumber: 104,
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      { routine: true, fetchReason: "mail_refresh" },
+    );
+
+    expect(result.embed.toJSON().fields).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
+    );
+    expect(result.expectedOutcome).toBe("UNKNOWN");
+    expect(result.mailRevisionDecision.mailBlockedReason).toBeTruthy();
+    expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
+  });
+
+  it("does not show stored points when the routine website pair is current", async () => {
+    const { cocService } = configureRoutineMailRenderFixture({
+      primaryWinnerBoxSync: 103,
+      opponentWinnerBoxSync: 103,
+    });
+
+    const result = await buildWarMailEmbedForTagForTest(
+      cocService as any,
+      "guild-1",
+      "#HOME",
+      { routine: true, fetchReason: "mail_refresh" },
+    );
+
+    expect(result.embed.toJSON().fields).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Stored Points" })]),
+    );
   });
 
   it("normalizes copy-paste into public visibility", () => {
