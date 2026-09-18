@@ -169,7 +169,7 @@ import {
 } from "../services/MatchTypeResolutionService";
 import {
   PointsEstimateResolverService,
-  type PointsEstimateResult,
+  resolveSafeFwaPointsProjection as resolveSafeFwaPointsProjectionFromService,
 } from "../services/PointsEstimateResolverService";
 import { knownBlacklistEvidenceService } from "../services/KnownBlacklistEvidenceService";
 import {
@@ -14753,9 +14753,11 @@ async function resolveSafeFwaPointsProjection(input: {
     return null;
   }
 
-  const matchup = await (input.resolver ?? pointsEstimateResolver).resolveMatchup({
+  return resolveSafeFwaPointsProjectionFromService({
+    resolver: input.resolver ?? pointsEstimateResolver,
     guildId: input.guildId,
     clanTag: input.clanTag,
+    opponentTag: input.opponentTag,
     activeWar: {
       trackedClanTag: input.activeWar.trackedClanTag,
       warId: input.activeWar.warId,
@@ -14768,20 +14770,6 @@ async function resolveSafeFwaPointsProjection(input: {
       warState: input.activeWar.warState,
     },
   });
-  const activeSync = Math.trunc(input.activeWar.syncNumber);
-  const isSafe = (result: PointsEstimateResult): boolean =>
-    result.projectionSafe === true &&
-    result.coverage === "complete_reconstruction" &&
-    result.balance !== null &&
-    Number.isFinite(result.balance) &&
-    result.syncNumber === activeSync;
-  if (!isSafe(matchup.clan) || !isSafe(matchup.opponent)) return null;
-
-  return {
-    clanBalance: Math.trunc(matchup.clan.balance as number),
-    opponentBalance: Math.trunc(matchup.opponent.balance as number),
-    estimated: matchup.clan.isEstimate || matchup.opponent.isEstimate,
-  };
 }
 
 export const resolveSafeFwaPointsProjectionForTest =

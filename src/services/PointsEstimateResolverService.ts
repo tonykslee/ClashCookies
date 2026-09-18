@@ -123,6 +123,13 @@ export type PointsEstimateResult = {
   reason: string;
 };
 
+export type SafeFwaPointsProjection = {
+  clanBalance: number;
+  opponentBalance: number;
+  syncNumber: number;
+  estimated: boolean;
+};
+
 type ResolverInput = {
   guildId: string;
   clanTag: string;
@@ -1022,6 +1029,59 @@ export class PointsEstimateResolverService {
     if (source === "unavailable") dozzleLog.warn(line);
     else dozzleLog.debug(line);
   }
+}
+
+/**
+ * Purpose: accept only a complete, same-sync DB projection for an active FWA
+ * matchup. This is shared by command and checklist display paths so neither
+ * caller can widen projection eligibility independently.
+ */
+export async function resolveSafeFwaPointsProjection(input: {
+  resolver: Pick<PointsEstimateResolverService, "resolveMatchup">;
+  guildId: string;
+  clanTag: string;
+  opponentTag: string;
+  activeWar: Omit<PointsEstimateActiveWarContext, "opponentTag"> & {
+    opponentTag: string;
+    matchType?: string | null;
+    syncNumber?: number | null;
+  };
+}): Promise<SafeFwaPointsProjection | null> {
+  if (!String(input.guildId ?? "").trim() || !input.activeWar.opponentTag) return null;
+  if (String(input.activeWar.matchType ?? "").trim().toUpperCase() !== "FWA") return null;
+
+  const matchup = await input.resolver.resolveMatchup({
+    guildId: input.guildId,
+    clanTag: input.clanTag,
+    activeWar: {
+      ...input.activeWar,
+      opponentTag: input.opponentTag,
+    },
+  });
+  const requestedSync = finiteInt(input.activeWar.syncNumber);
+  const resolvedSync = requestedSync ?? matchup.clan.syncNumber;
+  const isSafe = (result: PointsEstimateResult): boolean =>
+    result.projectionSafe === true &&
+    result.coverage === "complete_reconstruction" &&
+    result.balance !== null &&
+    Number.isFinite(result.balance) &&
+    result.syncNumber !== null &&
+    (resolvedSync === null || result.syncNumber === resolvedSync);
+  if (!isSafe(matchup.clan) || !isSafe(matchup.opponent)) return null;
+  if (
+    matchup.clan.syncNumber === null ||
+    matchup.opponent.syncNumber === null ||
+    matchup.clan.syncNumber !== matchup.opponent.syncNumber
+  ) {
+    return null;
+  }
+
+  return {
+    clanBalance: Math.trunc(matchup.clan.balance as number),
+    opponentBalance: Math.trunc(matchup.opponent.balance as number),
+    syncNumber: matchup.clan.syncNumber,
+    estimated: matchup.clan.isEstimate || matchup.opponent.isEstimate,
+  };
 }
 
 /** Purpose: match a points-sync row to active identity without relying on an external site identity. */
