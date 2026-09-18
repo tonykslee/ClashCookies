@@ -4189,6 +4189,88 @@ describe("fwa checklist tracked messages", () => {
     await expect(reaction).resolves.toBe(true);
 
     expect(currentMetadata.checkedClanTags).toHaveLength(1);
+    expect(currentMetadata.autoRefreshClaimToken).toBe("claim-1");
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅");
+  });
+
+  it("reconciles metadata after a post-edit CAS conflict and keeps resolved rows for later reactions", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    const unresolvedRows = tracked.metadata.rows.map((row: any) => ({
+      ...row,
+      compactCopyLine: "📭 | 🔘 | ☐ | RR vs `-`",
+      warId: null,
+      opponentTag: null,
+      warStartTimeIso: null,
+    }));
+    const resolvedRows = unresolvedRows.map((row: any) => ({
+      ...row,
+      compactCopyLine: "📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)",
+      warId: 1001,
+      opponentTag: "#B1",
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    }));
+    const staleTracked = {
+      ...tracked,
+      metadata: { ...tracked.metadata, rows: unresolvedRows },
+    } as any;
+    let currentTracked = staleTracked;
+    let updateAttempts = 0;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      updateAttempts += 1;
+      if (updateAttempts === 1) {
+        currentTracked = {
+          ...currentTracked,
+          metadata: {
+            ...currentTracked.metadata,
+            autoRefreshLastAttemptAtIso: "2026-05-13T18:01:00.000Z",
+          },
+        };
+        return { count: 0 };
+      }
+      currentTracked = {
+        ...currentTracked,
+        expiresAt: args.data.expiresAt ?? currentTracked.expiresAt,
+        metadata: args.data.metadata,
+      };
+      return { count: 1 };
+    });
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      edit,
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+        rows: resolvedRows as any,
+        scopeKey: "resolved-scope",
+      }),
+    ).resolves.toBe(true);
+
+    expect(updateAttempts).toBe(2);
+    expect(currentTracked.metadata.autoRefreshLastAttemptAtIso).toBe("2026-05-13T18:01:00.000Z");
+    expect(currentTracked.metadata.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ opponentTag: "#B1", warId: 1001 }),
+      ]),
+    );
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("#B1");
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+        kind: "add",
+        reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+      }),
+    ).resolves.toBe(true);
+
+    expect(currentTracked.metadata.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ opponentTag: "#B1", warId: "1001" }),
+      ]),
+    );
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("#B1");
   });
 });
