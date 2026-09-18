@@ -14509,6 +14509,68 @@ function buildCurrentWarPointsUpdate(input: {
   };
 }
 
+/** Purpose: retain already-loaded same-war balances for diagnostics after a resolver read failure. */
+function resolveFwaStoredParticipantEvidence(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    fwaPoints?: number | null;
+    opponentFwaPoints?: number | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+  sameWarSyncRow: WarScopedSyncReuseRow | null;
+}): {
+  clan: FwaStoredParticipantEvidence;
+  opponent: FwaStoredParticipantEvidence;
+} {
+  const empty = (): FwaStoredParticipantEvidence => ({
+    balance: null,
+    label: null,
+  });
+  const clan = empty();
+  const opponent = empty();
+  const isFiniteBalance = (value: number | null | undefined): value is number =>
+    value !== null && value !== undefined && Number.isFinite(Number(value));
+
+  if (
+    canPreserveCurrentWarPointsForActiveWar({
+      currentWar: input.currentWar,
+      activeWarId: input.activeWarId,
+      activeWarStartTime: input.activeWarStartTime,
+      activeOpponentTag: input.activeOpponentTag,
+    })
+  ) {
+    if (isFiniteBalance(input.currentWar?.fwaPoints)) {
+      clan.balance = Math.trunc(Number(input.currentWar.fwaPoints));
+      clan.label = "Last known, stored CurrentWar";
+    }
+    if (isFiniteBalance(input.currentWar?.opponentFwaPoints)) {
+      opponent.balance = Math.trunc(Number(input.currentWar.opponentFwaPoints));
+      opponent.label = "Last known, stored CurrentWar";
+    }
+  }
+
+  const row = input.sameWarSyncRow;
+  if (row && !row.needsValidation) {
+    const syncLabel = Number.isFinite(Number(row.syncNum))
+      ? `, sync #${Math.trunc(Number(row.syncNum))}`
+      : "";
+    if (clan.balance === null && isFiniteBalance(row.clanPoints)) {
+      clan.balance = Math.trunc(Number(row.clanPoints));
+      clan.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+    if (opponent.balance === null && isFiniteBalance(row.opponentPoints)) {
+      opponent.balance = Math.trunc(Number(row.opponentPoints));
+      opponent.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+  }
+
+  return { clan, opponent };
+}
+
 /** Purpose: preserve explicit opponent-not-found handling by deriving a proven snapshot from the tracked clan page. */
 async function resolveTrackedClanFallbackSnapshot(input: {
   settings: SettingsService;
@@ -14851,7 +14913,12 @@ type FwaPointsParticipantDisplay = {
   balance: number | null;
   kind: FwaPointsParticipantDisplayKind;
   label: string | null;
-  syncNumber: number | null;
+  anchorSyncNumber: number | null;
+};
+
+type FwaStoredParticipantEvidence = {
+  balance: number | null;
+  label: string | null;
 };
 
 type FwaPointsMatchupEvidence = {
@@ -14884,6 +14951,8 @@ function resolveFwaParticipantDisplay(input: {
   currentBalance: number | null;
   result: PointsEstimateResult | null;
   siteUpdatedForAlert: boolean;
+  activeSyncNumber: number | null;
+  storedEvidence?: FwaStoredParticipantEvidence | null;
 }): FwaPointsParticipantDisplay {
   const currentBalance = toFiniteDisplayBalance(input.currentBalance);
   if (input.siteUpdatedForAlert && currentBalance !== null) {
@@ -14891,23 +14960,33 @@ function resolveFwaParticipantDisplay(input: {
       balance: currentBalance,
       kind: "current",
       label: null,
-      syncNumber: input.result?.syncNumber ?? null,
+      anchorSyncNumber: null,
     };
   }
 
   const resultBalance = toFiniteDisplayBalance(input.result?.balance ?? null);
+  const anchorSyncNumber =
+    input.result?.baseline?.syncNumber ??
+    input.result?.provenance?.syncNumber ??
+    null;
+  const resultSyncNumber = input.result?.syncNumber ?? null;
+  const syncAligned =
+    input.activeSyncNumber !== null &&
+    resultSyncNumber !== null &&
+    resultSyncNumber === input.activeSyncNumber;
   if (
     input.result &&
     resultBalance !== null &&
     input.result.projectionSafe === true &&
-    input.result.coverage === "complete_reconstruction"
+    input.result.coverage === "complete_reconstruction" &&
+    syncAligned
   ) {
     const estimated = input.result.isEstimate === true;
     return {
       balance: resultBalance,
       kind: estimated ? "estimated" : "persisted",
       label: estimated ? "Estimated" : "Persisted",
-      syncNumber: input.result.syncNumber,
+      anchorSyncNumber,
     };
   }
 
@@ -14916,14 +14995,44 @@ function resolveFwaParticipantDisplay(input: {
     resultBalance !== null &&
     input.result.coverage === "last_known_unresolved_history"
   ) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "history incomplete";
     return {
       balance: resultBalance,
       kind: "last_known",
-      label:
-        input.result.syncNumber !== null
-          ? `Last known, history incomplete, sync #${input.result.syncNumber}`
-          : "Last known, history incomplete",
-      syncNumber: input.result.syncNumber,
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  if (input.result && resultBalance !== null) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "projection not safe";
+    return {
+      balance: resultBalance,
+      kind: "last_known",
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  const storedBalance = toFiniteDisplayBalance(
+    input.storedEvidence?.balance ?? null,
+  );
+  if (storedBalance !== null) {
+    return {
+      balance: storedBalance,
+      kind: "last_known",
+      label: input.storedEvidence?.label ?? "Last known, diagnostic",
+      anchorSyncNumber: null,
     };
   }
 
@@ -14931,7 +15040,7 @@ function resolveFwaParticipantDisplay(input: {
     balance: null,
     kind: "unavailable",
     label: null,
-    syncNumber: input.result?.syncNumber ?? null,
+    anchorSyncNumber,
   };
 }
 
@@ -15035,6 +15144,10 @@ function resolveFwaMatchDisplayState(input: {
   currentOpponentBalance: number | null;
   matchupEvidence?: FwaPointsMatchupEvidence | null;
   safeProjection: SafeFwaPointsProjection | null;
+  storedEvidence?: {
+    clan: FwaStoredParticipantEvidence;
+    opponent: FwaStoredParticipantEvidence;
+  } | null;
   siteUpdatedForAlert: boolean;
 }): FwaMatchDisplayState {
   const matchup =
@@ -15061,11 +15174,15 @@ function resolveFwaMatchDisplayState(input: {
     currentBalance: input.currentPrimaryBalance,
     result: matchup?.clan ?? null,
     siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.clan ?? null,
   });
   const opponentDisplay = resolveFwaParticipantDisplay({
     currentBalance: input.currentOpponentBalance,
     result: matchup?.opponent ?? null,
     siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.opponent ?? null,
   });
   const primaryBalance = primaryDisplay.balance;
   const opponentBalance = opponentDisplay.balance;
@@ -16221,6 +16338,16 @@ async function buildTrackedMatchOverview(
         : null;
     const safeFwaPointsProjection =
       fwaPointsMatchupEvidence?.safeProjection ?? null;
+    const storedFwaParticipantEvidence =
+      !siteUpdatedForAlert
+        ? resolveFwaStoredParticipantEvidence({
+            currentWar: sub,
+            activeWarId: warIdForReuse,
+            activeWarStartTime: warStartTimeForReuse,
+            activeOpponentTag: opponentTag,
+            sameWarSyncRow: confirmedCurrentWarSyncRow,
+          })
+        : null;
     const displayState = resolveFwaMatchDisplayState({
       clanTag,
       opponentTag,
@@ -16229,6 +16356,7 @@ async function buildTrackedMatchOverview(
       currentOpponentBalance,
       matchupEvidence: fwaPointsMatchupEvidence,
       safeProjection: safeFwaPointsProjection,
+      storedEvidence: storedFwaParticipantEvidence,
       siteUpdatedForAlert,
     });
     const displayPrimaryBalance = displayState.primaryBalance;

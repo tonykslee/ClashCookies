@@ -324,10 +324,30 @@ function makeSafeFwaPointsResolver(params?: {
   opponentSyncNumber?: number | null;
 }) {
   const syncNumber = params?.syncNumber ?? 102;
+  const makeBaseline = (balance: number | null, resultSync: number | null) =>
+    balance === null
+      ? null
+      : {
+          clanTag: "#HOME",
+          sourceClanTag: "#HOME",
+          warId: "game-war-102",
+          syncNumber: resultSync,
+          warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+          observedAt: new Date("2026-05-13T19:00:00.000Z"),
+          kind: "observed" as const,
+        };
   return {
     resolveMatchup: vi.fn().mockResolvedValue({
       clan: {
         balance: params?.clanBalance === undefined ? 101 : params.clanBalance,
+        baseline: makeBaseline(
+          params?.clanBalance === undefined ? 101 : params.clanBalance,
+          syncNumber,
+        ),
+        provenance: makeBaseline(
+          params?.clanBalance === undefined ? 101 : params.clanBalance,
+          syncNumber,
+        ),
         coverage: params?.clanCoverage ?? params?.coverage ?? "complete_reconstruction",
         projectionSafe: params?.clanProjectionSafe ?? params?.projectionSafe ?? true,
         syncNumber,
@@ -336,6 +356,14 @@ function makeSafeFwaPointsResolver(params?: {
       opponent: {
         balance:
           params?.opponentBalance === undefined ? 99 : params.opponentBalance,
+        baseline: makeBaseline(
+          params?.opponentBalance === undefined ? 99 : params.opponentBalance,
+          params?.opponentSyncNumber ?? syncNumber,
+        ),
+        provenance: makeBaseline(
+          params?.opponentBalance === undefined ? 99 : params.opponentBalance,
+          params?.opponentSyncNumber ?? syncNumber,
+        ),
         coverage:
           params?.opponentCoverage ??
           params?.coverage ??
@@ -359,6 +387,8 @@ function configurePartialOverviewFixture(params: {
   clanIsEstimate?: boolean;
   opponentIsEstimate?: boolean;
   opponentSyncNumber?: number | null;
+  includeStoredPoints?: boolean;
+  resolverFailure?: boolean;
 }) {
   const warStartTime = new Date("2026-05-13T18:00:00.000Z");
   prismaMock.trackedClan.findMany.mockResolvedValue([
@@ -382,8 +412,8 @@ function configurePartialOverviewFixture(params: {
       matchType: "FWA",
       inferredMatchType: false,
       outcome: null,
-      fwaPoints: 100,
-      opponentFwaPoints: 98,
+      fwaPoints: params.includeStoredPoints === false ? null : 100,
+      opponentFwaPoints: params.includeStoredPoints === false ? null : 98,
     },
   ]);
   prismaMock.clanPointsSync.findMany.mockResolvedValue([
@@ -395,8 +425,8 @@ function configurePartialOverviewFixture(params: {
       lastKnownSyncNumber: 102,
       lastKnownMatchType: "FWA",
       opponentTag: "#OPP",
-      clanPoints: 100,
-      opponentPoints: 98,
+      clanPoints: params.includeStoredPoints === false ? null : 100,
+      opponentPoints: params.includeStoredPoints === false ? null : 98,
       isFwa: true,
       needsValidation: false,
       lastSuccessfulPointsApiFetchAt: new Date("2026-05-13T19:00:00.000Z"),
@@ -415,6 +445,9 @@ function configurePartialOverviewFixture(params: {
     opponentIsEstimate: params.opponentIsEstimate,
     opponentSyncNumber: params.opponentSyncNumber,
   });
+  if (params.resolverFailure) {
+    resolver.resolveMatchup.mockRejectedValue(new Error("resolver read failed"));
+  }
   const cocService = {
     getCurrentWar: vi.fn().mockResolvedValue({
       state: "inWar",
@@ -434,12 +467,25 @@ function makeDisplayResult(params: {
   projectionSafe: boolean;
   syncNumber?: number | null;
   isEstimate?: boolean;
+  baselineSyncNumber?: number | null;
 }) {
+  const baseline =
+    params.balance === null
+      ? null
+      : {
+          clanTag: "#HOME",
+          sourceClanTag: "#HOME",
+          warId: "game-war-102",
+          syncNumber: params.baselineSyncNumber ?? params.syncNumber ?? 102,
+          warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+          observedAt: new Date("2026-05-13T19:00:00.000Z"),
+          kind: "observed" as const,
+        };
   return {
     balance: params.balance,
     source: "history_reconstruction",
-    provenance: null,
-    baseline: null,
+    provenance: baseline,
+    baseline,
     isEstimate: params.isEstimate ?? true,
     isValidatedCurrentMatchupEvidence: false,
     coverage: params.coverage,
@@ -653,13 +699,13 @@ describe("/fwa match response normalization", () => {
         balance: 101,
         kind: "estimated",
         label: "Estimated",
-        syncNumber: 102,
+        anchorSyncNumber: null,
       },
       opponentDisplay: {
         balance: 99,
         kind: "estimated",
         label: "Estimated",
-        syncNumber: 102,
+        anchorSyncNumber: null,
       },
       estimated: true,
       displayOnlyFallback: true,
@@ -691,13 +737,13 @@ describe("/fwa match response normalization", () => {
         balance: 101,
         kind: "persisted",
         label: "Persisted",
-        syncNumber: 102,
+        anchorSyncNumber: null,
       },
       opponentDisplay: {
         balance: 99,
         kind: "persisted",
         label: "Persisted",
-        syncNumber: 102,
+        anchorSyncNumber: null,
       },
       estimated: false,
       displayOnlyFallback: true,
@@ -725,13 +771,13 @@ describe("/fwa match response normalization", () => {
         balance: null,
         kind: "unavailable",
         label: null,
-        syncNumber: null,
+        anchorSyncNumber: null,
       },
       opponentDisplay: {
         balance: null,
         kind: "unavailable",
         label: null,
-        syncNumber: null,
+        anchorSyncNumber: null,
       },
       estimated: false,
       displayOnlyFallback: false,
@@ -753,7 +799,10 @@ describe("/fwa match response normalization", () => {
         coverage: "no_usable_balance",
         projectionSafe: false,
       }),
-      expected: ["Home: 101 (Estimated)", "Opponent: unavailable"],
+      expected: [
+        "Home: 101 (Estimated)",
+        "Opponent: unavailable",
+      ],
     },
     {
       name: "own missing and opponent complete",
@@ -767,7 +816,10 @@ describe("/fwa match response normalization", () => {
         coverage: "complete_reconstruction",
         projectionSafe: true,
       }),
-      expected: ["Home: unavailable", "Opponent: 99 (Estimated)"],
+      expected: [
+        "Home: unavailable",
+        "Opponent: 99 (Estimated)",
+      ],
     },
     {
       name: "own complete and opponent last known",
@@ -783,7 +835,7 @@ describe("/fwa match response normalization", () => {
       }),
       expected: [
         "Home: 101 (Estimated)",
-        "Opponent: 99 (Last known, history incomplete, sync #102)",
+        "Opponent: 99 (Last known, history incomplete, anchor sync #102)",
       ],
     },
     {
@@ -799,8 +851,8 @@ describe("/fwa match response normalization", () => {
         projectionSafe: false,
       }),
       expected: [
-        "Home: 101 (Last known, history incomplete, sync #102)",
-        "Opponent: 99 (Last known, history incomplete, sync #102)",
+        "Home: 101 (Last known, history incomplete, anchor sync #102)",
+        "Opponent: 99 (Last known, history incomplete, anchor sync #102)",
       ],
     },
     {
@@ -816,7 +868,7 @@ describe("/fwa match response normalization", () => {
         projectionSafe: false,
       }),
       expected: [
-        "Home: 101 (Last known, history incomplete, sync #102)",
+        "Home: 101 (Last known, history incomplete, anchor sync #102)",
         "Opponent: unavailable",
       ],
     },
@@ -920,6 +972,78 @@ describe("/fwa match response normalization", () => {
 
     expect(state.primaryDisplay.kind).toBe("unavailable");
     expect(state.opponentDisplay.kind).toBe("unavailable");
+    expect(state.projectedOutcome).toBeNull();
+  });
+
+  it("labels a reconstructed balance by its baseline anchor, not the active sync", () => {
+    const state = resolveFwaMatchDisplayStateForTest({
+      clanTag: "#HOME",
+      opponentTag: "#OPP",
+      syncNumber: 102,
+      currentPrimaryBalance: null,
+      currentOpponentBalance: null,
+      matchupEvidence: {
+        matchup: {
+          clan: makeDisplayResult({
+            balance: 100,
+            coverage: "last_known_unresolved_history",
+            projectionSafe: false,
+            syncNumber: 102,
+            baselineSyncNumber: 100,
+          }),
+          opponent: makeDisplayResult({
+            balance: 98,
+            coverage: "last_known_unresolved_history",
+            projectionSafe: false,
+            syncNumber: 102,
+            baselineSyncNumber: 100,
+          }),
+        },
+        safeProjection: null,
+      } as any,
+      safeProjection: null,
+      siteUpdatedForAlert: false,
+    });
+
+    expect(state.primaryDisplay.label).toBe(
+      "Last known, history incomplete, anchor sync #100",
+    );
+    expect(state.primaryDisplay.label).not.toContain("sync #102");
+  });
+
+  it("keeps unresolved active-sync values diagnostic", () => {
+    const state = resolveFwaMatchDisplayStateForTest({
+      clanTag: "#HOME",
+      opponentTag: "#OPP",
+      syncNumber: null,
+      currentPrimaryBalance: null,
+      currentOpponentBalance: null,
+      matchupEvidence: {
+        matchup: {
+          clan: makeDisplayResult({
+            balance: 100,
+            coverage: "complete_reconstruction",
+            projectionSafe: true,
+            syncNumber: 102,
+            baselineSyncNumber: 100,
+          }),
+          opponent: makeDisplayResult({
+            balance: 98,
+            coverage: "complete_reconstruction",
+            projectionSafe: true,
+            syncNumber: 102,
+            baselineSyncNumber: 100,
+          }),
+        },
+        safeProjection: null,
+      } as any,
+      safeProjection: null,
+      siteUpdatedForAlert: false,
+    });
+
+    expect(state.primaryDisplay.balance).toBe(100);
+    expect(state.primaryDisplay.kind).toBe("last_known");
+    expect(state.primaryDisplay.label).toContain("active sync unresolved");
     expect(state.projectedOutcome).toBeNull();
   });
 
@@ -1101,7 +1225,10 @@ describe("/fwa match response normalization", () => {
         opponentCoverage: "no_usable_balance" as const,
         opponentProjectionSafe: false,
       },
-      expected: ["Home: 101 (Estimated)", "Opponent: unavailable"],
+      expected: [
+        "Home: 101 (Estimated)",
+        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
+      ],
     },
     {
       name: "own missing and opponent complete",
@@ -1111,7 +1238,10 @@ describe("/fwa match response normalization", () => {
         clanProjectionSafe: false,
         opponentBalance: 99,
       },
-      expected: ["Home: unavailable", "Opponent: 99 (Estimated)"],
+      expected: [
+        "Home: 100 (Last known, stored ClanPointsSync, sync #102)",
+        "Opponent: 99 (Estimated)",
+      ],
     },
     {
       name: "own complete and opponent last known",
@@ -1123,7 +1253,7 @@ describe("/fwa match response normalization", () => {
       },
       expected: [
         "Home: 101 (Estimated)",
-        "Opponent: 99 (Last known, history incomplete, sync #102)",
+        "Opponent: 99 (Last known, history incomplete, anchor sync #102)",
       ],
     },
     {
@@ -1137,8 +1267,8 @@ describe("/fwa match response normalization", () => {
         opponentProjectionSafe: false,
       },
       expected: [
-        "Home: 101 (Last known, history incomplete, sync #102)",
-        "Opponent: 99 (Last known, history incomplete, sync #102)",
+        "Home: 101 (Last known, history incomplete, anchor sync #102)",
+        "Opponent: 99 (Last known, history incomplete, anchor sync #102)",
       ],
     },
     {
@@ -1152,8 +1282,8 @@ describe("/fwa match response normalization", () => {
         opponentProjectionSafe: false,
       },
       expected: [
-        "Home: 101 (Last known, history incomplete, sync #102)",
-        "Opponent: unavailable",
+        "Home: 101 (Last known, history incomplete, anchor sync #102)",
+        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
       ],
     },
     {
@@ -1165,6 +1295,7 @@ describe("/fwa match response normalization", () => {
         opponentBalance: null,
         opponentCoverage: "no_usable_balance" as const,
         opponentProjectionSafe: false,
+        includeStoredPoints: false,
       },
       expected: ["Home: unavailable", "Opponent: unavailable"],
     },
@@ -1175,7 +1306,10 @@ describe("/fwa match response normalization", () => {
         opponentBalance: 99,
         opponentSyncNumber: 101,
       },
-      expected: ["Home: 101 (Estimated)", "Opponent: 99 (Estimated)"],
+      expected: [
+        "Home: 101 (Estimated)",
+        "Opponent: 99 (Last known, sync conflict (#101 vs active #102), anchor sync #101)",
+      ],
     },
   ])("renders independent partial FWA balances at the real overview call site: $name", async ({ fixture, expected }) => {
     const { resolver, cocService } = configurePartialOverviewFixture(fixture);
@@ -1211,6 +1345,53 @@ describe("/fwa match response normalization", () => {
       expect(payload.create?.opponentFwaPoints).not.toBe(99);
       expect(payload.update?.fwaPoints).not.toBe(101);
       expect(payload.update?.opponentFwaPoints).not.toBe(99);
+    }
+  });
+
+  it("shows exact-war stored balances diagnostically after a resolver failure in both views", async () => {
+    const { resolver, cocService } = configurePartialOverviewFixture({
+      clanBalance: null,
+      opponentBalance: null,
+      clanCoverage: "no_usable_balance",
+      opponentCoverage: "no_usable_balance",
+      clanProjectionSafe: false,
+      opponentProjectionSafe: false,
+      resolverFailure: true,
+    });
+
+    const result = await buildTrackedMatchOverviewForTest(
+      cocService as any,
+      102,
+      "guild-1",
+      undefined,
+      null,
+      {
+        includeActualSheet: false,
+        pointsEstimateResolver: resolver as any,
+        pointsSnapshotProvider: vi.fn(async () => null as any),
+      },
+    );
+
+    const allianceValue = JSON.stringify(result.embed.toJSON().fields ?? []);
+    const singleView = result.singleViews.HOME;
+    const singleValue = JSON.stringify(singleView.embed.toJSON().fields ?? []);
+    for (const value of [allianceValue, singleValue]) {
+      expect(value).toContain(
+        "Home: 100 (Last known, stored ClanPointsSync, sync #102)",
+      );
+      expect(value).toContain(
+        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
+      );
+    }
+    expect(singleView.projectedFwaOutcome).toBeNull();
+    expect(singleView.mailAction?.enabled).toBe(false);
+    expect(resolver.resolveMatchup).toHaveBeenCalledTimes(1);
+    expect(prismaMock.clanPointsSync.upsert).not.toHaveBeenCalled();
+    for (const [payload] of prismaMock.currentWar.upsert.mock.calls) {
+      expect(payload.create?.fwaPoints).not.toBe(100);
+      expect(payload.create?.opponentFwaPoints).not.toBe(98);
+      expect(payload.update?.fwaPoints).not.toBe(100);
+      expect(payload.update?.opponentFwaPoints).not.toBe(98);
     }
   });
 
