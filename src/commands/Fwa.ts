@@ -3427,6 +3427,36 @@ function resolveRoutineBlockedPointsFetchSkipLogLevel(params: {
 function resetFwaSteadyStateLogTrackers(): void {
   fwaMatchTypeResolutionLogGate.clear();
   fwaRoutinePointsSkipLogGate.clear();
+  fwaMailOutcomeResolutionLogGate.clear();
+}
+
+type FwaMailOutcomeSource =
+  | "confirmed_current_war"
+  | "validated_current_website"
+  | "safe_persisted_projection"
+  | "unresolved";
+
+/** Purpose: emit one bounded diagnostic when the active FWA mail outcome source changes. */
+function logFwaMailOutcomeResolution(params: {
+  stage: "overview" | "mail_embed";
+  guildId: string | null | undefined;
+  clanTag: string;
+  opponentTag: string | null | undefined;
+  warId: string | number | null | undefined;
+  syncNumber: number | null | undefined;
+  source: FwaMailOutcomeSource;
+  outcome: "WIN" | "LOSE" | "UNKNOWN";
+}): void {
+  const identity = `fwa-mail-outcome|stage=${params.stage}|guild=${params.guildId ?? "none"}|clan=${normalizeTag(params.clanTag)}|war=${normalizeWarIdText(params.warId) ?? "unknown"}`;
+  const signature = `source=${params.source}|outcome=${params.outcome}|sync=${params.syncNumber ?? "unknown"}|opponent=${normalizeTag(String(params.opponentTag ?? ""))}`;
+  const level = resolveSteadyStateLogLevel({
+    gate: fwaMailOutcomeResolutionLogGate,
+    identity,
+    signature,
+  });
+  const line = `[fwa-mail-outcome] stage=${params.stage} guild=${params.guildId ?? "none"} clan=#${normalizeTag(params.clanTag)} opponent=#${normalizeTag(String(params.opponentTag ?? "")) || "unknown"} war_id=${normalizeWarIdText(params.warId) ?? "unknown"} sync=${params.syncNumber ?? "unknown"} source=${params.source} outcome=${params.outcome}`;
+  if (level === "info") console.info(line);
+  else console.debug(line);
 }
 
 /** Purpose: emit structured logs for match-type source/inference/confirmation decisions. */
@@ -3562,6 +3592,7 @@ const pointsSnapshotCache = new Map<string, PointsSnapshotCacheEntry>();
 const pointsSnapshotInFlight = new Map<string, Promise<PointsSnapshot>>();
 const fwaMatchTypeResolutionLogGate = new SteadyStateLogGate();
 const fwaRoutinePointsSkipLogGate = new SteadyStateLogGate();
+const fwaMailOutcomeResolutionLogGate = new SteadyStateLogGate();
 
 export function setFwaBaseSwapSplitPostPayloadForTest(
   key: string,
@@ -5756,6 +5787,10 @@ async function buildWarMailEmbedForTag(
     targetedWarReconcileClient?: Client | null;
     activeCycleSyncNumber?: number | null;
     activeCycleConflict?: boolean;
+    pointsEstimateResolver?: Pick<
+      PointsEstimateResolverService,
+      "resolveMatchup"
+    >;
   },
 ): Promise<{
   embed: EmbedBuilder;
@@ -6262,6 +6297,39 @@ async function buildWarMailEmbedForTag(
       warStartTime: warStartTimeForSync,
       activeCycleConflict: activeWarSyncConflict,
     });
+    const safeFwaPointsProjection =
+      !siteCurrent && matchType === "FWA" && warStartTimeForSync
+        ? await resolveSafeFwaPointsProjection({
+            guildId,
+            clanTag: normalizedTag,
+            opponentTag,
+            activeWar: {
+              trackedClanTag: normalizedTag,
+              warId: warIdForSync,
+              warStartTime: warStartTimeForSync,
+              prepStartTime: preparationStartTimeForSync,
+              syncNumber: finalResolvedCurrentSyncNum,
+              matchType,
+              inferredMatchType,
+              warState,
+            },
+            resolver: options?.pointsEstimateResolver,
+          }).catch((error) => {
+            console.debug(
+              `[fwa-points-estimate] stage=mail_embed outcome=unavailable clan=#${normalizedTag} opponent=#${opponentTag} error=${String(error)}`,
+            );
+            return null;
+          })
+        : null;
+    const safeProjectedOutcome = safeFwaPointsProjection
+      ? deriveProjectedOutcome(
+          normalizedTag,
+          opponentTag,
+          safeFwaPointsProjection.clanBalance,
+          safeFwaPointsProjection.opponentBalance,
+          finalResolvedCurrentSyncNum,
+        )
+      : null;
     const derivedOutcome = deriveProjectedOutcome(
       normalizedTag,
       opponentTag,
@@ -6273,7 +6341,26 @@ async function buildWarMailEmbedForTag(
       matchType,
       currentWarOutcome: currentWarRenderState.outcome,
       currentWarOutcomeConfirmed: appliedResolution?.confirmed === true,
-      projectedOutcome: derivedOutcome,
+      projectedOutcome: siteCurrent ? derivedOutcome : safeProjectedOutcome,
+    });
+    const outcomeSource: FwaMailOutcomeSource =
+      appliedResolution?.confirmed === true &&
+      toWinLoseOutcome(currentWarRenderState.outcome) !== null
+        ? "confirmed_current_war"
+        : siteCurrent && toWinLoseOutcome(outcome) !== null
+          ? "validated_current_website"
+          : safeProjectedOutcome !== null
+            ? "safe_persisted_projection"
+            : "unresolved";
+    logFwaMailOutcomeResolution({
+      stage: "mail_embed",
+      guildId,
+      clanTag: normalizedTag,
+      opponentTag,
+      warId: warIdForSync,
+      syncNumber: finalResolvedCurrentSyncNum,
+      source: outcomeSource,
+      outcome: toWinLoseOutcome(outcome) ?? "UNKNOWN",
     });
     if (
       siteCurrent &&
@@ -16108,6 +16195,38 @@ async function buildTrackedMatchOverview(
       matchType === "FWA" || matchType === "BL" || matchType === "MM"
         ? matchType
         : "UNKNOWN";
+    const hasConfirmedCurrentOutcome =
+      appliedResolution.confirmed === true &&
+      toWinLoseOutcome(sub?.outcome as "WIN" | "LOSE" | null | undefined) !==
+        null;
+    const safeProjectedMailOutcome =
+      usesDisplayOnlyProjection &&
+      matchType === "FWA" &&
+      !hasConfirmedCurrentOutcome
+        ? toWinLoseOutcome(derivedOutcome)
+        : null;
+    const mailOutcomeForDecision =
+      safeProjectedMailOutcome ?? toWinLoseOutcome(liveExpectedOutcome);
+    const mailOutcomeSource: FwaMailOutcomeSource =
+      appliedResolution.confirmed === true &&
+      toWinLoseOutcome(sub?.outcome as "WIN" | "LOSE" | null | undefined) !==
+        null
+        ? "confirmed_current_war"
+        : siteUpdatedForAlert && mailOutcomeForDecision !== null
+          ? "validated_current_website"
+          : safeProjectedMailOutcome !== null
+            ? "safe_persisted_projection"
+            : "unresolved";
+    logFwaMailOutcomeResolution({
+      stage: "overview",
+      guildId,
+      clanTag,
+      opponentTag,
+      warId: warIdForReuse,
+      syncNumber: finalResolvedCurrentSyncNum,
+      source: mailOutcomeSource,
+      outcome: mailOutcomeForDecision ?? "UNKNOWN",
+    });
     const mailRevisionDecision =
       await resolveMailRevisionDecisionForRenderedState({
         client: client ?? null,
@@ -16122,9 +16241,7 @@ async function buildTrackedMatchOverview(
         matchType: matchTypeForMailDecision,
         expectedOutcome:
           matchTypeForMailDecision === "FWA"
-            ? (usesDisplayOnlyProjection && appliedResolution.confirmed !== true
-                ? "UNKNOWN"
-                : (liveExpectedOutcome ?? "UNKNOWN"))
+            ? (mailOutcomeForDecision ?? "UNKNOWN")
             : null,
         draft: revisionDraftByTag[clanTag] ?? null,
       });
