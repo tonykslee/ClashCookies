@@ -6136,8 +6136,7 @@ async function buildWarMailEmbedForTag(
   }
   const storedPointsFallbackAvailable =
     options?.routine === true &&
-    (!routineDecision.allowed ||
-      (primarySnapshot === null && opponentSnapshot === null)) &&
+    !siteCurrent &&
     storedPrimaryBalance !== null &&
     storedOpponentBalance !== null;
   if (opponentTag) {
