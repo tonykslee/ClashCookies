@@ -428,6 +428,11 @@ async function resolveChecklistEffectiveMatchState(input: {
     matchType?: string | null;
     inferredMatchType?: boolean | null;
   } | null;
+  projectionIdentityWar?: {
+    warId?: number | string | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+  } | null;
   projectionWar?: {
     warId?: number | string | null;
     startTime?: Date | null;
@@ -500,7 +505,21 @@ async function resolveChecklistEffectiveMatchState(input: {
     );
   }
   const projectionActiveWar =
-    activeWar && input.projectionWar
+    activeWar &&
+    input.projectionWar &&
+    input.projectionIdentityWar &&
+    compareActiveWarIdentities({
+      persisted: {
+        warId: input.projectionIdentityWar.warId ?? null,
+        warStartTime: input.projectionIdentityWar.startTime ?? null,
+        opponentTag: input.projectionIdentityWar.opponentTag ?? null,
+      },
+      active: {
+        warId: input.projectionWar.warId ?? null,
+        warStartTime: input.projectionWar.startTime ?? null,
+        opponentTag: input.projectionWar.opponentTag ?? null,
+      },
+    }).sameWar
       ? {
           ...activeWar,
           warId: input.projectionWar.warId ?? null,
@@ -510,7 +529,7 @@ async function resolveChecklistEffectiveMatchState(input: {
         }
       : null;
   const activeSyncNumber =
-    matchType === "FWA" && projectionActiveWar
+    matchType === "FWA" && !currentOutcomeConfirmed && projectionActiveWar
       ? await resolveChecklistActiveSyncNumber({
           guildId: input.guildId ?? "",
           activeWar: {
@@ -526,33 +545,33 @@ async function resolveChecklistEffectiveMatchState(input: {
   const safeProjection =
     matchType === "FWA" &&
     !currentOutcomeConfirmed &&
-    activeWar?.startTime instanceof Date &&
-    Number.isFinite(activeWar.startTime.getTime()) &&
-    normalizeChecklistClanTag(activeWar.opponentTag ?? "") &&
+    projectionActiveWar?.startTime instanceof Date &&
+    Number.isFinite(projectionActiveWar.startTime.getTime()) &&
+    normalizeChecklistClanTag(projectionActiveWar.opponentTag ?? "") &&
     activeSyncNumber !== null &&
     Number.isFinite(Number(activeSyncNumber))
       ? await resolveSafeFwaPointsProjection({
           resolver: input.pointsEstimateResolver ?? pointsEstimateResolver,
           guildId: input.guildId ?? "",
           clanTag: input.clanTag ?? "",
-          opponentTag: activeWar.opponentTag ?? "",
+          opponentTag: projectionActiveWar.opponentTag ?? "",
           activeWar: {
             trackedClanTag: input.clanTag ?? "",
-            warId: activeWar.warId ?? null,
-            warStartTime: activeWar.startTime,
+            warId: projectionActiveWar.warId ?? null,
+            warStartTime: projectionActiveWar.startTime,
             prepStartTime: null,
-            opponentTag: activeWar.opponentTag ?? "",
+            opponentTag: projectionActiveWar.opponentTag ?? "",
             syncNumber: activeSyncNumber,
             matchType: "FWA",
             inferredMatchType: input.currentWar?.inferredMatchType ?? null,
-            warState: activeWar.state ?? "preparation",
+            warState: projectionActiveWar.state ?? "preparation",
           },
         }).catch(() => null)
       : null;
   const safeProjectedOutcome = safeProjection
     ? deriveFwaProjectedOutcomeFromPreparedSync({
         clanTag: input.clanTag ?? "",
-        opponentTag: activeWar?.opponentTag ?? "",
+        opponentTag: projectionActiveWar?.opponentTag ?? activeWar?.opponentTag ?? "",
         clanPoints: safeProjection.clanBalance,
         opponentPoints: safeProjection.opponentBalance,
         syncNum: safeProjection.syncNumber,
@@ -1055,6 +1074,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
+  const persistedCurrentWarByTag = new Map(currentWarByTag);
   const liveWarByTag = new Map<string, any | null>();
   const reconciliationByTag = new Map<string, Awaited<ReturnType<typeof reconcileActiveWarIdentity>> | null>();
   for (const clan of trackedClans) {
@@ -1208,6 +1228,7 @@ async function buildFwaMatchBasesRenderStateForGuild(params: {
       activeWarSyncResolution: params.activeWarSyncResolution,
       clanTag,
       currentWar: activeCurrentWar,
+      projectionIdentityWar: persistedCurrentWarByTag.get(clanTag) ?? null,
       activeWar: activeCurrentWar
         ? {
             warId: activeCurrentWar.warId ?? null,
@@ -1530,6 +1551,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
   const currentWarByTag = new Map(
     currentWars.map((row) => [normalizeChecklistClanTag(row.clanTag), row]),
   );
+  const persistedCurrentWarByTag = new Map(currentWarByTag);
   const liveWarByTag = new Map<string, any | null>();
   const reconciliationByTag = new Map<string, Awaited<ReturnType<typeof reconcileActiveWarIdentity>> | null>();
   for (const clan of trackedClans) {
@@ -1647,6 +1669,7 @@ export async function buildFwaMatchChecklistRenderStateForGuild(params: {
             opponentFwaPoints: effectiveCurrentWar.opponentFwaPoints ?? null,
           }
         : null,
+      projectionIdentityWar: persistedCurrentWarByTag.get(clanTag) ?? null,
       activeWar: mailRenderState.fresh
         ? {
             warId: mailRenderState.warId,
