@@ -36,13 +36,20 @@ const prismaMock = vi.hoisted(() => ({
   clanPointsSync: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
   trackedClan: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
   currentWar: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
+  warMailLifecycle: {
     findFirst: vi.fn(),
   },
   trackedMessage: {
@@ -76,6 +83,7 @@ vi.mock("../src/services/FwaMatchChecklistStateService", () => ({
 
 import {
   Fwa,
+  buildTrackedMatchOverviewForTest,
   normalizeFwaMatchResponseModeForTest,
   resolveCurrentWarOutcomeForPersistenceForTest,
   resolveFwaMatchDisplayStateForTest,
@@ -150,10 +158,15 @@ describe("/fwa match response normalization", () => {
     prismaMock.$queryRaw.mockResolvedValue([]);
     prismaMock.clanPointsSync.findFirst.mockResolvedValue(null);
     prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
+    prismaMock.clanPointsSync.findUnique.mockResolvedValue(null);
     prismaMock.trackedClan.findFirst.mockResolvedValue(null);
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue(null);
     prismaMock.currentWar.findMany.mockResolvedValue([]);
     prismaMock.currentWar.findFirst.mockResolvedValue(null);
+    prismaMock.currentWar.findUnique.mockResolvedValue(null);
+    prismaMock.currentWar.upsert.mockResolvedValue({});
+    prismaMock.warMailLifecycle.findFirst.mockResolvedValue(null);
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
     prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
     blacklistClanServiceMock.upsertBlacklistClanTags.mockReset();
@@ -294,7 +307,7 @@ describe("/fwa match response normalization", () => {
     (_label, estimatedProjection, liveExpectedOutcome, expected) => {
       expect(
         resolveCurrentWarOutcomeForPersistenceForTest({
-          estimatedProjection,
+          displayOnlyProjection: estimatedProjection,
           liveExpectedOutcome,
         }),
       ).toBe(expected);
@@ -314,13 +327,41 @@ describe("/fwa match response normalization", () => {
           opponentBalance: 99,
           estimated: true,
         },
+        siteUpdatedForAlert: false,
       }),
     ).toEqual({
       primaryBalance: 101,
       opponentBalance: 99,
       estimated: true,
+      displayOnlyFallback: true,
       warningLine:
         ":warning: Points projected from persisted evidence; not current points.fwafarm data.",
+      projectedOutcome: "WIN",
+    });
+  });
+
+  it("labels a validated stale-site fallback independently of resolver estimate provenance", () => {
+    expect(
+      resolveFwaMatchDisplayStateForTest({
+        clanTag: "#HOME",
+        opponentTag: "#OPP",
+        syncNumber: 102,
+        currentPrimaryBalance: null,
+        currentOpponentBalance: null,
+        safeProjection: {
+          clanBalance: 101,
+          opponentBalance: 99,
+          estimated: false,
+        },
+        siteUpdatedForAlert: false,
+      }),
+    ).toEqual({
+      primaryBalance: 101,
+      opponentBalance: 99,
+      estimated: false,
+      displayOnlyFallback: true,
+      warningLine:
+        ":warning: Points from persisted fallback evidence; not current points.fwafarm data.",
       projectedOutcome: "WIN",
     });
   });
@@ -334,14 +375,185 @@ describe("/fwa match response normalization", () => {
         currentPrimaryBalance: null,
         currentOpponentBalance: null,
         safeProjection: null,
+        siteUpdatedForAlert: false,
       }),
     ).toEqual({
       primaryBalance: null,
       opponentBalance: null,
       estimated: false,
+      displayOnlyFallback: false,
       warningLine: null,
       projectedOutcome: null,
     });
+  });
+
+  it("keeps a safe validated fallback display-only at the real overview call site", async () => {
+    const warStartTime = new Date("2026-05-13T18:00:00.000Z");
+    const staleSyncRow = (clanTag: string, points: number, opponentPoints: number) => ({
+      clanTag,
+      warId: "7001",
+      warStartTime,
+      syncNum: 102,
+      lastKnownSyncNumber: 102,
+      lastKnownMatchType: "FWA",
+      opponentTag: clanTag === "#HOME" ? "#OPP" : "#HOME",
+      clanPoints: points,
+      opponentPoints,
+      isFwa: true,
+      needsValidation: false,
+      lastSuccessfulPointsApiFetchAt: new Date("2026-05-13T19:00:00.000Z"),
+      syncFetchedAt: new Date("2026-05-13T19:00:00.000Z"),
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#HOME", name: "Home", shortName: "H", mailChannelId: null },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        clanTag: "#HOME",
+        warId: "7001",
+        startTime: warStartTime,
+        opponentTag: "#OPP",
+        state: "inWar",
+        prepStartTime: new Date("2026-05-12T18:00:00.000Z"),
+        endTime: null,
+        opponentName: "Opponent",
+        clanName: "Home",
+        channelId: "channel-1",
+        notify: false,
+        pingRole: false,
+        notifyRole: false,
+        matchType: "FWA",
+        inferredMatchType: false,
+        outcome: null,
+        fwaPoints: 100,
+        opponentFwaPoints: 98,
+      },
+    ]);
+    prismaMock.clanPointsSync.findMany.mockResolvedValue([
+      staleSyncRow("#HOME", 100, 98),
+    ]);
+    prismaMock.currentWar.upsert.mockResolvedValue({
+      warId: "7001",
+      startTime: warStartTime,
+      opponentTag: "#OPP",
+      state: "inWar",
+      matchType: "FWA",
+      inferredMatchType: false,
+      outcome: null,
+      fwaPoints: 100,
+      opponentFwaPoints: 98,
+    });
+
+    const resolver = {
+      resolveMatchup: vi.fn().mockResolvedValue({
+        clan: {
+          balance: 101,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber: 102,
+          isEstimate: false,
+        },
+        opponent: {
+          balance: 99,
+          coverage: "complete_reconstruction",
+          projectionSafe: true,
+          syncNumber: 102,
+          isEstimate: false,
+        },
+      }),
+    };
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue({
+        state: "inWar",
+        startTime: "20260513T180000.000Z",
+        preparationStartTime: "20260512T180000.000Z",
+        endTime: null,
+        clan: { tag: "#HOME", name: "Home", stars: 0, attacks: 0 },
+        opponent: { tag: "#OPP", name: "Opponent", stars: 0, attacks: 0 },
+      }),
+    };
+    const staleSnapshot = (tag: string, balance: number, opponentTag: string, opponentBalance: number) => ({
+      version: 5,
+      tag,
+      url: `https://points.fwafarm.com/clan?tag=${tag.replace(/^#/, "")}`,
+      snapshotSource: "direct",
+      lookupState: "ok",
+      balance,
+      clanName: tag === "#HOME" ? "Home" : "Opponent",
+      activeFwa: true,
+      notFound: false,
+      winnerBoxText: null,
+      winnerBoxTags: [tag, opponentTag],
+      winnerBoxSync: 101,
+      effectiveSync: 101,
+      syncMode: "high",
+      winnerBoxHasTag: true,
+      headerPrimaryTag: tag,
+      headerOpponentTag: opponentTag,
+      headerPrimaryBalance: balance,
+      headerOpponentBalance: opponentBalance,
+      warEndMs: null,
+      lastWarCheckAtMs: null,
+      fetchedAtMs: Date.now(),
+      refreshedForWarEndMs: null,
+    });
+
+    const result = await buildTrackedMatchOverviewForTest(
+      cocService as any,
+      102,
+      "guild-1",
+      undefined,
+      null,
+      {
+        includeActualSheet: false,
+        pointsEstimateResolver: resolver as any,
+        pointsSnapshotProvider: vi.fn(async (tag: string) =>
+          tag === "HOME"
+            ? staleSnapshot("#HOME", 100, "#OPP", 98)
+            : staleSnapshot("#OPP", 98, "#HOME", 100),
+        ),
+      },
+    );
+
+    const view = result.singleViews.HOME;
+    expect(view.embed.toJSON().fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Persisted Points",
+          value: expect.stringContaining("101"),
+        }),
+      ]),
+    );
+    expect(view.embed.toJSON().description).toContain(
+      "persisted fallback evidence",
+    );
+    expect(view.embed.toJSON().description).toContain("Expected outcome: **WIN**");
+    expect(result.embed.toJSON().fields?.[0]?.value).toContain(
+      "Persisted points: 101 - 99",
+    );
+    expect(result.embed.toJSON().fields?.[0]?.value).toContain(
+      "Outcome: **WIN**",
+    );
+    expect(view.effectiveRevisionFields?.expectedOutcome).toBe("UNKNOWN");
+    expect(view.mailAction?.enabled).toBe(false);
+    const overviewUpsert = prismaMock.currentWar.upsert.mock.calls.at(-1)?.[0];
+    expect(overviewUpsert).toEqual(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          fwaPoints: null,
+          opponentFwaPoints: null,
+          outcome: null,
+        }),
+        update: expect.objectContaining({
+          matchType: "FWA",
+          inferredMatchType: false,
+          outcome: undefined,
+          fwaPoints: undefined,
+          opponentFwaPoints: undefined,
+        }),
+      }),
+    );
+    expect(resolver.resolveMatchup).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes copy-paste into public visibility", () => {
