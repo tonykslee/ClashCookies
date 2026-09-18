@@ -169,7 +169,9 @@ import {
 } from "../services/MatchTypeResolutionService";
 import {
   PointsEstimateResolverService,
-  resolveSafeFwaPointsProjection as resolveSafeFwaPointsProjectionFromService,
+  resolveSafeFwaPointsProjectionFromMatchup,
+  type PointsEstimateResult,
+  type ResolvedFwaPointsMatchup,
 } from "../services/PointsEstimateResolverService";
 import { knownBlacklistEvidenceService } from "../services/KnownBlacklistEvidenceService";
 import {
@@ -14507,6 +14509,68 @@ function buildCurrentWarPointsUpdate(input: {
   };
 }
 
+/** Purpose: retain already-loaded same-war balances for diagnostics after a resolver read failure. */
+function resolveFwaStoredParticipantEvidence(input: {
+  currentWar: {
+    warId?: string | number | null;
+    startTime?: Date | null;
+    opponentTag?: string | null;
+    fwaPoints?: number | null;
+    opponentFwaPoints?: number | null;
+  } | null | undefined;
+  activeWarId: string | number | null;
+  activeWarStartTime: Date | null;
+  activeOpponentTag: string | null;
+  sameWarSyncRow: WarScopedSyncReuseRow | null;
+}): {
+  clan: FwaStoredParticipantEvidence;
+  opponent: FwaStoredParticipantEvidence;
+} {
+  const empty = (): FwaStoredParticipantEvidence => ({
+    balance: null,
+    label: null,
+  });
+  const clan = empty();
+  const opponent = empty();
+  const isFiniteBalance = (value: number | null | undefined): value is number =>
+    value !== null && value !== undefined && Number.isFinite(Number(value));
+
+  if (
+    canPreserveCurrentWarPointsForActiveWar({
+      currentWar: input.currentWar,
+      activeWarId: input.activeWarId,
+      activeWarStartTime: input.activeWarStartTime,
+      activeOpponentTag: input.activeOpponentTag,
+    })
+  ) {
+    if (isFiniteBalance(input.currentWar?.fwaPoints)) {
+      clan.balance = Math.trunc(Number(input.currentWar.fwaPoints));
+      clan.label = "Last known, stored CurrentWar";
+    }
+    if (isFiniteBalance(input.currentWar?.opponentFwaPoints)) {
+      opponent.balance = Math.trunc(Number(input.currentWar.opponentFwaPoints));
+      opponent.label = "Last known, stored CurrentWar";
+    }
+  }
+
+  const row = input.sameWarSyncRow;
+  if (row && !row.needsValidation) {
+    const syncLabel = Number.isFinite(Number(row.syncNum))
+      ? `, sync #${Math.trunc(Number(row.syncNum))}`
+      : "";
+    if (clan.balance === null && isFiniteBalance(row.clanPoints)) {
+      clan.balance = Math.trunc(Number(row.clanPoints));
+      clan.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+    if (opponent.balance === null && isFiniteBalance(row.opponentPoints)) {
+      opponent.balance = Math.trunc(Number(row.opponentPoints));
+      opponent.label = `Last known, stored ClanPointsSync${syncLabel}`;
+    }
+  }
+
+  return { clan, opponent };
+}
+
 /** Purpose: preserve explicit opponent-not-found handling by deriving a proven snapshot from the tracked clan page. */
 async function resolveTrackedClanFallbackSnapshot(input: {
   settings: SettingsService;
@@ -14834,8 +14898,206 @@ function deriveProjectedOutcome(
 type SafeFwaPointsProjection = {
   clanBalance: number;
   opponentBalance: number;
+  syncNumber?: number;
   estimated: boolean;
 };
+
+type FwaPointsParticipantDisplayKind =
+  | "current"
+  | "estimated"
+  | "persisted"
+  | "last_known"
+  | "unavailable";
+
+type FwaPointsParticipantDisplay = {
+  balance: number | null;
+  kind: FwaPointsParticipantDisplayKind;
+  label: string | null;
+  anchorSyncNumber: number | null;
+};
+
+type FwaStoredParticipantEvidence = {
+  balance: number | null;
+  label: string | null;
+};
+
+type FwaPointsMatchupEvidence = {
+  matchup: ResolvedFwaPointsMatchup;
+  safeProjection: SafeFwaPointsProjection | null;
+};
+
+type FwaPointsProjectionInput = {
+  guildId: string | null;
+  clanTag: string;
+  opponentTag: string;
+  activeWar: {
+    trackedClanTag: string;
+    warId: string | number | null;
+    warStartTime: Date;
+    prepStartTime?: Date | null;
+    syncNumber: number | null;
+    matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
+    inferredMatchType: boolean | null;
+    warState: "preparation" | "inWar" | "notInWar";
+  };
+  resolver?: Pick<PointsEstimateResolverService, "resolveMatchup">;
+};
+
+function toFiniteDisplayBalance(value: number | null): number | null {
+  return value !== null && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+function resolveFwaParticipantDisplay(input: {
+  currentBalance: number | null;
+  result: PointsEstimateResult | null;
+  siteUpdatedForAlert: boolean;
+  activeSyncNumber: number | null;
+  storedEvidence?: FwaStoredParticipantEvidence | null;
+}): FwaPointsParticipantDisplay {
+  const currentBalance = toFiniteDisplayBalance(input.currentBalance);
+  if (input.siteUpdatedForAlert && currentBalance !== null) {
+    return {
+      balance: currentBalance,
+      kind: "current",
+      label: null,
+      anchorSyncNumber: null,
+    };
+  }
+
+  const resultBalance = toFiniteDisplayBalance(input.result?.balance ?? null);
+  const anchorSyncNumber =
+    input.result?.baseline?.syncNumber ??
+    input.result?.provenance?.syncNumber ??
+    null;
+  const resultSyncNumber = input.result?.syncNumber ?? null;
+  const syncAligned =
+    input.activeSyncNumber !== null &&
+    resultSyncNumber !== null &&
+    resultSyncNumber === input.activeSyncNumber;
+  if (
+    input.result &&
+    resultBalance !== null &&
+    input.result.projectionSafe === true &&
+    input.result.coverage === "complete_reconstruction" &&
+    syncAligned
+  ) {
+    const estimated = input.result.isEstimate === true;
+    return {
+      balance: resultBalance,
+      kind: estimated ? "estimated" : "persisted",
+      label: estimated ? "Estimated" : "Persisted",
+      anchorSyncNumber,
+    };
+  }
+
+  if (
+    input.result &&
+    resultBalance !== null &&
+    input.result.coverage === "last_known_unresolved_history"
+  ) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "history incomplete";
+    return {
+      balance: resultBalance,
+      kind: "last_known",
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  if (input.result && resultBalance !== null) {
+    const syncLimitation =
+      input.activeSyncNumber === null
+        ? "active sync unresolved"
+        : resultSyncNumber !== null && resultSyncNumber !== input.activeSyncNumber
+          ? `sync conflict (#${resultSyncNumber} vs active #${input.activeSyncNumber})`
+          : "projection not safe";
+    return {
+      balance: resultBalance,
+      kind: "last_known",
+      label: `Last known, ${syncLimitation}${anchorSyncNumber !== null ? `, anchor sync #${anchorSyncNumber}` : ""}`,
+      anchorSyncNumber,
+    };
+  }
+
+  const storedBalance = toFiniteDisplayBalance(
+    input.storedEvidence?.balance ?? null,
+  );
+  if (storedBalance !== null) {
+    return {
+      balance: storedBalance,
+      kind: "last_known",
+      label: input.storedEvidence?.label ?? "Last known, diagnostic",
+      anchorSyncNumber: null,
+    };
+  }
+
+  return {
+    balance: null,
+    kind: "unavailable",
+    label: null,
+    anchorSyncNumber,
+  };
+}
+
+function formatFwaParticipantDisplay(
+  name: string,
+  participant: FwaPointsParticipantDisplay,
+): string {
+  if (participant.balance === null) {
+    return `${name}: unavailable`;
+  }
+  return participant.label
+    ? `${name}: ${participant.balance} (${participant.label})`
+    : `${name}: ${participant.balance}`;
+}
+
+function hasFiniteFwaBalance(
+  participant: FwaPointsParticipantDisplay,
+): boolean {
+  return participant.balance !== null && Number.isFinite(participant.balance);
+}
+
+async function resolveFwaPointsMatchupEvidence(
+  input: FwaPointsProjectionInput,
+): Promise<FwaPointsMatchupEvidence | null> {
+  if (
+    !input.guildId ||
+    input.activeWar.matchType !== "FWA"
+  ) {
+    return null;
+  }
+
+  const matchup = await (input.resolver ?? pointsEstimateResolver).resolveMatchup({
+    guildId: input.guildId,
+    clanTag: input.clanTag,
+    activeWar: {
+      trackedClanTag: input.activeWar.trackedClanTag,
+      warId: input.activeWar.warId,
+      warStartTime: input.activeWar.warStartTime,
+      prepStartTime: input.activeWar.prepStartTime ?? null,
+      opponentTag: input.opponentTag,
+      syncNumber: input.activeWar.syncNumber,
+      matchType: input.activeWar.matchType,
+      inferredMatchType: input.activeWar.inferredMatchType,
+      warState: input.activeWar.warState,
+    },
+  });
+  return {
+    matchup,
+    safeProjection:
+      input.activeWar.syncNumber === null
+        ? null
+        : resolveSafeFwaPointsProjectionFromMatchup({
+            matchup,
+            syncNumber: input.activeWar.syncNumber,
+          }),
+  };
+}
 
 /** Purpose: preserve CurrentWar lifecycle state while keeping estimates display-only. */
 function resolveCurrentWarOutcomeForPersistence(input: {
@@ -14851,53 +15113,12 @@ export const resolveCurrentWarOutcomeForPersistenceForTest =
   resolveCurrentWarOutcomeForPersistence;
 
 /** Purpose: accept only a complete, same-sync DB projection for the active FWA matchup. */
-async function resolveSafeFwaPointsProjection(input: {
-  guildId: string | null;
-  clanTag: string;
-  opponentTag: string;
-  activeWar: {
-    trackedClanTag: string;
-    warId: string | number | null;
-    warStartTime: Date;
-    prepStartTime?: Date | null;
-    syncNumber: number | null;
-    matchType: "FWA" | "BL" | "MM" | "SKIP" | null;
-    inferredMatchType: boolean | null;
-    warState: "preparation" | "inWar" | "notInWar";
-  };
-  resolver?: Pick<PointsEstimateResolverService, "resolveMatchup">;
-}): Promise<SafeFwaPointsProjection | null> {
-  if (
-    !input.guildId ||
-    input.activeWar.syncNumber === null ||
-    input.activeWar.matchType !== "FWA"
-  ) {
-    return null;
-  }
-
-  const projection = await resolveSafeFwaPointsProjectionFromService({
-    resolver: input.resolver ?? pointsEstimateResolver,
-    guildId: input.guildId,
-    clanTag: input.clanTag,
-    opponentTag: input.opponentTag,
-    activeWar: {
-      trackedClanTag: input.activeWar.trackedClanTag,
-      warId: input.activeWar.warId,
-      warStartTime: input.activeWar.warStartTime,
-      prepStartTime: input.activeWar.prepStartTime ?? null,
-      opponentTag: input.opponentTag,
-      syncNumber: input.activeWar.syncNumber,
-      matchType: input.activeWar.matchType,
-      inferredMatchType: input.activeWar.inferredMatchType,
-      warState: input.activeWar.warState,
-    },
-  });
-  if (!projection) return null;
-  return {
-    clanBalance: projection.clanBalance,
-    opponentBalance: projection.opponentBalance,
-    estimated: projection.estimated,
-  };
+async function resolveSafeFwaPointsProjection(
+  input: FwaPointsProjectionInput,
+): Promise<SafeFwaPointsProjection | null> {
+  if (input.activeWar.syncNumber === null) return null;
+  const evidence = await resolveFwaPointsMatchupEvidence(input);
+  return evidence?.safeProjection ?? null;
 }
 
 export const resolveSafeFwaPointsProjectionForTest =
@@ -14906,6 +15127,8 @@ export const resolveSafeFwaPointsProjectionForTest =
 type FwaMatchDisplayState = {
   primaryBalance: number | null;
   opponentBalance: number | null;
+  primaryDisplay: FwaPointsParticipantDisplay;
+  opponentDisplay: FwaPointsParticipantDisplay;
   estimated: boolean;
   displayOnlyFallback: boolean;
   warningLine: string | null;
@@ -14919,33 +15142,92 @@ function resolveFwaMatchDisplayState(input: {
   syncNumber: number | null;
   currentPrimaryBalance: number | null;
   currentOpponentBalance: number | null;
+  matchupEvidence?: FwaPointsMatchupEvidence | null;
   safeProjection: SafeFwaPointsProjection | null;
+  storedEvidence?: {
+    clan: FwaStoredParticipantEvidence;
+    opponent: FwaStoredParticipantEvidence;
+  } | null;
   siteUpdatedForAlert: boolean;
 }): FwaMatchDisplayState {
-  const primaryBalance =
-    input.safeProjection?.clanBalance ?? input.currentPrimaryBalance;
-  const opponentBalance =
-    input.safeProjection?.opponentBalance ?? input.currentOpponentBalance;
-  const estimated = input.safeProjection?.estimated === true;
+  const matchup =
+    input.matchupEvidence?.matchup ??
+    (input.safeProjection
+      ? {
+          clan: {
+            balance: input.safeProjection.clanBalance,
+            isEstimate: input.safeProjection.estimated,
+            projectionSafe: true,
+            coverage: "complete_reconstruction",
+            syncNumber: input.safeProjection.syncNumber ?? input.syncNumber,
+          } as PointsEstimateResult,
+          opponent: {
+            balance: input.safeProjection.opponentBalance,
+            isEstimate: input.safeProjection.estimated,
+            projectionSafe: true,
+            coverage: "complete_reconstruction",
+            syncNumber: input.safeProjection.syncNumber ?? input.syncNumber,
+          } as PointsEstimateResult,
+        }
+      : null);
+  const primaryDisplay = resolveFwaParticipantDisplay({
+    currentBalance: input.currentPrimaryBalance,
+    result: matchup?.clan ?? null,
+    siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.clan ?? null,
+  });
+  const opponentDisplay = resolveFwaParticipantDisplay({
+    currentBalance: input.currentOpponentBalance,
+    result: matchup?.opponent ?? null,
+    siteUpdatedForAlert: input.siteUpdatedForAlert,
+    activeSyncNumber: input.syncNumber,
+    storedEvidence: input.storedEvidence?.opponent ?? null,
+  });
+  const primaryBalance = primaryDisplay.balance;
+  const opponentBalance = opponentDisplay.balance;
+  const estimated =
+    primaryDisplay.kind === "estimated" || opponentDisplay.kind === "estimated";
   const displayOnlyFallback =
-    input.siteUpdatedForAlert === false && input.safeProjection !== null;
+    input.siteUpdatedForAlert === false &&
+    (primaryDisplay.kind !== "unavailable" ||
+      opponentDisplay.kind !== "unavailable");
+  const hasPartialDiagnostic =
+    primaryDisplay.kind === "last_known" ||
+    opponentDisplay.kind === "last_known" ||
+    primaryDisplay.kind === "unavailable" ||
+    opponentDisplay.kind === "unavailable";
   return {
     primaryBalance,
     opponentBalance,
+    primaryDisplay,
+    opponentDisplay,
     estimated,
     displayOnlyFallback,
-    warningLine: displayOnlyFallback
-      ? estimated
-        ? ":warning: Points projected from persisted evidence; not current points.fwafarm data."
-        : ":warning: Points from persisted fallback evidence; not current points.fwafarm data."
+    warningLine: displayOnlyFallback && hasPartialDiagnostic
+      ? ":warning: Some points are last known or unavailable; diagnostic only, not a current matchup projection."
+      : displayOnlyFallback
+        ? estimated
+          ? ":warning: Points projected from persisted evidence; not current points.fwafarm data."
+          : ":warning: Points from persisted fallback evidence; not current points.fwafarm data."
       : null,
-    projectedOutcome: deriveProjectedOutcome(
-      input.clanTag,
-      input.opponentTag,
-      primaryBalance,
-      opponentBalance,
-      input.syncNumber,
-    ),
+    projectedOutcome: input.safeProjection
+      ? deriveProjectedOutcome(
+          input.clanTag,
+          input.opponentTag,
+          input.safeProjection.clanBalance,
+          input.safeProjection.opponentBalance,
+          input.safeProjection.syncNumber ?? input.syncNumber,
+        )
+      : input.siteUpdatedForAlert
+        ? deriveProjectedOutcome(
+            input.clanTag,
+            input.opponentTag,
+            primaryBalance,
+            opponentBalance,
+            input.syncNumber,
+          )
+        : null,
   };
 }
 
@@ -16030,9 +16312,9 @@ async function buildTrackedMatchOverview(
     clanSyncLine = formatResolvedSyncDisplay(finalResolvedCurrentSyncNum);
     const estimateWarStartTime =
       warStartTimeForReuse ?? syncIdentity.warStartTime;
-    const safeFwaPointsProjection =
+    const fwaPointsMatchupEvidence =
       !siteUpdatedForAlert && matchType === "FWA" && estimateWarStartTime
-        ? await resolveSafeFwaPointsProjection({
+        ? await resolveFwaPointsMatchupEvidence({
             guildId,
             clanTag,
             opponentTag,
@@ -16054,13 +16336,27 @@ async function buildTrackedMatchOverview(
             return null;
           })
         : null;
+    const safeFwaPointsProjection =
+      fwaPointsMatchupEvidence?.safeProjection ?? null;
+    const storedFwaParticipantEvidence =
+      !siteUpdatedForAlert
+        ? resolveFwaStoredParticipantEvidence({
+            currentWar: sub,
+            activeWarId: warIdForReuse,
+            activeWarStartTime: warStartTimeForReuse,
+            activeOpponentTag: opponentTag,
+            sameWarSyncRow: confirmedCurrentWarSyncRow,
+          })
+        : null;
     const displayState = resolveFwaMatchDisplayState({
       clanTag,
       opponentTag,
       syncNumber: finalResolvedCurrentSyncNum,
       currentPrimaryBalance,
       currentOpponentBalance,
+      matchupEvidence: fwaPointsMatchupEvidence,
       safeProjection: safeFwaPointsProjection,
+      storedEvidence: storedFwaParticipantEvidence,
       siteUpdatedForAlert,
     });
     const displayPrimaryBalance = displayState.primaryBalance;
@@ -16129,10 +16425,15 @@ async function buildTrackedMatchOverview(
         },
       });
     }
+    const hasBothDisplayedBalances =
+      hasFiniteFwaBalance(displayState.primaryDisplay) &&
+      hasFiniteFwaBalance(displayState.opponentDisplay);
     const pointsLine =
-      displayPrimaryBalance !== null && displayOpponentBalance !== null
-        ? `${usesDisplayOnlyProjection ? (usesEstimatedProjection ? "Estimated points" : "Persisted points") : "Points"}: ${displayPrimaryBalance} - ${displayOpponentBalance}`
-        : "Points: unavailable";
+      hasBothDisplayedBalances && safeFwaPointsProjection !== null
+        ? `${usesEstimatedProjection ? "Estimated points" : "Persisted points"}: ${displayPrimaryBalance} - ${displayOpponentBalance}`
+        : hasBothDisplayedBalances && !usesDisplayOnlyProjection
+          ? `Points: ${displayPrimaryBalance} - ${displayOpponentBalance}`
+          : `Points:\n${formatFwaParticipantDisplay(clanName, displayState.primaryDisplay)}\n${formatFwaParticipantDisplay(opponentName, displayState.opponentDisplay)}`;
     const verifyLink = `[cc:${opponentTag}](${buildCcVerifyUrl(opponentTag)})`;
     const warStartTimeForSync = warStartTimeForReuse;
     await persistClanPointsSyncIfCurrent({
@@ -16501,16 +16802,18 @@ async function buildTrackedMatchOverview(
         )
         .addFields(
           {
-            name: usesFwaDisplayOnlyProjection
+            name: usesFwaDisplayOnlyProjection && safeFwaPointsProjection !== null
               ? usesEstimatedProjection
                 ? "Estimated Points"
                 : "Persisted Points"
               : singleClanLinks.pointsFieldName,
             value:
               effectiveMatchType === "FWA"
-                ? displayPrimaryBalance !== null && displayOpponentBalance !== null
+                ? safeFwaPointsProjection !== null &&
+                  displayPrimaryBalance !== null &&
+                  displayOpponentBalance !== null
                   ? `${clanName}: **${displayPrimaryBalance}**${clanWinnerMarker}\n${opponentName}: **${displayOpponentBalance}**${opponentWinnerMarker}`
-                  : "Unavailable on both clans."
+                  : `${formatFwaParticipantDisplay(clanName, displayState.primaryDisplay)}\n${formatFwaParticipantDisplay(opponentName, displayState.opponentDisplay)}`
                 : hasPrimarySnapshot
                   ? `${clanName}: **${primaryPoints?.balance}**`
                   : "Unavailable",

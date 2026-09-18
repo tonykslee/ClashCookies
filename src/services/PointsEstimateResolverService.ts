@@ -130,6 +130,42 @@ export type SafeFwaPointsProjection = {
   estimated: boolean;
 };
 
+export type ResolvedFwaPointsMatchup = {
+  clan: PointsEstimateResult;
+  opponent: PointsEstimateResult;
+};
+
+/** Purpose: validate an already-resolved matchup without resolving either participant again. */
+export function resolveSafeFwaPointsProjectionFromMatchup(input: {
+  matchup: ResolvedFwaPointsMatchup;
+  syncNumber?: number | null;
+}): SafeFwaPointsProjection | null {
+  const requestedSync = finiteInt(input.syncNumber);
+  const resolvedSync = requestedSync ?? input.matchup.clan.syncNumber;
+  const isSafe = (result: PointsEstimateResult): boolean =>
+    result.projectionSafe === true &&
+    result.coverage === "complete_reconstruction" &&
+    result.balance !== null &&
+    Number.isFinite(result.balance) &&
+    result.syncNumber !== null &&
+    (resolvedSync === null || result.syncNumber === resolvedSync);
+  if (!isSafe(input.matchup.clan) || !isSafe(input.matchup.opponent)) return null;
+  if (
+    input.matchup.clan.syncNumber === null ||
+    input.matchup.opponent.syncNumber === null ||
+    input.matchup.clan.syncNumber !== input.matchup.opponent.syncNumber
+  ) {
+    return null;
+  }
+
+  return {
+    clanBalance: Math.trunc(input.matchup.clan.balance as number),
+    opponentBalance: Math.trunc(input.matchup.opponent.balance as number),
+    syncNumber: input.matchup.clan.syncNumber,
+    estimated: input.matchup.clan.isEstimate || input.matchup.opponent.isEstimate,
+  };
+}
+
 type ResolverInput = {
   guildId: string;
   clanTag: string;
@@ -1058,30 +1094,10 @@ export async function resolveSafeFwaPointsProjection(input: {
       opponentTag: input.opponentTag,
     },
   });
-  const requestedSync = finiteInt(input.activeWar.syncNumber);
-  const resolvedSync = requestedSync ?? matchup.clan.syncNumber;
-  const isSafe = (result: PointsEstimateResult): boolean =>
-    result.projectionSafe === true &&
-    result.coverage === "complete_reconstruction" &&
-    result.balance !== null &&
-    Number.isFinite(result.balance) &&
-    result.syncNumber !== null &&
-    (resolvedSync === null || result.syncNumber === resolvedSync);
-  if (!isSafe(matchup.clan) || !isSafe(matchup.opponent)) return null;
-  if (
-    matchup.clan.syncNumber === null ||
-    matchup.opponent.syncNumber === null ||
-    matchup.clan.syncNumber !== matchup.opponent.syncNumber
-  ) {
-    return null;
-  }
-
-  return {
-    clanBalance: Math.trunc(matchup.clan.balance as number),
-    opponentBalance: Math.trunc(matchup.opponent.balance as number),
-    syncNumber: matchup.clan.syncNumber,
-    estimated: matchup.clan.isEstimate || matchup.opponent.isEstimate,
-  };
+  return resolveSafeFwaPointsProjectionFromMatchup({
+    matchup,
+    syncNumber: input.activeWar.syncNumber,
+  });
 }
 
 /** Purpose: match a points-sync row to active identity without relying on an external site identity. */
