@@ -121,6 +121,17 @@ function makeMailTrackedChecklistRowWithRows(rows: any[], checkedClanTags: strin
   } as any;
 }
 
+function matchesTrackedMessageCasMetadata(args: any, currentMetadata: unknown): boolean {
+  const metadataFilter = args?.where?.metadata;
+  if (
+    !metadataFilter ||
+    !Object.prototype.hasOwnProperty.call(metadataFilter, "equals")
+  ) {
+    throw new Error("CAS mock requires where.metadata.equals");
+  }
+  return JSON.stringify(metadataFilter.equals) === JSON.stringify(currentMetadata);
+}
+
 function makeBasesTrackedChecklistRow() {
   return {
     id: "tracked-bases-1",
@@ -299,7 +310,9 @@ describe("fwa checklist badge reaction reconciliation", () => {
     vi.clearAllMocks();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
-    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ data }: any) => {
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, undefined);
+      const data = args.data;
       await prismaMock.trackedMessage.update({
         where: { messageId: data?.metadata?.messageId ?? "checklist-message-1" },
         data,
@@ -1645,7 +1658,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       };
       prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
       prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
-        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        if (!matchesTrackedMessageCasMetadata(args, currentTracked.metadata)) return { count: 0 };
         currentTracked = {
           ...currentTracked,
           ...(args.data?.expiresAt ? { expiresAt: args.data.expiresAt } : {}),
@@ -1783,7 +1796,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       };
       prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
       prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
-        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        if (!matchesTrackedMessageCasMetadata(args, currentTracked.metadata)) return { count: 0 };
         currentTracked = { ...currentTracked, metadata: args.data.metadata };
         return { count: 1 };
       });
@@ -1871,7 +1884,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         };
         prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
         prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
-          if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+          if (!matchesTrackedMessageCasMetadata(args, currentTracked.metadata)) return { count: 0 };
           currentTracked = { ...currentTracked, metadata: args.data.metadata };
           return { count: 1 };
         });
@@ -1924,7 +1937,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       };
       prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
       prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
-        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        if (!matchesTrackedMessageCasMetadata(args, currentTracked.metadata)) return { count: 0 };
         currentTracked = { ...currentTracked, metadata: args.data.metadata };
         return { count: 1 };
       });
@@ -1974,6 +1987,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
       let attempts = 0;
       prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+        matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
         attempts += 1;
         if (attempts === 1) {
           currentTracked = {
@@ -1986,7 +2000,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
           };
           return { count: 0 };
         }
-        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        if (!matchesTrackedMessageCasMetadata(args, currentTracked.metadata)) return { count: 0 };
         currentTracked = { ...currentTracked, metadata: args.data.metadata };
         return { count: 1 };
       });
