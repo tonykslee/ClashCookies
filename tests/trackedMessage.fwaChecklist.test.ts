@@ -1088,6 +1088,37 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toEqual([]);
   });
 
+  it("does not reuse an exact-scope Mail completion from a different sync", async () => {
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
+      {
+        referenceId: "sync-b",
+        metadata: {
+          kind: "mail_checklist",
+          createdByUserId: "user-2",
+          createdAtIso: "2026-05-13T18:00:00.000Z",
+          scopeKey: "same-scope",
+          checkedClanTags: ["#PYPY"],
+          rows: [
+            {
+              clanTag: "#PYPY",
+              compactCopyLine: "📭 | 🟢 | Alpha vs `Bravo` (`#B1`)",
+              badgeEmojiInline: "<:rr:111>",
+            },
+          ],
+        },
+      },
+    ] as any);
+
+    await expect(
+      findLatestFwaMatchChecklistCheckedClanTags({
+        guildId: "guild-1",
+        clanTag: null,
+        scopeKey: "same-scope",
+        syncMessageId: "sync-a",
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it("ignores bases completion rows for a different war identity", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
 
@@ -2259,7 +2290,7 @@ describe("fwa checklist tracked messages", () => {
     );
   });
 
-  it("reacting with one clan badge checks only that clan", async () => {
+  it("does not infer Mail completion from a reaction cache during ordinary refresh", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
     const setBasesCompletion = vi.spyOn(
       trackedMessageService,
@@ -2300,14 +2331,14 @@ describe("fwa checklist tracked messages", () => {
     expect(payload.content).toBe(
       buildFwaMatchChecklistMessageContent({
         rows: makeTrackedChecklistRow().metadata.rows,
-        checkedClanTags: ["#RR"],
+        checkedClanTags: [],
       }),
     );
     expect(payload.content).toContain("# Clan Mail Checklist");
     expect(payload.content).toContain(
       "React with your clan's badge to indicate that the in-game mails have been sent.",
     );
-    expect(payload.content).toContain("📬 | 🟢 | ✅ | RR vs `Bravo` (`#B1`)");
+    expect(payload.content).toContain("📬 | 🟢 | ☐ | RR vs `Bravo` (`#B1`)");
     expect(payload.content).toContain("📭 | 🔴 | ☐ | TWC vs `Delta` (`#D2`)");
     expect(setBasesCompletion).not.toHaveBeenCalled();
   });
@@ -2362,7 +2393,7 @@ describe("fwa checklist tracked messages", () => {
     expect(payload.content).toBe(
       buildFwaMatchChecklistMessageContent({
         rows: currentRows as any,
-        checkedClanTags: ["#RR"],
+        checkedClanTags: [],
       }),
     );
     expect(payload.content).toContain("# Clan Mail Checklist");
@@ -2374,13 +2405,13 @@ describe("fwa checklist tracked messages", () => {
           metadata: expect.objectContaining({
             scopeKey: "scope-key-current",
             rows: currentRows,
-            checkedClanTags: ["RR"],
+            checkedClanTags: [],
           }),
         }),
       }),
     );
   });
-  it("persists checked state when a clan badge is reacted to", async () => {
+  it("persists the existing checked state when no explicit reaction event is supplied", async () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTrackedChecklistRow());
 
     const edit = vi.fn().mockResolvedValue(undefined);
@@ -2417,7 +2448,7 @@ describe("fwa checklist tracked messages", () => {
         where: { messageId: "checklist-message-1" },
         data: expect.objectContaining({
           metadata: expect.objectContaining({
-            checkedClanTags: ["RR"],
+            checkedClanTags: [],
           }),
         }),
       }),

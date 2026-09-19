@@ -1615,6 +1615,254 @@ describe("fwa checklist badge reaction reconciliation", () => {
       vi.spyOn(repWorkActivityService, "recordMailChecked").mockResolvedValue(true);
     });
 
+    it("keeps Mail completion event-driven across refreshes, cache misses, removal, and sync changes", async () => {
+      const rows = [
+        makeMailRow({
+          clanTag: "#RR",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-rr",
+        }),
+        makeMailRow({
+          clanTag: "#SH",
+          compactCopyLine: "Bravo | [ ] | Mail not checked",
+          badgeEmojiInline: "<:bravo:222>",
+          badgeEmojiId: "222",
+          badgeEmojiName: "bravo",
+          contextKey: "ctx-sh",
+        }),
+      ];
+      let currentTracked: any = {
+        ...makeMailTrackedChecklistRowWithRows(rows),
+        referenceId: "sync-a",
+        metadata: {
+          ...makeMailTrackedChecklistRowWithRows(rows).metadata,
+          referenceId: "sync-a",
+          autoRefreshClaimToken: "claim-a",
+        },
+      };
+      prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+      prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        currentTracked = {
+          ...currentTracked,
+          ...(args.data?.expiresAt ? { expiresAt: args.data.expiresAt } : {}),
+          metadata: args.data.metadata,
+        };
+        return { count: 1 };
+      });
+
+      const reactionCache = new Map<string, any>();
+      const message: any = {
+        id: "mail-message-1",
+        reactions: { cache: reactionCache },
+        fetch: vi.fn().mockResolvedValue({ id: "mail-message-1", reactions: { cache: reactionCache } }),
+        react: vi.fn().mockImplementation(async (emoji: string) => {
+          const custom = /^<a?:([A-Za-z0-9_]{2,32}):(\d{1,22})>$/.exec(emoji);
+          const key = `custom:${custom?.[2]}`;
+          const existing = reactionCache.get(key);
+          reactionCache.set(key, {
+            emoji: { id: custom?.[2] ?? null, name: custom?.[1] ?? null },
+            count: existing?.count ?? 1,
+            me: true,
+          });
+        }),
+        edit: vi.fn().mockResolvedValue(undefined),
+      };
+      const refresh = (change?: any, options?: any) =>
+        trackedMessageService.refreshFwaMatchChecklistMessage(message, change, options);
+      const contentWith = (checkedClanTags: string[]) =>
+        buildFwaMatchChecklistMessageContent({ rows, checkedClanTags });
+
+      await expect(refresh()).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual([]);
+
+      reactionCache.set("custom:111", {
+        emoji: { id: "111", name: "alpha" }, count: 2, me: true,
+      });
+      await expect(refresh({
+        kind: "add",
+        reactorUserId: "user-rr",
+        reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
+      })).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["RR"]);
+
+      reactionCache.set("custom:222", {
+        emoji: { id: "222", name: "bravo" }, count: 2, me: true,
+      });
+      await expect(refresh({
+        kind: "add",
+        reactorUserId: "user-sh",
+        reaction: { emoji: { id: "222", name: "bravo" }, count: 2 },
+      })).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["RR", "SH"]);
+
+      await expect(refresh()).resolves.toBe(true);
+      expect(message.edit.mock.calls.at(-1)?.[0]?.content).toBe(contentWith(["RR", "SH"]));
+
+      const refreshedRows = rows.map((row) => ({
+        ...row,
+        compactCopyLine: row.compactCopyLine.replace("Mail not checked", "Mail still pending"),
+      }));
+      await expect(refresh(null, {
+        rows: refreshedRows,
+        scopeKey: "scope-refresh",
+        automatic: true,
+        autoRefreshClaimToken: "claim-a",
+      })).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["RR", "SH"]);
+
+      reactionCache.delete("custom:222");
+      await expect(refresh()).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["RR", "SH"]);
+
+      reactionCache.set("custom:111", {
+        emoji: { id: "111", name: "alpha" }, count: 1, me: true,
+      });
+      await expect(refresh({
+        kind: "remove",
+        reaction: { emoji: { id: "111", name: "alpha" }, count: 1 },
+      })).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["SH"]);
+
+      await expect(refresh()).resolves.toBe(true);
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["SH"]);
+
+      const differentSync = {
+        ...currentTracked,
+        id: "tracked-mail-sync-b",
+        messageId: "mail-message-sync-b",
+        referenceId: "sync-b",
+        metadata: {
+          ...currentTracked.metadata,
+          referenceId: "sync-b",
+          scopeKey: "scope-refresh",
+          checkedClanTags: [],
+        },
+      };
+      currentTracked = differentSync;
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(differentSync);
+      const differentMessage = {
+        ...message,
+        id: "mail-message-sync-b",
+        edit: vi.fn().mockResolvedValue(undefined),
+      };
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(differentMessage as any),
+      ).resolves.toBe(true);
+      expect(differentMessage.edit.mock.calls.at(-1)?.[0]?.content).toContain("☐");
+    });
+
+    it("merges a newer reaction completion after an automatic-refresh CAS conflict", async () => {
+      const rows = [
+        makeMailRow({
+          clanTag: "#RR",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-rr",
+        }),
+      ];
+      let currentTracked: any = {
+        ...makeMailTrackedChecklistRowWithRows(rows),
+        metadata: {
+          ...makeMailTrackedChecklistRowWithRows(rows).metadata,
+          autoRefreshClaimToken: "claim-a",
+          checkedClanTags: [],
+        },
+      };
+      prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+      let attempts = 0;
+      prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+        attempts += 1;
+        if (attempts === 1) {
+          currentTracked = {
+            ...currentTracked,
+            metadata: {
+              ...currentTracked.metadata,
+              checkedClanTags: ["SH"],
+              autoRefreshCompletedAtIso: "2026-06-13T18:01:00.000Z",
+            },
+          };
+          return { count: 0 };
+        }
+        if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+        currentTracked = { ...currentTracked, metadata: args.data.metadata };
+        return { count: 1 };
+      });
+      const message: any = {
+        id: "mail-message-1",
+        reactions: {
+          cache: new Map([
+            ["custom:111", {
+              emoji: { id: "111", name: "alpha" }, count: 2, me: true,
+            }],
+          ]),
+        },
+        edit: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+          kind: "add",
+          reactorUserId: "user-rr",
+          reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
+        }, {
+          automatic: true,
+          autoRefreshClaimToken: "claim-a",
+          rows,
+          scopeKey: "scope-auto",
+        }),
+      ).resolves.toBe(true);
+
+      expect(currentTracked.metadata.checkedClanTags).toEqual(["RR", "SH"]);
+      expect(currentTracked.metadata.autoRefreshCompletedAtIso).toBe(
+        "2026-06-13T18:01:00.000Z",
+      );
+      expect(message.edit.mock.calls.at(-1)?.[0]?.content).toContain("✅");
+    });
+
+    it("does not edit Discord with a confirmed Mail completion when persistence cannot be applied", async () => {
+      const rows = [
+        makeMailRow({
+          clanTag: "#RR",
+          compactCopyLine: "Alpha | [ ] | Mail not checked",
+          badgeEmojiInline: "<:alpha:111>",
+          badgeEmojiId: "111",
+          badgeEmojiName: "alpha",
+          contextKey: "ctx-rr",
+        }),
+      ];
+      const tracked = makeMailTrackedChecklistRowWithRows(rows);
+      prismaMock.trackedMessage.findUnique.mockResolvedValue(tracked);
+      prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
+      const message: any = {
+        id: "mail-message-1",
+        content: buildFwaMatchChecklistMessageContent({ rows, checkedClanTags: [] }),
+        reactions: {
+          cache: new Map([
+            ["custom:111", {
+              emoji: { id: "111", name: "alpha" }, count: 2, me: true,
+            }],
+          ]),
+        },
+        edit: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await expect(
+        trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+          kind: "add",
+          reactorUserId: "user-rr",
+          reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
+        }),
+      ).resolves.toBe(false);
+      expect(message.edit).not.toHaveBeenCalled();
+      expect(tracked.metadata.checkedClanTags).toEqual([]);
+    });
+
     it("adds a newly introduced Mail badge on a listener refresh", async () => {
       const finalRows = [
         makeMailRow({

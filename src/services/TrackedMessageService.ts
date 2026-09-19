@@ -663,6 +663,30 @@ function mergeFwaMatchChecklistMetadataAfterConflict(params: {
       });
       continue;
     }
+    if (key === "checkedClanTags") {
+      const normalizeTags = (tags: string[] | undefined): Set<string> =>
+        new Set(
+          (tags ?? [])
+            .map((clanTag) => normalizeChecklistClanTag(clanTag))
+            .filter((clanTag): clanTag is string => Boolean(clanTag)),
+        );
+      const baseTags = normalizeTags(params.base.checkedClanTags);
+      const desiredTags = normalizeTags(params.desired.checkedClanTags);
+      const latestTags = normalizeTags(params.latest.checkedClanTags);
+      const mergedTags = new Set<string>();
+      for (const clanTag of new Set([...baseTags, ...desiredTags, ...latestTags])) {
+        const desiredChanged = desiredTags.has(clanTag) !== baseTags.has(clanTag);
+        const latestChanged = latestTags.has(clanTag) !== baseTags.has(clanTag);
+        const checked = latestChanged
+          ? latestTags.has(clanTag)
+          : desiredChanged
+            ? desiredTags.has(clanTag)
+            : baseTags.has(clanTag);
+        if (checked) mergedTags.add(clanTag);
+      }
+      merged.checkedClanTags = [...mergedTags];
+      continue;
+    }
     const baseValue = (params.base as unknown as Record<string, unknown>)[key];
     const latestValue = (params.latest as unknown as Record<string, unknown>)[key];
     if (!checklistMetadataValueEqual(latestValue, baseValue)) {
@@ -1052,10 +1076,13 @@ export async function findLatestFwaMatchChecklistCheckedClanTags(params: {
   for (const row of rows) {
     const metadata = parseFwaMatchChecklistMetadata(row.metadata);
     if (!metadata || resolveFwaMatchChecklistViewType(row.metadata) !== "Mail") continue;
-    if (metadata.scopeKey === scopeKey) {
+    const rowSyncIdentity = normalizeTrackedMessageId(row.referenceId ?? null);
+    if (
+      metadata.scopeKey === scopeKey &&
+      (!syncIdentity || rowSyncIdentity === syncIdentity)
+    ) {
       return metadata.checkedClanTags ?? [];
     }
-    const rowSyncIdentity = normalizeTrackedMessageId(row.referenceId ?? null);
     if (
       syncScopedFallback === null &&
       syncIdentity &&
@@ -2236,6 +2263,50 @@ export class TrackedMessageService {
     renderContent: (metadata: FwaMatchChecklistTrackedMetadata) => string;
   }): Promise<FwaMatchChecklistTrackedMetadata | null> {
     const recoveryExpectedContents = new Set(params.recoveryExpectedContents);
+    const editAfterPersist = async (
+      metadata: FwaMatchChecklistTrackedMetadata,
+      phase: "initial_edit" | "reconciliation_edit",
+      attempt?: number,
+    ): Promise<boolean> => {
+      recoveryExpectedContents.add(params.renderContent(params.baseMetadata));
+      recoveryExpectedContents.add(params.renderContent(metadata));
+      try {
+        await params.message.edit({
+          content: params.renderContent(metadata),
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      } catch (err) {
+        console.error(
+          `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=${phase}${attempt === undefined ? "" : ` attempt=${attempt}`} error=${formatError(err)}`,
+        );
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
+        return false;
+      }
+    };
+    // A newly confirmed completion must reach the CAS before Discord is edited.
+    // Refresh-only row changes retain the established edit/reconcile ordering because
+    // they do not create a new completion claim.
+    const completionChanged = !checklistMetadataValueEqual(
+      params.baseMetadata.checkedClanTags ?? [],
+      params.desiredMetadata.checkedClanTags ?? [],
+    );
+    if (!completionChanged) {
+      try {
+        await params.message.edit({
+          content: params.renderContent(params.desiredMetadata),
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        console.error(
+          `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=initial_edit error=${formatError(err)}`,
+        );
+        throw err;
+      }
+    }
     const initialPersisted = await prisma.trackedMessage.updateMany({
       where: {
         id: params.tracked.id,
@@ -2252,7 +2323,12 @@ export class TrackedMessageService {
       );
       return { count: 0 };
     });
-    if (initialPersisted.count === 1) return params.desiredMetadata;
+    if (initialPersisted.count === 1) {
+      if (!completionChanged) return params.desiredMetadata;
+      return (await editAfterPersist(params.desiredMetadata, "initial_edit"))
+        ? params.desiredMetadata
+        : null;
+    }
     console.warn(
       `[tracked-message] event=fwa_checklist_metadata_conflict guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=initial_cas`,
     );
@@ -2326,24 +2402,24 @@ export class TrackedMessageService {
         params.extendedExpiresAt && latestExpiry
           ? new Date(Math.max(params.extendedExpiresAt.getTime(), latestExpiry.getTime()))
           : params.extendedExpiresAt ?? latestExpiry;
-      const reconciledContent = params.renderContent(mergedMetadata);
-      recoveryExpectedContents.add(reconciledContent);
-      try {
-        await params.message.edit({
-          content: reconciledContent,
-          allowedMentions: { parse: [] },
-        });
-      } catch (err) {
-        console.error(
-          `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_edit attempt=${attempt} error=${formatError(err)}`,
-        );
-        await this.recoverFwaChecklistDiscordState({
-          ...params,
-          recoveryExpectedContents,
-        });
-        return null;
+      if (!completionChanged) {
+        recoveryExpectedContents.add(params.renderContent(mergedMetadata));
+        try {
+          await params.message.edit({
+            content: params.renderContent(mergedMetadata),
+            allowedMentions: { parse: [] },
+          });
+        } catch (err) {
+          console.error(
+            `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_edit attempt=${attempt} error=${formatError(err)}`,
+          );
+          await this.recoverFwaChecklistDiscordState({
+            ...params,
+            recoveryExpectedContents,
+          });
+          return null;
+        }
       }
-
       const persisted = await prisma.trackedMessage.updateMany({
         where: {
           id: latestTracked.id,
@@ -2361,6 +2437,12 @@ export class TrackedMessageService {
         return { count: 0 };
       });
       if (persisted.count === 1) {
+        if (
+          completionChanged &&
+          !(await editAfterPersist(mergedMetadata, "reconciliation_edit", attempt))
+        ) {
+          return null;
+        }
         console.info(
           `[tracked-message] event=fwa_checklist_reconciliation_succeeded guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt}`,
         );
@@ -5233,17 +5315,6 @@ export class TrackedMessageService {
         );
         return false;
       }
-      try {
-        await message.edit({
-          content,
-          allowedMentions: { parse: [] },
-        });
-      } catch (err) {
-        console.error(
-          `[tracked-message] event=fwa_checklist_refresh_failed guild=${tracked.guildId} messageId=${message.id} phase=initial_edit view=Bases error=${formatError(err)}`,
-        );
-        throw err;
-      }
       const desiredMetadata: FwaMatchChecklistTrackedMetadata = {
         ...metadata,
         kind: "bases_checklist",
@@ -5306,7 +5377,8 @@ export class TrackedMessageService {
       rows: effectiveRows,
       observation: reactionObservation,
     });
-    const reactionCacheForObservation = reactionObservation.cache;
+    // Mail completion is durable event state. Reaction observation below is only
+    // used by badge reconciliation; cache presence must not rewrite this set.
     const persistedCheckedTags = new Set(
       (metadata.checkedClanTags ?? [])
         .map((clanTag) => normalizeChecklistClanTag(clanTag))
@@ -5358,26 +5430,30 @@ export class TrackedMessageService {
           },
         });
       }
-    }
-    for (const row of effectiveRows) {
-      const reaction = findFwaMatchChecklistReactionEntry(reactionCacheForObservation, row);
-      const rowTag = normalizeChecklistClanTag(row.clanTag);
-      if (!reaction) {
-        if (reactionObservation.fetchSucceeded === true) {
-          reactedTags.delete(rowTag);
+      if (matchedRow && reactionChange.kind === "add") {
+        reactedTags.add(changedRowTag);
+      } else if (matchedRow && reactionChange.kind === "remove") {
+        const matchingReaction = findFwaMatchChecklistReactionEntry(
+          reactionObservation.cache,
+          matchedRow,
+        );
+        const humanCount = matchingReaction
+          ? matchingReaction.me === undefined
+            ? null
+            : getFwaMatchChecklistReactionUserCount(matchingReaction)
+          : reactionObservation.fetchSucceeded
+            ? 0
+            : Number(reactionChange.reaction.count ?? 0) <= 0
+              ? 0
+              : null;
+        if (humanCount === 0) {
+          reactedTags.delete(changedRowTag);
+        } else if (humanCount === null) {
+          console.warn(
+            `[fwa_checklist_reaction_observation] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} reason=source_observation_unavailable action=preserve_completion`,
+          );
         }
-        continue;
       }
-      if (reaction.me === undefined) continue;
-      const userCount = getFwaMatchChecklistReactionUserCount(reaction);
-      if (userCount > 0) {
-        reactedTags.add(rowTag);
-      } else {
-        reactedTags.delete(rowTag);
-      }
-    }
-    if (change && changedRowTag && change.kind === "add") {
-      reactedTags.add(changedRowTag);
     }
 
     const content = buildFwaMatchChecklistMessageContent({
@@ -5402,17 +5478,6 @@ export class TrackedMessageService {
         `[tracked-message] fwa checklist refresh lost ownership guild=${tracked.guildId} messageId=${message.id} view=Mail reason=claim_changed_before_edit`,
       );
       return false;
-    }
-    try {
-      await message.edit({
-        content,
-        allowedMentions: { parse: [] },
-      });
-    } catch (err) {
-      console.error(
-        `[tracked-message] event=fwa_checklist_refresh_failed guild=${tracked.guildId} messageId=${message.id} phase=initial_edit view=Mail error=${formatError(err)}`,
-      );
-      throw err;
     }
     const desiredMetadata: FwaMatchChecklistTrackedMetadata = {
       ...metadata,
