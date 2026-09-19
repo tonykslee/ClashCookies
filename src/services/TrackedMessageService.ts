@@ -2253,7 +2253,14 @@ export class TrackedMessageService {
 
   /** Purpose: reconcile a Discord edit with newer tracked metadata after a failed CAS. */
   private async reconcileFwaChecklistMetadataAfterConflict(params: {
-    tracked: { id: string; messageId: string; guildId: string; status: string; expiresAt: Date | null; metadata: unknown };
+    tracked: {
+      id: string;
+      messageId: string;
+      guildId: string;
+      status: string;
+      expiresAt: Date | null;
+      metadata: Prisma.JsonValue | null;
+    };
     baseMetadata: FwaMatchChecklistTrackedMetadata;
     desiredMetadata: FwaMatchChecklistTrackedMetadata;
     extendedExpiresAt: Date | null;
@@ -2307,22 +2314,31 @@ export class TrackedMessageService {
         throw err;
       }
     }
-    const initialPersisted = await prisma.trackedMessage.updateMany({
-      where: {
-        id: params.tracked.id,
-        status: TRACKED_MESSAGE_STATUS.ACTIVE,
-        metadata: params.tracked.metadata as any,
-      },
-      data: {
-        ...(params.extendedExpiresAt ? { expiresAt: params.extendedExpiresAt } : {}),
-        metadata: params.desiredMetadata as any,
-      },
-    }).catch((err) => {
+    let initialPersisted: { count: number };
+    try {
+      initialPersisted = await prisma.trackedMessage.updateMany({
+        where: {
+          id: params.tracked.id,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          metadata: {
+            equals: params.tracked.metadata === null ? Prisma.DbNull : params.tracked.metadata,
+          },
+        },
+        data: {
+          ...(params.extendedExpiresAt ? { expiresAt: params.extendedExpiresAt } : {}),
+          metadata: params.desiredMetadata as Prisma.InputJsonValue,
+        },
+      });
+    } catch (_err) {
       console.error(
-        `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=initial_cas error=${formatError(err)}`,
+        `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=initial_cas reason=database_error`,
       );
-      return { count: 0 };
-    });
+      await this.recoverFwaChecklistDiscordState({
+        ...params,
+        recoveryExpectedContents,
+      });
+      return null;
+    }
     if (initialPersisted.count === 1) {
       if (!completionChanged) return params.desiredMetadata;
       return (await editAfterPersist(params.desiredMetadata, "initial_edit"))
@@ -2420,22 +2436,31 @@ export class TrackedMessageService {
           return null;
         }
       }
-      const persisted = await prisma.trackedMessage.updateMany({
-        where: {
-          id: latestTracked.id,
-          status: TRACKED_MESSAGE_STATUS.ACTIVE,
-          metadata: latestTracked.metadata as any,
-        },
-        data: {
-          ...(reconciledExpiresAt ? { expiresAt: reconciledExpiresAt } : {}),
-          metadata: mergedMetadata as any,
-        },
-      }).catch((err) => {
+      let persisted: { count: number };
+      try {
+        persisted = await prisma.trackedMessage.updateMany({
+          where: {
+            id: latestTracked.id,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+            metadata: {
+              equals: latestTracked.metadata === null ? Prisma.DbNull : latestTracked.metadata,
+            },
+          },
+          data: {
+            ...(reconciledExpiresAt ? { expiresAt: reconciledExpiresAt } : {}),
+            metadata: mergedMetadata as Prisma.InputJsonValue,
+          },
+        });
+      } catch (_err) {
         console.error(
-          `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_cas attempt=${attempt} error=${formatError(err)}`,
+          `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_cas attempt=${attempt} reason=database_error`,
         );
-        return { count: 0 };
-      });
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
+        return null;
+      }
       if (persisted.count === 1) {
         if (
           completionChanged &&
