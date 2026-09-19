@@ -2580,16 +2580,18 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.findUnique.mockResolvedValue(removeRow);
     prismaMock.trackedMessage.update.mockClear();
     const removeEdit = vi.fn().mockResolvedValue(undefined);
+    const removeReactionCache = new Map([
+      [
+        "rr",
+        { emoji: { id: "111", name: "rr" }, count: 1, me: true },
+      ],
+    ]);
     const removeMessage = {
       id: "checklist-message-1",
       reactions: {
-        cache: new Map([
-          [
-            "rr",
-            { emoji: { id: "111", name: "rr" }, count: 1, me: true },
-          ],
-        ]),
+        cache: removeReactionCache,
       },
+      fetch: vi.fn().mockResolvedValue({ reactions: { cache: removeReactionCache } }),
       edit: removeEdit,
     };
 
@@ -2625,28 +2627,30 @@ describe("fwa checklist tracked messages", () => {
       .mockResolvedValue(true);
 
     const edit = vi.fn().mockResolvedValue(undefined);
+    const reactionCache = new Map([
+      [
+        "rr",
+        {
+          emoji: { id: "111", name: "rr" },
+          count: 1,
+          me: true,
+        },
+      ],
+      [
+        "twc",
+        {
+          emoji: { id: "222", name: "twc" },
+          count: 2,
+          me: true,
+        },
+      ],
+    ]);
     const message = {
       id: "checklist-message-1",
       reactions: {
-        cache: new Map([
-          [
-            "rr",
-            {
-              emoji: { id: "111", name: "rr" },
-              count: 1,
-              me: true,
-            },
-          ],
-          [
-            "twc",
-            {
-              emoji: { id: "222", name: "twc" },
-              count: 2,
-              me: true,
-            },
-          ],
-        ]),
+        cache: reactionCache,
       },
+      fetch: vi.fn().mockResolvedValue({ reactions: { cache: reactionCache } }),
       edit,
     };
 

@@ -5433,19 +5433,33 @@ export class TrackedMessageService {
       if (matchedRow && reactionChange.kind === "add") {
         reactedTags.add(changedRowTag);
       } else if (matchedRow && reactionChange.kind === "remove") {
+        reactionObservation = await observeFwaMatchChecklistReactionCacheForRows({
+          guildId: tracked.guildId,
+          messageId: message.id,
+          viewType: "Mail",
+          message,
+          rows: [matchedRow],
+          observation: reactionObservation,
+          forceFetch: true,
+        });
         const matchingReaction = findFwaMatchChecklistReactionEntry(
           reactionObservation.cache,
           matchedRow,
         );
-        const humanCount = matchingReaction
-          ? matchingReaction.me === undefined
+        const observedCount = matchingReaction?.count;
+        const hasAuthoritativeCount =
+          reactionObservation.fetchSucceeded === true &&
+          matchingReaction !== undefined &&
+          matchingReaction.me !== undefined &&
+          Number.isFinite(Number(observedCount));
+        const humanCount =
+          reactionObservation.fetchSucceeded !== true
             ? null
-            : getFwaMatchChecklistReactionUserCount(matchingReaction)
-          : reactionObservation.fetchSucceeded
-            ? 0
-            : Number(reactionChange.reaction.count ?? 0) <= 0
+            : matchingReaction === undefined
               ? 0
-              : null;
+              : hasAuthoritativeCount
+                ? getFwaMatchChecklistReactionUserCount(matchingReaction)
+                : null;
         if (humanCount === 0) {
           reactedTags.delete(changedRowTag);
         } else if (humanCount === null) {
