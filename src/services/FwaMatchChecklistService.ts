@@ -28,6 +28,138 @@ import {
 
 const FWA_MATCH_CHECKLIST_CHECKED_EMOJI = "✅";
 const FWA_MATCH_CHECKLIST_UNCHECKED_EMOJI = "☐";
+const FWA_MATCH_CHECKLIST_MANUAL_REFRESH_TIMEOUT_MS = 30_000;
+
+type FwaManualRefreshPromiseSettlement<T> =
+  | { status: "completed"; value: T }
+  | { status: "rejected"; error: unknown };
+
+type FwaManualRefreshPromiseObservation<T> =
+  | FwaManualRefreshPromiseSettlement<T>
+  | { status: "timeout" };
+
+type FwaManualRefreshPrepareOutcome =
+  | {
+      status: "success";
+      viewType: "Mail" | "Bases";
+      checklistState: Awaited<
+        ReturnType<typeof buildFwaMatchChecklistRenderStateForGuild>
+      >;
+    }
+  | { status: "failure"; reason: "guild_missing" | "tracked_lookup_failed" | "state_build_failed" }
+  | { status: "expired" };
+
+const fwaMatchChecklistManualRefreshInFlight = new Map<string, symbol>();
+
+/** Purpose: keep one manual refresh operation per guild/message pair and prevent stale work from releasing a newer token. */
+function acquireFwaMatchChecklistManualRefreshGuard(
+  key: string,
+): symbol | null {
+  if (fwaMatchChecklistManualRefreshInFlight.has(key)) return null;
+  const token = Symbol(key);
+  fwaMatchChecklistManualRefreshInFlight.set(key, token);
+  return token;
+}
+
+/** Purpose: release only the manual refresh guard owned by this operation. */
+function releaseFwaMatchChecklistManualRefreshGuard(
+  key: string,
+  token: symbol,
+): void {
+  if (fwaMatchChecklistManualRefreshInFlight.get(key) === token) {
+    fwaMatchChecklistManualRefreshInFlight.delete(key);
+  }
+}
+
+/** Purpose: bound a promise wait while still consuming late resolution or rejection safely. */
+function observeFwaMatchChecklistManualRefreshPromise<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  onLateSettlement?: (settlement: FwaManualRefreshPromiseSettlement<T>) => void,
+): Promise<FwaManualRefreshPromiseObservation<T>> {
+  return new Promise((resolve) => {
+    let observed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (settlement: FwaManualRefreshPromiseSettlement<T>): void => {
+      if (observed) {
+        onLateSettlement?.(settlement);
+        return;
+      }
+      observed = true;
+      if (timer) clearTimeout(timer);
+      resolve(settlement);
+    };
+    operation.then(
+      (value) => settle({ status: "completed", value }),
+      (error: unknown) => settle({ status: "rejected", error }),
+    );
+    timer = setTimeout(() => {
+      if (observed) return;
+      observed = true;
+      timer = undefined;
+      resolve({ status: "timeout" });
+    }, timeoutMs);
+  });
+}
+
+/** Purpose: emit bounded manual-refresh lifecycle diagnostics without logging error bodies. */
+function logFwaMatchChecklistManualRefresh(params: {
+  event:
+    | "started"
+    | "duplicate"
+    | "prepare_timeout"
+    | "prepare_failed"
+    | "apply_timeout"
+    | "apply_completed"
+    | "apply_failed"
+    | "expired";
+  guildId: string | null;
+  messageId: string;
+  viewType?: "Mail" | "Bases";
+  phase: "prepare" | "apply" | "status" | "expired";
+  durationMs?: number;
+  outcome?: string;
+  reason?: string;
+}): void {
+  const fields = [
+    `[fwa-checklist-manual-refresh] event=${params.event}`,
+    `guild=${params.guildId ?? "unknown"}`,
+    `message=${params.messageId}`,
+    `view=${params.viewType ?? "unknown"}`,
+    `phase=${params.phase}`,
+    params.durationMs === undefined ? null : `duration_ms=${Math.max(0, Math.round(params.durationMs))}`,
+    params.outcome ? `outcome=${params.outcome}` : null,
+    params.reason ? `reason=${params.reason}` : null,
+  ].filter((field): field is string => Boolean(field));
+  console.debug(fields.join(" "));
+}
+
+/** Purpose: bound the best-effort Expired component edit after inactive status is confirmed. */
+async function markFwaMatchChecklistRefreshExpired(
+  interaction: ButtonInteraction,
+  guildId: string | null,
+  viewType?: "Mail" | "Bases",
+): Promise<void> {
+  const startedAt = Date.now();
+  const edit = observeFwaMatchChecklistManualRefreshPromise(
+    Promise.resolve().then(() =>
+      interaction.message.edit({
+        components: buildFwaMatchChecklistComponents({ state: "expired" }),
+      }),
+    ),
+    FWA_MATCH_CHECKLIST_MANUAL_REFRESH_TIMEOUT_MS,
+  );
+  await edit;
+  logFwaMatchChecklistManualRefresh({
+    event: "expired",
+    guildId,
+    messageId: interaction.message.id,
+    viewType,
+    phase: "expired",
+    durationMs: Date.now() - startedAt,
+    outcome: "inactive_confirmed",
+  });
+}
 
 /** Purpose: build one mobile-friendly compact copy row for the FWA mail checklist. */
 export function buildFwaMatchChecklistRowsFromCopyView(params: {
@@ -450,47 +582,63 @@ export async function handleFwaMatchChecklistRefreshButton(
   if (!isFwaMatchChecklistRefreshButtonCustomId(interaction.customId)) return;
   await interaction.deferUpdate();
   const guildId = interaction.guildId ?? null;
-  const trackedBeforeRefresh = guildId
-    ? await trackedMessageService
-        .getActiveByMessageId(interaction.message.id)
-        .catch(() => null)
-    : null;
-  if (trackedBeforeRefresh?.status !== "ACTIVE") {
-    await interaction.message
-      .edit({
-        components: buildFwaMatchChecklistComponents({ state: "expired" }),
-      })
-      .catch(() => undefined);
+  const messageId = interaction.message.id;
+  const guardKey = `${guildId ?? "unknown"}:${messageId}`;
+  const guardToken = acquireFwaMatchChecklistManualRefreshGuard(guardKey);
+  if (!guardToken) {
+    logFwaMatchChecklistManualRefresh({
+      event: "duplicate",
+      guildId,
+      messageId,
+      phase: "prepare",
+      outcome: "blocked",
+      reason: "already_in_flight",
+    });
     await interaction
       .followUp({
         ephemeral: true,
-        content: "This checklist post can no longer be refreshed.",
+        content: "This checklist is already refreshing. Please wait for it to finish.",
       })
       .catch(() => undefined);
     return;
   }
-  const disableRefreshButton = async (): Promise<void> => {
-    await interaction.message
-      .edit({
-        components: buildFwaMatchChecklistComponents({ state: "refreshing" }),
-      })
-      .catch(() => undefined);
+
+  const startedAt = Date.now();
+  logFwaMatchChecklistManualRefresh({
+    event: "started",
+    guildId,
+    messageId,
+    phase: "prepare",
+    outcome: "started",
+  });
+
+  const releaseGuard = (): void => {
+    releaseFwaMatchChecklistManualRefreshGuard(guardKey, guardToken);
   };
-  const restoreRefreshButton = async (state: "refresh" | "expired"): Promise<void> => {
-    await interaction.message
-      .edit({
-        components: buildFwaMatchChecklistComponents({ state }),
-      })
-      .catch(() => undefined);
+  const followUp = async (content: string): Promise<void> => {
+    await interaction.followUp({ ephemeral: true, content }).catch(() => undefined);
   };
-  const refreshed = await (async () => {
+
+  const prepareOperation = (async (): Promise<FwaManualRefreshPrepareOutcome> => {
+    if (!guildId) return { status: "failure", reason: "guild_missing" };
+
+    let trackedBeforeRefresh: Awaited<
+      ReturnType<typeof trackedMessageService.getActiveByMessageId>
+    >;
     try {
-      if (!guildId) return false;
-      await disableRefreshButton();
-      const trackedViewType = resolveFwaMatchChecklistViewType(trackedBeforeRefresh.metadata);
-      const previousChecklistMetadata = parseFwaMatchChecklistMetadata(
-        trackedBeforeRefresh.metadata,
-      );
+      trackedBeforeRefresh = await trackedMessageService.getActiveByMessageId(messageId);
+    } catch {
+      return { status: "failure", reason: "tracked_lookup_failed" };
+    }
+    if (trackedBeforeRefresh?.status !== "ACTIVE") return { status: "expired" };
+
+    const trackedViewType = resolveFwaMatchChecklistViewType(
+      trackedBeforeRefresh.metadata,
+    );
+    const previousChecklistMetadata = parseFwaMatchChecklistMetadata(
+      trackedBeforeRefresh.metadata,
+    );
+    try {
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService: new CoCService(),
         guildId,
@@ -503,50 +651,159 @@ export async function handleFwaMatchChecklistRefreshButton(
         previousSyncIdentity:
           trackedViewType === "Mail" ? trackedBeforeRefresh.referenceId ?? null : null,
       });
-      const updated = await trackedMessageService
-        .refreshFwaMatchChecklistMessage(
-          interaction.message as any,
-          null,
-          {
-            rows: checklistState.rows,
-            scopeKey: checklistState.scopeKey,
-            expiresAt: checklistState.expiresAt,
-          },
-        )
-        .catch((err) => {
-          console.error(
-            `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
-          );
-          return false;
-        });
-      return updated;
-    } catch (err) {
-      console.error(
-        `[fwa match checklist] refresh failed message=${interaction.message.id} error=${formatError(err)}`,
-      );
-      return false;
+      return {
+        status: "success",
+        viewType: trackedViewType === "Bases" ? "Bases" : "Mail",
+        checklistState,
+      };
+    } catch {
+      return { status: "failure", reason: "state_build_failed" };
     }
   })();
-  const trackedAfterRefresh = await trackedMessageService
-    .getActiveByMessageId(interaction.message.id)
-    .catch(() => null);
-  if (trackedAfterRefresh?.status === "ACTIVE") {
-    await restoreRefreshButton("refresh");
-  } else {
-    await restoreRefreshButton("expired");
+  const prepare = await observeFwaMatchChecklistManualRefreshPromise(
+    prepareOperation,
+    FWA_MATCH_CHECKLIST_MANUAL_REFRESH_TIMEOUT_MS,
+  );
+  if (prepare.status === "timeout") {
+    logFwaMatchChecklistManualRefresh({
+      event: "prepare_timeout",
+      guildId,
+      messageId,
+      phase: "prepare",
+      durationMs: Date.now() - startedAt,
+      outcome: "timeout",
+      reason: "pre_write_deadline",
+    });
+    releaseGuard();
+    await followUp("Checklist refresh preparation timed out. Please try again.");
+    return;
   }
-  if (!refreshed) {
-    const refreshFailureContent =
-      trackedAfterRefresh?.status === "ACTIVE"
-        ? "This checklist post could not be refreshed. Please try again."
-        : "This checklist post can no longer be refreshed.";
-    await interaction
-      .followUp({
-        ephemeral: true,
-        content: refreshFailureContent,
-      })
-      .catch(() => undefined);
+  if (prepare.status === "rejected") {
+    logFwaMatchChecklistManualRefresh({
+      event: "prepare_failed",
+      guildId,
+      messageId,
+      phase: "prepare",
+      durationMs: Date.now() - startedAt,
+      outcome: "failed",
+      reason: "unexpected_prepare_rejection",
+    });
+    releaseGuard();
+    await followUp("This checklist could not be prepared for refresh. Please try again.");
+    return;
   }
+  if (prepare.value.status === "expired") {
+    await markFwaMatchChecklistRefreshExpired(interaction, guildId);
+    releaseGuard();
+    await followUp("This checklist post can no longer be refreshed.");
+    return;
+  }
+  if (prepare.value.status === "failure") {
+    logFwaMatchChecklistManualRefresh({
+      event: "prepare_failed",
+      guildId,
+      messageId,
+      phase: "prepare",
+      durationMs: Date.now() - startedAt,
+      outcome: "failed",
+      reason: prepare.value.reason,
+    });
+    releaseGuard();
+    await followUp("This checklist post could not be refreshed. Please try again.");
+    return;
+  }
+
+  const { checklistState, viewType } = prepare.value;
+  const applyStartedAt = Date.now();
+  const applyOperation = Promise.resolve().then(() =>
+    trackedMessageService.refreshFwaMatchChecklistMessage(
+      interaction.message as any,
+      null,
+      {
+        rows: checklistState.rows,
+        scopeKey: checklistState.scopeKey,
+        expiresAt: checklistState.expiresAt,
+      },
+    ),
+  );
+  const apply = await observeFwaMatchChecklistManualRefreshPromise(
+    applyOperation,
+    FWA_MATCH_CHECKLIST_MANUAL_REFRESH_TIMEOUT_MS,
+    (settlement) => {
+      logFwaMatchChecklistManualRefresh({
+        event: settlement.status === "completed" && settlement.value
+          ? "apply_completed"
+          : "apply_failed",
+        guildId,
+        messageId,
+        viewType,
+        phase: "apply",
+        durationMs: Date.now() - applyStartedAt,
+        outcome:
+          settlement.status === "completed" && settlement.value ? "updated" : "failed",
+        reason: "late_settlement",
+      });
+      releaseGuard();
+    },
+  );
+  if (apply.status === "timeout") {
+    logFwaMatchChecklistManualRefresh({
+      event: "apply_timeout",
+      guildId,
+      messageId,
+      viewType,
+      phase: "apply",
+      durationMs: Date.now() - applyStartedAt,
+      outcome: "timeout",
+      reason: "write_deadline",
+    });
+    await followUp("Checklist refresh is still processing. Please wait before trying again.");
+    return;
+  }
+  if (
+    apply.status === "rejected" ||
+    (apply.status === "completed" && !apply.value)
+  ) {
+    logFwaMatchChecklistManualRefresh({
+      event: "apply_failed",
+      guildId,
+      messageId,
+      viewType,
+      phase: "apply",
+      durationMs: Date.now() - applyStartedAt,
+      outcome: "failed",
+      reason: apply.status === "rejected" ? "write_rejected" : "write_not_applied",
+    });
+    const trackedAfterRefresh = await observeFwaMatchChecklistManualRefreshPromise(
+      Promise.resolve().then(() =>
+        trackedMessageService.getActiveByMessageId(messageId),
+      ),
+      FWA_MATCH_CHECKLIST_MANUAL_REFRESH_TIMEOUT_MS,
+    );
+    if (
+      trackedAfterRefresh.status === "completed" &&
+      trackedAfterRefresh.value?.status !== "ACTIVE"
+    ) {
+      await markFwaMatchChecklistRefreshExpired(interaction, guildId, viewType);
+      releaseGuard();
+      await followUp("This checklist post can no longer be refreshed.");
+      return;
+    }
+    releaseGuard();
+    await followUp("This checklist post could not be refreshed. Please try again.");
+    return;
+  }
+
+  logFwaMatchChecklistManualRefresh({
+    event: "apply_completed",
+    guildId,
+    messageId,
+    viewType,
+    phase: "apply",
+    durationMs: Date.now() - applyStartedAt,
+    outcome: "updated",
+  });
+  releaseGuard();
 }
 
 /** Purpose: expose checklist reaction logic for regression tests. */
