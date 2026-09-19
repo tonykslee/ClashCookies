@@ -12,6 +12,7 @@ import { CoCService } from "./CoCService";
 import {
   buildFwaMatchChecklistContent,
   buildFwaMatchChecklistRowContextKey,
+  parseFwaMatchChecklistMetadata,
   shouldApplyFwaMatchChecklistBadgeReaction,
   trackedMessageService,
   resolveFwaMatchChecklistViewType,
@@ -487,6 +488,9 @@ export async function handleFwaMatchChecklistRefreshButton(
       if (!guildId) return false;
       await disableRefreshButton();
       const trackedViewType = resolveFwaMatchChecklistViewType(trackedBeforeRefresh.metadata);
+      const previousChecklistMetadata = parseFwaMatchChecklistMetadata(
+        trackedBeforeRefresh.metadata,
+      );
       const checklistState = await buildFwaMatchChecklistRenderStateForGuild({
         cocService: new CoCService(),
         guildId,
@@ -494,6 +498,10 @@ export async function handleFwaMatchChecklistRefreshButton(
         client: interaction.client,
         viewType: trackedViewType === "Bases" ? "Bases" : "Mail",
         syncMessageId: trackedViewType === "Bases" ? trackedBeforeRefresh.referenceId ?? null : null,
+        previousRows:
+          trackedViewType === "Mail" ? previousChecklistMetadata?.rows ?? null : null,
+        previousSyncIdentity:
+          trackedViewType === "Mail" ? trackedBeforeRefresh.referenceId ?? null : null,
       });
       const updated = await trackedMessageService
         .refreshFwaMatchChecklistMessage(
