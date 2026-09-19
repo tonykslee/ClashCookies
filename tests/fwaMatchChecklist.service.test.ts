@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
@@ -106,8 +106,43 @@ function buildBasesPublicationRows() {
   ] as const;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function buildRefreshInteraction(messageId: string, guildId = "guild-1") {
+  return {
+    customId: "fwa-match-checklist-refresh",
+    guildId,
+    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+    client: {} as any,
+    message: {
+      id: messageId,
+      edit: vi.fn().mockResolvedValue(undefined),
+      reactions: { cache: { values: () => [][Symbol.iterator]() } },
+    },
+  } as any;
+}
+
+async function flushManualRefreshMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 
 describe("FWA match checklist service", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     trackedMessageMock.createFwaMatchChecklistTrackedMessage.mockResolvedValue(
@@ -364,18 +399,7 @@ describe("FWA match checklist service", () => {
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
-    expect(edit).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        components: expect.any(Array),
-      }),
-    );
-    expect(
-      edit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label,
-    ).toBe("Refreshing...");
-    expect(
-      edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label,
-    ).toBe("Refresh");
+    expect(edit).not.toHaveBeenCalled();
     expect(
       fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
     ).toHaveBeenCalledWith(
@@ -401,6 +425,93 @@ describe("FWA match checklist service", () => {
     );
     expect(react).not.toHaveBeenCalled();
     expect(followUp).not.toHaveBeenCalled();
+  });
+
+  it("anchors manual Mail refresh to the tracked checklist sync and persists exact rows", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const trackedRow = {
+      clanTag: "#PYPY",
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+      matchType: "FWA",
+      matchStateInferred: true,
+      outcome: "UNKNOWN",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      warId: 1001,
+      opponentTag: "#OPP1",
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    };
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "message-1",
+        reactions: { cache: { values: () => [][Symbol.iterator]() } },
+        edit,
+      },
+    } as any;
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "ACTIVE",
+      referenceId: "old-sync",
+      metadata: {
+        kind: "mail_checklist",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T18:01:00.000Z",
+        referenceId: "old-sync",
+        scopeKey: "old-scope",
+        rows: [trackedRow],
+      },
+    } as any);
+    const refreshedRows = [{ ...trackedRow }];
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Mail",
+      rows: refreshedRows,
+      scopeKey: "old-scope",
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    });
+    let persistedRows: unknown;
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockImplementationOnce(
+      async (_message, _actor, options) => {
+        persistedRows = options.rows;
+        return true;
+      },
+    );
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(
+      fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+        syncMessageId: "old-sync",
+        previousSyncIdentity: "old-sync",
+        previousRows: [
+          expect.objectContaining({
+            clanTag: "#PYPY",
+            contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+            warId: "1001",
+            opponentTag: "#OPP1",
+            warStartTimeIso: "2026-05-13T18:00:00.000Z",
+          }),
+        ],
+      }),
+    );
+    expect(persistedRows).toEqual(refreshedRows);
+    expect((persistedRows as any[])[0]).toMatchObject({
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      warId: 1001,
+      opponentTag: "#OPP1",
+    });
   });
 
   it("refreshes an unknown mail row into a confirmed row on a later refresh", async () => {
@@ -572,12 +683,7 @@ describe("FWA match checklist service", () => {
         expiresAt: new Date("2026-05-13T22:00:00.000Z"),
       }),
     );
-    expect(edit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refreshing...",
-    );
-    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refresh",
-    );
+    expect(edit).not.toHaveBeenCalled();
     expect(followUp).not.toHaveBeenCalled();
   });
 
@@ -659,9 +765,9 @@ describe("FWA match checklist service", () => {
     } as any;
 
     trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(false);
-    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
-      status: "EXPIRED",
-    });
+    trackedMessageMock.getActiveByMessageId
+      .mockResolvedValueOnce({ status: "ACTIVE" })
+      .mockResolvedValueOnce({ status: "EXPIRED" });
 
     await handleFwaMatchChecklistRefreshButton(interaction);
 
@@ -677,7 +783,7 @@ describe("FWA match checklist service", () => {
     );
   });
 
-  it("restores the refresh button after a transient refresh error", async () => {
+  it("reports a transient refresh error without changing the public button", async () => {
     const deferUpdate = vi.fn().mockResolvedValue(undefined);
     const followUp = vi.fn().mockResolvedValue(undefined);
     const edit = vi.fn().mockResolvedValue(undefined);
@@ -708,12 +814,7 @@ describe("FWA match checklist service", () => {
     await handleFwaMatchChecklistRefreshButton(interaction);
 
     expect(deferUpdate).toHaveBeenCalledTimes(1);
-    expect(edit.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refreshing...",
-    );
-    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refresh",
-    );
+    expect(edit).not.toHaveBeenCalled();
     expect(followUp).toHaveBeenCalledWith(
       expect.objectContaining({
         ephemeral: true,
@@ -746,10 +847,161 @@ describe("FWA match checklist service", () => {
 
     await handleFwaMatchChecklistRefreshButton(interaction);
 
-    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
-      "Refresh",
-    );
+    expect(edit).not.toHaveBeenCalled();
     expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist post could not be refreshed. Please try again.",
+      }),
+    );
+  });
+
+  it("times out preparation without refreshing or allowing late state to write", async () => {
+    vi.useFakeTimers();
+    const interaction = buildRefreshInteraction("prepare-timeout-message");
+    const state = deferred<unknown>();
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({ status: "ACTIVE" });
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockReturnValueOnce(
+      state.promise,
+    );
+
+    const refresh = handleFwaMatchChecklistRefreshButton(interaction);
+    await flushManualRefreshMicrotasks();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await refresh;
+
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).not.toHaveBeenCalled();
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "Checklist refresh preparation timed out. Please try again.",
+      }),
+    );
+
+    state.resolve({});
+    await flushManualRefreshMicrotasks();
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).not.toHaveBeenCalled();
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
+  it("blocks a duplicate refresh for the same message while the first build is pending", async () => {
+    const firstInteraction = buildRefreshInteraction("duplicate-message");
+    const secondInteraction = buildRefreshInteraction("duplicate-message");
+    const state = deferred<unknown>();
+    trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockReturnValueOnce(
+      state.promise,
+    );
+
+    const firstRefresh = handleFwaMatchChecklistRefreshButton(firstInteraction);
+    await flushManualRefreshMicrotasks();
+    await handleFwaMatchChecklistRefreshButton(secondInteraction);
+
+    expect(
+      fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+    ).toHaveBeenCalledTimes(1);
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).not.toHaveBeenCalled();
+    expect(secondInteraction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist is already refreshing. Please wait for it to finish.",
+      }),
+    );
+
+    state.resolve({});
+    await firstRefresh;
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows independent checklist messages to refresh concurrently", async () => {
+    const firstInteraction = buildRefreshInteraction("independent-message-1");
+    const secondInteraction = buildRefreshInteraction("independent-message-2");
+    const firstState = deferred<unknown>();
+    const secondState = deferred<unknown>();
+    trackedMessageMock.getActiveByMessageId.mockResolvedValue({ status: "ACTIVE" });
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild
+      .mockReturnValueOnce(firstState.promise)
+      .mockReturnValueOnce(secondState.promise);
+
+    const firstRefresh = handleFwaMatchChecklistRefreshButton(firstInteraction);
+    const secondRefresh = handleFwaMatchChecklistRefreshButton(secondInteraction);
+    await vi.waitFor(() => {
+      expect(
+        fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+      ).toHaveBeenCalledTimes(2);
+    });
+
+    firstState.resolve({});
+    secondState.resolve({});
+    await Promise.all([firstRefresh, secondRefresh]);
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a timed-out write guarded until the original write settles", async () => {
+    vi.useFakeTimers();
+    const firstInteraction = buildRefreshInteraction("apply-timeout-message");
+    const secondInteraction = buildRefreshInteraction("apply-timeout-message");
+    const write = deferred<boolean>();
+    trackedMessageMock.refreshFwaMatchChecklistMessage
+      .mockReturnValueOnce(write.promise)
+      .mockResolvedValueOnce(true);
+
+    const firstRefresh = handleFwaMatchChecklistRefreshButton(firstInteraction);
+    await flushManualRefreshMicrotasks();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await firstRefresh;
+    expect(firstInteraction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "Checklist refresh is still processing. Please wait before trying again.",
+      }),
+    );
+
+    await handleFwaMatchChecklistRefreshButton(secondInteraction);
+    expect(secondInteraction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist is already refreshing. Please wait for it to finish.",
+      }),
+    );
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledTimes(1);
+
+    write.resolve(true);
+    await flushManualRefreshMicrotasks();
+    await handleFwaMatchChecklistRefreshButton(secondInteraction);
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a rejected write and releases the guard for a later retry", async () => {
+    const firstInteraction = buildRefreshInteraction("rejected-write-message");
+    const secondInteraction = buildRefreshInteraction("rejected-write-message");
+    trackedMessageMock.refreshFwaMatchChecklistMessage
+      .mockRejectedValueOnce(new Error("write failed"))
+      .mockResolvedValueOnce(true);
+
+    await handleFwaMatchChecklistRefreshButton(firstInteraction);
+    expect(firstInteraction.message.edit).not.toHaveBeenCalled();
+    expect(firstInteraction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist post could not be refreshed. Please try again.",
+      }),
+    );
+
+    await handleFwaMatchChecklistRefreshButton(secondInteraction);
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats an initial tracked-message lookup rejection as temporary", async () => {
+    const interaction = buildRefreshInteraction("lookup-rejection-message");
+    trackedMessageMock.getActiveByMessageId.mockRejectedValueOnce(new Error("db unavailable"));
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+    expect(trackedMessageMock.refreshFwaMatchChecklistMessage).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith(
       expect.objectContaining({
         ephemeral: true,
         content: "This checklist post could not be refreshed. Please try again.",

@@ -3,6 +3,7 @@ import { prisma } from "../../prisma";
 import { dozzleLog } from "../../helper/dozzleLogger";
 import { formatError } from "../../helper/formatError";
 import { CoCService } from "../CoCService";
+import { runWithCoCQueueContext } from "../CoCQueueContext";
 import {
   assessFwaMatchChecklistCompletion,
   areFwaMatchChecklistRowsEqual,
@@ -147,6 +148,20 @@ export class FwaMatchChecklistAutoPostSchedulerService {
   }
 
   async runCycle(nowMs: number = Date.now()): Promise<FwaMatchChecklistAutoPostSchedulerCounts> {
+    return runWithCoCQueueContext(
+      {
+        priority: "background",
+        source: FWA_MATCH_CHECKLIST_AUTO_POST_SCHEDULER_JOB_KEY,
+        scheduledAtMs: nowMs,
+        freshnessDeadlineMs: nowMs + FWA_MATCH_CHECKLIST_AUTO_REFRESH_INTERVAL_MS,
+      },
+      () => this.runCycleWithQueueContext(nowMs),
+    );
+  }
+
+  private async runCycleWithQueueContext(
+    nowMs: number,
+  ): Promise<FwaMatchChecklistAutoPostSchedulerCounts> {
     if (this.inFlight) {
       dozzleLog.debug("[fwa match checklist auto-post] cycle_skipped reason=in_flight");
       return createZeroCounts();
@@ -319,6 +334,8 @@ export class FwaMatchChecklistAutoPostSchedulerService {
             warLookupCache: params.context.warLookupCache,
             viewType,
             syncMessageId: syncIdentity,
+            previousRows: viewType === "Mail" ? claim.metadata.rows : undefined,
+            previousSyncIdentity: viewType === "Mail" ? syncIdentity : undefined,
             nowMs: params.nowMs,
           });
         } catch (err) {
