@@ -4254,6 +4254,110 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(state.rows[0]).toEqual(previousRow);
   });
 
+  it("rejects an unavailable lookup when the typed war start time differs", async () => {
+    const currentStartTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: "2026-05-13T19:00:00.000Z",
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: currentStartTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].opponentTag).not.toBe("#OPP1");
+  });
+
+  it("preserves an unavailable lookup when the typed war start time matches", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).toEqual(previousRow);
+  });
+
+  it("rejects an invalid typed war start time during unavailable lookup preservation", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: "not-a-timestamp",
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].opponentTag).not.toBe("#OPP1");
+  });
+
   it("does not preserve a Mail baseline for an explicit successful notInWar response", async () => {
     const startTime = "2026-05-13T18:00:00.000Z";
     const cocService = configureSingleClanChecklistScenario({

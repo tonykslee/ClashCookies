@@ -1527,6 +1527,7 @@ function preserveMailRowsAfterUnavailableLookup(params: {
     state?: string | null;
     warId?: number | string | null;
     opponentTag?: string | null;
+    startTime?: Date | null;
   }>;
   liveWarLookupByTag: Map<string, CurrentWarLookupResult>;
 }): FwaMatchChecklistTrackedRow[] {
@@ -1581,9 +1582,21 @@ function preserveMailRowsAfterUnavailableLookup(params: {
     const currentWarId = String(currentWar?.warId ?? "").trim();
     const priorOpponentTag = normalizeChecklistClanTag(previousRow.opponentTag ?? "");
     const currentOpponentTag = normalizeChecklistClanTag(currentWar?.opponentTag ?? "");
+    const priorWarStartTimeIso = String(previousRow.warStartTimeIso ?? "").trim();
+    const priorWarStartTimeMs = priorWarStartTimeIso ? Date.parse(priorWarStartTimeIso) : null;
+    const currentWarStartTimeMs =
+      currentWar?.startTime instanceof Date && !Number.isNaN(currentWar.startTime.getTime())
+        ? currentWar.startTime.getTime()
+        : null;
     const typedIdentityCompatible =
       (!priorWarId || (Boolean(currentWarId) && priorWarId === currentWarId)) &&
       (!priorOpponentTag || (Boolean(currentOpponentTag) && priorOpponentTag === currentOpponentTag));
+    const typedStartTimeCompatible =
+      !priorWarStartTimeIso ||
+      (priorWarStartTimeMs !== null &&
+        !Number.isNaN(priorWarStartTimeMs) &&
+        currentWarStartTimeMs !== null &&
+        priorWarStartTimeMs === currentWarStartTimeMs);
     const identityMatched =
       (currentState === "preparation" || currentState === "inWar") &&
       currentContextKey !== null &&
@@ -1592,7 +1605,8 @@ function preserveMailRowsAfterUnavailableLookup(params: {
       currentSyncIdentity !== null &&
       previousSyncIdentity !== null &&
       currentSyncIdentity === previousSyncIdentity &&
-      typedIdentityCompatible;
+      typedIdentityCompatible &&
+      typedStartTimeCompatible;
 
     if (identityMatched) {
       logMailBaselineDecision({
@@ -1616,7 +1630,7 @@ function preserveMailRowsAfterUnavailableLookup(params: {
       clanTag,
       syncIdentity: currentSyncIdentity,
       reason: "lookup_unavailable",
-      decision: `previous_identity_mismatch current_state=${currentState} current_context=${currentContextKey ?? "missing"} previous_context=${previousContextKey ?? "missing"} current_sync=${currentSyncIdentity ?? "missing"} previous_sync=${previousSyncIdentity ?? "missing"} typed_identity_compatible=${typedIdentityCompatible ? "true" : "false"}`,
+      decision: `previous_identity_mismatch current_state=${currentState} current_context=${currentContextKey ?? "missing"} previous_context=${previousContextKey ?? "missing"} current_sync=${currentSyncIdentity ?? "missing"} previous_sync=${previousSyncIdentity ?? "missing"} typed_identity_compatible=${typedIdentityCompatible ? "true" : "false"} typed_start_time_compatible=${typedStartTimeCompatible ? "true" : "false"}`,
     });
     logMailBaselineDecision({
       guildId: params.guildId,
