@@ -5447,11 +5447,20 @@ export class TrackedMessageService {
           matchedRow,
         );
         const observedCount = matchingReaction?.count;
+        const observedMe = matchingReaction?.me;
+        const hasValidObservedCount =
+          typeof observedCount === "number" &&
+          Number.isFinite(observedCount) &&
+          Number.isInteger(observedCount) &&
+          observedCount >= 0;
+        const hasValidObservedMe = observedMe === true || observedMe === false;
         const hasAuthoritativeCount =
           reactionObservation.fetchSucceeded === true &&
           matchingReaction !== undefined &&
-          matchingReaction.me !== undefined &&
-          Number.isFinite(Number(observedCount));
+          hasValidObservedCount &&
+          hasValidObservedMe &&
+          (observedMe !== true ||
+            (typeof observedCount === "number" && observedCount >= 1));
         const humanCount =
           reactionObservation.fetchSucceeded !== true
             ? null

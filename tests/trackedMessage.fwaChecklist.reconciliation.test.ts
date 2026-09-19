@@ -1843,6 +1843,71 @@ describe("fwa checklist badge reaction reconciliation", () => {
       expect(currentTracked.metadata.checkedClanTags).toEqual(["SH"]);
     });
 
+    const malformedMailRemovalObservations: Array<[
+      string,
+      number | null,
+      boolean | null,
+    ]> = [
+      ["null count", null, true],
+      ["null bot membership", 1, null],
+      ["bot-only count with bot membership", 0, true],
+    ];
+
+    it.each(malformedMailRemovalObservations)(
+      "preserves Mail completion for a malformed fresh removal observation (%s)",
+      async (_label, count, me) => {
+        const rows = [
+          makeMailRow({
+            clanTag: "#RR",
+            compactCopyLine: "Alpha | [ ] | Mail not checked",
+            badgeEmojiInline: "<:alpha:111>",
+            badgeEmojiId: "111",
+            badgeEmojiName: "alpha",
+            contextKey: "ctx-rr",
+          }),
+        ];
+        let currentTracked: any = {
+          ...makeMailTrackedChecklistRowWithRows(rows, ["RR"]),
+        };
+        prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+        prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+          if (args.where?.metadata !== currentTracked.metadata) return { count: 0 };
+          currentTracked = { ...currentTracked, metadata: args.data.metadata };
+          return { count: 1 };
+        });
+
+        const message: any = {
+          id: "mail-message-1",
+          reactions: {
+            cache: new Map([
+              ["custom:111", {
+                emoji: { id: "111", name: "alpha" }, count: 1, me: true,
+              }],
+            ]),
+          },
+          fetch: vi.fn().mockResolvedValue({
+            reactions: {
+              cache: new Map([
+                ["custom:111", {
+                  emoji: { id: "111", name: "alpha" }, count, me,
+                }],
+              ]),
+            },
+          }),
+          react: vi.fn().mockResolvedValue(undefined),
+          edit: vi.fn().mockResolvedValue(undefined),
+        };
+
+        await expect(trackedMessageService.refreshFwaMatchChecklistMessage(message, {
+          kind: "remove",
+          reaction: { emoji: { id: "111", name: "alpha" }, count: 0 },
+        })).resolves.toBe(true);
+
+        expect(message.fetch).toHaveBeenCalledTimes(1);
+        expect(currentTracked.metadata.checkedClanTags).toEqual(["RR"]);
+      },
+    );
+
     it("clears Mail completion when a fresh removal snapshot has no matching reaction", async () => {
       const rows = [
         makeMailRow({
