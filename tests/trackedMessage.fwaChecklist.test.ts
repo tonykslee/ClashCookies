@@ -84,6 +84,36 @@ function makeTrackedChecklistRowWithState(checkedClanTags: string[]) {
   };
 }
 
+function makeDegradedMailChecklistRowWithState(checkedClanTags: string[]) {
+  const row = makeTrackedChecklistRow();
+  return {
+    ...row,
+    referenceId: "old-sync",
+    metadata: {
+      ...row.metadata,
+      kind: "mail_checklist",
+      referenceId: "old-sync",
+      checkedClanTags,
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "📭 | 🟢 | ☐ | A vs `Opponent` (`#OPP1`) ⚠️",
+          badgeEmojiId: "111",
+          badgeEmojiName: "rr",
+          badgeEmojiInline: "<:rr:111>",
+          matchType: "FWA",
+          matchStateInferred: true,
+          outcome: "UNKNOWN",
+          contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-13T18:00:00.000Z",
+        },
+      ],
+    },
+  };
+}
+
 function makeBasesTrackedChecklistRow() {
   return {
     id: "tracked-bases-1",
@@ -2472,6 +2502,87 @@ describe("fwa checklist tracked messages", () => {
         sourceTrackedMessageId: "tracked-1",
       }),
     );
+  });
+
+  it("keeps degraded Mail matchup fields and warnings unchanged across add and remove", async () => {
+    vi.spyOn(repWorkActivityService, "recordMailChecked").mockResolvedValue(true);
+    const addRow = makeDegradedMailChecklistRowWithState([]);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(addRow);
+    const addEdit = vi.fn().mockResolvedValue(undefined);
+    const addMessage = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            { emoji: { id: "111", name: "rr" }, count: 2, me: true },
+          ],
+        ]),
+      },
+      edit: addEdit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(addMessage as any, {
+        kind: "add",
+        reactorUserId: "111111111111111111",
+        reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
+      } as any),
+    ).resolves.toBe(true);
+
+    expect((addEdit.mock.calls[0]?.[0] as any).content).toContain(
+      "A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+    expect(
+      (prismaMock.trackedMessage.update.mock.calls.at(-1)?.[0] as any).data.metadata.rows,
+    ).toEqual([
+      expect.objectContaining({
+        compactCopyLine: "📭 | 🟢 | ☐ | A vs `Opponent` (`#OPP1`) ⚠️",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+        warId: "1001",
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+      }),
+    ]);
+
+    const removeRow = makeDegradedMailChecklistRowWithState(["#PYPY"]);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(removeRow);
+    prismaMock.trackedMessage.update.mockClear();
+    const removeEdit = vi.fn().mockResolvedValue(undefined);
+    const removeMessage = {
+      id: "checklist-message-1",
+      reactions: {
+        cache: new Map([
+          [
+            "rr",
+            { emoji: { id: "111", name: "rr" }, count: 1, me: true },
+          ],
+        ]),
+      },
+      edit: removeEdit,
+    };
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(removeMessage as any, {
+        kind: "remove",
+        reaction: { emoji: { id: "111", name: "rr" }, count: 1 },
+      } as any),
+    ).resolves.toBe(true);
+
+    expect((removeEdit.mock.calls[0]?.[0] as any).content).toContain(
+      "A vs `Opponent` (`#OPP1`) ⚠️",
+    );
+    expect(
+      (prismaMock.trackedMessage.update.mock.calls.at(-1)?.[0] as any).data.metadata.rows,
+    ).toEqual([
+      expect.objectContaining({
+        compactCopyLine: "📭 | 🟢 | ☐ | A vs `Opponent` (`#OPP1`) ⚠️",
+        contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+        warId: "1001",
+        opponentTag: "#OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+      }),
+    ]);
   });
 
   it("removes only the reacted clan from persisted checked state on reaction remove", async () => {

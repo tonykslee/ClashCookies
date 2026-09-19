@@ -50,7 +50,10 @@ vi.mock("../src/services/WarMailLifecycleService", () => ({
   },
 }));
 
-import { trackedMessageService } from "../src/services/TrackedMessageService";
+import {
+  buildFwaMatchChecklistRowContextKey,
+  trackedMessageService,
+} from "../src/services/TrackedMessageService";
 import { buildFwaMatchBasesMessageContent } from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../src/services/FwaMatchChecklistStateService";
 import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
@@ -211,6 +214,33 @@ function configureSingleClanChecklistScenario(params: {
     null as any,
   );
   return { cocService: { getCurrentWar: vi.fn().mockResolvedValue(params.liveWar) } as any };
+}
+
+function makePreviousMailChecklistRow(params: {
+  clanTag: string;
+  warId: number;
+  startTimeIso: string;
+  opponentTag: string;
+  badgeEmojiId?: string;
+}) {
+  return {
+    clanTag: params.clanTag,
+    compactCopyLine: `📭 | 🟢 | ${params.clanTag} vs \`Opponent\` (${params.opponentTag}) ⚠️`,
+    badgeEmojiId: params.badgeEmojiId ?? "111",
+    badgeEmojiName: "rr",
+    badgeEmojiInline: `<:rr:${params.badgeEmojiId ?? "111"}>`,
+    matchType: "FWA",
+    matchStateInferred: true,
+    outcome: "UNKNOWN",
+    contextKey: buildFwaMatchChecklistRowContextKey({
+      clanTag: params.clanTag,
+      warId: params.warId,
+      opponentTag: params.opponentTag,
+    }),
+    warId: params.warId,
+    opponentTag: params.opponentTag,
+    warStartTimeIso: params.startTimeIso,
+  } as any;
 }
 
 function configureActiveChecklistChronology() {
@@ -3961,5 +3991,441 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
     expect(confirmedState.rows[0].compactCopyLine).toBe(
       "📬 | 🟢 | A vs `Opponent` (`#OPP1`)",
     );
+  });
+
+  it("preserves only the null Mail lookup among eight active clans", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const clanTags = ["#PYPY", "#PYPL", "#PYLQ", "#PYLG", "#PYLR", "#PYLJ", "#PYLU", "#PYLV"];
+    const trackedClans = clanTags.map((tag, index) => ({
+      tag,
+      clanBadge: `<:rr:111${index}>`,
+      name: `Clan ${index}`,
+      shortName: `C${index}`,
+    }));
+    const currentWars = trackedClans.map((clan, index) =>
+      makeCurrentWarRow({
+        clanTag: clan.tag,
+        warId: 1000 + index,
+        startTimeIso: startTime,
+        opponentTag: `#OPP${index}`,
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+    );
+    const previousRows = currentWars.map((war, index) =>
+      makePreviousMailChecklistRow({
+        clanTag: war.clanTag,
+        warId: war.warId,
+        startTimeIso: startTime,
+        opponentTag: war.opponentTag,
+        badgeEmojiId: `111${index}`,
+      }),
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue(trackedClans);
+    prismaMock.currentWar.findMany.mockResolvedValue(currentWars);
+    prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
+    const failedTag = trackedClans[3].tag;
+    const cocService = {
+      getCurrentWar: vi.fn().mockImplementation(async (clanTag: string) => {
+        if (clanTag === failedTag) return null;
+        const index = trackedClans.findIndex((clan) => clan.tag === clanTag);
+        return makeLiveWarSnapshot({
+          startTimeIso: startTime,
+          opponentTag: `#OPP${index}`,
+          warId: 1000 + index,
+        });
+      }),
+    } as any;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows,
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(cocService.getCurrentWar).toHaveBeenCalledTimes(8);
+    expect(state.rows[3]).toEqual(previousRows[3]);
+    expect(state.rows.slice(0, 3).concat(state.rows.slice(4)).every((row) => row.opponentTag !== "-")).toBe(true);
+  });
+
+  it("retains all known Mail rows when every live lookup returns null", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const clanTags = ["#PQPQ", "#PQPL", "#PQLQ", "#PQLG", "#PQLR", "#PQLJ", "#PQLU", "#PQLV"];
+    const trackedClans = clanTags.map((tag, index) => ({
+      tag,
+      clanBadge: `<:rr:222${index}>`,
+      name: `Clan ${index}`,
+      shortName: `C${index}`,
+    }));
+    const currentWars = trackedClans.map((clan, index) =>
+      makeCurrentWarRow({
+        clanTag: clan.tag,
+        warId: 2000 + index,
+        startTimeIso: startTime,
+        opponentTag: `#OPP${index}`,
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+    );
+    const previousRows = currentWars.map((war, index) =>
+      makePreviousMailChecklistRow({
+        clanTag: war.clanTag,
+        warId: war.warId,
+        startTimeIso: startTime,
+        opponentTag: war.opponentTag,
+        badgeEmojiId: `222${index}`,
+      }),
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue(trackedClans);
+    prismaMock.currentWar.findMany.mockResolvedValue(currentWars);
+    prismaMock.clanPointsSync.findMany.mockResolvedValue([]);
+    const cocService = {
+      getCurrentWar: vi.fn().mockResolvedValue(null),
+    } as any;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows,
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(cocService.getCurrentWar).toHaveBeenCalledTimes(8);
+    expect(state.rows).toEqual(previousRows);
+  });
+
+  it("does not preserve a Mail row when CurrentWar has moved to a different war", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const currentWar = makeCurrentWarRow({
+      clanTag: "#PYPY",
+      warId: 2002,
+      startTimeIso: startTime,
+      opponentTag: "#OPP2",
+      matchType: "FWA",
+      inferredMatchType: true,
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar,
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+    });
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].compactCopyLine).toContain("-");
+  });
+
+  it("preserves a Mail baseline when the live lookup rejects for the same active war and sync", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const currentWar = makeCurrentWarRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+      matchType: "FWA",
+      inferredMatchType: true,
+      outcome: null,
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar,
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockRejectedValue(new Error("temporary CoC failure"));
+    const previousRow = {
+      clanTag: "#PYPY",
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+      matchType: "FWA",
+      matchStateInferred: true,
+      outcome: "UNKNOWN",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      warId: 1001,
+      opponentTag: "#OPP1",
+      warStartTimeIso: startTime,
+    } as any;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).toEqual(previousRow);
+  });
+
+  it("treats a cached null lookup as unavailable without refetching", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+    });
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      warLookupCache: new Map([["#PYPY", null]]),
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(cocService.getCurrentWar).not.toHaveBeenCalled();
+    expect(state.rows[0]).toEqual(previousRow);
+  });
+
+  it("preserves a legacy Mail row using exact context and sync identity only", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+    const typedRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+    });
+    const previousRow: any = { ...typedRow };
+    delete previousRow.warId;
+    delete previousRow.opponentTag;
+    delete previousRow.warStartTimeIso;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).toEqual(previousRow);
+  });
+
+  it("rejects an unavailable lookup when the typed war start time differs", async () => {
+    const currentStartTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: "2026-05-13T19:00:00.000Z",
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: currentStartTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].opponentTag).not.toBe("#OPP1");
+  });
+
+  it("preserves an unavailable lookup when the typed war start time matches", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: startTime,
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).toEqual(previousRow);
+  });
+
+  it("rejects an invalid typed war start time during unavailable lookup preservation", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const previousRow = makePreviousMailChecklistRow({
+      clanTag: "#PYPY",
+      warId: 1001,
+      startTimeIso: "not-a-timestamp",
+      opponentTag: "#OPP1",
+    });
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+        inferredMatchType: true,
+      }),
+      liveWar: null,
+    }).cocService;
+    cocService.getCurrentWar.mockResolvedValue(null);
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].opponentTag).not.toBe("#OPP1");
+  });
+
+  it("does not preserve a Mail baseline for an explicit successful notInWar response", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        state: "preparation",
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        state: "notInWar",
+      }),
+    }).cocService;
+    const previousRow = {
+      clanTag: "#PYPY",
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`)",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+    } as any;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+      syncMessageId: "sync-1",
+      previousRows: [previousRow],
+      previousSyncIdentity: "sync-1",
+    });
+
+    expect(state.rows[0]).not.toEqual(previousRow);
+    expect(state.rows[0].compactCopyLine).toContain("-");
+  });
+
+  it("persists typed identity on a newly resolved Mail row", async () => {
+    const startTime = "2026-05-13T18:00:00.000Z";
+    const cocService = configureSingleClanChecklistScenario({
+      currentWar: makeCurrentWarRow({
+        clanTag: "#PYPY",
+        warId: 1001,
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        matchType: "FWA",
+      }),
+      liveWar: makeLiveWarSnapshot({
+        startTimeIso: startTime,
+        opponentTag: "#OPP1",
+        warId: 1001,
+      }),
+    }).cocService;
+
+    const state = await buildFwaMatchChecklistRenderStateForGuild({
+      cocService,
+      guildId: "guild-1",
+      client: {} as any,
+      viewType: "Mail",
+    });
+
+    expect(state.rows[0]).toMatchObject({
+      warId: 1001,
+      opponentTag: "OPP1",
+      warStartTimeIso: startTime,
+      matchType: "FWA",
+    });
   });
 });

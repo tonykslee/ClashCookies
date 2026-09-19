@@ -50,6 +50,7 @@ import {
   FwaMatchChecklistAutoPostSchedulerService,
   FWA_MATCH_CHECKLIST_AUTO_REFRESH_INTERVAL_MS,
 } from "../src/services/fwa/matchChecklistAutoPostSchedulerService";
+import { getCoCQueueContext } from "../src/services/CoCQueueContext";
 
 const syncEpochSeconds = Math.floor(new Date("2026-05-13T00:00:00.000Z").getTime() / 1000);
 const refreshAt = new Date("2026-05-13T00:15:00.000Z").getTime();
@@ -228,5 +229,38 @@ describe("FWA checklist automatic-refresh production path", () => {
     pollingModeMock.resolveRuntimeEnvironment.mockReturnValue("staging");
     await new FwaMatchChecklistAutoPostSchedulerService({} as any).runCycle(refreshAt);
     expect(prismaMock.trackedMessage.findMany).not.toHaveBeenCalled();
+  });
+
+  it("supplies a background CoC queue context for direct runCycle calls", async () => {
+    pollingModeMock.isMirrorPollingMode.mockReturnValue(false);
+    pollingModeMock.resolveRuntimeEnvironment.mockReturnValue("test");
+    let observedContext: ReturnType<typeof getCoCQueueContext> = null;
+    stateMock.buildFwaMatchChecklistRenderStateForGuild.mockImplementation(async () => {
+      observedContext = getCoCQueueContext();
+      return {
+        rows: [{ clanTag: "#PYPY", compactCopyLine: "new", outcome: "UNKNOWN" }],
+        scopeKey: "scope-new",
+        expectedTrackedClanTags: ["#PYPY"],
+      };
+    });
+    const target = makeTarget();
+    trackedMessageServiceMock.findCurrentFwaMatchChecklistAutoRefreshTargets.mockResolvedValue([target]);
+    trackedMessageServiceMock.claimFwaMatchChecklistAutoRefresh.mockResolvedValue({
+      claimed: true,
+      reason: "claimed",
+      claimToken: "claim-1",
+      metadata: target.metadata,
+    });
+    const message = makeMessage();
+    const client = {
+      channels: { fetch: vi.fn().mockResolvedValue({ messages: { fetch: vi.fn().mockResolvedValue(message) } }) },
+    };
+
+    await new FwaMatchChecklistAutoPostSchedulerService(client as any).runCycle(refreshAt);
+
+    expect(observedContext).toEqual(expect.objectContaining({
+      priority: "background",
+      source: "fwa_match_checklist_auto_post_scheduler",
+    }));
   });
 });
