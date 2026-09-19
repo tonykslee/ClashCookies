@@ -223,6 +223,7 @@ export type FwaMatchChecklistRefreshOptions = {
 
 type FwaMatchChecklistDiscordMessage = {
   id: string;
+  content?: string | null;
   partial?: boolean;
   fetch?: () => Promise<any>;
   react?: (emoji: string) => Promise<unknown>;
@@ -2231,8 +2232,10 @@ export class TrackedMessageService {
     extendedExpiresAt: Date | null;
     message: FwaMatchChecklistDiscordMessage;
     automaticClaimToken?: string | null;
+    recoveryExpectedContents: readonly string[];
     renderContent: (metadata: FwaMatchChecklistTrackedMetadata) => string;
   }): Promise<FwaMatchChecklistTrackedMetadata | null> {
+    const recoveryExpectedContents = new Set(params.recoveryExpectedContents);
     const initialPersisted = await prisma.trackedMessage.updateMany({
       where: {
         id: params.tracked.id,
@@ -2266,7 +2269,10 @@ export class TrackedMessageService {
         console.warn(
           `[tracked-message] event=fwa_checklist_reconciliation_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt} reason=tracked_message_unavailable`,
         );
-        await this.recoverFwaChecklistDiscordState(params);
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
         return null;
       }
       if (
@@ -2276,7 +2282,10 @@ export class TrackedMessageService {
         console.info(
           `[tracked-message] event=fwa_checklist_reconciliation_expired guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt}`,
         );
-        await this.recoverFwaChecklistDiscordState(params);
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
         return null;
       }
       const latestMetadata = parseFwaMatchChecklistMetadata(latestTracked.metadata);
@@ -2284,7 +2293,10 @@ export class TrackedMessageService {
         console.warn(
           `[tracked-message] event=fwa_checklist_reconciliation_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt} reason=invalid_metadata`,
         );
-        await this.recoverFwaChecklistDiscordState(params);
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
         return null;
       }
       if (
@@ -2294,7 +2306,10 @@ export class TrackedMessageService {
         console.warn(
           `[tracked-message] event=fwa_checklist_reconciliation_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt} reason=claim_changed`,
         );
-        await this.recoverFwaChecklistDiscordState(params);
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
         return null;
       }
 
@@ -2311,16 +2326,21 @@ export class TrackedMessageService {
         params.extendedExpiresAt && latestExpiry
           ? new Date(Math.max(params.extendedExpiresAt.getTime(), latestExpiry.getTime()))
           : params.extendedExpiresAt ?? latestExpiry;
+      const reconciledContent = params.renderContent(mergedMetadata);
+      recoveryExpectedContents.add(reconciledContent);
       try {
         await params.message.edit({
-          content: params.renderContent(mergedMetadata),
+          content: reconciledContent,
           allowedMentions: { parse: [] },
         });
       } catch (err) {
         console.error(
           `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_edit attempt=${attempt} error=${formatError(err)}`,
         );
-        await this.recoverFwaChecklistDiscordState(params);
+        await this.recoverFwaChecklistDiscordState({
+          ...params,
+          recoveryExpectedContents,
+        });
         return null;
       }
 
@@ -2353,7 +2373,10 @@ export class TrackedMessageService {
     console.error(
       `[tracked-message] event=fwa_checklist_refresh_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_exhausted attempts=${FWA_CHECKLIST_METADATA_RECONCILIATION_ATTEMPTS}`,
     );
-    await this.recoverFwaChecklistDiscordState(params);
+    await this.recoverFwaChecklistDiscordState({
+      ...params,
+      recoveryExpectedContents,
+    });
     return null;
   }
 
@@ -2362,6 +2385,7 @@ export class TrackedMessageService {
     tracked: { id: string; messageId: string; guildId: string; status: string; expiresAt: Date | null; metadata: unknown };
     message: FwaMatchChecklistDiscordMessage;
     automaticClaimToken?: string | null;
+    recoveryExpectedContents: ReadonlySet<string>;
     renderContent: (metadata: FwaMatchChecklistTrackedMetadata) => string;
   }): Promise<void> {
     const latestTracked = await prisma.trackedMessage.findUnique({
@@ -2374,7 +2398,7 @@ export class TrackedMessageService {
     });
     if (!latestTracked || latestTracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) {
       console.warn(
-        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=tracked_message_unavailable`,
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=tracked_message_unavailable retry=existing_lifecycle`,
       );
       return;
     }
@@ -2383,33 +2407,147 @@ export class TrackedMessageService {
       latestTracked.expiresAt.getTime() <= Date.now()
     ) {
       console.info(
-        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=expired`,
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=expired retry=existing_lifecycle`,
       );
       return;
     }
     const latestMetadata = parseFwaMatchChecklistMetadata(latestTracked.metadata);
     if (!latestMetadata) {
       console.warn(
-        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=invalid_metadata`,
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=invalid_metadata retry=existing_lifecycle`,
+      );
+      return;
+    }
+
+    const observeDiscordContent = async (): Promise<string | null> => {
+      if (typeof params.message.fetch === "function") {
+        const fetched = await params.message.fetch();
+        return typeof fetched?.content === "string" ? fetched.content : null;
+      }
+      return typeof params.message.content === "string" ? params.message.content : null;
+    };
+    let observedContent: string | null;
+    try {
+      observedContent = await observeDiscordContent();
+    } catch (err) {
+      console.error(
+        `[tracked-message] event=fwa_checklist_recovery_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_read error=${formatError(err)}`,
+      );
+      return;
+    }
+    if (observedContent === null) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_observation_unavailable retry=existing_lifecycle`,
+      );
+      return;
+    }
+    if (!params.recoveryExpectedContents.has(observedContent)) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_changed retry=existing_lifecycle`,
+      );
+      return;
+    }
+
+    const confirmedTracked = await prisma.trackedMessage.findUnique({
+      where: { id: params.tracked.id },
+    }).catch((err) => {
+      console.error(
+        `[tracked-message] event=fwa_checklist_recovery_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=confirm_read error=${formatError(err)}`,
+      );
+      return null;
+    });
+    if (!confirmedTracked || confirmedTracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=tracked_message_changed retry=existing_lifecycle`,
       );
       return;
     }
     if (
-      params.automaticClaimToken &&
-      latestMetadata.autoRefreshClaimToken !== params.automaticClaimToken
+      confirmedTracked.expiresAt instanceof Date &&
+      confirmedTracked.expiresAt.getTime() <= Date.now()
     ) {
-      console.warn(
-        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=claim_changed`,
+      console.info(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=expired_after_read retry=existing_lifecycle`,
       );
       return;
     }
+    const confirmedMetadata = parseFwaMatchChecklistMetadata(confirmedTracked.metadata);
+    if (!confirmedMetadata) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=invalid_metadata_after_read retry=existing_lifecycle`,
+      );
+      return;
+    }
+
+    let confirmedContent: string | null;
+    try {
+      confirmedContent = await observeDiscordContent();
+    } catch (err) {
+      console.error(
+        `[tracked-message] event=fwa_checklist_recovery_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_recheck error=${formatError(err)}`,
+      );
+      return;
+    }
+    if (confirmedContent !== observedContent) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_changed_during_recovery retry=existing_lifecycle`,
+      );
+      return;
+    }
+
+    const finalTracked = await prisma.trackedMessage.findUnique({
+      where: { id: params.tracked.id },
+    }).catch((err) => {
+      console.error(
+        `[tracked-message] event=fwa_checklist_recovery_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=final_confirm_read error=${formatError(err)}`,
+      );
+      return null;
+    });
+    if (
+      !finalTracked ||
+      finalTracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+      (finalTracked.expiresAt instanceof Date && finalTracked.expiresAt.getTime() <= Date.now()) ||
+      !checklistMetadataValueEqual(finalTracked.metadata, confirmedTracked.metadata)
+    ) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=state_changed_during_recovery retry=existing_lifecycle`,
+      );
+      return;
+    }
+    const finalMetadata = parseFwaMatchChecklistMetadata(finalTracked.metadata);
+    if (!finalMetadata) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=invalid_metadata_final retry=existing_lifecycle`,
+      );
+      return;
+    }
+    let finalContent: string | null;
+    try {
+      finalContent = await observeDiscordContent();
+    } catch (err) {
+      console.error(
+        `[tracked-message] event=fwa_checklist_recovery_failed guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_final_recheck error=${formatError(err)}`,
+      );
+      return;
+    }
+    if (finalContent !== confirmedContent) {
+      console.warn(
+        `[tracked-message] event=fwa_checklist_recovery_skipped guild=${params.tracked.guildId} messageId=${params.tracked.messageId} reason=discord_changed_before_edit retry=existing_lifecycle`,
+      );
+      return;
+    }
+    const recoveryContent = params.renderContent(finalMetadata);
+    const claimChanged = Boolean(
+      params.automaticClaimToken &&
+      finalMetadata.autoRefreshClaimToken !== params.automaticClaimToken,
+    );
     try {
       await params.message.edit({
-        content: params.renderContent(latestMetadata),
+        content: recoveryContent,
         allowedMentions: { parse: [] },
       });
       console.info(
-        `[tracked-message] event=fwa_checklist_recovery_succeeded guild=${params.tracked.guildId} messageId=${params.tracked.messageId}`,
+        `[tracked-message] event=fwa_checklist_recovery_succeeded guild=${params.tracked.guildId} messageId=${params.tracked.messageId} claim_changed=${claimChanged ? "yes" : "no"} ownership=preserved`,
       );
     } catch (err) {
       console.error(
@@ -5132,6 +5270,7 @@ export class TrackedMessageService {
         extendedExpiresAt,
         message,
         automaticClaimToken: options?.automatic ? options.autoRefreshClaimToken : null,
+        recoveryExpectedContents: [content],
         renderContent: (reconciledMetadata) =>
           checklistService.buildFwaMatchBasesMessageContent({
             rows: reconciledMetadata.rows,
@@ -5301,6 +5440,7 @@ export class TrackedMessageService {
       extendedExpiresAt,
       message,
       automaticClaimToken: options?.automatic ? options.autoRefreshClaimToken : null,
+      recoveryExpectedContents: [content],
       renderContent: (reconciledMetadata) =>
         buildFwaMatchChecklistMessageContent({
           rows: reconciledMetadata.rows,

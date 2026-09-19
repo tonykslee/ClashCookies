@@ -4236,10 +4236,14 @@ describe("fwa checklist tracked messages", () => {
       };
       return { count: 1 };
     });
-    const edit = vi.fn().mockResolvedValue(undefined);
+    let discordContent = "";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
     const message = {
       id: tracked.messageId,
       reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
       edit,
     } as any;
 
@@ -4329,10 +4333,14 @@ describe("fwa checklist tracked messages", () => {
       currentTracked = { ...currentTracked, metadata: args.data.metadata };
       return { count: 1 };
     });
-    const edit = vi.fn().mockResolvedValue(undefined);
+    let discordContent = "";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
     const message = {
       id: tracked.messageId,
       reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
       edit,
     } as any;
 
@@ -4383,10 +4391,14 @@ describe("fwa checklist tracked messages", () => {
       ...row,
       compactCopyLine: `${row.compactCopyLine} unpersisted`,
     }));
-    const edit = vi.fn().mockResolvedValue(undefined);
+    let discordContent = "";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
     const message = {
       id: tracked.messageId,
       reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
       edit,
     } as any;
 
@@ -4424,14 +4436,20 @@ describe("fwa checklist tracked messages", () => {
       currentTracked = { ...currentTracked, metadata: args.data.metadata };
       return { count: 1 };
     });
+    let discordContent = "";
     const edit = vi
       .fn()
-      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async (payload: { content: string }) => {
+        discordContent = payload.content;
+      })
       .mockRejectedValueOnce(new Error("reconciliation edit failed"))
-      .mockResolvedValueOnce(undefined);
+      .mockImplementationOnce(async (payload: { content: string }) => {
+        discordContent = payload.content;
+      });
     const message = {
       id: tracked.messageId,
       reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
       edit,
     } as any;
     const refreshRows = persistedRows.map((row) => ({
@@ -4456,6 +4474,10 @@ describe("fwa checklist tracked messages", () => {
       kind: "mail_checklist",
       autoRefreshClaimToken: "claim-old",
     };
+    const refreshRows = (tracked.metadata.rows as any[]).map((row) => ({
+      ...row,
+      compactCopyLine: "📭 | 🔴 | ☐ | RR vs `New` (`#NEW`)",
+    }));
     let currentTracked: any = tracked;
     let updateAttempts = 0;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
@@ -4475,16 +4497,20 @@ describe("fwa checklist tracked messages", () => {
       currentTracked = { ...currentTracked, metadata: args.data.metadata };
       return { count: 1 };
     });
-    const edit = vi.fn().mockResolvedValue(undefined);
+    let discordContent = "";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
     const message = {
       id: tracked.messageId,
       reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
       edit,
     } as any;
 
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
-        rows: tracked.metadata.rows as any,
+        rows: refreshRows as any,
         automatic: true,
         autoRefreshClaimToken: "claim-old",
       }),
@@ -4492,7 +4518,9 @@ describe("fwa checklist tracked messages", () => {
 
     expect(updateAttempts).toBe(1);
     expect(currentTracked.metadata.autoRefreshClaimToken).toBe("claim-new");
-    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(discordContent).toContain("#B1");
+    expect(discordContent).not.toContain("#NEW");
 
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(message, {
@@ -4500,6 +4528,64 @@ describe("fwa checklist tracked messages", () => {
         reaction: { emoji: { id: "111", name: "rr" }, count: 2 },
       }),
     ).resolves.toBe(true);
+    expect(currentTracked.metadata.autoRefreshClaimToken).toBe("claim-new");
+  });
+
+  it("does not overwrite a new owner's Discord publication during recovery", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    tracked.metadata = {
+      ...tracked.metadata,
+      kind: "mail_checklist",
+      autoRefreshClaimToken: "claim-old",
+    };
+    let currentTracked: any = tracked;
+    let updateAttempts = 0;
+    prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async () => {
+      updateAttempts += 1;
+      currentTracked = {
+        ...currentTracked,
+        metadata: {
+          ...currentTracked.metadata,
+          autoRefreshClaimToken: "claim-new",
+        },
+      };
+      return { count: 0 };
+    });
+    let discordContent = "";
+    let fetchCount = 0;
+    const newOwnerContent = "new owner published authoritative checklist";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => {
+        fetchCount += 1;
+        if (fetchCount === 2) discordContent = newOwnerContent;
+        return { content: discordContent };
+      }),
+      edit,
+    } as any;
+    const refreshRows = (tracked.metadata.rows as any[]).map((row) => ({
+      ...row,
+      compactCopyLine: "📭 | 🔴 | ☐ | RR vs `New` (`#NEW`)",
+    }));
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+        rows: refreshRows as any,
+        automatic: true,
+        autoRefreshClaimToken: "claim-old",
+      }),
+    ).resolves.toBe(false);
+
+    expect(updateAttempts).toBe(1);
+    expect(fetchCount).toBe(2);
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(discordContent).toBe(newOwnerContent);
     expect(currentTracked.metadata.autoRefreshClaimToken).toBe("claim-new");
   });
 
