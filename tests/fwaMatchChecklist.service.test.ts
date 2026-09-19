@@ -403,6 +403,93 @@ describe("FWA match checklist service", () => {
     expect(followUp).not.toHaveBeenCalled();
   });
 
+  it("anchors manual Mail refresh to the tracked checklist sync and persists exact rows", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const trackedRow = {
+      clanTag: "#PYPY",
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      badgeEmojiId: "111",
+      badgeEmojiName: "rr",
+      badgeEmojiInline: "<:rr:111>",
+      matchType: "FWA",
+      matchStateInferred: true,
+      outcome: "UNKNOWN",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      warId: 1001,
+      opponentTag: "#OPP1",
+      warStartTimeIso: "2026-05-13T18:00:00.000Z",
+    };
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "message-1",
+        reactions: { cache: { values: () => [][Symbol.iterator]() } },
+        edit,
+      },
+    } as any;
+    trackedMessageMock.getActiveByMessageId.mockResolvedValueOnce({
+      status: "ACTIVE",
+      referenceId: "old-sync",
+      metadata: {
+        kind: "mail_checklist",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T18:01:00.000Z",
+        referenceId: "old-sync",
+        scopeKey: "old-scope",
+        rows: [trackedRow],
+      },
+    } as any);
+    const refreshedRows = [{ ...trackedRow }];
+    fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild.mockResolvedValueOnce({
+      viewType: "Mail",
+      rows: refreshedRows,
+      scopeKey: "old-scope",
+      expiresAt: new Date("2026-05-13T22:00:00.000Z"),
+      emptyMessage: null,
+    });
+    let persistedRows: unknown;
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockImplementationOnce(
+      async (_message, _actor, options) => {
+        persistedRows = options.rows;
+        return true;
+      },
+    );
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(
+      fwaChecklistRenderStateMock.buildFwaMatchChecklistRenderStateForGuild,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewType: "Mail",
+        syncMessageId: "old-sync",
+        previousSyncIdentity: "old-sync",
+        previousRows: [
+          expect.objectContaining({
+            clanTag: "#PYPY",
+            contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+            warId: "1001",
+            opponentTag: "#OPP1",
+            warStartTimeIso: "2026-05-13T18:00:00.000Z",
+          }),
+        ],
+      }),
+    );
+    expect(persistedRows).toEqual(refreshedRows);
+    expect((persistedRows as any[])[0]).toMatchObject({
+      compactCopyLine: "📭 | 🟢 | A vs `Opponent` (`#OPP1`) ⚠️",
+      contextKey: "clan=#PYPY|war=1001|opponent=OPP1",
+      warId: 1001,
+      opponentTag: "#OPP1",
+    });
+  });
+
   it("refreshes an unknown mail row into a confirmed row on a later refresh", async () => {
     const react = vi.fn().mockResolvedValue(undefined);
     const deferUpdate = vi.fn().mockResolvedValue(undefined);

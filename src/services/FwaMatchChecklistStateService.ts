@@ -77,6 +77,18 @@ type CurrentWarLookupResult =
   | { status: "success"; war: any | null }
   | { status: "unavailable"; war: null };
 
+function normalizeCurrentWarLookupResult(value: any): CurrentWarLookupResult {
+  if (value && (value.status === "success" || value.status === "unavailable") && "war" in value) {
+    if (value.status === "unavailable" || value.war == null) {
+      return { status: "unavailable", war: null };
+    }
+    return { status: "success", war: value.war };
+  }
+  return value == null
+    ? { status: "unavailable", war: null }
+    : { status: "success", war: value };
+}
+
 type FwaMatchChecklistSingleView = {
   liveRevisionFields?: {
     warId?: string | number | null;
@@ -995,16 +1007,12 @@ function getCurrentWarCached(
   const cached = cache?.get(normalizedTag);
   if (cache?.has(normalizedTag)) {
     return Promise.resolve(cached)
-      .then((value: any) =>
-        value && (value.status === "success" || value.status === "unavailable") && "war" in value
-          ? value as CurrentWarLookupResult
-          : { status: "success" as const, war: value ?? null },
-      )
+      .then(normalizeCurrentWarLookupResult)
       .catch(() => ({ status: "unavailable", war: null }));
   }
   const pending = Promise.resolve()
     .then(() => cocService.getCurrentWar(normalizedTag))
-    .then((war) => ({ status: "success" as const, war: war ?? null }))
+    .then(normalizeCurrentWarLookupResult)
     .catch((err) => {
       console.error(
         `[fwa match checklist state] getCurrentWar failed clan=${normalizedTag} error=${formatError(err)}`,
