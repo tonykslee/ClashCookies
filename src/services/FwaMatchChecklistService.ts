@@ -528,10 +528,14 @@ export async function handleFwaMatchChecklistRefreshButton(
     await restoreRefreshButton("expired");
   }
   if (!refreshed) {
+    const refreshFailureContent =
+      trackedAfterRefresh?.status === "ACTIVE"
+        ? "This checklist post could not be refreshed. Please try again."
+        : "This checklist post can no longer be refreshed.";
     await interaction
       .followUp({
         ephemeral: true,
-        content: "This checklist post can no longer be refreshed.",
+        content: refreshFailureContent,
       })
       .catch(() => undefined);
   }

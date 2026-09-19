@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const trackedMessageMock = vi.hoisted(() => ({
   createFwaMatchChecklistTrackedMessage: vi.fn().mockResolvedValue(undefined),
@@ -717,7 +717,42 @@ describe("FWA match checklist service", () => {
     expect(followUp).toHaveBeenCalledWith(
       expect.objectContaining({
         ephemeral: true,
-        content: "This checklist post can no longer be refreshed.",
+        content: "This checklist post could not be refreshed. Please try again.",
+      }),
+    );
+  });
+
+  it("does not report expiration when an active refresh fails after Discord was edited", async () => {
+    const deferUpdate = vi.fn().mockResolvedValue(undefined);
+    const followUp = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const interaction = {
+      customId: "fwa-match-checklist-refresh",
+      guildId: "guild-1",
+      deferUpdate,
+      followUp,
+      client: {} as any,
+      message: {
+        id: "message-1",
+        edit,
+        reactions: { cache: { values: () => [].values() } },
+      },
+    } as any;
+
+    trackedMessageMock.refreshFwaMatchChecklistMessage.mockResolvedValueOnce(false);
+    trackedMessageMock.getActiveByMessageId
+      .mockResolvedValueOnce({ status: "ACTIVE" })
+      .mockResolvedValueOnce({ status: "ACTIVE" });
+
+    await handleFwaMatchChecklistRefreshButton(interaction);
+
+    expect(edit.mock.calls.at(-1)?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
+      "Refresh",
+    );
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: "This checklist post could not be refreshed. Please try again.",
       }),
     );
   });
