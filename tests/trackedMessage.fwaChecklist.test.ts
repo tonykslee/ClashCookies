@@ -23,6 +23,17 @@ vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
 }));
 
+function matchesTrackedMessageCasMetadata(args: any, currentMetadata: unknown): boolean {
+  const metadataFilter = args?.where?.metadata;
+  if (
+    !metadataFilter ||
+    !Object.prototype.hasOwnProperty.call(metadataFilter, "equals")
+  ) {
+    throw new Error("CAS mock requires where.metadata.equals");
+  }
+  return JSON.stringify(metadataFilter.equals) === JSON.stringify(currentMetadata);
+}
+
 import messageReactionAdd from "../src/listeners/messageReactionAdd";
 import messageReactionRemove from "../src/listeners/messageReactionRemove";
 import {
@@ -247,6 +258,9 @@ describe("fwa checklist tracked messages", () => {
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      if (args?.where?.metadata) {
+        matchesTrackedMessageCasMetadata(args, undefined);
+      }
       if (args?.where?.metadata && args?.data?.metadata?.messageId) {
         await prismaMock.trackedMessage.update({
           where: { messageId: args.data.metadata.messageId },
@@ -4291,7 +4305,7 @@ describe("fwa checklist tracked messages", () => {
       metadata: currentMetadata,
     }));
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
-      if (args.where?.metadata !== currentMetadata) return { count: 0 };
+      if (!matchesTrackedMessageCasMetadata(args, currentMetadata)) return { count: 0 };
       currentMetadata = args.data.metadata;
       return { count: 1 };
     });
@@ -4362,8 +4376,11 @@ describe("fwa checklist tracked messages", () => {
     } as any;
     let currentTracked = staleTracked;
     let updateAttempts = 0;
+    const casMetadataFilters: unknown[] = [];
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
+      casMetadataFilters.push(args.where.metadata);
       updateAttempts += 1;
       if (updateAttempts === 1) {
         currentTracked = {
@@ -4401,6 +4418,12 @@ describe("fwa checklist tracked messages", () => {
     ).resolves.toBe(true);
 
     expect(updateAttempts).toBe(2);
+    expect(casMetadataFilters[0]).toEqual({ equals: staleTracked.metadata });
+    expect(casMetadataFilters[1]).toEqual({
+      equals: expect.objectContaining({
+        autoRefreshLastAttemptAtIso: "2026-05-13T18:01:00.000Z",
+      }),
+    });
     expect(currentTracked.metadata.autoRefreshLastAttemptAtIso).toBe("2026-05-13T18:01:00.000Z");
     expect(currentTracked.metadata.rows).toEqual(
       expect.arrayContaining([
@@ -4471,6 +4494,7 @@ describe("fwa checklist tracked messages", () => {
     let updateAttempts = 0;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
       updateAttempts += 1;
       if (updateAttempts === 1) {
         currentTracked = latestTracked;
@@ -4529,6 +4553,7 @@ describe("fwa checklist tracked messages", () => {
     let allowLaterReaction = false;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
       if (!allowLaterReaction) return { count: 0 };
       currentTracked = { ...currentTracked, metadata: args.data.metadata };
       return { count: 1 };
@@ -4568,6 +4593,51 @@ describe("fwa checklist tracked messages", () => {
     expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("unpersisted");
   });
 
+  it("does not retry a database CAS rejection and recovers persisted Discord content", async () => {
+    const tracked = makeTrackedChecklistRow();
+    tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
+    const persistedTracked = {
+      ...tracked,
+      metadata: { ...tracked.metadata },
+    } as any;
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(persistedTracked);
+    prismaMock.trackedMessage.updateMany.mockRejectedValue(new Error("database unavailable"));
+
+    let discordContent = "";
+    const edit = vi.fn().mockImplementation(async (payload: { content: string }) => {
+      discordContent = payload.content;
+    });
+    const message = {
+      id: tracked.messageId,
+      reactions: { cache: { values: function* () { yield* []; } } },
+      fetch: vi.fn(async () => ({ content: discordContent })),
+      edit,
+    } as any;
+    const refreshRows = (tracked.metadata.rows as any[]).map((row) => ({
+      ...row,
+      compactCopyLine: `${row.compactCopyLine} unpersisted`,
+    }));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      trackedMessageService.refreshFwaMatchChecklistMessage(message, null, {
+        rows: refreshRows as any,
+      }),
+    ).resolves.toBe(false);
+
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls.at(-1)?.[0]?.content).toBe(
+      buildFwaMatchChecklistMessageContent({
+        rows: persistedTracked.metadata.rows,
+        checkedClanTags: persistedTracked.metadata.checkedClanTags,
+      }),
+    );
+    expect(edit.mock.calls.at(-1)?.[0]?.content).not.toContain("unpersisted");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("phase=initial_cas reason=database_error"),
+    );
+  });
+
   it("recovers the latest persisted content when a reconciliation Discord edit fails", async () => {
     const tracked = makeTrackedChecklistRow();
     tracked.expiresAt = new Date("2030-01-01T00:00:00.000Z");
@@ -4577,6 +4647,7 @@ describe("fwa checklist tracked messages", () => {
     let updateAttempts = 0;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
       updateAttempts += 1;
       if (updateAttempts === 1) return { count: 0 };
       currentTracked = { ...currentTracked, metadata: args.data.metadata };
@@ -4628,6 +4699,7 @@ describe("fwa checklist tracked messages", () => {
     let updateAttempts = 0;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
     prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
       updateAttempts += 1;
       if (updateAttempts === 1) {
         currentTracked = {
@@ -4688,7 +4760,8 @@ describe("fwa checklist tracked messages", () => {
     let currentTracked: any = tracked;
     let updateAttempts = 0;
     prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
-    prismaMock.trackedMessage.updateMany.mockImplementation(async () => {
+    prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+      matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
       updateAttempts += 1;
       currentTracked = {
         ...currentTracked,
@@ -4743,7 +4816,8 @@ describe("fwa checklist tracked messages", () => {
       let currentTracked: any = tracked;
       let updateAttempts = 0;
       prismaMock.trackedMessage.findUnique.mockImplementation(async () => currentTracked);
-      prismaMock.trackedMessage.updateMany.mockImplementation(async () => {
+      prismaMock.trackedMessage.updateMany.mockImplementation(async (args: any) => {
+        matchesTrackedMessageCasMetadata(args, currentTracked.metadata);
         updateAttempts += 1;
         currentTracked = { ...currentTracked, status };
         return { count: 0 };
