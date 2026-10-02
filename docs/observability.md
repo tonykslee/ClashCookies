@@ -230,6 +230,10 @@ Recommended container port mapping on the droplet:
 - Production app: `127.0.0.1:8085:8080`
 - Staging app: `127.0.0.1:8086:8080`
 
+## Docker Log Retention
+
+The production app container uses Docker's `json-file` driver with `max-size: "50m"` and `max-file: "5"`. This bounds local app-log retention to approximately 250 MiB so high-volume trace output cannot exhaust the droplet filesystem and prevent container mounts or database writes. Preserve the relevant log window before manually truncating an exhausted log file.
+
 ## Secrets And Manual Inputs
 
 - Discord webhook URL for Uptime Kuma notifications
