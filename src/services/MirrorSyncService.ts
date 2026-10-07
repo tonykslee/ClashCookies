@@ -10,6 +10,7 @@ import {
   type ClanHomeTransferCandidate,
   type HomeAwaySyncAlertSchedule,
   type HomeAwaySyncAlertDelivery,
+  type HomeAwaySyncAlertDeliveryAccount,
   type AllianceClanMembershipInterval,
   type CwlEventClan,
   type CwlEventInstance,
@@ -62,6 +63,7 @@ export const MIRRORED_RUNTIME_TABLES = [
   "ClanHomeTransferCandidate",
   "HomeAwaySyncAlertSchedule",
   "HomeAwaySyncAlertDelivery",
+  "HomeAwaySyncAlertDeliveryAccount",
   "ClanWarParticipation",
   "WarPlanComplianceEvaluation",
   "WarPlanViolation",
@@ -178,6 +180,9 @@ type MirrorSyncSourceClient = {
   homeAwaySyncAlertDelivery: {
     findMany: (args?: unknown) => Promise<HomeAwaySyncAlertDelivery[]>;
   };
+  homeAwaySyncAlertDeliveryAccount: {
+    findMany: (args?: unknown) => Promise<HomeAwaySyncAlertDeliveryAccount[]>;
+  };
   clanWarParticipation: {
     findMany: (args?: unknown) => Promise<ClanWarParticipation[]>;
   };
@@ -277,6 +282,10 @@ type MirrorSyncTargetClient = {
   homeAwaySyncAlertDelivery: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
     createMany: (args: { data: HomeAwaySyncAlertDelivery[] }) => Promise<CreateManyResult>;
+  };
+  homeAwaySyncAlertDeliveryAccount: {
+    deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
+    createMany: (args: { data: HomeAwaySyncAlertDeliveryAccount[] }) => Promise<CreateManyResult>;
   };
   clanWarParticipation: {
     deleteMany: (args?: unknown) => Promise<DeleteManyResult>;
@@ -396,6 +405,7 @@ type MirrorSyncSourceRows = {
   ClanHomeTransferCandidate: ClanHomeTransferCandidate[];
   HomeAwaySyncAlertSchedule: HomeAwaySyncAlertSchedule[];
   HomeAwaySyncAlertDelivery: HomeAwaySyncAlertDelivery[];
+  HomeAwaySyncAlertDeliveryAccount: HomeAwaySyncAlertDeliveryAccount[];
   ClanWarParticipation: ClanWarParticipation[];
   WarPlanComplianceEvaluation: WarPlanComplianceEvaluation[];
   WarPlanViolation: WarPlanViolation[];
@@ -728,6 +738,9 @@ export class MirrorSyncService {
       HomeAwaySyncAlertDelivery: await sourceClient.homeAwaySyncAlertDelivery.findMany({
         orderBy: [{ alertScheduleId: "asc" }, { discordUserId: "asc" }, { id: "asc" }],
       }),
+      HomeAwaySyncAlertDeliveryAccount: await sourceClient.homeAwaySyncAlertDeliveryAccount.findMany({
+        orderBy: [{ homeMembershipPeriodId: "asc" }, { playerTag: "asc" }, { id: "asc" }],
+      }),
       ClanWarParticipation: await sourceClient.clanWarParticipation.findMany({
         orderBy: [{ guildId: "asc" }, { warId: "asc" }, { playerTag: "asc" }],
       }),
@@ -936,6 +949,15 @@ export class MirrorSyncService {
       const insertedRows = await this.insertBatches(
         rows as HomeAwaySyncAlertDelivery[],
         (batch) => tx.homeAwaySyncAlertDelivery.createMany({ data: batch }),
+      );
+      return { table, sourceRows: rows.length, deletedRows, insertedRows };
+    }
+
+    if (table === "HomeAwaySyncAlertDeliveryAccount") {
+      const deletedRows = (await tx.homeAwaySyncAlertDeliveryAccount.deleteMany()).count;
+      const insertedRows = await this.insertBatches(
+        rows as HomeAwaySyncAlertDeliveryAccount[],
+        (batch) => tx.homeAwaySyncAlertDeliveryAccount.createMany({ data: batch }),
       );
       return { table, sourceRows: rows.length, deletedRows, insertedRows };
     }

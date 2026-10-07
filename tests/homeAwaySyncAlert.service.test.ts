@@ -33,6 +33,7 @@ function buildHarness(input: {
   trackedClans?: any[];
   links?: any[];
   rosters?: Record<string, any>;
+  snapshots?: any[];
   users?: Record<string, any>;
   random?: () => number;
   clock?: () => Date;
@@ -41,6 +42,7 @@ function buildHarness(input: {
     sources: input.sources ?? [],
     schedules: [] as any[],
     deliveries: [] as any[],
+    deliveryAccounts: [] as any[],
   };
   let nextId = 1;
   const update = (row: any, data: any) => {
@@ -109,6 +111,47 @@ function buildHarness(input: {
         return { count: rows.length };
       }),
     },
+    homeAwaySyncAlertDeliveryAccount: {
+      findMany: vi.fn(async ({ where }: any = {}) => state.deliveryAccounts
+        .filter((row) => {
+          const delivery = state.deliveries.find((candidate) => candidate.id === row.homeAwaySyncAlertDeliveryId);
+          return matches(row, {
+            homeMembershipPeriodId: where.homeMembershipPeriodId,
+            playerTag: where.playerTag,
+          }) && delivery?.status === "SENT";
+        })
+        .map((row) => {
+          const delivery = state.deliveries.find((candidate) => candidate.id === row.homeAwaySyncAlertDeliveryId);
+          const schedule = state.schedules.find((candidate) => candidate.id === delivery?.alertScheduleId);
+          return {
+            ...row,
+            delivery: delivery
+              ? {
+                  status: delivery.status,
+                  sentAt: delivery.sentAt,
+                  alertSchedule: schedule ? { syncTime: schedule.syncTime } : null,
+                }
+              : null,
+          };
+        })),
+      createMany: vi.fn(async ({ data, skipDuplicates }: any) => {
+        let count = 0;
+        for (const item of data) {
+          const duplicate = state.deliveryAccounts.some(
+            (row) => row.homeAwaySyncAlertDeliveryId === item.homeAwaySyncAlertDeliveryId &&
+              row.homeMembershipPeriodId === item.homeMembershipPeriodId &&
+              row.playerTag === item.playerTag,
+          );
+          if (duplicate && skipDuplicates) continue;
+          state.deliveryAccounts.push({ id: `delivery-account-${nextId++}`, ...item });
+          count += 1;
+        }
+        return { count };
+      }),
+    },
+    syncClanMemberSnapshot: {
+      findMany: vi.fn(async ({ where }: any = {}) => (input.snapshots ?? []).filter((row) => matches(row, where))),
+    },
     clanHomeMembershipPeriod: {
       findMany: vi.fn(async () => input.homes ?? []),
     },
@@ -168,6 +211,16 @@ function roster(clanTag: string, members: any[], unknownCount = 0) {
 
 function member(playerTag: string, playerName: string, presence: "PRESENT" | "AWAY" | "UNKNOWN") {
   return { playerTag, playerName, presence };
+}
+
+function homePeriod(playerTag: string) {
+  return {
+    id: `home-${playerTag}`,
+    guildId: "guild-1",
+    playerTag,
+    clanTag: "#HOME",
+    endedAtSyncTime: null,
+  };
 }
 
 describe("HomeAwaySyncAlertService", () => {
@@ -762,6 +815,114 @@ describe("HomeAwaySyncAlertService", () => {
     expect(firstSend).toHaveBeenCalledTimes(1);
     expect(secondSend).toHaveBeenCalledTimes(2);
     expect(harness.state.deliveries.filter((row) => row.status === "SENT")).toHaveLength(2);
+  });
+
+  it("suppresses the same SENT Away account on a later sync schedule", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-away-first", "PENDING", 4);
+    const second = source("post-away-second", "PENDING", 8);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [homePeriod("#AWAY1")],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(harness.state.deliveries.filter((row) => row.status === "SENT")).toHaveLength(1);
+    expect(harness.state.deliveries).toHaveLength(1);
+  });
+
+  it("re-arms after a later exact Home snapshot and allows one new Away reminder", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-return-first", "PENDING", 4);
+    const second = source("post-return-second", "PENDING", 8);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [homePeriod("#AWAY1")],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      snapshots: [{
+        guildId: "guild-1",
+        syncTime: first.syncTime,
+        clanTag: "#HOME",
+        playerTag: "#AWAY1",
+      }],
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(harness.state.deliveries).toHaveLength(2);
+  });
+
+  it("aggregates only newly eligible accounts when one account remains suppressed", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-partial-first", "PENDING", 4);
+    const second = source("post-partial-second", "PENDING", 8);
+    const rosters = { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) };
+    const harness = buildHarness({
+      sources: [first],
+      homes: [homePeriod("#AWAY1"), homePeriod("#AWAY2")],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [
+        { playerTag: "#AWAY1", discordUserId: "user-1" },
+        { playerTag: "#AWAY2", discordUserId: "user-1" },
+      ],
+      rosters,
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    rosters["#HOME"] = roster("#HOME", [
+      member("#AWAY1", "Away One", "AWAY"),
+      member("#AWAY2", "Away Two", "AWAY"),
+    ]);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0].content).toContain("Away Two");
+    expect(send.mock.calls[1][0].content).not.toContain("Away One");
+  });
+
+  it("does not suppress a future schedule after a failed delivery", async () => {
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("cannot message"), { code: 50007 }))
+      .mockResolvedValueOnce(undefined);
+    const first = source("post-failed-first", "PENDING", 4);
+    const second = source("post-failed-second", "PENDING", 8);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [homePeriod("#AWAY1")],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    expect(harness.state.deliveries[0].status).toBe("FAILED");
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(harness.state.deliveries.filter((row) => row.status === "SENT")).toHaveLength(1);
   });
 
   it("keeps a completed alert terminal when its source is reactivated", async () => {
