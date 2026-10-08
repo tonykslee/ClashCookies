@@ -13,6 +13,7 @@ import {
   type HomeRosterService,
 } from "./HomeRosterService";
 import { prisma } from "../prisma";
+import { normalizeClashTagWithHash } from "../helper/clashTag";
 
 export const HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS = {
   PENDING: "PENDING",
@@ -46,6 +47,8 @@ export type HomeAwaySyncAlertCounts = {
   failed: number;
   unlinked: number;
   unknown: number;
+  suppressedAccounts: number;
+  rearmedAccounts: number;
   cancelled: number;
   expired: number;
   completed: number;
@@ -198,6 +201,8 @@ function zeroCounts(): HomeAwaySyncAlertCounts {
     failed: 0,
     unlinked: 0,
     unknown: 0,
+    suppressedAccounts: 0,
+    rearmedAccounts: 0,
     cancelled: 0,
     expired: 0,
     completed: 0,
@@ -212,6 +217,40 @@ function isValidDate(value: unknown): value is Date {
 /** Purpose: normalize persisted identifiers before comparison or member-facing rendering. */
 function normalizeId(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+/** Purpose: normalize snapshot player/clan tags with the same validity rules as membership evidence. */
+function normalizeSnapshotTag(value: unknown): string {
+  return normalizeClashTagWithHash(String(value ?? ""));
+}
+
+/** Purpose: group immutable snapshot evidence by player and boundary, preserving AMBIGUOUS rows. */
+function buildUnambiguousHomeBoundaries(
+  rows: readonly SyncClanMemberSnapshotRow[],
+): Map<string, Map<number, string>> {
+  const byPlayerBoundary = new Map<string, Map<number, { tags: Set<string>; malformed: boolean }>>();
+  for (const row of rows) {
+    const playerTag = normalizeSnapshotTag(row.playerTag);
+    if (!playerTag || !isValidDate(row.syncTime)) continue;
+    const boundaryRows = byPlayerBoundary.get(playerTag) ?? new Map();
+    const boundary = boundaryRows.get(row.syncTime.getTime()) ?? { tags: new Set<string>(), malformed: false };
+    const clanTag = normalizeSnapshotTag(row.clanTag);
+    if (!clanTag) boundary.malformed = true;
+    else boundary.tags.add(clanTag);
+    boundaryRows.set(row.syncTime.getTime(), boundary);
+    byPlayerBoundary.set(playerTag, boundaryRows);
+  }
+  const resolved = new Map<string, Map<number, string>>();
+  for (const [playerTag, boundaries] of byPlayerBoundary) {
+    const playerResolved = new Map<number, string>();
+    for (const [syncTime, boundary] of boundaries) {
+      if (!boundary.malformed && boundary.tags.size === 1) {
+        playerResolved.set(syncTime, [...boundary.tags][0]);
+      }
+    }
+    if (playerResolved.size > 0) resolved.set(playerTag, playerResolved);
+  }
+  return resolved;
 }
 
 /** Purpose: identify the expected concurrent schedule-creation race from Prisma. */
@@ -464,6 +503,8 @@ export class HomeAwaySyncAlertService {
         counts.recipients += evaluation.recipients;
         counts.unlinked += evaluation.unlinked;
         counts.unknown += evaluation.unknown;
+        counts.suppressedAccounts += evaluation.suppressedAccounts;
+        counts.rearmedAccounts += evaluation.rearmedAccounts;
       }
 
       const evaluatedSchedules = await this.db.homeAwaySyncAlertSchedule.findMany({
@@ -499,7 +540,7 @@ export class HomeAwaySyncAlertService {
       }
 
       dozzleLog.debug(
-        `[home-away-sync-alert] cycle_complete ensured=${counts.ensured} due=${counts.due} evaluated=${counts.evaluated} recipients=${counts.recipients} sent=${counts.sent} failed=${counts.failed} unlinked=${counts.unlinked} unknown=${counts.unknown} cancelled=${counts.cancelled} expired=${counts.expired} completed=${counts.completed}`,
+        `[home-away-sync-alert] cycle_complete ensured=${counts.ensured} due=${counts.due} evaluated=${counts.evaluated} recipients=${counts.recipients} sent=${counts.sent} failed=${counts.failed} unlinked=${counts.unlinked} unknown=${counts.unknown} suppressed_accounts=${counts.suppressedAccounts} rearmed_accounts=${counts.rearmedAccounts} cancelled=${counts.cancelled} expired=${counts.expired} completed=${counts.completed}`,
       );
       return counts;
     } catch (error) {
@@ -762,6 +803,8 @@ export class HomeAwaySyncAlertService {
     recipients: number;
     unlinked: number;
     unknown: number;
+    suppressedAccounts: number;
+    rearmedAccounts: number;
   }> {
     if (now.getTime() >= schedule.syncTime.getTime()) {
       await this.expireSchedule(schedule.id, "sync_time_passed_before_evaluation");
@@ -772,6 +815,8 @@ export class HomeAwaySyncAlertService {
         recipients: 0,
         unlinked: 0,
         unknown: 0,
+        suppressedAccounts: 0,
+        rearmedAccounts: 0,
       };
     }
 
@@ -883,28 +928,35 @@ export class HomeAwaySyncAlertService {
           where: {
             guildId: schedule.guildId,
             playerTag: { in: awayTags },
-            clanTag: { in: homeClanTags },
             syncTime: { gt: earliestSentBoundary },
           },
           select: { guildId: true, syncTime: true, clanTag: true, playerTag: true },
         });
+    const unambiguousHomeBoundaries = buildUnambiguousHomeBoundaries(returnSnapshots);
     const hasReturnedHome = (delivery: HomeAwaySyncAlertDeliveryAccountRow): boolean => {
       const period = activeHomePeriodById.get(normalizeId(delivery.homeMembershipPeriodId));
       const boundary = delivery.delivery?.sentAt ?? delivery.alertScheduleSyncTime ?? delivery.delivery?.alertSchedule?.syncTime ?? null;
-      if (!period || !isValidDate(boundary)) return false;
-      return returnSnapshots.some(
-        (snapshot) =>
-          normalizeId(snapshot.guildId) === normalizeId(schedule.guildId) &&
-          normalizeId(snapshot.playerTag) === normalizeId(delivery.playerTag) &&
-          normalizeId(snapshot.clanTag) === normalizeId(period.clanTag) &&
-          isValidDate(snapshot.syncTime) &&
-          snapshot.syncTime.getTime() > boundary.getTime(),
+      const playerTag = normalizeSnapshotTag(delivery.playerTag);
+      const homeClanTag = normalizeSnapshotTag(period?.clanTag);
+      if (!period || !playerTag || !homeClanTag || !isValidDate(boundary)) return false;
+      const playerBoundaries = unambiguousHomeBoundaries.get(playerTag);
+      if (!playerBoundaries) return false;
+      return [...playerBoundaries.entries()].some(
+        ([syncTime, clanTag]) => syncTime > boundary.getTime() && clanTag === homeClanTag,
       );
     };
     const suppressedAccounts = new Set(
       sentAccountDeliveries
         .filter((delivery) => !hasReturnedHome(delivery))
         .map((delivery) => `${normalizeId(delivery.homeMembershipPeriodId)}\u0000${normalizeId(delivery.playerTag)}`),
+    );
+    const previouslyRemindedAccounts = new Set(
+      sentAccountDeliveries.map(
+        (delivery) => `${normalizeId(delivery.homeMembershipPeriodId)}\u0000${normalizeId(delivery.playerTag)}`,
+      ),
+    );
+    const rearmedAccounts = new Set(
+      [...previouslyRemindedAccounts].filter((accountKey) => !suppressedAccounts.has(accountKey)),
     );
     const recipientAccounts = new Map<string, RecipientAccount[]>();
     let unlinked = 0;
@@ -1006,10 +1058,12 @@ export class HomeAwaySyncAlertService {
         recipients: 0,
         unlinked: 0,
         unknown: 0,
+        suppressedAccounts: 0,
+        rearmedAccounts: 0,
       };
     }
     dozzleLog.info(
-      `[home-away-sync-alert] evaluated alert_id=${schedule.id} guild_id=${schedule.guildId} recipients=${recipients.length} away=${awayMembers.length} unlinked=${unlinked} unknown=${unknown}`,
+      `[home-away-sync-alert] evaluated alert_id=${schedule.id} guild_id=${schedule.guildId} recipients=${recipients.length} away=${awayMembers.length} unlinked=${unlinked} unknown=${unknown} suppressed_accounts=${suppressedAccounts.size} rearmed_accounts=${rearmedAccounts.size}`,
     );
     return {
       evaluated: true,
@@ -1018,6 +1072,8 @@ export class HomeAwaySyncAlertService {
       recipients: recipients.length,
       unlinked,
       unknown,
+      suppressedAccounts: suppressedAccounts.size,
+      rearmedAccounts: rearmedAccounts.size,
     };
   }
 

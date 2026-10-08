@@ -844,17 +844,19 @@ describe("HomeAwaySyncAlertService", () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const first = source("post-return-first", "PENDING", 4);
     const second = source("post-return-second", "PENDING", 8);
+    const playerTag = "#PYQR";
+    const homeClanTag = "#PQLQ";
     const harness = buildHarness({
       sources: [first],
-      homes: [homePeriod("#AWAY1")],
-      trackedClans: [{ tag: "#HOME" }],
-      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
-      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      homes: [{ ...homePeriod(playerTag), clanTag: homeClanTag }],
+      trackedClans: [{ tag: homeClanTag }],
+      links: [{ playerTag, discordUserId: "user-1" }],
+      rosters: { [homeClanTag]: roster(homeClanTag, [member(playerTag, "Away One", "AWAY")]) },
       snapshots: [{
         guildId: "guild-1",
         syncTime: first.syncTime,
-        clanTag: "#HOME",
-        playerTag: "#AWAY1",
+        clanTag: homeClanTag,
+        playerTag,
       }],
       users: { "user-1": { send } },
     });
@@ -866,6 +868,93 @@ describe("HomeAwaySyncAlertService", () => {
 
     expect(send).toHaveBeenCalledTimes(2);
     expect(harness.state.deliveries).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      name: "Home plus another clan at the same boundary",
+      snapshots: (syncTime: Date) => [
+        { guildId: "guild-1", syncTime, clanTag: "#PQLQ", playerTag: "#PYQR" },
+        { guildId: "guild-1", syncTime, clanTag: "#PQLR", playerTag: "#PYQR" },
+      ],
+    },
+    {
+      name: "another clan only at the later boundary",
+      snapshots: (syncTime: Date) => [
+        { guildId: "guild-1", syncTime, clanTag: "#PQLR", playerTag: "#PYQR" },
+      ],
+    },
+  ])("keeps suppression for $name", async ({ snapshots }) => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-ambiguous-first", "PENDING", 4);
+    const second = source("post-ambiguous-second", "PENDING", 8);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [{ ...homePeriod("#PYQR"), clanTag: "#PQLQ" }],
+      trackedClans: [{ tag: "#PQLQ" }],
+      links: [{ playerTag: "#PYQR", discordUserId: "user-1" }],
+      rosters: { "#PQLQ": roster("#PQLQ", [member("#PYQR", "Away One", "AWAY")]) },
+      snapshots: snapshots(first.syncTime),
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms after an ambiguous boundary followed by a later unambiguous Home boundary", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-resolved-after-ambiguous-first", "PENDING", 4);
+    const second = source("post-resolved-after-ambiguous-second", "PENDING", 8);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [{ ...homePeriod("#PYQR"), clanTag: "#PQLQ" }],
+      trackedClans: [{ tag: "#PQLQ" }],
+      links: [{ playerTag: "#PYQR", discordUserId: "user-1" }],
+      rosters: { "#PQLQ": roster("#PQLQ", [member("#PYQR", "Away One", "AWAY")]) },
+      snapshots: [
+        { guildId: "guild-1", syncTime: first.syncTime, clanTag: "#PQLQ", playerTag: "#PYQR" },
+        { guildId: "guild-1", syncTime: first.syncTime, clanTag: "#PQLR", playerTag: "#PYQR" },
+        { guildId: "guild-1", syncTime: new Date(first.syncTime.getTime() + HOUR), clanTag: "#PQLQ", playerTag: "#PYQR" },
+      ],
+      users: { "user-1": { send } },
+    });
+
+    await harness.service.runCycle(now);
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an EXPIRED account delivery suppress a later schedule", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const first = source("post-expired-first", "PENDING", 4);
+    const second = source("post-expired-second", "PENDING", 8);
+    const afterFirstSync = new Date(first.syncTime.getTime() + 1);
+    const harness = buildHarness({
+      sources: [first],
+      homes: [homePeriod("#AWAY1")],
+      trackedClans: [{ tag: "#HOME" }],
+      links: [{ playerTag: "#AWAY1", discordUserId: "user-1" }],
+      rosters: { "#HOME": roster("#HOME", [member("#AWAY1", "Away One", "AWAY")]) },
+      users: { "user-1": { send } },
+      clock: () => afterFirstSync,
+    });
+
+    await harness.service.runCycle(now);
+    expect(harness.state.deliveries[0].status).toBe("EXPIRED");
+    harness.state.sources[0].status = "CANCELLED";
+    harness.state.sources.push(second);
+    await harness.service.runCycle(new Date(now.getTime() + 5 * HOUR));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(harness.state.deliveries.filter((row) => row.status === "SENT")).toHaveLength(1);
   });
 
   it("aggregates only newly eligible accounts when one account remains suppressed", async () => {
