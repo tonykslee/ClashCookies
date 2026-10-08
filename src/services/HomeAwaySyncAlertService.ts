@@ -13,6 +13,7 @@ import {
   type HomeRosterService,
 } from "./HomeRosterService";
 import { prisma } from "../prisma";
+import { normalizeClashTagWithHash } from "../helper/clashTag";
 
 export const HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS = {
   PENDING: "PENDING",
@@ -46,6 +47,8 @@ export type HomeAwaySyncAlertCounts = {
   failed: number;
   unlinked: number;
   unknown: number;
+  suppressedAccounts: number;
+  rearmedAccounts: number;
   cancelled: number;
   expired: number;
   completed: number;
@@ -80,6 +83,28 @@ type HomeAwaySyncAlertDeliveryRow = {
   failureReason: string | null;
 };
 
+type HomeAwaySyncAlertDeliveryAccountRow = {
+  id?: string;
+  homeAwaySyncAlertDeliveryId?: string;
+  homeMembershipPeriodId: string;
+  guildId?: string;
+  playerTag: string;
+  delivery?: {
+    status?: HomeAwaySyncAlertDeliveryStatus;
+    sentAt?: Date | null;
+    alertSchedule?: { syncTime?: Date | null } | null;
+  } | null;
+  deliveryStatus?: HomeAwaySyncAlertDeliveryStatus;
+  alertScheduleSyncTime?: Date | null;
+};
+
+type SyncClanMemberSnapshotRow = {
+  guildId: string;
+  syncTime: Date;
+  clanTag: string;
+  playerTag: string;
+};
+
 type ScheduledSyncPostSourceRow = {
   id: string;
   guildId: string;
@@ -102,6 +127,13 @@ type HomeAwaySyncAlertDb = {
     findMany: (args?: any) => Promise<HomeAwaySyncAlertDeliveryRow[]>;
     createMany: (args: any) => Promise<{ count: number }>;
     updateMany: (args: any) => Promise<{ count: number }>;
+  };
+  homeAwaySyncAlertDeliveryAccount: {
+    findMany: (args?: any) => Promise<HomeAwaySyncAlertDeliveryAccountRow[]>;
+    createMany: (args: any) => Promise<{ count: number }>;
+  };
+  syncClanMemberSnapshot: {
+    findMany: (args?: any) => Promise<SyncClanMemberSnapshotRow[]>;
   };
   clanHomeMembershipPeriod: {
     findMany: (args?: any) => Promise<any[]>;
@@ -127,6 +159,7 @@ type RecipientAccount = {
   playerName: string;
   homeClanName: string;
   homeClanTag: string;
+  homeMembershipPeriodId?: string;
 };
 
 type Recipient = {
@@ -168,6 +201,8 @@ function zeroCounts(): HomeAwaySyncAlertCounts {
     failed: 0,
     unlinked: 0,
     unknown: 0,
+    suppressedAccounts: 0,
+    rearmedAccounts: 0,
     cancelled: 0,
     expired: 0,
     completed: 0,
@@ -182,6 +217,40 @@ function isValidDate(value: unknown): value is Date {
 /** Purpose: normalize persisted identifiers before comparison or member-facing rendering. */
 function normalizeId(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+/** Purpose: normalize snapshot player/clan tags with the same validity rules as membership evidence. */
+function normalizeSnapshotTag(value: unknown): string {
+  return normalizeClashTagWithHash(String(value ?? ""));
+}
+
+/** Purpose: group immutable snapshot evidence by player and boundary, preserving AMBIGUOUS rows. */
+function buildUnambiguousHomeBoundaries(
+  rows: readonly SyncClanMemberSnapshotRow[],
+): Map<string, Map<number, string>> {
+  const byPlayerBoundary = new Map<string, Map<number, { tags: Set<string>; malformed: boolean }>>();
+  for (const row of rows) {
+    const playerTag = normalizeSnapshotTag(row.playerTag);
+    if (!playerTag || !isValidDate(row.syncTime)) continue;
+    const boundaryRows = byPlayerBoundary.get(playerTag) ?? new Map();
+    const boundary = boundaryRows.get(row.syncTime.getTime()) ?? { tags: new Set<string>(), malformed: false };
+    const clanTag = normalizeSnapshotTag(row.clanTag);
+    if (!clanTag) boundary.malformed = true;
+    else boundary.tags.add(clanTag);
+    boundaryRows.set(row.syncTime.getTime(), boundary);
+    byPlayerBoundary.set(playerTag, boundaryRows);
+  }
+  const resolved = new Map<string, Map<number, string>>();
+  for (const [playerTag, boundaries] of byPlayerBoundary) {
+    const playerResolved = new Map<number, string>();
+    for (const [syncTime, boundary] of boundaries) {
+      if (!boundary.malformed && boundary.tags.size === 1) {
+        playerResolved.set(syncTime, [...boundary.tags][0]);
+      }
+    }
+    if (playerResolved.size > 0) resolved.set(playerTag, playerResolved);
+  }
+  return resolved;
 }
 
 /** Purpose: identify the expected concurrent schedule-creation race from Prisma. */
@@ -434,6 +503,8 @@ export class HomeAwaySyncAlertService {
         counts.recipients += evaluation.recipients;
         counts.unlinked += evaluation.unlinked;
         counts.unknown += evaluation.unknown;
+        counts.suppressedAccounts += evaluation.suppressedAccounts;
+        counts.rearmedAccounts += evaluation.rearmedAccounts;
       }
 
       const evaluatedSchedules = await this.db.homeAwaySyncAlertSchedule.findMany({
@@ -469,7 +540,7 @@ export class HomeAwaySyncAlertService {
       }
 
       dozzleLog.debug(
-        `[home-away-sync-alert] cycle_complete ensured=${counts.ensured} due=${counts.due} evaluated=${counts.evaluated} recipients=${counts.recipients} sent=${counts.sent} failed=${counts.failed} unlinked=${counts.unlinked} unknown=${counts.unknown} cancelled=${counts.cancelled} expired=${counts.expired} completed=${counts.completed}`,
+        `[home-away-sync-alert] cycle_complete ensured=${counts.ensured} due=${counts.due} evaluated=${counts.evaluated} recipients=${counts.recipients} sent=${counts.sent} failed=${counts.failed} unlinked=${counts.unlinked} unknown=${counts.unknown} suppressed_accounts=${counts.suppressedAccounts} rearmed_accounts=${counts.rearmedAccounts} cancelled=${counts.cancelled} expired=${counts.expired} completed=${counts.completed}`,
       );
       return counts;
     } catch (error) {
@@ -732,6 +803,8 @@ export class HomeAwaySyncAlertService {
     recipients: number;
     unlinked: number;
     unknown: number;
+    suppressedAccounts: number;
+    rearmedAccounts: number;
   }> {
     if (now.getTime() >= schedule.syncTime.getTime()) {
       await this.expireSchedule(schedule.id, "sync_time_passed_before_evaluation");
@@ -742,14 +815,31 @@ export class HomeAwaySyncAlertService {
         recipients: 0,
         unlinked: 0,
         unknown: 0,
+        suppressedAccounts: 0,
+        rearmedAccounts: 0,
       };
     }
 
     const homeRows = await this.db.clanHomeMembershipPeriod.findMany({
       where: { guildId: schedule.guildId, endedAtSyncTime: null },
-      select: { clanTag: true },
+      select: { id: true, playerTag: true, clanTag: true },
     });
     const homeClanTags = [...new Set(homeRows.map((row) => normalizeId(row.clanTag)).filter(Boolean))];
+    const hasExplicitHomePlayers = homeRows.some((row) => normalizeId(row.playerTag));
+    const homePeriodsByPlayer = new Map<string, { id: string; playerTag: string; clanTag: string }>();
+    const homePeriodsByClan = new Map<string, Array<{ id: string; playerTag: string; clanTag: string }>>();
+    for (const row of homeRows) {
+      const clanTag = normalizeId(row.clanTag);
+      if (!clanTag) continue;
+      const playerTag = normalizeId(row.playerTag);
+      const period = { id: normalizeId(row.id), playerTag, clanTag };
+      const clanPeriods = homePeriodsByClan.get(clanTag) ?? [];
+      clanPeriods.push(period);
+      homePeriodsByClan.set(clanTag, clanPeriods);
+      if (playerTag) {
+        if (period.id) homePeriodsByPlayer.set(playerTag, period);
+      }
+    }
     const trackedClans = homeClanTags.length === 0
       ? []
       : await this.db.trackedClan.findMany({
@@ -762,12 +852,30 @@ export class HomeAwaySyncAlertService {
         .filter((row) => trackedTagSet.has(normalizeId(row.tag)))
         .map((row) => this.homeRosterReader.getClanHomeRoster({ guildId: schedule.guildId, clanTag: row.tag, now })),
     );
-    const awayMembers: Array<{ member: HomeRosterMember; roster: ClanHomeRoster }> = [];
+    const awayMembers: Array<{
+      member: HomeRosterMember;
+      roster: ClanHomeRoster;
+      homeMembershipPeriodId: string;
+    }> = [];
     let unknown = 0;
     for (const roster of rosters) {
       unknown += roster.unknownCount;
       for (const member of roster.members) {
-        if (member.presence === "AWAY") awayMembers.push({ member, roster });
+        if (member.presence !== "AWAY") continue;
+        const playerTag = normalizeId(member.playerTag);
+        const explicitPeriod = homePeriodsByPlayer.get(playerTag);
+        const fallbackPeriod = !hasExplicitHomePlayers
+          ? homePeriodsByClan.get(normalizeId(roster.clanTag))?.[0]
+          : undefined;
+        const period = explicitPeriod ?? (fallbackPeriod
+          ? {
+              ...fallbackPeriod,
+              id: `${fallbackPeriod.id || `legacy:${schedule.guildId}:${fallbackPeriod.clanTag}`}:${playerTag}`,
+              playerTag,
+            }
+          : undefined);
+        if (!period?.id || !playerTag) continue;
+        awayMembers.push({ member, roster, homeMembershipPeriodId: period.id });
       }
     }
     const awayTags = [...new Set(awayMembers.map(({ member }) => normalizeId(member.playerTag)).filter(Boolean))];
@@ -782,6 +890,74 @@ export class HomeAwaySyncAlertService {
         .map((row) => [normalizeId(row.playerTag), normalizeId(row.discordUserId)] as const)
         .filter(([tag, userId]) => Boolean(tag && userId)),
     );
+    const activeHomePeriodById = new Map(
+      [...homePeriodsByPlayer.values(), ...Array.from(homePeriodsByClan.values()).reduce((all, periods) => all.concat(periods), [])]
+        .filter((period) => Boolean(period.id))
+        .map((period) => [period.id, period] as const),
+    );
+    const sentAccountDeliveries = awayTags.length === 0 || activeHomePeriodById.size === 0
+      ? []
+      : await this.db.homeAwaySyncAlertDeliveryAccount.findMany({
+          where: {
+            homeMembershipPeriodId: { in: [...activeHomePeriodById.keys()] },
+            playerTag: { in: awayTags },
+            delivery: { is: { status: HOME_AWAY_SYNC_ALERT_DELIVERY_STATUS.SENT } },
+          },
+          select: {
+            homeMembershipPeriodId: true,
+            playerTag: true,
+            delivery: {
+              select: {
+                status: true,
+                sentAt: true,
+                alertSchedule: { select: { syncTime: true } },
+              },
+            },
+          },
+        });
+    const sentBoundaries = sentAccountDeliveries
+      .map((row) => row.delivery?.sentAt ?? row.alertScheduleSyncTime ?? row.delivery?.alertSchedule?.syncTime ?? null)
+      .filter((value): value is Date => isValidDate(value));
+    const earliestSentBoundary = sentBoundaries.reduce<Date | null>(
+      (earliest, boundary) => (!earliest || boundary.getTime() < earliest.getTime() ? boundary : earliest),
+      null,
+    );
+    const returnSnapshots = !earliestSentBoundary
+      ? []
+      : await this.db.syncClanMemberSnapshot.findMany({
+          where: {
+            guildId: schedule.guildId,
+            playerTag: { in: awayTags },
+            syncTime: { gt: earliestSentBoundary },
+          },
+          select: { guildId: true, syncTime: true, clanTag: true, playerTag: true },
+        });
+    const unambiguousHomeBoundaries = buildUnambiguousHomeBoundaries(returnSnapshots);
+    const hasReturnedHome = (delivery: HomeAwaySyncAlertDeliveryAccountRow): boolean => {
+      const period = activeHomePeriodById.get(normalizeId(delivery.homeMembershipPeriodId));
+      const boundary = delivery.delivery?.sentAt ?? delivery.alertScheduleSyncTime ?? delivery.delivery?.alertSchedule?.syncTime ?? null;
+      const playerTag = normalizeSnapshotTag(delivery.playerTag);
+      const homeClanTag = normalizeSnapshotTag(period?.clanTag);
+      if (!period || !playerTag || !homeClanTag || !isValidDate(boundary)) return false;
+      const playerBoundaries = unambiguousHomeBoundaries.get(playerTag);
+      if (!playerBoundaries) return false;
+      return [...playerBoundaries.entries()].some(
+        ([syncTime, clanTag]) => syncTime > boundary.getTime() && clanTag === homeClanTag,
+      );
+    };
+    const suppressedAccounts = new Set(
+      sentAccountDeliveries
+        .filter((delivery) => !hasReturnedHome(delivery))
+        .map((delivery) => `${normalizeId(delivery.homeMembershipPeriodId)}\u0000${normalizeId(delivery.playerTag)}`),
+    );
+    const previouslyRemindedAccounts = new Set(
+      sentAccountDeliveries.map(
+        (delivery) => `${normalizeId(delivery.homeMembershipPeriodId)}\u0000${normalizeId(delivery.playerTag)}`,
+      ),
+    );
+    const rearmedAccounts = new Set(
+      [...previouslyRemindedAccounts].filter((accountKey) => !suppressedAccounts.has(accountKey)),
+    );
     const recipientAccounts = new Map<string, RecipientAccount[]>();
     let unlinked = 0;
     for (const entry of awayMembers) {
@@ -791,8 +967,12 @@ export class HomeAwaySyncAlertService {
         unlinked += 1;
         continue;
       }
+      if (suppressedAccounts.has(`${entry.homeMembershipPeriodId}\u0000${playerTag}`)) continue;
       const accounts = recipientAccounts.get(discordUserId) ?? [];
-      accounts.push(normalizeRosterMember(entry.member, entry.roster));
+      accounts.push({
+        ...normalizeRosterMember(entry.member, entry.roster),
+        homeMembershipPeriodId: entry.homeMembershipPeriodId,
+      });
       recipientAccounts.set(discordUserId, accounts);
     }
     const recipients: Recipient[] = [...recipientAccounts.entries()]
@@ -824,6 +1004,34 @@ export class HomeAwaySyncAlertService {
           })),
           skipDuplicates: true,
         });
+        const persistedDeliveries = await tx.homeAwaySyncAlertDelivery.findMany({
+          where: {
+            alertScheduleId: schedule.id,
+            discordUserId: { in: recipients.map((recipient) => recipient.discordUserId) },
+          },
+          select: { id: true, discordUserId: true },
+        });
+        const deliveryIdByUser = new Map(
+          persistedDeliveries.map((delivery) => [normalizeId(delivery.discordUserId), normalizeId(delivery.id)] as const),
+        );
+        const accountMemberships = recipients.flatMap((recipient) => {
+          const deliveryId = deliveryIdByUser.get(recipient.discordUserId);
+          if (!deliveryId) return [];
+          return recipient.accounts
+            .filter((account) => Boolean(account.homeMembershipPeriodId))
+            .map((account) => ({
+              homeAwaySyncAlertDeliveryId: deliveryId,
+              homeMembershipPeriodId: account.homeMembershipPeriodId as string,
+              guildId: schedule.guildId,
+              playerTag: account.playerTag,
+            }));
+        });
+        if (accountMemberships.length > 0) {
+          await tx.homeAwaySyncAlertDeliveryAccount.createMany({
+            data: accountMemberships,
+            skipDuplicates: true,
+          });
+        }
       }
       await tx.homeAwaySyncAlertSchedule.updateMany({
         where: { id: schedule.id, claimToken: schedule.claimToken, status: HOME_AWAY_SYNC_ALERT_SCHEDULE_STATUS.CLAIMED },
@@ -850,10 +1058,12 @@ export class HomeAwaySyncAlertService {
         recipients: 0,
         unlinked: 0,
         unknown: 0,
+        suppressedAccounts: 0,
+        rearmedAccounts: 0,
       };
     }
     dozzleLog.info(
-      `[home-away-sync-alert] evaluated alert_id=${schedule.id} guild_id=${schedule.guildId} recipients=${recipients.length} away=${awayMembers.length} unlinked=${unlinked} unknown=${unknown}`,
+      `[home-away-sync-alert] evaluated alert_id=${schedule.id} guild_id=${schedule.guildId} recipients=${recipients.length} away=${awayMembers.length} unlinked=${unlinked} unknown=${unknown} suppressed_accounts=${suppressedAccounts.size} rearmed_accounts=${rearmedAccounts.size}`,
     );
     return {
       evaluated: true,
@@ -862,6 +1072,8 @@ export class HomeAwaySyncAlertService {
       recipients: recipients.length,
       unlinked,
       unknown,
+      suppressedAccounts: suppressedAccounts.size,
+      rearmedAccounts: rearmedAccounts.size,
     };
   }
 

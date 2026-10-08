@@ -919,6 +919,7 @@ model ClanHomeMembershipPeriod {
   endReason              ClanHomeMembershipEndReason?
   createdAt              DateTime                            @default(now())
   updatedAt              DateTime                            @updatedAt
+  alertDeliveryAccounts  HomeAwaySyncAlertDeliveryAccount[]
 
   @@index([guildId, playerTag, endedAtSyncTime])
   @@index([guildId, clanTag, endedAtSyncTime])
@@ -1365,6 +1366,7 @@ model HomeAwaySyncAlertSchedule {
   failureReason       String?
   createdAt           DateTime                        @default(now())
   updatedAt           DateTime                        @updatedAt
+  deliveries          HomeAwaySyncAlertDelivery[]
 
   @@unique([guildId, syncTime])
   @@index([status, fireAt])
@@ -1387,10 +1389,28 @@ model HomeAwaySyncAlertDelivery {
   failureReason   String?
   createdAt       DateTime                        @default(now())
   updatedAt       DateTime                        @updatedAt
+  alertSchedule   HomeAwaySyncAlertSchedule          @relation(fields: [alertScheduleId], references: [id], onDelete: Cascade)
+  accountMembers  HomeAwaySyncAlertDeliveryAccount[]
 
   @@unique([alertScheduleId, discordUserId])
   @@index([alertScheduleId, status, nextAttemptAt])
   @@index([guildId, status, nextAttemptAt])
+}
+
+model HomeAwaySyncAlertDeliveryAccount {
+  id                          String                    @id @default(cuid())
+  homeAwaySyncAlertDeliveryId String
+  homeMembershipPeriodId      String
+  guildId                     String
+  playerTag                   String                    @db.VarChar(16)
+  createdAt                   DateTime                  @default(now())
+  updatedAt                   DateTime                  @updatedAt
+  delivery                    HomeAwaySyncAlertDelivery @relation(fields: [homeAwaySyncAlertDeliveryId], references: [id], onDelete: Cascade)
+  homeMembershipPeriod        ClanHomeMembershipPeriod  @relation(fields: [homeMembershipPeriodId], references: [id], onDelete: Cascade)
+
+  @@unique([homeAwaySyncAlertDeliveryId, homeMembershipPeriodId, playerTag])
+  @@index([guildId, homeMembershipPeriodId, playerTag])
+  @@index([homeMembershipPeriodId, playerTag])
 }
 
 model SyncCycle {

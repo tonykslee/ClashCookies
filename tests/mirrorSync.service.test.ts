@@ -131,6 +131,7 @@ function makeDefaultTableStore(): MirrorTableDataStore {
     ],
     HomeAwaySyncAlertSchedule: [],
     HomeAwaySyncAlertDelivery: [],
+    HomeAwaySyncAlertDeliveryAccount: [],
     ClanWarParticipation: [{ id: "p1", guildId: "g1", warId: "1", clanTag: "#AAA111", playerTag: "#P1", playerPosition: 1 }],
     WarPlanComplianceEvaluation: [
       {
@@ -389,6 +390,9 @@ function buildSourceClient(
     homeAwaySyncAlertDelivery: {
       findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertDelivery)),
     },
+    homeAwaySyncAlertDeliveryAccount: {
+      findMany: vi.fn(async () => cloneRows(store.HomeAwaySyncAlertDeliveryAccount)),
+    },
     clanWarParticipation: {
       findMany: vi.fn(async () => cloneRows(store.ClanWarParticipation)),
     },
@@ -531,6 +535,10 @@ function buildTargetClient(
       deleteMany: deleteMany("HomeAwaySyncAlertDelivery"),
       createMany: createMany("HomeAwaySyncAlertDelivery"),
     },
+    homeAwaySyncAlertDeliveryAccount: {
+      deleteMany: deleteMany("HomeAwaySyncAlertDeliveryAccount"),
+      createMany: createMany("HomeAwaySyncAlertDeliveryAccount"),
+    },
     clanWarParticipation: {
       deleteMany: deleteMany("ClanWarParticipation"),
       createMany: createMany("ClanWarParticipation"),
@@ -589,6 +597,7 @@ describe("MirrorSyncService", () => {
     expect(MIRRORED_RUNTIME_TABLES).toContain("SyncClanMemberSnapshot");
     expect(MIRRORED_RUNTIME_TABLES).toContain("ClanHomeMembershipPeriod");
     expect(MIRRORED_RUNTIME_TABLES).toContain("ClanHomeTransferCandidate");
+    expect(MIRRORED_RUNTIME_TABLES).toContain("HomeAwaySyncAlertDeliveryAccount");
   });
 
   it("mirrors retrospective owners but not scheduled-post lifecycle state", () => {
