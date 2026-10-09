@@ -375,6 +375,7 @@ describe("layout post persistent interactions", () => {
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledWith({
       id: record.id,
       discordUserId: "clicker-1",
+      expectedLayoutLink: record.layoutLink,
     });
     expect(interaction.interaction.update).toHaveBeenCalledTimes(1);
     expect(interaction.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);

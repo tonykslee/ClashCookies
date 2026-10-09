@@ -267,6 +267,7 @@ export class LayoutPostService {
       const confirmedRecord = await this.layoutService.confirmSuccessfulOpening({
         id: record.id,
         discordUserId: interaction.user.id,
+        expectedLayoutLink: record.layoutLink,
       });
       await interaction.update(
         buildLayoutPostPayload(confirmedRecord, "collapsed", imageSource),

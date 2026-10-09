@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LayoutRecord } from "@prisma/client";
 import { InvalidClashLayoutLinkError } from "../src/services/ClashLayoutLinkService";
 import {
+  ConcurrentLayoutReplacementError,
   DuplicateLayoutLinkError,
   LayoutDiscordPostAlreadyBoundError,
   LayoutService,
+  StaleLayoutConfirmationError,
 } from "../src/services/LayoutService";
 
 const layoutRecordMock = {
@@ -123,6 +125,93 @@ describe("LayoutService", () => {
         lastConfirmedByDiscordUserId: "discord-user-2",
       },
     });
+  });
+
+  it("replaces a link with a stable record ID and resets freshness through a CAS", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AREPLACED";
+    const current = buildRecord({
+      lastConfirmedAt: now,
+      lastConfirmedByDiscordUserId: "discord-user-2",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    const updated = buildRecord({
+      ...current,
+      layoutLink: replacement,
+      submittedAt: now,
+      lastConfirmedAt: null,
+      lastConfirmedByDiscordUserId: null,
+    });
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(updated);
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(service.replaceLink({
+      id: current.id,
+      expectedOldLayoutLink: current.layoutLink,
+      replacementLink: replacement,
+    })).resolves.toEqual(updated);
+
+    expect(layoutRecordMock.updateMany).toHaveBeenCalledWith({
+      where: { id: current.id, layoutLink: current.layoutLink },
+      data: {
+        layoutLink: replacement,
+        submittedAt: now,
+        lastConfirmedAt: null,
+        lastConfirmedByDiscordUserId: null,
+      },
+    });
+    expect(updated.id).toBe(current.id);
+  });
+
+  it("updates every FWA compatibility projection in the same transaction", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APROJECTED";
+    const current = buildRecord();
+    const updated = buildRecord({ ...current, layoutLink: replacement, submittedAt: now });
+    layoutRecordMock.findUnique
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(updated);
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 1 });
+    const transactionalService = new LayoutService({ db: projectionDb as any, now: () => now });
+
+    await transactionalService.replaceLink({
+      id: current.id,
+      expectedOldLayoutLink: current.layoutLink,
+      replacementLink: replacement,
+    });
+
+    expect(fwaLayoutsMock.updateMany).toHaveBeenCalledWith({
+      where: { layoutId: current.id },
+      data: { LayoutLink: replacement, ImageUrl: current.imageUrl },
+    });
+  });
+
+  it("rejects a replacement when its expected old link is stale", async () => {
+    const current = buildRecord({
+      layoutLink: "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ACURRENT",
+    });
+    layoutRecordMock.findUnique.mockResolvedValue(current);
+
+    await expect(service.replaceLink({
+      id: current.id,
+      expectedOldLayoutLink: VALID_LAYOUT_LINK,
+      replacementLink: "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AREPLACED",
+    })).rejects.toBeInstanceOf(ConcurrentLayoutReplacementError);
+    expect(layoutRecordMock.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("guards confirmation against a link replacement that raced the click", async () => {
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.confirmSuccessfulOpening({
+      id: "layout-1",
+      discordUserId: "discord-user-1",
+      expectedLayoutLink: VALID_LAYOUT_LINK,
+    })).rejects.toBeInstanceOf(StaleLayoutConfirmationError);
   });
 
   it("uses submittedAt before confirmation and lastConfirmedAt afterward", () => {
