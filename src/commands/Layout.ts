@@ -24,6 +24,8 @@ import {
 import {
   ConcurrentLayoutReplacementError,
   DuplicateLayoutLinkError,
+  LayoutReplacementKindMismatchError,
+  LayoutReplacementTownHallMismatchError,
   LayoutRecordNotFoundError,
   LayoutService,
   layoutService,
@@ -430,6 +432,12 @@ export async function runLayoutUpdateCommand(
     } else if (error instanceof LayoutRecordNotFoundError) {
       reason = "missing_record";
       await replyUpdate(interaction, "The original tracked layout no longer exists.");
+    } else if (error instanceof LayoutReplacementTownHallMismatchError) {
+      reason = "townhall_mismatch";
+      await replyUpdate(interaction, "The replacement link must use the same Town Hall.");
+    } else if (error instanceof LayoutReplacementKindMismatchError) {
+      reason = "layout_kind_mismatch";
+      await replyUpdate(interaction, "The replacement link must use the same layout kind.");
     } else if (error instanceof InvalidClashLayoutLinkError) {
       reason = "invalid_link";
       await replyUpdate(interaction, "Invalid Clash layout link.");

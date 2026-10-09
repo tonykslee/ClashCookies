@@ -95,6 +95,36 @@ export class StaleLayoutConfirmationError extends Error {
   }
 }
 
+/** Purpose: reject a replacement that would change the layout's Town Hall at the authoritative service boundary. */
+export class LayoutReplacementTownHallMismatchError extends Error {
+  readonly layoutId: string;
+  readonly expectedTownHall: number;
+  readonly replacementTownHall: number;
+
+  constructor(layoutId: string, expectedTownHall: number, replacementTownHall: number) {
+    super(`Layout replacement Town Hall does not match layout record: ${layoutId}`);
+    this.name = "LayoutReplacementTownHallMismatchError";
+    this.layoutId = layoutId;
+    this.expectedTownHall = expectedTownHall;
+    this.replacementTownHall = replacementTownHall;
+  }
+}
+
+/** Purpose: reject a replacement that would change the layout kind at the authoritative service boundary. */
+export class LayoutReplacementKindMismatchError extends Error {
+  readonly layoutId: string;
+  readonly expectedLayoutKind: string;
+  readonly replacementLayoutKind: string;
+
+  constructor(layoutId: string, expectedLayoutKind: string, replacementLayoutKind: string) {
+    super(`Layout replacement kind does not match layout record: ${layoutId}`);
+    this.name = "LayoutReplacementKindMismatchError";
+    this.layoutId = layoutId;
+    this.expectedLayoutKind = expectedLayoutKind;
+    this.replacementLayoutKind = replacementLayoutKind;
+  }
+}
+
 /** Purpose: expose the semantic freshness timestamp without coupling callers to database update metadata. */
 export function deriveLayoutFreshnessTimestamp(
   layout: Pick<LayoutRecord, "lastConfirmedAt" | "submittedAt">
@@ -292,6 +322,20 @@ export class LayoutService {
 
         const currentParsed = parseClashLayoutLink(current.layoutLink);
         const replacementParsed = parseClashLayoutLink(replacement);
+        if (currentParsed.townHall !== replacementParsed.townHall) {
+          throw new LayoutReplacementTownHallMismatchError(
+            input.id,
+            currentParsed.townHall,
+            replacementParsed.townHall,
+          );
+        }
+        if (currentParsed.layoutKind !== replacementParsed.layoutKind) {
+          throw new LayoutReplacementKindMismatchError(
+            input.id,
+            currentParsed.layoutKind,
+            replacementParsed.layoutKind,
+          );
+        }
         if (currentParsed.layoutId === replacementParsed.layoutId) return current;
 
         const owner = await transaction.layoutRecord.findUnique({ where: { layoutLink: replacement } });
@@ -423,31 +467,22 @@ export class LayoutService {
   async confirmSuccessfulOpening(input: {
     id: string;
     discordUserId: string;
-    expectedLayoutLink?: string;
+    expectedLayoutLink: string;
   }): Promise<LayoutRecord> {
-    if (input.expectedLayoutLink !== undefined) {
-      const expectedLayoutLink = parseClashLayoutLink(input.expectedLayoutLink).layoutLink;
-      const result = await this.db.layoutRecord.updateMany({
-        where: { id: input.id, layoutLink: expectedLayoutLink },
-        data: {
-          lastConfirmedAt: new Date(this.now().getTime()),
-          lastConfirmedByDiscordUserId: input.discordUserId,
-        },
-      });
-      if (result.count !== 1) {
-        throw new StaleLayoutConfirmationError(input.id);
-      }
-      const updated = await this.findById(input.id);
-      if (!updated) throw new LayoutRecordNotFoundError(input.id);
-      return updated;
-    }
-    return this.db.layoutRecord.update({
-      where: { id: input.id },
+    const expectedLayoutLink = parseClashLayoutLink(input.expectedLayoutLink).layoutLink;
+    const result = await this.db.layoutRecord.updateMany({
+      where: { id: input.id, layoutLink: expectedLayoutLink },
       data: {
         lastConfirmedAt: new Date(this.now().getTime()),
         lastConfirmedByDiscordUserId: input.discordUserId,
       },
     });
+    if (result.count !== 1) {
+      throw new StaleLayoutConfirmationError(input.id);
+    }
+    const updated = await this.findById(input.id);
+    if (!updated) throw new LayoutRecordNotFoundError(input.id);
+    return updated;
   }
 
   /** Purpose: derive the current semantic freshness timestamp for one persisted layout. */

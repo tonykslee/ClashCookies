@@ -4,6 +4,7 @@ import {
   buildLayoutInfoDescription,
   buildLayoutPostCustomId,
   buildLayoutPostPayload,
+  buildLayoutPostVersionToken,
   isLayoutPostButtonCustomId,
   isLayoutPostCustomId,
   LayoutPostService,
@@ -364,7 +365,11 @@ describe("layout post persistent interactions", () => {
       customId: buildLayoutPostCustomId("link", record.id),
     });
     const interaction = makeInteraction({
-      customId: buildLayoutPostCustomId("confirm", record.id),
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        record.id,
+        buildLayoutPostVersionToken(record.layoutLink),
+      ),
     });
     interaction.interaction.message = link.interaction.message;
 
@@ -382,6 +387,44 @@ describe("layout post persistent interactions", () => {
     expect(JSON.stringify(interaction.interaction.update.mock.calls[0]?.[0])).not.toContain(
       record.layoutLink,
     );
+  });
+
+  it("rejects a legacy confirmation control without mutating freshness", async () => {
+    const record = buildRecord({ lastConfirmedAt: null });
+    layoutRecordService.findById.mockResolvedValue(record);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId("confirm", record.id),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a confirmation token from a previous link episode", async () => {
+    const oldLink = LAYOUT_LINK;
+    const currentLink = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ACURRENT_EPISODE";
+    const current = buildRecord({ layoutLink: currentLink, lastConfirmedAt: null });
+    layoutRecordService.findById.mockResolvedValue(current);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        current.id,
+        buildLayoutPostVersionToken(oldLink),
+      ),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -508,7 +551,11 @@ describe("layout post persistent interactions", () => {
         customId: buildLayoutPostCustomId("link", record.id),
       });
       const second = makeInteraction({
-        customId: buildLayoutPostCustomId("confirm", record.id),
+        customId: buildLayoutPostCustomId(
+          "confirm",
+          record.id,
+          buildLayoutPostVersionToken(record.layoutLink),
+        ),
       });
       second.interaction.message = first.interaction.message;
       postService = new LayoutPostService({

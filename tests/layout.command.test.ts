@@ -586,4 +586,36 @@ describe("/layout command behavior", () => {
     }));
     expect(reply).not.toHaveBeenCalled();
   });
+
+  it("does not mutate the database when the pre-commit Discord collapse fails", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AEDIT_FAIL";
+    const { interaction } = makeInteraction({
+      subcommand: "update",
+      messageId: "123456789012345678",
+      link: replacement,
+    });
+    const deps = makeDeps();
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "123456789012345678",
+    });
+    const message = {
+      id: existing.discordMessageId,
+      author: { id: "bot-1" },
+      editable: true,
+      edit: vi.fn().mockResolvedValue(undefined),
+      attachments: { first: vi.fn(() => undefined) },
+    };
+    interaction.client.channels.fetch.mockResolvedValue({ messages: { fetch: vi.fn().mockResolvedValue(message) } });
+    deps.findByDiscordMessage.mockResolvedValue(existing);
+    deps.collapseBeforeLinkReplacement.mockRejectedValue(new Error("edit failed"));
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.replaceLink).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("existing link remains authoritative"),
+    }));
+  });
 });
