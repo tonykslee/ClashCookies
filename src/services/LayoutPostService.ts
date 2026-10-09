@@ -65,9 +65,13 @@ export type ParsedLayoutPostCustomId = {
 const LAYOUT_POST_VERSION_TOKEN_LENGTH = 16;
 
 /** Purpose: derive a deterministic, restart-safe token for the exact link episode rendered to a user. */
-export function buildLayoutPostVersionToken(layoutLink: string): string {
+export function buildLayoutPostVersionToken(
+  layoutLink: string,
+  submittedAt: Date | null | undefined,
+): string {
+  const submittedAtIso = submittedAt?.toISOString() ?? null;
   return createHash("sha256")
-    .update(String(layoutLink ?? "").trim())
+    .update(JSON.stringify([String(layoutLink ?? "").trim(), submittedAtIso]))
     .digest("hex")
     .slice(0, LAYOUT_POST_VERSION_TOKEN_LENGTH);
 }
@@ -157,7 +161,7 @@ export function buildLayoutPostPayload(
   const title = record.title?.trim();
   const imageUrl = resolveImageUrl(record, imageSource);
   const versionToken = mode === "link"
-    ? buildLayoutPostVersionToken(record.layoutLink)
+    ? buildLayoutPostVersionToken(record.layoutLink, record.submittedAt)
     : undefined;
 
   if (title) embed.setTitle(title);
@@ -254,7 +258,7 @@ export class LayoutPostService {
       }
 
       if (parsed.action === "confirm") {
-        const currentVersionToken = buildLayoutPostVersionToken(record.layoutLink);
+        const currentVersionToken = buildLayoutPostVersionToken(record.layoutLink, record.submittedAt);
         if (!parsed.versionToken) {
           this.logConfirmationRejection(interaction, record.id, "legacy_control");
           await replyLayoutPostError(
@@ -321,6 +325,7 @@ export class LayoutPostService {
         id: record.id,
         discordUserId: interaction.user.id,
         expectedLayoutLink: record.layoutLink,
+        expectedSubmittedAt: record.submittedAt,
       });
       await interaction.update(
         buildLayoutPostPayload(confirmedRecord, "collapsed", imageSource),

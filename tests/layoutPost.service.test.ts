@@ -368,7 +368,7 @@ describe("layout post persistent interactions", () => {
       customId: buildLayoutPostCustomId(
         "confirm",
         record.id,
-        buildLayoutPostVersionToken(record.layoutLink),
+        buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
       ),
     });
     interaction.interaction.message = link.interaction.message;
@@ -381,6 +381,7 @@ describe("layout post persistent interactions", () => {
       id: record.id,
       discordUserId: "clicker-1",
       expectedLayoutLink: record.layoutLink,
+      expectedSubmittedAt: record.submittedAt,
     });
     expect(interaction.interaction.update).toHaveBeenCalledTimes(1);
     expect(interaction.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
@@ -414,7 +415,36 @@ describe("layout post persistent interactions", () => {
       customId: buildLayoutPostCustomId(
         "confirm",
         current.id,
-        buildLayoutPostVersionToken(oldLink),
+        buildLayoutPostVersionToken(oldLink, current.submittedAt),
+      ),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects the first A episode after an A to B to A replacement sequence", async () => {
+    const firstA = buildRecord({
+      layoutLink: LAYOUT_LINK,
+      submittedAt: new Date("2026-08-20T00:00:00.000Z"),
+      lastConfirmedAt: null,
+    });
+    const secondA = buildRecord({
+      layoutLink: LAYOUT_LINK,
+      submittedAt: new Date("2026-08-22T00:00:00.000Z"),
+      lastConfirmedAt: null,
+    });
+    layoutRecordService.findById.mockResolvedValue(secondA);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        secondA.id,
+        buildLayoutPostVersionToken(firstA.layoutLink, firstA.submittedAt),
       ),
     });
 
@@ -554,7 +584,7 @@ describe("layout post persistent interactions", () => {
         customId: buildLayoutPostCustomId(
           "confirm",
           record.id,
-          buildLayoutPostVersionToken(record.layoutLink),
+          buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
         ),
       });
       second.interaction.message = first.interaction.message;

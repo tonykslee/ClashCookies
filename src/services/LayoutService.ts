@@ -468,10 +468,18 @@ export class LayoutService {
     id: string;
     discordUserId: string;
     expectedLayoutLink: string;
+    expectedSubmittedAt?: Date | null;
   }): Promise<LayoutRecord> {
     const expectedLayoutLink = parseClashLayoutLink(input.expectedLayoutLink).layoutLink;
+    const where: Prisma.LayoutRecordWhereInput = {
+      id: input.id,
+      layoutLink: expectedLayoutLink,
+      ...(input.expectedSubmittedAt !== undefined
+        ? { submittedAt: input.expectedSubmittedAt }
+        : {}),
+    };
     const result = await this.db.layoutRecord.updateMany({
-      where: { id: input.id, layoutLink: expectedLayoutLink },
+      where,
       data: {
         lastConfirmedAt: new Date(this.now().getTime()),
         lastConfirmedByDiscordUserId: input.discordUserId,

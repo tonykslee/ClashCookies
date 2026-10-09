@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LayoutRecord } from "@prisma/client";
 import { InvalidClashLayoutLinkError } from "../src/services/ClashLayoutLinkService";
+import { buildLayoutPostVersionToken } from "../src/services/LayoutPostService";
 import {
   ConcurrentLayoutReplacementError,
   DuplicateLayoutLinkError,
@@ -120,10 +121,15 @@ describe("LayoutService", () => {
       id: record.id,
       discordUserId: "discord-user-2",
       expectedLayoutLink: record.layoutLink,
+      expectedSubmittedAt: record.submittedAt,
     });
 
     expect(layoutRecordMock.updateMany).toHaveBeenCalledWith({
-      where: { id: record.id, layoutLink: record.layoutLink },
+      where: {
+        id: record.id,
+        layoutLink: record.layoutLink,
+        submittedAt: record.submittedAt,
+      },
       data: {
         lastConfirmedAt: now,
         lastConfirmedByDiscordUserId: "discord-user-2",
@@ -279,6 +285,7 @@ describe("LayoutService", () => {
 
   it("treats an unchanged semantic layout ID as a no-op without resetting freshness", async () => {
     const current = buildRecord({ lastConfirmedAt: now });
+    const episodeToken = buildLayoutPostVersionToken(current.layoutLink, current.submittedAt);
     const equivalentLink = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD";
     layoutRecordMock.findUnique.mockResolvedValue(current);
 
@@ -289,6 +296,7 @@ describe("LayoutService", () => {
     })).resolves.toBe(current);
     expect(layoutRecordMock.updateMany).not.toHaveBeenCalled();
     expect(current.lastConfirmedAt).toBe(now);
+    expect(buildLayoutPostVersionToken(current.layoutLink, current.submittedAt)).toBe(episodeToken);
   });
 
   it("enforces Town Hall and layout kind invariants at the service boundary", async () => {
@@ -318,7 +326,15 @@ describe("LayoutService", () => {
       id: "layout-1",
       discordUserId: "discord-user-1",
       expectedLayoutLink: VALID_LAYOUT_LINK,
+      expectedSubmittedAt: buildRecord().submittedAt,
     })).rejects.toBeInstanceOf(StaleLayoutConfirmationError);
+    expect(layoutRecordMock.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: "layout-1",
+        layoutLink: VALID_LAYOUT_LINK,
+        submittedAt: buildRecord().submittedAt,
+      },
+    }));
   });
 
   it("uses submittedAt before confirmation and lastConfirmedAt afterward", () => {
