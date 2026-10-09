@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationCommandOptionType } from "discord.js";
 import { ChannelType } from "discord.js";
-import { Layout, LAYOUT_COMMAND_OPTIONS, runLayoutCommand } from "../src/commands/Layout";
+import {
+  Layout,
+  LAYOUT_COMMAND_OPTIONS,
+  LAYOUT_UPDATE_OPTIONS,
+  runLayoutCommand,
+} from "../src/commands/Layout";
 import { injectVisibilityOptionsForTest } from "../src/listeners/ready";
 import { MAX_LAYOUT_ATTACHMENT_BYTES } from "../src/services/LayoutPostPublicationService";
 
@@ -29,7 +34,11 @@ function buildRecord(overrides: Record<string, unknown> = {}) {
 }
 
 function makeInteraction(input: {
+  subcommand?: string;
+  guildId?: string;
+  channelId?: string;
   link?: string | null;
+  messageId?: string | null;
   title?: string | null;
   description?: string | null;
   imageUrl?: string | null;
@@ -41,15 +50,20 @@ function makeInteraction(input: {
   const reply = vi.fn().mockResolvedValue(undefined);
   const interaction: any = {
     user: { id: "user-1" },
-    client: { channels: { fetch: vi.fn() } },
-    guildId: "guild-1",
-    channelId: "channel-1",
-    channel: { id: "channel-1", send: vi.fn() },
+    client: { user: { id: "bot-1" }, channels: { fetch: vi.fn() } },
+    guildId: input.guildId ?? "guild-1",
+    channelId: input.channelId ?? "channel-1",
+    channel: { id: input.channelId ?? "channel-1", send: vi.fn() },
     memberPermissions: { has: vi.fn(() => input.isAdmin ?? true) },
     reply,
+    deferred: false,
+    deferReply: vi.fn().mockImplementation(async () => { interaction.deferred = true; }),
+    editReply: vi.fn().mockResolvedValue(undefined),
     options: {
+      getSubcommand: vi.fn(() => input.subcommand ?? "post"),
       getString: vi.fn((name: string) => {
         if (name === "link") return input.link ?? null;
+        if (name === "message-id") return input.messageId ?? null;
         if (name === "title") return input.title ?? null;
         if (name === "description") return input.description ?? null;
         if (name === "img-url") return input.imageUrl ?? null;
@@ -67,6 +81,8 @@ function makeDeps() {
   return {
     getOrCreate: vi.fn().mockResolvedValue(buildRecord()),
     findByLayoutLink: vi.fn().mockResolvedValue(null),
+    findByDiscordMessage: vi.fn().mockResolvedValue(null),
+    replaceLink: vi.fn().mockResolvedValue(buildRecord()),
     publish: vi.fn().mockResolvedValue({
       layout: buildRecord({
         discordGuildId: "guild-1",
@@ -79,20 +95,16 @@ function makeDeps() {
     setPolicy: vi.fn().mockResolvedValue(undefined),
     disablePolicy: vi.fn().mockResolvedValue(undefined),
     getChannelIdForType: vi.fn().mockResolvedValue("alerts-1"),
+    collapseBeforeLinkReplacement: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 describe("/layout command shape", () => {
-  it("exposes only the generic tracked-layout options", () => {
+  it("registers post and update subcommands while preserving post options", () => {
     const registered = injectVisibilityOptionsForTest(Layout) as any;
     expect(registered.options.map((option: any) => option.name)).toEqual([
-      "link",
-      "title",
-      "description",
-      "image",
-      "img-url",
-      "alert-type",
-      "alert-channel",
+      "post",
+      "update",
     ]);
     expect(LAYOUT_COMMAND_OPTIONS[0]).toEqual(expect.objectContaining({
       name: "link",
@@ -106,6 +118,7 @@ describe("/layout command shape", () => {
     }));
     expect(Layout.options?.some((option) => option.name === "visibility")).toBe(false);
     expect(Layout.suppressVisibilityOption).toBe(true);
+    expect(LAYOUT_UPDATE_OPTIONS.map((option) => option.name)).toEqual(["message-id", "link"]);
   });
 });
 
@@ -451,6 +464,158 @@ describe("/layout command behavior", () => {
     expect(deps.publish).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
       content: "The `image` attachment is too large.",
+    }));
+  });
+
+  it("updates the existing bot-authored post without publishing another message", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ANEW_PAYLOAD";
+    const { interaction } = makeInteraction({
+      subcommand: "update",
+      messageId: "123456789012345678",
+      link: replacement,
+    });
+    const deps = makeDeps();
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "123456789012345678",
+      title: "Keep title",
+      description: "Keep description",
+      imageUrl: "https://example.com/old.png",
+      lastConfirmedAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+    const message = {
+      id: existing.discordMessageId,
+      author: { id: "bot-1" },
+      editable: true,
+      edit: vi.fn().mockResolvedValue(undefined),
+      attachments: { first: vi.fn(() => ({ name: "native.png", url: "https://cdn.test/native.png" })) },
+    };
+    interaction.client.channels.fetch.mockResolvedValue({ messages: { fetch: vi.fn().mockResolvedValue(message) } });
+    deps.findByDiscordMessage.mockResolvedValue(existing);
+    deps.replaceLink.mockResolvedValue(buildRecord({ ...existing, layoutLink: replacement, submittedAt: new Date() }));
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(deps.collapseBeforeLinkReplacement).toHaveBeenCalledWith({ layout: existing, message });
+    expect(deps.replaceLink).toHaveBeenCalledWith({
+      id: existing.id,
+      expectedOldLayoutLink: existing.layoutLink,
+      replacementLink: replacement,
+    });
+    expect(deps.publish).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("View original post"),
+    }));
+  });
+
+  it("accepts an exact full Discord message URL", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ANEW_FULL_URL";
+    const guildId = "123456789012345670";
+    const channelId = "123456789012345671";
+    const messageId = "123456789012345678";
+    const { interaction } = makeInteraction({
+      subcommand: "update",
+      guildId,
+      channelId,
+      messageId: `https://discord.com/channels/${guildId}/${channelId}/${messageId}`,
+      link: replacement,
+    });
+    const deps = makeDeps();
+    const existing = buildRecord({
+      discordGuildId: guildId,
+      discordChannelId: channelId,
+      discordMessageId: messageId,
+    });
+    const message = {
+      id: messageId,
+      author: { id: "bot-1" },
+      editable: true,
+      edit: vi.fn().mockResolvedValue(undefined),
+      attachments: { first: vi.fn(() => undefined) },
+    };
+    interaction.client.channels.fetch.mockResolvedValue({ messages: { fetch: vi.fn().mockResolvedValue(message) } });
+    deps.findByDiscordMessage.mockResolvedValue(existing);
+    deps.replaceLink.mockResolvedValue(buildRecord({ ...existing, layoutLink: replacement }));
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.findByDiscordMessage).toHaveBeenCalledWith({
+      guildId,
+      channelId,
+      messageId,
+    });
+    expect(deps.replaceLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a full Discord message URL from another guild before lookup", async () => {
+    const guildId = "123456789012345670";
+    const { interaction } = makeInteraction({
+      subcommand: "update",
+      guildId,
+      messageId: "https://discord.com/channels/123456789012345679/123456789012345671/123456789012345678",
+      link: LINK,
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.findByDiscordMessage).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "The Discord message URL must point to this server.",
+    }));
+  });
+
+  it("rejects a raw message ID outside the persisted invoking guild scope", async () => {
+    const { interaction, reply } = makeInteraction({
+      subcommand: "update",
+      messageId: "123456789012345678",
+      link: LINK,
+    });
+    const deps = makeDeps();
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.findByDiscordMessage).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      messageId: "123456789012345678",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("could not be found"),
+    }));
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate the database when the pre-commit Discord collapse fails", async () => {
+    const replacement = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3AEDIT_FAIL";
+    const { interaction } = makeInteraction({
+      subcommand: "update",
+      messageId: "123456789012345678",
+      link: replacement,
+    });
+    const deps = makeDeps();
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "123456789012345678",
+    });
+    const message = {
+      id: existing.discordMessageId,
+      author: { id: "bot-1" },
+      editable: true,
+      edit: vi.fn().mockResolvedValue(undefined),
+      attachments: { first: vi.fn(() => undefined) },
+    };
+    interaction.client.channels.fetch.mockResolvedValue({ messages: { fetch: vi.fn().mockResolvedValue(message) } });
+    deps.findByDiscordMessage.mockResolvedValue(existing);
+    deps.collapseBeforeLinkReplacement.mockRejectedValue(new Error("edit failed"));
+
+    await runLayoutCommand(interaction, { layoutService: deps, publicationService: deps as any });
+
+    expect(deps.replaceLink).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("existing link remains authoritative"),
     }));
   });
 });

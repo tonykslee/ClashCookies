@@ -267,9 +267,10 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
     examples: ["/role-users role:@Leaders"],
   },
   layout: {
-    summary: "Create or reuse a tracked Clash layout post.",
+    summary: "Create or update a tracked Clash layout post.",
     details: [
-      "`/layout link:<link> [title] [description] [image] [img-url] [alert-type] [alert-channel]` creates or reuses a generic tracked LayoutRecord; Town Hall is derived automatically from the shared Clash parser. Omitted alert options preserve existing policy; `none`, `dm`, `default-channel`, `both`, and `custom-channel` configure the durable per-layout policy, with `alert-channel` required only for custom-channel.",
+      "The old `/layout link:<link> ...` root syntax is now `/layout post link:<link> ...`; `post` creates or reuses a generic tracked LayoutRecord. Town Hall is derived automatically from the shared Clash parser. Omitted alert options preserve existing policy; `none`, `dm`, `default-channel`, `both`, and `custom-channel` configure the durable per-layout policy, with `alert-channel` required only for custom-channel.",
+      "`/layout update message-id:<Discord message ID or full message URL> link:<replacement link>` replaces the link behind the existing bot-authored post. It preserves the original post, title, description, image, alerts, history, and stable LayoutRecord ID; a successful replacement starts a new freshness episode with submittedAt reset and no confirmation.",
       "The canonical public post is minimal: optional title/image plus Layout Link and Info buttons. Description is shown through the ephemeral Info interaction, not on the collapsed post.",
       "Use either a native `image` attachment or an external `img-url`, not both. Native images are uploaded into the bot-authored canonical post.",
       "Only a successful `Yes, It Opened` confirmation refreshes freshness. Exact-link reuse preserves lifecycle and post ownership.",
@@ -277,9 +278,9 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "FWA layout catalog management lives under `/fwa layout`.",
     ],
     examples: [
-      "/layout link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18... image:base.png",
-      "/layout link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18... title:\"TH18 War Base\"",
-      "/layout link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18... description:\"CC: Ice Golems\" img-url:https://i.imgur.com/example.png",
+      "/layout post link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18... image:base.png",
+      "/layout post link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18... title:\"TH18 War Base\"",
+      "/layout update message-id:123456789012345678 link:https://link.clashofclans.com/en?action=OpenLayout&id=TH18...",
     ],
   },
   dump: {

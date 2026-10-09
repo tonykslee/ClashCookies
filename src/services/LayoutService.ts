@@ -27,7 +27,7 @@ export type LayoutServiceOptions = {
 
 export type LayoutRecordDelegate = Pick<
   PrismaClient["layoutRecord"],
-  "findUnique" | "create" | "update" | "upsert"
+  "findUnique" | "findFirst" | "create" | "update" | "updateMany" | "upsert"
 >;
 
 export type LayoutPresentationInput = {
@@ -70,6 +70,58 @@ export class LayoutDiscordPostAlreadyBoundError extends Error {
     super(`Layout record is already bound to a different Discord post: ${layoutId}`);
     this.name = "LayoutDiscordPostAlreadyBoundError";
     this.layoutId = layoutId;
+  }
+}
+
+/** Purpose: report that a link replacement lost an optimistic concurrency race. */
+export class ConcurrentLayoutReplacementError extends Error {
+  readonly layoutId: string;
+
+  constructor(layoutId: string) {
+    super(`Layout link replacement was stale for layout record: ${layoutId}`);
+    this.name = "ConcurrentLayoutReplacementError";
+    this.layoutId = layoutId;
+  }
+}
+
+/** Purpose: prevent an opening confirmation captured before a replacement from confirming the new link. */
+export class StaleLayoutConfirmationError extends Error {
+  readonly layoutId: string;
+
+  constructor(layoutId: string) {
+    super(`Layout confirmation was stale for layout record: ${layoutId}`);
+    this.name = "StaleLayoutConfirmationError";
+    this.layoutId = layoutId;
+  }
+}
+
+/** Purpose: reject a replacement that would change the layout's Town Hall at the authoritative service boundary. */
+export class LayoutReplacementTownHallMismatchError extends Error {
+  readonly layoutId: string;
+  readonly expectedTownHall: number;
+  readonly replacementTownHall: number;
+
+  constructor(layoutId: string, expectedTownHall: number, replacementTownHall: number) {
+    super(`Layout replacement Town Hall does not match layout record: ${layoutId}`);
+    this.name = "LayoutReplacementTownHallMismatchError";
+    this.layoutId = layoutId;
+    this.expectedTownHall = expectedTownHall;
+    this.replacementTownHall = replacementTownHall;
+  }
+}
+
+/** Purpose: reject a replacement that would change the layout kind at the authoritative service boundary. */
+export class LayoutReplacementKindMismatchError extends Error {
+  readonly layoutId: string;
+  readonly expectedLayoutKind: string;
+  readonly replacementLayoutKind: string;
+
+  constructor(layoutId: string, expectedLayoutKind: string, replacementLayoutKind: string) {
+    super(`Layout replacement kind does not match layout record: ${layoutId}`);
+    this.name = "LayoutReplacementKindMismatchError";
+    this.layoutId = layoutId;
+    this.expectedLayoutKind = expectedLayoutKind;
+    this.replacementLayoutKind = replacementLayoutKind;
   }
 }
 
@@ -233,6 +285,98 @@ export class LayoutService {
     return this.db.layoutRecord.findUnique({ where: { layoutLink: layoutLink.trim() } });
   }
 
+  /** Purpose: resolve canonical post provenance by guild and message, optionally requiring the exact channel. */
+  async findByDiscordMessage(input: {
+    guildId: string;
+    channelId?: string;
+    messageId: string;
+  }): Promise<LayoutRecord | null> {
+    return this.db.layoutRecord.findFirst({
+      where: {
+        discordGuildId: input.guildId.trim(),
+        ...(input.channelId ? { discordChannelId: input.channelId.trim() } : {}),
+        discordMessageId: input.messageId.trim(),
+      },
+    });
+  }
+
+  /**
+   * Purpose: replace one canonical link without changing its stable identity or Discord provenance.
+   * The old link is part of the write predicate so concurrent administrators cannot silently overwrite one another.
+   */
+  async replaceLink(input: {
+    id: string;
+    expectedOldLayoutLink: string;
+    replacementLink: string;
+  }): Promise<LayoutRecord> {
+    const expectedOld = parseClashLayoutLink(input.expectedOldLayoutLink).layoutLink;
+    const replacement = parseClashLayoutLink(input.replacementLink).layoutLink;
+
+    try {
+      return await this.runRootOperation(async (transaction) => {
+        const current = await transaction.layoutRecord.findUnique({ where: { id: input.id } });
+        if (!current) throw new LayoutRecordNotFoundError(input.id);
+        if (current.layoutLink !== expectedOld) {
+          throw new ConcurrentLayoutReplacementError(input.id);
+        }
+
+        const currentParsed = parseClashLayoutLink(current.layoutLink);
+        const replacementParsed = parseClashLayoutLink(replacement);
+        if (currentParsed.townHall !== replacementParsed.townHall) {
+          throw new LayoutReplacementTownHallMismatchError(
+            input.id,
+            currentParsed.townHall,
+            replacementParsed.townHall,
+          );
+        }
+        if (currentParsed.layoutKind !== replacementParsed.layoutKind) {
+          throw new LayoutReplacementKindMismatchError(
+            input.id,
+            currentParsed.layoutKind,
+            replacementParsed.layoutKind,
+          );
+        }
+        if (currentParsed.layoutId === replacementParsed.layoutId) return current;
+
+        const owner = await transaction.layoutRecord.findUnique({ where: { layoutLink: replacement } });
+        if (owner && owner.id !== input.id) {
+          throw new DuplicateLayoutLinkError(replacement);
+        }
+
+        const result = await transaction.layoutRecord.updateMany({
+          where: { id: input.id, layoutLink: expectedOld },
+          data: {
+            layoutLink: replacement,
+            submittedAt: new Date(this.now().getTime()),
+            lastConfirmedAt: null,
+            lastConfirmedByDiscordUserId: null,
+          },
+        });
+
+        if (result.count !== 1) {
+          const raced = await transaction.layoutRecord.findUnique({ where: { id: input.id } });
+          if (!raced) throw new LayoutRecordNotFoundError(input.id);
+          throw new ConcurrentLayoutReplacementError(input.id);
+        }
+
+        const updated = await transaction.layoutRecord.findUnique({ where: { id: input.id } });
+        if (!updated) throw new LayoutRecordNotFoundError(input.id);
+        await synchronizeFwaLayoutProjection(transaction.fwaLayouts, updated);
+        return updated;
+      });
+    } catch (error) {
+      // A PostgreSQL unique violation aborts the transaction, so race classification must query after rollback.
+      if (!isPrismaUniqueConstraintError(error)) throw error;
+      const racedOwner = await this.findByLayoutLink(replacement);
+      if (racedOwner && racedOwner.id !== input.id) {
+        throw new DuplicateLayoutLinkError(replacement);
+      }
+      const raced = await this.findById(input.id);
+      if (!raced) throw new LayoutRecordNotFoundError(input.id);
+      throw new ConcurrentLayoutReplacementError(input.id);
+    }
+  }
+
   /** Purpose: bind one layout to its canonical Discord post without changing lifecycle timestamps. */
   async attachDiscordPost(input: {
     id: string;
@@ -323,14 +467,30 @@ export class LayoutService {
   async confirmSuccessfulOpening(input: {
     id: string;
     discordUserId: string;
+    expectedLayoutLink: string;
+    expectedSubmittedAt?: Date | null;
   }): Promise<LayoutRecord> {
-    return this.db.layoutRecord.update({
-      where: { id: input.id },
+    const expectedLayoutLink = parseClashLayoutLink(input.expectedLayoutLink).layoutLink;
+    const where: Prisma.LayoutRecordWhereInput = {
+      id: input.id,
+      layoutLink: expectedLayoutLink,
+      ...(input.expectedSubmittedAt !== undefined
+        ? { submittedAt: input.expectedSubmittedAt }
+        : {}),
+    };
+    const result = await this.db.layoutRecord.updateMany({
+      where,
       data: {
         lastConfirmedAt: new Date(this.now().getTime()),
         lastConfirmedByDiscordUserId: input.discordUserId,
       },
     });
+    if (result.count !== 1) {
+      throw new StaleLayoutConfirmationError(input.id);
+    }
+    const updated = await this.findById(input.id);
+    if (!updated) throw new LayoutRecordNotFoundError(input.id);
+    return updated;
   }
 
   /** Purpose: derive the current semantic freshness timestamp for one persisted layout. */

@@ -5,6 +5,7 @@ import {
   ButtonStyle,
   EmbedBuilder,
 } from "discord.js";
+import { createHash } from "node:crypto";
 import type { LayoutRecord } from "@prisma/client";
 import { LayoutAlertMode } from "@prisma/client";
 import { formatError } from "../helper/formatError";
@@ -57,12 +58,29 @@ export type LayoutPostServiceOptions = {
 export type ParsedLayoutPostCustomId = {
   action: LayoutPostButtonAction;
   layoutId: string;
+  /** Missing/null identifies a legacy confirmation control that predates episode tokens. */
+  versionToken?: string | null;
 };
+
+const LAYOUT_POST_VERSION_TOKEN_LENGTH = 16;
+
+/** Purpose: derive a deterministic, restart-safe token for the exact link episode rendered to a user. */
+export function buildLayoutPostVersionToken(
+  layoutLink: string,
+  submittedAt: Date | null | undefined,
+): string {
+  const submittedAtIso = submittedAt?.toISOString() ?? null;
+  return createHash("sha256")
+    .update(JSON.stringify([String(layoutLink ?? "").trim(), submittedAtIso]))
+    .digest("hex")
+    .slice(0, LAYOUT_POST_VERSION_TOKEN_LENGTH);
+}
 
 /** Purpose: build one restart-safe persistent layout button custom ID. */
 export function buildLayoutPostCustomId(
   action: LayoutPostButtonAction,
   layoutId: string,
+  versionToken?: string,
 ): string {
   if (!isLayoutPostButtonAction(action)) {
     throw new Error(`Unsupported layout post action: ${action}`);
@@ -73,7 +91,17 @@ export function buildLayoutPostCustomId(
     throw new Error("Layout post custom IDs require a safe layout record ID.");
   }
 
-  const customId = `${LAYOUT_POST_PREFIX}:${action}:${normalizedLayoutId}`;
+  const normalizedVersionToken = versionToken?.trim() ?? "";
+  if (normalizedVersionToken && action !== "confirm") {
+    throw new Error("Layout post version tokens are only valid for confirmations.");
+  }
+  if (normalizedVersionToken && !isLayoutPostVersionToken(normalizedVersionToken)) {
+    throw new Error("Layout post confirmation version token is invalid.");
+  }
+
+  const customId = normalizedVersionToken
+    ? `${LAYOUT_POST_PREFIX}:${action}:${normalizedLayoutId}:${normalizedVersionToken}`
+    : `${LAYOUT_POST_PREFIX}:${action}:${normalizedLayoutId}`;
   if (customId.length > LAYOUT_POST_CUSTOM_ID_MAX_LENGTH) {
     throw new Error("Layout post custom ID exceeds Discord's length limit.");
   }
@@ -85,14 +113,20 @@ export function parseLayoutPostCustomId(
   customId: string,
 ): ParsedLayoutPostCustomId | null {
   const parts = String(customId ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== LAYOUT_POST_PREFIX) return null;
+  if ((parts.length !== 3 && parts.length !== 4) || parts[0] !== LAYOUT_POST_PREFIX) return null;
 
   const action = parts[1] as LayoutPostButtonAction;
   const layoutId = parts[2] ?? "";
   if (!isLayoutPostButtonAction(action) || !/^[A-Za-z0-9_-]+$/.test(layoutId)) {
     return null;
   }
-  return { action, layoutId };
+  const versionToken = parts.length === 4 ? parts[3] ?? "" : null;
+  if (parts.length === 4 && (action !== "confirm" || !versionToken || !isLayoutPostVersionToken(versionToken))) {
+    return null;
+  }
+  return parts.length === 4
+    ? { action, layoutId, versionToken }
+    : { action, layoutId };
 }
 
 /** Purpose: route persistent layout IDs while safely ignoring obsolete paginator IDs from the removed legacy command. */
@@ -126,6 +160,9 @@ export function buildLayoutPostPayload(
   const embed = new EmbedBuilder();
   const title = record.title?.trim();
   const imageUrl = resolveImageUrl(record, imageSource);
+  const versionToken = mode === "link"
+    ? buildLayoutPostVersionToken(record.layoutLink, record.submittedAt)
+    : undefined;
 
   if (title) embed.setTitle(title);
   if (imageUrl) embed.setImage(imageUrl);
@@ -141,7 +178,7 @@ export function buildLayoutPostPayload(
   const hasVisibleEmbedContent = Boolean(title || imageUrl || mode !== "collapsed");
   return {
     embeds: hasVisibleEmbedContent ? [embed] : [],
-    components: [buildLayoutPostButtonRow(record.id, mode)],
+    components: [buildLayoutPostButtonRow(record.id, mode, versionToken)],
     allowedMentions: { parse: [], repliedUser: false },
   };
 }
@@ -220,6 +257,26 @@ export class LayoutPostService {
         return;
       }
 
+      if (parsed.action === "confirm") {
+        const currentVersionToken = buildLayoutPostVersionToken(record.layoutLink, record.submittedAt);
+        if (!parsed.versionToken) {
+          this.logConfirmationRejection(interaction, record.id, "legacy_control");
+          await replyLayoutPostError(
+            interaction,
+            "This confirmation control is from an older layout link and can no longer confirm it.",
+          );
+          return;
+        }
+        if (parsed.versionToken !== currentVersionToken) {
+          this.logConfirmationRejection(interaction, record.id, "stale_link_version");
+          await replyLayoutPostError(
+            interaction,
+            "This confirmation belongs to an older layout link and was not applied.",
+          );
+          return;
+        }
+      }
+
       const imageSource = getCurrentMessageImageSource(interaction);
       if (parsed.action === "info") {
         const alertPolicy = this.alertConfigService
@@ -267,6 +324,8 @@ export class LayoutPostService {
       const confirmedRecord = await this.layoutService.confirmSuccessfulOpening({
         id: record.id,
         discordUserId: interaction.user.id,
+        expectedLayoutLink: record.layoutLink,
+        expectedSubmittedAt: record.submittedAt,
       });
       await interaction.update(
         buildLayoutPostPayload(confirmedRecord, "collapsed", imageSource),
@@ -344,6 +403,17 @@ export class LayoutPostService {
       `[layout-post] event=scope_rejected layout_id=${layoutId} interaction_guild_id=${interaction.guildId ?? "DM"} interaction_channel_id=${interaction.channelId ?? "unknown"} interaction_message_id=${interaction.message.id}`,
     );
   }
+
+  /** Purpose: make stale and legacy confirmation rejection observable without logging the layout URL. */
+  private logConfirmationRejection(
+    interaction: ButtonInteraction,
+    layoutId: string,
+    reason: "legacy_control" | "stale_link_version",
+  ): void {
+    dozzleLog.warn(
+      `[layout-post] event=confirmation_rejected layout_id=${layoutId} reason=${reason} interaction_guild_id=${interaction.guildId ?? "DM"} interaction_channel_id=${interaction.channelId ?? "unknown"} interaction_message_id=${interaction.message.id} user_id=${interaction.user.id}`,
+    );
+  }
 }
 
 /** Purpose: route the centralized persistent button dispatcher to the shared layout post service. */
@@ -358,6 +428,7 @@ export async function handleLayoutButtonInteraction(
 function buildLayoutPostButtonRow(
   layoutId: string,
   mode: LayoutPostRenderMode,
+  versionToken?: string,
 ): ActionRowBuilder<ButtonBuilder> {
   const buttons = mode === "collapsed"
     ? [
@@ -373,7 +444,7 @@ function buildLayoutPostButtonRow(
     : mode === "link"
       ? [
           new ButtonBuilder()
-            .setCustomId(buildLayoutPostCustomId("confirm", layoutId))
+            .setCustomId(buildLayoutPostCustomId("confirm", layoutId, versionToken))
             .setLabel("Yes, It Opened")
             .setStyle(ButtonStyle.Success),
           new ButtonBuilder()
@@ -402,6 +473,11 @@ function buildLayoutPostButtonRow(
 /** Purpose: keep the action union centralized for custom-ID construction and parsing. */
 function isLayoutPostButtonAction(value: string): value is LayoutPostButtonAction {
   return value === "link" || value === "confirm" || value === "close" || value === "info";
+}
+
+/** Purpose: validate the bounded hash token carried by a version-aware confirmation custom ID. */
+function isLayoutPostVersionToken(value: string): boolean {
+  return new RegExp(`^[a-f0-9]{${LAYOUT_POST_VERSION_TOKEN_LENGTH}}$`).test(value);
 }
 
 /** Purpose: choose the persisted external image or a same-message attachment reference without re-uploading. */

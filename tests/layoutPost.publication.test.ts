@@ -63,6 +63,41 @@ describe("LayoutPostPublicationService", () => {
     expect(fetch).toHaveBeenCalledWith("message-1");
   });
 
+  it("requires the configured bot author for link replacement preflight", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      id: "message-1",
+      edit: vi.fn(),
+      author: { id: "other-bot" },
+    });
+    const resolver = createDiscordLayoutPostResolver(
+      { user: { id: "this-bot" }, channels: { fetch: vi.fn().mockResolvedValue({ messages: { fetch } }) } },
+      { requireBotAuthored: true },
+    );
+
+    await expect(resolver.resolve({ guildId: "guild-1", channelId: "channel-1", messageId: "message-1" }))
+      .resolves.toBeNull();
+  });
+
+  it("collapses an expanded post without replacing its native attachment", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "message-1",
+      delete: vi.fn(),
+      edit,
+      attachments: { first: vi.fn(() => ({ name: "native.png", url: "https://cdn.example/native.png" })) },
+    };
+
+    await service.collapseBeforeLinkReplacement({
+      layout: buildLayout({ discordGuildId: "guild-1", discordChannelId: "channel-1", discordMessageId: "message-1" }) as any,
+      message: message as any,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.attachments).toBeUndefined();
+    expect(payload.files).toBeUndefined();
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://native.png");
+  });
+
   it("reuses an existing canonical provenance without sending another post", async () => {
     const layout = buildLayout({
       discordGuildId: "guild-1",

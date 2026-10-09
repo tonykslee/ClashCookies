@@ -18,6 +18,8 @@ export type LayoutPostDiscordPayload = ReturnType<typeof buildLayoutPostPayload>
 
 export type ResolvedLayoutPostMessage = PublishedLayoutMessage & {
   edit: (payload: LayoutPostDiscordPayload) => Promise<unknown>;
+  author?: { id?: string | null } | null;
+  editable?: boolean;
   attachments?: { first?: () => { name?: string | null; url?: string | null } | undefined };
 };
 
@@ -174,6 +176,20 @@ export class LayoutPostPublicationService {
     };
   }
 
+  /** Purpose: collapse the canonical post using its old record before a link-only CAS replacement commits. */
+  async collapseBeforeLinkReplacement(input: {
+    layout: LayoutRecord;
+    message: ResolvedLayoutPostMessage;
+  }): Promise<void> {
+    await input.message.edit(
+      buildLayoutPostPayload(
+        input.layout,
+        "collapsed",
+        getMessageImageSource(input.message),
+      ),
+    );
+  }
+
   /** Purpose: persist native ownership only after an existing canonical message accepted the replacement. */
   private async persistNativeOwnershipAfterEdit(
     originalLayout: LayoutRecord,
@@ -247,9 +263,13 @@ export function isLayoutAttachmentSizeSupported(size: number | null | undefined)
 }
 
 /** Purpose: keep Discord fetch/edit mechanics inside the focused layout publication integration. */
-export function createDiscordLayoutPostResolver(client: {
+export function createDiscordLayoutPostResolver(
+  client: {
   channels: { fetch: (channelId: string) => Promise<unknown> };
-}): LayoutPostMessageResolver {
+    user?: { id?: string | null } | null;
+  },
+  options: { requireBotAuthored?: boolean } = {},
+): LayoutPostMessageResolver {
   return {
     resolve: async ({ channelId, messageId }) => {
       const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -259,7 +279,13 @@ export function createDiscordLayoutPostResolver(client: {
         typeof (messages as { fetch?: unknown }).fetch !== "function") return null;
       const message = await (messages as { fetch: (id: string) => Promise<unknown> }).fetch(messageId).catch(() => null);
       if (!message || typeof message !== "object" || typeof (message as { edit?: unknown }).edit !== "function") return null;
-      return message as ResolvedLayoutPostMessage;
+      const resolved = message as ResolvedLayoutPostMessage;
+      if (resolved.editable === false) return null;
+      if (options.requireBotAuthored) {
+        const botUserId = client.user?.id;
+        if (!botUserId || resolved.author?.id !== botUserId) return null;
+      }
+      return resolved;
     },
   };
 }
