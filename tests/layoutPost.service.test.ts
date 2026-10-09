@@ -4,6 +4,7 @@ import {
   buildLayoutInfoDescription,
   buildLayoutPostCustomId,
   buildLayoutPostPayload,
+  buildLayoutPostVersionToken,
   isLayoutPostButtonCustomId,
   isLayoutPostCustomId,
   LayoutPostService,
@@ -364,7 +365,11 @@ describe("layout post persistent interactions", () => {
       customId: buildLayoutPostCustomId("link", record.id),
     });
     const interaction = makeInteraction({
-      customId: buildLayoutPostCustomId("confirm", record.id),
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        record.id,
+        buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
+      ),
     });
     interaction.interaction.message = link.interaction.message;
 
@@ -375,12 +380,81 @@ describe("layout post persistent interactions", () => {
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledWith({
       id: record.id,
       discordUserId: "clicker-1",
+      expectedLayoutLink: record.layoutLink,
+      expectedSubmittedAt: record.submittedAt,
     });
     expect(interaction.interaction.update).toHaveBeenCalledTimes(1);
     expect(interaction.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
     expect(JSON.stringify(interaction.interaction.update.mock.calls[0]?.[0])).not.toContain(
       record.layoutLink,
     );
+  });
+
+  it("rejects a legacy confirmation control without mutating freshness", async () => {
+    const record = buildRecord({ lastConfirmedAt: null });
+    layoutRecordService.findById.mockResolvedValue(record);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId("confirm", record.id),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a confirmation token from a previous link episode", async () => {
+    const oldLink = LAYOUT_LINK;
+    const currentLink = "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ACURRENT_EPISODE";
+    const current = buildRecord({ layoutLink: currentLink, lastConfirmedAt: null });
+    layoutRecordService.findById.mockResolvedValue(current);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        current.id,
+        buildLayoutPostVersionToken(oldLink, current.submittedAt),
+      ),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects the first A episode after an A to B to A replacement sequence", async () => {
+    const firstA = buildRecord({
+      layoutLink: LAYOUT_LINK,
+      submittedAt: new Date("2026-08-20T00:00:00.000Z"),
+      lastConfirmedAt: null,
+    });
+    const secondA = buildRecord({
+      layoutLink: LAYOUT_LINK,
+      submittedAt: new Date("2026-08-22T00:00:00.000Z"),
+      lastConfirmedAt: null,
+    });
+    layoutRecordService.findById.mockResolvedValue(secondA);
+    const { interaction } = makeInteraction({
+      customId: buildLayoutPostCustomId(
+        "confirm",
+        secondA.id,
+        buildLayoutPostVersionToken(firstA.layoutLink, firstA.submittedAt),
+      ),
+    });
+
+    await postService.handleButtonInteraction(interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("older layout link"),
+    }));
+    expect(interaction.update).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -507,7 +581,11 @@ describe("layout post persistent interactions", () => {
         customId: buildLayoutPostCustomId("link", record.id),
       });
       const second = makeInteraction({
-        customId: buildLayoutPostCustomId("confirm", record.id),
+        customId: buildLayoutPostCustomId(
+          "confirm",
+          record.id,
+          buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
+        ),
       });
       second.interaction.message = first.interaction.message;
       postService = new LayoutPostService({
