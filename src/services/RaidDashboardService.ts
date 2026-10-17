@@ -2183,10 +2183,6 @@ function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string 
   }
 
   const marks = row.raidIntelMarks ?? [];
-  if (marks.length <= 0) {
-    return null;
-  }
-
   const groups = buildRaidIntelSummaryGroups(marks);
   const defaultAbbreviations = groups.get("Default") ?? [];
   const defaultText = defaultAbbreviations.length > 0 ? defaultAbbreviations.join(", ") : "—";
