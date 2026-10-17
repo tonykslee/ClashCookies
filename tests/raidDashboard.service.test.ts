@@ -516,6 +516,7 @@ describe("RaidDashboardService", () => {
         hasOngoingRaid: false,
         raidsCompleted: 0,
         defaultLayoutCount: 0,
+        raidIntelDefenderUpgrades: 1444,
         intelGradeScore: 0,
         maxDefenseAttacksUsed: null,
         raidIntelMarks: [
@@ -526,8 +527,80 @@ describe("RaidDashboardService", () => {
       } as any,
     ]);
 
-    expect(overview).toContain("- 🏘️ — | defaults: 0 | —");
+    expect(overview).toContain("- 🏘️ 1444 | defaults: 0 | —");
     expect(overview).not.toContain("GM, SP, GQ");
+  });
+
+  it("renders the overview intel line with resolved upgrades when no layout marks exist", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 0,
+        defaultLayoutCount: null,
+        raidIntelDefenderUpgrades: 1444,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        raidIntelMarks: [],
+      } as any,
+    ]);
+
+    expect(overview).toContain("- 🏘️ 1444 | defaults: 0 | —");
+  });
+
+  it("renders the overview intel fallback when upgrades and layout marks are unavailable", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 0,
+        defaultLayoutCount: null,
+        raidIntelDefenderUpgrades: null,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        raidIntelMarks: [],
+      } as any,
+    ]);
+
+    expect(overview).toContain("- 🏘️ — | defaults: 0 | —");
+  });
+
+  it("keeps the completed-raid overview intel suppression with no layout marks", () => {
+    const overview = buildRaidDashboardOverviewDescription([
+      {
+        clanTag: "2RVGJYLC0",
+        clanName: "Bravo Raid",
+        upgrades: null,
+        joinType: "closed",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+        attacksCompleted: null,
+        attacksMax: null,
+        hasOngoingRaid: false,
+        raidsCompleted: 1,
+        defaultLayoutCount: null,
+        raidIntelDefenderUpgrades: 1444,
+        intelGradeScore: 0,
+        maxDefenseAttacksUsed: null,
+        raidIntelMarks: [],
+      } as any,
+    ]);
+
+    expect(overview).not.toContain("- 🏘️");
   });
 
   it("omits the defense shield metric when the active season defense counts are unknown", () => {
