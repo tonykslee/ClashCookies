@@ -64,6 +64,10 @@ Representative examples:
 
 Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
 
+### Automatic sync-status lookup
+
+`/sync post status` and `/sync spin status` emit one bounded `[sync-status] automatic_lookup` event for automatic discovery. The event records the guild, resolution result (`active`, `expired`, `deleted`, `missing`, `unavailable`, `format_mismatch`, `no_active_tracked_announcement`, or `stale_saved_pointer`), selected root identity/status, saved-pointer identity, and whether the saved pointer matched the DB-selected root. Discord permission, temporary API, and format failures preserve `TrackedMessage`; only a definitive missing-message response may mark the tracked root deleted. Message contents and unbounded exception text are not logged.
+
 ### FWA weight-alert delivery
 
 The existing FWA Clans.json scheduler invokes weight-alert evaluation only after a fresh catalog sync reports `SUCCESS` or `NOOP`. Delivery is failure-isolated from feed synchronization and uses the durable `FwaWeightAlertDelivery` row keyed by clan and persisted `weightSubmitDate` for claims, retries, and terminal `SENT` state. Bounded `[fwa-weight-alert]` events are `cycle_complete`, `cycle_skipped`, `routing_missing`, `delivery_sent`, and `delivery_failed`; cycle events contain aggregate counts, while per-event lines identify the affected clan and destination without logging message content. The evaluator bulk-reads enabled `FwaWeightAlertConfig` rows, `FwaClanCatalog.weightSubmitDate`, and `TrackedClan` routing; it does not perform FWAStats HTTP work.

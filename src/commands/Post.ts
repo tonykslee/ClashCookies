@@ -108,6 +108,27 @@ type ReusableSyncTimeAnnouncement = {
   link: string;
 };
 
+type AutomaticSyncMessageFetchOutcome =
+  | "available"
+  | "missing"
+  | "unavailable"
+  | "format_mismatch";
+
+type AutomaticSyncLookupReason =
+  | "active"
+  | "expired"
+  | "deleted"
+  | "missing"
+  | "unavailable"
+  | "format_mismatch"
+  | "no_active_tracked_announcement"
+  | "stale_saved_pointer";
+
+type SyncStatusMessageResolution = {
+  message: any | null;
+  automaticReason: AutomaticSyncLookupReason | null;
+};
+
 function parseActiveSyncPost(
   raw: string | null
 ): { channelId: string; messageId: string } | null {
@@ -125,42 +146,267 @@ function parseActiveSyncPost(
   }
 }
 
+function isDefinitelyMissingDiscordError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    code?: unknown;
+  };
+  const code = String(candidate.code ?? "").trim();
+  return code === "10008";
+}
+
+function automaticLookupFailureMessage(reason: AutomaticSyncLookupReason): string {
+  switch (reason) {
+    case "unavailable":
+      return "An active sync-time announcement is tracked, but Discord could not make it available right now. Check the bot's channel permissions, try again, or provide its `message-id`.";
+    case "format_mismatch":
+      return "The tracked sync-time announcement was found, but its message format is not recognized. Try again or provide its `message-id`.";
+    case "missing":
+    case "deleted":
+      return "The active sync-time announcement is tracked as missing or deleted in Discord. Try again or provide its `message-id`.";
+    case "expired":
+      return "No active sync-time announcement is available because the tracked announcement has expired. Post a new one, or provide a message ID for an older post.";
+    case "stale_saved_pointer":
+    case "no_active_tracked_announcement":
+    default:
+      return "No active tracked sync-time announcement could be resolved. Post one with `/sync time post`, or provide its `message-id`.";
+  }
+}
+
+function automaticLookupReasonFromFetchOutcome(
+  outcome: AutomaticSyncMessageFetchOutcome,
+): Exclude<AutomaticSyncLookupReason, "active" | "expired" | "deleted" | "no_active_tracked_announcement" | "stale_saved_pointer"> {
+  return outcome === "available" ? "unavailable" : outcome;
+}
+
+function logAutomaticSyncLookup(input: {
+  guildId: string;
+  reason: AutomaticSyncLookupReason;
+  rootMessageId?: string | null;
+  rootStatus?: string | null;
+  savedMessageId?: string | null;
+  savedPointerMatchesRoot?: boolean | null;
+}): void {
+  console.info(
+    `[sync-status] automatic_lookup guild_id=${input.guildId} result=${input.reason} root_message_id=${input.rootMessageId ?? "none"} root_status=${input.rootStatus ?? "none"} saved_message_id=${input.savedMessageId ?? "none"} saved_pointer_matches_root=${input.savedPointerMatchesRoot === null || input.savedPointerMatchesRoot === undefined ? "unknown" : input.savedPointerMatchesRoot}`,
+  );
+}
+
 async function resolveStoredActiveSyncMessage(
   context: { guild: Guild | null },
   settings: SettingsService
-) {
+): Promise<SyncStatusMessageResolution> {
   const guild = context.guild;
-  if (!guild) return null;
+  if (!guild) {
+    return { message: null, automaticReason: "no_active_tracked_announcement" };
+  }
   const guildId = guild.id;
 
-  const fetchTrackedMessage = async (channelId: string, messageId: string) => {
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (!channel?.isTextBased() || !("messages" in channel)) {
-      return null;
+  const fetchTrackedMessage = async (
+    channelId: string,
+    messageId: string,
+  ): Promise<{ message: any | null; outcome: AutomaticSyncMessageFetchOutcome }> => {
+    let channel: any | null;
+    try {
+      channel = await guild.channels.fetch(channelId);
+    } catch {
+      return { message: null, outcome: "unavailable" };
     }
-    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (!channel?.isTextBased?.() || !("messages" in channel)) {
+      return { message: null, outcome: "unavailable" };
+    }
+
+    let message: any | null;
+    try {
+      message = await channel.messages.fetch(messageId);
+    } catch (error) {
+      return {
+        message: null,
+        outcome: isDefinitelyMissingDiscordError(error) ? "missing" : "unavailable",
+      };
+    }
+    if (!message) {
+      return { message: null, outcome: "unavailable" };
+    }
     if (!message || !message.author.bot || !isBotSyncTimeMessage(message.content)) {
-      return null;
+      return { message: null, outcome: "format_mismatch" };
     }
-    return message;
+    return { message, outcome: "available" };
   };
 
   const latestTracked = await trackedMessageService.resolveLatestActiveSyncPost(guildId);
+  let stored: { channelId: string; messageId: string } | null = null;
+  try {
+    stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
+  } catch {
+    stored = null;
+  }
+  const savedPointerMatchesRoot =
+    latestTracked && stored
+      ? latestTracked.channelId === stored.channelId && latestTracked.messageId === stored.messageId
+      : latestTracked
+        ? false
+        : null;
+
   if (latestTracked) {
-    const trackedMessage = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
-    if (trackedMessage) return trackedMessage;
-    await trackedMessageService.markMessageDeleted(latestTracked.messageId);
-    return null;
+    if (
+      latestTracked.guildId !== guildId ||
+      latestTracked.featureType !== "SYNC_TIME_POST" ||
+      latestTracked.referenceId !== null ||
+      latestTracked.status !== "ACTIVE"
+    ) {
+      const reason: AutomaticSyncLookupReason =
+        latestTracked.status === "EXPIRED"
+          ? "expired"
+          : latestTracked.status === "DELETED"
+            ? "deleted"
+            : "no_active_tracked_announcement";
+      logAutomaticSyncLookup({
+        guildId,
+        reason,
+        rootMessageId: latestTracked.messageId,
+        rootStatus: latestTracked.status,
+        savedMessageId: stored?.messageId,
+        savedPointerMatchesRoot,
+      });
+      return { message: null, automaticReason: reason };
+    }
+
+    const expiresAtMs = latestTracked.expiresAt?.getTime?.() ?? NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      logAutomaticSyncLookup({
+        guildId,
+        reason: "expired",
+        rootMessageId: latestTracked.messageId,
+        rootStatus: latestTracked.status,
+        savedMessageId: stored?.messageId,
+        savedPointerMatchesRoot,
+      });
+      return { message: null, automaticReason: "expired" };
+    }
+
+    const fetched = await fetchTrackedMessage(latestTracked.channelId, latestTracked.messageId);
+    if (fetched.message) {
+      logAutomaticSyncLookup({
+        guildId,
+        reason: "active",
+        rootMessageId: latestTracked.messageId,
+        rootStatus: latestTracked.status,
+        savedMessageId: stored?.messageId,
+        savedPointerMatchesRoot,
+      });
+      return { message: fetched.message, automaticReason: "active" };
+    }
+
+    if (fetched.outcome === "missing") {
+      await trackedMessageService.markMessageDeleted(latestTracked.messageId).catch((error) => {
+        console.error(
+          `[sync-status] automatic_lookup_delete_mark_failed guild_id=${guildId} message_id=${latestTracked.messageId} error=${formatError(error)}`,
+        );
+      });
+    }
+    const reason = automaticLookupReasonFromFetchOutcome(fetched.outcome);
+    logAutomaticSyncLookup({
+      guildId,
+      reason,
+      rootMessageId: latestTracked.messageId,
+      rootStatus: latestTracked.status,
+      savedMessageId: stored?.messageId,
+      savedPointerMatchesRoot,
+    });
+    return { message: null, automaticReason: reason };
   }
 
-  const stored = parseActiveSyncPost(await settings.get(activeSyncPostKey(guildId)));
-  if (stored) {
-    const storedMessage = await fetchTrackedMessage(stored.channelId, stored.messageId);
-    if (storedMessage) return storedMessage;
-    await settings.delete(activeSyncPostKey(guildId));
+  if (!stored) {
+    logAutomaticSyncLookup({ guildId, reason: "no_active_tracked_announcement" });
+    return { message: null, automaticReason: "no_active_tracked_announcement" };
   }
 
-  return null;
+  let storedTracked: any | null | undefined;
+  try {
+    storedTracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(stored.messageId);
+  } catch (error) {
+    console.error(
+      `[sync-status] automatic_lookup_tracking_read_failed guild_id=${guildId} message_id=${stored.messageId} error=${formatError(error)}`,
+    );
+    logAutomaticSyncLookup({
+      guildId,
+      reason: "unavailable",
+      savedMessageId: stored.messageId,
+    });
+    return { message: null, automaticReason: "unavailable" };
+  }
+
+  if (
+    storedTracked &&
+    (storedTracked.guildId !== guildId ||
+      storedTracked.featureType !== "SYNC_TIME_POST" ||
+      storedTracked.referenceId !== null ||
+      storedTracked.channelId !== stored.channelId ||
+      storedTracked.status !== "ACTIVE")
+  ) {
+    const reason: AutomaticSyncLookupReason =
+      storedTracked.status === "EXPIRED"
+        ? "expired"
+        : storedTracked.status === "DELETED"
+          ? "deleted"
+          : "stale_saved_pointer";
+    logAutomaticSyncLookup({
+      guildId,
+      reason,
+      rootMessageId: storedTracked.messageId,
+      rootStatus: storedTracked.status,
+      savedMessageId: stored.messageId,
+    });
+    return { message: null, automaticReason: reason };
+  }
+
+  if (storedTracked) {
+    const expiresAtMs = storedTracked.expiresAt?.getTime?.() ?? NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      logAutomaticSyncLookup({
+        guildId,
+        reason: "expired",
+        rootMessageId: storedTracked.messageId,
+        rootStatus: storedTracked.status,
+        savedMessageId: stored.messageId,
+      });
+      return { message: null, automaticReason: "expired" };
+    }
+  }
+
+  const storedMessage = await fetchTrackedMessage(stored.channelId, stored.messageId);
+  if (storedMessage.message) {
+    logAutomaticSyncLookup({
+      guildId,
+      reason: "active",
+      rootMessageId: storedTracked?.messageId ?? null,
+      rootStatus: storedTracked?.status ?? null,
+      savedMessageId: stored.messageId,
+    });
+    return { message: storedMessage.message, automaticReason: "active" };
+  }
+
+  if (storedMessage.outcome === "missing") {
+    if (storedTracked?.status === "ACTIVE") {
+      await trackedMessageService.markMessageDeleted(stored.messageId).catch((error) => {
+        console.error(
+          `[sync-status] automatic_lookup_delete_mark_failed guild_id=${guildId} message_id=${stored.messageId} error=${formatError(error)}`,
+        );
+      });
+    }
+    await settings.delete(activeSyncPostKey(guildId)).catch(() => undefined);
+  }
+
+  const reason = automaticLookupReasonFromFetchOutcome(storedMessage.outcome);
+  logAutomaticSyncLookup({
+    guildId,
+    reason,
+    rootMessageId: storedTracked?.messageId ?? null,
+    rootStatus: storedTracked?.status ?? null,
+    savedMessageId: stored.messageId,
+  });
+  return { message: null, automaticReason: reason };
 }
 
 async function resolveReusableSameEpochSyncAnnouncement(input: {
@@ -329,10 +575,10 @@ async function resolveSyncStatusMessage(
   interaction: ChatInputCommandInteraction,
   settings: SettingsService,
   explicitMessageId: string | null
-) {
+): Promise<SyncStatusMessageResolution> {
   if (explicitMessageId) {
     const guild = interaction.guild;
-    if (!guild) return null;
+    if (!guild) return { message: null, automaticReason: null };
     const channels = guild.channels.cache.filter(
       (c) => c.isTextBased() && "messages" in c
     );
@@ -340,14 +586,12 @@ async function resolveSyncStatusMessage(
       const found = await (guildChannel as any).messages
         ?.fetch(explicitMessageId)
         .catch(() => null);
-      if (found) return found;
+      if (found) return { message: found, automaticReason: null };
     }
-    return null;
+    return { message: null, automaticReason: null };
   }
 
-  const storedActiveMessage = await resolveStoredActiveSyncMessage(interaction, settings);
-  if (storedActiveMessage) return storedActiveMessage;
-  return null;
+  return resolveStoredActiveSyncMessage(interaction, settings);
 }
 
 async function handleSyncSpinStatusSubcommand(
@@ -364,15 +608,18 @@ async function handleSyncSpinStatusSubcommand(
     return;
   }
 
-  const message = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
-  if (!message) {
+  const resolution = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
+  if (!resolution.message) {
     await interaction.editReply(
       explicitMessageId
         ? "Could not find that message ID in this channel."
-        : "Could not find an active sync-time message. Post one with `/sync time post` first."
+        : automaticLookupFailureMessage(
+            resolution.automaticReason ?? "no_active_tracked_announcement",
+          )
     );
     return;
   }
+  const message = resolution.message;
 
   const guild = interaction.guild;
   if (!guild) {
@@ -511,15 +758,18 @@ async function handleSyncClaimStatusSubcommand(
     return;
   }
 
-  const message = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
-  if (!message) {
+  const resolution = await resolveSyncStatusMessage(interaction, settings, explicitMessageId);
+  if (!resolution.message) {
     await interaction.editReply(
       explicitMessageId
         ? "Could not find that message ID in this channel."
-        : "Could not find an active sync-time message. Post one with `/sync time post` first."
+        : automaticLookupFailureMessage(
+            resolution.automaticReason ?? "no_active_tracked_announcement",
+          )
     );
     return;
   }
+  const message = resolution.message;
 
   const guild = interaction.guild;
   if (!guild) {

@@ -1,6 +1,7 @@
 import { ApplicationCommandOptionType, ChannelType } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
+import { BotLogChannelService } from "../src/services/BotLogChannelService";
 import { SettingsService } from "../src/services/SettingsService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 import * as syncTimeFwaClanListViewService from "../src/services/SyncTimeFwaClanListViewService";
@@ -32,6 +33,13 @@ const prismaMock = vi.hoisted(() => ({
   },
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
+  },
+  trackedMessage: {
+    findMany: vi.fn(),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    upsert: vi.fn(),
   },
 }));
 
@@ -448,6 +456,12 @@ describe("/sync post status reaction scan", () => {
       if (key === "command_roles:post:sync:time") return null;
       return null;
     });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
+    prismaMock.trackedMessage.update.mockResolvedValue(undefined);
+    prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
+    vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "fetchSyncTrackedMessageWithClaims").mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null);
   });
@@ -671,6 +685,512 @@ describe("/sync post status reaction scan", () => {
       .map((call) => call[0])
       .find((value) => value && typeof value === "object" && "embeds" in value) as any;
     expect(payload.embeds[0].toJSON().title).toBe("Sync Spin Status");
+  });
+
+  it("keeps an active root with a passed expiration excluded from automatic lookup", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-19T16:00:00.000Z"));
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    const root = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: message.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: new Date("2026-03-19T15:59:00.000Z"),
+    };
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(root as any);
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(channel.messages.fetch).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("tracked announcement has expired"),
+    );
+    expect(root.status).toBe("ACTIVE");
+    vi.useRealTimers();
+  });
+
+  it("does not use an expired saved-pointer target when no active root exists", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    const pointerChannelId = "123456789012345679";
+    interaction.guild.channels.cache.set(
+      pointerChannelId,
+      interaction.guild.channels.cache.get("channel-1"),
+    );
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) =>
+      key === "active_sync_post:guild-1"
+        ? JSON.stringify({ channelId: pointerChannelId, messageId: message.id })
+        : null,
+    );
+    const expiredPointerTarget = {
+      guildId: "guild-1",
+      channelId: pointerChannelId,
+      messageId: message.id,
+      featureType: "SYNC_TIME_POST",
+      status: "EXPIRED",
+      referenceId: null,
+      expiresAt: new Date("2026-03-19T15:59:00.000Z"),
+    };
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValueOnce(
+      expiredPointerTarget as any,
+    );
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(channel.messages.fetch).not.toHaveBeenCalled();
+    expect(expiredPointerTarget.status).toBe("EXPIRED");
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("tracked announcement has expired"),
+    );
+  });
+
+  it("preserves tracking after a temporary automatic Discord fetch error", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      ...message,
+      messageId: message.id,
+      guildId: "guild-1",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    interaction.guild.channels.fetch.mockRejectedValueOnce(new Error("temporary Discord outage"));
+    const markDeleted = vi
+      .spyOn(trackedMessageService, "markMessageDeleted")
+      .mockResolvedValue(undefined);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(markDeleted).not.toHaveBeenCalled();
+    expect(interaction.guild.channels.fetch).toHaveBeenCalledWith("channel-1");
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Discord could not make it available right now"),
+    );
+  });
+
+  it("preserves tracking when automatic lookup lacks Discord permissions", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      ...message,
+      messageId: message.id,
+      guildId: "guild-1",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+    channel.messages.fetch.mockRejectedValueOnce({ code: 50013, status: 403 });
+    const markDeleted = vi
+      .spyOn(trackedMessageService, "markMessageDeleted")
+      .mockResolvedValue(undefined);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(markDeleted).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Check the bot's channel permissions"),
+    );
+  });
+
+  it("does not delete tracking when the fetched message has an invalid format", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "This is not a sync-time announcement",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      ...message,
+      messageId: message.id,
+      guildId: "guild-1",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    const markDeleted = vi
+      .spyOn(trackedMessageService, "markMessageDeleted")
+      .mockResolvedValue(undefined);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(markDeleted).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("message format is not recognized"),
+    );
+  });
+
+  it("does not revive a stale saved pointer to a replaced sync post", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    const pointerChannelId = "123456789012345679";
+    interaction.guild.channels.cache.set(pointerChannelId, interaction.guild.channels.cache.get("channel-1"));
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) =>
+      key === "active_sync_post:guild-1"
+        ? JSON.stringify({ channelId: pointerChannelId, messageId: message.id })
+        : null,
+    );
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValueOnce({
+      guildId: "guild-1",
+      channelId: pointerChannelId,
+      messageId: message.id,
+      featureType: "SYNC_TIME_POST",
+      status: "REPLACED",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(channel.messages.fetch).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("No active tracked sync-time announcement"),
+    );
+  });
+
+  it("uses a valid saved pointer only when no active root exists", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    const pointerChannelId = "123456789012345679";
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+    interaction.guild.channels.cache.set(pointerChannelId, channel);
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce(null);
+    vi.mocked(SettingsService.prototype.get).mockImplementation(async (key: string) =>
+      key === "active_sync_post:guild-1"
+        ? JSON.stringify({ channelId: pointerChannelId, messageId: message.id })
+        : null,
+    );
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValueOnce(null);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(channel.messages.fetch).toHaveBeenCalledWith(message.id);
+    const payload = interaction.editReply.mock.calls
+      .map((call) => call[0])
+      .find((value) => value && typeof value === "object" && "embeds" in value) as any;
+    expect(payload.embeds[0].toJSON().title).toBe("Sync Claim Status");
+  });
+
+  it.each([10008, "10008"])(
+    "marks only a definitively missing automatic message as deleted for code %s",
+    async (code) => {
+      const message = {
+        id: "123456789012345678",
+        channelId: "channel-1",
+        author: { bot: true },
+        content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+        reactions: { cache: new Map() },
+      };
+      const interaction = makeStatusInteraction({
+        group: "post",
+        messageId: "",
+        message,
+        membersById: {},
+      });
+      vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+        ...message,
+        messageId: message.id,
+        guildId: "guild-1",
+        featureType: "SYNC_TIME_POST",
+        status: "ACTIVE",
+        referenceId: null,
+        expiresAt: null,
+      } as any);
+      const channel = interaction.guild.channels.cache.get("channel-1") as any;
+      channel.messages.fetch.mockRejectedValueOnce({ code, status: 404 });
+      const markDeleted = vi
+        .spyOn(trackedMessageService, "markMessageDeleted")
+        .mockResolvedValue(undefined);
+
+      await Post.run({} as any, interaction as any, {} as any);
+
+      expect(markDeleted).toHaveBeenCalledWith(message.id);
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("tracked as missing or deleted"),
+      );
+    },
+  );
+
+  it.each([
+    ["Unknown Channel", { code: 10003, status: 404 }],
+    ["generic HTTP 404", { status: 404 }],
+  ])("preserves tracking for %s automatic lookup failures", async (_label, error) => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      ...message,
+      messageId: message.id,
+      guildId: "guild-1",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+    channel.messages.fetch.mockRejectedValueOnce(error);
+    const markDeleted = vi
+      .spyOn(trackedMessageService, "markMessageDeleted")
+      .mockResolvedValue(undefined);
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(markDeleted).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Discord could not make it available right now"),
+    );
+  });
+
+  it("does not let a transient status lookup failure suppress the scheduled sync status post", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-19T15:15:00.000Z"));
+
+    const root = {
+      id: "tracked-root-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "123456789012345678",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      remindAt: new Date("2026-03-19T15:25:00.000Z"),
+      expiresAt: new Date("2026-03-19T17:30:00.000Z"),
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1742407800,
+        roleId: "456",
+        reminderSentAt: null,
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+      claims: [],
+    };
+    let child: any = null;
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockImplementation(
+      async (guildId: string) => (guildId === root.guildId && root.status === "ACTIVE" ? root : null) as any,
+    );
+    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockImplementation(
+      async (messageId: string) => (messageId === root.messageId ? root : child),
+    );
+    const markDeleted = vi
+      .spyOn(trackedMessageService, "markMessageDeleted")
+      .mockImplementation(async (messageId: string) => {
+        if (messageId === root.messageId) root.status = "DELETED";
+      });
+
+    const message = {
+      id: root.messageId,
+      channelId: root.channelId,
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    const sourceChannel = interaction.guild.channels.cache.get(root.channelId) as any;
+    sourceChannel.messages.fetch.mockRejectedValueOnce(new Error("temporary Discord outage"));
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(markDeleted).not.toHaveBeenCalled();
+    expect(root.status).toBe("ACTIVE");
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Discord could not make it available right now"),
+    );
+
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (
+        where?.status === "ACTIVE" &&
+        where?.referenceId === null &&
+        root.status === "ACTIVE" &&
+        root.remindAt <= new Date()
+      ) {
+        return [root];
+      }
+      return [];
+    });
+    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.trackedMessage.update.mockImplementation(async ({ data }: any) => {
+      root.metadata = { ...root.metadata, ...(data?.metadata ?? {}) };
+      return root;
+    });
+    prismaMock.trackedMessage.upsert.mockImplementation(async ({ create }: any) => {
+      child = { ...create };
+      return child;
+    });
+    const statusSend = vi.fn().mockResolvedValue({
+      id: "123456789012345679",
+      react: vi.fn().mockResolvedValue(undefined),
+    });
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue({
+          channels: {
+            fetch: vi.fn().mockResolvedValue({
+              isTextBased: () => true,
+              send: statusSend,
+            }),
+          },
+        }),
+      },
+      users: {
+        fetch: vi.fn().mockResolvedValue(null),
+      },
+    } as any;
+
+    vi.setSystemTime(new Date("2026-03-19T15:25:00.000Z"));
+    const posted = await trackedMessageService.processDueSyncReminders(client);
+
+    expect(posted).toBe(1);
+    expect(root.status).toBe("ACTIVE");
+    expect(statusSend).toHaveBeenCalledTimes(1);
+    expect(child).toMatchObject({
+      messageId: "123456789012345679",
+      status: "ACTIVE",
+      referenceId: root.messageId,
+    });
+    vi.useRealTimers();
+  });
+
+  it("keeps automatic lookup isolated to the interaction guild", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: { cache: new Map() },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: "",
+      message,
+      membersById: {},
+    });
+    vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValueOnce({
+      ...message,
+      messageId: message.id,
+      guildId: "guild-2",
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+    } as any);
+    const channel = interaction.guild.channels.cache.get("channel-1") as any;
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    expect(channel.messages.fetch).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("No active tracked sync-time announcement"),
+    );
   });
 });
 
