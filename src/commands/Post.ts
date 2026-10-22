@@ -150,14 +150,9 @@ function isDefinitelyMissingDiscordError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as {
     code?: unknown;
-    status?: unknown;
-    message?: unknown;
   };
   const code = String(candidate.code ?? "").trim();
-  if (code === "10003" || code === "10008") return true;
-  const status = Number(candidate.status);
-  if (status === 404) return true;
-  return /unknown\s+(?:message|channel)/i.test(String(candidate.message ?? ""));
+  return code === "10008";
 }
 
 function automaticLookupFailureMessage(reason: AutomaticSyncLookupReason): string {
