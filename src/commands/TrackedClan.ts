@@ -68,6 +68,13 @@ import {
   type CwlTrackedClanDetailedDisplayRow,
 } from "../services/TrackedClanListService";
 import {
+  loadTrackedClanLeadersView,
+  refreshTrackedClanLeadersWithQueueContext,
+  type TrackedClanLeadersClan,
+  type TrackedClanLeadersRegistry,
+  type TrackedClanLeadersView,
+} from "../services/TrackedClanLeadersService";
+import {
   listTrackedClanRepTagsForClanTags,
   listTrackedClanRepDisplayRowsForClanTags,
   listTrackedClanRepPlayerTags,
@@ -417,6 +424,140 @@ function buildCombinedTrackedClanListEmbed(total: number, description: string) {
     .setTitle(`Tracked Clans (All Types) (${total})`)
     .setDescription(description)
     .setColor(0x57f287);
+}
+
+function escapeTrackedClanLeaderPlayerName(input: string): string {
+  return String(input ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/([`*_{}[\]()#+\-.!|>~])/g, "\\$1");
+}
+
+function formatTrackedClanLeaderFreshness(clan: TrackedClanLeadersClan): string {
+  const observedAt = clan.observedAt ? Math.floor(clan.observedAt.getTime() / 1000) : null;
+  const timestamp = observedAt ? ` <t:${observedAt}:R>` : "";
+  if (clan.freshness === "CURRENT") return `CURRENT — updated${timestamp}`;
+  if (clan.freshness === "STALE") return `STALE — last persisted roster${timestamp}`;
+  if (clan.freshness === "REFRESH_FAILED") {
+    return `REFRESH FAILED — persisted roster not confirmed current${timestamp}`;
+  }
+  return "UNAVAILABLE — no persisted current roster data";
+}
+
+function buildTrackedClanLeadersClanLines(clan: TrackedClanLeadersClan): string[] {
+  const title = buildClanProfileMarkdownLink(clan.name, clan.clanTag);
+  const badge = clan.clanBadge ?? clan.registryIcon;
+  const league = clan.leagueLabel ? ` | ${escapeTrackedClanLeaderPlayerName(clan.leagueLabel)}` : "";
+  const lines = [`${badge} ${title} \`${clan.clanTag}\`${league}`, `Status: ${formatTrackedClanLeaderFreshness(clan)}`];
+
+  if (clan.freshness === "UNAVAILABLE") {
+    lines.push("Leadership: unavailable — roster data cannot establish current leadership.");
+    return lines;
+  }
+
+  if (clan.leaderGroups.length === 0) {
+    lines.push(
+      clan.freshness === "CURRENT"
+        ? "Leadership: no current leader/co-leader accounts found."
+        : "Leadership: no qualifying accounts in the persisted roster snapshot.",
+    );
+    return lines;
+  }
+
+  if (clan.freshness === "CURRENT") {
+    lines.push("Leadership:");
+  } else {
+    lines.push("Leadership (persisted; not confirmed current):");
+  }
+
+  for (const group of clan.leaderGroups) {
+    const accounts = group.accounts
+      .map(
+        (account) =>
+          `${account.role === "leader" ? "👑 Leader" : "Co-leader"}: ${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
+      )
+      .join("; ");
+    if (group.discordUserId) {
+      lines.push(`${group.hasLeader ? "👑 Leader" : "Co-leaders"}: <@${group.discordUserId}> — ${accounts}`);
+      continue;
+    }
+    for (const account of group.accounts) {
+      lines.push(
+        `${account.role === "leader" ? "👑 Leader" : "Co-leader"}: ${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
+      );
+    }
+  }
+
+  return lines;
+}
+
+function splitTrackedClanLeadersClanUnits(registry: TrackedClanLeadersRegistry, clan: TrackedClanLeadersClan): string[] {
+  const maxChars = 3800;
+  const lines = buildTrackedClanLeadersClanLines(clan);
+  const clanHeader = lines[0] ?? `${clan.registryIcon} ${clan.clanTag}`;
+  const body = lines.slice(1);
+  const chunks: string[] = [];
+  let currentBody: string[] = [];
+  let currentLength = `**${registry}**\n${clanHeader}`.length;
+
+  for (const line of body) {
+    const nextLength = currentLength + 1 + line.length;
+    if (currentBody.length > 0 && nextLength > maxChars) {
+      chunks.push(`**${registry}**\n${clanHeader}\n${currentBody.join("\n")}`);
+      currentBody = [];
+      currentLength = `**${registry} (continued)**\n${clanHeader} (continued)`.length;
+    }
+    currentBody.push(line);
+    currentLength += 1 + line.length;
+  }
+  if (currentBody.length > 0 || chunks.length === 0) {
+    const heading = chunks.length > 0 ? `**${registry} (continued)**` : `**${registry}**`;
+    const title = chunks.length > 0 ? `${clanHeader} (continued)` : clanHeader;
+    chunks.push(`${heading}\n${title}${currentBody.length > 0 ? `\n${currentBody.join("\n")}` : ""}`);
+  }
+  return chunks;
+}
+
+export function buildTrackedClanLeadersPages(view: TrackedClanLeadersView): string[] {
+  const units = view.sections.flatMap((section) =>
+    section.clans.flatMap((clan) => splitTrackedClanLeadersClanUnits(section.registry, clan)),
+  );
+  const pages: string[] = [];
+  let current = "";
+  for (const unit of units) {
+    const candidate = current ? `${current}\n\n${unit}` : unit;
+    if (current && candidate.length > 3900) {
+      pages.push(current);
+      current = unit;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) pages.push(current);
+  return pages.length > 0 ? pages : ["No tracked clans in the database."];
+}
+
+function buildTrackedClanLeadersEmbed(view: TrackedClanLeadersView, pages: string[], page: number) {
+  return new EmbedBuilder()
+    .setTitle(`Tracked Clan Leaders (${view.totalClanCount})`)
+    .setDescription(pages[page] ?? pages[0] ?? "")
+    .setColor(0x57f287)
+    .setFooter({ text: `Page ${page + 1}/${pages.length}` });
+}
+
+function buildTrackedClanLeadersComponents(prefix: string, page: number, pages: number, refreshing: boolean) {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  if (pages > 1) rows.push(buildTrackedClanListRow(prefix, page, pages, refreshing));
+  rows.push(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${prefix}:refresh`)
+        .setEmoji("🔄")
+        .setLabel(refreshing ? "Refreshing Leaders..." : "Refresh Leaders")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(refreshing),
+    ),
+  );
+  return rows;
 }
 
 function formatTagListForSummary(tags: string[]): string {
@@ -1205,6 +1346,113 @@ export async function refreshRaidTrackedClanListWithQueueContext(input: {
   );
 }
 
+async function runTrackedClanLeadersList(input: {
+  interaction: ChatInputCommandInteraction;
+  cocService: CoCService;
+  registry: TrackedClanLeadersRegistry | null;
+}): Promise<void> {
+  let view = await loadTrackedClanLeadersView({ registry: input.registry });
+  if (view.totalClanCount === 0) {
+    await safeReply(input.interaction, {
+      ephemeral: true,
+      content: input.registry
+        ? `No ${input.registry} tracked clans in the database.`
+        : "No tracked clans in the database.",
+    });
+    return;
+  }
+
+  let pages = buildTrackedClanLeadersPages(view);
+  let page = 0;
+  let refreshing = false;
+  const paginatorPrefix = `tracked-clan-list:leaders:${input.registry ?? "all"}:${input.interaction.id}`;
+  const allowedMentions = { users: [], roles: [] };
+  const render = () => ({
+    embeds: [buildTrackedClanLeadersEmbed(view, pages, page)],
+    components: buildTrackedClanLeadersComponents(paginatorPrefix, page, pages.length, refreshing),
+    allowedMentions,
+  });
+
+  await input.interaction.editReply(render());
+  const message = await input.interaction.fetchReply();
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: 10 * 60 * 1000,
+    filter: (button: ButtonInteraction) =>
+      button.user.id === input.interaction.user.id &&
+      (button.customId === `${paginatorPrefix}:refresh` ||
+        button.customId === `${paginatorPrefix}:prev` ||
+        button.customId === `${paginatorPrefix}:next`),
+  });
+
+  collector.on("collect", async (button: ButtonInteraction) => {
+    try {
+      if (button.user.id !== input.interaction.user.id) {
+        await button.reply({
+          content: "Only the command user can control this leaders view.",
+          ephemeral: true,
+          allowedMentions,
+        });
+        return;
+      }
+      if (button.customId === `${paginatorPrefix}:refresh`) {
+        if (refreshing) return;
+        refreshing = true;
+        await button.update(render());
+        try {
+          const refreshResult = await refreshTrackedClanLeadersWithQueueContext({
+            cocService: input.cocService,
+            registry: input.registry,
+            season: view.season,
+          });
+          view = refreshResult.view;
+          pages = buildTrackedClanLeadersPages(view);
+          page = Math.min(page, pages.length - 1);
+          refreshing = false;
+          await input.interaction.editReply(render());
+          if (refreshResult.blockedReason === "MIRROR_MODE_DISABLED" || refreshResult.failedClanTags.length > 0) {
+            const failureMessage = refreshResult.blockedReason === "MIRROR_MODE_DISABLED"
+              ? "Leaders refresh is disabled while polling mode is mirror. Persisted freshness was preserved."
+              : `Failed to refresh leadership roster for: ${formatTagListForSummary(refreshResult.failedClanTags)}`;
+            await button.followUp({ content: failureMessage, ephemeral: true, allowedMentions });
+          }
+        } catch (error) {
+          refreshing = false;
+          console.error(`tracked-clan leaders refresh failed: ${formatError(error)}`);
+          await input.interaction.editReply(render());
+          await button.followUp({
+            content: "Failed to refresh leadership roster data. Persisted results were kept.",
+            ephemeral: true,
+            allowedMentions,
+          });
+        }
+        return;
+      }
+
+      if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+      if (button.customId.endsWith(":next")) page = Math.min(pages.length - 1, page + 1);
+      await button.update(render());
+    } catch (error) {
+      console.error(`tracked-clan leaders paginator failed: ${formatError(error)}`);
+      if (!button.replied && !button.deferred) {
+        await button.reply({
+          content: "Failed to update the tracked clan leaders view.",
+          ephemeral: true,
+          allowedMentions,
+        });
+      }
+    }
+  });
+
+  collector.on("end", async () => {
+    try {
+      await input.interaction.editReply({ ...render(), components: [], allowedMentions });
+    } catch {
+      // no-op
+    }
+  });
+}
+
 async function normalizeClanBadgeInput(
   interaction: ChatInputCommandInteraction,
   input: string
@@ -1483,6 +1731,7 @@ export const TrackedClan: Command = {
           choices: [
             { name: "Minimal", value: "minimal" },
             { name: "Detailed", value: "detailed" },
+            { name: "Leaders", value: "leaders" },
           ],
         },
         {
@@ -2131,6 +2380,7 @@ export const TrackedClan: Command = {
         const requestedDisplay = interaction.options.getString("display", false) as
           | "minimal"
           | "detailed"
+          | "leaders"
           | null;
         const tagInput = interaction.options.getString("tag", false);
         if (tagInput !== null) {
@@ -2167,6 +2417,14 @@ export const TrackedClan: Command = {
           return;
         }
         const displayMode = listType === null ? null : requestedDisplay ?? "minimal";
+        if (requestedDisplay === "leaders") {
+          await runTrackedClanLeadersList({
+            interaction,
+            cocService,
+            registry: listType as TrackedClanLeadersRegistry | null,
+          });
+          return;
+        }
         if (listType === null) {
           const season = resolveCurrentCwlSeasonKey();
           const [fwaTracked, cwlTracked, raidTracked] = await Promise.all([
