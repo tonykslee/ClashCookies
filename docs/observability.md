@@ -111,6 +111,8 @@ Queue observability now includes:
 - queue wait timing telemetry for interactive and background CoC work
 - stale background skip counts and logs
 - degraded-delay and 429 recovery logs from the shared CoC pacing owner
+- bounded `[raids-overview]` history and dependency summaries with clan/request counts, successful/empty/failed history counts, failure codes, selected weekend, defender metadata duration, layout-mark lookup duration, and defender-upgrade lookup duration; `[raids]` overview completion/failure events include source, clan count, selected weekend, outcome, and total command duration
+- CoC requests use an abortable bounded request timeout that starts when a task enters the shared queue, so queued raid-overview requests cannot leave a stalled upstream call holding the interactive queue indefinitely; timeout failures retain the existing API timing/error taxonomy
 - autorole scheduler cadence decision logs with `guild_id`, `cadence_anchor_started_at`, `next_due_at`, `current_time`, `interval_minutes`, and `cadence_reason`; completed scheduled guild runs anchor the cadence, manual refreshes do not reset it, failed scheduled runs do not reset it, and overdue scheduled runs still dispatch with a fresh CoC queue deadline
 - autorole run lifecycle logs with persisted `run_id`, `guild_id`, `run_scope`, `run_trigger`, `scope_target_id`, and final `status` so refresh outcomes are visible without inferring trigger correctness from telemetry
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`

@@ -15,11 +15,37 @@ import { cocRequestQueueService } from "./CoCRequestQueueService";
 import { getCoCQueueContext } from "./CoCQueueContext";
 import { getTelemetryContext } from "./telemetry/context";
 
+const DEFAULT_COC_API_REQUEST_TIMEOUT_MS = 15_000;
+
+function resolveCoCApiRequestTimeoutMs(): number {
+  const configured = Math.trunc(Number(process.env.COC_API_REQUEST_TIMEOUT_MS));
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_COC_API_REQUEST_TIMEOUT_MS;
+}
+
+function createCoCRequestTimeoutError(timeoutMs: number, cause: unknown): Error & {
+  code: string;
+  timeout: boolean;
+  cause: unknown;
+} {
+  const error = new Error(`CoC API request timed out after ${timeoutMs}ms`) as Error & {
+    code: string;
+    timeout: boolean;
+    cause: unknown;
+  };
+  error.code = "ETIMEDOUT";
+  error.timeout = true;
+  error.cause = cause;
+  return error;
+}
+
 export class CoCService {
   private clansApi: ClansApi;
   private playersApi: PlayersApi;
   private readonly cocApiToken: string;
   private readonly cocApiBaseUrl: string;
+  private readonly cocApiRequestTimeoutMs: number;
   private readonly queue = cocRequestQueueService;
 
   /** Purpose: initialize service dependencies. */
@@ -32,10 +58,14 @@ export class CoCService {
         /\/+$/,
         "",
       );
+    this.cocApiRequestTimeoutMs = resolveCoCApiRequestTimeoutMs();
 
     const config = new Configuration({
       apiKey: `Bearer ${token}`,
       basePath: this.cocApiBaseUrl,
+      baseOptions: {
+        timeout: this.cocApiRequestTimeoutMs,
+      },
     });
 
     this.clansApi = new ClansApi(config);
@@ -46,23 +76,39 @@ export class CoCService {
   private async runQueuedRequest<T>(input: {
     operation: string;
     detail: string;
-    run: () => Promise<T>;
+    run: (signal: AbortSignal) => Promise<T>;
   }): Promise<T> {
     const queueContext = getCoCQueueContext();
     if (!queueContext) {
       throw new Error(`COC_QUEUE_CONTEXT_MISSING:${input.operation}`);
     }
-    return this.queue.enqueue({
-      operation: input.operation,
-      detail: input.detail,
-      priority: queueContext.priority,
-      source: queueContext.source,
-      scheduledAtMs: queueContext.scheduledAtMs,
-      nextScheduledAtMs: queueContext.nextScheduledAtMs,
-      freshnessDeadlineMs: queueContext.freshnessDeadlineMs,
-      telemetryContext: getTelemetryContext(),
-      run: input.run,
-    });
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.cocApiRequestTimeoutMs);
+
+    try {
+      return await this.queue.enqueue({
+        operation: input.operation,
+        detail: input.detail,
+        priority: queueContext.priority,
+        source: queueContext.source,
+        scheduledAtMs: queueContext.scheduledAtMs,
+        nextScheduledAtMs: queueContext.nextScheduledAtMs,
+        freshnessDeadlineMs: queueContext.freshnessDeadlineMs,
+        telemetryContext: getTelemetryContext(),
+        run: () => input.run(controller.signal),
+      });
+    } catch (err) {
+      if (timedOut) {
+        throw createCoCRequestTimeoutError(this.cocApiRequestTimeoutMs, err);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   /** Purpose: get current clan-capital raid seasons for one clan tag (newest first). */
@@ -76,13 +122,15 @@ export class CoCService {
       const response = await this.runQueuedRequest({
         operation: "getClanCapitalRaidSeasons",
         detail: `tag=${clanTag}`,
-        run: () =>
+        run: (signal) =>
           axios.get(
             `${this.cocApiBaseUrl}/clans/${encodeURIComponent(clanTag)}/capitalraidseasons`,
             {
               headers: {
                 Authorization: `Bearer ${this.cocApiToken}`,
               },
+              signal,
+              timeout: this.cocApiRequestTimeoutMs,
               params: {
                 limit: Math.max(1, Math.trunc(Number(limit) || 1)),
               },
@@ -90,7 +138,14 @@ export class CoCService {
           ),
       });
       const data = response?.data as { items?: ClanCapitalRaidSeason[] } | undefined;
-      const seasons = Array.isArray(data?.items) ? data.items : [];
+      if (!Array.isArray(data?.items)) {
+        const invalidResponse = new Error("CoC API returned an invalid raid-season response") as Error & {
+          code: string;
+        };
+        invalidResponse.code = "COC_INVALID_RESPONSE";
+        throw invalidResponse;
+      }
+      const seasons = data.items;
       recordFetchEvent({
         namespace: "coc",
         operation: "getClanCapitalRaidSeasons",
@@ -123,8 +178,14 @@ export class CoCService {
         detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
         durationMs: Date.now() - startedAtMs,
         status: "failure",
-        errorCategory: failure.errorCategory,
-        errorCode: failure.errorCode,
+        errorCategory:
+          (err as { code?: unknown })?.code === "COC_INVALID_RESPONSE"
+            ? "validation"
+            : failure.errorCategory,
+        errorCode:
+          (err as { code?: unknown })?.code === "COC_INVALID_RESPONSE"
+            ? "COC_INVALID_RESPONSE"
+            : failure.errorCode,
         timeout: failure.timeout,
       });
       if (status) throw new Error(`CoC API error ${status}`);
@@ -140,7 +201,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getClan",
         detail: `tag=${clanTag}`,
-        run: () => this.clansApi.getClan(clanTag),
+        run: (signal) => this.clansApi.getClan(clanTag, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",
@@ -189,7 +250,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getCurrentWar",
         detail: `tag=${clanTag}`,
-        run: () => this.clansApi.getCurrentWar(clanTag),
+        run: (signal) => this.clansApi.getCurrentWar(clanTag, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",
@@ -252,7 +313,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getClanWarLog",
         detail: `tag=${clanTag} limit=${limit}`,
-        run: () => this.clansApi.getClanWarLog(clanTag, limit),
+        run: (signal) => this.clansApi.getClanWarLog(clanTag, limit, undefined, undefined, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",
@@ -289,7 +350,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getClanWarLeagueGroup",
         detail: `tag=${clanTag}`,
-        run: () => this.clansApi.getClanWarLeagueGroup(clanTag),
+        run: (signal) => this.clansApi.getClanWarLeagueGroup(clanTag, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",
@@ -340,7 +401,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getClanWarLeagueWar",
         detail: `warTag=${normalizedWarTag}`,
-        run: () => this.clansApi.getClanWarLeagueWar(normalizedWarTag),
+        run: (signal) => this.clansApi.getClanWarLeagueWar(normalizedWarTag, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",
@@ -395,7 +456,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "getPlayerRaw",
         detail: `tag=${playerTag}`,
-        run: () => this.playersApi.getPlayer(playerTag),
+        run: (signal) => this.playersApi.getPlayer(playerTag, { signal }),
       });
       if (!options?.suppressTelemetry) {
         recordFetchEvent({
@@ -459,7 +520,7 @@ export class CoCService {
       const { data } = await this.runQueuedRequest({
         operation: "verifyPlayerToken",
         detail: `tag=${playerTag}`,
-        run: () => this.playersApi.verifyToken(playerTag, { token: normalizedToken }),
+        run: (signal) => this.playersApi.verifyToken(playerTag, { token: normalizedToken }, { signal }),
       });
       recordFetchEvent({
         namespace: "coc",

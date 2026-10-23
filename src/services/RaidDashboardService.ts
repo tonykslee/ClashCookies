@@ -76,6 +76,7 @@ const RAID_MEDAL_DEFENSE_DISPLAY_CAP = 350;
 const RAID_MEDAL_TOTAL_DISPLAY_CAP = 1970;
 export const RAID_DASHBOARD_HISTORY_LIMIT = 8;
 const RAID_DASHBOARD_CURRENT_SEASON_LIMIT = 2;
+const RAID_DASHBOARD_METADATA_BATCH_SIZE = 4;
 
 export {
   buildRaidIntelDistrictKey,
@@ -93,6 +94,7 @@ export type RaidDashboardCountRow = {
 };
 
 export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCountRow & {
+  raidHistoryStatus?: RaidDashboardHistoryStatus;
   defaultLayoutCount: number | null;
   raidIntelDefenderUpgrades: number | null;
   maxDefenseAttacksUsed: number | null;
@@ -103,6 +105,8 @@ export type RaidDashboardClanRow = RaidTrackedClanDisplayRow & RaidDashboardCoun
   raidIntelMarks?: RaidIntelDistrictLayoutMarkRecord[];
   openDefenseSections?: RaidDashboardDefenseSection[];
 };
+
+export type RaidDashboardHistoryStatus = "available" | "empty" | "failed";
 
 type RaidDashboardMedalEstimate = RaidMedalEstimate & {
   source: "finalized" | "estimated";
@@ -1138,14 +1142,18 @@ function buildRaidDefenseSectionLines(
 
 type RaidDashboardSeasonSnapshot = {
   activeSeason: ClanCapitalRaidSeason | null;
+  historyStatus: RaidDashboardHistoryStatus;
   attackSections: RaidDashboardAttackSection[];
   defenseSections: RaidDashboardDefenseSection[];
   counts: RaidDashboardCountRow;
 };
 
-function emptyRaidDashboardSeasonSnapshot(): RaidDashboardSeasonSnapshot {
+function emptyRaidDashboardSeasonSnapshot(
+  historyStatus: RaidDashboardHistoryStatus = "empty",
+): RaidDashboardSeasonSnapshot {
   return {
     activeSeason: null,
+    historyStatus,
     attackSections: [],
     defenseSections: [],
     counts: {
@@ -1157,17 +1165,44 @@ function emptyRaidDashboardSeasonSnapshot(): RaidDashboardSeasonSnapshot {
   };
 }
 
+type RaidDashboardSeasonHistoryResult = {
+  seasons: ClanCapitalRaidSeason[];
+  status: RaidDashboardHistoryStatus;
+  failureCode?: string;
+};
+
 async function loadRaidDashboardSeasonHistory(input: {
   cocService: CoCService | null;
   clanTag: string;
   limit: number;
-}): Promise<ClanCapitalRaidSeason[]> {
+}): Promise<RaidDashboardSeasonHistoryResult> {
   if (!input.cocService || typeof input.cocService.getClanCapitalRaidSeasons !== "function") {
-    return [];
+    return { seasons: [], status: "failed", failureCode: "COC_SERVICE_UNAVAILABLE" };
   }
-  return input.cocService
-    .getClanCapitalRaidSeasons(formatRaidTrackedClanTag(input.clanTag), input.limit)
-    .catch(() => []);
+  try {
+    const seasons = await input.cocService.getClanCapitalRaidSeasons(
+      formatRaidTrackedClanTag(input.clanTag),
+      input.limit,
+    );
+    if (!Array.isArray(seasons)) {
+      return { seasons: [], status: "failed", failureCode: "INVALID_RESPONSE" };
+    }
+    return {
+      seasons,
+      status: seasons.length > 0 ? "available" : "empty",
+    };
+  } catch (error) {
+    const status = Number(
+      (error as { status?: unknown; response?: { status?: unknown } } | null | undefined)?.status ??
+        (error as { response?: { status?: unknown } } | null | undefined)?.response?.status,
+    );
+    const code = String((error as { code?: unknown } | null | undefined)?.code ?? "").trim();
+    return {
+      seasons: [],
+      status: "failed",
+      failureCode: Number.isFinite(status) && status > 0 ? `HTTP_${Math.trunc(status)}` : code || "UNKNOWN",
+    };
+  }
 }
 
 async function loadRaidDashboardSeasonSnapshot(input: {
@@ -1175,21 +1210,24 @@ async function loadRaidDashboardSeasonSnapshot(input: {
   clanTag: string;
   nowMs: number;
   season?: ClanCapitalRaidSeason | null;
+  historyStatus?: RaidDashboardHistoryStatus;
 }): Promise<RaidDashboardSeasonSnapshot> {
   let activeSeason = input.season;
+  let historyStatus = input.historyStatus ?? (activeSeason ? "available" : "empty");
   if (activeSeason === undefined) {
-    const seasons = await loadRaidDashboardSeasonHistory({
+    const history = await loadRaidDashboardSeasonHistory({
       cocService: input.cocService,
       clanTag: input.clanTag,
       limit: RAID_DASHBOARD_CURRENT_SEASON_LIMIT,
     });
     activeSeason = selectCurrentRaidSeason({
-      seasons,
+      seasons: history.seasons,
       nowMs: input.nowMs,
     });
+    historyStatus = history.status === "failed" ? "failed" : activeSeason ? "available" : "empty";
   }
   if (!activeSeason) {
-    return emptyRaidDashboardSeasonSnapshot();
+    return emptyRaidDashboardSeasonSnapshot(historyStatus);
   }
 
   const attackSections = normalizeAttackSections(activeSeason);
@@ -1216,6 +1254,7 @@ async function loadRaidDashboardSeasonSnapshot(input: {
 
   return {
     activeSeason,
+    historyStatus: "available",
     attackSections,
     defenseSections,
     counts,
@@ -1398,18 +1437,30 @@ async function loadRaidAttackerClanMetadata(input: {
   }
 
   const uniqueTags = [...new Set(input.defenseSections.map((section) => section.attackerTag).filter(Boolean))];
-  for (const tag of uniqueTags) {
-    if (!tag) continue;
-    try {
-      const clan = await input.cocService.getClan(formatRaidTrackedClanTag(tag));
-      result.set(tag, normalizeRaidAttackerClanMetadata(clan));
-    } catch (err) {
-      console.error(
-        `[raids] stage=detail_attacker_metadata_fetch_failed source=${input.source} tag=${formatRaidTrackedClanTag(tag)} error=${String(err instanceof Error ? err.message : err)}`,
-      );
-      result.set(tag, null);
-    }
+  const startedAtMs = Date.now();
+  let failedCount = 0;
+  for (let offset = 0; offset < uniqueTags.length; offset += RAID_DASHBOARD_METADATA_BATCH_SIZE) {
+    const batch = uniqueTags.slice(offset, offset + RAID_DASHBOARD_METADATA_BATCH_SIZE);
+    await Promise.all(
+      batch.map(async (tag) => {
+        if (!tag) return;
+        try {
+          const clan = await input.cocService!.getClan(formatRaidTrackedClanTag(tag));
+          result.set(tag, normalizeRaidAttackerClanMetadata(clan));
+        } catch (err) {
+          failedCount += 1;
+          console.error(
+            `[raids] stage=detail_attacker_metadata_fetch_failed source=${input.source} tag=${formatRaidTrackedClanTag(tag)} error=${String(err instanceof Error ? err.message : err)}`,
+          );
+          result.set(tag, null);
+        }
+      }),
+    );
   }
+
+  console.info(
+    `[raids-overview] event=attacker_metadata_complete source=${input.source} requests=${uniqueTags.length} failures=${failedCount} duration_ms=${Date.now() - startedAtMs}`,
+  );
 
   return result;
 }
@@ -1443,14 +1494,16 @@ async function loadSelectedClanDetail(input: {
   raidSeasonStartTimeMs?: number | null;
 }): Promise<RaidDashboardSeasonDetail | null> {
   let selectedSeason: ClanCapitalRaidSeason | null | undefined;
+  let historyStatus: RaidDashboardHistoryStatus | undefined;
   if (input.raidSeasonStartTimeMs !== undefined) {
-    const seasons = await loadRaidDashboardSeasonHistory({
+    const history = await loadRaidDashboardSeasonHistory({
       cocService: input.cocService,
       clanTag: input.clanTag,
       limit: RAID_DASHBOARD_HISTORY_LIMIT,
     });
+    historyStatus = history.status;
     selectedSeason = selectRaidDashboardSeasonByStartTime({
-      seasons,
+      seasons: history.seasons,
       selectedRaidSeasonStartTimeMs: input.raidSeasonStartTimeMs,
     });
   }
@@ -1459,6 +1512,7 @@ async function loadSelectedClanDetail(input: {
     clanTag: input.clanTag,
     nowMs: Date.now(),
     season: selectedSeason,
+    historyStatus,
   });
   const activeSeason = snapshot.activeSeason;
   if (!activeSeason) {
@@ -1765,6 +1819,7 @@ function getRaidDashboardRowsFromSourceRows(input: {
   source: string;
   nowMs?: number;
   selectedSeasonsByTag?: ReadonlyMap<string, ClanCapitalRaidSeason | null>;
+  historyStatusesByTag?: ReadonlyMap<string, RaidDashboardHistoryStatus>;
 }): Promise<RaidDashboardClanRow[]> {
   return loadRaidDashboardRowsFromSourceRows(input);
 }
@@ -1776,6 +1831,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
   source: string;
   nowMs?: number;
   selectedSeasonsByTag?: ReadonlyMap<string, ClanCapitalRaidSeason | null>;
+  historyStatusesByTag?: ReadonlyMap<string, RaidDashboardHistoryStatus>;
 }): Promise<RaidDashboardClanRow[]> {
   const tracked = input.sourceRows;
   if (tracked.length <= 0) {
@@ -1795,6 +1851,9 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
         clanTag: row.clanTag,
         nowMs,
         season: hasSelectedSeasons ? input.selectedSeasonsByTag?.get(normalizedTag) ?? null : undefined,
+        historyStatus: hasSelectedSeasons
+          ? input.historyStatusesByTag?.get(normalizedTag) ?? "empty"
+          : undefined,
       });
       return [normalizedTag, snapshot] as const;
     }),
@@ -1813,15 +1872,23 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
         ];
   });
 
+  const metadataStartedAtMs = Date.now();
+  const layoutMarksStartedAtMs = Date.now();
+  let metadataDurationMs = 0;
+  let layoutMarksDurationMs = 0;
   const [metadataByTag, raidIntelMarksBySeason] = await Promise.all([
     loadRaidAttackerClanMetadata({
       cocService: input.cocService,
       defenseSections: allDefenseSections,
       source: input.source,
+    }).finally(() => {
+      metadataDurationMs = Date.now() - metadataStartedAtMs;
     }),
     loadRaidIntelLayoutMarksForSeasons({
       guildId: input.guildId ?? null,
       seasons: raidIntelSeasonInputs,
+    }).finally(() => {
+      layoutMarksDurationMs = Date.now() - layoutMarksStartedAtMs;
     }),
   ]);
   const raidIntelDefenderTags = [
@@ -1837,15 +1904,20 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
         .filter((tag): tag is string => Boolean(tag)),
     ),
   ];
+  const profileLookupStartedAtMs = Date.now();
   const raidIntelDefenderProfileUpgradesByTag = await loadRaidIntelDefenderProfileUpgradesForTags({
     guildId: input.guildId ?? null,
     defenderTags: raidIntelDefenderTags,
   });
+  console.info(
+    `[raids-overview] event=dependency_complete source=${input.source} clans=${tracked.length} defender_candidates=${raidIntelDefenderTags.length} metadata_duration_ms=${metadataDurationMs} layout_marks_duration_ms=${layoutMarksDurationMs} upgrade_lookup_duration_ms=${Date.now() - profileLookupStartedAtMs}`,
+  );
 
   const hitHistoryPersistenceTasks: Array<Promise<unknown>> = [];
   const rows = tracked.map((row, index) => {
     const snapshot = snapshots[index]?.[1] ?? {
       activeSeason: null,
+      historyStatus: "empty",
       attackSections: [],
       defenseSections: [],
       counts: {
@@ -1966,6 +2038,7 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
       : [];
     return {
       ...row,
+      raidHistoryStatus: snapshot.historyStatus,
       attacksCompleted: snapshot.counts.attacksCompleted,
       attacksMax: snapshot.counts.attacksMax,
       defaultLayoutCount,
@@ -2091,6 +2164,20 @@ export type RaidDashboardOverviewLoadResult = {
   latestRaidSeasonStartTimeMs: number | null;
 };
 
+export class RaidDashboardDataUnavailableError extends Error {
+  readonly source: string;
+  readonly clanCount: number;
+  readonly failedHistoryCount: number;
+
+  constructor(input: { source: string; clanCount: number; failedHistoryCount: number }) {
+    super("Raid weekend data is temporarily unavailable. Please try again shortly.");
+    this.name = "RaidDashboardDataUnavailableError";
+    this.source = input.source;
+    this.clanCount = input.clanCount;
+    this.failedHistoryCount = input.failedHistoryCount;
+  }
+}
+
 export async function loadRaidDashboardOverviewForSource(input: {
   cocService: CoCService | null;
   sourceMode: RaidDashboardOverviewSourceMode;
@@ -2103,16 +2190,36 @@ export async function loadRaidDashboardOverviewForSource(input: {
   const sourceInput = await listRaidDashboardSourceRows(input);
   const seasonHistories = await Promise.all(
     sourceInput.sourceRows.map(async (row) => {
-      const seasons = await loadRaidDashboardSeasonHistory({
+      const history = await loadRaidDashboardSeasonHistory({
         cocService: input.cocService,
         clanTag: row.clanTag,
         limit: RAID_DASHBOARD_HISTORY_LIMIT,
       });
-      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, seasons] as const;
+      return [normalizeRaidTrackedClanTag(row.clanTag) ?? row.clanTag, history] as const;
     }),
   );
   const seasonHistoriesByTag = new Map(seasonHistories);
-  const allSeasons = seasonHistories.flatMap(([, seasons]) => seasons);
+  const failedHistoryCount = seasonHistories.filter(([, history]) => history.status === "failed").length;
+  const emptyHistoryCount = seasonHistories.filter(([, history]) => history.status === "empty").length;
+  const availableHistoryCount = seasonHistories.length - failedHistoryCount - emptyHistoryCount;
+  const historyFailureCodes = [
+    ...new Set(
+      seasonHistories
+        .map(([, history]) => history.failureCode)
+        .filter((code): code is string => Boolean(code)),
+    ),
+  ].join(",") || "none";
+  if (sourceInput.sourceRows.length > 0 && failedHistoryCount === sourceInput.sourceRows.length) {
+    console.error(
+      `[raids-overview] event=history_unavailable source=${sourceInput.source} clans=${sourceInput.sourceRows.length} api_requests=${sourceInput.sourceRows.length} histories_success=0 histories_empty=0 histories_failed=${failedHistoryCount} failure_codes=${historyFailureCodes}`,
+    );
+    throw new RaidDashboardDataUnavailableError({
+      source: sourceInput.source,
+      clanCount: sourceInput.sourceRows.length,
+      failedHistoryCount,
+    });
+  }
+  const allSeasons = seasonHistories.flatMap(([, history]) => history.seasons);
   const latestSeason = selectLatestRaidDashboardSeason({ seasons: allSeasons, nowMs });
   const latestRaidSeasonStartTimeMs = parseRaidSeasonTimeMs(latestSeason?.startTime);
   const hasExplicitSelection =
@@ -2123,7 +2230,9 @@ export async function loadRaidDashboardOverviewForSource(input: {
       : null
     : latestRaidSeasonStartTimeMs;
   const selectedSeasonsByTag = new Map<string, ClanCapitalRaidSeason | null>();
-  for (const [tag, seasons] of seasonHistoriesByTag) {
+  const historyStatusesByTag = new Map<string, RaidDashboardHistoryStatus>();
+  for (const [tag, history] of seasonHistoriesByTag) {
+    const seasons = history.seasons;
     selectedSeasonsByTag.set(
       tag,
       selectedRaidSeasonStartTimeMs === null
@@ -2132,6 +2241,14 @@ export async function loadRaidDashboardOverviewForSource(input: {
             seasons,
             selectedRaidSeasonStartTimeMs,
           }),
+    );
+    historyStatusesByTag.set(
+      tag,
+      history.status === "failed"
+        ? "failed"
+        : selectedSeasonsByTag.get(tag)
+          ? "available"
+          : "empty",
     );
   }
   const selectedSeason = allSeasons.find((season) => {
@@ -2148,7 +2265,11 @@ export async function loadRaidDashboardOverviewForSource(input: {
     source: sourceInput.source,
     nowMs,
     selectedSeasonsByTag,
+    historyStatusesByTag,
   });
+  console.info(
+    `[raids-overview] event=complete source=${sourceInput.source} clans=${sourceInput.sourceRows.length} api_requests=${sourceInput.sourceRows.length} histories_success=${availableHistoryCount} histories_empty=${emptyHistoryCount} histories_failed=${failedHistoryCount} failure_codes=${historyFailureCodes} selected_weekend=${selectedRaidSeasonStartTimeMs ?? "none"} rows=${rows.length}`,
+  );
   return {
     rows,
     selectedRaidSeasonStartTimeMs,
@@ -2204,6 +2325,13 @@ function buildRaidDashboardOverviewClanTitle(input: {
 function buildRaidDashboardOverviewIntelLine(row: RaidDashboardClanRow): string | null {
   if ((row.raidsCompleted ?? 0) >= 1) {
     return null;
+  }
+
+  if (row.raidHistoryStatus === "failed") {
+    return "- ⚠️ Raid data unavailable for the selected weekend.";
+  }
+  if (row.raidHistoryStatus === "empty") {
+    return "- ℹ️ No Raid Weekend data available for the selected weekend.";
   }
 
   const marks = row.raidIntelMarks ?? [];

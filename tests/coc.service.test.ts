@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import axios from "axios";
 import { runWithCoCQueueContext } from "../src/services/CoCQueueContext";
 
 vi.mock("../src/services/CoCRequestQueueService", () => ({
@@ -18,6 +19,8 @@ describe("CoCService current war error wrapping", () => {
 
   afterEach(() => {
     process.env.COC_API_TOKEN = envSnapshot;
+    delete process.env.COC_API_REQUEST_TIMEOUT_MS;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -91,5 +94,34 @@ describe("CoCService current war error wrapping", () => {
       builderBaseTrophies: 4321,
       clanCapitalContributions: 77,
     });
+  });
+
+  it("aborts a stalled queued raid-season request and reports a timeout", async () => {
+    vi.useFakeTimers();
+    process.env.COC_API_REQUEST_TIMEOUT_MS = "1000";
+    const axiosGet = vi.spyOn(axios, "get").mockImplementation(((_url, config) =>
+      new Promise((_resolve, reject) => {
+        config?.signal?.addEventListener("abort", () => {
+          const error = Object.assign(new Error("canceled"), { code: "ERR_CANCELED" });
+          reject(error);
+        });
+      })) as typeof axios.get);
+    const service = new CoCService();
+
+    const pending = runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      () => service.getClanCapitalRaidSeasons("#ABC123"),
+    );
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "ETIMEDOUT",
+      timeout: true,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await rejection;
+    expect(axiosGet).toHaveBeenCalledWith(
+      expect.stringContaining("/clans/%23ABC123/capitalraidseasons"),
+      expect.objectContaining({ timeout: 1000, signal: expect.any(AbortSignal) }),
+    );
   });
 });
