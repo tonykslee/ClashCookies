@@ -114,7 +114,7 @@ describe("TrackedClanLeadersService", () => {
       { clanTag: fwaTag, playerTag: "#2QG2C08UPP", playerName: "Old Lead", role: "leader", sourceSyncedAt: new Date("2026-08-01") },
     ]);
     prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
-      { scopeKey: fwaTag, lastAttemptAt: new Date("2026-08-02"), lastSuccessAt: new Date("2026-08-01"), lastStatus: "SUCCESS", lastErrorSummary: null },
+      { scopeKey: fwaTag, lastAttemptAt: new Date("2026-08-02"), lastSuccessAt: new Date("2026-08-01"), lastStatus: "SUCCESS", lastErrorSummary: null, lastRowCount: 2 },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     const stale = await loadTrackedClanLeadersView({ registry: "FWA", now });
@@ -189,6 +189,45 @@ describe("TrackedClanLeadersService", () => {
       hasLeader: true,
       accounts: [expect.objectContaining({ playerName: "Invalid Link", discordUserId: null })],
     });
+  });
+
+  it("recognizes a complete 49-to-48 manual refresh immediately and on DB-only reopen", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    const oldObservedAt = new Date("2026-10-23T08:00:00.000Z");
+    const refreshedAt = new Date("2026-10-23T12:00:00.000Z");
+    const rosterTags = ["#2QG2C08UPP", "#PYLQ0289P", "#2RVGJYLC0P"];
+    const makeRows = (count: number, sourceSyncedAt: Date) =>
+      Array.from({ length: count }, (_, index) => ({
+        clanTag: fwaTag,
+        playerTag: rosterTags[index % rosterTags.length],
+        playerName: index === 0 ? "Current Leader" : `Member ${index}`,
+        role: index === 0 ? "leader" : "member",
+        sourceSyncedAt,
+      }));
+
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(makeRows(49, oldObservedAt));
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
+      {
+        scopeKey: fwaTag,
+        lastAttemptAt: oldObservedAt,
+        lastSuccessAt: oldObservedAt,
+        lastStatus: "NOOP",
+        lastErrorSummary: null,
+        lastRowCount: 49,
+      },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    const beforeRefresh = await loadTrackedClanLeadersView({ registry: "FWA", now: refreshedAt });
+    expect(beforeRefresh.sections[0]?.clans[0]?.freshness).toBe("STALE");
+
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(makeRows(48, refreshedAt));
+    memberRefreshMock.mockResolvedValue({ clanCount: 1, rowCount: 48, changedRowCount: 1, failedClans: [] });
+    const refreshed = await refreshTrackedClanLeadersWithQueueContext({ cocService: {} as any, registry: "FWA", now: refreshedAt });
+    expect(refreshed.view.sections[0]?.clans[0]?.freshness).toBe("CURRENT");
+
+    const reopenedDbOnly = await loadTrackedClanLeadersView({ registry: "FWA", now: refreshedAt });
+    expect(reopenedDbOnly.sections[0]?.clans[0]?.freshness).toBe("CURRENT");
   });
 
   it("deduplicates refresh requests for clans present in multiple registries and preserves partial failures", async () => {

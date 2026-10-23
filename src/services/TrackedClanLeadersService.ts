@@ -126,9 +126,25 @@ function chooseObservedAt(rows: MemberRow[], feedState: any | null): Date | null
   return memberObservedAt.getTime() >= feedObservedAt.getTime() ? memberObservedAt : feedObservedAt;
 }
 
+function hasNewerCompletePersistedRoster(rows: MemberRow[], feedState: any | null): boolean {
+  if (rows.length === 0) return false;
+  const sourceSyncedAt = rows
+    .map((row) => validDate(row.sourceSyncedAt))
+    .filter((value): value is Date => value !== null);
+  if (sourceSyncedAt.length !== rows.length) return false;
+
+  const oldestSourceSyncedAt = Math.min(...sourceSyncedAt.map((value) => value.getTime()));
+  const newestSourceSyncedAt = Math.max(...sourceSyncedAt.map((value) => value.getTime()));
+  if (oldestSourceSyncedAt !== newestSourceSyncedAt) return false;
+
+  const feedSuccessAt = validDate(feedState?.lastSuccessAt);
+  return !feedSuccessAt || oldestSourceSyncedAt > feedSuccessAt.getTime();
+}
+
 function resolveFreshness(input: {
   observedAt: Date | null;
   feedState: any | null;
+  memberRows: MemberRow[];
   memberRowCount: number;
   now: Date;
   refreshSucceeded: boolean;
@@ -139,7 +155,7 @@ function resolveFreshness(input: {
     : null;
   const hasCompleteRosterCoverage = persistedFeedRowCount === null
     ? input.memberRowCount > 0
-    : input.memberRowCount === persistedFeedRowCount;
+    : input.memberRowCount === persistedFeedRowCount || hasNewerCompletePersistedRoster(input.memberRows, input.feedState);
 
   if (input.refreshFailed) {
     return {
@@ -391,6 +407,7 @@ export async function loadTrackedClanLeadersView(input?: {
     const freshness = resolveFreshness({
       observedAt,
       feedState,
+      memberRows: clanRows,
       memberRowCount: clanRows.length,
       now,
       refreshSucceeded: refreshSucceeded.has(row.clanTag),
