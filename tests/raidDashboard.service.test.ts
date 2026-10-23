@@ -3031,6 +3031,40 @@ describe("RaidDashboardService", () => {
     expect(prismaMock.raidIntelDefenderProfile.findMany).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: "401", error: { response: { status: 401 } }, code: "HTTP_401", category: "permission" },
+    { label: "403", error: { response: { status: 403 } }, code: "HTTP_403", category: "permission" },
+    { label: "429", error: { response: { status: 429 } }, code: "HTTP_429", category: "validation" },
+    { label: "timeout", error: { code: "ETIMEDOUT" }, code: "ETIMEDOUT", category: "timeout" },
+    {
+      label: "invalid response",
+      error: { code: "COC_INVALID_RESPONSE" },
+      code: "COC_INVALID_RESPONSE",
+      category: "validation",
+    },
+    { label: "unknown", error: new Error("upstream unavailable"), code: "INTERNAL_ERROR", category: "internal" },
+  ])("keeps $label raid-history failures in the shared diagnostic taxonomy", async ({ error, code, category }) => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      loadRaidDashboardOverviewForSourceWithQueueContext({
+        cocService: {
+          getClanCapitalRaidSeasons: vi.fn().mockRejectedValue(error),
+        } as any,
+        sourceMode: "custom",
+        customClanTag: "2QG2C08UP",
+        guildId: "guild-1",
+      }),
+    ).rejects.toMatchObject({ name: "RaidDashboardDataUnavailableError" });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`failure_codes=${code}`),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`failure_categories=${category}`),
+    );
+  });
+
   it("marks partial raid history failures unavailable without borrowing another clan's data", async () => {
     prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
       {

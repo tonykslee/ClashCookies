@@ -75,5 +75,9 @@ export function classifyTelemetryError(error: unknown): TelemetryErrorInfo {
     };
   }
 
+  if (code === "COC_INVALID_RESPONSE") {
+    return { category: "validation", code, timeout: false };
+  }
+
   return { category: "internal", code: code || "INTERNAL_ERROR", timeout: false };
 }

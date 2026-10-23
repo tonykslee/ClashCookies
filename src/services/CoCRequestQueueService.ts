@@ -12,8 +12,9 @@ type CoCQueueTask<T> = {
   scheduledAtMs?: number | null;
   nextScheduledAtMs?: number | null;
   freshnessDeadlineMs?: number | null;
+  requestTimeoutMs?: number | null;
   telemetryContext?: TelemetryCommandContext | null;
-  run: () => Promise<T>;
+  run: (signal: AbortSignal) => Promise<T>;
 };
 
 type PendingCoCQueueTask<T> = CoCQueueTask<T> & {
@@ -121,6 +122,32 @@ export class CoCQueueSkippedError extends Error {
 /** Purpose: identify one queue-skip error without leaking implementation details to callers. */
 export function isCoCQueueSkippedError(err: unknown): err is CoCQueueSkippedError {
   return err instanceof CoCQueueSkippedError;
+}
+
+/** Purpose: identify a request that exceeded its execution deadline after queue dispatch. */
+export class CoCQueueRequestTimeoutError extends Error {
+  readonly operation: string;
+  readonly source: string;
+  readonly timeoutMs: number;
+  readonly code = "ETIMEDOUT";
+  readonly timeout = true;
+  readonly cause: unknown;
+
+  constructor(input: {
+    operation: string;
+    source: string;
+    timeoutMs: number;
+    cause: unknown;
+  }) {
+    super(
+      `CoC API request timed out after ${input.timeoutMs}ms operation=${input.operation} source=${input.source}`,
+    );
+    this.name = "CoCQueueRequestTimeoutError";
+    this.operation = input.operation;
+    this.source = input.source;
+    this.timeoutMs = input.timeoutMs;
+    this.cause = input.cause;
+  }
 }
 
 /** Purpose: provide one shared paced dispatcher for CoC API requests with strict interactive priority. */
@@ -334,14 +361,35 @@ export class CoCRequestQueueService {
     try {
       const waitMs = Math.max(0, Date.now() - task.enqueuedAtMs);
       this.noteDispatched(task, waitMs);
+      const requestTimeoutMs =
+        Number.isFinite(task.requestTimeoutMs ?? NaN) && (task.requestTimeoutMs ?? 0) > 0
+          ? Math.trunc(task.requestTimeoutMs!)
+          : null;
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeoutHandle = requestTimeoutMs
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, requestTimeoutMs)
+        : null;
       try {
-        const result = await task.run();
+        const result = await task.run(controller.signal);
         this.noteSuccess();
         task.resolve(result);
       } catch (err) {
-        this.noteFailure(err, task);
-        task.reject(err);
+        const failure = timedOut
+          ? new CoCQueueRequestTimeoutError({
+              operation: task.operation,
+              source: task.source,
+              timeoutMs: requestTimeoutMs!,
+              cause: err,
+            })
+          : err;
+        this.noteFailure(failure, task);
+        task.reject(failure);
       } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         this.nextAllowedAtMs =
           Math.max(this.nextAllowedAtMs, Date.now()) + this.currentSpacingMs();
       }

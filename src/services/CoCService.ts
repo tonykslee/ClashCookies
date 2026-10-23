@@ -24,20 +24,23 @@ function resolveCoCApiRequestTimeoutMs(): number {
     : DEFAULT_COC_API_REQUEST_TIMEOUT_MS;
 }
 
-function createCoCRequestTimeoutError(timeoutMs: number, cause: unknown): Error & {
-  code: string;
-  timeout: boolean;
-  cause: unknown;
+function wrapCoCStatusError(err: unknown, status: number): Error & {
+  status: number;
+  response?: AxiosError["response"];
+  code?: string | number;
+  cause?: unknown;
 } {
-  const error = new Error(`CoC API request timed out after ${timeoutMs}ms`) as Error & {
-    code: string;
-    timeout: boolean;
-    cause: unknown;
+  const wrapped = new Error(`CoC API error ${status}`) as Error & {
+    status: number;
+    response?: AxiosError["response"];
+    code?: string | number;
+    cause?: unknown;
   };
-  error.code = "ETIMEDOUT";
-  error.timeout = true;
-  error.cause = cause;
-  return error;
+  wrapped.status = status;
+  wrapped.response = (err as AxiosError).response;
+  wrapped.code = (err as AxiosError).code;
+  wrapped.cause = err;
+  return wrapped;
 }
 
 export class CoCService {
@@ -82,33 +85,18 @@ export class CoCService {
     if (!queueContext) {
       throw new Error(`COC_QUEUE_CONTEXT_MISSING:${input.operation}`);
     }
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.cocApiRequestTimeoutMs);
-
-    try {
-      return await this.queue.enqueue({
-        operation: input.operation,
-        detail: input.detail,
-        priority: queueContext.priority,
-        source: queueContext.source,
-        scheduledAtMs: queueContext.scheduledAtMs,
-        nextScheduledAtMs: queueContext.nextScheduledAtMs,
-        freshnessDeadlineMs: queueContext.freshnessDeadlineMs,
-        telemetryContext: getTelemetryContext(),
-        run: () => input.run(controller.signal),
-      });
-    } catch (err) {
-      if (timedOut) {
-        throw createCoCRequestTimeoutError(this.cocApiRequestTimeoutMs, err);
-      }
-      throw err;
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
+    return this.queue.enqueue({
+      operation: input.operation,
+      detail: input.detail,
+      priority: queueContext.priority,
+      source: queueContext.source,
+      scheduledAtMs: queueContext.scheduledAtMs,
+      nextScheduledAtMs: queueContext.nextScheduledAtMs,
+      freshnessDeadlineMs: queueContext.freshnessDeadlineMs,
+      requestTimeoutMs: this.cocApiRequestTimeoutMs,
+      telemetryContext: getTelemetryContext(),
+      run: input.run,
+    });
   }
 
   /** Purpose: get current clan-capital raid seasons for one clan tag (newest first). */
@@ -178,17 +166,11 @@ export class CoCService {
         detail: `tag=${clanTag} status=${status ?? "unknown"} result=error`,
         durationMs: Date.now() - startedAtMs,
         status: "failure",
-        errorCategory:
-          (err as { code?: unknown })?.code === "COC_INVALID_RESPONSE"
-            ? "validation"
-            : failure.errorCategory,
-        errorCode:
-          (err as { code?: unknown })?.code === "COC_INVALID_RESPONSE"
-            ? "COC_INVALID_RESPONSE"
-            : failure.errorCode,
+        errorCategory: failure.errorCategory,
+        errorCode: failure.errorCode,
         timeout: failure.timeout,
       });
-      if (status) throw new Error(`CoC API error ${status}`);
+      if (status) throw wrapCoCStatusError(err, status);
       throw err;
     }
   }

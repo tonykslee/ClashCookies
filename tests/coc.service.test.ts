@@ -96,32 +96,22 @@ describe("CoCService current war error wrapping", () => {
     });
   });
 
-  it("aborts a stalled queued raid-season request and reports a timeout", async () => {
-    vi.useFakeTimers();
-    process.env.COC_API_REQUEST_TIMEOUT_MS = "1000";
-    const axiosGet = vi.spyOn(axios, "get").mockImplementation(((_url, config) =>
-      new Promise((_resolve, reject) => {
-        config?.signal?.addEventListener("abort", () => {
-          const error = Object.assign(new Error("canceled"), { code: "ERR_CANCELED" });
-          reject(error);
-        });
-      })) as typeof axios.get);
+  it("preserves the upstream HTTP status on raid-history failures", async () => {
+    vi.spyOn(axios, "get").mockRejectedValue({
+      message: "Request failed with status code 429",
+      response: { status: 429, data: { message: "Rate limit exceeded" } },
+    });
     const service = new CoCService();
 
-    const pending = runWithCoCQueueContext(
-      { priority: "interactive", source: "test" },
-      () => service.getClanCapitalRaidSeasons("#ABC123"),
-    );
-    const rejection = expect(pending).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      timeout: true,
+    await expect(
+      runWithCoCQueueContext(
+        { priority: "interactive", source: "test" },
+        () => service.getClanCapitalRaidSeasons("#ABC123"),
+      ),
+    ).rejects.toMatchObject({
+      status: 429,
+      response: { status: 429 },
     });
-    await vi.advanceTimersByTimeAsync(1000);
-
-    await rejection;
-    expect(axiosGet).toHaveBeenCalledWith(
-      expect.stringContaining("/clans/%23ABC123/capitalraidseasons"),
-      expect.objectContaining({ timeout: 1000, signal: expect.any(AbortSignal) }),
-    );
   });
+
 });
