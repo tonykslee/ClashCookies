@@ -502,6 +502,128 @@ describe("RaidDashboardService", () => {
     expect(sourceRow?.raidIntelDefenderUpgrades).toBe(1444);
   });
 
+  it("resolves no-mark overview upgrades from one selected-weekend attack defender in one bulk lookup", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Profile Source",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Tracked Source",
+        upgrades: 2220,
+        joinType: "open",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:30:00.000Z"),
+      },
+      {
+        clanTag: "2QG2C08UQ",
+        name: "Tracked Defender",
+        upgrades: 3331,
+        joinType: "closed",
+        createdAt: new Date("2026-05-03T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:45:00.000Z"),
+      },
+      {
+        clanTag: "2XYZ12345",
+        name: "Ambiguous Source",
+        upgrades: 2230,
+        joinType: "open",
+        createdAt: new Date("2026-05-04T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:50:00.000Z"),
+      },
+      {
+        clanTag: "2XYZ12346",
+        name: "Missing Source",
+        upgrades: 2240,
+        joinType: "open",
+        createdAt: new Date("2026-05-05T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:55:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValueOnce([
+      {
+        defenderTag: "2QG2C08UR",
+        upgrades: 2393,
+      },
+    ]);
+
+    const buildSeason = (defenderTags: string[]) => ({
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      state: "ongoing",
+      members: [{ attacks: 1 }],
+      attackLog: defenderTags.map((defenderTag) => ({
+        defender: { name: `${defenderTag} Defender`, tag: `#${defenderTag}` },
+        attackCount: 1,
+        districts: [],
+      })),
+      defenseLog: [],
+      raidsCompleted: null,
+    });
+
+    const buildMissingDefenderSeason = () => ({
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      state: "ongoing",
+      members: [{ attacks: 1 }],
+      attackLog: [
+        {
+          defender: { name: "Missing Defender" },
+          attackCount: 1,
+          districts: [],
+        },
+      ],
+      defenseLog: [],
+      raidsCompleted: null,
+    });
+
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn(async (tag: string) => {
+        if (tag === "#2QG2C08UP") return [buildSeason(["2QG2C08UR", "2QG2C08UR"])];
+        if (tag === "#2RVGJYLC0") return [buildSeason(["2QG2C08UQ"])];
+        if (tag === "#2XYZ12345") return [buildSeason(["2QG2C08UR", "2QG2C08UQ"])];
+        if (tag === "#2XYZ12346") return [buildMissingDefenderSeason()];
+        return [];
+      }),
+      getClan: vi.fn(),
+    };
+
+    const rows = await listRaidDashboardRows({
+      cocService: cocService as any,
+      guildId: "guild-1",
+    });
+
+    expect(prismaMock.raidIntelDefenderProfile.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.raidIntelDefenderProfile.findMany).toHaveBeenCalledWith({
+      where: {
+        guildId: "guild-1",
+        defenderTag: { in: ["2QG2C08UR", "2QG2C08UQ"] },
+      },
+      select: {
+        defenderTag: true,
+        upgrades: true,
+      },
+    });
+
+    const profileSource = rows.find((row) => row.clanTag === "2QG2C08UP");
+    const trackedSource = rows.find((row) => row.clanTag === "2RVGJYLC0");
+    const ambiguousSource = rows.find((row) => row.clanTag === "2XYZ12345");
+    const missingSource = rows.find((row) => row.clanTag === "2XYZ12346");
+    expect(profileSource?.raidIntelDefenderUpgrades).toBe(2393);
+    expect(trackedSource?.raidIntelDefenderUpgrades).toBe(3331);
+    expect(ambiguousSource?.raidIntelDefenderUpgrades).toBeNull();
+    expect(missingSource?.raidIntelDefenderUpgrades).toBeNull();
+
+    const overview = buildRaidDashboardOverviewDescription(rows);
+    expect(overview).toContain("- 🏘️ 2393 | defaults: 0 | —");
+    expect(overview).toContain("- 🏘️ 3331 | defaults: 0 | —");
+  });
+
   it("renders zero defaults in the overview intel line when only non-default marks exist", () => {
     const overview = buildRaidDashboardOverviewDescription([
       {
@@ -2798,7 +2920,13 @@ describe("RaidDashboardService", () => {
       endTime: "2026-08-17T00:00:00.000Z",
       state: "completed",
       members: [{ attacks: 6 }],
-      attackLog: [],
+      attackLog: [
+        {
+          defender: { name: "Latest Defender", tag: "#2QG2C08UQ" },
+          attackCount: 5,
+          districts: [],
+        },
+      ],
       defenseLog: [],
       defensiveReward: 10,
     };
@@ -2809,7 +2937,7 @@ describe("RaidDashboardService", () => {
       members: [{ attacks: 5 }],
       attackLog: [
         {
-          defender: { name: "Historical Defender", tag: "#HIST" },
+          defender: { name: "Historical Defender", tag: "#2QG2C08UR" },
           attackCount: 5,
           districtCount: 1,
           districtsDestroyed: 1,
@@ -2840,6 +2968,12 @@ describe("RaidDashboardService", () => {
       ["#2QG2C08UP", [aug14, aug7, jul31]],
       ["#2RVGJYLC0", [aug14, jul31]],
     ]);
+    prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValueOnce([
+      {
+        defenderTag: "2QG2C08UR",
+        upgrades: 2393,
+      },
+    ]);
     const getSeasons = vi.fn(async (tag: string, limit: number) => {
       expect(limit).toBe(RAID_DASHBOARD_HISTORY_LIMIT);
       return seasonsByTag.get(tag) ?? [];
@@ -2865,6 +2999,15 @@ describe("RaidDashboardService", () => {
     expect(result.latestRaidSeasonStartTimeMs).toBe(Date.parse("2026-08-14T00:00:00.000Z"));
     expect(clanA?.attacksCompleted).toBe(5);
     expect(clanA?.raidMedalEstimate?.defensiveMedals).toBe(123);
+    expect(clanA?.raidIntelDefenderUpgrades).toBe(2393);
+    expect(prismaMock.raidIntelDefenderProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          guildId: "guild-1",
+          defenderTag: { in: ["2QG2C08UR"] },
+        },
+      }),
+    );
     expect(clanB?.attacksCompleted).toBeNull();
     expect(clanB?.raidMedalEstimate).toBeNull();
   });

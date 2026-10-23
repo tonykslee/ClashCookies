@@ -1826,9 +1826,14 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
   ]);
   const raidIntelDefenderTags = [
     ...new Set(
-      [...raidIntelMarksBySeason.values()]
-        .flat()
-        .map((mark) => normalizeRaidTrackedClanTag(mark.defenderTag))
+      [
+        ...[...raidIntelMarksBySeason.values()]
+          .flat()
+          .map((mark) => normalizeRaidTrackedClanTag(mark.defenderTag)),
+        ...snapshots.flatMap(([, snapshot]) =>
+          snapshot.attackSections.map((section) => normalizeRaidTrackedClanTag(section.defenderTag ?? "")),
+        ),
+      ]
         .filter((tag): tag is string => Boolean(tag)),
     ),
   ];
@@ -1887,18 +1892,37 @@ async function loadRaidDashboardRowsFromSourceRows(input: {
         ? raidIntelMarks.filter((mark) => mark.layoutGrade === "DEFAULT").length
         : null;
     const raidIntelDefenderUpgrades = (() => {
-      const defenderTags = [
+      const markedDefenderTags = [
         ...new Set(
           raidIntelMarks
             .map((mark) => normalizeRaidTrackedClanTag(mark.defenderTag))
             .filter((tag): tag is string => Boolean(tag)),
         ),
       ];
-      if (defenderTags.length !== 1) {
+      if (markedDefenderTags.length > 1) {
         return null;
       }
+      if (markedDefenderTags.length === 1) {
+        return resolveRaidIntelDefenderUpgrade({
+          defenderTag: markedDefenderTags[0]!,
+          trackedClanByTag: trackedByTag,
+          defenderProfileUpgradesByTag: raidIntelDefenderProfileUpgradesByTag,
+        });
+      }
+
+      const attackDefenderTags = [
+        ...new Set(
+          snapshot.attackSections
+            .map((section) => normalizeRaidTrackedClanTag(section.defenderTag ?? ""))
+            .filter((tag): tag is string => Boolean(tag)),
+        ),
+      ];
+      if (attackDefenderTags.length !== 1) {
+        return null;
+      }
+
       return resolveRaidIntelDefenderUpgrade({
-        defenderTag: defenderTags[0]!,
+        defenderTag: attackDefenderTags[0]!,
         trackedClanByTag: trackedByTag,
         defenderProfileUpgradesByTag: raidIntelDefenderProfileUpgradesByTag,
       });
