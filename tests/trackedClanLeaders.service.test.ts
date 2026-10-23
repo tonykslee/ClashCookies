@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: { findMany: vi.fn() },
@@ -53,11 +53,12 @@ describe("TrackedClanLeadersService", () => {
       { clanTag: fwaTag, playerTag: "#2QG2C08UPY", playerName: "CoTwo", role: "co-leader", sourceSyncedAt: now },
       { clanTag: fwaTag, playerTag: "#2QG2C08UPL", playerName: "Elder", role: "elder", sourceSyncedAt: now },
       { clanTag: cwlTag, playerTag: "#PYLQ0289P", playerName: "Cwl Co", role: "CoLeader", sourceSyncedAt: now },
+      { clanTag: raidsTag, playerTag: "#2RVGJYLC0P", playerName: "Raid Lead", role: "leader", sourceSyncedAt: now },
     ]);
     prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
-      { scopeKey: fwaTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null },
-      { scopeKey: cwlTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "SUCCESS", lastErrorSummary: null },
-      { scopeKey: raidsTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null },
+      { scopeKey: fwaTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null, lastRowCount: 3 },
+      { scopeKey: cwlTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "SUCCESS", lastErrorSummary: null, lastRowCount: 1 },
+      { scopeKey: raidsTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null, lastRowCount: 1 },
     ]);
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#2QG2C08UPP", discordUserId: "111111111111111111" },
@@ -65,6 +66,10 @@ describe("TrackedClanLeadersService", () => {
       { playerTag: "#PYLQ0289P", discordUserId: null },
     ]);
     memberRefreshMock.mockResolvedValue({ clanCount: 2, rowCount: 4, changedRowCount: 2, failedClans: [] });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("normalizes only current leader and co-leader roster roles", () => {
@@ -126,6 +131,66 @@ describe("TrackedClanLeadersService", () => {
     expect(failed.sections[0]?.clans[0]?.freshness).toBe("REFRESH_FAILED");
   });
 
+  it("does not treat a recent feed success as complete when current-member rows are missing", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
+      {
+        scopeKey: fwaTag,
+        lastAttemptAt: now,
+        lastSuccessAt: now,
+        lastStatus: "SUCCESS",
+        lastErrorSummary: null,
+        lastRowCount: 25,
+      },
+    ]);
+
+    const view = await loadTrackedClanLeadersView({ registry: "FWA", now });
+    expect(view.sections[0]?.clans[0]?.freshness).toBe("UNAVAILABLE");
+  });
+
+  it("uses the configured clan-member cadence for freshness", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    const observedAt = new Date(now.getTime() - 50 * 60 * 1000);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      { clanTag: fwaTag, playerTag: "#2QG2C08UPP", playerName: "Lead", role: "leader", sourceSyncedAt: observedAt },
+    ]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
+      { scopeKey: fwaTag, lastAttemptAt: observedAt, lastSuccessAt: observedAt, lastStatus: "NOOP", lastErrorSummary: null, lastRowCount: 1 },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+
+    const defaultCadence = await loadTrackedClanLeadersView({ registry: "FWA", now });
+    expect(defaultCadence.sections[0]?.clans[0]?.freshness).toBe("STALE");
+
+    vi.stubEnv("FWA_CLAN_MEMBERS_SYNC_MINUTES", "60");
+    const configuredCadence = await loadTrackedClanLeadersView({ registry: "FWA", now });
+    expect(configuredCadence.sections[0]?.clans[0]?.freshness).toBe("CURRENT");
+  });
+
+  it("treats invalid linked Discord IDs as unlinked", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      { clanTag: fwaTag, playerTag: "#2QG2C08UPP", playerName: "Invalid Link", role: "leader", sourceSyncedAt: now },
+    ]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
+      { scopeKey: fwaTag, lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null, lastRowCount: 1 },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#2QG2C08UPP", discordUserId: "not-a-discord-id" },
+    ]);
+
+    const view = await loadTrackedClanLeadersView({ registry: "FWA", now });
+    expect(view.sections[0]?.clans[0]?.leaderGroups[0]).toEqual({
+      discordUserId: null,
+      hasLeader: true,
+      accounts: [expect.objectContaining({ playerName: "Invalid Link", discordUserId: null })],
+    });
+  });
+
   it("deduplicates refresh requests for clans present in multiple registries and preserves partial failures", async () => {
     prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
       { season: "2026-10", tag: fwaTag, name: "CWL Same Clan", leagueLabel: null, createdAt: new Date("2026-10-02") },
@@ -144,5 +209,30 @@ describe("TrackedClanLeadersService", () => {
     expect(result.view.sections.flatMap((section) => section.clans).find((clan) => clan.clanTag === cwlTag)?.freshness).toBe("CURRENT");
     expect(result.view.sections.flatMap((section) => section.clans).find((clan) => clan.clanTag === raidsTag)?.freshness).toBe("CURRENT");
     expect(queueMock).toHaveBeenCalledWith(expect.objectContaining({ priority: "interactive" }), expect.any(Function));
+  });
+
+  it("preserves persisted freshness in mirror mode", async () => {
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    vi.stubEnv("POLLING_MODE", "mirror");
+
+    const result = await refreshTrackedClanLeadersWithQueueContext({ cocService: {} as any, now });
+    expect(result.blockedReason).toBe("MIRROR_MODE_DISABLED");
+    expect(result.failedClanTags).toEqual([]);
+    expect(result.view.sections[0]?.clans[0]?.freshness).toBe("CURRENT");
+    expect(memberRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it("logs FAILURE when every refresh fails", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([]);
+    memberRefreshMock.mockResolvedValue({ clanCount: 0, rowCount: 0, changedRowCount: 0, failedClans: [fwaTag] });
+
+    const result = await refreshTrackedClanLeadersWithQueueContext({ cocService: {} as any, now });
+    expect(result.refreshedClanTags).toEqual([]);
+    expect(result.failedClanTags).toEqual([fwaTag]);
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("status=FAILURE"));
+    infoSpy.mockRestore();
   });
 });

@@ -1410,9 +1410,9 @@ async function runTrackedClanLeadersList(input: {
           page = Math.min(page, pages.length - 1);
           refreshing = false;
           await input.interaction.editReply(render());
-          if (refreshResult.failedClanTags.length > 0) {
+          if (refreshResult.blockedReason === "MIRROR_MODE_DISABLED" || refreshResult.failedClanTags.length > 0) {
             const failureMessage = refreshResult.blockedReason === "MIRROR_MODE_DISABLED"
-              ? "Leaders refresh is disabled while polling mode is mirror. Persisted results are labeled as not confirmed current."
+              ? "Leaders refresh is disabled while polling mode is mirror. Persisted freshness was preserved."
               : `Failed to refresh leadership roster for: ${formatTagListForSummary(refreshResult.failedClanTags)}`;
             await button.followUp({ content: failureMessage, ephemeral: true, allowedMentions });
           }

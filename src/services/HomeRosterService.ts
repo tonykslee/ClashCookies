@@ -172,7 +172,7 @@ export function getHomeRosterCoverage(input: {
 }
 
 /** Purpose: read the configured CLAN_MEMBERS cadence using the scheduler's safe minimum. */
-function getConfiguredClanMembersCadenceMinutes(): number {
+export function getConfiguredClanMembersCadenceMinutes(): number {
   const configured = Number(process.env.FWA_CLAN_MEMBERS_SYNC_MINUTES ?? HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES);
   return Number.isFinite(configured) && configured > 0
     ? Math.max(HOME_ROSTER_COVERAGE_MIN_CADENCE_MINUTES, configured)

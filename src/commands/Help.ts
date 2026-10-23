@@ -318,7 +318,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "`display:detailed` opens the drilldown. detailed FWA shows the persisted channel destinations including `chatChannel`, still shows `leadRole`, and renders configured reps in a single inline code block for direct `/clan configure reps:` copy/paste.",
       "`display:leaders` is DB-first and shows current persisted roster `leader`/`coLeader` accounts for every selected FWA, current-season CWL, or RAIDS registry clan. It groups linked accounts by Discord user, keeps unlinked accounts visible, labels current/stale/unavailable/failed freshness explicitly, uses configured clan badges with registry-icon fallbacks, paginates deterministically, and provides an owner-only `Refresh Leaders` button that manually refreshes unique displayed tags through the interactive CoC queue without mention notifications.",
       "Detailed CWL shows the clan link/tag, CWL league emoji, spin status emoji, observed CWL roster count, current clan member count, and active roster link/title with a manual refresh button. CWL minimal and detailed rows sort by assigned roster league/division and bracket, falling back to the actual league label when roster titles are missing or unparseable.",
-      "Detailed RAIDS keeps its refresh button. If `type` is omitted, `display` is ignored.",
+      "Detailed RAIDS keeps its refresh button. If `type` is omitted, `display` is ignored except for `display:leaders`, which combines all three registries.",
       "`remove` supports deterministic FWA/CWL/RAIDS deletion; when a tag exists in more than one registry, pass `type` explicitly.",
       "`configure`, `cwl-tags`, `raid-tags`, and `remove` are admin-only by default.",
     ],

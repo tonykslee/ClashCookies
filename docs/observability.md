@@ -70,7 +70,7 @@ Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup
 
 ### Tracked-clan leaders view
 
-`/clan list display:leaders` emits bounded `[tracked-clan] event=leaders_refresh` lines for manual refresh lifecycle (`STARTED`, `SUCCESS`, `PARTIAL`, `FAILURE`, or `SKIPPED reason=mirror_mode`). Events contain only displayed and failed counts; player names, links, and Discord message content are not logged. Initial leaders rendering is DB-first and performs no CoC/FWAStats request. Manual refresh uses the interactive CoC queue with bounded clan concurrency, deduplicates normalized tags across registries, and preserves persisted results with explicit freshness labels when a clan refresh fails. Mirror mode remains read-only and marks refreshes as failed/not current instead of calling CoC.
+`/clan list display:leaders` emits bounded `[tracked-clan] event=leaders_refresh` lines for manual refresh lifecycle (`STARTED`, `SUCCESS`, `PARTIAL`, `FAILURE`, or `SKIPPED reason=mirror_mode`). Events contain only displayed and failed counts; player names, links, and Discord message content are not logged. Initial leaders rendering is DB-first and performs no CoC/FWAStats request. Manual refresh uses the interactive CoC queue with bounded clan concurrency, deduplicates normalized tags across registries, and preserves persisted results with explicit freshness labels when a clan refresh fails. Mirror mode remains read-only, preserves the persisted freshness state, and does not call CoC.
 
 ### FWA weight-alert delivery
 

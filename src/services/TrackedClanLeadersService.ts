@@ -2,7 +2,7 @@ import { prisma } from "../prisma";
 import { normalizeClanTag, normalizeDiscordUserId, normalizePlayerTag } from "./PlayerLinkService";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { normalizeRaidTrackedClanTag } from "./RaidTrackedClanService";
-import { getHomeRosterCoverage } from "./HomeRosterService";
+import { getConfiguredClanMembersCadenceMinutes, getHomeRosterCoverage } from "./HomeRosterService";
 import { CoCService } from "./CoCService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
@@ -129,13 +129,29 @@ function chooseObservedAt(rows: MemberRow[], feedState: any | null): Date | null
 function resolveFreshness(input: {
   observedAt: Date | null;
   feedState: any | null;
+  memberRowCount: number;
   now: Date;
   refreshSucceeded: boolean;
   refreshFailed: boolean;
 }): { freshness: TrackedClanLeadersFreshness; observedAt: Date | null; lastError: string | null } {
+  const persistedFeedRowCount = Number.isInteger(input.feedState?.lastRowCount)
+    ? Number(input.feedState.lastRowCount)
+    : null;
+  const hasCompleteRosterCoverage = persistedFeedRowCount === null
+    ? input.memberRowCount > 0
+    : input.memberRowCount === persistedFeedRowCount;
+
   if (input.refreshFailed) {
     return {
       freshness: "REFRESH_FAILED",
+      observedAt: input.observedAt,
+      lastError: normalizeText(input.feedState?.lastErrorSummary),
+    };
+  }
+
+  if (!hasCompleteRosterCoverage) {
+    return {
+      freshness: input.memberRowCount === 0 ? "UNAVAILABLE" : "STALE",
       observedAt: input.observedAt,
       lastError: normalizeText(input.feedState?.lastErrorSummary),
     };
@@ -160,6 +176,7 @@ function resolveFreshness(input: {
   const coverage = getHomeRosterCoverage({
     lastSuccessAt: input.observedAt,
     now: input.now,
+    cadenceMinutes: getConfiguredClanMembersCadenceMinutes(),
   }).coverage;
   return {
     freshness: feedFailedAfterObservation || coverage === "STALE" ? "STALE" : "CURRENT",
@@ -309,7 +326,14 @@ export async function loadTrackedClanLeadersView(input?: {
         scopeType: "CLAN_TAG",
         scopeKey: { in: displayedClanTags },
       },
-      select: { scopeKey: true, lastAttemptAt: true, lastSuccessAt: true, lastStatus: true, lastErrorSummary: true },
+      select: {
+        scopeKey: true,
+        lastAttemptAt: true,
+        lastSuccessAt: true,
+        lastStatus: true,
+        lastErrorSummary: true,
+        lastRowCount: true,
+      },
     }),
   ]);
 
@@ -335,8 +359,7 @@ export async function loadTrackedClanLeadersView(input?: {
   for (const row of playerLinks as Array<{ playerTag: string; discordUserId: string | null }>) {
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!playerTag) continue;
-    const rawUserId = String(row.discordUserId ?? "").trim();
-    playerLinkByTag.set(playerTag, rawUserId ? normalizeDiscordUserId(rawUserId) ?? rawUserId : null);
+    playerLinkByTag.set(playerTag, normalizeDiscordUserId(row.discordUserId));
   }
 
   const trackedByTag = new Map<string, { name: string | null; clanBadge: string | null }>();
@@ -345,7 +368,14 @@ export async function loadTrackedClanLeadersView(input?: {
     if (clanTag) trackedByTag.set(clanTag, { name: normalizeText(row.name), clanBadge: normalizeText(row.clanBadge) });
   }
   const feedStateByTag = new Map<string, any>();
-  for (const row of feedStates as Array<{ scopeKey: string; lastAttemptAt: Date | null; lastSuccessAt: Date | null; lastStatus: string; lastErrorSummary: string | null }>) {
+  for (const row of feedStates as Array<{
+    scopeKey: string;
+    lastAttemptAt: Date | null;
+    lastSuccessAt: Date | null;
+    lastStatus: string;
+    lastErrorSummary: string | null;
+    lastRowCount: number | null;
+  }>) {
     const clanTag = normalizeClanTag(row.scopeKey);
     if (clanTag) feedStateByTag.set(clanTag, row);
   }
@@ -361,6 +391,7 @@ export async function loadTrackedClanLeadersView(input?: {
     const freshness = resolveFreshness({
       observedAt,
       feedState,
+      memberRowCount: clanRows.length,
       now,
       refreshSucceeded: refreshSucceeded.has(row.clanTag),
       refreshFailed: refreshFailed.has(row.clanTag),
@@ -408,9 +439,9 @@ export async function refreshTrackedClanLeadersWithQueueContext(input: {
   if (!isActivePollingMode()) {
     console.warn(`[tracked-clan] event=leaders_refresh status=SKIPPED reason=mirror_mode displayed_count=${clanTags.length}`);
     return {
-      view: await loadTrackedClanLeadersView({ registry: input.registry ?? null, season: input.season, now: input.now, refreshFailedTags: clanTags }),
+      view: initialView,
       refreshedClanTags: [],
-      failedClanTags: clanTags,
+      failedClanTags: [],
       blockedReason: "MIRROR_MODE_DISABLED",
     };
   }
@@ -439,6 +470,11 @@ export async function refreshTrackedClanLeadersWithQueueContext(input: {
     refreshSucceededTags: refreshedClanTags,
     refreshFailedTags: failedClanTags,
   });
-  console.info(`[tracked-clan] event=leaders_refresh status=${failedClanTags.length > 0 ? "PARTIAL" : "SUCCESS"} displayed_count=${clanTags.length} failed_count=${failedClanTags.length}`);
+  const refreshStatus = failedClanTags.length === 0
+    ? "SUCCESS"
+    : refreshedClanTags.length === 0
+      ? "FAILURE"
+      : "PARTIAL";
+  console.info(`[tracked-clan] event=leaders_refresh status=${refreshStatus} displayed_count=${clanTags.length} failed_count=${failedClanTags.length}`);
   return { view, refreshedClanTags, failedClanTags, blockedReason: null };
 }

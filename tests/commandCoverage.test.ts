@@ -266,7 +266,9 @@ describe("command coverage", () => {
     expect(clanHelpText).toContain("display:minimal|detailed|leaders");
     expect(clanHelpText).toContain("`display:leaders` is DB-first");
     expect(clanHelpText.toLowerCase()).toContain("default `minimal`");
-    expect(clanHelpText.toLowerCase()).toContain("if `type` is omitted, `display` is ignored");
+    expect(clanHelpText.toLowerCase()).toContain(
+      "if `type` is omitted, `display` is ignored except for `display:leaders`, which combines all three registries",
+    );
     expect(clanHelpText).toContain("member-count `Refresh` button");
     expect(clanHelpText).toContain("short league abbreviation");
     expect(clanHelpText).toContain("CWL minimal `Refresh` force-refreshes placement, member counts, and live CWL status");

@@ -3863,7 +3863,7 @@ describe("/clan command behavior", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#2QG2C08UPP", discordUserId: "111111111111111111" },
       { playerTag: "#2QG2C08UPY", discordUserId: "111111111111111111" },
-      { playerTag: "#PYLQ0289P", discordUserId: null },
+      { playerTag: "#PYLQ0289P", discordUserId: "not-a-discord-id" },
     ]);
 
     const interaction = createInteraction({ subcommand: "list", strings: { display: "leaders" } });
@@ -3877,6 +3877,7 @@ describe("/clan command behavior", () => {
     expect(description).toContain("Lead\\*One");
     expect(description).toContain("CoTwo");
     expect(description).toContain("Co-leader: Unlinked Co");
+    expect(description).not.toContain("<@not-a-discord-id>");
     expect(description).toContain("Leadership: no current leader/co-leader accounts found.");
     expect(description).not.toContain("Elder");
     expect(interaction.editReply.mock.calls[0]?.[0]?.allowedMentions).toEqual({ users: [], roles: [] });
