@@ -611,6 +611,22 @@ describe("/raids command", () => {
     );
   });
 
+  it("returns a clear deferred-reply error when all overview history requests fail", async () => {
+    const cocService = {
+      getClanCapitalRaidSeasons: vi.fn().mockRejectedValue(new Error("upstream unavailable")),
+      getClan: vi.fn(),
+    };
+    const interaction = makeChatInteraction();
+
+    await Raids.run({} as any, interaction as any, cocService as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Raid weekend data is temporarily unavailable. Please try again shortly.",
+      ephemeral: true,
+    });
+    expect(interaction.editReply.mock.calls[0]?.[0]?.embeds).toBeUndefined();
+  });
+
   it("defaults between weekends to the latest completed weekend", async () => {
     vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
     const latestCompleted = makeRaidWeekend("2026-05-08T00:00:00.000Z", 6);

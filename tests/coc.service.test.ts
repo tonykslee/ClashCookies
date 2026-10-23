@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import axios from "axios";
 import { runWithCoCQueueContext } from "../src/services/CoCQueueContext";
 
 vi.mock("../src/services/CoCRequestQueueService", () => ({
@@ -18,6 +19,8 @@ describe("CoCService current war error wrapping", () => {
 
   afterEach(() => {
     process.env.COC_API_TOKEN = envSnapshot;
+    delete process.env.COC_API_REQUEST_TIMEOUT_MS;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -92,4 +95,23 @@ describe("CoCService current war error wrapping", () => {
       clanCapitalContributions: 77,
     });
   });
+
+  it("preserves the upstream HTTP status on raid-history failures", async () => {
+    vi.spyOn(axios, "get").mockRejectedValue({
+      message: "Request failed with status code 429",
+      response: { status: 429, data: { message: "Rate limit exceeded" } },
+    });
+    const service = new CoCService();
+
+    await expect(
+      runWithCoCQueueContext(
+        { priority: "interactive", source: "test" },
+        () => service.getClanCapitalRaidSeasons("#ABC123"),
+      ),
+    ).rejects.toMatchObject({
+      status: 429,
+      response: { status: 429 },
+    });
+  });
+
 });

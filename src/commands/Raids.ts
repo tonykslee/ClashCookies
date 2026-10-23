@@ -34,6 +34,7 @@ import {
   loadRaidDashboardSeasonDetailWithQueueContext,
   parseRaidSeasonTimeMs,
   RAID_DASHBOARD_HISTORY_LIMIT,
+  RaidDashboardDataUnavailableError,
   resolveRaidIntelDefenderUpgrade,
   type RaidDashboardOverviewSourceMode,
   type RaidDashboardClanRow,
@@ -1545,20 +1546,22 @@ export const Raids: Command = {
         return;
       }
 
-      const overview = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      const overviewStartedAtMs = Date.now();
+      try {
+        const overview = await loadRaidDashboardOverviewForSourceWithQueueContext({
         cocService,
         guildId: interaction.guildId ?? null,
         sourceMode,
         customClanTag: sourceMode === "custom" ? requestedClan ?? null : null,
-      });
-      const rows = overview.rows;
-      if (rows.length <= 0) {
+        });
+        const rows = overview.rows;
+        if (rows.length <= 0) {
         await safeReply(interaction, {
           ephemeral: true,
           content: getRaidsOverviewNoRowsMessage(sourceMode),
         });
         return;
-      }
+        }
 
       const requestedSelection = requestedClan;
       const selectedRow = requestedSelection ? findRaidDashboardClanRow(rows, requestedSelection) : null;
@@ -1599,10 +1602,32 @@ export const Raids: Command = {
         season: overview,
         detailSource: selectedRow ? "raids:overview:detail" : null,
       });
-      await interaction.editReply({
-        embeds: payload.embeds,
-        components: payload.components,
-      });
+        await interaction.editReply({
+          embeds: payload.embeds,
+          components: payload.components,
+        });
+        console.info(
+          `[raids] event=overview_complete source=${sourceMode} guild=${interaction.guildId ?? "dm"} clans=${rows.length} selected_weekend=${overview.selectedRaidSeasonStartTimeMs ?? "none"} duration_ms=${Date.now() - overviewStartedAtMs}`,
+        );
+      } catch (err) {
+        if (err instanceof RaidDashboardDataUnavailableError) {
+          console.warn(
+            `[raids] event=overview_failed source=${sourceMode} guild=${interaction.guildId ?? "dm"} clans=${err.clanCount} histories_failed=${err.failedHistoryCount} status=upstream_unavailable duration_ms=${Date.now() - overviewStartedAtMs}`,
+          );
+          await safeReply(interaction, {
+            ephemeral: true,
+            content: "Raid weekend data is temporarily unavailable. Please try again shortly.",
+          });
+          return;
+        }
+        console.error(
+          `[raids] event=overview_failed source=${sourceMode} guild=${interaction.guildId ?? "dm"} status=error duration_ms=${Date.now() - overviewStartedAtMs} error=${formatError(err)}`,
+        );
+        await safeReply(interaction, {
+          ephemeral: true,
+          content: "Failed to load the raid overview. Please try again shortly.",
+        });
+      }
       return;
     }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CoCQueueRequestTimeoutError,
   CoCQueueSkippedError,
   CoCRequestQueueService,
   resolveCoCQueueLogLevelForTest,
@@ -183,6 +184,136 @@ describe("CoCRequestQueueService", () => {
     expect(order).toEqual(["int1", "int2", "bg1", "bg2"]);
   });
 
+  it("starts the request timeout when dispatch begins, not while the task is queued", async () => {
+    const queue = new CoCRequestQueueService();
+    let releaseFirst: (() => void) | null = null;
+    const firstTaskGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let healthyStarted = false;
+
+    const firstPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:blocking",
+      operation: "blocking_request",
+      run: async () => {
+        await firstTaskGate;
+        return "first";
+      },
+    });
+    const healthyPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:queued",
+      operation: "queued_request",
+      requestTimeoutMs: 1_000,
+      run: async () => {
+        healthyStarted = true;
+        return "healthy";
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(healthyStarted).toBe(false);
+    expect(queue.getStatus().inFlight).toBe(1);
+
+    releaseFirst?.();
+    await vi.runAllTimersAsync();
+    await expect(Promise.all([firstPromise, healthyPromise])).resolves.toEqual([
+      "first",
+      "healthy",
+    ]);
+    expect(healthyStarted).toBe(true);
+  });
+
+  it("aborts a slow in-flight request and leaves no orphaned queue work", async () => {
+    const queue = new CoCRequestQueueService();
+    let aborted = false;
+    let healthyStarted = false;
+    const slowPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:slow",
+      operation: "slow_request",
+      requestTimeoutMs: 1_000,
+      run: (signal) =>
+        new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("request aborted"));
+          });
+        }),
+    });
+
+    const rejection = expect(slowPromise).rejects.toBeInstanceOf(CoCQueueRequestTimeoutError);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejection;
+    expect(aborted).toBe(true);
+    expect(queue.getStatus().inFlight).toBe(0);
+
+    const healthyPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:after_slow",
+      operation: "healthy_request",
+      requestTimeoutMs: 1_000,
+      run: async () => {
+        healthyStarted = true;
+        return "healthy";
+      },
+    });
+    await vi.runAllTimersAsync();
+    await expect(healthyPromise).resolves.toBe("healthy");
+    expect(healthyStarted).toBe(true);
+  });
+
+  it("does not cancel a request or start HTTP work while it is queued", async () => {
+    const queue = new CoCRequestQueueService();
+    let releaseFirst: (() => void) | null = null;
+    const firstTaskGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let queuedStarted = false;
+    let queuedAborted = false;
+
+    const firstPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:blocking",
+      operation: "blocking_request",
+      run: async () => {
+        await firstTaskGate;
+        return "first";
+      },
+    });
+    const queuedPromise = queue.enqueue({
+      priority: "interactive",
+      source: "slash:queued",
+      operation: "queued_request",
+      requestTimeoutMs: 1_000,
+      run: async (signal) => {
+        queuedStarted = true;
+        signal.addEventListener("abort", () => {
+          queuedAborted = true;
+        });
+        return "queued";
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(queuedStarted).toBe(false);
+    expect(queuedAborted).toBe(false);
+    expect(queue.getStatus().queueDepth).toBe(1);
+
+    releaseFirst?.();
+    await vi.runAllTimersAsync();
+    await expect(Promise.all([firstPromise, queuedPromise])).resolves.toEqual([
+      "first",
+      "queued",
+    ]);
+    expect(queuedStarted).toBe(true);
+    expect(queuedAborted).toBe(false);
+  });
+
   it("keeps one shared penalty/spacing owner across background and interactive work", async () => {
     const queue = new CoCRequestQueueService();
     let failureSeenAtMs = 0;
@@ -211,6 +342,7 @@ describe("CoCRequestQueueService", () => {
       priority: "interactive",
       source: "slash:after_429",
       operation: "command_after_429",
+      requestTimeoutMs: 100,
       run: async () => {
         interactiveStartedAtMs = Date.now();
         return "ok";

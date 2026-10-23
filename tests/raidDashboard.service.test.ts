@@ -3012,6 +3012,126 @@ describe("RaidDashboardService", () => {
     expect(clanB?.raidMedalEstimate).toBeNull();
   });
 
+  it("fails the overview clearly when every raid history request fails", async () => {
+    const getSeasons = vi.fn().mockRejectedValue(new Error("upstream unavailable"));
+
+    await expect(
+      loadRaidDashboardOverviewForSourceWithQueueContext({
+        cocService: { getClanCapitalRaidSeasons: getSeasons } as any,
+        sourceMode: "custom",
+        customClanTag: "2QG2C08UP",
+        guildId: "guild-1",
+      }),
+    ).rejects.toMatchObject({
+      name: "RaidDashboardDataUnavailableError",
+      clanCount: 1,
+      failedHistoryCount: 1,
+    });
+    expect(prismaMock.raidIntelDistrictLayoutMark.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.raidIntelDefenderProfile.findMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "401", error: { response: { status: 401 } }, code: "HTTP_401", category: "permission" },
+    { label: "403", error: { response: { status: 403 } }, code: "HTTP_403", category: "permission" },
+    { label: "429", error: { response: { status: 429 } }, code: "HTTP_429", category: "validation" },
+    { label: "timeout", error: { code: "ETIMEDOUT" }, code: "ETIMEDOUT", category: "timeout" },
+    {
+      label: "invalid response",
+      error: { code: "COC_INVALID_RESPONSE" },
+      code: "COC_INVALID_RESPONSE",
+      category: "validation",
+    },
+    { label: "unknown", error: new Error("upstream unavailable"), code: "INTERNAL_ERROR", category: "internal" },
+  ])("keeps $label raid-history failures in the shared diagnostic taxonomy", async ({ error, code, category }) => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      loadRaidDashboardOverviewForSourceWithQueueContext({
+        cocService: {
+          getClanCapitalRaidSeasons: vi.fn().mockRejectedValue(error),
+        } as any,
+        sourceMode: "custom",
+        customClanTag: "2QG2C08UP",
+        guildId: "guild-1",
+      }),
+    ).rejects.toMatchObject({ name: "RaidDashboardDataUnavailableError" });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`failure_codes=${code}`),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`failure_categories=${category}`),
+    );
+  });
+
+  it("marks partial raid history failures unavailable without borrowing another clan's data", async () => {
+    prismaMock.raidTrackedClan.findMany.mockResolvedValueOnce([
+      {
+        clanTag: "2QG2C08UP",
+        name: "Available Source",
+        upgrades: 2210,
+        joinType: "open",
+        createdAt: new Date("2026-05-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+      {
+        clanTag: "2RVGJYLC0",
+        name: "Unavailable Source",
+        upgrades: 2220,
+        joinType: "open",
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-08T11:00:00.000Z"),
+      },
+    ]);
+    prismaMock.raidIntelDefenderProfile.findMany.mockResolvedValueOnce([
+      { defenderTag: "2QG2C08UR", upgrades: 2393 },
+    ]);
+    const season = {
+      startTime: "2026-05-08T00:00:00.000Z",
+      endTime: "2026-05-11T00:00:00.000Z",
+      state: "ongoing",
+      attackLog: [
+        { defender: { name: "Opponent", tag: "#2QG2C08UR" }, districts: [] },
+      ],
+      defenseLog: [],
+    };
+    const getSeasons = vi.fn(async (tag: string) => {
+      if (tag === "#2QG2C08UP") return [season];
+      throw new Error("history request failed");
+    });
+
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: { getClanCapitalRaidSeasons: getSeasons } as any,
+      sourceMode: "raids",
+      guildId: "guild-1",
+      nowMs: Date.parse("2026-05-08T12:00:00.000Z"),
+    });
+    const available = result.rows.find((row) => row.clanTag === "2QG2C08UP");
+    const unavailable = result.rows.find((row) => row.clanTag === "2RVGJYLC0");
+    const overview = buildRaidDashboardOverviewDescription(result.rows);
+
+    expect(available?.raidIntelDefenderUpgrades).toBe(2393);
+    expect(unavailable?.raidHistoryStatus).toBe("failed");
+    expect(unavailable?.raidIntelDefenderUpgrades).toBeNull();
+    expect(overview).toContain("🏘️ 2393 | defaults: 0 | —");
+    expect(overview).toContain("⚠️ Raid data unavailable for the selected weekend.");
+  });
+
+  it("distinguishes genuine empty raid history from an upstream failure", async () => {
+    const result = await loadRaidDashboardOverviewForSourceWithQueueContext({
+      cocService: { getClanCapitalRaidSeasons: vi.fn().mockResolvedValue([]) } as any,
+      sourceMode: "custom",
+      customClanTag: "2QG2C08UP",
+      guildId: "guild-1",
+    });
+
+    expect(result.rows[0]?.raidHistoryStatus).toBe("empty");
+    expect(buildRaidDashboardOverviewDescription(result.rows)).toContain(
+      "ℹ️ No Raid Weekend data available for the selected weekend.",
+    );
+  });
+
   it("keeps active selected-weekend hit-history persistence enabled", async () => {
     const activeSeason = {
       startTime: "2026-08-14T00:00:00.000Z",
