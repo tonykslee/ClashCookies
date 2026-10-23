@@ -66,6 +66,9 @@ const prismaMock = vi.hoisted(() => {
       findMany: vi.fn(),
       groupBy: vi.fn(),
     },
+    fwaFeedSyncState: {
+      findMany: vi.fn(),
+    },
     playerLink: {
       findMany: vi.fn(),
     },
@@ -199,6 +202,7 @@ vi.mock("../src/services/TrackedClanRepService", async () => {
 
 import {
   TrackedClan,
+  buildTrackedClanLeadersPages,
   refreshRaidTrackedClanListWithQueueContext,
 } from "../src/commands/TrackedClan";
 
@@ -317,6 +321,7 @@ describe("/clan command behavior", () => {
     prismaMock.todoPlayerSnapshot.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.groupBy.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRepUserProfile.findMany.mockResolvedValue([]);
@@ -3830,5 +3835,102 @@ describe("/clan command behavior", () => {
     expect(description).not.toContain(":beta:");
     expect(description).not.toContain("#2QG2C08UP");
   });
+
+  it("renders leaders for all registries from current roster roles and grouped links without notifying", async () => {
+    const now = new Date("2026-03-26T00:00:00.000Z");
+    prismaMock.trackedClan.findMany.mockImplementation(async (args: any) =>
+      args?.where?.tag?.in
+        ? [{ tag: "#2QG2C08UP", name: "Configured FWA", clanBadge: ":fwa:" }]
+        : [{ tag: "#2QG2C08UP", name: "FWA Alpha", clanBadge: ":fwa:" }],
+    );
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([
+      { season: "2026-03", tag: "#PYLQ0289", name: "CWL Alpha", leagueLabel: "Crystal League II", createdAt: now },
+    ]);
+    prismaMock.raidTrackedClan.findMany.mockResolvedValue([
+      { clanTag: "2RVGJYLC0", name: "Raid Alpha", createdAt: now },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      { clanTag: "#2QG2C08UP", playerTag: "#2QG2C08UPP", playerName: "Lead*One", role: "leader", sourceSyncedAt: now },
+      { clanTag: "#2QG2C08UP", playerTag: "#2QG2C08UPY", playerName: "CoTwo", role: "co-leader", sourceSyncedAt: now },
+      { clanTag: "#PYLQ0289", playerTag: "#PYLQ0289P", playerName: "Unlinked Co", role: "coLeader", sourceSyncedAt: now },
+      { clanTag: "2RVGJYLC0", playerTag: "#2RVGJYLC0P", playerName: "Member", role: "member", sourceSyncedAt: now },
+    ]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([
+      { scopeKey: "#2QG2C08UP", lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null },
+      { scopeKey: "#PYLQ0289", lastAttemptAt: now, lastSuccessAt: now, lastStatus: "SUCCESS", lastErrorSummary: null },
+      { scopeKey: "#2RVGJYLC0", lastAttemptAt: now, lastSuccessAt: now, lastStatus: "NOOP", lastErrorSummary: null },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#2QG2C08UPP", discordUserId: "111111111111111111" },
+      { playerTag: "#2QG2C08UPY", discordUserId: "111111111111111111" },
+      { playerTag: "#PYLQ0289P", discordUserId: "not-a-discord-id" },
+    ]);
+
+    const interaction = createInteraction({ subcommand: "list", strings: { display: "leaders" } });
+    await TrackedClan.run({} as any, interaction as any, {} as any);
+
+    const description = getFirstEmbedDescription(interaction);
+    expect(description.indexOf("**FWA**")).toBeLessThan(description.indexOf("**CWL**"));
+    expect(description.indexOf("**CWL**")).toBeLessThan(description.indexOf("**RAIDS**"));
+    expect(description).toContain(":fwa: [FWA Alpha]");
+    expect(description).toContain("👑 Leader: <@111111111111111111>");
+    expect(description).toContain("Lead\\*One");
+    expect(description).toContain("CoTwo");
+    expect(description).toContain("Co-leader: Unlinked Co");
+    expect(description).not.toContain("<@not-a-discord-id>");
+    expect(description).toContain("Leadership: no current leader/co-leader accounts found.");
+    expect(description).not.toContain("Elder");
+    expect(interaction.editReply.mock.calls[0]?.[0]?.allowedMentions).toEqual({ users: [], roles: [] });
+    expect(interaction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
+      "Refresh Leaders",
+    );
+  });
+
+  it("paginates leaders without dropping clans or accounts", () => {
+    const view = {
+      season: "2026-03",
+      totalClanCount: 1,
+      displayedClanTags: ["#2QG2C08UP"],
+      sections: [
+        {
+          registry: "FWA" as const,
+          clans: [
+            {
+              registry: "FWA" as const,
+              clanTag: "#2QG2C08UP",
+              name: "Pagination Clan",
+              clanBadge: null,
+              registryIcon: "🛡️",
+              leagueLabel: null,
+              freshness: "CURRENT" as const,
+              observedAt: new Date("2026-03-26T00:00:00.000Z"),
+              lastError: null,
+              leaderGroups: Array.from({ length: 180 }, (_, index) => ({
+                discordUserId: null,
+                hasLeader: true,
+                accounts: [
+                  {
+                    playerTag: `#PYLQ${String(index).padStart(4, "0")}`,
+                    playerName: `Leader${index}`,
+                    role: "leader" as const,
+                    discordUserId: null,
+                  },
+                ],
+              })),
+            },
+          ],
+        },
+      ],
+    };
+
+    const pages = buildTrackedClanLeadersPages(view);
+    const combined = pages.join("\n");
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.length <= 3900)).toBe(true);
+    for (let index = 0; index < 180; index += 1) {
+      expect(combined).toContain(`Leader${index}`);
+    }
+  });
+
 });
 
