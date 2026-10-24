@@ -903,7 +903,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Retrospective metrics are persisted historical facts. Coverage is shown for partial data; `—` means historical data is unavailable or incomplete rather than zero.",
       "The retrospective is DB-first, mirror-safe, and does not claim coverage for periods before the historical snapshot/war evidence was introduced.",
       "`/sync spin status` shows the compact tracked Sync Spin Status for the stored active sync post, or a provided message ID.",
-      "`/sync post status` scans the live sync message reactions directly and shows claimed vs unclaimed clans, unavailable users, and leader eligibility details. Its owner-only `View Co-Leaders` toggle lazily reads the persisted current roster and linked accounts without making a live CoC request.",
+      "`/sync post status` scans the live sync message reactions directly and shows claimed vs unclaimed clans, unavailable users, and leader eligibility details. Its owner-only `Leaders` toggle lazily reads the persisted current roster and linked accounts without making a live CoC request.",
       "`sync time` is admin-only by default.",
     ],
     examples: [
