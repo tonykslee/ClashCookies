@@ -6,6 +6,8 @@ import {
 } from "../src/services/TrackedMessageService";
 import { BotLogChannelService } from "../src/services/BotLogChannelService";
 
+const leadershipLookupMock = vi.hoisted(() => vi.fn());
+
 const prismaMock = vi.hoisted(() => ({
   trackedMessage: {
     findMany: vi.fn(),
@@ -21,10 +23,20 @@ const prismaMock = vi.hoisted(() => ({
     deleteMany: vi.fn(),
     upsert: vi.fn(),
   },
+  fwaClanMemberCurrent: {
+    findMany: vi.fn(),
+  },
+  playerLink: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
   prisma: prismaMock,
+}));
+
+vi.mock("../src/services/ClanLeadershipLookupService", () => ({
+  lookupClanLeadershipForPairs: leadershipLookupMock,
 }));
 
 function makeMetadata() {
@@ -109,6 +121,29 @@ function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>
   });
 }
 
+function makeLeadershipEntry(input: {
+  clanTag: string;
+  discordUserId: string;
+  rosterAvailable?: boolean;
+  accounts?: Array<{ playerTag: string; playerName: string; role: "leader" | "coLeader" }>;
+}) {
+  return {
+    clanTag: input.clanTag,
+    discordUserId: input.discordUserId,
+    rosterAvailable: input.rosterAvailable ?? true,
+    observedAt: new Date("2026-03-19T15:20:00.000Z"),
+    accounts: (input.accounts ?? []).map((account) => ({
+      ...account,
+      clanTag: input.clanTag,
+      discordUserId: input.discordUserId,
+    })),
+  };
+}
+
+function getDmContent(send: ReturnType<typeof vi.fn>): string {
+  return send.mock.calls[0]?.[0]?.content ?? "";
+}
+
 describe("TrackedMessageService sync spin status", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -119,7 +154,138 @@ describe("TrackedMessageService sync spin status", () => {
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
     prismaMock.trackedMessage.updateMany.mockResolvedValue({ count: 0 });
+    leadershipLookupMock.mockResolvedValue({ entries: [] });
     vi.spyOn(BotLogChannelService.prototype, "getChannelIdForType").mockResolvedValue(null);
+  });
+
+  it("enriches one aggregated reminder DM with linked leader and co-leader names", async () => {
+    const userId = "111111111111111111";
+    const otherUserId = "222222222222222222";
+    const trackedRow = makeTrackedRow({
+      claims: [
+        { clanTag: "#PYLQ", userId },
+        { clanTag: "#PYLQ", userId },
+        { clanTag: "#PYLG", userId },
+        { clanTag: "#PYLG", userId: otherUserId },
+      ],
+    });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const otherUserSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({
+      userById: {
+        [userId]: { send: userSend },
+        [otherUserId]: { send: otherUserSend },
+      },
+    });
+    leadershipLookupMock.mockResolvedValue({
+      entries: [
+        makeLeadershipEntry({
+          clanTag: "#PYLQ",
+          discordUserId: userId,
+          accounts: [
+            { playerTag: "#P1", playerName: "Lead*One", role: "leader" },
+            { playerTag: "#P2", playerName: "Co <@everyone>", role: "coLeader" },
+          ],
+        }),
+        makeLeadershipEntry({
+          clanTag: "#PYLG",
+          discordUserId: userId,
+          accounts: [{ playerTag: "#P3", playerName: "Second Clan Co", role: "coLeader" }],
+        }),
+        makeLeadershipEntry({
+          clanTag: "#PYLG",
+          discordUserId: otherUserId,
+          accounts: [{ playerTag: "#P4", playerName: "Other User", role: "leader" }],
+        }),
+      ],
+    });
+
+    await trackedMessageService.processDueSyncReminders(client);
+
+    const content = getDmContent(userSend);
+    expect(content).toContain("<@111111111111111111> sync reminder for <t:1742407800:F> (<t:1742407800:R>).");
+    expect(content).toContain("- Rocky Road (👑 Lead\\*One, Co \\<\\@everyone\\>)");
+    expect(content).toContain("- TheWiseCowboys (Second Clan Co)");
+    expect(content).not.toContain("#P1");
+    expect(content).not.toContain("Other User");
+    expect(content).not.toContain("co-leader");
+    expect(content).not.toContain("<@everyone>");
+    expect(content).toContain("\\@everyone");
+    expect(otherUserSend).toHaveBeenCalledTimes(1);
+    expect(leadershipLookupMock).toHaveBeenCalledTimes(1);
+    expect(leadershipLookupMock.mock.calls[0][0]).toHaveLength(3);
+  });
+
+  it("distinguishes an empty matching roster from an unavailable roster", async () => {
+    const userId = "333333333333333333";
+    const trackedRow = makeTrackedRow({
+      claims: [
+        { clanTag: "#PYLQ", userId },
+        { clanTag: "#PYLG", userId },
+      ],
+    });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({ userById: { [userId]: { send: userSend } } });
+    leadershipLookupMock.mockResolvedValue({
+      entries: [
+        makeLeadershipEntry({ clanTag: "#PYLQ", discordUserId: userId }),
+        makeLeadershipEntry({ clanTag: "#PYLG", discordUserId: userId, rosterAvailable: false }),
+      ],
+    });
+
+    await trackedMessageService.processDueSyncReminders(client);
+
+    const content = getDmContent(userSend);
+    expect(content).toContain("- Rocky Road (no linked leader/co-leader found)");
+    expect(content).toContain("- TheWiseCowboys (roster unavailable)");
+  });
+
+  it("falls back to claim counts when leadership enrichment fails", async () => {
+    const userId = "444444444444444444";
+    const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({ userById: { [userId]: { send: userSend } } });
+    leadershipLookupMock.mockRejectedValueOnce(new Error("lookup unavailable"));
+
+    await trackedMessageService.processDueSyncReminders(client);
+
+    expect(getDmContent(userSend)).toContain("- Rocky Road (1)");
+    expect(getDmContent(userSend)).not.toContain("roster unavailable");
+    expect(userSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds excessive linked account names without sending duplicate reminders", async () => {
+    const userId = "555555555555555555";
+    const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({ userById: { [userId]: { send: userSend } } });
+    leadershipLookupMock.mockResolvedValue({
+      entries: [makeLeadershipEntry({
+        clanTag: "#PYLQ",
+        discordUserId: userId,
+        accounts: Array.from({ length: 120 }, (_, index) => ({
+          playerTag: `#P${index}`,
+          playerName: `Very Long Linked Account Name ${index} with extra text`,
+          role: "coLeader" as const,
+        })),
+      })],
+    });
+
+    await trackedMessageService.processDueSyncReminders(client);
+
+    const content = getDmContent(userSend);
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content).toContain("Rocky Road");
+    expect(content).toContain("more");
+    expect(userSend).toHaveBeenCalledTimes(1);
   });
 
   it("posts the scheduled status embed once and reacts with every clan badge", async () => {

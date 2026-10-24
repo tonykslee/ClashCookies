@@ -1,6 +1,11 @@
 import { Client, EmbedBuilder } from "discord.js";
 import { Prisma } from "@prisma/client";
-import { normalizeClanTag } from "./PlayerLinkService";
+import { normalizeClanTag, normalizeDiscordUserId } from "./PlayerLinkService";
+import {
+  lookupClanLeadershipForPairs,
+  type ClanLeadershipLookupPair,
+  type ClanLeadershipLookupResult,
+} from "./ClanLeadershipLookupService";
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
@@ -522,6 +527,19 @@ function normalizeTagBare(tag: string): string {
     .trim()
     .replace(/^#/, "")
     .toUpperCase();
+}
+
+/** Purpose: use the same normalized clan/user identity for reminder enrichment as the shared lookup. */
+function syncReminderLeadershipPairKey(clanTag: string, discordUserId: string): string {
+  return `${normalizeClanTag(clanTag) || normalizeTagBare(clanTag)}:${discordUserId}`;
+}
+
+/** Purpose: escape player-controlled names before placing them in a reminder DM. */
+function escapeSyncReminderPlayerName(input: string): string {
+  const unsafeCharacters = new Set("\\`*_{}[]()#+-.!|>~<@".split(""));
+  return [...String(input ?? "")].map((character) =>
+    unsafeCharacters.has(character) ? `\\${character}` : character,
+  ).join("");
 }
 
 function normalizeChecklistClanTag(tag: string): string {
@@ -1918,6 +1936,101 @@ export function buildSyncSpinStatusEmbed(input: {
   return embed;
 }
 
+const SYNC_REMINDER_DM_CONTENT_LIMIT = 2000;
+
+type SyncReminderClanLine = {
+  clanName: string;
+  claimedCount: number;
+  exclusive: boolean;
+  rosterUnavailable: boolean;
+  enrichmentFailed: boolean;
+  accountNames: string[];
+};
+
+/** Purpose: build one bounded reminder line while making account-name overflow explicit. */
+function formatSyncReminderClanLine(
+  clan: SyncReminderClanLine,
+  displayedAccountCount: number,
+): string {
+  if (clan.enrichmentFailed) return `- ${clan.clanName} (${clan.claimedCount})`;
+  if (clan.rosterUnavailable) return `- ${clan.clanName} (roster unavailable)`;
+  if (clan.accountNames.length === 0) return `- ${clan.clanName} (no linked leader/co-leader found)`;
+  const displayedNames = clan.accountNames.slice(0, displayedAccountCount);
+  const hiddenCount = clan.accountNames.length - displayedNames.length;
+  const suffix = hiddenCount > 0 ? `, … +${hiddenCount} more` : "";
+  return `- ${clan.clanName} (${displayedNames.join(", ")}${suffix})`;
+}
+
+/** Purpose: preserve one DM per recipient while explicitly bounding excessive account-name output. */
+function buildSyncReminderDmContent(
+  userId: string,
+  syncEpochSeconds: number,
+  clans: SyncReminderClanLine[],
+): string {
+  const opening = `<@${userId}> sync reminder for <t:${syncEpochSeconds}:F> (<t:${syncEpochSeconds}:R>).`;
+  const prefix = [opening, "You opted into these clans:"];
+  const fullLines = clans.map((clan) => formatSyncReminderClanLine(clan, clan.accountNames.length));
+  const fullContent = [...prefix, ...fullLines].join("\n");
+  if (fullContent.length <= SYNC_REMINDER_DM_CONTENT_LIMIT) return fullContent;
+
+  const displayedCounts = clans.map(() => 0);
+  const boundedLines = () => clans.map((clan, index) => formatSyncReminderClanLine(clan, displayedCounts[index] ?? 0));
+  for (let clanIndex = 0; clanIndex < clans.length; clanIndex += 1) {
+    const clan = clans[clanIndex];
+    for (let accountIndex = 0; accountIndex < clan.accountNames.length; accountIndex += 1) {
+      displayedCounts[clanIndex] = accountIndex + 1;
+      if ([...prefix, ...boundedLines()].join("\n").length > SYNC_REMINDER_DM_CONTENT_LIMIT) {
+        displayedCounts[clanIndex] = accountIndex;
+        break;
+      }
+    }
+  }
+
+  const boundedContent = [...prefix, ...boundedLines()].join("\n");
+  if (boundedContent.length <= SYNC_REMINDER_DM_CONTENT_LIMIT) return boundedContent;
+
+  const minimalLines = clans.map((clan) => `- ${clan.clanName}`);
+  const minimalContent = [...prefix, ...minimalLines, "- Account details omitted due to message length; see the sync post for the complete list."].join("\n");
+  if (minimalContent.length <= SYNC_REMINDER_DM_CONTENT_LIMIT) return minimalContent;
+
+  // Clan names are persisted metadata and normally well below Discord's limit.
+  // If even the names cannot fit, make the omission explicit rather than cutting
+  // a clan line in the middle or silently dropping the remainder.
+  const overflowMarker = "- Additional claimed clans omitted due to message length; see the sync post for the complete list.";
+  const visibleLines: string[] = [];
+  let omittedClanCount = 0;
+  for (const line of minimalLines) {
+    const candidate = [...prefix, ...visibleLines, line, overflowMarker].join("\n");
+    if (candidate.length <= SYNC_REMINDER_DM_CONTENT_LIMIT) {
+      visibleLines.push(line);
+    } else {
+      omittedClanCount += 1;
+    }
+  }
+  const finalMarker = omittedClanCount > 0
+    ? `- ${omittedClanCount} additional claimed clan${omittedClanCount === 1 ? "" : "s"} omitted due to message length; see the sync post for the complete list.`
+    : overflowMarker;
+  return [...prefix, ...visibleLines, finalMarker].join("\n");
+}
+
+/** Purpose: collect unique valid claim/metadata pairs for one DB-only reminder enrichment batch. */
+function buildSyncReminderLeadershipPairs(input: {
+  tracked: { claims: Array<{ clanTag: string; userId: string }> };
+  metadata: SyncTimeTrackedMetadata;
+}): ClanLeadershipLookupPair[] {
+  const metadataClanTags = new Set(input.metadata.clans.map((clan) => normalizeClanTag(clan.clanTag)));
+  return [...new Map(
+    input.tracked.claims
+      .map((claim) => {
+        const clanTag = normalizeClanTag(claim.clanTag);
+        const discordUserId = normalizeDiscordUserId(claim.userId);
+        if (!clanTag || !metadataClanTags.has(clanTag) || !discordUserId) return null;
+        return [syncReminderLeadershipPairKey(clanTag, discordUserId), { clanTag, discordUserId }] as const;
+      })
+      .filter((pair): pair is readonly [string, ClanLeadershipLookupPair] => pair !== null),
+  ).values()];
+}
+
 async function sendSyncTimeReminderDms(input: {
   client: Client;
   tracked: {
@@ -1928,7 +2041,15 @@ async function sendSyncTimeReminderDms(input: {
     }>;
   };
   metadata: SyncTimeTrackedMetadata;
+  leadershipLookup: ClanLeadershipLookupResult | null;
+  leadershipLookupFailed: boolean;
 }): Promise<void> {
+  const leadershipByPair = new Map(
+    (input.leadershipLookup?.entries ?? []).map((entry) => [
+      syncReminderLeadershipPairKey(entry.clanTag, entry.discordUserId),
+      entry,
+    ]),
+  );
   const claimsByUser = new Map<string, string[]>();
   const countByClan = new Map<string, number>();
   for (const claim of input.tracked.claims) {
@@ -1960,13 +2081,28 @@ async function sendSyncTimeReminderDms(input: {
       });
     if (clans.length === 0) continue;
 
-    const lines = clans.map((clan) => `- ${clan.clanName} (${clan.claimedCount})`);
+    const enrichedClans: SyncReminderClanLine[] = clans.map((clan) => {
+      const entry = leadershipByPair.get(syncReminderLeadershipPairKey(clan.clanTag, userId));
+      if (input.leadershipLookupFailed || !entry) {
+        return {
+          ...clan,
+          rosterUnavailable: !input.leadershipLookupFailed,
+          enrichmentFailed: input.leadershipLookupFailed,
+          accountNames: [],
+        };
+      }
+      return {
+        ...clan,
+        rosterUnavailable: !entry.rosterAvailable,
+        enrichmentFailed: false,
+        accountNames: entry.accounts.map((account) =>
+          `${account.role === "leader" ? "👑 " : ""}${escapeSyncReminderPlayerName(account.playerName)}`,
+        ),
+      };
+    });
+    const content = buildSyncReminderDmContent(userId, input.metadata.syncEpochSeconds, enrichedClans);
     await user
-      .send([
-        `<@${userId}> sync reminder for <t:${input.metadata.syncEpochSeconds}:F> (<t:${input.metadata.syncEpochSeconds}:R>).`,
-        "You opted into these clans:",
-        ...lines,
-      ].join("\n"))
+      .send({ content, allowedMentions: { parse: [] } })
       .catch((err) => {
         console.error(
           `[tracked-message] sync reminder DM failed user=${userId} message=${input.tracked.messageId} error=${formatError(err)}`,
@@ -4630,7 +4766,10 @@ export class TrackedMessageService {
       orderBy: [{ remindAt: "asc" }, { createdAt: "asc" }],
     });
 
-    let sentCount = 0;
+    const dueWithMetadata: Array<{
+      tracked: (typeof due)[number];
+      metadata: SyncTimeTrackedMetadata;
+    }> = [];
     for (const tracked of due) {
       const metadata = parseSyncTimeMetadata(tracked.metadata);
       if (!metadata) {
@@ -4640,6 +4779,40 @@ export class TrackedMessageService {
         });
         continue;
       }
+      dueWithMetadata.push({ tracked, metadata });
+    }
+
+    const reminderPairs = dueWithMetadata
+      .filter(({ metadata }) => !metadata.reminderSentAt)
+      .flatMap(({ tracked, metadata }) => buildSyncReminderLeadershipPairs({
+        tracked: {
+          claims: tracked.claims as Array<{ clanTag: string; userId: string }>,
+        },
+        metadata,
+      }));
+    let leadershipLookup: ClanLeadershipLookupResult | null = null;
+    let leadershipLookupFailed = false;
+    if (reminderPairs.length > 0) {
+      try {
+        leadershipLookup = await lookupClanLeadershipForPairs(reminderPairs);
+        const matchedAccountCount = leadershipLookup.entries.reduce(
+          (count, entry) => count + entry.accounts.length,
+          0,
+        );
+        const unavailablePairCount = leadershipLookup.entries.filter((entry) => !entry.rosterAvailable).length;
+        console.info(
+          `[tracked-message] sync reminder leadership_enrichment status=SUCCESS pair_count=${reminderPairs.length} matched_account_count=${matchedAccountCount} unavailable_pair_count=${unavailablePairCount}`,
+        );
+      } catch (err) {
+        leadershipLookupFailed = true;
+        console.error(
+          `[tracked-message] sync reminder leadership_enrichment status=FAILURE pair_count=${reminderPairs.length} error=${formatError(err)}`,
+        );
+      }
+    }
+
+    let sentCount = 0;
+    for (const { tracked, metadata } of dueWithMetadata) {
       const existingStatus = await prisma.trackedMessage.findFirst({
         where: {
           featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
@@ -4658,6 +4831,8 @@ export class TrackedMessageService {
             claims: tracked.claims as Array<{ clanTag: string; userId: string }>,
           },
           metadata,
+          leadershipLookup,
+          leadershipLookupFailed,
         });
         metadata.reminderSentAt = now.toISOString();
         await prisma.trackedMessage.update({
