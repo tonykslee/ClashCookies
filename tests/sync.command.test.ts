@@ -19,6 +19,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
     findMany: vi.fn(),
   },
+  playerLink: {
+    findMany: vi.fn(),
+  },
   heatMapRef: {
     findMany: vi.fn(),
   },
@@ -519,6 +522,87 @@ describe("/sync post status reaction scan", () => {
     expect(embed.description).toContain("**Claimed Clans**");
     expect(embed.description).toContain("**Unclaimed Clans**");
     expect(embed.footer.text).toContain("Leader eligibility:");
+  });
+
+  it("adds an owner-only lazy co-leader view using persisted links and caches the lookup", async () => {
+    const message = {
+      id: "123456789012345678",
+      channelId: "channel-1",
+      author: { bot: true },
+      content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
+      reactions: {
+        cache: new Map([["rr", makeStatusReaction({ id: "111", name: "rr" }, ["111111111111111111"])]]),
+      },
+    };
+    const interaction = makeStatusInteraction({
+      group: "post",
+      messageId: message.id,
+      message,
+      membersById: { "111111111111111111": makeStatusMember({ admin: true }) },
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#2QG2C08UP", name: "Rocky Road", clanBadge: "<:rr:111>", shortName: "RR" },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#2QG2C08UQ",
+        playerName: "Co*Leader",
+        role: "coLeader",
+        sourceSyncedAt: new Date("2026-10-23T12:00:00.000Z"),
+      },
+      {
+        clanTag: "#2QG2C08UP",
+        playerTag: "#2QG2C08UR",
+        playerName: "Not A CoLeader",
+        role: "leader",
+        sourceSyncedAt: new Date("2026-10-23T12:00:00.000Z"),
+      },
+    ]);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#2QG2C08UQ", discordUserId: "111111111111111111" },
+      { playerTag: "#2QG2C08UR", discordUserId: "111111111111111111" },
+    ]);
+
+    const collector = { on: vi.fn() };
+    const reply = { createMessageComponentCollector: vi.fn().mockReturnValue(collector) };
+    interaction.editReply.mockResolvedValue(reply);
+    const handlers = new Map<string, (button: any) => Promise<void>>();
+    collector.on.mockImplementation((event: string, handler: (button: any) => Promise<void>) => {
+      if (event === "collect") handlers.set(event, handler);
+    });
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    const initialPayload = interaction.editReply.mock.calls[0]?.[0] as any;
+    expect(initialPayload.components[0].components[0].data.label).toBe("View Co-Leaders");
+    expect(prismaMock.fwaClanMemberCurrent.findMany).not.toHaveBeenCalled();
+
+    const button = {
+      customId: "sync-claim-leaders:user-1:toggle",
+      user: { id: "user-1" },
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+    await handlers.get("collect")?.(button);
+
+    const leadersPayload = interaction.editReply.mock.calls.at(-1)?.[0] as any;
+    const leadersDescription = leadersPayload.embeds[0].toJSON().description;
+    expect(leadersDescription).toContain("<@111111111111111111>");
+    expect(leadersDescription).toContain("Co\\*Leader");
+    expect(leadersDescription).toContain("#2QG2C08UQ");
+    expect(leadersDescription).not.toContain("Not A CoLeader");
+    expect(leadersPayload.components[0].components[0].data.label).toBe("Back to Status");
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
+    expect(leadersPayload.allowedMentions).toEqual({ parse: [] });
+
+    await handlers.get("collect")?.(button);
+    expect(interaction.editReply.mock.calls.at(-1)?.[0].embeds[0].toJSON().title).toBe(
+      "Sync Claim Status",
+    );
+    expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
   });
 
   it("defaults /sync post status to the newest authoritative active sync announcement", async () => {

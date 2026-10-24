@@ -1,10 +1,13 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
+  ComponentType,
   EmbedBuilder,
   GuildMember,
   ModalBuilder,
@@ -14,11 +17,17 @@ import {
   TextInputBuilder,
   TextInputStyle,
   type Guild,
+  type ButtonInteraction,
 } from "discord.js";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
 import { CoCService } from "../services/CoCService";
+import { normalizeClanTag } from "../services/PlayerLinkService";
+import {
+  lookupClanLeadershipForPairs,
+  type ClanLeadershipLookupResult,
+} from "../services/ClanLeadershipLookupService";
 import {
   CommandPermissionService,
   FWA_LEADER_ROLE_SETTING_KEY,
@@ -82,6 +91,32 @@ type SyncBadge = {
   matchEmojiIds: string[];
   matchEmojiNames: string[];
 };
+
+type SyncClaimClanSnapshot = {
+  badge: SyncBadge;
+  claimedUserIds: string[];
+  nonLeaderUserIds: string[];
+};
+
+type SyncClaimStatusSnapshot = {
+  guildId: string;
+  messageId: string;
+  messageChannelId: string;
+  syncEpochSeconds: number | null;
+  badges: SyncBadge[];
+  claimedClans: SyncClaimClanSnapshot[];
+  unclaimedClans: SyncClaimClanSnapshot[];
+  unavailableUserIds: string[];
+  leaderRoleIds: string[];
+};
+
+const SYNC_CLAIM_LEADERS_CUSTOM_ID_PREFIX = "sync-claim-leaders";
+const SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT = 3900;
+
+/** Purpose: use one stable key for a claimed clan/user pair across raw badge and normalized DB tags. */
+function syncClaimLeadershipPairKey(clanTag: string, discordUserId: string): string {
+  return `${normalizeClanTag(clanTag) || clanTag.trim().toUpperCase()}:${discordUserId}`;
+}
 
 type SyncTimeReadinessFlowStatus =
   | "scheduled"
@@ -744,8 +779,185 @@ async function handleSyncReadinessSubcommand(
   }
 }
 
+/** Purpose: render the unchanged reaction-scan status view from its persisted-in-session snapshot. */
+function buildSyncClaimStatusEmbed(snapshot: SyncClaimStatusSnapshot): EmbedBuilder {
+  const claimedLines = snapshot.claimedClans.map((claim) => {
+    const claimedBy = claim.claimedUserIds.map((userId) => `<@${userId}>`);
+    const nonLeader = claim.nonLeaderUserIds.map((userId) => `<@${userId}>`);
+    const extra = nonLeader.length > 0 ? ` | non-leader: ${nonLeader.join(", ")}` : "";
+    return `- ${claim.badge.emojiInline} **${claim.badge.code}** (${claim.badge.label}) - ${claimedBy.join(", ")}${extra}`;
+  });
+  const unclaimedLines = snapshot.unclaimedClans.map((claim) => {
+    const nonLeader = claim.nonLeaderUserIds.map((userId) => `<@${userId}>`);
+    const extra = nonLeader.length > 0 ? ` (only non-leader: ${nonLeader.join(", ")})` : "";
+    return `- ${claim.badge.emojiInline} **${claim.badge.code}** (${claim.badge.label})${extra}`;
+  });
+  const unavailableUsers = snapshot.unavailableUserIds.map((userId) => `<@${userId}>`);
+
+  return new EmbedBuilder()
+    .setTitle("Sync Claim Status")
+    .setDescription(
+      [
+        `Message: https://discord.com/channels/${snapshot.guildId}/${snapshot.messageChannelId}/${snapshot.messageId}`,
+        snapshot.syncEpochSeconds
+          ? `Sync time: <t:${snapshot.syncEpochSeconds}:F> (<t:${snapshot.syncEpochSeconds}:R>)`
+          : "Sync time: not detected from message content",
+        "",
+        `Claimed: **${claimedLines.length}/${snapshot.badges.length}**`,
+        `Unavailable (${SYNC_UNAVAILABLE_EMOJI}): **${unavailableUsers.length}**`,
+        ...(unavailableUsers.length > 0 ? [`${SYNC_UNAVAILABLE_EMOJI} ${unavailableUsers.join(", ")}`] : []),
+        "",
+        "**Claimed Clans**",
+        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
+        "",
+        "**Unclaimed Clans**",
+        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
+      ].join("\n"),
+    )
+    .setFooter({
+      text:
+        snapshot.leaderRoleIds.length > 0
+          ? "Leader eligibility: Administrator or role allowed for /sync time post"
+          : "Leader eligibility: Administrator only (no /sync time post role whitelist configured)",
+    });
+}
+
+/** Purpose: escape player-controlled text before placing it in Discord Markdown. */
+function escapeSyncClaimPlayerName(input: string): string {
+  const unsafeCharacters = new Set("\\`*_{}[]()#+-.!|>~".split(""));
+  return [...input].map((character) =>
+    unsafeCharacters.has(character) ? `\\${character}` : character,
+  ).join("");
+}
+
+/** Purpose: render a bounded page of claimed clans with only linked current co-leader accounts. */
+function buildSyncClaimLeadersPages(
+  snapshot: SyncClaimStatusSnapshot,
+  lookup: ClanLeadershipLookupResult,
+): string[] {
+  const entryByPair = new Map(
+    lookup.entries.map((entry) => [syncClaimLeadershipPairKey(entry.clanTag, entry.discordUserId), entry]),
+  );
+  const header = [
+    "**Claimed Clans — Co-Leaders**",
+    "Persisted roster data only; this view is not a live CoC lookup.",
+  ];
+  const blocks: string[][] = [];
+
+  for (const claim of snapshot.claimedClans) {
+    const lines = [`${claim.badge.emojiInline} **${claim.badge.code}** (${claim.badge.label})`];
+    for (const userId of claim.claimedUserIds) {
+      const entry = entryByPair.get(syncClaimLeadershipPairKey(claim.badge.clanTag, userId));
+      if (!entry || !entry.rosterAvailable) {
+        lines.push(`  <@${userId}> — (co-leader roster unavailable)`);
+        continue;
+      }
+      const coLeaders = entry.accounts.filter((account) => account.role === "coLeader");
+      if (coLeaders.length === 0) {
+        lines.push(`  <@${userId}> — (no linked co-leader found)`);
+        continue;
+      }
+      const names = coLeaders.map(
+        (account) => `${escapeSyncClaimPlayerName(account.playerName)} (\`${account.playerTag}\`)`,
+      );
+      const observed = entry.observedAt
+        ? `; roster persisted <t:${Math.trunc(entry.observedAt.getTime() / 1000)}:R>`
+        : "";
+      lines.push(`  <@${userId}> — ${names.join(", ")}${observed}`);
+    }
+    blocks.push(lines);
+  }
+
+  if (blocks.length === 0) blocks.push(["- None"]);
+
+  const pages: string[] = [];
+  let current = header.join("\n");
+  for (const block of blocks) {
+    const blockText = block.join("\n");
+    const candidate = `${current}\n\n${blockText}`;
+    if (candidate.length <= SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT) {
+      current = candidate;
+      continue;
+    }
+    pages.push(current);
+    current = `${header.join("\n")}\n\n${blockText}`;
+    if (current.length > SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT) {
+      const blockLines: string[] = [];
+      for (const line of block) {
+        const lineCandidate = `${header.join("\n")}\n\n${blockLines.concat(line).join("\n")}`;
+        if (lineCandidate.length > SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT && blockLines.length > 0) {
+          pages.push(`${header.join("\n")}\n\n${blockLines.join("\n")}`);
+          blockLines.length = 0;
+        }
+        blockLines.push(line);
+      }
+      current = `${header.join("\n")}\n\n${blockLines.join("\n")}`;
+    }
+  }
+  if (current) pages.push(current);
+  return pages;
+}
+
+/** Purpose: build the owner-only status/leadership toggle controls for one ephemeral session. */
+function buildSyncClaimStatusComponents(input: {
+  prefix: string;
+  mode: "status" | "leaders";
+  page: number;
+  totalPages: number;
+}): ActionRowBuilder<ButtonBuilder>[] {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (input.mode === "leaders" && input.totalPages > 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${input.prefix}:prev`)
+        .setLabel("Prev")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(input.page <= 0),
+      new ButtonBuilder()
+        .setCustomId(`${input.prefix}:next`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(input.page >= input.totalPages - 1),
+    );
+  }
+  row.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${input.prefix}:toggle`)
+      .setLabel(input.mode === "leaders" ? "Back to Status" : "View Co-Leaders")
+      .setStyle(ButtonStyle.Secondary),
+  );
+  return [row];
+}
+
+/** Purpose: lazily load and cache the claimed-clan leadership lookup pairs for one status interaction. */
+async function loadSyncClaimLeadership(
+  snapshot: SyncClaimStatusSnapshot,
+): Promise<ClanLeadershipLookupResult> {
+  const pairs = snapshot.claimedClans.flatMap((claim) =>
+    claim.claimedUserIds.map((discordUserId) => ({ clanTag: claim.badge.clanTag, discordUserId })),
+  );
+  const uniquePairs = [...new Map(
+    pairs.map((pair) => [syncClaimLeadershipPairKey(pair.clanTag, pair.discordUserId), pair]),
+  ).values()];
+  console.info(
+    `[sync-status] leadership_lookup status=STARTED claimed_clan_count=${snapshot.claimedClans.length} pair_count=${uniquePairs.length}`,
+  );
+  try {
+    const result = await lookupClanLeadershipForPairs(uniquePairs);
+    console.info(
+      `[sync-status] leadership_lookup status=SUCCESS pair_count=${uniquePairs.length} available_count=${result.entries.filter((entry) => entry.rosterAvailable).length}`,
+    );
+    return result;
+  } catch (error) {
+    console.error(
+      `[sync-status] leadership_lookup status=FAILURE pair_count=${uniquePairs.length} error=${formatError(error)}`,
+    );
+    throw error;
+  }
+}
+
 async function handleSyncClaimStatusSubcommand(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
 
@@ -795,9 +1007,9 @@ async function handleSyncClaimStatusSubcommand(
     return member;
   };
 
-  const claimedLines: string[] = [];
-  const unclaimedLines: string[] = [];
-  const unavailableUsers: string[] = [];
+  const claimedClans: SyncClaimClanSnapshot[] = [];
+  const unclaimedClans: SyncClaimClanSnapshot[] = [];
+  const unavailableUserIds: string[] = [];
 
   for (const badge of badges) {
     const reaction = [...message.reactions.cache.values()].find((r) => reactionMatchesBadge(r, badge));
@@ -817,25 +1029,26 @@ async function handleSyncClaimStatusSubcommand(
             leaderRoleIds.length > 0 &&
             leaderRoleIds.some((roleId) => member.roles.cache.has(roleId));
           if (isAdmin || hasLeaderRole) {
-            claimedBy.push(`<@${user.id}>`);
+            claimedBy.push(user.id);
           } else {
-            nonLeader.push(`<@${user.id}>`);
+            nonLeader.push(user.id);
           }
         }
       }
     }
 
-    const emojiInline = badge.emojiInline;
     if (claimedBy.length > 0) {
-      const extra =
-        nonLeader.length > 0 ? ` | non-leader: ${[...new Set(nonLeader)].join(", ")}` : "";
-      claimedLines.push(
-        `- ${emojiInline} **${badge.code}** (${badge.label}) - ${[...new Set(claimedBy)].join(", ")}${extra}`
-      );
+      claimedClans.push({
+        badge,
+        claimedUserIds: [...new Set(claimedBy)],
+        nonLeaderUserIds: [...new Set(nonLeader)],
+      });
     } else {
-      const extra =
-        nonLeader.length > 0 ? ` (only non-leader: ${[...new Set(nonLeader)].join(", ")})` : "";
-      unclaimedLines.push(`- ${emojiInline} **${badge.code}** (${badge.label})${extra}`);
+      unclaimedClans.push({
+        badge,
+        claimedUserIds: [],
+        nonLeaderUserIds: [...new Set(nonLeader)],
+      });
     }
   }
 
@@ -847,45 +1060,91 @@ async function handleSyncClaimStatusSubcommand(
     if (users) {
       for (const user of users.values()) {
         if (user.bot) continue;
-        unavailableUsers.push(`<@${user.id}>`);
+        unavailableUserIds.push(user.id);
       }
     }
   }
 
-  const uniqueUnavailableUsers = [...new Set(unavailableUsers)];
-  const embed = new EmbedBuilder()
-    .setTitle("Sync Claim Status")
-    .setDescription(
-      [
-        `Message: https://discord.com/channels/${guild.id}/${message.channelId}/${message.id}`,
-        (() => {
-          const epoch = extractSyncEpochSeconds(message.content);
-          return epoch
-            ? `Sync time: <t:${epoch}:F> (<t:${epoch}:R>)`
-            : "Sync time: not detected from message content";
-        })(),
-        "",
-        `Claimed: **${claimedLines.length}/${badges.length}**`,
-        `Unavailable (${SYNC_UNAVAILABLE_EMOJI}): **${uniqueUnavailableUsers.length}**`,
-        ...(uniqueUnavailableUsers.length > 0
-          ? [`${SYNC_UNAVAILABLE_EMOJI} ${uniqueUnavailableUsers.join(", ")}`]
-          : []),
-        "",
-        "**Claimed Clans**",
-        ...(claimedLines.length > 0 ? claimedLines : ["- None"]),
-        "",
-        "**Unclaimed Clans**",
-        ...(unclaimedLines.length > 0 ? unclaimedLines : ["- None"]),
-      ].join("\n")
-    )
-    .setFooter({
-      text:
-        leaderRoleIds.length > 0
-          ? "Leader eligibility: Administrator or role allowed for /sync time post"
-          : "Leader eligibility: Administrator only (no /sync time post role whitelist configured)",
-    });
+  const snapshot: SyncClaimStatusSnapshot = {
+    guildId: guild.id,
+    messageId: message.id,
+    messageChannelId: message.channelId,
+    syncEpochSeconds: extractSyncEpochSeconds(message.content),
+    badges,
+    claimedClans,
+    unclaimedClans,
+    unavailableUserIds: [...new Set(unavailableUserIds)],
+    leaderRoleIds,
+  };
+  const statusEmbed = buildSyncClaimStatusEmbed(snapshot);
+  const prefix = `${SYNC_CLAIM_LEADERS_CUSTOM_ID_PREFIX}:${interaction.user.id}`;
+  let mode: "status" | "leaders" = "status";
+  let page = 0;
+  let leadershipLookup: ClanLeadershipLookupResult | null = null;
+  let leadershipPages: string[] = [];
 
-  await interaction.editReply({ embeds: [embed] });
+  const reply = await interaction.editReply({
+    embeds: [statusEmbed],
+    components: buildSyncClaimStatusComponents({ prefix, mode, page, totalPages: 1 }),
+    allowedMentions: { parse: [] },
+  });
+  if (!reply || typeof (reply as any).createMessageComponentCollector !== "function") return;
+
+  const collector = (reply as any).createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: 10 * 60 * 1000,
+    filter: (button: ButtonInteraction) =>
+      button.user.id === interaction.user.id && button.customId.startsWith(`${prefix}:`),
+  });
+
+  collector.on("collect", async (button: ButtonInteraction) => {
+    try {
+      await button.deferUpdate();
+      if (button.customId.endsWith(":toggle")) {
+        if (mode === "status") {
+          leadershipLookup ??= await loadSyncClaimLeadership(snapshot);
+          leadershipPages = buildSyncClaimLeadersPages(snapshot, leadershipLookup);
+          mode = "leaders";
+          page = 0;
+        } else {
+          mode = "status";
+          page = 0;
+        }
+      } else if (mode === "leaders") {
+        if (button.customId.endsWith(":prev")) page = Math.max(0, page - 1);
+        if (button.customId.endsWith(":next")) page = Math.min(leadershipPages.length - 1, page + 1);
+      }
+
+      await interaction.editReply({
+        embeds:
+          mode === "leaders"
+            ? [new EmbedBuilder().setTitle("Sync Claim Status").setDescription(leadershipPages[page] ?? "- None")]
+            : [statusEmbed],
+        components: buildSyncClaimStatusComponents({
+          prefix,
+          mode,
+          page,
+          totalPages: Math.max(1, leadershipPages.length),
+        }),
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      console.error(
+        `[sync-status] leadership_toggle status=FAILURE mode=${mode} error=${formatError(error)}`,
+      );
+      await button
+        .followUp({
+          ephemeral: true,
+          content: "Could not load co-leader status from persisted roster data.",
+          allowedMentions: { parse: [] },
+        })
+        .catch(() => undefined);
+    }
+  });
+
+  collector.on("end", async () => {
+    await interaction.editReply({ components: [] }).catch(() => undefined);
+  });
 }
 
 function parseDate(input: string): { year: number; month: number; day: number } | null {
