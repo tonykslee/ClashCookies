@@ -473,16 +473,16 @@ function buildTrackedClanLeadersClanLines(clan: TrackedClanLeadersClan): string[
     const accounts = group.accounts
       .map(
         (account) =>
-          `${account.role === "leader" ? "👑 Leader" : "Co-leader"}: ${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
+          `${account.role === "leader" ? "👑 " : ""}${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
       )
       .join("; ");
     if (group.discordUserId) {
-      lines.push(`${group.hasLeader ? "👑 Leader" : "Co-leaders"}: <@${group.discordUserId}> — ${accounts}`);
+      lines.push(`<@${group.discordUserId}> — ${accounts}`);
       continue;
     }
     for (const account of group.accounts) {
       lines.push(
-        `${account.role === "leader" ? "👑 Leader" : "Co-leader"}: ${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
+        `${account.role === "leader" ? "👑 " : ""}${escapeTrackedClanLeaderPlayerName(account.playerName)} \`${account.playerTag}\``,
       );
     }
   }
