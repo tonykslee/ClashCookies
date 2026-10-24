@@ -3873,10 +3873,12 @@ describe("/clan command behavior", () => {
     expect(description.indexOf("**FWA**")).toBeLessThan(description.indexOf("**CWL**"));
     expect(description.indexOf("**CWL**")).toBeLessThan(description.indexOf("**RAIDS**"));
     expect(description).toContain(":fwa: [FWA Alpha]");
-    expect(description).toContain("👑 Leader: <@111111111111111111>");
-    expect(description).toContain("Lead\\*One");
-    expect(description).toContain("CoTwo");
-    expect(description).toContain("Co-leader: Unlinked Co");
+    expect(description).toContain("<@111111111111111111> — 👑 Lead\\*One");
+    expect(description).toContain("; CoTwo");
+    expect(description).toContain("Unlinked Co");
+    expect(description).not.toContain("👑 Leader:");
+    expect(description).not.toContain("Co-leader:");
+    expect(description).not.toContain("Co-leaders:");
     expect(description).not.toContain("<@not-a-discord-id>");
     expect(description).toContain("Leadership: no current leader/co-leader accounts found.");
     expect(description).not.toContain("Elder");
