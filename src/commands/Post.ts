@@ -830,8 +830,8 @@ function escapeSyncClaimPlayerName(input: string): string {
   ).join("");
 }
 
-/** Purpose: render a bounded page of claimed clans with only linked current co-leader accounts. */
-function buildSyncClaimLeadersPages(
+/** Purpose: render bounded pages of claimed clans with only linked current co-leader accounts. */
+export function buildSyncClaimLeadersPages(
   snapshot: SyncClaimStatusSnapshot,
   lookup: ClanLeadershipLookupResult,
 ): string[] {
@@ -842,10 +842,12 @@ function buildSyncClaimLeadersPages(
     "**Claimed Clans — Co-Leaders**",
     "Persisted roster data only; this view is not a live CoC lookup.",
   ];
-  const blocks: string[][] = [];
+  const headerText = header.join("\n");
+  const blocks: { heading: string; lines: string[] }[] = [];
 
   for (const claim of snapshot.claimedClans) {
-    const lines = [`${claim.badge.emojiInline} **${claim.badge.code}** (${claim.badge.label})`];
+    const heading = `${claim.badge.emojiInline} **${claim.badge.code}** (${claim.badge.label})`;
+    const lines: string[] = [];
     for (const userId of claim.claimedUserIds) {
       const entry = entryByPair.get(syncClaimLeadershipPairKey(claim.badge.clanTag, userId));
       if (!entry || !entry.rosterAvailable) {
@@ -865,36 +867,91 @@ function buildSyncClaimLeadersPages(
         : "";
       lines.push(`  <@${userId}> — ${names.join(", ")}${observed}`);
     }
-    blocks.push(lines);
+    blocks.push({ heading, lines: lines.length > 0 ? lines : ["  - No claimed users recorded"] });
   }
 
-  if (blocks.length === 0) blocks.push(["- None"]);
+  if (blocks.length === 0) return [`${headerText}\n\n- None`];
+
+  const renderClanPage = (heading: string, lines: string[]): string =>
+    `${headerText}\n\n${heading}\n${lines.join("\n")}`;
+
+  const splitClanIntoPages = (heading: string, lines: string[]): string[] => {
+    const prefix = `${headerText}\n\n${heading}`;
+    const chunks: string[][] = [];
+    let currentLines: string[] = [];
+
+    const flush = () => {
+      if (currentLines.length > 0) {
+        chunks.push([...currentLines]);
+        currentLines = [];
+      }
+    };
+    const availableCharacters = (linePrefixLength: number): number => {
+      const currentLength = currentLines.length > 0
+        ? currentLines.join("\n").length + 1
+        : 0;
+      return SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT - prefix.length - 1 - currentLength - linePrefixLength;
+    };
+
+    for (const line of lines) {
+      let remaining = line;
+      let firstFragment = true;
+      while (remaining.length > 0) {
+        const continuationPrefix = firstFragment ? "" : "  ↳ ";
+        let available = availableCharacters(continuationPrefix.length);
+        if (available <= 0) {
+          flush();
+          available = availableCharacters(continuationPrefix.length);
+        }
+
+        if (remaining.length <= available) {
+          currentLines.push(`${continuationPrefix}${remaining}`);
+          break;
+        }
+
+        if (currentLines.length > 0) {
+          flush();
+          continue;
+        }
+
+        // An individual claimant entry is larger than a page. Preserve its full
+        // text in bounded fragments, with the clan heading repeated on each page.
+        const fragmentLength = Math.max(1, available);
+        currentLines.push(`${continuationPrefix}${remaining.slice(0, fragmentLength)}`);
+        remaining = remaining.slice(fragmentLength);
+        firstFragment = false;
+        flush();
+      }
+    }
+    flush();
+    return chunks.map((chunk) => renderClanPage(heading, chunk));
+  };
 
   const pages: string[] = [];
-  let current = header.join("\n");
+  let current = headerText;
+  let currentHasClan = false;
   for (const block of blocks) {
-    const blockText = block.join("\n");
+    const blockText = `${block.heading}\n${block.lines.join("\n")}`;
     const candidate = `${current}\n\n${blockText}`;
     if (candidate.length <= SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT) {
       current = candidate;
+      currentHasClan = true;
       continue;
     }
-    pages.push(current);
-    current = `${header.join("\n")}\n\n${blockText}`;
-    if (current.length > SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT) {
-      const blockLines: string[] = [];
-      for (const line of block) {
-        const lineCandidate = `${header.join("\n")}\n\n${blockLines.concat(line).join("\n")}`;
-        if (lineCandidate.length > SYNC_CLAIM_LEADERS_DESCRIPTION_LIMIT && blockLines.length > 0) {
-          pages.push(`${header.join("\n")}\n\n${blockLines.join("\n")}`);
-          blockLines.length = 0;
-        }
-        blockLines.push(line);
-      }
-      current = `${header.join("\n")}\n\n${blockLines.join("\n")}`;
-    }
+
+    // Do not emit a generic-header-only page. If a clan does not fit, begin it
+    // on a fresh page and repeat its heading for any continuation pages.
+    if (currentHasClan) pages.push(current);
+    const clanPages = splitClanIntoPages(block.heading, block.lines);
+    pages.push(...clanPages.slice(0, -1));
+    current = clanPages.at(-1) ?? headerText;
+    currentHasClan = true;
   }
-  if (current) pages.push(current);
+  if (currentHasClan) {
+    pages.push(current);
+  } else {
+    pages.push(`${headerText}\n\n- None`);
+  }
   return pages;
 }
 

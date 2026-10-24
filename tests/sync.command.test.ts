@@ -72,7 +72,7 @@ vi.mock("../src/services/fwa/matchChecklistAutoPostService", () => ({
   fwaMatchChecklistAutoPostService: checklistAutoPostMock,
 }));
 
-import { Post, handlePostModalSubmit } from "../src/commands/Post";
+import { buildSyncClaimLeadersPages, Post, handlePostModalSubmit } from "../src/commands/Post";
 
 function makeSendableChannel(input: {
   id: string;
@@ -568,8 +568,10 @@ describe("/sync post status reaction scan", () => {
     const reply = { createMessageComponentCollector: vi.fn().mockReturnValue(collector) };
     interaction.editReply.mockResolvedValue(reply);
     const handlers = new Map<string, (button: any) => Promise<void>>();
-    collector.on.mockImplementation((event: string, handler: (button: any) => Promise<void>) => {
+    const endHandlers: Array<() => Promise<void>> = [];
+    collector.on.mockImplementation((event: string, handler: any) => {
       if (event === "collect") handlers.set(event, handler);
+      if (event === "end") endHandlers.push(handler);
     });
 
     await Post.run({} as any, interaction as any, {} as any);
@@ -603,6 +605,119 @@ describe("/sync post status reaction scan", () => {
     );
     expect(prismaMock.fwaClanMemberCurrent.findMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.playerLink.findMany).toHaveBeenCalledTimes(1);
+
+    const collectorOptions = reply.createMessageComponentCollector.mock.calls[0][0];
+    expect(collectorOptions.filter({ user: { id: "user-1" }, customId: "sync-claim-leaders:user-1:toggle" })).toBe(true);
+    expect(collectorOptions.filter({ user: { id: "other-user" }, customId: "sync-claim-leaders:user-1:toggle" })).toBe(false);
+    expect(collectorOptions.filter({ user: { id: "user-1" }, customId: "other-prefix:toggle" })).toBe(false);
+    await endHandlers[0]?.();
+    expect(interaction.editReply.mock.calls.at(-1)?.[0]).toEqual({ components: [] });
+  });
+
+  it("keeps large co-leader pages bounded, clan-labelled, and lossless", () => {
+    const allowedTagCharacters = "PYLQGRJCUV0289";
+    const encodeTagSuffix = (value: number) => {
+      let suffix = "";
+      do {
+        suffix = allowedTagCharacters[value % allowedTagCharacters.length] + suffix;
+        value = Math.floor(value / allowedTagCharacters.length);
+      } while (value > 0);
+      return suffix.padStart(4, "P");
+    };
+    const makeClaim = (clanTag: string, code: string, label: string, count: number, offset = 0) => ({
+      badge: {
+        clanTag,
+        code,
+        label,
+        reactionIdentifier: code,
+        emojiInline: `<:${code.toLowerCase()}:111>`,
+        id: "111",
+        name: code.toLowerCase(),
+        matchEmojiIds: ["111"],
+        matchEmojiNames: [code.toLowerCase()],
+      },
+      claimedUserIds: Array.from({ length: count }, (_, index) =>
+        `1111111111111${String(index + offset).padStart(5, "0")}`,
+      ),
+      nonLeaderUserIds: [],
+    });
+    const claims = [makeClaim("#2QG2C08UP", "RR", "Rocky Road", 96)];
+    const lookupEntries = claims.flatMap((claim) => claim.claimedUserIds.map((discordUserId, index) => ({
+      clanTag: claim.badge.clanTag,
+      discordUserId,
+      rosterAvailable: true,
+      observedAt: new Date("2026-10-23T12:00:00.000Z"),
+      accounts: [{
+        clanTag: claim.badge.clanTag,
+        discordUserId,
+        playerTag: `#2QG${encodeTagSuffix(index)}`,
+        playerName: `Co-Leader ${index}`,
+        role: "coLeader" as const,
+      }],
+    })));
+
+    const pages = buildSyncClaimLeadersPages({ claimedClans: claims } as any, { entries: lookupEntries });
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.length <= 3900)).toBe(true);
+    expect(pages.every((page) => page.includes("**RR** (Rocky Road)"))).toBe(true);
+    expect(pages.every((page) => page.trim() !== "**Claimed Clans — Co-Leaders**\nPersisted roster data only; this view is not a live CoC lookup.")).toBe(true);
+    const mentions = pages.flatMap((page) => [...page.matchAll(/<@(\d{18})>/g)].map((match) => match[1]));
+    expect(mentions).toHaveLength(96);
+    expect(new Set(mentions)).toHaveLength(96);
+    for (let index = 0; index < 96; index += 1) {
+      expect(pages.join("\n")).toContain(`Co\\-Leader ${index}`);
+    }
+  });
+
+  it("keeps multiple clans labelled across page boundaries without dropping or duplicating claimants", () => {
+    const makeClaim = (clanTag: string, code: string, label: string, start: number) => ({
+      badge: {
+        clanTag,
+        code,
+        label,
+        reactionIdentifier: code,
+        emojiInline: `<:${code.toLowerCase()}:111>`,
+        id: "111",
+        name: code.toLowerCase(),
+        matchEmojiIds: ["111"],
+        matchEmojiNames: [code.toLowerCase()],
+      },
+      claimedUserIds: Array.from({ length: 48 }, (_, index) =>
+        `2222222222222${String(start + index).padStart(5, "0")}`,
+      ),
+      nonLeaderUserIds: [],
+    });
+    const claims = [
+      makeClaim("#2QG2C08UP", "RR", "Rocky Road", 0),
+      makeClaim("#2QG2C08UQ", "TWC", "TheWiseCowboys", 48),
+    ];
+    const entries = claims.flatMap((claim) => claim.claimedUserIds.map((discordUserId, index) => ({
+      clanTag: claim.badge.clanTag,
+      discordUserId,
+      rosterAvailable: true,
+      observedAt: null,
+      accounts: [{
+        clanTag: claim.badge.clanTag,
+        discordUserId,
+        playerTag: "#2QG2C08UR",
+        playerName: `${claim.badge.code} Player ${index}`,
+        role: "coLeader" as const,
+      }],
+    })));
+
+    const pages = buildSyncClaimLeadersPages({ claimedClans: claims } as any, { entries });
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.length <= 3900)).toBe(true);
+    expect(pages.some((page) => page.includes("**RR** (Rocky Road)"))).toBe(true);
+    expect(pages.some((page) => page.includes("**TWC** (TheWiseCowboys)"))).toBe(true);
+    const mentions = pages.flatMap((page) => [...page.matchAll(/<@(\d{18})>/g)].map((match) => match[1]));
+    expect(mentions).toHaveLength(96);
+    expect(new Set(mentions)).toHaveLength(96);
+    expect(pages.every((page) =>
+      page.includes("**RR** (Rocky Road)") || page.includes("**TWC** (TheWiseCowboys)")
+    )).toBe(true);
   });
 
   it("defaults /sync post status to the newest authoritative active sync announcement", async () => {
