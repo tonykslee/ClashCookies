@@ -3872,7 +3872,10 @@ describe("/clan command behavior", () => {
     const description = getFirstEmbedDescription(interaction);
     expect(description.indexOf("**FWA**")).toBeLessThan(description.indexOf("**CWL**"));
     expect(description.indexOf("**CWL**")).toBeLessThan(description.indexOf("**RAIDS**"));
+    expect(description.match(/\*\*(FWA|CWL|RAIDS)\*\*/g)).toHaveLength(3);
+    expect(description.match(/Status:/g)).toHaveLength(3);
     expect(description).toContain(":fwa: [FWA Alpha]");
+    expect(description).toContain("**FWA**\nStatus: CURRENT");
     expect(description).toContain("<@111111111111111111> — 👑 Lead\\*One");
     expect(description).toContain("; CoTwo");
     expect(description).toContain("Unlinked Co");
@@ -3880,12 +3883,69 @@ describe("/clan command behavior", () => {
     expect(description).not.toContain("Co-leader:");
     expect(description).not.toContain("Co-leaders:");
     expect(description).not.toContain("<@not-a-discord-id>");
-    expect(description).toContain("Leadership: no current leader/co-leader accounts found.");
+    expect(description).toContain("No current leader/co-leader accounts found.");
+    expect(description).not.toContain("Leadership:");
     expect(description).not.toContain("Elder");
     expect(interaction.editReply.mock.calls[0]?.[0]?.allowedMentions).toEqual({ users: [], roles: [] });
     expect(interaction.editReply.mock.calls[0]?.[0]?.components?.[0]?.toJSON?.().components?.[0]?.label).toBe(
       "Refresh Leaders",
     );
+  });
+
+  it("consolidates registry headers and marks mixed freshness clans", () => {
+    const current = new Date("2026-03-26T00:00:00.000Z");
+    const stale = new Date("2026-03-25T00:00:00.000Z");
+    const makeClan = (registry: "FWA" | "CWL" | "RAIDS", clanTag: string, name: string, freshness: "CURRENT" | "STALE" | "UNAVAILABLE", observedAt: Date | null) => ({
+      registry,
+      clanTag,
+      name,
+      clanBadge: null,
+      registryIcon: registry === "FWA" ? "🛡️" : registry === "CWL" ? "⚔️" : "🏰",
+      leagueLabel: null,
+      freshness,
+      observedAt,
+      lastError: null,
+      leaderGroups: [],
+    });
+    const view = {
+      season: "2026-03",
+      totalClanCount: 6,
+      displayedClanTags: [],
+      sections: [
+        {
+          registry: "FWA" as const,
+          clans: [
+            makeClan("FWA", "#2QG2C08UP", "FWA One", "CURRENT", current),
+            makeClan("FWA", "#2QG2C08UQ", "FWA Two", "CURRENT", stale),
+          ],
+        },
+        {
+          registry: "CWL" as const,
+          clans: [
+            makeClan("CWL", "#PYLQ0289", "CWL Current", "CURRENT", current),
+            makeClan("CWL", "#PYLQ0290", "CWL Stale", "STALE", stale),
+            makeClan("CWL", "#QGRJ2222", "CWL Unavailable", "UNAVAILABLE", null),
+          ],
+        },
+        {
+          registry: "RAIDS" as const,
+          clans: [makeClan("RAIDS", "#2RVGJYLC0", "Raids Current", "CURRENT", current)],
+        },
+      ],
+    };
+
+    const pages = buildTrackedClanLeadersPages(view);
+    const description = pages.join("\n\n");
+    expect(description.match(/\*\*FWA\*\*/g)).toHaveLength(1);
+    expect(description.match(/\*\*CWL\*\*/g)).toHaveLength(1);
+    expect(description.match(/\*\*RAIDS\*\*/g)).toHaveLength(1);
+    expect(description).toContain("**FWA**\nStatus: CURRENT — oldest update");
+    expect(description).toContain("**CWL**\nStatus: MIXED — CURRENT 1, STALE 1, UNAVAILABLE 1");
+    expect(description).toContain("⚠️ ⚔️ [CWL Stale]");
+    expect(description).toContain("⚠️ ⚔️ [CWL Unavailable]");
+    expect(description).not.toContain("⚠️ ⚔️ [CWL Current]");
+    expect(description.match(/Status:/g)).toHaveLength(3);
+    expect(description).not.toContain("Leadership:");
   });
 
   it("paginates leaders without dropping clans or accounts", () => {
@@ -3929,6 +3989,7 @@ describe("/clan command behavior", () => {
     const combined = pages.join("\n");
     expect(pages.length).toBeGreaterThan(1);
     expect(pages.every((page) => page.length <= 3900)).toBe(true);
+    expect(pages.every((page) => page.startsWith("**FWA**\nStatus: CURRENT"))).toBe(true);
     for (let index = 0; index < 180; index += 1) {
       expect(combined).toContain(`Leader${index}`);
     }
