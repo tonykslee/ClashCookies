@@ -288,6 +288,77 @@ describe("TrackedMessageService sync spin status", () => {
     expect(userSend).toHaveBeenCalledTimes(1);
   });
 
+  it("does not add a leading comma when later clans receive zero account-name budget", async () => {
+    const userId = "666666666666666666";
+    const baseMetadata = makeMetadata();
+    const trackedRow = makeTrackedRow({
+      metadata: {
+        ...baseMetadata,
+        clans: [
+          ...baseMetadata.clans,
+          {
+            code: "ZG",
+            clanTag: "#PYLU",
+            clanName: "Zero Gravity",
+            emojiId: "333",
+            emojiName: "zg",
+            emojiInline: "<:zg:333>",
+          },
+        ],
+      },
+      claims: [
+        { clanTag: "#PYLQ", userId },
+        { clanTag: "#PYLG", userId },
+        { clanTag: "#PYLU", userId },
+      ],
+    });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    const userSend = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({ userById: { [userId]: { send: userSend } } });
+    leadershipLookupMock.mockResolvedValue({
+      entries: [
+        makeLeadershipEntry({
+          clanTag: "#PYLQ",
+          discordUserId: userId,
+          accounts: Array.from({ length: 80 }, (_, index) => ({
+            playerTag: `#Q${index}`,
+            playerName: `Rocky Account ${index} with a deliberately long name`,
+            role: "coLeader" as const,
+          })),
+        }),
+        makeLeadershipEntry({
+          clanTag: "#PYLG",
+          discordUserId: userId,
+          accounts: [
+            { playerTag: "#T1", playerName: "Tilonius", role: "coLeader" },
+            { playerTag: "#T2", playerName: "Zoey", role: "coLeader" },
+            { playerTag: "#T3", playerName: "Joka", role: "coLeader" },
+          ],
+        }),
+        makeLeadershipEntry({
+          clanTag: "#PYLU",
+          discordUserId: userId,
+          accounts: [
+            { playerTag: "#Z1", playerName: "Zero One", role: "coLeader" },
+            { playerTag: "#Z2", playerName: "Zero Two", role: "coLeader" },
+            { playerTag: "#Z3", playerName: "Zero Three", role: "coLeader" },
+          ],
+        }),
+      ],
+    });
+
+    await trackedMessageService.processDueSyncReminders(client);
+
+    const content = getDmContent(userSend);
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content).toContain("- TheWiseCowboys (… +3 more)");
+    expect(content).toContain("- Zero Gravity (… +3 more)");
+    expect(content).not.toContain("- TheWiseCowboys (, …");
+    expect(content).not.toContain("- Zero Gravity (, …");
+    expect(userSend).toHaveBeenCalledTimes(1);
+  });
+
   it("posts the scheduled status embed once and reacts with every clan badge", async () => {
     const trackedRow = makeTrackedRow({
       claims: [

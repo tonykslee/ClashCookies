@@ -1957,7 +1957,9 @@ function formatSyncReminderClanLine(
   if (clan.accountNames.length === 0) return `- ${clan.clanName} (no linked leader/co-leader found)`;
   const displayedNames = clan.accountNames.slice(0, displayedAccountCount);
   const hiddenCount = clan.accountNames.length - displayedNames.length;
-  const suffix = hiddenCount > 0 ? `, … +${hiddenCount} more` : "";
+  const suffix = hiddenCount > 0
+    ? `${displayedNames.length > 0 ? ", " : ""}… +${hiddenCount} more`
+    : "";
   return `- ${clan.clanName} (${displayedNames.join(", ")}${suffix})`;
 }
 
