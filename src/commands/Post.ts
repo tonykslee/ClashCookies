@@ -830,7 +830,7 @@ function escapeSyncClaimPlayerName(input: string): string {
   ).join("");
 }
 
-/** Purpose: render bounded pages of claimed clans with only linked current co-leader accounts. */
+/** Purpose: render bounded pages of claimed clans with linked current leader accounts. */
 export function buildSyncClaimLeadersPages(
   snapshot: SyncClaimStatusSnapshot,
   lookup: ClanLeadershipLookupResult,
@@ -838,10 +838,7 @@ export function buildSyncClaimLeadersPages(
   const entryByPair = new Map(
     lookup.entries.map((entry) => [syncClaimLeadershipPairKey(entry.clanTag, entry.discordUserId), entry]),
   );
-  const header = [
-    "**Claimed Clans — Co-Leaders**",
-    "Persisted roster data only; this view is not a live CoC lookup.",
-  ];
+  const header = ["**Claimed Clans**"];
   const headerText = header.join("\n");
   const blocks: { heading: string; lines: string[] }[] = [];
 
@@ -851,21 +848,17 @@ export function buildSyncClaimLeadersPages(
     for (const userId of claim.claimedUserIds) {
       const entry = entryByPair.get(syncClaimLeadershipPairKey(claim.badge.clanTag, userId));
       if (!entry || !entry.rosterAvailable) {
-        lines.push(`  <@${userId}> — (co-leader roster unavailable)`);
+        lines.push(`  <@${userId}> — (leadership roster unavailable)`);
         continue;
       }
-      const coLeaders = entry.accounts.filter((account) => account.role === "coLeader");
-      if (coLeaders.length === 0) {
-        lines.push(`  <@${userId}> — (no linked co-leader found)`);
+      if (entry.accounts.length === 0) {
+        lines.push(`  <@${userId}> — (no linked leader/co-leader found)`);
         continue;
       }
-      const names = coLeaders.map(
-        (account) => `${escapeSyncClaimPlayerName(account.playerName)} (\`${account.playerTag}\`)`,
+      const names = entry.accounts.map(
+        (account) => `${account.role === "leader" ? "👑 " : ""}${escapeSyncClaimPlayerName(account.playerName)}`,
       );
-      const observed = entry.observedAt
-        ? `; roster persisted <t:${Math.trunc(entry.observedAt.getTime() / 1000)}:R>`
-        : "";
-      lines.push(`  <@${userId}> — ${names.join(", ")}${observed}`);
+      lines.push(`  <@${userId}> — ${names.join(", ")}`);
     }
     blocks.push({ heading, lines: lines.length > 0 ? lines : ["  - No claimed users recorded"] });
   }
@@ -980,7 +973,7 @@ function buildSyncClaimStatusComponents(input: {
   row.addComponents(
     new ButtonBuilder()
       .setCustomId(`${input.prefix}:toggle`)
-      .setLabel(input.mode === "leaders" ? "Back to Status" : "View Co-Leaders")
+      .setLabel(input.mode === "leaders" ? "Back to Status" : "Leaders")
       .setStyle(ButtonStyle.Secondary),
   );
   return [row];
@@ -1192,7 +1185,7 @@ async function handleSyncClaimStatusSubcommand(
       await button
         .followUp({
           ephemeral: true,
-          content: "Could not load co-leader status from persisted roster data.",
+          content: "Could not load leadership status from persisted roster data.",
           allowedMentions: { parse: [] },
         })
         .catch(() => undefined);

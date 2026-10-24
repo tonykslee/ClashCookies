@@ -313,7 +313,7 @@ describe("command coverage", () => {
     expect(normalized).toContain("refresh:true|false");
     expect(normalized).toContain("visibility:private|public");
     expect(normalized).toContain("shared refresh button");
-    expect(syncHelpText).toContain("View Co-Leaders");
+    expect(syncHelpText).toContain("`Leaders` toggle");
   });
 
   it("documents clan-lead routing in unlinked help detail text", () => {
