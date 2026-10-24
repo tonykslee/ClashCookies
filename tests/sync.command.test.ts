@@ -708,7 +708,7 @@ describe("/sync post status reaction scan", () => {
     expect(pages.length).toBeGreaterThan(1);
     expect(pages.every((page) => page.length <= 3900)).toBe(true);
     expect(pages.every((page) => page.includes("**RR** (Rocky Road)"))).toBe(true);
-    expect(pages.every((page) => page.trim() !== "**Claimed Clans")).toBe(true);
+    expect(pages.every((page) => page.trim() !== "**Claimed Clans**")).toBe(true);
     const mentions = pages.flatMap((page) => [...page.matchAll(/<@(\d{18})>/g)].map((match) => match[1]));
     expect(mentions).toHaveLength(140);
     expect(new Set(mentions)).toHaveLength(140);
