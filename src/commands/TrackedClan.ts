@@ -72,6 +72,7 @@ import {
   refreshTrackedClanLeadersWithQueueContext,
   type TrackedClanLeadersClan,
   type TrackedClanLeadersRegistry,
+  type TrackedClanLeadersSection,
   type TrackedClanLeadersView,
 } from "../services/TrackedClanLeadersService";
 import {
@@ -432,41 +433,67 @@ function escapeTrackedClanLeaderPlayerName(input: string): string {
     .replace(/([`*_{}[\]()#+\-.!|>~])/g, "\\$1");
 }
 
-function formatTrackedClanLeaderFreshness(clan: TrackedClanLeadersClan): string {
-  const observedAt = clan.observedAt ? Math.floor(clan.observedAt.getTime() / 1000) : null;
-  const timestamp = observedAt ? ` <t:${observedAt}:R>` : "";
-  if (clan.freshness === "CURRENT") return `CURRENT — updated${timestamp}`;
-  if (clan.freshness === "STALE") return `STALE — last persisted roster${timestamp}`;
-  if (clan.freshness === "REFRESH_FAILED") {
-    return `REFRESH FAILED — persisted roster not confirmed current${timestamp}`;
+const TRACKED_CLAN_LEADER_FRESHNESS_LABEL: Record<TrackedClanLeadersClan["freshness"], string> = {
+  CURRENT: "CURRENT",
+  STALE: "STALE",
+  REFRESH_FAILED: "REFRESH FAILED",
+  UNAVAILABLE: "UNAVAILABLE",
+};
+
+function formatTrackedClanLeaderStatus(
+  freshness: TrackedClanLeadersClan["freshness"],
+  observedAt: Date | null,
+  timestampLabel: "updated" | "oldest" = "updated",
+): string {
+  const observedAtUnix = observedAt ? Math.floor(observedAt.getTime() / 1000) : null;
+  const timestamp = observedAtUnix ? ` <t:${observedAtUnix}:R>` : "";
+  if (freshness === "CURRENT") return `CURRENT — ${timestampLabel} update${timestamp}`;
+  if (freshness === "STALE") return `STALE — ${timestampLabel} persisted roster${timestamp}`;
+  if (freshness === "REFRESH_FAILED") {
+    return `REFRESH FAILED — ${timestampLabel} persisted roster not confirmed current${timestamp}`;
   }
   return "UNAVAILABLE — no persisted current roster data";
 }
 
-function buildTrackedClanLeadersClanLines(clan: TrackedClanLeadersClan): string[] {
+function formatTrackedClanLeadersSectionStatus(section: TrackedClanLeadersSection): string {
+  const oldestObservedAt = section.clans
+    .map((clan) => clan.observedAt)
+    .filter((observedAt): observedAt is Date => observedAt instanceof Date && Number.isFinite(observedAt.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
+  const counts = new Map<TrackedClanLeadersClan["freshness"], number>();
+  for (const clan of section.clans) counts.set(clan.freshness, (counts.get(clan.freshness) ?? 0) + 1);
+
+  if (counts.size === 1) {
+    const freshness = section.clans[0]?.freshness ?? "UNAVAILABLE";
+    return formatTrackedClanLeaderStatus(freshness, oldestObservedAt, "oldest");
+  }
+
+  const countText = (Object.keys(TRACKED_CLAN_LEADER_FRESHNESS_LABEL) as Array<TrackedClanLeadersClan["freshness"]>)
+    .filter((freshness) => counts.has(freshness))
+    .map((freshness) => `${TRACKED_CLAN_LEADER_FRESHNESS_LABEL[freshness]} ${counts.get(freshness)}`)
+    .join(", ");
+  const oldestTimestamp = oldestObservedAt ? ` — oldest observation <t:${Math.floor(oldestObservedAt.getTime() / 1000)}:R>` : "";
+  return `MIXED — ${countText}${oldestTimestamp}`;
+}
+
+function buildTrackedClanLeadersClanLines(clan: TrackedClanLeadersClan, warning: boolean): string[] {
   const title = buildClanProfileMarkdownLink(clan.name, clan.clanTag);
   const badge = clan.clanBadge ?? clan.registryIcon;
   const league = clan.leagueLabel ? ` | ${escapeTrackedClanLeaderPlayerName(clan.leagueLabel)}` : "";
-  const lines = [`${badge} ${title} \`${clan.clanTag}\`${league}`, `Status: ${formatTrackedClanLeaderFreshness(clan)}`];
+  const lines = [`${warning ? "⚠️ " : ""}${badge} ${title} \`${clan.clanTag}\`${league}`];
 
   if (clan.freshness === "UNAVAILABLE") {
-    lines.push("Leadership: unavailable — roster data cannot establish current leadership.");
+    lines.push("Roster unavailable — roster data cannot establish current leadership.");
     return lines;
   }
 
   if (clan.leaderGroups.length === 0) {
     lines.push(
       clan.freshness === "CURRENT"
-        ? "Leadership: no current leader/co-leader accounts found."
-        : "Leadership: no qualifying accounts in the persisted roster snapshot.",
+        ? "No current leader/co-leader accounts found."
+        : "No qualifying accounts in the persisted roster snapshot.",
     );
     return lines;
-  }
-
-  if (clan.freshness === "CURRENT") {
-    lines.push("Leadership:");
-  } else {
-    lines.push("Leadership (persisted; not confirmed current):");
   }
 
   for (const group of clan.leaderGroups) {
@@ -490,46 +517,53 @@ function buildTrackedClanLeadersClanLines(clan: TrackedClanLeadersClan): string[
   return lines;
 }
 
-function splitTrackedClanLeadersClanUnits(registry: TrackedClanLeadersRegistry, clan: TrackedClanLeadersClan): string[] {
-  const maxChars = 3800;
-  const lines = buildTrackedClanLeadersClanLines(clan);
+function splitTrackedClanLeadersClanUnits(clan: TrackedClanLeadersClan, warning: boolean): string[] {
+  const maxChars = 3600;
+  const lines = buildTrackedClanLeadersClanLines(clan, warning);
   const clanHeader = lines[0] ?? `${clan.registryIcon} ${clan.clanTag}`;
   const body = lines.slice(1);
   const chunks: string[] = [];
   let currentBody: string[] = [];
-  let currentLength = `**${registry}**\n${clanHeader}`.length;
+  let currentLength = clanHeader.length;
 
   for (const line of body) {
     const nextLength = currentLength + 1 + line.length;
     if (currentBody.length > 0 && nextLength > maxChars) {
-      chunks.push(`**${registry}**\n${clanHeader}\n${currentBody.join("\n")}`);
+      chunks.push(`${clanHeader}\n${currentBody.join("\n")}`);
       currentBody = [];
-      currentLength = `**${registry} (continued)**\n${clanHeader} (continued)`.length;
+      currentLength = `${clanHeader} (continued)`.length;
     }
     currentBody.push(line);
     currentLength += 1 + line.length;
   }
   if (currentBody.length > 0 || chunks.length === 0) {
-    const heading = chunks.length > 0 ? `**${registry} (continued)**` : `**${registry}**`;
     const title = chunks.length > 0 ? `${clanHeader} (continued)` : clanHeader;
-    chunks.push(`${heading}\n${title}${currentBody.length > 0 ? `\n${currentBody.join("\n")}` : ""}`);
+    chunks.push(`${title}${currentBody.length > 0 ? `\n${currentBody.join("\n")}` : ""}`);
   }
   return chunks;
 }
 
 export function buildTrackedClanLeadersPages(view: TrackedClanLeadersView): string[] {
-  const units = view.sections.flatMap((section) =>
-    section.clans.flatMap((clan) => splitTrackedClanLeadersClanUnits(section.registry, clan)),
-  );
   const pages: string[] = [];
   let current = "";
-  for (const unit of units) {
-    const candidate = current ? `${current}\n\n${unit}` : unit;
-    if (current && candidate.length > 3900) {
-      pages.push(current);
-      current = unit;
-    } else {
-      current = candidate;
+  let currentRegistry: TrackedClanLeadersRegistry | null = null;
+  for (const section of view.sections) {
+    const sectionHeader = `**${section.registry}**\nStatus: ${formatTrackedClanLeadersSectionStatus(section)}`;
+    const mixedFreshness = new Set(section.clans.map((clan) => clan.freshness)).size > 1;
+    for (const clan of section.clans) {
+      const clanUnits = splitTrackedClanLeadersClanUnits(clan, mixedFreshness && clan.freshness !== "CURRENT");
+      for (const clanUnit of clanUnits) {
+        const includeSectionHeader = currentRegistry !== section.registry || current.length === 0;
+        const nextUnit = includeSectionHeader ? `${sectionHeader}\n${clanUnit}` : clanUnit;
+        const candidate = current ? `${current}\n\n${nextUnit}` : nextUnit;
+        if (current && candidate.length > 3900) {
+          pages.push(current);
+          current = `${sectionHeader}\n${clanUnit}`;
+        } else {
+          current = candidate;
+        }
+        currentRegistry = section.registry;
+      }
     }
   }
   if (current) pages.push(current);
