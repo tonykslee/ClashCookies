@@ -7,10 +7,13 @@ import { CoCService } from "./CoCService";
 import { runWithCoCQueueContext } from "./CoCQueueContext";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { isActivePollingMode } from "./PollingModeService";
+import { normalizeClanLeadershipRole, type ClanLeadershipRole } from "./ClanLeadershipRole";
+
+export { normalizeClanLeadershipRole as normalizeTrackedClanLeaderRole } from "./ClanLeadershipRole";
 
 export type TrackedClanLeadersRegistry = "FWA" | "CWL" | "RAIDS";
 export type TrackedClanLeadersFreshness = "CURRENT" | "STALE" | "UNAVAILABLE" | "REFRESH_FAILED";
-export type TrackedClanLeaderRole = "leader" | "coLeader";
+export type TrackedClanLeaderRole = ClanLeadershipRole;
 
 export type TrackedClanLeaderAccount = {
   playerTag: string;
@@ -90,17 +93,6 @@ function validDate(input: unknown): Date | null {
   if (input instanceof Date && Number.isFinite(input.getTime())) return input;
   const parsed = new Date(String(input ?? ""));
   return Number.isFinite(parsed.getTime()) ? parsed : null;
-}
-
-/** Purpose: preserve the existing clan-role normalization semantics for persisted roster values. */
-export function normalizeTrackedClanLeaderRole(input: unknown): TrackedClanLeaderRole | null {
-  const normalized = String(input ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z]/g, "");
-  if (normalized === "leader") return "leader";
-  if (normalized === "coleader") return "coLeader";
-  return null;
 }
 
 function normalizeRegistryFilter(input: TrackedClanLeadersRegistry | null | undefined): TrackedClanLeadersRegistry[] {
@@ -211,7 +203,7 @@ function buildLeaderGroups(input: {
   const rows = input.memberRowsByClan.get(input.clanTag) ?? [];
 
   for (const row of rows) {
-    const role = normalizeTrackedClanLeaderRole(row.role);
+    const role = normalizeClanLeadershipRole(row.role);
     const playerTag = normalizePlayerTag(row.playerTag);
     if (!role || !playerTag) continue;
     const account: TrackedClanLeaderAccount = {
