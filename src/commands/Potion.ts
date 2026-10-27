@@ -9,8 +9,10 @@ import { formatError } from "../helper/formatError";
 import { CoCService } from "../services/CoCService";
 import {
   calculatePotionCompletion,
+  calculatePotionRecommendation,
   formatPotionDuration,
   type PotionCalculationResult,
+  type PotionRecommendationResult,
   type PotionType,
 } from "../services/PotionCalculatorService";
 
@@ -29,6 +31,13 @@ function buildPotionResultContent(result: Extract<PotionCalculationResult, { kin
     "Assumes all selected potions are activated immediately.",
   ];
 
+  if (result.helperLevel !== undefined) {
+    content.push(
+      `Helper assumption: **level ${result.helperLevel} · next work session in ${formatPotionDuration(result.helperNextInSeconds ?? 0)}**`,
+      "Helper contribution repeats for 1 hour every 23 hours and is added to, rather than multiplied by, potion speed.",
+    );
+  }
+
   if (result.boostRemainingSeconds !== undefined && result.effectiveBoostWindowSeconds !== undefined) {
     content.splice(
       4,
@@ -42,6 +51,45 @@ function buildPotionResultContent(result: Extract<PotionCalculationResult, { kin
   }
 
   return content.join("\n");
+}
+
+/** Purpose: render the minimum-pot recommendation and its boundary comparison. */
+function buildPotionRecommendationContent(
+  result: Extract<PotionRecommendationResult, { kind: "recommendation" }>,
+): string {
+  const potionLabel = result.recommendedNumPots === 1 ? "potion" : "potions";
+  const lines = [
+    "**Potion Calculator**",
+    `Type: **${result.typeLabel}**`,
+    `Original time left: **${result.originalTimeLeftDisplay}**`,
+    `Recommendation: **${result.recommendedNumPots} additional ${potionLabel}**`,
+  ];
+
+  if (result.boostRemainingSeconds !== undefined) {
+    lines.push(`Current boost remaining: **${result.boostRemainingDisplay}**`);
+  }
+  if (result.helperLevel !== undefined) {
+    lines.push(
+      `Helper assumption: **level ${result.helperLevel} · next work session in ${formatPotionDuration(result.helperNextInSeconds ?? 0)}**`,
+      "Helper contribution repeats for 1 hour every 23 hours and is added to, rather than multiplied by, potion speed.",
+    );
+  }
+
+  if (result.previousScenario) {
+    const previousLabel = result.previousScenario.numPots === 1 ? "potion" : "potions";
+    lines.push(
+      `With **${result.previousScenario.numPots} ${previousLabel}**: **${result.previousScenario.upgradeTimeRemainingAtBoostExpiryDisplay}** upgrade time remains when boosts expire; estimated completion in **${result.previousScenario.completionDurationDisplay}** at <t:${result.previousScenario.completionUnixSeconds}:F> (<t:${result.previousScenario.completionUnixSeconds}:R>).`,
+    );
+  }
+
+  const scenario = result.recommendedScenario;
+  lines.push(
+    `With **${scenario.numPots} ${potionLabel}**: estimated completion in **${scenario.completionDurationDisplay}** at <t:${scenario.completionUnixSeconds}:F> (<t:${scenario.completionUnixSeconds}:R>).`,
+    `Potion boost remaining at completion: **${scenario.potionBoostRemainingAtCompletionDisplay}**`,
+    "Assumes all recommended potions are activated immediately; results are estimates based on the supplied time and boost values.",
+  );
+
+  return lines.join("\n");
 }
 
 /** Purpose: normalize the potion type option into one of the fixed calculator keys. */
@@ -84,13 +132,27 @@ export const Potion: Command = {
           name: "num-pots",
           description: "Number of potions to activate",
           type: ApplicationCommandOptionType.Integer,
-          required: true,
+          required: false,
           minValue: 1,
           maxValue: 100,
         },
         {
           name: "boost-remaining",
           description: "Real-world time remaining on an active boost",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "helper-level",
+          description: "Builder's Apprentice (1-8) or Lab Assistant (1-12)",
+          type: ApplicationCommandOptionType.Integer,
+          required: false,
+          minValue: 1,
+          maxValue: 12,
+        },
+        {
+          name: "helper-next-in",
+          description: "Time until the next helper work session, like 0m or 2h30m",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -122,16 +184,29 @@ export const Potion: Command = {
       }
 
       const timeLeft = interaction.options.getString("time-left", true);
-      const numPots = interaction.options.getInteger("num-pots", true);
+      const numPots = interaction.options.getInteger("num-pots");
       const boostRemaining = interaction.options.getString("boost-remaining");
+      const helperLevel = interaction.options.getInteger("helper-level");
+      const helperNextIn = interaction.options.getString("helper-next-in");
       const now = new Date();
-      const result = calculatePotionCompletion({
-        type: potionType,
-        timeLeft,
-        numPots,
-        boostRemaining,
-        now,
-      });
+      const result = numPots === null
+        ? calculatePotionRecommendation({
+            type: potionType,
+            timeLeft,
+            boostRemaining,
+            helperLevel,
+            helperNextIn,
+            now,
+          })
+        : calculatePotionCompletion({
+            type: potionType,
+            timeLeft,
+            numPots,
+            boostRemaining,
+            helperLevel,
+            helperNextIn,
+            now,
+          });
 
       if (result.kind === "invalid") {
         await safeReply(interaction, {
@@ -143,7 +218,10 @@ export const Potion: Command = {
 
       await safeReply(interaction, {
         ephemeral: true,
-        content: buildPotionResultContent(result),
+        content:
+          result.kind === "recommendation"
+            ? buildPotionRecommendationContent(result)
+            : buildPotionResultContent(result),
       });
     } catch (err) {
       console.error(`potion command failed: ${formatError(err)}`);
