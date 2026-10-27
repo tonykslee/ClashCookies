@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   calculatePotionCompletion,
+  calculatePotionRecommendation,
   formatPotionDuration,
   getPotionConfig,
   parsePotionDuration,
   POTION_BOOST_REMAINING_INVALID_MESSAGE,
+  POTION_HELPER_INCOMPATIBLE_MESSAGE,
+  POTION_HELPER_LEVEL_INVALID_MESSAGE,
+  POTION_HELPER_LEVEL_REQUIRED_MESSAGE,
+  POTION_HELPER_NEXT_IN_INVALID_MESSAGE,
   POTION_NUM_POTS_INVALID_MESSAGE,
+  POTION_RECOMMENDATION_LIMIT_MESSAGE,
   POTION_TIME_LEFT_INVALID_MESSAGE,
 } from "../src/services/PotionCalculatorService";
 
@@ -375,6 +381,211 @@ describe("PotionCalculatorService", () => {
     expect(result).toEqual({
       kind: "invalid",
       message: POTION_TIME_LEFT_INVALID_MESSAGE,
+    });
+  });
+
+  it("recommends the minimum potions and reports the one-potion boundary", () => {
+    const result = calculatePotionRecommendation({
+      type: "builder",
+      timeLeft: "17h",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "recommendation",
+      recommendedNumPots: 2,
+      recommendedScenario: {
+        numPots: 2,
+        completionDurationSeconds: 6_120,
+        potionBoostRemainingAtCompletionSeconds: 1_080,
+      },
+      previousScenario: {
+        numPots: 1,
+        upgradeTimeRemainingAtBoostExpirySeconds: 25_200,
+        completionDurationSeconds: 28_800,
+      },
+    });
+  });
+
+  it("recommends zero potions when the active boost already suffices", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "5h",
+      boostRemaining: "37m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "recommendation",
+      recommendedNumPots: 0,
+      recommendedScenario: {
+        completionDurationSeconds: 1_800,
+        potionBoostRemainingAtCompletionSeconds: 420,
+      },
+    });
+    if (result.kind === "recommendation") {
+      expect(result.previousScenario).toBeUndefined();
+    }
+  });
+
+  it("uses additive helper work for explicit counts and prorates a partial session", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "8h",
+      numPots: 1,
+      helperLevel: 5,
+      helperNextIn: "30m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 2_520,
+      completionDurationDisplay: "42m",
+      helperLevel: 5,
+      helperNextInSeconds: 1_800,
+    });
+
+    const withoutHelper = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "17h",
+      numPots: 2,
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+    const withHelper = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "17h",
+      numPots: 2,
+      helperLevel: 5,
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+    expect(withoutHelper).toMatchObject({ completionDurationSeconds: 6_120 });
+    expect(withHelper).toMatchObject({ completionDurationSeconds: 4_320 });
+  });
+
+  it("respects helper start offsets and recurring 23-hour sessions", () => {
+    const result = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "52h",
+      numPots: 1,
+      helperLevel: 8,
+      helperNextIn: "2h",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 97_200,
+      completionDurationDisplay: "1d 3h",
+    });
+  });
+
+  it("supports research helper levels and accepts an explicit zero-minute start", () => {
+    expect(parsePotionDuration("0m", POTION_HELPER_NEXT_IN_INVALID_MESSAGE, true)).toEqual({
+      kind: "valid",
+      totalSeconds: 0,
+    });
+
+    const result = calculatePotionCompletion({
+      type: "research",
+      timeLeft: "24h",
+      numPots: 1,
+      helperLevel: 12,
+      helperNextIn: "0m",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "valid",
+      completionDurationSeconds: 2_400,
+      helperNextInSeconds: 0,
+    });
+  });
+
+  it("uses the same helper model for automatic recommendations", () => {
+    const result = calculatePotionRecommendation({
+      type: "builder",
+      timeLeft: "17h",
+      helperLevel: 5,
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      kind: "recommendation",
+      recommendedNumPots: 2,
+      recommendedScenario: {
+        completionDurationSeconds: 4_320,
+        potionBoostRemainingAtCompletionSeconds: 2_880,
+      },
+      previousScenario: {
+        upgradeTimeRemainingAtBoostExpirySeconds: 7_200,
+      },
+      helperLevel: 5,
+      helperNextInSeconds: 0,
+    });
+  });
+
+  it("rejects invalid or incompatible helper arguments", () => {
+    const cases = [
+      {
+        input: { type: "builder" as const, helperLevel: 0 },
+        message: POTION_HELPER_LEVEL_INVALID_MESSAGE,
+      },
+      {
+        input: { type: "builder" as const, helperLevel: 9 },
+        message: POTION_HELPER_LEVEL_INVALID_MESSAGE,
+      },
+      {
+        input: { type: "research" as const, helperLevel: 13 },
+        message: POTION_HELPER_LEVEL_INVALID_MESSAGE,
+      },
+      {
+        input: { type: "pet" as const, helperLevel: 1 },
+        message: POTION_HELPER_INCOMPATIBLE_MESSAGE,
+      },
+      {
+        input: { type: "clocktower" as const, helperNextIn: "0m" },
+        message: POTION_HELPER_INCOMPATIBLE_MESSAGE,
+      },
+      {
+        input: { type: "builder" as const, helperNextIn: "0m" },
+        message: POTION_HELPER_LEVEL_REQUIRED_MESSAGE,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = calculatePotionRecommendation({
+        ...testCase.input,
+        timeLeft: "1h",
+        now: new Date("2026-07-01T12:00:00.000Z"),
+      });
+      expect(result).toEqual({ kind: "invalid", message: testCase.message });
+    }
+
+    const malformedNextIn = calculatePotionCompletion({
+      type: "builder",
+      timeLeft: "1h",
+      numPots: 1,
+      helperLevel: 1,
+      helperNextIn: "not-a-duration",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+    expect(malformedNextIn).toEqual({
+      kind: "invalid",
+      message: POTION_HELPER_NEXT_IN_INVALID_MESSAGE,
+    });
+  });
+
+  it("returns a clear limitation when the recommendation exceeds 100 potions", () => {
+    const result = calculatePotionRecommendation({
+      type: "builder",
+      timeLeft: "43d",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      kind: "invalid",
+      message: POTION_RECOMMENDATION_LIMIT_MESSAGE,
     });
   });
 });

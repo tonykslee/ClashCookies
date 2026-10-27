@@ -18,6 +18,8 @@ function makeInteraction(input: {
   timeLeft?: string | null;
   numPots?: number | null;
   boostRemaining?: string | null;
+  helperLevel?: number | null;
+  helperNextIn?: string | null;
 }) {
   return {
     options: {
@@ -26,10 +28,12 @@ function makeInteraction(input: {
         if (name === "type") return input.type ?? null;
         if (name === "time-left") return input.timeLeft ?? null;
         if (name === "boost-remaining") return input.boostRemaining ?? null;
+        if (name === "helper-next-in") return input.helperNextIn ?? null;
         return null;
       }),
       getInteger: vi.fn((name: string) => {
         if (name === "num-pots") return input.numPots ?? null;
+        if (name === "helper-level") return input.helperLevel ?? null;
         return null;
       }),
     },
@@ -62,6 +66,8 @@ describe("/potion command", () => {
       "time-left",
       "num-pots",
       "boost-remaining",
+      "helper-level",
+      "helper-next-in",
     ]);
 
     const typeOption = calc?.options?.find((option: any) => option.name === "type");
@@ -80,13 +86,23 @@ describe("/potion command", () => {
 
     const numPotsOption = calc?.options?.find((option: any) => option.name === "num-pots");
     expect(numPotsOption?.type).toBe(ApplicationCommandOptionType.Integer);
-    expect(numPotsOption?.required).toBe(true);
+    expect(numPotsOption?.required).toBe(false);
     expect(numPotsOption?.minValue).toBe(1);
     expect(numPotsOption?.maxValue).toBe(100);
 
     const boostRemainingOption = calc?.options?.find((option: any) => option.name === "boost-remaining");
     expect(boostRemainingOption?.type).toBe(ApplicationCommandOptionType.String);
     expect(boostRemainingOption?.required).toBe(false);
+
+    const helperLevelOption = calc?.options?.find((option: any) => option.name === "helper-level");
+    expect(helperLevelOption?.type).toBe(ApplicationCommandOptionType.Integer);
+    expect(helperLevelOption?.required).toBe(false);
+    expect(helperLevelOption?.minValue).toBe(1);
+    expect(helperLevelOption?.maxValue).toBe(12);
+
+    const helperNextInOption = calc?.options?.find((option: any) => option.name === "helper-next-in");
+    expect(helperNextInOption?.type).toBe(ApplicationCommandOptionType.String);
+    expect(helperNextInOption?.required).toBe(false);
   });
 
   it("renders a timestamped result for a valid calc request", async () => {
@@ -187,5 +203,48 @@ describe("/potion command", () => {
       }),
     );
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders an automatic recommendation when num-pots is omitted", async () => {
+    const interaction = makeInteraction({
+      subcommand: "calc",
+      type: "builder",
+      timeLeft: "17h",
+    });
+
+    await Potion.run({} as any, interaction as any, {} as any);
+
+    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
+    expect(content).toContain("Recommendation: **2 additional potions**");
+    expect(content).toContain("With **1 potion**");
+    expect(content).toContain("7h** upgrade time remains when boosts expire");
+    expect(content).toContain("estimated completion in **8h**");
+    expect(content).toContain("With **2 potions**: estimated completion in **1h 42m**");
+    expect(content).toContain("Potion boost remaining at completion: **18m**");
+  });
+
+  it("passes helper arguments and renders the recurring helper assumption", async () => {
+    const calculateSpy = vi.spyOn(potionCalculatorService, "calculatePotionCompletion");
+    const interaction = makeInteraction({
+      subcommand: "calc",
+      type: "builder",
+      timeLeft: "17h",
+      numPots: 2,
+      helperLevel: 5,
+      helperNextIn: "0m",
+    });
+
+    await Potion.run({} as any, interaction as any, {} as any);
+
+    expect(calculateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        numPots: 2,
+        helperLevel: 5,
+        helperNextIn: "0m",
+      }),
+    );
+    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
+    expect(content).toContain("Helper assumption: **level 5 · next work session in 0s**");
+    expect(content).toContain("added to, rather than multiplied by, potion speed");
   });
 });
