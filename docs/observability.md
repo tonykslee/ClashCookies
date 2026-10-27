@@ -68,6 +68,10 @@ Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup
 
 `/sync post status` and `/sync spin status` emit one bounded `[sync-status] automatic_lookup` event for automatic discovery. The event records the guild, resolution result (`active`, `expired`, `deleted`, `missing`, `unavailable`, `format_mismatch`, `no_active_tracked_announcement`, or `stale_saved_pointer`), selected root identity/status, saved-pointer identity, and whether the saved pointer matched the DB-selected root. Discord permission, temporary API, and format failures preserve `TrackedMessage`; only a definitive missing-message response may mark the tracked root deleted. Message contents and unbounded exception text are not logged.
 
+### Sync Spin Status leader-account button
+
+The persistent `My Leader Accounts` button emits bounded `[sync-leader-accounts]` events with `STARTED`, `SUCCESS`, `FAILURE`, and `INVALID_CONTEXT` outcomes. Success records only clan count, matched-account count, page counts, and duration; failures record a bounded reason/code and duration. The flow reads tracked sync metadata and performs one bulk persisted roster/`PlayerLink` lookup for the clicking user. It never logs player names, tags, links, account details, or ephemeral response content, and it does not call live CoC APIs or write state.
+
 ### Tracked-clan leaders view
 
 `/clan list display:leaders` emits bounded `[tracked-clan] event=leaders_refresh` lines for manual refresh lifecycle (`STARTED`, `SUCCESS`, `PARTIAL`, `FAILURE`, or `SKIPPED reason=mirror_mode`). Events contain only displayed and failed counts; player names, links, and Discord message content are not logged. Initial leaders rendering is DB-first and performs no CoC/FWAStats request. Manual refresh uses the interactive CoC queue with bounded clan concurrency, deduplicates normalized tags across registries, and preserves persisted results with explicit freshness labels when a clan refresh fails. Mirror mode remains read-only, preserves the persisted freshness state, and does not call CoC.
