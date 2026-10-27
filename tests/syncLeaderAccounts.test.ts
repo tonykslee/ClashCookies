@@ -46,7 +46,7 @@ function makeTracked(metadata = makeMetadata(), overrides: Record<string, unknow
     featureType: "SYNC_TIME_POST",
     status: "ACTIVE",
     referenceId: null,
-    expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     metadata,
     claims: [],
     ...overrides,
