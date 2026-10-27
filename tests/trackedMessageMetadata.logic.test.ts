@@ -396,6 +396,18 @@ describe("tracked message metadata parsing", () => {
       })
     ).toBeNull();
   });
+
+  it("keeps missing sync badges invalid by default and only accepts an explicit view fallback", () => {
+    const value = {
+      syncTimeIso: "2026-03-19T15:30:00.000Z",
+      syncEpochSeconds: 1742407800,
+      roleId: "456",
+      clans: [{ clanTag: "#AAA111", clanName: "Clan", emojiInline: "" }],
+    };
+
+    expect(parseSyncTimeMetadata(value)).toBeNull();
+    expect(parseSyncTimeMetadata(value, { fallbackEmojiInline: "🏷️" })?.clans[0]?.emojiInline).toBe("🏷️");
+  });
 });
 
 describe("sync readiness tracked message writes", () => {

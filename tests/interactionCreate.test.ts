@@ -643,4 +643,37 @@ describe("interactionCreate global post-to-channel behavior", () => {
       content: "Posted to channel.",
     });
   }, 30000);
+
+  it("routes the persistent sync leader-account namespace through the button handler", async () => {
+    const { handler } = await loadInteractionHandler(
+      vi.fn().mockResolvedValue(undefined),
+    );
+    const interaction: any = {
+      customId: "sync-leaders:v1:not-a-snowflake:0",
+      user: { id: "user-1" },
+      guildId: "guild-1",
+      guild: { id: "guild-1" },
+      isAutocomplete: () => false,
+      isButton: () => true,
+      isStringSelectMenu: () => false,
+      isUserSelectMenu: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => false,
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(async () => {
+        interaction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handler(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "This sync status button is no longer available." }),
+    );
+  }, 30000);
 });

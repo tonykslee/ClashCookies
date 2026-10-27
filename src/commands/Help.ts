@@ -905,7 +905,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Select a clan below the retrospective to open an ephemeral drilldown with persisted war, missed-attack, FWA compliance, readiness, and filler facts; the controls use the same canonical clan order as the summary.",
       "Retrospective metrics are persisted historical facts. Coverage is shown for partial data; `—` means historical data is unavailable or incomplete rather than zero.",
       "The retrospective is DB-first, mirror-safe, and does not claim coverage for periods before the historical snapshot/war evidence was introduced.",
-      "`/sync spin status` shows the compact tracked Sync Spin Status for the stored active sync post, or a provided message ID.",
+      "`/sync spin status` shows the compact tracked Sync Spin Status for the stored active sync post, or a provided message ID. Its persistent `My Leader Accounts` button is available to any guild member and returns an ephemeral, viewer-specific list of linked persisted Leader/Co-Leader accounts for every clan in that sync; it uses no live CoC request.",
       "`/sync post status` scans the live sync message reactions directly and shows claimed vs unclaimed clans, unavailable users, and leader eligibility details. Its owner-only `Leaders` toggle lazily reads the persisted current roster and linked accounts without making a live CoC request.",
       "`sync time` is admin-only by default.",
     ],

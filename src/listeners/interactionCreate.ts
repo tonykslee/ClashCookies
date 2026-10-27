@@ -234,6 +234,10 @@ import {
   handleLayoutButtonInteraction,
   isLayoutPostCustomId,
 } from "../services/LayoutPostService";
+import {
+  handleSyncLeaderAccountsButtonInteraction,
+  isSyncLeaderAccountsButtonCustomId,
+} from "../services/SyncLeaderAccountsInteractionService";
 
 const commandPermissionService = new CommandPermissionService();
 const GLOBAL_POST_BUTTON_PREFIX = "post-channel";
@@ -1000,6 +1004,11 @@ const handleButtonInteraction = async (
 
   if (isLayoutPostCustomId(interaction.customId)) {
     await handleLayoutButtonInteraction(interaction);
+    return;
+  }
+
+  if (isSyncLeaderAccountsButtonCustomId(interaction.customId)) {
+    await handleSyncLeaderAccountsButtonInteraction(interaction);
     return;
   }
 
