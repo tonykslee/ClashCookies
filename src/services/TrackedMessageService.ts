@@ -1275,12 +1275,21 @@ export function shouldSendFwaBaseSwapBattleDayReminder(
   return metadata.entries.some((entry) => entry.section === "fwa_bases");
 }
 
-export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata | null {
+export type SyncTimeMetadataParseOptions = {
+  fallbackEmojiInline?: string;
+};
+
+/** Purpose: parse persisted sync metadata while preserving required-field semantics for existing consumers. */
+export function parseSyncTimeMetadata(
+  value: unknown,
+  options: SyncTimeMetadataParseOptions = {},
+): SyncTimeTrackedMetadata | null {
   if (!isObject(value) || !Array.isArray(value.clans)) return null;
   const syncTimeIso = String(value.syncTimeIso ?? "").trim();
   const syncEpochSeconds = Number(value.syncEpochSeconds);
   const roleId = String(value.roleId ?? "").trim();
   if (!syncTimeIso || !Number.isFinite(syncEpochSeconds) || !roleId) return null;
+  const fallbackEmojiInline = String(options.fallbackEmojiInline ?? "").trim();
   const clans = value.clans
     .map((clan) => {
       if (!isObject(clan)) return null;
@@ -1291,10 +1300,10 @@ export function parseSyncTimeMetadata(value: unknown): SyncTimeTrackedMetadata |
       });
       const clanTag = String(clan.clanTag ?? "").trim();
       const clanName = String(clan.clanName ?? "").trim();
-      const emojiInline = String(clan.emojiInline ?? "").trim() || "🏷️";
+      const emojiInline = String(clan.emojiInline ?? "").trim() || fallbackEmojiInline;
       const emojiIdRaw = String(clan.emojiId ?? "").trim();
       const emojiNameRaw = String(clan.emojiName ?? "").trim();
-      if (!clanTag || !clanName) return null;
+      if (!clanTag || !clanName || !emojiInline) return null;
       return {
         code: clanCode,
         clanTag,

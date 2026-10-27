@@ -1,12 +1,18 @@
 import type { ButtonInteraction } from "discord.js";
-import { normalizeClanTag } from "./PlayerLinkService";
 import { lookupClanLeadershipForPairs } from "./ClanLeadershipLookupService";
-import { parseSyncTimeMetadata, trackedMessageService, TRACKED_MESSAGE_FEATURE_TYPE, TRACKED_MESSAGE_STATUS } from "./TrackedMessageService";
+import {
+  parseSyncTimeMetadata,
+  trackedMessageService,
+  TRACKED_MESSAGE_FEATURE_TYPE,
+  TRACKED_MESSAGE_STATUS,
+} from "./TrackedMessageService";
 import {
   buildSyncLeaderAccountsEmbed,
   buildSyncLeaderAccountsPaginationComponents,
   buildSyncLeaderAccountsPages,
+  dedupeSyncLeaderAccountClans,
   parseSyncLeaderAccountsButtonCustomId,
+  SYNC_LEADER_ACCOUNTS_FALLBACK_CLAN_BADGE,
 } from "./SyncLeaderAccountsViewService";
 
 export { isSyncLeaderAccountsButtonCustomId } from "./SyncLeaderAccountsViewService";
@@ -21,6 +27,12 @@ function logSyncLeaderAccounts(event: "STARTED" | "SUCCESS" | "FAILURE" | "INVAL
 function failureCode(error: unknown): string {
   if (error instanceof Error && error.name) return error.name.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 40);
   return "unknown_error";
+}
+
+/** Purpose: recognize a finite future expiry for tracked source validation. */
+function hasFutureExpiry(value: unknown, nowMs: number): boolean {
+  const expiresAt = value instanceof Date ? value : new Date(String(value ?? ""));
+  return Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() > nowMs;
 }
 
 /** Purpose: resolve and render one user's current persisted leader accounts from a persistent button. */
@@ -67,16 +79,34 @@ export async function handleSyncLeaderAccountsButtonInteraction(
   if (!tracked || tracked.guildId !== interaction.guildId) return invalid("guild_mismatch");
   if (tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return invalid("tracked_message_inactive");
   if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return invalid("feature_mismatch");
-  const expiresAt = tracked.expiresAt instanceof Date ? tracked.expiresAt : new Date(String(tracked.expiresAt ?? ""));
-  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) return invalid("expired");
+  if (!hasFutureExpiry(tracked.expiresAt, Date.now())) return invalid("expired");
 
-  const metadata = parseSyncTimeMetadata(tracked.metadata);
+  if (tracked.referenceId) {
+    let sourceSync;
+    try {
+      sourceSync = await trackedMessageService.fetchSyncTrackedMessageWithClaims(tracked.referenceId);
+    } catch (error) {
+      logSyncLeaderAccounts("FAILURE", `reason=source_sync_read_failed duration_ms=${Date.now() - startedAt} error=${failureCode(error)}`);
+      await interaction.editReply({
+        content: "Could not load your leader accounts right now.",
+        allowedMentions: { parse: [] },
+      }).catch(() => undefined);
+      return;
+    }
+    if (!sourceSync || sourceSync.guildId !== tracked.guildId) return invalid("source_sync_guild_mismatch");
+    if (sourceSync.referenceId) return invalid("source_sync_not_root");
+    if (sourceSync.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return invalid("source_sync_inactive");
+    if (sourceSync.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) {
+      return invalid("source_sync_feature_mismatch");
+    }
+    if (!hasFutureExpiry(sourceSync.expiresAt, Date.now())) return invalid("source_sync_expired");
+  }
+
+  const metadata = parseSyncTimeMetadata(tracked.metadata, {
+    fallbackEmojiInline: SYNC_LEADER_ACCOUNTS_FALLBACK_CLAN_BADGE,
+  });
   if (!metadata) return invalid("metadata_invalid");
-  const clans = [...new Map(
-    metadata.clans
-      .map((clan) => [normalizeClanTag(clan.clanTag), clan] as const)
-      .filter(([tag]) => Boolean(tag)),
-  ).values()];
+  const clans = dedupeSyncLeaderAccountClans(metadata);
   if (clans.length === 0) return invalid("clans_missing");
 
   try {

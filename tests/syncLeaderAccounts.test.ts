@@ -23,6 +23,7 @@ import { handleSyncLeaderAccountsButtonInteraction } from "../src/services/SyncL
 const USER_ONE = "111111111111111111";
 const USER_TWO = "222222222222222222";
 const TRACKED_MESSAGE_ID = "123456789012345678";
+const SOURCE_MESSAGE_ID = "987654321098765432";
 
 function makeMetadata(clans = [
   { code: "RD", clanTag: "#PYLQ", clanName: "Rising Dawn", emojiId: "1", emojiName: "rd", emojiInline: "<:rd:1>" },
@@ -37,7 +38,7 @@ function makeMetadata(clans = [
   } as any;
 }
 
-function makeTracked(metadata = makeMetadata()) {
+function makeTracked(metadata = makeMetadata(), overrides: Record<string, unknown> = {}) {
   return {
     guildId: "guild-1",
     channelId: "channel-1",
@@ -48,6 +49,7 @@ function makeTracked(metadata = makeMetadata()) {
     expiresAt: new Date("2026-12-01T00:00:00.000Z"),
     metadata,
     claims: [],
+    ...overrides,
   };
 }
 
@@ -129,6 +131,48 @@ describe("Sync leader accounts button", () => {
     expect(lines.every((line) => !line.startsWith("-"))).toBe(true);
   });
 
+  it("preserves the first duplicate clan metadata entry in the shared interaction/view path", () => {
+    const metadata = makeMetadata([
+      { code: "FIRST", clanTag: "#PYLQ", clanName: "First", emojiId: "1", emojiName: "first", emojiInline: "🅰️" },
+      { code: "SECOND", clanTag: "#pylq", clanName: "Second", emojiId: "2", emojiName: "second", emojiInline: "🅱️" },
+      { code: "ZG", clanTag: "#PYLG", clanName: "Zero Gravity", emojiId: "3", emojiName: "zg", emojiInline: "🆉" },
+    ]);
+    const lines = buildSyncLeaderAccountsLines({
+      metadata,
+      lookup: { entries: [] },
+      discordUserId: USER_ONE,
+    });
+
+    expect(lines).toEqual([
+      "🅰️ **FIRST** (Roster unavailable)",
+      "🆉 **ZG** (Roster unavailable)",
+    ]);
+  });
+
+  it.each([
+    ["replaced", { status: "REPLACED" }],
+    ["expired", { expiresAt: new Date("2026-01-01T00:00:00.000Z") }],
+    ["cross-guild", { guildId: "guild-2" }],
+    ["deleted", null],
+  ])("rejects an automatic status with a %s source sync", async (_label, sourceOverrides) => {
+    const automatic = makeTracked(makeMetadata(), { referenceId: SOURCE_MESSAGE_ID });
+    const source = sourceOverrides
+      ? makeTracked(makeMetadata(), { messageId: SOURCE_MESSAGE_ID, ...sourceOverrides })
+      : null;
+    prismaMock.trackedMessage.findUnique
+      .mockResolvedValueOnce(automatic)
+      .mockResolvedValueOnce(source);
+    const interaction = makeButtonInteraction(USER_ONE, `sync-leaders:v1:${TRACKED_MESSAGE_ID}:0`);
+
+    await handleSyncLeaderAccountsButtonInteraction(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({
+      content: "This sync status button is no longer available.",
+    }));
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(interaction.editReply.mock.calls[0][0].content).toBe("This sync status button is no longer available.");
+  });
+
   it("isolates each clicking user and keeps multiple matching accounts in one clan", async () => {
     const first = makeButtonInteraction(USER_ONE, "sync-leaders:v1:123456789012345678:0");
     await handleSyncLeaderAccountsButtonInteraction(first);
@@ -160,5 +204,44 @@ describe("Sync leader accounts button", () => {
     const pages = buildSyncLeaderAccountsPages({ metadata, lookup: { entries: [] }, discordUserId: USER_ONE });
     expect(pages.length).toBeGreaterThan(1);
     expect(pages.join("\n").match(/\*\*C\d+\*\*/g)).toHaveLength(300);
+  });
+
+  it("keeps pagination restart-safe and viewer-specific across page clicks", async () => {
+    const tagAlphabet = "PYLQGRJCUV0289";
+    const metadata = makeMetadata(Array.from({ length: 300 }, (_, index) => ({
+      code: `P${index}`,
+      clanTag: `#2QG${tagAlphabet[index % tagAlphabet.length]}${tagAlphabet[Math.floor(index / tagAlphabet.length) % tagAlphabet.length]}${tagAlphabet[Math.floor(index / (tagAlphabet.length * tagAlphabet.length))]}`,
+      clanName: `Clan ${index}`,
+      emojiId: String(index),
+      emojiName: `clan${index}`,
+      emojiInline: `🏷️`,
+    })));
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(makeTracked(metadata));
+    lookupMock.mockImplementation(async (pairs: Array<{ clanTag: string; discordUserId: string }>) => ({
+      entries: pairs.map((pair) => ({
+        clanTag: pair.clanTag,
+        discordUserId: pair.discordUserId,
+        rosterAvailable: true,
+        observedAt: null,
+        accounts: pair.discordUserId === USER_ONE
+          ? [{ clanTag: pair.clanTag, discordUserId: pair.discordUserId, playerTag: "#P1", playerName: "Only One", role: "leader" }]
+          : [{ clanTag: pair.clanTag, discordUserId: pair.discordUserId, playerTag: "#P2", playerName: "Only Two", role: "coLeader" }],
+      })),
+    }));
+
+    const first = makeButtonInteraction(USER_ONE, `sync-leaders:v1:${TRACKED_MESSAGE_ID}:0`);
+    await handleSyncLeaderAccountsButtonInteraction(first);
+    const firstReply = first.editReply.mock.calls[0][0];
+    const nextButton = firstReply.components[0].toJSON().components[1];
+    expect(nextButton.custom_id).toBe(`sync-leaders:v1:${TRACKED_MESSAGE_ID}:1`);
+    expect(firstReply.embeds[0].toJSON().description).toContain("Only One");
+    expect(firstReply.embeds[0].toJSON().description).not.toContain("Only Two");
+
+    const second = makeButtonInteraction(USER_TWO, nextButton.custom_id);
+    await handleSyncLeaderAccountsButtonInteraction(second);
+    const secondReply = second.editReply.mock.calls[0][0];
+    expect(secondReply.embeds[0].toJSON().description).toContain("Only Two");
+    expect(secondReply.embeds[0].toJSON().description).not.toContain("Only One");
+    expect(lookupMock.mock.calls.at(-1)?.[0].every((pair: { discordUserId: string }) => pair.discordUserId === USER_TWO)).toBe(true);
   });
 });

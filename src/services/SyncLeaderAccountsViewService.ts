@@ -16,7 +16,7 @@ export const SYNC_LEADER_ACCOUNTS_BUTTON_LABEL = "My Leader Accounts";
 
 const SYNC_LEADER_ACCOUNTS_BUTTON_VERSION = "v1";
 const SYNC_LEADER_ACCOUNTS_PAGE_LIMIT = 3900;
-const FALLBACK_CLAN_BADGE = "🏷️";
+export const SYNC_LEADER_ACCOUNTS_FALLBACK_CLAN_BADGE = "🏷️";
 
 /** Purpose: create the bounded custom ID shared by public and manual sync-status buttons. */
 export function buildSyncLeaderAccountsButtonCustomId(
@@ -88,7 +88,9 @@ function compareLeadershipAccounts(left: ClanLeadershipLookupAccount, right: Cla
 }
 
 /** Purpose: preserve announcement order while removing duplicate clan tags safely. */
-function uniqueSyncClans(metadata: SyncTimeTrackedMetadata): SyncTimeTrackedMetadata["clans"] {
+export function dedupeSyncLeaderAccountClans(
+  metadata: SyncTimeTrackedMetadata,
+): SyncTimeTrackedMetadata["clans"] {
   const seen = new Set<string>();
   return metadata.clans.filter((clan) => {
     const key = normalizeClanTag(clan.clanTag);
@@ -108,9 +110,9 @@ export function buildSyncLeaderAccountsLines(input: {
     input.lookup.entries.map((entry) => [accountPairKey(entry.clanTag, entry.discordUserId), entry]),
   );
 
-  return uniqueSyncClans(input.metadata).map((clan) => {
+  return dedupeSyncLeaderAccountClans(input.metadata).map((clan) => {
     const entry = entries.get(accountPairKey(clan.clanTag, input.discordUserId));
-    const badge = clan.emojiInline.trim() || FALLBACK_CLAN_BADGE;
+    const badge = clan.emojiInline.trim() || SYNC_LEADER_ACCOUNTS_FALLBACK_CLAN_BADGE;
     const abbreviation = escapeSyncLeaderAccountName(clan.code.trim() || "?");
     let accountText = "(Roster unavailable)";
     if (entry?.rosterAvailable) {
@@ -144,7 +146,9 @@ export function buildSyncLeaderAccountsPages(input: {
     }
   }
   if (current.length > 0) pages.push(current.join("\n"));
-  return pages.length > 0 ? pages : ["🏷️ **?** (Roster unavailable)"];
+  return pages.length > 0
+    ? pages
+    : [`${SYNC_LEADER_ACCOUNTS_FALLBACK_CLAN_BADGE} **?** (Roster unavailable)`];
 }
 
 /** Purpose: build restart-safe ephemeral pagination controls from the tracked-message reference. */
