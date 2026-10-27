@@ -2694,5 +2694,9 @@ describe("/sync time post modal submit", () => {
     expect(embed.description).toContain("Claimed: **1/2**");
     expect(embed.description).toContain("✅ <:rr:111> **RR** (Rocky Road)");
     expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
+    expect(payload.components[0].components[0].data.label).toBe("My Leader Accounts");
+    expect(payload.components[0].components[0].data.custom_id).toBe(
+      "sync-leaders:v1:123456789012345678:0",
+    );
   });
 });

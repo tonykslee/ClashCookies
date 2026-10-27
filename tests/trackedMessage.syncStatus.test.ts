@@ -391,6 +391,10 @@ describe("TrackedMessageService sync spin status", () => {
     expect(embed.description).toContain("Claimed: **0/2**");
     expect(embed.description).toContain("- <:rr:111> **RR** (Rocky Road)");
     expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
+    expect(payload.components[0].components[0].data.label).toBe("My Leader Accounts");
+    expect(payload.components[0].components[0].data.custom_id).toBe(
+      "sync-leaders:v1:sync-message-1:0",
+    );
     expect(user1Send).toHaveBeenCalledTimes(1);
     expect(user2Send).toHaveBeenCalledTimes(1);
     expect(react).toHaveBeenCalledWith("<:rr:111>");
@@ -685,6 +689,9 @@ describe("TrackedMessageService sync spin status", () => {
     expect((edit.mock.calls[0]?.[0] as any).embeds[0].toJSON().description).toContain(
       "✅ <:rr:111> **RR** (Rocky Road)",
     );
+    expect((edit.mock.calls[0]?.[0] as any).components[0].components[0].data.label).toBe(
+      "My Leader Accounts",
+    );
 
     const claimedDescription = (edit.mock.calls[0]?.[0] as any).embeds[0].toJSON().description;
     expect(claimedDescription).toContain(
@@ -701,6 +708,9 @@ describe("TrackedMessageService sync spin status", () => {
     expect(edit).toHaveBeenCalledTimes(1);
     expect((edit.mock.calls[0]?.[0] as any).embeds[0].toJSON().description).toContain(
       "- <:rr:111> **RR** (Rocky Road)",
+    );
+    expect((edit.mock.calls[0]?.[0] as any).components[0].components[0].data.label).toBe(
+      "My Leader Accounts",
     );
   });
 });

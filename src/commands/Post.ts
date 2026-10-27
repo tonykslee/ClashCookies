@@ -64,6 +64,7 @@ import {
   buildSyncRetrospectiveEmbeds,
   hasSyncRetrospectiveData,
 } from "../services/SyncRetrospectiveViewService";
+import { buildSyncLeaderAccountsButtonComponents } from "../services/SyncLeaderAccountsViewService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
@@ -678,7 +679,11 @@ async function handleSyncSpinStatusSubcommand(
     title: "Sync Spin Status",
   });
 
-  await interaction.editReply({ embeds: [embed] });
+  await interaction.editReply({
+    embeds: [embed],
+    components: buildSyncLeaderAccountsButtonComponents(tracked.messageId),
+    allowedMentions: { parse: [] },
+  });
 }
 
 function buildStandaloneReadinessTrackedMetadata(now: Date): SyncReadinessTrackedMetadata {
