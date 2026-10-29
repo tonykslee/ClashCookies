@@ -24,7 +24,7 @@ describe("/fwa base-swap command shape", () => {
     expect(hasPermissionTargetForCommand("fwa:layout")).toBe(true);
   });
 
-  it("registers /fwa layout-move with one type, destination, and bounded TH options", () => {
+  it("registers /fwa layout-move with one type, optional destination/order, and bounded TH options", () => {
     const move = Fwa.options?.find(
       (option) =>
         option.type === ApplicationCommandOptionType.Subcommand &&
@@ -35,9 +35,15 @@ describe("/fwa base-swap command shape", () => {
       "target-channel",
       "min-th",
       "max-th",
+      "order",
     ]);
     expect(move?.options?.find((option: { name: string }) => option.name === "type")?.required).toBe(true);
-    expect(move?.options?.find((option: { name: string }) => option.name === "target-channel")?.required).toBe(true);
+    expect(move?.options?.find((option: { name: string }) => option.name === "target-channel")?.required).toBe(false);
+    expect(move?.options?.find((option: { name: string }) => option.name === "order")?.required).toBe(false);
+    expect(move?.options?.find((option: { name: string }) => option.name === "order")?.choices).toEqual([
+      { name: "Ascending", value: "ascending" },
+      { name: "Descending", value: "descending" },
+    ]);
     expect(hasPermissionTargetForCommand("fwa:layout-move")).toBe(true);
   });
 
