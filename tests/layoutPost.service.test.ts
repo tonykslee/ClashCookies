@@ -3,12 +3,14 @@ import { LayoutAlertMode, LayoutRecord } from "@prisma/client";
 import {
   buildLayoutInfoDescription,
   buildLayoutPostCustomId,
+  buildLayoutPostPanelCustomId,
   buildLayoutPostPayload,
   buildLayoutPostVersionToken,
   isLayoutPostButtonCustomId,
   isLayoutPostCustomId,
   LayoutPostService,
   parseLayoutPostCustomId,
+  parseLayoutPostPanelCustomId,
   resolveLayoutPostImageSource,
 } from "../src/services/LayoutPostService";
 
@@ -41,6 +43,7 @@ function makeInteraction(input: {
   guildId?: string | null;
   channelId?: string | null;
   messageId?: string;
+  userId?: string;
   attachments?: { first: ReturnType<typeof vi.fn> };
   embeds?: Array<{ image?: { url?: string | null } | null } | null>;
 }) {
@@ -54,7 +57,7 @@ function makeInteraction(input: {
     customId: input.customId,
     guildId: input.guildId === undefined ? "guild-1" : input.guildId,
     channelId: input.channelId === undefined ? "channel-1" : input.channelId,
-    user: { id: "clicker-1" },
+    user: { id: input.userId ?? "clicker-1" },
     message,
     replied: false,
     deferred: false,
@@ -209,6 +212,39 @@ describe("layout post custom IDs", () => {
       expect(isLayoutPostCustomId(customId)).toBe(customId.startsWith("layout:"));
     },
   );
+
+  it("binds private panel actions to the canonical post and user", () => {
+    const customId = buildLayoutPostPanelCustomId(
+      "confirm",
+      "layout-1",
+      "message-1",
+      "clicker-1",
+      buildLayoutPostVersionToken(LAYOUT_LINK, new Date("2026-08-20T00:00:00.000Z")),
+    );
+
+    expect(parseLayoutPostPanelCustomId(customId)).toEqual({
+      action: "confirm",
+      layoutId: "layout-1",
+      canonicalMessageId: "message-1",
+      ownerDiscordUserId: "clicker-1",
+      versionToken: expect.any(String),
+    });
+    expect(isLayoutPostCustomId(customId)).toBe(true);
+    expect(isLayoutPostButtonCustomId(customId)).toBe(true);
+  });
+
+  it("keeps UUID and Discord snowflake panel IDs within the component limit", () => {
+    const customId = buildLayoutPostPanelCustomId(
+      "confirm",
+      "12345678-1234-1234-1234-123456789012",
+      "123456789012345678",
+      "987654321098765432",
+      "0123456789abcdef",
+    );
+
+    expect(customId.length).toBeLessThanOrEqual(100);
+    expect(parseLayoutPostPanelCustomId(customId)?.action).toBe("confirm");
+  });
 });
 
 describe("layout post persistent interactions", () => {
@@ -223,7 +259,7 @@ describe("layout post persistent interactions", () => {
     postService = new LayoutPostService({ layoutService: layoutRecordService });
   });
 
-  it("reveals the link without writing lifecycle state", async () => {
+  it("reveals the link in an ephemeral panel without editing the public post", async () => {
     const record = buildRecord({ lastConfirmedAt: null });
     layoutRecordService.findById.mockResolvedValue(record);
     const { interaction } = makeInteraction({
@@ -233,12 +269,14 @@ describe("layout post persistent interactions", () => {
     await postService.handleButtonInteraction(interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
-    expect(interaction.reply).not.toHaveBeenCalled();
-    expect(interaction.update).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).toContain(record.layoutLink);
+    expect(interaction.reply).toHaveBeenCalledTimes(1);
+    expect(interaction.reply.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ ephemeral: true }));
+    expect(JSON.stringify(interaction.reply.mock.calls[0]?.[0])).toContain(record.layoutLink);
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
-  it("shows Info publicly without mutating the post policy or freshness", async () => {
+  it("shows Info in an ephemeral panel without mutating the public post", async () => {
     const record = buildRecord();
     layoutRecordService.findById.mockResolvedValue(record);
     const { interaction } = makeInteraction({
@@ -248,21 +286,20 @@ describe("layout post persistent interactions", () => {
     await postService.handleButtonInteraction(interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
-    expect(interaction.reply).not.toHaveBeenCalled();
-    expect(interaction.update).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    expect(interaction.reply).toHaveBeenCalledTimes(1);
+    expect(interaction.reply.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ ephemeral: true }));
+    expect(JSON.stringify(interaction.reply.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.message.edit).not.toHaveBeenCalled();
   });
 
   it.each(["link", "info", "close", "confirm"] as const)(
-    "keeps an embedded native image through the %s action",
+    "does not edit or re-upload the public native image through the %s action",
     async (action) => {
       const record = buildRecord({ imageUrl: null });
       layoutRecordService.findById.mockResolvedValue(record);
       layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(record);
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100_000,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
       const customId = action === "confirm"
         ? buildLayoutPostCustomId(
             action,
@@ -278,9 +315,10 @@ describe("layout post persistent interactions", () => {
 
       await postService.handleButtonInteraction(interaction);
 
-      expect(interaction.update.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
-        .toBe("attachment://embedded.png");
-      postService.clearAutoCollapse(message.id);
+      expect(interaction.update).not.toHaveBeenCalled();
+      expect(interaction.message.edit).not.toHaveBeenCalled();
+      expect(interaction.reply).toHaveBeenCalled();
+      expect(message.attachments.first).not.toHaveBeenCalled();
     },
   );
 
@@ -304,111 +342,31 @@ describe("layout post persistent interactions", () => {
 
     await postService.handleButtonInteraction(interaction);
 
-    const description = interaction.update.mock.calls[0]?.[0]?.embeds?.[0]
+    const description = interaction.reply.mock.calls[0]?.[0]?.embeds?.[0]
       ?.toJSON().description;
     expect(description).toContain("Expiration alert: <#alerts-1>");
     expect(getPolicy).toHaveBeenCalledWith(record.id);
     expect(getChannelIdForType).toHaveBeenCalledWith("guild-1", "layout-alerts");
   });
 
-  it("switches directly from the link view to Info and resets its collapse timer", async () => {
-    vi.useFakeTimers();
-    try {
-      const record = buildRecord();
-      layoutRecordService.findById.mockResolvedValue(record);
-      const link = makeInteraction({
-        customId: buildLayoutPostCustomId("link", record.id),
-      });
-      const info = makeInteraction({
-        customId: buildLayoutPostCustomId("info", record.id),
-      });
-      info.interaction.message = link.interaction.message;
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
-
-      await postService.handleButtonInteraction(link.interaction);
-      await vi.advanceTimersByTimeAsync(50);
-      await postService.handleButtonInteraction(info.interaction);
-      await vi.advanceTimersByTimeAsync(50);
-      expect(link.message.edit).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(50);
-      expect(link.message.edit).toHaveBeenCalledTimes(1);
-      expect(link.message.edit.mock.calls[0]?.[0].embeds).toEqual([
-        expect.anything(),
-      ]);
-      expect(JSON.stringify(link.message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("switches directly from Info to the link view", async () => {
+  it("closes a private link panel without writing lifecycle state or editing the public post", async () => {
     const record = buildRecord();
     layoutRecordService.findById.mockResolvedValue(record);
-    const info = makeInteraction({
-      customId: buildLayoutPostCustomId("info", record.id),
-    });
-    const link = makeInteraction({
-      customId: buildLayoutPostCustomId("link", record.id),
-    });
-    link.interaction.message = info.interaction.message;
-
-    await postService.handleButtonInteraction(info.interaction);
-    await postService.handleButtonInteraction(link.interaction);
-
-    const payload = link.interaction.update.mock.calls[0]?.[0];
-    expect(JSON.stringify(payload)).toContain(record.layoutLink);
-    expect(payload.components[0].toJSON().components.map((button: { label: string }) => button.label)).toEqual([
-      "Yes, It Opened",
-      "Close",
-      "Info",
-    ]);
-  });
-
-  it("closes an Info view with an empty embed list when no title or image exists", async () => {
-    const record = buildRecord({ title: null, imageUrl: null });
-    layoutRecordService.findById.mockResolvedValue(record);
-    const info = makeInteraction({
-      customId: buildLayoutPostCustomId("info", record.id),
-    });
     const close = makeInteraction({
-      customId: buildLayoutPostCustomId("close", record.id),
+      customId: buildLayoutPostPanelCustomId("close", record.id, record.discordMessageId!, "clicker-1"),
+      messageId: "ephemeral-panel-1",
     });
-    close.interaction.message = info.interaction.message;
 
-    await postService.handleButtonInteraction(info.interaction);
     await postService.handleButtonInteraction(close.interaction);
 
-    expect(close.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
-    expect(JSON.stringify(close.interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
-  });
-
-  it("closes the link view without writing lifecycle state", async () => {
-    const record = buildRecord({ title: null, imageUrl: null });
-    layoutRecordService.findById.mockResolvedValue(record);
-    const link = makeInteraction({
-      customId: buildLayoutPostCustomId("link", record.id),
-    });
-    const collapsed = makeInteraction({
-      customId: buildLayoutPostCustomId("close", record.id),
-    });
-    collapsed.interaction.message = link.interaction.message;
-
-    await postService.handleButtonInteraction(link.interaction);
-    await postService.handleButtonInteraction(collapsed.interaction);
-
     expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
-    expect(collapsed.interaction.update).toHaveBeenCalledTimes(1);
-    expect(collapsed.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
-    expect(JSON.stringify(collapsed.interaction.update.mock.calls[0]?.[0])).not.toContain(
-      record.layoutLink,
-    );
+    expect(close.interaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      components: [],
+    }));
+    expect(close.message.edit).not.toHaveBeenCalled();
   });
 
-  it("confirms for the clicking user and collapses the public post", async () => {
+  it("confirms for the panel owner and leaves the public post unchanged", async () => {
     const record = buildRecord({ lastConfirmedAt: null, title: null, imageUrl: null });
     const confirmed = buildRecord({
       title: null,
@@ -418,19 +376,17 @@ describe("layout post persistent interactions", () => {
     });
     layoutRecordService.findById.mockResolvedValue(record);
     layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(confirmed);
-    const link = makeInteraction({
-      customId: buildLayoutPostCustomId("link", record.id),
-    });
     const interaction = makeInteraction({
-      customId: buildLayoutPostCustomId(
+      customId: buildLayoutPostPanelCustomId(
         "confirm",
         record.id,
+        record.discordMessageId!,
+        "clicker-1",
         buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
       ),
+      messageId: "ephemeral-panel-1",
     });
-    interaction.interaction.message = link.interaction.message;
 
-    await postService.handleButtonInteraction(link.interaction);
     await postService.handleButtonInteraction(interaction.interaction);
 
     expect(layoutRecordService.confirmSuccessfulOpening).toHaveBeenCalledTimes(1);
@@ -440,11 +396,55 @@ describe("layout post persistent interactions", () => {
       expectedLayoutLink: record.layoutLink,
       expectedSubmittedAt: record.submittedAt,
     });
-    expect(interaction.interaction.update).toHaveBeenCalledTimes(1);
-    expect(interaction.interaction.update.mock.calls[0]?.[0].embeds).toEqual([]);
-    expect(JSON.stringify(interaction.interaction.update.mock.calls[0]?.[0])).not.toContain(
-      record.layoutLink,
-    );
+    expect(interaction.interaction.update).toHaveBeenCalledWith(expect.objectContaining({
+      components: [],
+    }));
+    expect(interaction.message.edit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a panel click from another Discord user", async () => {
+    const record = buildRecord();
+    layoutRecordService.findById.mockResolvedValue(record);
+    const interaction = makeInteraction({
+      customId: buildLayoutPostPanelCustomId("confirm", record.id, record.discordMessageId!, "clicker-1", buildLayoutPostVersionToken(record.layoutLink, record.submittedAt)),
+      messageId: "ephemeral-panel-1",
+      userId: "other-user",
+    });
+
+    await postService.handleButtonInteraction(interaction.interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.interaction.update).not.toHaveBeenCalled();
+    expect(interaction.interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: expect.stringContaining("no longer valid"),
+    }));
+  });
+
+  it("rejects a stale private panel after the layout episode changes", async () => {
+    const record = buildRecord({
+      layoutLink: "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3ANEW_EPISODE",
+    });
+    layoutRecordService.findById.mockResolvedValue(record);
+    const interaction = makeInteraction({
+      customId: buildLayoutPostPanelCustomId(
+        "confirm",
+        record.id,
+        record.discordMessageId!,
+        "clicker-1",
+        buildLayoutPostVersionToken(LAYOUT_LINK, record.submittedAt),
+      ),
+      messageId: "ephemeral-panel-1",
+    });
+
+    await postService.handleButtonInteraction(interaction.interaction);
+
+    expect(layoutRecordService.confirmSuccessfulOpening).not.toHaveBeenCalled();
+    expect(interaction.interaction.update).not.toHaveBeenCalled();
+    expect(interaction.interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: expect.stringContaining("older layout link"),
+    }));
   });
 
   it("rejects a legacy confirmation control without mutating freshness", async () => {
@@ -549,7 +549,7 @@ describe("layout post persistent interactions", () => {
     );
   });
 
-  it("auto-collapses a link post after the presentation timeout", async () => {
+  it("does not auto-collapse or edit the public post after an ephemeral link panel", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord({ title: null, imageUrl: null });
@@ -557,23 +557,18 @@ describe("layout post persistent interactions", () => {
       const { interaction, message } = makeInteraction({
         customId: buildLayoutPostCustomId("link", record.id),
       });
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
 
       await postService.handleButtonInteraction(interaction);
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(message.edit).toHaveBeenCalledTimes(1);
-      expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
-      expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+      expect(message.edit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("keeps an embedded native image during automatic collapse", async () => {
+  it("leaves an embedded native image untouched after the link panel opens", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord({ imageUrl: null });
@@ -583,22 +578,18 @@ describe("layout post persistent interactions", () => {
         attachments: { first: vi.fn(() => undefined) },
         embeds: [{ image: { url: "attachment://embedded.png" } }],
       });
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
 
       await postService.handleButtonInteraction(interaction);
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(message.edit.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
-        .toBe("attachment://embedded.png");
+      expect(message.edit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("auto-collapses an Info post with an empty embed list after the presentation timeout", async () => {
+  it("does not auto-collapse or edit the public post after an ephemeral Info panel", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord({ title: null, imageUrl: null });
@@ -606,50 +597,38 @@ describe("layout post persistent interactions", () => {
       const { interaction, message } = makeInteraction({
         customId: buildLayoutPostCustomId("info", record.id),
       });
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
 
       await postService.handleButtonInteraction(interaction);
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(message.edit).toHaveBeenCalledTimes(1);
-      expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
-      expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+      expect(message.edit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("cancels the delayed edit when Close is clicked", async () => {
+  it("closes a panel without scheduling a public edit", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord();
       layoutRecordService.findById.mockResolvedValue(record);
-      const first = makeInteraction({
-        customId: buildLayoutPostCustomId("link", record.id),
-      });
       const second = makeInteraction({
-        customId: buildLayoutPostCustomId("close", record.id),
+        customId: buildLayoutPostPanelCustomId("close", record.id, record.discordMessageId!, "clicker-1"),
+        messageId: "ephemeral-panel-1",
       });
-      second.interaction.message = first.interaction.message;
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
 
-      await postService.handleButtonInteraction(first.interaction);
       await postService.handleButtonInteraction(second.interaction);
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(first.message.edit).not.toHaveBeenCalled();
+      expect(second.message.edit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("cancels the delayed edit when the layout is confirmed", async () => {
+  it("confirms through a panel without scheduling a public edit", async () => {
     vi.useFakeTimers();
     try {
       const record = buildRecord({ lastConfirmedAt: null });
@@ -659,27 +638,22 @@ describe("layout post persistent interactions", () => {
       });
       layoutRecordService.findById.mockResolvedValue(record);
       layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(confirmed);
-      const first = makeInteraction({
-        customId: buildLayoutPostCustomId("link", record.id),
-      });
       const second = makeInteraction({
-        customId: buildLayoutPostCustomId(
+        customId: buildLayoutPostPanelCustomId(
           "confirm",
           record.id,
+          record.discordMessageId!,
+          "clicker-1",
           buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
         ),
+        messageId: "ephemeral-panel-1",
       });
-      second.interaction.message = first.interaction.message;
-      postService = new LayoutPostService({
-        layoutService: layoutRecordService,
-        autoCollapseDelayMs: 100,
-      });
+      postService = new LayoutPostService({ layoutService: layoutRecordService });
 
-      await postService.handleButtonInteraction(first.interaction);
       await postService.handleButtonInteraction(second.interaction);
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(first.message.edit).not.toHaveBeenCalled();
+      expect(second.message.edit).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
