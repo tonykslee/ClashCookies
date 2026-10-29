@@ -46,6 +46,32 @@ export type LayoutPostImageSource = {
   attachmentUrl?: string | null;
 };
 
+export type LayoutPostImageSourceKind =
+  | "attachment_collection"
+  | "embedded_attachment"
+  | "embedded_url"
+  | "none"
+  | "metadata_unavailable";
+
+export type LayoutPostImageSourceResolution = {
+  source: LayoutPostImageSource;
+  kind: LayoutPostImageSourceKind;
+};
+
+type LayoutPostImageMessageLike = {
+  attachments?: {
+    first?: () => {
+      name?: string | null;
+      url?: string | null;
+      contentType?: string | null;
+      size?: number | null;
+    } | undefined;
+  };
+  embeds?: Array<{
+    image?: { url?: string | null } | null;
+  } | null>;
+};
+
 export type LayoutPostServiceOptions = {
   layoutService?: Pick<
     LayoutService,
@@ -510,11 +536,86 @@ function resolveImageUrl(
 function getCurrentMessageImageSource(
   interaction: ButtonInteraction,
 ): LayoutPostImageSource {
-  const attachment = interaction.message.attachments?.first?.();
+  const resolution = resolveLayoutPostImageSource(interaction.message);
+  logImageSourceResolution(resolution, interaction.message.id, "interaction");
+  return resolution.source;
+}
+
+/** Purpose: recover only image metadata needed to rebuild a presentation without copying stale embeds. */
+export function resolveLayoutPostImageSource(
+  message: LayoutPostImageMessageLike,
+): LayoutPostImageSourceResolution {
+  const attachment = message.attachments?.first?.();
+  if (attachment?.name?.trim() || attachment?.url?.trim()) {
+    return {
+      source: {
+        attachmentName: attachment.name ?? null,
+        attachmentUrl: attachment.url ?? null,
+      },
+      kind: "attachment_collection",
+    };
+  }
+
+  const embeddedImageUrl = message.embeds?.find((embed) => embed?.image?.url)?.image?.url?.trim();
+  if (!embeddedImageUrl) {
+    return {
+      source: { attachmentName: null, attachmentUrl: null },
+      kind: message.embeds?.some((embed) => embed?.image) ? "metadata_unavailable" : "none",
+    };
+  }
+
+  if (embeddedImageUrl.toLowerCase().startsWith("attachment://")) {
+    const attachmentName = decodeAttachmentName(embeddedImageUrl.slice("attachment://".length));
+    if (attachmentName) {
+      return {
+        source: { attachmentName, attachmentUrl: null },
+        kind: "embedded_attachment",
+      };
+    }
+    return {
+      source: { attachmentName: null, attachmentUrl: null },
+      kind: "metadata_unavailable",
+    };
+  }
+
+  if (/^https?:\/\//i.test(embeddedImageUrl)) {
+    return {
+      // This is presentation-only metadata. It is never persisted as LayoutRecord.imageUrl.
+      source: { attachmentName: null, attachmentUrl: embeddedImageUrl },
+      kind: "embedded_url",
+    };
+  }
+
   return {
-    attachmentName: attachment?.name ?? null,
-    attachmentUrl: attachment?.url ?? null,
+    source: { attachmentName: null, attachmentUrl: null },
+    kind: "metadata_unavailable",
   };
+}
+
+function decodeAttachmentName(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  try {
+    return decodeURIComponent(normalized) || null;
+  } catch {
+    return normalized;
+  }
+}
+
+function logImageSourceResolution(
+  resolution: LayoutPostImageSourceResolution,
+  messageId: string,
+  phase: "interaction" | "publication",
+): void {
+  if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+    dozzleLog.debug(
+      `[layout-post] event=image_source_fallback phase=${phase} source=${resolution.kind} message_id=${messageId}`,
+    );
+  } else if (resolution.kind === "metadata_unavailable") {
+    dozzleLog.warn(
+      `[layout-post] event=image_source_unresolved phase=${phase} reason=metadata_unavailable message_id=${messageId}`,
+    );
+  }
 }
 
 /** Purpose: parse layout metadata for Info while tolerating legacy malformed links without exposing them. */

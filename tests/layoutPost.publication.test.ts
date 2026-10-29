@@ -100,6 +100,27 @@ describe("LayoutPostPublicationService", () => {
     expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://native.png");
   });
 
+  it("preserves an embedded native image during link-replacement collapse", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      id: "message-1",
+      delete: vi.fn(),
+      edit,
+      attachments: { first: vi.fn(() => undefined) },
+      embeds: [{ image: { url: "attachment://embedded.png" } }],
+    };
+
+    await service.collapseBeforeLinkReplacement({
+      layout: buildLayout({ imageUrl: null }) as any,
+      message: message as any,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://embedded.png");
+    expect(payload.files).toBeUndefined();
+    expect(payload.attachments).toBeUndefined();
+  });
+
   it("reuses an existing canonical provenance without sending another post", async () => {
     const layout = buildLayout({
       discordGuildId: "guild-1",
@@ -156,6 +177,37 @@ describe("LayoutPostPublicationService", () => {
 
     const payload = edit.mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().title).toBe("Updated title");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves an embedded native image during existing-post refresh without uploading it again", async () => {
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn().mockResolvedValue(undefined),
+        edit,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: "attachment://embedded.png" } }],
+      }),
+    };
+
+    await service.publish({
+      layout: buildLayout({
+        imageUrl: null,
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-1",
+        discordMessageId: "message-1",
+      }) as any,
+      guildId: "guild-1",
+      channel: { id: "channel-1", send },
+      messageResolver: resolver,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://embedded.png");
+    expect(payload.files).toBeUndefined();
+    expect(payload.attachments).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -703,6 +755,43 @@ describe("LayoutPostPublicationService", () => {
     expect(oldEdit.mock.calls[0]?.[0].attachments).toEqual([]);
     expect(oldEdit.mock.calls[0]?.[0].embeds).toEqual([]);
     expect(oldEdit.mock.calls[0]?.[0].components).toEqual([]);
+  });
+
+  it("does not relocate when a native embed has no safe downloadable source", async () => {
+    const oldLayout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+      imageUrl: null,
+    });
+    const sendToDestination = vi.fn();
+    const oldEdit = vi.fn();
+    const sourceResolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-old",
+        author: { id: "bot-1" },
+        delete: vi.fn(),
+        edit: oldEdit,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: "attachment://native.png" } }],
+      }),
+    };
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn(),
+    });
+
+    await expect(nativeService.relocate({
+      layout: oldLayout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: sendToDestination },
+      messageResolver: sourceResolver,
+      botUserId: "bot-1",
+    })).rejects.toThrow("safely copied");
+
+    expect(sendToDestination).not.toHaveBeenCalled();
+    expect(layoutService.rebindDiscordPost).not.toHaveBeenCalled();
+    expect(oldEdit).not.toHaveBeenCalled();
   });
 
   it("deletes the new message when the provenance CAS loses", async () => {
