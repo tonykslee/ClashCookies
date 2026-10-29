@@ -31,4 +31,27 @@ describe("/fwa layout permission defaults", () => {
 
     expect(allowed).toBe(true);
   });
+
+  it("registers layout relocation as an administrator-only permission target", async () => {
+    const interaction = {
+      commandName: "fwa",
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue(null),
+        getSubcommand: vi.fn().mockReturnValue("layout-move"),
+      },
+    } as any;
+    expect(getCommandTargetsFromInteraction(interaction)).toContain("fwa:layout-move");
+
+    const service = new CommandPermissionService({
+      get: vi.fn(async () => null),
+    } as any);
+    const allowed = await service.canUseAnyTarget(["fwa:layout-move"], {
+      inGuild: () => true,
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      memberPermissions: { has: () => false },
+      member: { roles: [] },
+    } as any);
+    expect(allowed).toBe(false);
+  });
 });

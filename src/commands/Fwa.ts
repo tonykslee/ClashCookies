@@ -98,6 +98,10 @@ import {
   runFwaLayoutCommand,
 } from "./fwa/layoutCommand";
 import {
+  FWA_LAYOUT_MOVE_SUBCOMMAND,
+  runFwaLayoutMoveCommand,
+} from "./fwa/layoutMoveCommand";
+import {
   fwaWeightCatalogService,
   type FwaCatalogWeightAge,
 } from "../services/FwaWeightCatalogService";
@@ -18209,6 +18213,9 @@ export const Fwa: Command = {
       ...FWA_LAYOUT_SUBCOMMAND,
     },
     {
+      ...FWA_LAYOUT_MOVE_SUBCOMMAND,
+    },
+    {
       name: "police",
       description: "Manage FWA police automation, status, and preview delivery",
       type: ApplicationCommandOptionType.SubcommandGroup,
@@ -18396,6 +18403,10 @@ export const Fwa: Command = {
     }
     if (subcommand === "layout") {
       await runFwaLayoutCommand(interaction);
+      return;
+    }
+    if (subcommand === "layout-move") {
+      await runFwaLayoutMoveCommand(interaction);
       return;
     }
     const requestedVisibility =

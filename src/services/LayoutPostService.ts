@@ -37,6 +37,7 @@ export type LayoutPostPayload = {
   content?: string;
   embeds?: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
+  attachments?: [];
   allowedMentions: { parse: []; repliedUser: false };
 };
 
@@ -179,6 +180,17 @@ export function buildLayoutPostPayload(
   return {
     embeds: hasVisibleEmbedContent ? [embed] : [],
     components: [buildLayoutPostButtonRow(record.id, mode, versionToken)],
+    allowedMentions: { parse: [], repliedUser: false },
+  };
+}
+
+/** Purpose: turn a superseded canonical message into a link-only redirect with no active controls. */
+export function buildLayoutPostRedirectPayload(jumpUrl: string): LayoutPostPayload {
+  return {
+    content: `This canonical layout moved to [the new post](${jumpUrl}).`,
+    embeds: [],
+    components: [],
+    attachments: [],
     allowedMentions: { parse: [], repliedUser: false },
   };
 }
