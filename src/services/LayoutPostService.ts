@@ -74,7 +74,14 @@ type LayoutPostImageMessageLike = {
   };
   embeds?: Array<{
     image?: { url?: string | null } | null;
+    description?: string | null;
   } | null>;
+  components?: Array<{
+    components?: Array<{
+      customId?: string | null;
+      data?: { custom_id?: string | null } | null;
+    }>;
+  }>;
 };
 
 export type LayoutPostServiceOptions = {
@@ -543,7 +550,12 @@ export class LayoutPostService {
         return;
       }
 
+      const legacyExpanded = this.isLegacyExpandedPresentation(interaction, record);
       if (parsed.action === "close") {
+        if (legacyExpanded) {
+          await this.collapseLegacyPresentation(interaction, record);
+          return;
+        }
         await replyLegacyPanelControl(interaction);
         return;
       }
@@ -554,6 +566,15 @@ export class LayoutPostService {
         expectedLayoutLink: record.layoutLink,
         expectedSubmittedAt: record.submittedAt,
       });
+
+      if (legacyExpanded) {
+        await this.collapseLegacyPresentation(interaction, confirmedRecord);
+        dozzleLog.info(
+          `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} canonical_message_id=${interaction.message.id} user_id=${interaction.user.id} source=legacy_public_control`,
+        );
+        return;
+      }
+
       await interaction.reply(buildLayoutPostConfirmationPayload(confirmedRecord));
       dozzleLog.info(
         `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} canonical_message_id=${interaction.message.id} user_id=${interaction.user.id} source=legacy_public_control`,
@@ -572,6 +593,67 @@ export class LayoutPostService {
   /** Purpose: retain compatibility for callers that used to cancel public presentation timers. */
   clearAutoCollapse(messageId: string): void {
     void messageId;
+  }
+
+  /** Purpose: identify only the restart-surviving public presentation produced by the old interaction flow. */
+  private isLegacyExpandedPresentation(
+    interaction: ButtonInteraction,
+    record: LayoutRecord,
+  ): boolean {
+    const message = interaction.message as unknown as LayoutPostImageMessageLike;
+    const customIds = (message.components ?? []).flatMap((row) => row.components ?? [])
+      .map((component) => component.customId ?? component.data?.custom_id ?? null)
+      .filter((customId): customId is string => Boolean(customId));
+    const closeId = buildLayoutPostCustomId("close", record.id);
+    if (!customIds.includes(closeId)) return false;
+
+    const linkId = buildLayoutPostCustomId("link", record.id);
+    const hasLegacyInfoControls = customIds.includes(linkId);
+    const hasLegacyConfirmationControl = customIds.some((customId) => {
+      const parsed = parseLayoutPostCustomId(customId);
+      return parsed?.action === "confirm" && parsed.layoutId === record.id;
+    });
+    const hasRevealedLayoutUrl = (message.embeds ?? []).some((embed) =>
+      embed?.description?.includes(`[Open Layout](<${record.layoutLink}>)`),
+    );
+
+    return hasLegacyInfoControls || hasLegacyConfirmationControl || hasRevealedLayoutUrl;
+  }
+
+  /** Purpose: collapse one confirmed legacy public presentation while retaining recoverable image metadata. */
+  private async collapseLegacyPresentation(
+    interaction: ButtonInteraction,
+    record: LayoutRecord,
+  ): Promise<void> {
+    const resolution = resolveLayoutPostImageSource(
+      interaction.message as unknown as LayoutPostImageMessageLike,
+    );
+    if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+      dozzleLog.debug(
+        `[layout-post] event=legacy_cleanup_image_fallback source=${resolution.kind} layout_id=${record.id} message_id=${interaction.message.id}`,
+      );
+    }
+    if (!record.imageUrl?.trim() && resolution.kind === "metadata_unavailable") {
+      const error = new Error("Legacy layout image metadata is unavailable; public cleanup was not attempted.");
+      dozzleLog.warn(
+        `[layout-post] event=legacy_cleanup_failed layout_id=${record.id} message_id=${interaction.message.id} reason=image_metadata_unavailable`,
+      );
+      throw error;
+    }
+
+    try {
+      await interaction.update(
+        buildLayoutPostPayload(record, "collapsed", resolution.source),
+      );
+      dozzleLog.info(
+        `[layout-post] event=legacy_cleanup_succeeded layout_id=${record.id} message_id=${interaction.message.id}`,
+      );
+    } catch (error) {
+      dozzleLog.error(
+        `[layout-post] event=legacy_cleanup_failed layout_id=${record.id} message_id=${interaction.message.id} reason=discord_update_failed error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
 
   private async handlePanelInteraction(
