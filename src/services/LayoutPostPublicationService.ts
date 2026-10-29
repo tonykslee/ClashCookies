@@ -4,6 +4,7 @@ import {
   buildLayoutPostPayload,
   buildLayoutPostRedirectPayload,
   LayoutPostImageSource,
+  resolveLayoutPostImageSource,
 } from "./LayoutPostService";
 import {
   ConcurrentLayoutRelocationError,
@@ -39,6 +40,9 @@ export type ResolvedLayoutPostMessage = PublishedLayoutMessage & {
       size?: number | null;
     } | undefined;
   };
+  embeds?: Array<{
+    image?: { url?: string | null } | null;
+  } | null>;
 };
 
 export type LayoutPostChannel = {
@@ -656,16 +660,30 @@ async function deleteBestEffort(
 function getMessageAttachmentSource(
   message: ResolvedLayoutPostMessage,
 ): LayoutPostAttachmentSource | null {
+  const resolution = resolveLayoutPostImageSource(message);
   const attachment = message.attachments?.first?.();
-  if (!attachment?.url) return null;
-  if (attachment.contentType && !attachment.contentType.toLowerCase().startsWith("image/")) {
+  const url = resolution.source.attachmentUrl;
+  if (!url) {
+    if (
+      resolution.kind === "attachment_collection" ||
+      resolution.kind === "embedded_attachment" ||
+      resolution.kind === "metadata_unavailable"
+    ) {
+      dozzleLog.warn(
+        `[layout-relocation] event=image_source_unresolved reason=attachment_url_unavailable message_id=${message.id}`,
+      );
+      throw new Error("The canonical layout image could not be safely copied.");
+    }
+    return null;
+  }
+  if (attachment?.contentType && !attachment.contentType.toLowerCase().startsWith("image/")) {
     throw new Error("The canonical layout attachment is not an image.");
   }
   return {
-    url: attachment.url,
-    filename: attachment.name,
-    contentType: attachment.contentType,
-    size: attachment.size,
+    url,
+    filename: attachment?.name ?? resolution.source.attachmentName,
+    contentType: attachment?.contentType,
+    size: attachment?.size,
   };
 }
 
@@ -700,8 +718,17 @@ function nativeOwnershipPersistenceError(): Error {
 }
 
 function getMessageImageSource(message: ResolvedLayoutPostMessage): LayoutPostImageSource {
-  const attachment = message.attachments?.first?.();
-  return { attachmentName: attachment?.name ?? null, attachmentUrl: attachment?.url ?? null };
+  const resolution = resolveLayoutPostImageSource(message);
+  if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+    dozzleLog.debug(
+      `[layout-publication] event=image_source_fallback source=${resolution.kind} message_id=${message.id}`,
+    );
+  } else if (resolution.kind === "metadata_unavailable") {
+    dozzleLog.warn(
+      `[layout-publication] event=image_source_unresolved reason=metadata_unavailable message_id=${message.id}`,
+    );
+  }
+  return resolution.source;
 }
 
 function buildSendPayload(payload: ReturnType<typeof buildLayoutPostPayload>, attachment: PreparedLayoutPostAttachment | null): LayoutPostDiscordPayload {

@@ -9,6 +9,7 @@ import {
   isLayoutPostCustomId,
   LayoutPostService,
   parseLayoutPostCustomId,
+  resolveLayoutPostImageSource,
 } from "../src/services/LayoutPostService";
 
 const LAYOUT_LINK =
@@ -40,12 +41,13 @@ function makeInteraction(input: {
   guildId?: string | null;
   channelId?: string | null;
   messageId?: string;
+  attachments?: { first: ReturnType<typeof vi.fn> };
+  embeds?: Array<{ image?: { url?: string | null } | null } | null>;
 }) {
   const message = {
     id: input.messageId ?? "message-1",
-    attachments: {
-      first: vi.fn().mockReturnValue(null),
-    },
+    attachments: input.attachments ?? { first: vi.fn().mockReturnValue(null) },
+    embeds: input.embeds ?? [],
     edit: vi.fn().mockResolvedValue(undefined),
   };
   const interaction: any = {
@@ -111,6 +113,30 @@ describe("layout post rendering", () => {
     );
 
     expect(payload.embeds?.[0]?.toJSON().image?.url).toBe("attachment://base.png");
+  });
+
+  it("recovers an embedded native image when the attachment collection is empty", () => {
+    const resolution = resolveLayoutPostImageSource({
+      attachments: { first: vi.fn(() => undefined) },
+      embeds: [{ image: { url: "attachment://embedded.png" } }],
+    });
+
+    expect(resolution).toEqual({
+      source: { attachmentName: "embedded.png", attachmentUrl: null },
+      kind: "embedded_attachment",
+    });
+    expect(buildLayoutPostPayload(buildRecord({ imageUrl: null }), "collapsed", resolution.source)
+      .embeds?.[0]?.toJSON().image?.url).toBe("attachment://embedded.png");
+  });
+
+  it("prefers a standalone native attachment over embedded image metadata", () => {
+    const resolution = resolveLayoutPostImageSource({
+      attachments: { first: vi.fn(() => ({ name: "standalone.png", url: "https://cdn.example/standalone.png" })) },
+      embeds: [{ image: { url: "attachment://embedded.png" } }],
+    });
+
+    expect(resolution.kind).toBe("attachment_collection");
+    expect(resolution.source.attachmentName).toBe("standalone.png");
   });
 
   it("renders the link URL and confirmation question with link controls", () => {
@@ -226,6 +252,37 @@ describe("layout post persistent interactions", () => {
     expect(interaction.update).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
   });
+
+  it.each(["link", "info", "close", "confirm"] as const)(
+    "keeps an embedded native image through the %s action",
+    async (action) => {
+      const record = buildRecord({ imageUrl: null });
+      layoutRecordService.findById.mockResolvedValue(record);
+      layoutRecordService.confirmSuccessfulOpening.mockResolvedValue(record);
+      postService = new LayoutPostService({
+        layoutService: layoutRecordService,
+        autoCollapseDelayMs: 100_000,
+      });
+      const customId = action === "confirm"
+        ? buildLayoutPostCustomId(
+            action,
+            record.id,
+            buildLayoutPostVersionToken(record.layoutLink, record.submittedAt),
+          )
+        : buildLayoutPostCustomId(action, record.id);
+      const { interaction, message } = makeInteraction({
+        customId,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: "attachment://embedded.png" } }],
+      });
+
+      await postService.handleButtonInteraction(interaction);
+
+      expect(interaction.update.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
+        .toBe("attachment://embedded.png");
+      postService.clearAutoCollapse(message.id);
+    },
+  );
 
   it("shows the current durable alert policy and resolves the default channel dynamically", async () => {
     const record = buildRecord();
@@ -511,6 +568,31 @@ describe("layout post persistent interactions", () => {
       expect(message.edit).toHaveBeenCalledTimes(1);
       expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
       expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an embedded native image during automatic collapse", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = buildRecord({ imageUrl: null });
+      layoutRecordService.findById.mockResolvedValue(record);
+      const { interaction, message } = makeInteraction({
+        customId: buildLayoutPostCustomId("link", record.id),
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: "attachment://embedded.png" } }],
+      });
+      postService = new LayoutPostService({
+        layoutService: layoutRecordService,
+        autoCollapseDelayMs: 100,
+      });
+
+      await postService.handleButtonInteraction(interaction);
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(message.edit.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
+        .toBe("attachment://embedded.png");
     } finally {
       vi.useRealTimers();
     }
