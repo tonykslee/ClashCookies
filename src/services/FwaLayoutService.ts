@@ -8,6 +8,7 @@ import {
 import { prisma } from "../prisma";
 import { parseClashLayoutLink } from "./ClashLayoutLinkService";
 import { LayoutService } from "./LayoutService";
+import { formatFwaLayoutTitle } from "./FwaLayoutTitle";
 
 export const FWA_LAYOUT_TYPES = [
   "RISINGDAWN",
@@ -41,6 +42,8 @@ export type SetCanonicalFwaLayoutInput = {
   imageUrl?: string | null;
   postedByDiscordUserId?: string | null;
 };
+
+export { formatFwaLayoutTitle } from "./FwaLayoutTitle";
 
 export class FwaLayoutTownhallMismatchError extends Error {
   readonly suppliedTownhall: number;
@@ -139,11 +142,16 @@ export class FwaLayoutService {
 
     const layoutLink = parsed.layoutLink;
     const operation = async (transaction: Prisma.TransactionClient) => {
+      const existingRecord = await transaction.layoutRecord.findUnique({ where: { layoutLink } });
+      const shouldApplyDefaultTitle =
+        input.title === undefined && !existingRecord?.title?.trim();
       const layoutRecord = await this.layoutService.getOrCreate(
         {
           layoutLink,
           ...(input.title !== undefined
             ? { title: normalizeNullableText(input.title) }
+            : shouldApplyDefaultTitle
+              ? { title: formatFwaLayoutTitle(input.type, parsed.townHall) }
             : {}),
           ...(input.description !== undefined
             ? { description: normalizeNullableText(input.description) }
@@ -154,6 +162,7 @@ export class FwaLayoutService {
           postedByDiscordUserId: input.postedByDiscordUserId,
         },
         transaction.layoutRecord,
+        { preserveExistingTitle: input.title === undefined && !shouldApplyDefaultTitle },
       );
 
       const fwaLayout = await transaction.fwaLayouts.upsert({

@@ -54,4 +54,27 @@ describe("/fwa layout permission defaults", () => {
     } as any);
     expect(allowed).toBe(false);
   });
+
+  it("registers layout retitling as an administrator-only permission target", async () => {
+    const interaction = {
+      commandName: "fwa",
+      options: {
+        getSubcommandGroup: vi.fn().mockReturnValue(null),
+        getSubcommand: vi.fn().mockReturnValue("layout-retitle"),
+      },
+    } as any;
+    expect(getCommandTargetsFromInteraction(interaction)).toContain("fwa:layout-retitle");
+
+    const service = new CommandPermissionService({
+      get: vi.fn(async () => null),
+    } as any);
+    const allowed = await service.canUseAnyTarget(["fwa:layout-retitle"], {
+      inGuild: () => true,
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      memberPermissions: { has: () => false },
+      member: { roles: [] },
+    } as any);
+    expect(allowed).toBe(false);
+  });
 });
