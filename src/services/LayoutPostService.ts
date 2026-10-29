@@ -24,6 +24,10 @@ import {
 import { BotLogChannelService, botLogChannelService } from "./BotLogChannelService";
 
 const LAYOUT_POST_PREFIX = "layout";
+// Private panel IDs use a compact namespace so UUID layout IDs plus two Discord snowflakes
+// remain within Discord's 100-character component custom-ID limit.
+const LAYOUT_POST_PANEL_PREFIX = "l";
+const LAYOUT_POST_PANEL_MARKER = "p";
 const LAYOUT_POST_CUSTOM_ID_MAX_LENGTH = 100;
 const DEFAULT_AUTO_COLLAPSE_DELAY_MS = 2 * 60 * 1000;
 
@@ -38,6 +42,7 @@ export type LayoutPostPayload = {
   embeds?: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
   attachments?: [];
+  ephemeral?: boolean;
   allowedMentions: { parse: []; repliedUser: false };
 };
 
@@ -69,7 +74,14 @@ type LayoutPostImageMessageLike = {
   };
   embeds?: Array<{
     image?: { url?: string | null } | null;
+    description?: string | null;
   } | null>;
+  components?: Array<{
+    components?: Array<{
+      customId?: string | null;
+      data?: { custom_id?: string | null } | null;
+    }>;
+  }>;
 };
 
 export type LayoutPostServiceOptions = {
@@ -87,6 +99,14 @@ export type ParsedLayoutPostCustomId = {
   layoutId: string;
   /** Missing/null identifies a legacy confirmation control that predates episode tokens. */
   versionToken?: string | null;
+};
+
+export type ParsedLayoutPostPanelCustomId = {
+  action: "confirm" | "close";
+  layoutId: string;
+  canonicalMessageId: string;
+  ownerDiscordUserId: string;
+  versionToken?: string;
 };
 
 const LAYOUT_POST_VERSION_TOKEN_LENGTH = 16;
@@ -135,6 +155,40 @@ export function buildLayoutPostCustomId(
   return customId;
 }
 
+/** Purpose: bind private panel actions to the user, canonical message, and exact link episode. */
+export function buildLayoutPostPanelCustomId(
+  action: "confirm" | "close",
+  layoutId: string,
+  canonicalMessageId: string,
+  ownerDiscordUserId: string,
+  versionToken?: string,
+): string {
+  const normalizedLayoutId = normalizeLayoutPostId(layoutId, "layout record");
+  const normalizedMessageId = normalizeLayoutPostId(canonicalMessageId, "canonical message");
+  const normalizedOwnerId = normalizeLayoutPostId(ownerDiscordUserId, "Discord user");
+  const normalizedVersionToken = versionToken?.trim() ?? "";
+  if (action === "close" && normalizedVersionToken) {
+    throw new Error("Layout panel version tokens are only valid for confirmations.");
+  }
+  if (action === "confirm" && !isLayoutPostVersionToken(normalizedVersionToken)) {
+    throw new Error("Layout panel confirmation version token is invalid.");
+  }
+
+  const customId = [
+    LAYOUT_POST_PANEL_PREFIX,
+    LAYOUT_POST_PANEL_MARKER,
+    action === "confirm" ? "c" : "x",
+    normalizedLayoutId,
+    normalizedMessageId,
+    normalizedOwnerId,
+    ...(normalizedVersionToken ? [normalizedVersionToken] : []),
+  ].join(":");
+  if (customId.length > LAYOUT_POST_CUSTOM_ID_MAX_LENGTH) {
+    throw new Error("Layout panel custom ID exceeds Discord's length limit.");
+  }
+  return customId;
+}
+
 /** Purpose: parse a layout post custom ID without trusting its action or record ID. */
 export function parseLayoutPostCustomId(
   customId: string,
@@ -156,10 +210,39 @@ export function parseLayoutPostCustomId(
     : { action, layoutId };
 }
 
+/** Purpose: parse a user-owned ephemeral panel action without trusting its embedded scope. */
+export function parseLayoutPostPanelCustomId(
+  customId: string,
+): ParsedLayoutPostPanelCustomId | null {
+  const parts = String(customId ?? "").split(":");
+  if ((parts.length !== 6 && parts.length !== 7) || parts[0] !== LAYOUT_POST_PANEL_PREFIX || parts[1] !== LAYOUT_POST_PANEL_MARKER) {
+    return null;
+  }
+  const actionMarker = parts[2];
+  if (actionMarker !== "c" && actionMarker !== "x") return null;
+  const action = actionMarker === "c" ? "confirm" : "close";
+  const layoutId = parts[3] ?? "";
+  const canonicalMessageId = parts[4] ?? "";
+  const ownerDiscordUserId = parts[5] ?? "";
+  if (!isSafeLayoutPostId(layoutId) || !isSafeLayoutPostId(canonicalMessageId) || !isSafeLayoutPostId(ownerDiscordUserId)) {
+    return null;
+  }
+  const versionToken = parts.length === 7 ? parts[6] ?? "" : undefined;
+  if (action === "confirm" && (!versionToken || !isLayoutPostVersionToken(versionToken))) return null;
+  if (action === "close" && parts.length !== 6) return null;
+  return {
+    action,
+    layoutId,
+    canonicalMessageId,
+    ownerDiscordUserId,
+    ...(versionToken ? { versionToken } : {}),
+  };
+}
+
 /** Purpose: route persistent layout IDs while safely ignoring obsolete paginator IDs from the removed legacy command. */
 export function isLayoutPostCustomId(customId: string): boolean {
   const normalized = String(customId ?? "");
-  if (parseLayoutPostCustomId(normalized)) return true;
+  if (parseLayoutPostCustomId(normalized) || parseLayoutPostPanelCustomId(normalized)) return true;
 
   const parts = normalized.split(":");
   if (
@@ -174,7 +257,19 @@ export function isLayoutPostCustomId(customId: string): boolean {
 
 /** Purpose: identify a fully valid layout post button custom ID for focused routing/tests. */
 export function isLayoutPostButtonCustomId(customId: string): boolean {
-  return parseLayoutPostCustomId(customId) !== null;
+  return parseLayoutPostCustomId(customId) !== null || parseLayoutPostPanelCustomId(customId) !== null;
+}
+
+function normalizeLayoutPostId(value: string, label: string): string {
+  const normalized = String(value ?? "").trim();
+  if (!isSafeLayoutPostId(normalized)) {
+    throw new Error(`Layout panel custom IDs require a safe ${label} ID.`);
+  }
+  return normalized;
+}
+
+function isSafeLayoutPostId(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 /** Purpose: render one edit-safe presentation of the canonical public layout post. */
@@ -221,6 +316,104 @@ export function buildLayoutPostRedirectPayload(jumpUrl: string): LayoutPostPaylo
   };
 }
 
+/** Purpose: render a private link or metadata panel without rebuilding the canonical public embed. */
+export function buildLayoutPostPanelPayload(
+  record: LayoutRecord,
+  mode: "link" | "info",
+  ownerDiscordUserId: string,
+  canonicalMessageId: string,
+  alertLine?: string,
+): LayoutPostPayload {
+  const embed = new EmbedBuilder();
+  const title = record.title?.trim();
+  if (title) embed.setTitle(title);
+  if (mode === "link") {
+    embed.setDescription(
+      `[Open Layout](<${record.layoutLink}>)\n\nDid the layout open successfully in Clash of Clans?`,
+    );
+  } else {
+    embed.setDescription(buildLayoutInfoDescription(record, alertLine));
+  }
+
+  const versionToken = mode === "link"
+    ? buildLayoutPostVersionToken(record.layoutLink, record.submittedAt)
+    : undefined;
+  const buttons = mode === "link"
+    ? [
+        new ButtonBuilder()
+          .setCustomId(buildLayoutPostPanelCustomId(
+            "confirm",
+            record.id,
+            canonicalMessageId,
+            ownerDiscordUserId,
+            versionToken,
+          ))
+          .setLabel("Yes, It Opened")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(buildLayoutPostPanelCustomId(
+            "close",
+            record.id,
+            canonicalMessageId,
+            ownerDiscordUserId,
+          ))
+          .setLabel("Close")
+          .setStyle(ButtonStyle.Secondary),
+      ]
+    : [
+        new ButtonBuilder()
+          .setCustomId(buildLayoutPostPanelCustomId(
+            "close",
+            record.id,
+            canonicalMessageId,
+            ownerDiscordUserId,
+          ))
+          .setLabel("Close")
+          .setStyle(ButtonStyle.Secondary),
+      ];
+
+  return {
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)],
+    ephemeral: true,
+    allowedMentions: { parse: [], repliedUser: false },
+  };
+}
+
+/** Purpose: close or acknowledge a private panel without touching the canonical message. */
+export function buildLayoutPostPanelClosedPayload(
+  content: string,
+  ephemeral = true,
+): LayoutPostPayload {
+  return {
+    content,
+    embeds: [],
+    components: [],
+    ...(ephemeral ? { ephemeral: true } : {}),
+    allowedMentions: { parse: [], repliedUser: false },
+  };
+}
+
+/** Purpose: acknowledge a confirmation privately and keep all public layout presentation static. */
+export function buildLayoutPostConfirmationPayload(
+  _record?: LayoutRecord,
+  ephemeral = true,
+): LayoutPostPayload {
+  return buildLayoutPostPanelClosedPayload(
+    "Thanks — this layout was marked as confirmed.",
+    ephemeral,
+  );
+}
+
+/** Purpose: handle obsolete public link-view controls without editing the canonical message. */
+async function replyLegacyPanelControl(interaction: ButtonInteraction): Promise<void> {
+  await interaction.reply(
+    buildLayoutPostPanelClosedPayload(
+      "This older layout control is no longer active. Use Layout Link to open a private panel.",
+    ),
+  );
+}
+
 /** Purpose: build the public Info description without exposing the layout URL. */
 export function buildLayoutInfoDescription(record: LayoutRecord, alertLine?: string): string {
   const parsed = tryParseLayoutLink(record.layoutLink);
@@ -258,26 +451,29 @@ export function formatRelativeDiscordTimestamp(value: Date): string {
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
 }
 
-/** Purpose: coordinate scoped layout interactions and best-effort in-memory auto-collapse timers. */
+/** Purpose: coordinate scoped layout interactions while keeping the canonical post immutable. */
 export class LayoutPostService {
   private readonly layoutService: Pick<
     LayoutService,
     "findById" | "confirmSuccessfulOpening"
   >;
-  private readonly autoCollapseDelayMs: number;
   private readonly alertConfigService?: Pick<LayoutAlertConfigService, "getPolicy">;
   private readonly botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
-  private readonly autoCollapseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(options: LayoutPostServiceOptions = {}) {
     this.layoutService = options.layoutService ?? layoutService;
-    this.autoCollapseDelayMs = options.autoCollapseDelayMs ?? DEFAULT_AUTO_COLLAPSE_DELAY_MS;
     this.alertConfigService = options.alertConfigService;
     this.botLogChannelService = options.botLogChannelService;
   }
 
-  /** Purpose: handle one persistent layout button after loading and validating canonical post scope. */
+  /** Purpose: handle one persistent or user-owned panel action without editing the canonical post. */
   async handleButtonInteraction(interaction: ButtonInteraction): Promise<void> {
+    const panel = parseLayoutPostPanelCustomId(interaction.customId);
+    if (panel) {
+      await this.handlePanelInteraction(interaction, panel);
+      return;
+    }
+
     const parsed = parseLayoutPostCustomId(interaction.customId);
     if (!parsed) {
       await replyLayoutPostError(interaction, "This layout action is no longer valid.");
@@ -315,7 +511,6 @@ export class LayoutPostService {
         }
       }
 
-      const imageSource = getCurrentMessageImageSource(interaction);
       if (parsed.action === "info") {
         const alertPolicy = this.alertConfigService
           ? await this.alertConfigService.getPolicy(record.id)
@@ -331,31 +526,37 @@ export class LayoutPostService {
                 "layout-alerts",
               )
             : null;
-        await interaction.update(
-          buildLayoutPostPayload(
+        await interaction.reply(
+          buildLayoutPostPanelPayload(
             record,
             "info",
-            imageSource,
+            interaction.user.id,
+            record.discordMessageId ?? "",
             formatLayoutAlertPolicyLine(alertPolicy, defaultChannelId) ?? undefined,
           ),
         );
-        this.scheduleAutoCollapse(interaction, record.id, imageSource);
         return;
       }
 
       if (parsed.action === "link") {
-        await interaction.update(
-          buildLayoutPostPayload(record, "link", imageSource),
+        await interaction.reply(
+          buildLayoutPostPanelPayload(
+            record,
+            "link",
+            interaction.user.id,
+            record.discordMessageId ?? "",
+          ),
         );
-        this.scheduleAutoCollapse(interaction, record.id, imageSource);
         return;
       }
 
-      this.clearAutoCollapse(interaction.message.id);
+      const legacyExpanded = this.isLegacyExpandedPresentation(interaction, record);
       if (parsed.action === "close") {
-        await interaction.update(
-          buildLayoutPostPayload(record, "collapsed", imageSource),
-        );
+        if (legacyExpanded) {
+          await this.collapseLegacyPresentation(interaction, record);
+          return;
+        }
+        await replyLegacyPanelControl(interaction);
         return;
       }
 
@@ -365,11 +566,18 @@ export class LayoutPostService {
         expectedLayoutLink: record.layoutLink,
         expectedSubmittedAt: record.submittedAt,
       });
-      await interaction.update(
-        buildLayoutPostPayload(confirmedRecord, "collapsed", imageSource),
-      );
+
+      if (legacyExpanded) {
+        await this.collapseLegacyPresentation(interaction, confirmedRecord);
+        dozzleLog.info(
+          `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} canonical_message_id=${interaction.message.id} user_id=${interaction.user.id} source=legacy_public_control`,
+        );
+        return;
+      }
+
+      await interaction.reply(buildLayoutPostConfirmationPayload(confirmedRecord));
       dozzleLog.info(
-        `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} message_id=${interaction.message.id} user_id=${interaction.user.id}`,
+        `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} canonical_message_id=${interaction.message.id} user_id=${interaction.user.id} source=legacy_public_control`,
       );
     } catch (error) {
       dozzleLog.error(
@@ -382,43 +590,118 @@ export class LayoutPostService {
     }
   }
 
-  /** Purpose: cancel any pending presentation-only collapse for a canonical message. */
+  /** Purpose: retain compatibility for callers that used to cancel public presentation timers. */
   clearAutoCollapse(messageId: string): void {
-    const timer = this.autoCollapseTimers.get(messageId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.autoCollapseTimers.delete(messageId);
+    void messageId;
   }
 
-  /** Purpose: schedule one replaceable best-effort collapse without persisting presentation state. */
-  private scheduleAutoCollapse(
+  /** Purpose: identify only the restart-surviving public presentation produced by the old interaction flow. */
+  private isLegacyExpandedPresentation(
     interaction: ButtonInteraction,
-    layoutId: string,
-    imageSource: LayoutPostImageSource,
-  ): void {
-    this.clearAutoCollapse(interaction.message.id);
+    record: LayoutRecord,
+  ): boolean {
+    const message = interaction.message as unknown as LayoutPostImageMessageLike;
+    const customIds = (message.components ?? []).flatMap((row) => row.components ?? [])
+      .map((component) => component.customId ?? component.data?.custom_id ?? null)
+      .filter((customId): customId is string => Boolean(customId));
+    const closeId = buildLayoutPostCustomId("close", record.id);
+    if (!customIds.includes(closeId)) return false;
 
-    let timer: ReturnType<typeof setTimeout>;
-    timer = setTimeout(async () => {
-      if (this.autoCollapseTimers.get(interaction.message.id) !== timer) return;
-      this.autoCollapseTimers.delete(interaction.message.id);
+    const linkId = buildLayoutPostCustomId("link", record.id);
+    const hasLegacyInfoControls = customIds.includes(linkId);
+    const hasLegacyConfirmationControl = customIds.some((customId) => {
+      const parsed = parseLayoutPostCustomId(customId);
+      return parsed?.action === "confirm" && parsed.layoutId === record.id;
+    });
+    const hasRevealedLayoutUrl = (message.embeds ?? []).some((embed) =>
+      embed?.description?.includes(`[Open Layout](<${record.layoutLink}>)`),
+    );
 
-      try {
-        const record = await this.layoutService.findById(layoutId);
-        if (!record || !this.matchesCanonicalPostScope(interaction, record)) return;
-        await interaction.message.edit(
-          buildLayoutPostPayload(record, "collapsed", imageSource),
-        );
-      } catch (error) {
-        dozzleLog.error(
-          `[layout-post] event=auto_collapse_failed layout_id=${layoutId} message_id=${interaction.message.id} error=${formatError(error)}`,
-        );
+    return hasLegacyInfoControls || hasLegacyConfirmationControl || hasRevealedLayoutUrl;
+  }
+
+  /** Purpose: collapse one confirmed legacy public presentation while retaining recoverable image metadata. */
+  private async collapseLegacyPresentation(
+    interaction: ButtonInteraction,
+    record: LayoutRecord,
+  ): Promise<void> {
+    const resolution = resolveLayoutPostImageSource(
+      interaction.message as unknown as LayoutPostImageMessageLike,
+    );
+    if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+      dozzleLog.debug(
+        `[layout-post] event=legacy_cleanup_image_fallback source=${resolution.kind} layout_id=${record.id} message_id=${interaction.message.id}`,
+      );
+    }
+    if (!record.imageUrl?.trim() && resolution.kind === "metadata_unavailable") {
+      const error = new Error("Legacy layout image metadata is unavailable; public cleanup was not attempted.");
+      dozzleLog.warn(
+        `[layout-post] event=legacy_cleanup_failed layout_id=${record.id} message_id=${interaction.message.id} reason=image_metadata_unavailable`,
+      );
+      throw error;
+    }
+
+    try {
+      await interaction.update(
+        buildLayoutPostPayload(record, "collapsed", resolution.source),
+      );
+      dozzleLog.info(
+        `[layout-post] event=legacy_cleanup_succeeded layout_id=${record.id} message_id=${interaction.message.id}`,
+      );
+    } catch (error) {
+      dozzleLog.error(
+        `[layout-post] event=legacy_cleanup_failed layout_id=${record.id} message_id=${interaction.message.id} reason=discord_update_failed error=${formatError(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  private async handlePanelInteraction(
+    interaction: ButtonInteraction,
+    panel: ParsedLayoutPostPanelCustomId,
+  ): Promise<void> {
+    try {
+      const record = await this.layoutService.findById(panel.layoutId);
+      if (!record || !this.matchesPanelScope(interaction, record, panel)) {
+        this.logPanelRejection(interaction, panel, "scope_mismatch");
+        await replyLayoutPostError(interaction, "This private layout panel is no longer valid.");
+        return;
       }
-    }, this.autoCollapseDelayMs);
 
-    this.autoCollapseTimers.set(interaction.message.id, timer);
-    const unref = (timer as unknown as { unref?: () => void }).unref;
-    unref?.call(timer);
+      if (panel.action === "close") {
+        await interaction.update(buildLayoutPostPanelClosedPayload("Layout panel closed.", false));
+        return;
+      }
+
+      const currentVersionToken = buildLayoutPostVersionToken(record.layoutLink, record.submittedAt);
+      if (!panel.versionToken || panel.versionToken !== currentVersionToken) {
+        this.logPanelRejection(interaction, panel, "stale_link_version");
+        await replyLayoutPostError(
+          interaction,
+          "This confirmation belongs to an older layout link and was not applied.",
+        );
+        return;
+      }
+
+      const confirmedRecord = await this.layoutService.confirmSuccessfulOpening({
+        id: record.id,
+        discordUserId: interaction.user.id,
+        expectedLayoutLink: record.layoutLink,
+        expectedSubmittedAt: record.submittedAt,
+      });
+      await interaction.update(buildLayoutPostConfirmationPayload(confirmedRecord, false));
+      dozzleLog.info(
+        `[layout-post] event=confirmation_succeeded layout_id=${record.id} guild_id=${interaction.guildId} channel_id=${interaction.channelId} canonical_message_id=${record.discordMessageId} panel_message_id=${interaction.message.id} user_id=${interaction.user.id} source=ephemeral_panel`,
+      );
+    } catch (error) {
+      dozzleLog.error(
+        `[layout-post] event=panel_interaction_failed layout_id=${panel.layoutId} action=${panel.action} guild_id=${interaction.guildId ?? "DM"} channel_id=${interaction.channelId ?? "unknown"} panel_message_id=${interaction.message.id} error=${formatError(error)}`,
+      );
+      await replyLayoutPostError(
+        interaction,
+        "Failed to update this private layout panel. Please try again shortly.",
+      );
+    }
   }
 
   /** Purpose: enforce the persisted guild/channel/message provenance boundary for every public interaction. */
@@ -432,6 +715,23 @@ export class LayoutPostService {
         record.discordGuildId === interaction.guildId &&
         record.discordChannelId === interaction.channelId &&
         record.discordMessageId === interaction.message.id,
+    );
+  }
+
+  /** Purpose: validate private panel ownership and its canonical provenance boundary. */
+  private matchesPanelScope(
+    interaction: ButtonInteraction,
+    record: LayoutRecord,
+    panel: ParsedLayoutPostPanelCustomId,
+  ): boolean {
+    return Boolean(
+      interaction.guildId &&
+        interaction.channelId &&
+        interaction.user.id === panel.ownerDiscordUserId &&
+        record.id === panel.layoutId &&
+        record.discordGuildId === interaction.guildId &&
+        record.discordChannelId === interaction.channelId &&
+        record.discordMessageId === panel.canonicalMessageId,
     );
   }
 
@@ -450,6 +750,17 @@ export class LayoutPostService {
   ): void {
     dozzleLog.warn(
       `[layout-post] event=confirmation_rejected layout_id=${layoutId} reason=${reason} interaction_guild_id=${interaction.guildId ?? "DM"} interaction_channel_id=${interaction.channelId ?? "unknown"} interaction_message_id=${interaction.message.id} user_id=${interaction.user.id}`,
+    );
+  }
+
+  /** Purpose: make forged or cross-user private panel actions diagnosable without logging layout URLs. */
+  private logPanelRejection(
+    interaction: ButtonInteraction,
+    panel: ParsedLayoutPostPanelCustomId,
+    reason: "scope_mismatch" | "stale_link_version",
+  ): void {
+    dozzleLog.warn(
+      `[layout-post] event=panel_action_rejected layout_id=${panel.layoutId} action=${panel.action} reason=${reason} guild_id=${interaction.guildId ?? "DM"} channel_id=${interaction.channelId ?? "unknown"} panel_message_id=${interaction.message.id} canonical_message_id=${panel.canonicalMessageId} owner_user_id=${panel.ownerDiscordUserId} user_id=${interaction.user.id}`,
     );
   }
 }
@@ -532,15 +843,6 @@ function resolveImageUrl(
   return null;
 }
 
-/** Purpose: extract the current canonical message attachment so button edits preserve it. */
-function getCurrentMessageImageSource(
-  interaction: ButtonInteraction,
-): LayoutPostImageSource {
-  const resolution = resolveLayoutPostImageSource(interaction.message);
-  logImageSourceResolution(resolution, interaction.message.id, "interaction");
-  return resolution.source;
-}
-
 /** Purpose: recover only image metadata needed to rebuild a presentation without copying stale embeds. */
 export function resolveLayoutPostImageSource(
   message: LayoutPostImageMessageLike,
@@ -599,22 +901,6 @@ function decodeAttachmentName(value: string): string | null {
     return decodeURIComponent(normalized) || null;
   } catch {
     return normalized;
-  }
-}
-
-function logImageSourceResolution(
-  resolution: LayoutPostImageSourceResolution,
-  messageId: string,
-  phase: "interaction" | "publication",
-): void {
-  if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
-    dozzleLog.debug(
-      `[layout-post] event=image_source_fallback phase=${phase} source=${resolution.kind} message_id=${messageId}`,
-    );
-  } else if (resolution.kind === "metadata_unavailable") {
-    dozzleLog.warn(
-      `[layout-post] event=image_source_unresolved phase=${phase} reason=metadata_unavailable message_id=${messageId}`,
-    );
   }
 }
 
