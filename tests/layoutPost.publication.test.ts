@@ -211,6 +211,40 @@ describe("LayoutPostPublicationService", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("recovers a canonical native image from a Discord CDN embed during refresh", async () => {
+    const channelId = "123456789012345678";
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const imageUrl =
+      `https://cdn.discordapp.com/attachments/${channelId}/987654321098765432/native.png?ex=bounded`;
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-1",
+        delete: vi.fn().mockResolvedValue(undefined),
+        edit,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: imageUrl } }],
+      }),
+    };
+
+    await service.publish({
+      layout: buildLayout({
+        imageUrl: null,
+        discordGuildId: "guild-1",
+        discordChannelId: channelId,
+        discordMessageId: "message-1",
+      }) as any,
+      guildId: "guild-1",
+      channel: { id: channelId, send },
+      messageResolver: resolver,
+    });
+
+    const payload = edit.mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://native.png");
+    expect(payload.files).toBeUndefined();
+    expect(payload.attachments).toBeUndefined();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("edits the existing canonical message when external image presentation changes", async () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const resolver = {

@@ -4,6 +4,7 @@ import {
   buildLayoutPostPayload,
   buildLayoutPostRedirectPayload,
   LayoutPostImageSource,
+  LayoutPostImageSourceResolutionContext,
   resolveLayoutPostImageSource,
 } from "./LayoutPostService";
 import {
@@ -129,7 +130,7 @@ export class LayoutPostPublicationService {
             "collapsed",
             preparedAttachment
               ? { attachmentName: preparedAttachment.filename }
-              : getMessageImageSource(existingMessage),
+              : getMessageImageSource(existingMessage, existing.channelId),
           ),
           preparedAttachment,
           Boolean(input.layout.imageUrl),
@@ -245,7 +246,7 @@ export class LayoutPostPublicationService {
     }
 
     const attachment = input.layout.imageUrl === null
-      ? getMessageAttachmentSource(sourceMessage)
+      ? getMessageAttachmentSource(sourceMessage, existing.channelId)
       : null;
     const preparedAttachment = attachment
       ? await this.prepareAttachment(attachment)
@@ -374,7 +375,7 @@ export class LayoutPostPublicationService {
       buildLayoutPostPayload(
         input.layout,
         "collapsed",
-        getMessageImageSource(input.message),
+        getMessageImageSource(input.message, input.layout.discordChannelId),
       ),
     );
   }
@@ -659,8 +660,9 @@ async function deleteBestEffort(
 
 function getMessageAttachmentSource(
   message: ResolvedLayoutPostMessage,
+  canonicalChannelId: string,
 ): LayoutPostAttachmentSource | null {
-  const resolution = resolveLayoutPostImageSource(message);
+  const resolution = resolveLayoutPostImageSource(message, { canonicalChannelId });
   const attachment = message.attachments?.first?.();
   const url = resolution.source.attachmentUrl;
   if (!url) {
@@ -717,9 +719,17 @@ function nativeOwnershipPersistenceError(): Error {
   );
 }
 
-function getMessageImageSource(message: ResolvedLayoutPostMessage): LayoutPostImageSource {
-  const resolution = resolveLayoutPostImageSource(message);
-  if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+function getMessageImageSource(
+  message: ResolvedLayoutPostMessage,
+  canonicalChannelId: string | null | undefined,
+): LayoutPostImageSource {
+  const resolutionContext: LayoutPostImageSourceResolutionContext = { canonicalChannelId };
+  const resolution = resolveLayoutPostImageSource(message, resolutionContext);
+  if (
+    resolution.kind === "embedded_attachment" ||
+    resolution.kind === "embedded_discord_attachment" ||
+    resolution.kind === "embedded_url"
+  ) {
     dozzleLog.debug(
       `[layout-publication] event=image_source_fallback source=${resolution.kind} message_id=${message.id}`,
     );

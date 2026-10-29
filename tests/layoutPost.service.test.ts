@@ -14,6 +14,9 @@ import {
 
 const LAYOUT_LINK =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD";
+const NATIVE_CHANNEL_ID = "123456789012345678";
+const NATIVE_ATTACHMENT_URL =
+  `https://cdn.discordapp.com/attachments/${NATIVE_CHANNEL_ID}/987654321098765432/native.png?ex=bounded`;
 
 function buildRecord(overrides: Partial<LayoutRecord> = {}): LayoutRecord {
   const createdAt = new Date("2026-08-24T00:00:00.000Z");
@@ -139,6 +142,44 @@ describe("layout post rendering", () => {
     expect(resolution.source.attachmentName).toBe("standalone.png");
   });
 
+  it("recovers a canonical native attachment from its Discord CDN embed URL", () => {
+    const resolution = resolveLayoutPostImageSource(
+      {
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: NATIVE_ATTACHMENT_URL } }],
+      },
+      { canonicalChannelId: NATIVE_CHANNEL_ID },
+    );
+
+    expect(resolution).toEqual({
+      source: { attachmentName: "native.png", attachmentUrl: NATIVE_ATTACHMENT_URL },
+      kind: "embedded_discord_attachment",
+    });
+    expect(
+      buildLayoutPostPayload(
+        buildRecord({ imageUrl: null }),
+        "collapsed",
+        resolution.source,
+      ).embeds?.[0]?.toJSON().image?.url,
+    ).toBe("attachment://native.png");
+  });
+
+  it("leaves an unrelated Discord CDN URL as an external presentation URL", () => {
+    const resolution = resolveLayoutPostImageSource(
+      {
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: NATIVE_ATTACHMENT_URL } }],
+      },
+      { canonicalChannelId: "999999999999999999" },
+    );
+
+    expect(resolution.kind).toBe("embedded_url");
+    expect(resolution.source).toEqual({
+      attachmentName: null,
+      attachmentUrl: NATIVE_ATTACHMENT_URL,
+    });
+  });
+
   it("renders the link URL and confirmation question with link controls", () => {
     const payload = buildLayoutPostPayload(record, "link");
     const embed = payload.embeds?.[0]?.toJSON();
@@ -236,6 +277,8 @@ describe("layout post persistent interactions", () => {
     expect(interaction.reply).not.toHaveBeenCalled();
     expect(interaction.update).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(interaction.update.mock.calls[0]?.[0])).toContain(record.layoutLink);
+    expect(interaction.update.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
+      .toBe(record.imageUrl);
   });
 
   it("shows Info publicly without mutating the post policy or freshness", async () => {
@@ -280,6 +323,37 @@ describe("layout post persistent interactions", () => {
 
       expect(interaction.update.mock.calls[0]?.[0]?.embeds?.[0]?.toJSON().image?.url)
         .toBe("attachment://embedded.png");
+      postService.clearAutoCollapse(message.id);
+    },
+  );
+
+  it.each(["link", "info", "close"] as const)(
+    "keeps a CDN-backed native image embedded through the %s action without uploading",
+    async (action) => {
+      const record = buildRecord({
+        imageUrl: null,
+        discordChannelId: NATIVE_CHANNEL_ID,
+      });
+      const originalRecord = { ...record };
+      layoutRecordService.findById.mockResolvedValue(record);
+      const { interaction, message } = makeInteraction({
+        customId: buildLayoutPostCustomId(action, record.id),
+        channelId: NATIVE_CHANNEL_ID,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: NATIVE_ATTACHMENT_URL } }],
+      });
+
+      await postService.handleButtonInteraction(interaction);
+
+      const payload = interaction.update.mock.calls[0]?.[0];
+      expect(payload.embeds?.[0]?.toJSON().image?.url).toBe("attachment://native.png");
+      expect(payload.files).toBeUndefined();
+      expect(payload.attachments).toBeUndefined();
+      expect(message.id).toBe(originalRecord.discordMessageId);
+      expect(record.id).toBe(originalRecord.id);
+      expect(record.layoutLink).toBe(originalRecord.layoutLink);
+      expect(record.submittedAt).toBe(originalRecord.submittedAt);
+      expect(record.lastConfirmedAt).toBe(originalRecord.lastConfirmedAt);
       postService.clearAutoCollapse(message.id);
     },
   );
@@ -568,6 +642,37 @@ describe("layout post persistent interactions", () => {
       expect(message.edit).toHaveBeenCalledTimes(1);
       expect(message.edit.mock.calls[0]?.[0].embeds).toEqual([]);
       expect(JSON.stringify(message.edit.mock.calls[0]?.[0])).not.toContain(record.layoutLink);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a CDN-backed native image embedded during automatic collapse", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = buildRecord({
+        imageUrl: null,
+        discordChannelId: NATIVE_CHANNEL_ID,
+      });
+      layoutRecordService.findById.mockResolvedValue(record);
+      const { interaction, message } = makeInteraction({
+        customId: buildLayoutPostCustomId("link", record.id),
+        channelId: NATIVE_CHANNEL_ID,
+        attachments: { first: vi.fn(() => undefined) },
+        embeds: [{ image: { url: NATIVE_ATTACHMENT_URL } }],
+      });
+      postService = new LayoutPostService({
+        layoutService: layoutRecordService,
+        autoCollapseDelayMs: 100,
+      });
+
+      await postService.handleButtonInteraction(interaction);
+      await vi.advanceTimersByTimeAsync(100);
+
+      const payload = message.edit.mock.calls[0]?.[0];
+      expect(payload.embeds?.[0]?.toJSON().image?.url).toBe("attachment://native.png");
+      expect(payload.files).toBeUndefined();
+      expect(payload.attachments).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
