@@ -1,6 +1,8 @@
 import { ApplicationCommandOptionType } from "discord.js";
 import { describe, expect, it } from "vitest";
 import { Fwa } from "../src/commands/Fwa";
+import { FWA_LAYOUT_SUBCOMMAND } from "../src/commands/fwa/layoutCommand";
+import { injectVisibilityOptionsForTest } from "../src/listeners/ready";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
 describe("/fwa base-swap command shape", () => {
@@ -21,6 +23,10 @@ describe("/fwa base-swap command shape", () => {
       "alert-type",
       "alert-channel",
     ]);
+    expect(FWA_LAYOUT_SUBCOMMAND.options.map((option) => option.name)).not.toContain("visibility");
+    const registered = injectVisibilityOptionsForTest(Fwa) as any;
+    const registeredLayout = registered.options.find((option: any) => option.name === "layout");
+    expect(registeredLayout.options.filter((option: any) => option.name === "visibility")).toHaveLength(1);
     expect(hasPermissionTargetForCommand("fwa:layout")).toBe(true);
   });
 
