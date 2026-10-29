@@ -37,6 +37,7 @@ export type LayoutPostPayload = {
   content?: string;
   embeds?: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
+  attachments?: [];
   allowedMentions: { parse: []; repliedUser: false };
 };
 
@@ -189,6 +190,7 @@ export function buildLayoutPostRedirectPayload(jumpUrl: string): LayoutPostPaylo
     content: `This canonical layout moved to [the new post](${jumpUrl}).`,
     embeds: [],
     components: [],
+    attachments: [],
     allowedMentions: { parse: [], repliedUser: false },
   };
 }

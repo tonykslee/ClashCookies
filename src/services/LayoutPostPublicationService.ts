@@ -8,6 +8,7 @@ import {
 import {
   ConcurrentLayoutRelocationError,
   LayoutDiscordPostAlreadyBoundError,
+  LayoutRecordNotFoundError,
   LayoutService,
   layoutService,
 } from "./LayoutService";
@@ -209,6 +210,28 @@ export class LayoutPostPublicationService {
     if (existing.guildId !== input.guildId) {
       throw new Error("The canonical layout post belongs to another guild.");
     }
+
+    const current = await this.layoutService.findById(input.layout.id);
+    if (current === null) throw new LayoutRecordNotFoundError(input.layout.id);
+    const currentProvenance = current ? getCompleteProvenance(current) : null;
+    if (current && currentProvenance) {
+      if (currentProvenance.guildId === input.guildId && currentProvenance.channelId === input.channel.id) {
+        return {
+          layout: current,
+          messageId: currentProvenance.messageId,
+          jumpUrl: buildDiscordJumpUrl(
+            currentProvenance.guildId,
+            currentProvenance.channelId,
+            currentProvenance.messageId,
+          ),
+          oldPostCleanupFailed: false,
+        };
+      }
+      if (!sameLayoutVersion(current, input.layout) || !sameProvenance(currentProvenance, existing)) {
+        throw new ConcurrentLayoutRelocationError(input.layout.id);
+      }
+    }
+
     const sourceMessage = await input.messageResolver.resolve(existing);
     if (!sourceMessage || sourceMessage.id !== existing.messageId) {
       throw new Error("The canonical Discord layout post could not be resolved.");
@@ -267,14 +290,54 @@ export class LayoutPostPublicationService {
           phase: "provenance_rebind",
         },
       );
-      await deleteBestEffort(message, {
-        layoutId: input.layout.id,
-        phase: error instanceof ConcurrentLayoutRelocationError ? "cas_conflict" : "rebind_failed",
-        newMessageId: message.id,
-        oldMessageId: existing.messageId,
-        guildId: input.guildId,
-      });
-      throw error;
+      const verification = await verifyRelocationAfterRebindFailure(
+        this.layoutService,
+        input.layout,
+        existing,
+        input.guildId,
+        input.channel.id,
+        message.id,
+      );
+      if (verification.kind === "new_canonical") {
+        rebound = verification.layout;
+        logRelocationEvent("rebind_recovered", {
+          layoutId: input.layout.id,
+          oldMessageId: existing.messageId,
+          newMessageId: message.id,
+          guildId: input.guildId,
+          phase: "provenance_rebind",
+        });
+      } else if (verification.kind === "old_canonical") {
+        const cleanup = await deleteNewMessageIfSafe(
+          this.layoutService,
+          message,
+          input.layout,
+          existing,
+          input.guildId,
+          input.channel.id,
+          message.id,
+        );
+        if (cleanup !== "deleted") {
+          logRelocationEvent("uncertain_outcome", {
+            layoutId: input.layout.id,
+            oldMessageId: existing.messageId,
+            newMessageId: message.id,
+            guildId: input.guildId,
+            phase: "rebind_failure_cleanup",
+          });
+          throw new UncertainLayoutRelocationError(input.layout.id, existing.messageId, message.id);
+        }
+        throw error;
+      } else {
+        logRelocationEvent("uncertain_outcome", {
+          layoutId: input.layout.id,
+          oldMessageId: existing.messageId,
+          newMessageId: message.id,
+          guildId: input.guildId,
+          phase: "provenance_rebind",
+        });
+        throw new UncertainLayoutRelocationError(input.layout.id, existing.messageId, message.id);
+      }
     }
 
     const jumpUrl = buildDiscordJumpUrl(input.guildId, input.channel.id, message.id);
@@ -417,12 +480,159 @@ function getCompleteProvenance(layout: LayoutRecord): { guildId: string; channel
   return { guildId: layout.discordGuildId, channelId: layout.discordChannelId, messageId: layout.discordMessageId };
 }
 
+type RelocationVerification =
+  | { kind: "new_canonical"; layout: LayoutRecord }
+  | { kind: "old_canonical" }
+  | { kind: "uncertain" };
+
+async function verifyRelocationAfterRebindFailure(
+  service: Pick<LayoutService, "findById">,
+  expectedLayout: LayoutRecord,
+  expectedOld: { guildId: string; channelId: string; messageId: string },
+  newGuildId: string,
+  newChannelId: string,
+  newMessageId: string,
+): Promise<RelocationVerification> {
+  let current: LayoutRecord | null;
+  try {
+    current = await service.findById(expectedLayout.id);
+  } catch {
+    logRelocationEvent("rebind_verification_failed", {
+      layoutId: expectedLayout.id,
+      oldMessageId: expectedOld.messageId,
+      newMessageId,
+      guildId: newGuildId,
+      phase: "rebind_verification",
+    });
+    return { kind: "uncertain" };
+  }
+
+  const currentProvenance = current ? getCompleteProvenance(current) : null;
+  if (
+    current &&
+    currentProvenance &&
+    currentProvenance.guildId === newGuildId &&
+    currentProvenance.channelId === newChannelId &&
+    currentProvenance.messageId === newMessageId
+  ) {
+    return { kind: "new_canonical", layout: current };
+  }
+  if (current && currentProvenance && sameProvenance(currentProvenance, expectedOld) && sameLayoutVersion(current, expectedLayout)) {
+    return { kind: "old_canonical" };
+  }
+
+  logRelocationEvent("rebind_verification_failed", {
+    layoutId: expectedLayout.id,
+    oldMessageId: expectedOld.messageId,
+    newMessageId,
+    guildId: newGuildId,
+    phase: current ? "rebind_verification_conflict" : "rebind_verification_missing",
+  });
+  return { kind: "uncertain" };
+}
+
+async function deleteNewMessageIfSafe(
+  service: Pick<LayoutService, "findById">,
+  message: PublishedLayoutMessage,
+  expectedLayout: LayoutRecord,
+  expectedOld: { guildId: string; channelId: string; messageId: string },
+  guildId: string,
+  channelId: string,
+  newMessageId: string,
+): Promise<"deleted" | "canonical" | "uncertain"> {
+  let current: LayoutRecord | null;
+  try {
+    current = await service.findById(expectedLayout.id);
+  } catch {
+    logRelocationEvent("rebind_verification_failed", {
+      layoutId: expectedLayout.id,
+      oldMessageId: expectedOld.messageId,
+      newMessageId,
+      guildId,
+      phase: "pre_cleanup_verification",
+    });
+    return "uncertain";
+  }
+  const currentProvenance = current ? getCompleteProvenance(current) : null;
+  if (
+    currentProvenance?.guildId === guildId &&
+    currentProvenance.channelId === channelId &&
+    currentProvenance.messageId === newMessageId
+  ) {
+    logRelocationEvent("canonical_message_preserved", {
+      layoutId: expectedLayout.id,
+      oldMessageId: expectedOld.messageId,
+      newMessageId,
+      guildId,
+      phase: "pre_cleanup_verification",
+    });
+    return "canonical";
+  }
+  if (!current || !currentProvenance || !sameProvenance(currentProvenance, expectedOld) || !sameLayoutVersion(current, expectedLayout)) {
+    logRelocationEvent("rebind_verification_failed", {
+      layoutId: expectedLayout.id,
+      oldMessageId: expectedOld.messageId,
+      newMessageId,
+      guildId,
+      phase: "pre_cleanup_verification",
+    });
+    return "uncertain";
+  }
+  try {
+    await message.delete();
+    return "deleted";
+  } catch {
+    logRelocationEvent("new_message_cleanup_failed", {
+      layoutId: expectedLayout.id,
+      oldMessageId: expectedOld.messageId,
+      newMessageId,
+      guildId,
+      phase: "rebind_failure_cleanup",
+    });
+    return "uncertain";
+  }
+}
+
+function sameProvenance(
+  left: { guildId: string; channelId: string; messageId: string },
+  right: { guildId: string; channelId: string; messageId: string },
+): boolean {
+  return left.guildId === right.guildId && left.channelId === right.channelId && left.messageId === right.messageId;
+}
+
+function sameLayoutVersion(left: LayoutRecord, right: LayoutRecord): boolean {
+  return left.id === right.id &&
+    left.layoutLink === right.layoutLink &&
+    left.submittedAt?.getTime() === right.submittedAt?.getTime() &&
+    left.title === right.title &&
+    left.description === right.description &&
+    left.imageUrl === right.imageUrl &&
+    left.postedByDiscordUserId === right.postedByDiscordUserId &&
+    left.lastConfirmedAt?.getTime() === right.lastConfirmedAt?.getTime() &&
+    left.lastConfirmedByDiscordUserId === right.lastConfirmedByDiscordUserId;
+}
+
 export type LayoutRelocationResult = {
   layout: LayoutRecord;
   messageId: string;
   jumpUrl: string;
   oldPostCleanupFailed: boolean;
 };
+
+/** Purpose: preserve a newly published message when canonical state cannot be verified after an ambiguous failure. */
+export class UncertainLayoutRelocationError extends Error {
+  readonly layoutId: string;
+  readonly oldMessageId: string;
+  readonly newMessageId: string;
+
+  constructor(layoutId: string, oldMessageId: string, newMessageId: string) {
+    super(`Layout post relocation requires reconciliation before retrying: ${layoutId}`);
+    this.name = "UncertainLayoutRelocationError";
+    this.layoutId = layoutId;
+    this.oldMessageId = oldMessageId;
+    this.newMessageId = newMessageId;
+  }
+}
 
 async function deleteBestEffort(
   message: PublishedLayoutMessage,
@@ -460,7 +670,15 @@ function getMessageAttachmentSource(
 }
 
 function logRelocationEvent(
-  event: "old_redirect_failed" | "new_message_cleanup_failed" | "cas_conflict" | "rebind_failed",
+  event:
+    | "old_redirect_failed"
+    | "new_message_cleanup_failed"
+    | "cas_conflict"
+    | "rebind_failed"
+    | "rebind_recovered"
+    | "rebind_verification_failed"
+    | "uncertain_outcome"
+    | "canonical_message_preserved",
   input: { layoutId: string; oldMessageId?: string; newMessageId: string; guildId?: string; phase?: string },
 ): void {
   dozzleLog.warn(

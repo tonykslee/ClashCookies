@@ -17,6 +17,7 @@ import {
   LayoutPostChannel,
   LayoutPostMessageResolver,
   LayoutPostPublicationService,
+  UncertainLayoutRelocationError,
   createDiscordLayoutPostResolver,
   layoutPostPublicationService,
 } from "../../services/LayoutPostPublicationService";
@@ -67,6 +68,8 @@ type FwaLayoutMoveChannel = LayoutPostChannel & {
   type?: number;
   permissionsFor?: (member: unknown) => { has: (permission: bigint) => boolean } | null;
 };
+
+type LayoutMoveOutcome = { townhall: number; reason: string };
 
 export type FwaLayoutMoveCommandDeps = {
   layoutService?: FwaLayoutMoveService;
@@ -130,6 +133,8 @@ export async function runFwaLayoutMoveCommand(
       failed: 0,
       links: [] as string[],
       cleanupWarnings: 0,
+      skippedLayouts: [] as LayoutMoveOutcome[],
+      failedLayouts: [] as LayoutMoveOutcome[],
     };
 
     for (const canonical of layouts) {
@@ -137,16 +142,19 @@ export async function runFwaLayoutMoveCommand(
       const layoutId = record?.id ?? canonical.layoutId ?? `TH${canonical.Townhall}`;
       if (!record || !hasCompleteProvenance(record)) {
         summary.skipped += 1;
+        summary.skippedLayouts.push({ townhall: canonical.Townhall, reason: "unpublished" });
         logMove("skipped", { guildId, layoutId, reason: "unpublished" });
         continue;
       }
       if (record.discordGuildId !== guildId) {
         summary.failed += 1;
+        summary.failedLayouts.push({ townhall: canonical.Townhall, reason: "source_guild_mismatch" });
         logMove("failed", { guildId, layoutId, reason: "source_guild_mismatch", oldMessageId: record.discordMessageId });
         continue;
       }
       if (record.discordChannelId === destination.id) {
         summary.skipped += 1;
+        summary.skippedLayouts.push({ townhall: canonical.Townhall, reason: "already_in_destination" });
         logMove("skipped", { guildId, layoutId, reason: "already_in_destination", oldMessageId: record.discordMessageId });
         continue;
       }
@@ -178,10 +186,13 @@ export async function runFwaLayoutMoveCommand(
         });
       } catch (error) {
         summary.failed += 1;
+        summary.failedLayouts.push({ townhall: canonical.Townhall, reason: classifyMoveError(error) });
         logMove("failed", {
           guildId,
           layoutId,
           oldMessageId: record.discordMessageId,
+          newMessageId: error instanceof UncertainLayoutRelocationError ? error.newMessageId : undefined,
+          destinationChannelId: destination.id,
           reason: classifyMoveError(error),
         });
       }
@@ -255,7 +266,15 @@ function validateDestinationPermissions(
 }
 
 function formatSummary(
-  summary: { moved: number; skipped: number; failed: number; links: string[]; cleanupWarnings: number },
+  summary: {
+    moved: number;
+    skipped: number;
+    failed: number;
+    links: string[];
+    cleanupWarnings: number;
+    skippedLayouts: LayoutMoveOutcome[];
+    failedLayouts: LayoutMoveOutcome[];
+  },
   type: string,
   minTownhall: number,
   maxTownhall: number,
@@ -266,6 +285,8 @@ function formatSummary(
     `Moved: ${summary.moved} · Skipped: ${summary.skipped} · Failed: ${summary.failed}`,
     `Destination: <#${destinationChannelId}>`,
   ];
+  appendOutcomeLines(lines, "Skipped THs", summary.skippedLayouts);
+  appendOutcomeLines(lines, "Failed THs", summary.failedLayouts);
   if (summary.cleanupWarnings > 0) {
     lines.push(`Old-post redirect cleanup warnings: ${summary.cleanupWarnings}; the new canonical posts remain active.`);
   }
@@ -274,17 +295,21 @@ function formatSummary(
   }
   const rendered = lines.join("\n");
   if (rendered.length <= 1900) return rendered;
-  const movedPostsIndex = lines.indexOf("Moved posts:");
-  const header = lines.slice(0, movedPostsIndex + 1).join("\n");
-  const visibleLinks: string[] = [];
-  let length = header.length;
-  for (const link of summary.links) {
-    if (length + link.length + 1 > 1840) break;
-    visibleLinks.push(link);
-    length += link.length + 1;
+  const visibleLines: string[] = [];
+  let length = 0;
+  for (const line of lines) {
+    if (length + line.length + 1 > 1850) break;
+    visibleLines.push(line);
+    length += line.length + 1;
   }
-  const omitted = summary.links.length - visibleLinks.length;
-  return `${header}\n${visibleLinks.join("\n")}\n…and ${omitted} destination link(s) omitted from the summary.`;
+  const omitted = lines.length - visibleLines.length;
+  return `${visibleLines.join("\n")}\n…and ${omitted} summary line(s) omitted; rerun with a narrower TH range for details.`;
+}
+
+function appendOutcomeLines(lines: string[], label: string, outcomes: LayoutMoveOutcome[]): void {
+  if (outcomes.length === 0) return;
+  const rendered = outcomes.map((outcome) => `TH${outcome.townhall} (${outcome.reason})`).join(", ");
+  lines.push(`${label}: ${rendered}`);
 }
 
 function classifyMoveError(error: unknown): string {
@@ -292,6 +317,8 @@ function classifyMoveError(error: unknown): string {
   if (message.includes("permission")) return "permission_denied";
   if (message.includes("not authored")) return "source_not_bot_authored";
   if (message.includes("could not be resolved")) return "source_missing_or_inaccessible";
+  if (message.includes("not found")) return "layout_record_missing";
+  if (message.includes("reconciliation")) return "reconciliation_required";
   if (message.includes("stale") || message.includes("concurrent")) return "cas_conflict";
   if (message.includes("attachment")) return "image_transfer_failed";
   if (message.includes("guild")) return "guild_mismatch";

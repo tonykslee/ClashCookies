@@ -127,6 +127,7 @@ describe("/fwa layout-move", () => {
     expect(listCanonical).toHaveBeenCalledWith({ type: "RISINGDAWN" });
     expect(relocate).toHaveBeenCalledTimes(1);
     expect(editReply.mock.calls[0]?.[0].content).toContain("Moved: 1 · Skipped: 2 · Failed: 0");
+    expect(editReply.mock.calls[0]?.[0].content).toContain("Skipped THs: TH18 (already_in_destination), TH16 (unpublished)");
     expect(editReply.mock.calls[0]?.[0].content).toContain("new-message");
   });
 
@@ -156,6 +157,7 @@ describe("/fwa layout-move", () => {
 
     expect(relocate).toHaveBeenCalledTimes(2);
     expect(editReply.mock.calls[0]?.[0].content).toContain("Moved: 1 · Skipped: 0 · Failed: 1");
+    expect(editReply.mock.calls[0]?.[0].content).toContain("Failed THs: TH17 (cas_conflict)");
     expect(editReply.mock.calls[0]?.[0].content).toContain("cleanup warnings: 1");
   });
 
