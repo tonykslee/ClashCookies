@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDiscordLayoutPostResolver,
   LayoutPostPublicationService,
+  UncertainLayoutRelocationError,
 } from "../src/services/LayoutPostPublicationService";
 import { LayoutDiscordPostAlreadyBoundError, LayoutService } from "../src/services/LayoutService";
 
@@ -33,12 +34,13 @@ describe("LayoutPostPublicationService", () => {
     attachDiscordPost: vi.fn(),
     findById: vi.fn(),
     updatePresentation: vi.fn(),
+    rebindDiscordPost: vi.fn(),
   };
   const send = vi.fn();
   let service: LayoutPostPublicationService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     service = new LayoutPostPublicationService({ layoutService });
   });
 
@@ -597,5 +599,271 @@ describe("LayoutPostPublicationService", () => {
     })).rejects.toThrow("won this native image update");
     expect(message.delete).toHaveBeenCalledTimes(1);
     expect(layoutService.updatePresentation).not.toHaveBeenCalled();
+  });
+
+  it("relocates a canonical post with CAS provenance and a redirect", async () => {
+    const oldLayout = buildLayout({
+      title: "TH18 base",
+      description: "Keep this description",
+      imageUrl: "https://example.com/layout.png",
+      postedByDiscordUserId: "poster-1",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+      submittedAt: new Date("2026-08-20T00:00:00.000Z"),
+      lastConfirmedAt: new Date("2026-08-23T00:00:00.000Z"),
+      lastConfirmedByDiscordUserId: "confirmer-1",
+    });
+    const newLayout = { ...oldLayout, discordChannelId: "channel-new", discordMessageId: "message-new" };
+    const oldEdit = vi.fn().mockResolvedValue(undefined);
+    const newMessage = { id: "message-new", delete: vi.fn().mockResolvedValue(undefined), edit: vi.fn() };
+    const sendToDestination = vi.fn().mockResolvedValue(newMessage);
+    const sourceResolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-old",
+        author: { id: "bot-1" },
+        delete: vi.fn(),
+        edit: oldEdit,
+        attachments: { first: vi.fn(() => undefined) },
+      }),
+    };
+    layoutService.rebindDiscordPost.mockResolvedValue(newLayout);
+
+    const result = await service.relocate({
+      layout: oldLayout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: sendToDestination },
+      messageResolver: sourceResolver,
+      botUserId: "bot-1",
+    });
+
+    expect(sendToDestination).toHaveBeenCalledTimes(1);
+    expect(sendToDestination.mock.calls[0]?.[0].embeds[0].toJSON().image?.url).toBe(
+      "https://example.com/layout.png",
+    );
+    expect(layoutService.rebindDiscordPost).toHaveBeenCalledWith(expect.objectContaining({
+      id: oldLayout.id,
+      expectedOldMessageId: "message-old",
+      expectedSubmittedAt: oldLayout.submittedAt,
+      expectedLastConfirmedAt: oldLayout.lastConfirmedAt,
+      newChannelId: "channel-new",
+      newMessageId: "message-new",
+    }));
+    expect(oldEdit).toHaveBeenCalledWith(expect.objectContaining({
+      content: "This canonical layout moved to [the new post](https://discord.com/channels/guild-1/channel-new/message-new).",
+      embeds: [],
+      components: [],
+      attachments: [],
+    }));
+    expect(result.oldPostCleanupFailed).toBe(false);
+    expect(result.layout).toBe(newLayout);
+  });
+
+  it("copies a native Discord image before rebinding the canonical post", async () => {
+    const oldLayout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+      imageUrl: null,
+    });
+    const newMessage = { id: "message-new", delete: vi.fn().mockResolvedValue(undefined), edit: vi.fn() };
+    const oldEdit = vi.fn().mockResolvedValue(undefined);
+    const sourceResolver = {
+      resolve: vi.fn().mockResolvedValue({
+        id: "message-old",
+        author: { id: "bot-1" },
+        delete: vi.fn(),
+        edit: oldEdit,
+        attachments: { first: vi.fn(() => ({ name: "native.png", url: "https://cdn.example/native.png", contentType: "image/png", size: 4 })) },
+      }),
+    };
+    const sendToDestination = vi.fn().mockResolvedValue(newMessage);
+    const nativeService = new LayoutPostPublicationService({
+      layoutService,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: vi.fn(() => "4") },
+        arrayBuffer: vi.fn().mockResolvedValue(Uint8Array.from([1, 2, 3, 4]).buffer),
+      }),
+    });
+    layoutService.rebindDiscordPost.mockResolvedValue({ ...oldLayout, discordChannelId: "channel-new", discordMessageId: "message-new" });
+
+    await nativeService.relocate({
+      layout: oldLayout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: sendToDestination },
+      messageResolver: sourceResolver,
+      botUserId: "bot-1",
+    });
+
+    const payload = sendToDestination.mock.calls[0]?.[0];
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0].name).toBe("native.png");
+    expect(payload.embeds[0].toJSON().image?.url).toBe("attachment://native.png");
+    expect(oldEdit.mock.calls[0]?.[0].attachments).toEqual([]);
+    expect(oldEdit.mock.calls[0]?.[0].embeds).toEqual([]);
+    expect(oldEdit.mock.calls[0]?.[0].components).toEqual([]);
+  });
+
+  it("deletes the new message when the provenance CAS loses", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+    });
+    const newMessage = { id: "message-new", delete: vi.fn().mockResolvedValue(undefined), edit: vi.fn() };
+    layoutService.rebindDiscordPost.mockRejectedValue(new Error("stale relocation"));
+    layoutService.findById.mockResolvedValue(layout);
+
+    await expect(service.relocate({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: vi.fn().mockResolvedValue(newMessage) },
+      messageResolver: {
+        resolve: vi.fn().mockResolvedValue({
+          id: "message-old",
+          author: { id: "bot-1" },
+          delete: vi.fn(),
+          edit: vi.fn(),
+          attachments: { first: vi.fn(() => undefined) },
+        }),
+      },
+      botUserId: "bot-1",
+    })).rejects.toThrow("stale relocation");
+    expect(newMessage.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the new message when rebind verification is ambiguous", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+    });
+    const newMessage = { id: "message-new", delete: vi.fn(), edit: vi.fn() };
+    layoutService.rebindDiscordPost.mockRejectedValue(new Error("database timeout"));
+    layoutService.findById
+      .mockResolvedValueOnce(layout)
+      .mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(service.relocate({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: vi.fn().mockResolvedValue(newMessage) },
+      messageResolver: {
+        resolve: vi.fn().mockResolvedValue({
+          id: "message-old",
+          author: { id: "bot-1" },
+          delete: vi.fn(),
+          edit: vi.fn(),
+          attachments: { first: vi.fn(() => undefined) },
+        }),
+      },
+      botUserId: "bot-1",
+    })).rejects.toBeInstanceOf(UncertainLayoutRelocationError);
+    expect(newMessage.delete).not.toHaveBeenCalled();
+  });
+
+  it("recovers an ambiguous rebind when the new post is already canonical", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+    });
+    const rebound = { ...layout, discordChannelId: "channel-new", discordMessageId: "message-new" };
+    const oldEdit = vi.fn().mockResolvedValue(undefined);
+    const newMessage = { id: "message-new", delete: vi.fn(), edit: vi.fn() };
+    layoutService.findById.mockResolvedValueOnce(layout).mockResolvedValueOnce(rebound);
+    layoutService.rebindDiscordPost.mockRejectedValue(new Error("database timeout"));
+
+    const result = await service.relocate({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: vi.fn().mockResolvedValue(newMessage) },
+      messageResolver: {
+        resolve: vi.fn().mockResolvedValue({
+          id: "message-old",
+          author: { id: "bot-1" },
+          delete: vi.fn(),
+          edit: oldEdit,
+          attachments: { first: vi.fn(() => undefined) },
+        }),
+      },
+      botUserId: "bot-1",
+    });
+
+    expect(result.messageId).toBe("message-new");
+    expect(oldEdit).toHaveBeenCalledTimes(1);
+    expect(newMessage.delete).not.toHaveBeenCalled();
+  });
+
+  it("returns an already-canonical destination post without publishing a duplicate", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-new",
+      discordMessageId: "message-new",
+    });
+    const sendToDestination = vi.fn();
+    const sourceResolver = { resolve: vi.fn() };
+    layoutService.findById.mockResolvedValue(layout);
+
+    const result = await service.relocate({
+      layout: { ...layout, discordChannelId: "channel-old", discordMessageId: "message-old" } as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: sendToDestination },
+      messageResolver: sourceResolver,
+      botUserId: "bot-1",
+    });
+
+    expect(result.messageId).toBe("message-new");
+    expect(sendToDestination).not.toHaveBeenCalled();
+    expect(sourceResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not publish when the canonical source message is missing or inaccessible", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+    });
+    const sendToDestination = vi.fn();
+
+    await expect(service.relocate({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: sendToDestination },
+      messageResolver: { resolve: vi.fn().mockResolvedValue(null) },
+      botUserId: "bot-1",
+    })).rejects.toThrow("could not be resolved");
+    expect(sendToDestination).not.toHaveBeenCalled();
+  });
+
+  it("keeps a successful rebind when old-post redirect cleanup fails", async () => {
+    const layout = buildLayout({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-old",
+      discordMessageId: "message-old",
+    });
+    const newMessage = { id: "message-new", delete: vi.fn(), edit: vi.fn() };
+    const rebound = { ...layout, discordChannelId: "channel-new", discordMessageId: "message-new" };
+    layoutService.rebindDiscordPost.mockResolvedValue(rebound);
+
+    const result = await service.relocate({
+      layout: layout as any,
+      guildId: "guild-1",
+      channel: { id: "channel-new", send: vi.fn().mockResolvedValue(newMessage) },
+      messageResolver: {
+        resolve: vi.fn().mockResolvedValue({
+          id: "message-old",
+          author: { id: "bot-1" },
+          delete: vi.fn(),
+          edit: vi.fn().mockRejectedValue(new Error("missing permission")),
+          attachments: { first: vi.fn(() => undefined) },
+        }),
+      },
+      botUserId: "bot-1",
+    });
+
+    expect(result.oldPostCleanupFailed).toBe(true);
+    expect(result.messageId).toBe("message-new");
   });
 });

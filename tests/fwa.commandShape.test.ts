@@ -24,6 +24,23 @@ describe("/fwa base-swap command shape", () => {
     expect(hasPermissionTargetForCommand("fwa:layout")).toBe(true);
   });
 
+  it("registers /fwa layout-move with one type, destination, and bounded TH options", () => {
+    const move = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "layout-move",
+    );
+    expect(move?.options?.map((option: { name: string }) => option.name)).toEqual([
+      "type",
+      "target-channel",
+      "min-th",
+      "max-th",
+    ]);
+    expect(move?.options?.find((option: { name: string }) => option.name === "type")?.required).toBe(true);
+    expect(move?.options?.find((option: { name: string }) => option.name === "target-channel")?.required).toBe(true);
+    expect(hasPermissionTargetForCommand("fwa:layout-move")).toBe(true);
+  });
+
   it("registers war-bases, base-errors, and fwa-bases with a FWA battle-day swap-reminder option", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>
