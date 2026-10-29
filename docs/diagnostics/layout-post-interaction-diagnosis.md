@@ -6,9 +6,9 @@ Status: diagnostic only. No production or source behavior was changed by this in
 
 The repository at `HEAD` is the #1931 revert merge, `8fcb7c153e37a1837366837d116f7e78dfc37d44`. In the TypeScript source, successful Info and Layout Link actions use `interaction.update()`, so they update the canonical public message in place. The only intentional ephemeral path in the current source is `replyLayoutPostError()` for invalid, stale, out-of-scope, or failed interactions.
 
-There is, however, a stale local compiled artifact: `dist/services/LayoutPostService.js` still contains the pre-revert private-panel implementation and calls `interaction.reply(buildLayoutPostPanelPayload(...))` for Info and Layout Link. `dist` is not tracked, and no production runtime or log access was available, so this proves a stale artifact in the workspace, not that production used it.
+Production evidence subsequently confirmed that the obsolete PR #1929 compiled implementation was present before redeployment. On the production droplet, the command `docker exec clashcookies-app sh -lc 'grep -n "Layout panel custom ID exceeds" dist/services/LayoutPostService.js || true'` returned `92: throw new Error("Layout panel custom ID exceeds Discord's length limit.");`. Production then emitted `event=interaction_failed ... action=link ... error=Layout panel custom ID exceeds Discord's length limit.` for `legacy-layout-5fe3458a21330780d51c6fc599c91fa8`, and was redeployed successfully. After redeployment, the unwanted ephemeral interaction behavior disappeared. The same obsolete implementation remains as a stale local `dist` artifact, which is consistent with the production finding.
 
-The strongest image diagnosis is a source-level fallback defect introduced by #1927. Native images are initially published as an uploaded file referenced by `attachment://filename`. On a later interaction, if `message.attachments.first()` is empty but the existing embed image is exposed as a Discord CDN HTTPS URL, `resolveLayoutPostImageSource()` returns that CDN URL. `interaction.update()` then retains the native attachment while rebuilding the embed against the CDN URL. This can make the same image render both as an embed image and as an ordinary attachment preview. The exact production message shape—empty attachment collection plus CDN embed URL—remains unverified.
+The image analysis remains a source-level hypothesis only. Native images are initially published as an uploaded file referenced by `attachment://filename`. On a later interaction, if `message.attachments.first()` is empty but the existing embed image is exposed as a Discord CDN HTTPS URL, `resolveLayoutPostImageSource()` returns that CDN URL. `interaction.update()` would then retain the native attachment while rebuilding the embed against the CDN URL. This could make the same image render both as an embed image and as an ordinary attachment preview, but the original image observations occurred while production was running the obsolete #1929 code. Whether duplication persists under the corrected deployment is unverified.
 
 ## 1. Repository and runtime identity
 
@@ -19,7 +19,9 @@ The strongest image diagnosis is a source-level fallback defect introduced by #1
 - `dist/services/LayoutPostService.js` is ignored/untracked and has a local timestamp of 2026-10-29 09:35:29, earlier than the current merge commit at 10:07:16.
 - `src/ClashCookies.ts:25-45` emits `[startup:build] git_sha=... build_sha=...`. `package.json` makes `npm start` rebuild before `start:runtime`; `ops/deploy/container-start.sh` invokes `npm run start`.
 
-Unverified runtime facts: the production startup `git_sha`, the production image/container digest, the command actually used to start each instance, whether all old instances were stopped, the number of active bot sessions, and the live Discord message JSON before and after each click. No runtime logs, server shell, deployment dashboard, or Discord API credentials were available in this workspace.
+Confirmed production facts: the pre-redeployment production artifact contained the obsolete #1929 panel code; the custom-ID length error came from that old panel implementation; redeployment removed the observed ephemeral behavior. The current source restores in-place Info and Link.
+
+Still-unverified runtime facts: whether native-image duplication persists after the corrected deployment, the corrected deployment's exact startup SHA/container digest, the number of active bot sessions after redeployment, and the live Discord message JSON before and after the corrected-deployment clicks. No post-redeployment image metadata was provided.
 
 ## 2. Info-button execution paths
 
@@ -51,14 +53,15 @@ For a valid Info click, `src/services/LayoutPostService.ts:318-343` resolves ima
 
 ### Old code, stale deployment, or duplicate listener possibilities
 
-- The old #1929 source explicitly used `interaction.reply(buildLayoutPostPanelPayload(...))` for Info and Link. The current local `dist` still has that behavior. If a process was started from that artifact, successful Info would be ephemeral by design.
+- Confirmed: the old #1929 source explicitly used `interaction.reply(buildLayoutPostPanelPayload(...))` for Info and Link, and the production artifact contained that implementation. The observed `Layout panel custom ID exceeds Discord's length limit` error came from that old panel code when Layout Link was clicked.
+- Confirmed: production was redeployed and the unwanted ephemeral behavior disappeared afterward.
 - `src/listeners/interactionCreate.ts:253-254` and `601-607` use a per-`Client` `WeakSet` to prevent registering this listener twice in one process. That does not prevent two separate bot processes or old and new deployments from receiving the same interaction.
-- Two live instances would race to acknowledge one interaction. That can produce one successful response and one failed/expired response, but there is no repository evidence that two instances were running.
+- Two live instances would race to acknowledge one interaction. That can produce one successful response and one failed/expired response, but there is no evidence that this remained true after redeployment.
 - A stale component on a moved, replaced, or non-canonical message reaches the scope check and intentionally receives an ephemeral error. It cannot produce a successful public Info update from current source.
 
 ### Info conclusion
 
-Confirmed from repository: current source has no successful ephemeral Info path. Confirmed locally: the ignored compiled artifact still has the old successful ephemeral Info path. Production root cause is therefore either a stale/wrong deployment artifact or one of the current source's error paths; the available evidence cannot distinguish them without the startup SHA and interaction logs.
+Confirmed: the obsolete compiled #1929 implementation was present in production before redeployment; its panel custom-ID construction produced the observed length error; and redeployment resolved the observed ephemeral behavior. Confirmed from repository: current source has no successful ephemeral Info path and restores public in-place Info/Link updates. The corrected deployment's current image behavior is a separate, open question.
 
 ## 3. Native image publication and interaction trace
 
@@ -97,12 +100,12 @@ Therefore, the current interaction update does not create a second upload. It re
 The #1927 fallback is the code-level defect most consistent with the report:
 
 1. The initial message is created with `attachment://base.png`, which correctly associates the native file with the embed.
-2. Discord may expose the attachment as absent from `message.attachments` because it is referenced by the embed, while exposing the embed image as a CDN HTTPS URL. The current client also does not request `GatewayIntentBits.MessageContent` (`src/ClashCookies.ts:47-54`); Discord documents that without the privileged intent, message `attachments` and `embeds` can be empty ([Message Structure](https://docs.discord.com/developers/resources/message#message-structure)). This makes the exact interaction metadata especially important to capture.
+2. Discord may expose the attachment as absent from `message.attachments` because it is referenced by the embed, while exposing the embed image as a CDN HTTPS URL. The current client does not request `GatewayIntentBits.MessageContent` (`src/ClashCookies.ts:47-54`), but this is not evidence of missing metadata for this case: Discord exempts content in messages sent by the app—including these bot-authored canonical messages—from the Message Content restriction ([Gateway Message Content Intent](https://docs.discord.com/developers/events/gateway#message-content-intent)). Do not enable the privileged intent without separate evidence that the corrected production interaction payload is missing needed fields.
 3. The #1927 resolver classifies the CDN URL as `embedded_url`, and `resolveImageUrl()` rebuilds the embed with that CDN URL instead of `attachment://base.png`.
 4. The interaction edit omits `attachments`, so the native file is retained. The embed now points at the same bytes through HTTPS while the retained file is no longer referenced by the embed. Discord can consequently render the embed image and the ordinary attachment preview.
 5. On a subsequent Close click, if Discord now exposes the retained file through `attachments.first()`, the resolver takes the first branch and rebuilds the embed with `attachment://base.png` again. That explains why Close can restore the normal appearance without deleting the file.
 
-This is a strongly supported conditional root cause, not a live-confirmed production root cause. The required live evidence is the pre-click and post-click tuple:
+This is a source-level hypothesis, not a confirmed production root cause. The original duplication observations were made while production was running obsolete code, so they do not prove that the reverted implementation has the same problem. The required live evidence after the corrected deployment is the pre-click and post-click tuple:
 
 `attachments.first().name`, `attachments.first().url`, `embeds[*].image.url`, attachment count, attachment content type, and the actual PATCH payload/response.
 
@@ -137,16 +140,14 @@ Relevant proof boundaries:
 
 ## 5. Minimal reproduction and required live capture
 
-1. Publish or update an existing canonical record with `/layout post link:<existing link> image:<native image>`.
-2. Capture the message JSON after publication, including `attachments`, `embeds`, attachment filename, URL, content type, and message flags.
-3. Click Layout Link once. Capture the interaction message metadata and the exact `interaction.update()` payload.
-4. Observe whether the embed image URL changed from `attachment://filename` to a Discord CDN HTTPS URL and whether the attachment count changed.
-5. Click Close. Capture the same fields again.
-6. Repeat with Info and with an external HTTPS image URL.
-7. Repeat without clicking Close and wait two minutes to capture the automatic `message.edit()` payload.
-8. Correlate the click time with `[startup:build]`, `[layout-post] event=image_source_fallback`, `event=image_source_unresolved`, `event=interaction_failed`, and `event=auto_collapse_failed` logs.
+1. Against the corrected production deployment, publish or update an existing canonical record with `/layout post link:<existing link> image:<native image>`.
+2. Exercise Link, Info, Close, and the two-minute automatic collapse.
+3. Repeat with an external HTTPS image URL.
+4. If native duplication persists, capture the message JSON before and after each action, including `attachments`, `embeds`, attachment filename, URL, content type, and message flags.
+5. If native duplication persists, capture whether the embed image URL changed from `attachment://filename` to a Discord CDN HTTPS URL and the exact `interaction.update()`/`message.edit()` payload.
+6. Correlate the click time with `[startup:build]`, `[layout-post] event=image_source_fallback`, `event=image_source_unresolved`, `event=interaction_failed`, and `event=auto_collapse_failed` logs.
 
-For Info, also record whether the response was `UPDATE_MESSAGE` or an ephemeral `CHANNEL_MESSAGE_WITH_SOURCE`, the deployed SHA, and whether more than one process was connected with the bot token.
+For Info, also record whether the response was `UPDATE_MESSAGE` or an ephemeral `CHANNEL_MESSAGE_WITH_SOURCE`, the corrected deployed SHA, and whether more than one process was connected with the bot token.
 
 ## 6. Smallest viable follow-up fixes
 
@@ -158,9 +159,9 @@ Current-source error replies should remain ephemeral. If a valid Info click is f
 
 ### Native image duplication
 
-The smallest code fix is localized to image-source resolution: when the only available image metadata is a Discord attachment CDN URL for the canonical message, recover/preserve the attachment filename and render it as `attachment://filename`; do not downgrade that case to a generic HTTPS embed URL. Keep arbitrary external HTTPS URLs as `embedded_url`. Add payload-level regression coverage for an empty attachment collection plus a Discord attachment CDN URL, and verify the real Discord message on at least one native image.
+No implementation fix is currently justified. First retest the corrected deployment. If duplication persists, confirm the live metadata and only then evaluate a localized image-source change. A possible fix would be preserving/recovering `attachment://filename` for a verified Discord attachment CDN URL while keeping arbitrary external HTTPS URLs as `embedded_url`, but this remains conditional and must not be implemented from the pre-redeployment observations alone.
 
-If the live interaction payload is empty because of the current gateway-intent configuration, the follow-up must first choose between enabling the required privileged intent operationally or fetching the canonical message through the existing resolver before rendering. That decision needs live evidence; it should not be guessed from unit mocks.
+If the corrected production interaction payload is unexpectedly missing needed fields, investigate the bot-authored-message exception and the existing resolver/fetch path first. Do not recommend enabling `MessageContent` without additional production evidence.
 
 ## 7. Risks and regressions
 
@@ -173,12 +174,13 @@ If the live interaction payload is empty because of the current gateway-intent c
 
 ## 8. Exact follow-up PR scope
 
-1. Keep the public canonical message and current `interaction.update()` flow unchanged.
-2. Modify only the native-image source-resolution path needed to preserve `attachment://filename` when Discord exposes the same canonical attachment through CDN metadata.
-3. Add focused tests for native CDN fallback, external HTTPS images, Info, Link, Close, and automatic collapse; assert `files`/`attachments` fields as well as embed URLs.
-4. Add bounded diagnostic logging of source kind, attachment count, filename presence, and message ID—without logging raw image URLs or bytes.
-5. Verify against a live Discord message and record the before/after payloads.
-6. Separately verify deployment SHA and process count; do not mix a deployment repair with the image-rendering code change unless the live evidence requires it.
+1. No source implementation PR for image rendering should be opened until corrected-production retesting confirms that duplication persists.
+2. If it persists, keep the public canonical message and current `interaction.update()` flow unchanged.
+3. Then modify only the confirmed native-image source-resolution path, preserving arbitrary external HTTPS URLs.
+4. Add focused tests only in that follow-up PR for the confirmed behavior; this diagnostic update does not modify tests.
+5. Add bounded diagnostic logging only if needed to capture source kind, attachment count, filename presence, and message ID—without logging raw image URLs or bytes.
+6. Verify against a live Discord message and record the before/after payloads.
+7. Keep deployment repair, privileged-intent decisions, persistence, schema, canonical ownership, alerts, confirmation, reposting, and unrelated interaction behavior out of scope unless new evidence requires a separately approved change.
 
 No persistence, schema, canonical ownership, alert policy, confirmation, repost, or unrelated interaction behavior should change.
 
