@@ -422,6 +422,73 @@ describe("/fwa layout", () => {
     expect(embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0)).toBeLessThanOrEqual(6000);
   });
 
+  it("leaves a catalog that fits entirely unchanged", () => {
+    const sections = [
+      { type: "RISINGDAWN", lines: ["TH18 — 🟢 · [View Post](https://discord.com/channels/guild/channel/message)"] },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ];
+
+    expect(buildFwaLayoutCatalogEmbedsForTest(sections)).toEqual([
+      {
+        title: "FWA Layout Catalog — RISINGDAWN",
+        description: "TH18 — 🟢 · [View Post](https://discord.com/channels/guild/channel/message)",
+        color: 0x5865f2,
+      },
+      {
+        title: "FWA Layout Catalog — BASIC",
+        description: "No layouts saved for this type yet.",
+        color: 0x5865f2,
+      },
+      {
+        title: "FWA Layout Catalog — ICE",
+        description: "No layouts saved for this type yet.",
+        color: 0x5865f2,
+      },
+    ]);
+  });
+
+  it("keeps every complete hyperlink when a catalog is near the combined limit", () => {
+    const lines = Array.from(
+      { length: 80 },
+      (_, index) => `TH${8 + (index % 11)} — 🟢 · [View Post](https://discord.com/channels/guild/channel/${index})`,
+    );
+    const embeds = buildFwaLayoutCatalogEmbedsForTest([
+      { type: "RISINGDAWN", lines },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ]);
+    const rendered = embeds.map((embed) => embed.description).join("\n");
+
+    for (let index = 0; index < lines.length; index += 1) {
+      expect(rendered).toContain(lines[index]);
+    }
+    expect(rendered).not.toContain("omitted");
+  });
+
+  it("omits only complete rows and reports the omitted entry count", () => {
+    const lines = Array.from(
+      { length: 120 },
+      (_, index) => `TH${8 + (index % 11)} — 🟢 · [View Post](https://discord.com/channels/guild/channel/${index})`,
+    );
+    const embeds = buildFwaLayoutCatalogEmbedsForTest([
+      { type: "RISINGDAWN", lines },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ]);
+    const rendered = embeds.map((embed) => embed.description).join("\n");
+
+    expect(rendered).toMatch(/\d+ catalog entr(?:y was|ies were) omitted/);
+    for (const embed of embeds) {
+      expect(embed.description.length).toBeLessThanOrEqual(4096);
+    }
+    expect(embeds.length).toBeLessThanOrEqual(10);
+    expect(embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0)).toBeLessThanOrEqual(6000);
+    for (const line of rendered.split("\n").filter((value) => value.includes("[View Post]"))) {
+      expect(line).toMatch(/^TH\d+ — 🟢 · \[View Post\]\(https:\/\/discord\.com\/channels\/guild\/channel\/\d+\)$/);
+    }
+  });
+
   it("surfaces an explicit TH mismatch without persisting", async () => {
     const setCanonicalLayout = vi
       .fn()

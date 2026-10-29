@@ -444,51 +444,174 @@ function hasCompleteProvenance(
 const DISCORD_EMBED_DESCRIPTION_LIMIT = 4096;
 const DISCORD_COMBINED_EMBED_LIMIT = 6000;
 const DISCORD_MAX_EMBEDS = 10;
+const CATALOG_OMISSION_NOTICE_RESERVE = 256;
+
+type CatalogEmbedCandidate = {
+  title: string;
+  description: string;
+  entryCount: number;
+};
 
 function buildCatalogEmbeds(
   sections: readonly { type: string; lines: readonly string[] }[],
 ): Array<{ title: string; description: string; color: number }> {
-  const candidates = sections.flatMap((section) => {
-    const lines = section.lines.length ? section.lines : ["No layouts saved for this type yet."];
-    const chunks = splitCatalogLines(lines, DISCORD_EMBED_DESCRIPTION_LIMIT);
-    return chunks.map((description, index) => ({
-      title: `FWA Layout Catalog — ${section.type}${index > 0 ? " (continued)" : ""}`,
-      description,
-      color: 0x5865f2,
-    }));
-  });
+  const candidates: CatalogEmbedCandidate[] = [];
+  let intrinsicallyOmitted = 0;
+  for (const section of sections) {
+    if (!section.lines.length) {
+      candidates.push({
+        title: `FWA Layout Catalog — ${section.type}`,
+        description: "No layouts saved for this type yet.",
+        entryCount: 0,
+      });
+      continue;
+    }
 
-  const embeds: Array<{ title: string; description: string; color: number }> = [];
-  let usedCharacters = 0;
-  for (const candidate of candidates) {
-    if (embeds.length >= DISCORD_MAX_EMBEDS) break;
-    const remaining = DISCORD_COMBINED_EMBED_LIMIT - usedCharacters - candidate.title.length;
-    if (remaining <= 0) break;
-    const description = candidate.description.slice(0, Math.min(candidate.description.length, remaining));
-    if (!description) break;
-    embeds.push({ ...candidate, description });
-    usedCharacters += candidate.title.length + description.length;
+    let chunkLines: string[] = [];
+    let chunkLength = 0;
+    let chunkIndex = 0;
+    const flushChunk = () => {
+      if (!chunkLines.length) return;
+      candidates.push({
+        title: `FWA Layout Catalog — ${section.type}${chunkIndex > 0 ? " (continued)" : ""}`,
+        description: chunkLines.join("\n"),
+        entryCount: chunkLines.length,
+      });
+      chunkLines = [];
+      chunkLength = 0;
+      chunkIndex += 1;
+    };
+
+    for (const line of section.lines) {
+      // A catalog row is indivisible. An unusually large row is omitted and
+      // counted rather than producing a broken Markdown link.
+      if (line.length > DISCORD_EMBED_DESCRIPTION_LIMIT) {
+        intrinsicallyOmitted += 1;
+        continue;
+      }
+      const nextLength = chunkLines.length ? chunkLength + 1 + line.length : line.length;
+      if (chunkLines.length && nextLength > DISCORD_EMBED_DESCRIPTION_LIMIT) {
+        flushChunk();
+      }
+      chunkLines.push(line);
+      chunkLength = chunkLines.length === 1 ? line.length : chunkLength + 1 + line.length;
+    }
+    flushChunk();
   }
-  return embeds.length ? embeds : [{
-    title: "FWA Layout Catalog",
-    description: "No layouts saved for this type yet.",
-    color: 0x5865f2,
-  }];
+
+  const initial = assembleCatalogCandidates(candidates, DISCORD_COMBINED_EMBED_LIMIT);
+  if (intrinsicallyOmitted + initial.omittedEntries === 0) {
+    return initial.embeds;
+  }
+
+  // Reserve space only when omission is necessary, so catalogs that fit retain
+  // their existing descriptions byte-for-byte.
+  const bounded = assembleCatalogCandidates(
+    candidates,
+    DISCORD_COMBINED_EMBED_LIMIT - CATALOG_OMISSION_NOTICE_RESERVE,
+  );
+  const omittedEntries = intrinsicallyOmitted + bounded.omittedEntries;
+  if (!bounded.embeds.length) {
+    return [{
+      title: "FWA Layout Catalog",
+      description: formatCatalogOmissionNotice(omittedEntries),
+      color: 0x5865f2,
+    }];
+  }
+
+  return appendCatalogOmissionNotice(bounded.embeds, omittedEntries);
 }
 
-function splitCatalogLines(lines: readonly string[], limit: number): string[] {
-  const chunks: string[] = [];
-  let current = "";
-  for (const rawLine of lines) {
-    const line = rawLine.length <= limit ? rawLine : `${rawLine.slice(0, limit - 1)}…`;
-    if (current && current.length + 1 + line.length > limit) {
-      chunks.push(current);
-      current = "";
+function assembleCatalogCandidates(
+  candidates: readonly CatalogEmbedCandidate[],
+  combinedLimit: number,
+): {
+  embeds: Array<{ title: string; description: string; color: number }>;
+  omittedEntries: number;
+  usedCharacters: number;
+} {
+  const embeds: Array<{ title: string; description: string; color: number }> = [];
+  let omittedEntries = 0;
+  let usedCharacters = 0;
+  for (const candidate of candidates) {
+    const candidateCharacters = candidate.title.length + candidate.description.length;
+    if (
+      embeds.length >= DISCORD_MAX_EMBEDS ||
+      usedCharacters + candidateCharacters > combinedLimit
+    ) {
+      omittedEntries += candidate.entryCount;
+      continue;
     }
-    current = current ? `${current}\n${line}` : line;
+    embeds.push({
+      title: candidate.title,
+      description: candidate.description,
+      color: 0x5865f2,
+    });
+    usedCharacters += candidateCharacters;
   }
-  if (current) chunks.push(current);
-  return chunks.length ? chunks : ["No layouts saved for this type yet."];
+  return { embeds, omittedEntries, usedCharacters };
+}
+
+function appendCatalogOmissionNotice(
+  embeds: Array<{ title: string; description: string; color: number }>,
+  initialOmittedEntries: number,
+): Array<{ title: string; description: string; color: number }> {
+  const result = embeds.map((embed) => ({ ...embed }));
+  let omittedEntries = initialOmittedEntries;
+
+  while (result.length) {
+    const last = result[result.length - 1];
+    const notice = formatCatalogOmissionNotice(omittedEntries);
+    const withNotice = `${last.description}\n\n${notice}`;
+    const withoutLastDescription = result.reduce(
+      (total, embed, index) => total + embed.title.length + (index === result.length - 1 ? 0 : embed.description.length),
+      0,
+    );
+    if (
+      withNotice.length <= DISCORD_EMBED_DESCRIPTION_LIMIT &&
+      withoutLastDescription + withNotice.length <= DISCORD_COMBINED_EMBED_LIMIT
+    ) {
+      last.description = withNotice;
+      return result;
+    }
+
+    if (result.length < DISCORD_MAX_EMBEDS) {
+      const noticeTitle = "FWA Layout Catalog — omitted";
+      if (
+        combinedCatalogCharacters(result) + noticeTitle.length + notice.length <=
+        DISCORD_COMBINED_EMBED_LIMIT
+      ) {
+        result.push({ title: noticeTitle, description: notice, color: 0x5865f2 });
+        return result;
+      }
+    }
+
+    // The last embed is full and all ten embed slots are occupied. Remove
+    // complete rows until the warning itself fits; never slice a row.
+    const lines = last.description.split("\n");
+    if (!lines.length) break;
+    const removedLine = lines.pop();
+    if (removedLine && !removedLine.startsWith("No layouts saved for this type yet.")) {
+      omittedEntries += 1;
+    }
+    last.description = lines.join("\n");
+    if (!last.description) {
+      last.description = formatCatalogOmissionNotice(omittedEntries);
+      return result;
+    }
+  }
+
+  return result;
+}
+
+function combinedCatalogCharacters(
+  embeds: readonly { title: string; description: string }[],
+): number {
+  return embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0);
+}
+
+function formatCatalogOmissionNotice(count: number): string {
+  return `⚠️ ${count} catalog ${count === 1 ? "entry was" : "entries were"} omitted because Discord message limits were reached.`;
 }
 
 async function publishCanonicalLayout(input: {

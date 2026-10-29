@@ -84,17 +84,24 @@ export async function runFwaLayoutRetitleCommand(
   };
 
   try {
-    const rows = await layoutServiceForCommand.listCanonical({ type });
-    for (const row of rows) {
+    // Load the complete association catalog so a type-filtered operation can
+    // still detect conflicts held by another FWA designation on the record.
+    const allRows = await layoutServiceForCommand.listCanonical();
+    const selectedRows = type
+      ? allRows.filter((row) => row.Type === type)
+      : allRows;
+    for (const row of selectedRows) {
       if (row.layoutRecord) continue;
       addSkipped(summary, row, "unpublished");
       logRetitle("skipped", row, row.layoutId ?? `TH${row.Townhall}`, "unpublished");
     }
-    const groups = groupRetitleRows(rows);
+    const allGroups = new Map(groupRetitleRows(allRows).map((group) => [group.record.id, group]));
+    const groups = groupRetitleRows(selectedRows);
 
     for (const group of groups) {
+      const conflictGroup = allGroups.get(group.record.id) ?? group;
       const expectedTitles = new Set(
-        group.rows.map((row) => formatFwaLayoutTitle(row.Type, row.Townhall)),
+        conflictGroup.rows.map((row) => formatFwaLayoutTitle(row.Type, row.Townhall)),
       );
       if (expectedTitles.size > 1) {
         for (const row of group.rows) {

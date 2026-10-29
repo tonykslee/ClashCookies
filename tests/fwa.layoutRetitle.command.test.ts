@@ -179,6 +179,69 @@ describe("/fwa layout-retitle", () => {
     expect(editReply.mock.calls[0]?.[0].content).toContain("TH18 BASIC");
   });
 
+  it("detects a shared-record conflict even when only RISINGDAWN was selected", async () => {
+    const record = buildRecord();
+    const updatePresentation = vi.fn();
+    const publish = vi.fn();
+    const { interaction, editReply } = makeInteraction({ type: "RISINGDAWN" });
+    const listCanonical = vi.fn().mockResolvedValue([
+      buildRow(record, { Type: "RISINGDAWN", Townhall: 18 }),
+      buildRow(record, { Type: "BASIC", Townhall: 18 }),
+    ]);
+
+    await runFwaLayoutRetitleCommand(interaction, {
+      layoutService: { listCanonical },
+      presentationService: { updatePresentation },
+      publicationService: { publish },
+      messageResolver: { resolve: vi.fn() },
+    });
+
+    expect(listCanonical).toHaveBeenCalledWith();
+    expect(updatePresentation).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(editReply.mock.calls[0]?.[0].content).toContain("Skipped 1");
+    expect(editReply.mock.calls[0]?.[0].content).toContain("TH18 RISINGDAWN (title_conflict)");
+    expect(editReply.mock.calls[0]?.[0].content).not.toContain("TH18 BASIC");
+  });
+
+  it("updates a unique record when RISINGDAWN is selected", async () => {
+    const record = buildRecord();
+    const updatePresentation = vi.fn().mockResolvedValue({ ...record, title: "TH18 - R" });
+    const publish = vi.fn().mockResolvedValue({ messageId: "message-1" });
+    const { interaction, editReply } = makeInteraction({ type: "RISINGDAWN" });
+    const message = buildMessage();
+
+    await runFwaLayoutRetitleCommand(interaction, {
+      layoutService: { listCanonical: vi.fn().mockResolvedValue([buildRow(record)]) },
+      presentationService: { updatePresentation },
+      publicationService: { publish },
+      messageResolver: { resolve: vi.fn().mockResolvedValue(message) },
+    });
+
+    expect(updatePresentation).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(editReply.mock.calls[0]?.[0].content).toContain("Updated 1 · Skipped 0 · Failed 0");
+  });
+
+  it("processes a shared record once when every associated designation has the same title", async () => {
+    const record = buildRecord();
+    const updatePresentation = vi.fn().mockResolvedValue({ ...record, title: "TH18 - R" });
+    const publish = vi.fn().mockResolvedValue({ messageId: "message-1" });
+    const { interaction, editReply } = makeInteraction();
+    const row = buildRow(record);
+
+    await runFwaLayoutRetitleCommand(interaction, {
+      layoutService: { listCanonical: vi.fn().mockResolvedValue([row, { ...row }]) },
+      presentationService: { updatePresentation },
+      publicationService: { publish },
+      messageResolver: { resolve: vi.fn().mockResolvedValue(buildMessage()) },
+    });
+
+    expect(updatePresentation).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(editReply.mock.calls[0]?.[0].content).toContain("Updated 2 · Skipped 0 · Failed 0");
+  });
+
   it("remains retryable after the database title write succeeds but Discord editing fails", async () => {
     let currentRecord = buildRecord();
     const message = buildMessage();
