@@ -40,6 +40,7 @@ import {
   createDiscordLayoutPostResolver,
   layoutPostPublicationService,
 } from "../../services/LayoutPostPublicationService";
+import { deriveLayoutFreshnessTimestamp } from "../../services/LayoutService";
 
 export const FWA_LAYOUT_SUBCOMMAND = {
   name: "layout",
@@ -113,6 +114,7 @@ export type FwaLayoutCommandDeps = {
   messageResolver?: LayoutPostMessageResolver;
   alertConfigService?: Pick<LayoutAlertConfigService, "setPolicy" | "disablePolicy">;
   botLogChannelService?: Pick<BotLogChannelService, "getChannelIdForType">;
+  now?: () => Date;
 };
 
 /** Purpose: execute the modular canonical FWA layout command without putting layout policy in Fwa.ts. */
@@ -120,6 +122,7 @@ export async function runFwaLayoutCommand(
   interaction: ChatInputCommandInteraction,
   deps: FwaLayoutCommandDeps = {},
 ): Promise<void> {
+  const invocationNow = deps.now?.() ?? new Date();
   const layoutService = deps.layoutService ?? fwaLayoutService;
   const publicationService =
     deps.publicationService ?? layoutPostPublicationService;
@@ -199,7 +202,12 @@ export async function runFwaLayoutCommand(
       return;
     }
 
-    await runListMode({ interaction, layoutService, type: typeInput ? type : null });
+    await runListMode({
+      interaction,
+      layoutService,
+      type: typeInput ? type : null,
+      now: invocationNow,
+    });
   } catch (error) {
     const safeError =
       error instanceof InvalidClashLayoutLinkError
@@ -373,37 +381,237 @@ async function runListMode(input: {
   interaction: ChatInputCommandInteraction;
   layoutService: FwaLayoutService;
   type: ReturnType<typeof normalizeLayoutType> | null;
+  now: Date;
 }): Promise<void> {
   const rows = await input.layoutService.listCanonical({ type: input.type });
-  const sections = (input.type ? [input.type] : FWA_LAYOUT_TYPES).map((type) => {
-    const typeRows = rows.filter((row) => row.Type === type);
-    const lines = typeRows.length
-      ? typeRows.map((row) => formatListRow(row))
-      : ["No layouts saved for this type yet."];
-    return `**${type}**\n${lines.join("\n")}`;
-  });
+  const sections = (input.type ? [input.type] : FWA_LAYOUT_TYPES).map((type) => ({
+    type,
+    lines: rows.filter((row) => row.Type === type).map((row) => formatListRow(row, input.now)),
+  }));
+  const embeds = buildCatalogEmbeds(sections);
   await input.interaction.reply({
-    embeds: [
-      {
-        title: "FWA Layout Catalog",
-        description: sections.join("\n\n"),
-        color: 0x5865f2,
-      },
-    ],
+    embeds,
     ephemeral: true,
     allowedMentions: { parse: [] },
   });
 }
 
-function formatListRow(row: FwaCanonicalLayout): string {
+function formatListRow(row: FwaCanonicalLayout, now = new Date()): string {
   const record = row.layoutRecord;
-  const freshness = record?.lastConfirmedAt
-    ? `confirmed <t:${Math.floor(record.lastConfirmedAt.getTime() / 1000)}:R>`
-    : record?.submittedAt
-      ? `submitted <t:${Math.floor(record.submittedAt.getTime() / 1000)}:R>`
-      : "freshness unknown";
-  const post = record?.discordMessageId ? "post available" : "not posted";
+  const freshness = formatFreshness(record, now);
+  const post = hasCompleteProvenance(record)
+    ? `[View Post](${buildDiscordJumpUrl(record.discordGuildId, record.discordChannelId, record.discordMessageId)})`
+    : "Not posted";
   return `TH${row.Townhall} — ${freshness} · ${post}`;
+}
+
+function formatFreshness(
+  record: FwaCanonicalLayout["layoutRecord"],
+  now: Date,
+): string {
+  if (!record) return "⚪ freshness unknown";
+  const timestamp = deriveLayoutFreshnessTimestamp(record);
+  const timestampMs = timestamp instanceof Date ? timestamp.getTime() : Number.NaN;
+  const nowMs = now.getTime();
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(nowMs) || timestampMs > nowMs) {
+    return "⚪ freshness unknown";
+  }
+
+  const ageMs = nowMs - timestampMs;
+  const grade = ageMs < 15 * 24 * 60 * 60 * 1000
+    ? "🟢"
+    : ageMs < 27 * 24 * 60 * 60 * 1000
+      ? "🟡"
+      : "🔴";
+  const label = record.lastConfirmedAt ? "confirmed" : "submitted";
+  return `${grade} ${label} <t:${Math.floor(timestampMs / 1000)}:R>`;
+}
+
+function hasCompleteProvenance(
+  record: FwaCanonicalLayout["layoutRecord"],
+): record is NonNullable<FwaCanonicalLayout["layoutRecord"]> & {
+  discordGuildId: string;
+  discordChannelId: string;
+  discordMessageId: string;
+} {
+  return Boolean(
+    record?.discordGuildId &&
+    record.discordChannelId &&
+    record.discordMessageId,
+  );
+}
+
+const DISCORD_EMBED_DESCRIPTION_LIMIT = 4096;
+const DISCORD_COMBINED_EMBED_LIMIT = 6000;
+const DISCORD_MAX_EMBEDS = 10;
+const CATALOG_OMISSION_NOTICE_RESERVE = 256;
+
+type CatalogEmbedCandidate = {
+  title: string;
+  description: string;
+  entryCount: number;
+};
+
+function buildCatalogEmbeds(
+  sections: readonly { type: string; lines: readonly string[] }[],
+): Array<{ title: string; description: string; color: number }> {
+  const candidates: CatalogEmbedCandidate[] = [];
+  let intrinsicallyOmitted = 0;
+  for (const section of sections) {
+    if (!section.lines.length) {
+      candidates.push({
+        title: `FWA Layout Catalog — ${section.type}`,
+        description: "No layouts saved for this type yet.",
+        entryCount: 0,
+      });
+      continue;
+    }
+
+    let chunkLines: string[] = [];
+    let chunkLength = 0;
+    let chunkIndex = 0;
+    const flushChunk = () => {
+      if (!chunkLines.length) return;
+      candidates.push({
+        title: `FWA Layout Catalog — ${section.type}${chunkIndex > 0 ? " (continued)" : ""}`,
+        description: chunkLines.join("\n"),
+        entryCount: chunkLines.length,
+      });
+      chunkLines = [];
+      chunkLength = 0;
+      chunkIndex += 1;
+    };
+
+    for (const line of section.lines) {
+      // A catalog row is indivisible. An unusually large row is omitted and
+      // counted rather than producing a broken Markdown link.
+      if (line.length > DISCORD_EMBED_DESCRIPTION_LIMIT) {
+        intrinsicallyOmitted += 1;
+        continue;
+      }
+      const nextLength = chunkLines.length ? chunkLength + 1 + line.length : line.length;
+      if (chunkLines.length && nextLength > DISCORD_EMBED_DESCRIPTION_LIMIT) {
+        flushChunk();
+      }
+      chunkLines.push(line);
+      chunkLength = chunkLines.length === 1 ? line.length : chunkLength + 1 + line.length;
+    }
+    flushChunk();
+  }
+
+  const initial = assembleCatalogCandidates(candidates, DISCORD_COMBINED_EMBED_LIMIT);
+  if (intrinsicallyOmitted + initial.omittedEntries === 0) {
+    return initial.embeds;
+  }
+
+  // Reserve space only when omission is necessary, so catalogs that fit retain
+  // their existing descriptions byte-for-byte.
+  const bounded = assembleCatalogCandidates(
+    candidates,
+    DISCORD_COMBINED_EMBED_LIMIT - CATALOG_OMISSION_NOTICE_RESERVE,
+  );
+  const omittedEntries = intrinsicallyOmitted + bounded.omittedEntries;
+  if (!bounded.embeds.length) {
+    return [{
+      title: "FWA Layout Catalog",
+      description: formatCatalogOmissionNotice(omittedEntries),
+      color: 0x5865f2,
+    }];
+  }
+
+  return appendCatalogOmissionNotice(bounded.embeds, omittedEntries);
+}
+
+function assembleCatalogCandidates(
+  candidates: readonly CatalogEmbedCandidate[],
+  combinedLimit: number,
+): {
+  embeds: Array<{ title: string; description: string; color: number }>;
+  omittedEntries: number;
+  usedCharacters: number;
+} {
+  const embeds: Array<{ title: string; description: string; color: number }> = [];
+  let omittedEntries = 0;
+  let usedCharacters = 0;
+  for (const candidate of candidates) {
+    const candidateCharacters = candidate.title.length + candidate.description.length;
+    if (
+      embeds.length >= DISCORD_MAX_EMBEDS ||
+      usedCharacters + candidateCharacters > combinedLimit
+    ) {
+      omittedEntries += candidate.entryCount;
+      continue;
+    }
+    embeds.push({
+      title: candidate.title,
+      description: candidate.description,
+      color: 0x5865f2,
+    });
+    usedCharacters += candidateCharacters;
+  }
+  return { embeds, omittedEntries, usedCharacters };
+}
+
+function appendCatalogOmissionNotice(
+  embeds: Array<{ title: string; description: string; color: number }>,
+  initialOmittedEntries: number,
+): Array<{ title: string; description: string; color: number }> {
+  const result = embeds.map((embed) => ({ ...embed }));
+  let omittedEntries = initialOmittedEntries;
+
+  while (result.length) {
+    const last = result[result.length - 1];
+    const notice = formatCatalogOmissionNotice(omittedEntries);
+    const withNotice = `${last.description}\n\n${notice}`;
+    const withoutLastDescription = result.reduce(
+      (total, embed, index) => total + embed.title.length + (index === result.length - 1 ? 0 : embed.description.length),
+      0,
+    );
+    if (
+      withNotice.length <= DISCORD_EMBED_DESCRIPTION_LIMIT &&
+      withoutLastDescription + withNotice.length <= DISCORD_COMBINED_EMBED_LIMIT
+    ) {
+      last.description = withNotice;
+      return result;
+    }
+
+    if (result.length < DISCORD_MAX_EMBEDS) {
+      const noticeTitle = "FWA Layout Catalog — omitted";
+      if (
+        combinedCatalogCharacters(result) + noticeTitle.length + notice.length <=
+        DISCORD_COMBINED_EMBED_LIMIT
+      ) {
+        result.push({ title: noticeTitle, description: notice, color: 0x5865f2 });
+        return result;
+      }
+    }
+
+    // The last embed is full and all ten embed slots are occupied. Remove
+    // complete rows until the warning itself fits; never slice a row.
+    const lines = last.description.split("\n");
+    if (!lines.length) break;
+    const removedLine = lines.pop();
+    if (removedLine && !removedLine.startsWith("No layouts saved for this type yet.")) {
+      omittedEntries += 1;
+    }
+    last.description = lines.join("\n");
+    if (!last.description) {
+      last.description = formatCatalogOmissionNotice(omittedEntries);
+      return result;
+    }
+  }
+
+  return result;
+}
+
+function combinedCatalogCharacters(
+  embeds: readonly { title: string; description: string }[],
+): number {
+  return embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0);
+}
+
+function formatCatalogOmissionNotice(count: number): string {
+  return `⚠️ ${count} catalog ${count === 1 ? "entry was" : "entries were"} omitted because Discord message limits were reached.`;
 }
 
 async function publishCanonicalLayout(input: {
@@ -441,5 +649,7 @@ async function replyPrivate(
   });
 }
 
-export const buildFwaLayoutListRowForTest = formatListRow;
+export const buildFwaLayoutListRowForTest = (row: FwaCanonicalLayout, now?: Date) =>
+  formatListRow(row, now ?? new Date());
+export const buildFwaLayoutCatalogEmbedsForTest = buildCatalogEmbeds;
 export const buildFwaLayoutJumpUrlForTest = buildDiscordJumpUrl;

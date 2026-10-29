@@ -96,9 +96,10 @@ describe("FwaLayoutService", () => {
 
     expect(db.layoutRecord.upsert).toHaveBeenCalledWith({
       where: { layoutLink: LINK_TH18 },
-      update: { imageUrl: "https://example.com/base.png" },
+      update: { title: "TH18 - BASIC", imageUrl: "https://example.com/base.png" },
       create: expect.objectContaining({
         layoutLink: LINK_TH18,
+        title: "TH18 - BASIC",
         imageUrl: "https://example.com/base.png",
         postedByDiscordUserId: "admin-1",
         submittedAt: NOW,
@@ -132,6 +133,7 @@ describe("FwaLayoutService", () => {
       lastConfirmedByDiscordUserId: "confirmer-1",
       postedByDiscordUserId: "original-poster",
     });
+    db.layoutRecord.findUnique.mockResolvedValue(existing);
     db.layoutRecord.upsert.mockResolvedValue(existing);
 
     await service.setCanonicalLayout({
@@ -144,8 +146,8 @@ describe("FwaLayoutService", () => {
     expect(db.layoutRecord.update).not.toHaveBeenCalled();
     expect(db.layoutRecord.upsert).toHaveBeenCalledWith({
       where: { layoutLink: LINK_TH18 },
-      update: {},
-      create: expect.any(Object),
+      update: { title: "TH18 - R" },
+      create: expect.objectContaining({ title: "TH18 - R" }),
     });
     expect(db.fwaLayouts.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -190,6 +192,20 @@ describe("FwaLayoutService", () => {
     });
     expect(db.layoutRecord.upsert.mock.calls[0]?.[0].update).not.toHaveProperty("submittedAt");
     expect(db.layoutRecord.upsert.mock.calls[0]?.[0].update).not.toHaveProperty("lastConfirmedAt");
+  });
+
+  it("does not replace an explicit custom title when an FWA link is assigned again without a title", async () => {
+    const existing = buildRecord({ title: "Custom FWA presentation" });
+    db.layoutRecord.findUnique.mockResolvedValue(existing);
+    db.layoutRecord.upsert.mockResolvedValue(existing);
+
+    await service.setCanonicalLayout({
+      type: "RISINGDAWN",
+      layoutLink: LINK_TH18,
+    });
+
+    expect(db.layoutRecord.upsert).not.toHaveBeenCalled();
+    expect(existing.title).toBe("Custom FWA presentation");
   });
 
   it("repairs an existing customized seed row without overwriting its compatibility values", async () => {

@@ -47,6 +47,22 @@ describe("/fwa base-swap command shape", () => {
     expect(hasPermissionTargetForCommand("fwa:layout-move")).toBe(true);
   });
 
+  it("registers administrator-only /fwa layout-retitle with an optional type", () => {
+    const retitle = Fwa.options?.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand &&
+        option.name === "layout-retitle",
+    );
+    expect(retitle?.options?.map((option: { name: string }) => option.name)).toEqual(["type"]);
+    expect(retitle?.options?.[0]?.required).toBe(false);
+    expect(retitle?.options?.[0]?.choices).toEqual([
+      { name: "RISINGDAWN", value: "RISINGDAWN" },
+      { name: "BASIC", value: "BASIC" },
+      { name: "ICE", value: "ICE" },
+    ]);
+    expect(hasPermissionTargetForCommand("fwa:layout-retitle")).toBe(true);
+  });
+
   it("registers war-bases, base-errors, and fwa-bases with a FWA battle-day swap-reminder option", () => {
     const baseSwap = Fwa.options?.find(
       (option) =>
