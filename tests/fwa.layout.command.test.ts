@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChannelType } from "discord.js";
 import {
+  buildFwaLayoutCatalogEmbedsForTest,
+  buildFwaLayoutListRowForTest,
   FWA_LAYOUT_SUBCOMMAND,
   runFwaLayoutCommand,
 } from "../src/commands/fwa/layoutCommand";
@@ -358,7 +360,133 @@ describe("/fwa layout", () => {
     const payload = reply.mock.calls[0]?.[0];
     expect(JSON.stringify(payload)).not.toContain(LINK);
     expect(payload.embeds[0].description).toContain("submitted");
-    expect(payload.embeds[0].description).toContain("BASIC");
+    expect(payload.embeds.some((embed: any) => embed.title.includes("BASIC"))).toBe(true);
+  });
+
+  it("renders complete canonical provenance as a Discord View Post link and partial provenance as Not posted", () => {
+    const now = new Date("2026-08-25T00:00:00.000Z");
+    const complete = buildFwaLayoutListRowForTest(
+      buildCanonical({
+        layoutRecord: buildRecord({
+          discordGuildId: "guild-1",
+          discordChannelId: "channel-1",
+          discordMessageId: "message-1",
+          submittedAt: new Date("2026-08-24T00:00:00.000Z"),
+        }),
+      }),
+      now,
+    );
+    const partial = buildFwaLayoutListRowForTest(
+      buildCanonical({ layoutRecord: buildRecord({ discordMessageId: "message-1" }) }),
+      now,
+    );
+
+    expect(complete).toContain("[View Post](https://discord.com/channels/guild-1/channel-1/message-1)");
+    expect(partial).toContain("Not posted");
+    expect(partial).not.toContain("View Post");
+  });
+
+  it.each([
+    ["green", new Date("2026-08-10T00:00:00.001Z"), "🟢"],
+    ["yellow boundary", new Date("2026-08-10T00:00:00.000Z"), "🟡"],
+    ["red boundary", new Date("2026-07-29T00:00:00.000Z"), "🔴"],
+  ])("uses elapsed verification freshness grades at the %s boundary", (_label, submittedAt, emoji) => {
+    const row = buildCanonical({
+      layoutRecord: buildRecord({ submittedAt }),
+    });
+    expect(buildFwaLayoutListRowForTest(row, new Date("2026-08-25T00:00:00.000Z"))).toContain(emoji);
+  });
+
+  it("marks missing, invalid, and future freshness unknown while retaining confirmed/submitted labels when valid", () => {
+    const now = new Date("2026-08-25T00:00:00.000Z");
+    expect(buildFwaLayoutListRowForTest(buildCanonical({ layoutRecord: buildRecord() }), now)).toContain("⚪ freshness unknown");
+    expect(buildFwaLayoutListRowForTest(buildCanonical({
+      layoutRecord: buildRecord({ submittedAt: new Date("not-a-date") }),
+    }), now)).toContain("⚪ freshness unknown");
+    expect(buildFwaLayoutListRowForTest(buildCanonical({
+      layoutRecord: buildRecord({ lastConfirmedAt: new Date("2026-08-26T00:00:00.000Z") }),
+    }), now)).toContain("⚪ freshness unknown");
+    expect(buildFwaLayoutListRowForTest(buildCanonical({
+      layoutRecord: buildRecord({ lastConfirmedAt: new Date("2026-08-24T00:00:00.000Z") }),
+    }), now)).toContain("confirmed");
+  });
+
+  it("keeps catalog embeds within Discord per-embed and combined limits", () => {
+    const embeds = buildFwaLayoutCatalogEmbedsForTest([
+      { type: "RISINGDAWN", lines: Array.from({ length: 100 }, (_, index) => `TH${index + 8} — ${"x".repeat(120)}`) },
+      { type: "BASIC", lines: ["No layouts saved for this type yet."] },
+      { type: "ICE", lines: ["No layouts saved for this type yet."] },
+    ]);
+    expect(embeds.length).toBeLessThanOrEqual(10);
+    expect(embeds.every((embed) => embed.description.length <= 4096)).toBe(true);
+    expect(embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0)).toBeLessThanOrEqual(6000);
+  });
+
+  it("leaves a catalog that fits entirely unchanged", () => {
+    const sections = [
+      { type: "RISINGDAWN", lines: ["TH18 — 🟢 · [View Post](https://discord.com/channels/guild/channel/message)"] },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ];
+
+    expect(buildFwaLayoutCatalogEmbedsForTest(sections)).toEqual([
+      {
+        title: "FWA Layout Catalog — RISINGDAWN",
+        description: "TH18 — 🟢 · [View Post](https://discord.com/channels/guild/channel/message)",
+        color: 0x5865f2,
+      },
+      {
+        title: "FWA Layout Catalog — BASIC",
+        description: "No layouts saved for this type yet.",
+        color: 0x5865f2,
+      },
+      {
+        title: "FWA Layout Catalog — ICE",
+        description: "No layouts saved for this type yet.",
+        color: 0x5865f2,
+      },
+    ]);
+  });
+
+  it("keeps every complete hyperlink when a catalog is near the combined limit", () => {
+    const lines = Array.from(
+      { length: 80 },
+      (_, index) => `TH${8 + (index % 11)} — 🟢 · [View Post](https://discord.com/channels/guild/channel/${index})`,
+    );
+    const embeds = buildFwaLayoutCatalogEmbedsForTest([
+      { type: "RISINGDAWN", lines },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ]);
+    const rendered = embeds.map((embed) => embed.description).join("\n");
+
+    for (let index = 0; index < lines.length; index += 1) {
+      expect(rendered).toContain(lines[index]);
+    }
+    expect(rendered).not.toContain("omitted");
+  });
+
+  it("omits only complete rows and reports the omitted entry count", () => {
+    const lines = Array.from(
+      { length: 120 },
+      (_, index) => `TH${8 + (index % 11)} — 🟢 · [View Post](https://discord.com/channels/guild/channel/${index})`,
+    );
+    const embeds = buildFwaLayoutCatalogEmbedsForTest([
+      { type: "RISINGDAWN", lines },
+      { type: "BASIC", lines: [] },
+      { type: "ICE", lines: [] },
+    ]);
+    const rendered = embeds.map((embed) => embed.description).join("\n");
+
+    expect(rendered).toMatch(/\d+ catalog entr(?:y was|ies were) omitted/);
+    for (const embed of embeds) {
+      expect(embed.description.length).toBeLessThanOrEqual(4096);
+    }
+    expect(embeds.length).toBeLessThanOrEqual(10);
+    expect(embeds.reduce((total, embed) => total + embed.title.length + embed.description.length, 0)).toBeLessThanOrEqual(6000);
+    for (const line of rendered.split("\n").filter((value) => value.includes("[View Post]"))) {
+      expect(line).toMatch(/^TH\d+ — 🟢 · \[View Post\]\(https:\/\/discord\.com\/channels\/guild\/channel\/\d+\)$/);
+    }
   });
 
   it("surfaces an explicit TH mismatch without persisting", async () => {

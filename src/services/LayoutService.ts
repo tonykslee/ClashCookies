@@ -38,6 +38,7 @@ export type LayoutPresentationInput = {
 
 export type LayoutCreationOptions = {
   submittedAt?: Date | null;
+  preserveExistingTitle?: boolean;
 };
 
 /** Purpose: report that a normalized layout link already owns a lifecycle record. */
@@ -215,6 +216,19 @@ export class LayoutService {
     options: LayoutCreationOptions,
     fwaLayouts?: Prisma.TransactionClient["fwaLayouts"],
   ): Promise<LayoutRecord> {
+    if (options.preserveExistingTitle) {
+      const existing = await delegate.findUnique({ where: { layoutLink } });
+      if (existing) {
+        const { title: _ignoredTitle, ...presentationWithoutTitle } = presentationData;
+        if (Object.keys(presentationWithoutTitle).length === 0) return existing;
+        const updated = await delegate.update({
+          where: { id: existing.id },
+          data: presentationWithoutTitle,
+        });
+        await synchronizeFwaLayoutProjection(fwaLayouts, updated);
+        return updated;
+      }
+    }
     let record: LayoutRecord;
     try {
       record = await delegate.upsert({
