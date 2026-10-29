@@ -49,6 +49,7 @@ export type LayoutPostImageSource = {
 export type LayoutPostImageSourceKind =
   | "attachment_collection"
   | "embedded_attachment"
+  | "embedded_discord_attachment"
   | "embedded_url"
   | "none"
   | "metadata_unavailable";
@@ -56,6 +57,11 @@ export type LayoutPostImageSourceKind =
 export type LayoutPostImageSourceResolution = {
   source: LayoutPostImageSource;
   kind: LayoutPostImageSourceKind;
+};
+
+export type LayoutPostImageSourceResolutionContext = {
+  /** The canonical message channel used to verify Discord attachment CDN URLs. */
+  canonicalChannelId?: string | null;
 };
 
 type LayoutPostImageMessageLike = {
@@ -315,7 +321,7 @@ export class LayoutPostService {
         }
       }
 
-      const imageSource = getCurrentMessageImageSource(interaction);
+      const imageSource = getCurrentMessageImageSource(interaction, record);
       if (parsed.action === "info") {
         const alertPolicy = this.alertConfigService
           ? await this.alertConfigService.getPolicy(record.id)
@@ -535,8 +541,11 @@ function resolveImageUrl(
 /** Purpose: extract the current canonical message attachment so button edits preserve it. */
 function getCurrentMessageImageSource(
   interaction: ButtonInteraction,
+  record: LayoutRecord,
 ): LayoutPostImageSource {
-  const resolution = resolveLayoutPostImageSource(interaction.message);
+  const resolution = resolveLayoutPostImageSource(interaction.message, {
+    canonicalChannelId: record.discordChannelId,
+  });
   logImageSourceResolution(resolution, interaction.message.id, "interaction");
   return resolution.source;
 }
@@ -544,6 +553,7 @@ function getCurrentMessageImageSource(
 /** Purpose: recover only image metadata needed to rebuild a presentation without copying stale embeds. */
 export function resolveLayoutPostImageSource(
   message: LayoutPostImageMessageLike,
+  context: LayoutPostImageSourceResolutionContext = {},
 ): LayoutPostImageSourceResolution {
   const attachment = message.attachments?.first?.();
   if (attachment?.name?.trim() || attachment?.url?.trim()) {
@@ -579,6 +589,18 @@ export function resolveLayoutPostImageSource(
   }
 
   if (/^https?:\/\//i.test(embeddedImageUrl)) {
+    const attachmentName = resolveCanonicalDiscordAttachmentName(
+      embeddedImageUrl,
+      context.canonicalChannelId,
+    );
+    if (attachmentName) {
+      return {
+        // Keep the CDN URL available for relocation/download paths, but rebuild
+        // interaction embeds from the native attachment reference.
+        source: { attachmentName, attachmentUrl: embeddedImageUrl },
+        kind: "embedded_discord_attachment",
+      };
+    }
     return {
       // This is presentation-only metadata. It is never persisted as LayoutRecord.imageUrl.
       source: { attachmentName: null, attachmentUrl: embeddedImageUrl },
@@ -590,6 +612,42 @@ export function resolveLayoutPostImageSource(
     source: { attachmentName: null, attachmentUrl: null },
     kind: "metadata_unavailable",
   };
+}
+
+function resolveCanonicalDiscordAttachmentName(
+  imageUrl: string,
+  canonicalChannelId: string | null | undefined,
+): string | null {
+  const expectedChannelId = canonicalChannelId?.trim();
+  if (!expectedChannelId) return null;
+
+  try {
+    const parsed = new URL(imageUrl);
+    if (
+      parsed.protocol !== "https:" ||
+      (parsed.hostname !== "cdn.discordapp.com" && parsed.hostname !== "media.discordapp.net")
+    ) {
+      return null;
+    }
+
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length !== 4 || segments[0] !== "attachments") return null;
+    if (segments[1] !== expectedChannelId || !/^\d+$/.test(segments[2] ?? "")) return null;
+
+    const filename = decodeAttachmentName(segments[3] ?? "");
+    if (!isSafeAttachmentFilename(filename)) return null;
+    return filename;
+  } catch {
+    return null;
+  }
+}
+
+function isSafeAttachmentFilename(value: string | null): value is string {
+  if (!value || value.includes("/") || value.includes("\\")) return false;
+  return [...value].every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  });
 }
 
 function decodeAttachmentName(value: string): string | null {
@@ -607,7 +665,11 @@ function logImageSourceResolution(
   messageId: string,
   phase: "interaction" | "publication",
 ): void {
-  if (resolution.kind === "embedded_attachment" || resolution.kind === "embedded_url") {
+  if (
+    resolution.kind === "embedded_attachment" ||
+    resolution.kind === "embedded_discord_attachment" ||
+    resolution.kind === "embedded_url"
+  ) {
     dozzleLog.debug(
       `[layout-post] event=image_source_fallback phase=${phase} source=${resolution.kind} message_id=${messageId}`,
     );
