@@ -183,6 +183,16 @@ export function buildLayoutPostPayload(
   };
 }
 
+/** Purpose: turn a superseded canonical message into a link-only redirect with no active controls. */
+export function buildLayoutPostRedirectPayload(jumpUrl: string): LayoutPostPayload {
+  return {
+    content: `This canonical layout moved to [the new post](${jumpUrl}).`,
+    embeds: [],
+    components: [],
+    allowedMentions: { parse: [], repliedUser: false },
+  };
+}
+
 /** Purpose: build the public Info description without exposing the layout URL. */
 export function buildLayoutInfoDescription(record: LayoutRecord, alertLine?: string): string {
   const parsed = tryParseLayoutLink(record.layoutLink);

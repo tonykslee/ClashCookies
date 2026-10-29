@@ -4,6 +4,7 @@ import { InvalidClashLayoutLinkError } from "../src/services/ClashLayoutLinkServ
 import { buildLayoutPostVersionToken } from "../src/services/LayoutPostService";
 import {
   ConcurrentLayoutReplacementError,
+  ConcurrentLayoutRelocationError,
   DuplicateLayoutLinkError,
   LayoutDiscordPostAlreadyBoundError,
   LayoutReplacementKindMismatchError,
@@ -690,5 +691,92 @@ describe("LayoutService", () => {
         messageId: "message-1",
       }),
     ).resolves.toBe(winner);
+  });
+
+  it("rebinds canonical provenance with a full lifecycle/presentation CAS", async () => {
+    const existing = buildRecord({
+      title: "Old title",
+      description: "Description",
+      postedByDiscordUserId: "poster-1",
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+      lastConfirmedAt: new Date("2026-08-23T00:00:00.000Z"),
+      lastConfirmedByDiscordUserId: "confirmer-1",
+    });
+    const rebound = buildRecord({
+      ...existing,
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-2",
+      discordMessageId: "message-2",
+    });
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 1 });
+    layoutRecordMock.findUnique.mockResolvedValue(rebound);
+
+    await expect(service.rebindDiscordPost({
+      id: existing.id,
+      expectedOldGuildId: existing.discordGuildId!,
+      expectedOldChannelId: existing.discordChannelId!,
+      expectedOldMessageId: existing.discordMessageId!,
+      expectedLayoutLink: existing.layoutLink,
+      expectedSubmittedAt: existing.submittedAt,
+      expectedTitle: existing.title,
+      expectedDescription: existing.description,
+      expectedImageUrl: existing.imageUrl,
+      expectedPostedByDiscordUserId: existing.postedByDiscordUserId,
+      expectedLastConfirmedAt: existing.lastConfirmedAt,
+      expectedLastConfirmedByDiscordUserId: existing.lastConfirmedByDiscordUserId,
+      newGuildId: "guild-1",
+      newChannelId: "channel-2",
+      newMessageId: "message-2",
+    })).resolves.toBe(rebound);
+
+    expect(layoutRecordMock.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: existing.id,
+        discordMessageId: "message-1",
+        layoutLink: existing.layoutLink,
+        submittedAt: existing.submittedAt,
+        lastConfirmedAt: existing.lastConfirmedAt,
+      }),
+      data: {
+        discordGuildId: "guild-1",
+        discordChannelId: "channel-2",
+        discordMessageId: "message-2",
+      },
+    });
+  });
+
+  it("rejects a concurrent relocation and leaves the record untouched", async () => {
+    const existing = buildRecord({
+      discordGuildId: "guild-1",
+      discordChannelId: "channel-1",
+      discordMessageId: "message-1",
+    });
+    const changed = buildRecord({
+      ...existing,
+      discordChannelId: "channel-3",
+      discordMessageId: "message-3",
+    });
+    layoutRecordMock.updateMany.mockResolvedValue({ count: 0 });
+    layoutRecordMock.findUnique.mockResolvedValue(changed);
+
+    await expect(service.rebindDiscordPost({
+      id: existing.id,
+      expectedOldGuildId: "guild-1",
+      expectedOldChannelId: "channel-1",
+      expectedOldMessageId: "message-1",
+      expectedLayoutLink: existing.layoutLink,
+      expectedSubmittedAt: existing.submittedAt,
+      expectedTitle: existing.title,
+      expectedDescription: existing.description,
+      expectedImageUrl: existing.imageUrl,
+      expectedPostedByDiscordUserId: existing.postedByDiscordUserId,
+      expectedLastConfirmedAt: existing.lastConfirmedAt,
+      expectedLastConfirmedByDiscordUserId: existing.lastConfirmedByDiscordUserId,
+      newGuildId: "guild-1",
+      newChannelId: "channel-2",
+      newMessageId: "message-2",
+    })).rejects.toBeInstanceOf(ConcurrentLayoutRelocationError);
   });
 });

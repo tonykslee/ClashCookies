@@ -1,6 +1,16 @@
 import type { LayoutRecord } from "@prisma/client";
-import { buildLayoutPostPayload, LayoutPostImageSource } from "./LayoutPostService";
-import { LayoutDiscordPostAlreadyBoundError, LayoutService, layoutService } from "./LayoutService";
+import { dozzleLog } from "../helper/dozzleLogger";
+import {
+  buildLayoutPostPayload,
+  buildLayoutPostRedirectPayload,
+  LayoutPostImageSource,
+} from "./LayoutPostService";
+import {
+  ConcurrentLayoutRelocationError,
+  LayoutDiscordPostAlreadyBoundError,
+  LayoutService,
+  layoutService,
+} from "./LayoutService";
 
 export const MAX_LAYOUT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const LAYOUT_ATTACHMENT_FETCH_TIMEOUT_MS = 15_000;
@@ -20,7 +30,14 @@ export type ResolvedLayoutPostMessage = PublishedLayoutMessage & {
   edit: (payload: LayoutPostDiscordPayload) => Promise<unknown>;
   author?: { id?: string | null } | null;
   editable?: boolean;
-  attachments?: { first?: () => { name?: string | null; url?: string | null } | undefined };
+  attachments?: {
+    first?: () => {
+      name?: string | null;
+      url?: string | null;
+      contentType?: string | null;
+      size?: number | null;
+    } | undefined;
+  };
 };
 
 export type LayoutPostChannel = {
@@ -55,7 +72,7 @@ export type LayoutPostPublicationResult = { layout: LayoutRecord; messageId: str
 
 export type LayoutPostPublicationServiceOptions = {
   layoutService?: Pick<LayoutService, "attachDiscordPost" | "findById"> &
-    Partial<Pick<LayoutService, "updatePresentation">>;
+    Partial<Pick<LayoutService, "updatePresentation" | "rebindDiscordPost">>;
   messageResolver?: LayoutPostMessageResolver;
   fetch?: LayoutFetch;
 };
@@ -63,7 +80,7 @@ export type LayoutPostPublicationServiceOptions = {
 /** Purpose: publish one canonical layout post and resolve concurrent publication races without duplicate public posts. */
 export class LayoutPostPublicationService {
   private readonly layoutService: Pick<LayoutService, "attachDiscordPost" | "findById"> &
-    Partial<Pick<LayoutService, "updatePresentation">>;
+    Partial<Pick<LayoutService, "updatePresentation" | "rebindDiscordPost">>;
   private readonly messageResolver?: LayoutPostMessageResolver;
   private readonly fetch: LayoutFetch;
 
@@ -176,6 +193,111 @@ export class LayoutPostPublicationService {
     };
   }
 
+  /**
+   * Purpose: publish a new canonical post, CAS-rebind its provenance, and leave the old post as a redirect.
+   * The old post remains authoritative until the durable rebind succeeds.
+   */
+  async relocate(input: {
+    layout: LayoutRecord;
+    guildId: string;
+    channel: LayoutPostChannel;
+    messageResolver: LayoutPostMessageResolver;
+    botUserId: string;
+  }): Promise<LayoutRelocationResult> {
+    const existing = getCompleteProvenance(input.layout);
+    if (!existing) throw new Error("The canonical layout post has incomplete provenance.");
+    if (existing.guildId !== input.guildId) {
+      throw new Error("The canonical layout post belongs to another guild.");
+    }
+    const sourceMessage = await input.messageResolver.resolve(existing);
+    if (!sourceMessage || sourceMessage.id !== existing.messageId) {
+      throw new Error("The canonical Discord layout post could not be resolved.");
+    }
+    if (sourceMessage.author?.id !== input.botUserId) {
+      throw new Error("The canonical Discord layout post is not authored by this bot.");
+    }
+
+    const attachment = input.layout.imageUrl === null
+      ? getMessageAttachmentSource(sourceMessage)
+      : null;
+    const preparedAttachment = attachment
+      ? await this.prepareAttachment(attachment)
+      : null;
+    const message = await input.channel.send(
+      buildSendPayload(
+        buildLayoutPostPayload(
+          input.layout,
+          "collapsed",
+          preparedAttachment ? { attachmentName: preparedAttachment.filename } : {},
+        ),
+        preparedAttachment,
+      ),
+    );
+
+    let rebound: LayoutRecord;
+    try {
+      if (!this.layoutService.rebindDiscordPost) {
+        throw new Error("The layout provenance relocation operation is unavailable.");
+      }
+      rebound = await this.layoutService.rebindDiscordPost({
+        id: input.layout.id,
+        expectedOldGuildId: existing.guildId,
+        expectedOldChannelId: existing.channelId,
+        expectedOldMessageId: existing.messageId,
+        expectedLayoutLink: input.layout.layoutLink,
+        expectedSubmittedAt: input.layout.submittedAt,
+        expectedTitle: input.layout.title,
+        expectedDescription: input.layout.description,
+        expectedImageUrl: input.layout.imageUrl,
+        expectedPostedByDiscordUserId: input.layout.postedByDiscordUserId,
+        expectedLastConfirmedAt: input.layout.lastConfirmedAt,
+        expectedLastConfirmedByDiscordUserId: input.layout.lastConfirmedByDiscordUserId,
+        newGuildId: input.guildId,
+        newChannelId: input.channel.id,
+        newMessageId: message.id,
+      });
+    } catch (error) {
+      logRelocationEvent(
+        error instanceof ConcurrentLayoutRelocationError ? "cas_conflict" : "rebind_failed",
+        {
+          layoutId: input.layout.id,
+          oldMessageId: existing.messageId,
+          newMessageId: message.id,
+          guildId: input.guildId,
+          phase: "provenance_rebind",
+        },
+      );
+      await deleteBestEffort(message, {
+        layoutId: input.layout.id,
+        phase: error instanceof ConcurrentLayoutRelocationError ? "cas_conflict" : "rebind_failed",
+        newMessageId: message.id,
+        oldMessageId: existing.messageId,
+        guildId: input.guildId,
+      });
+      throw error;
+    }
+
+    const jumpUrl = buildDiscordJumpUrl(input.guildId, input.channel.id, message.id);
+    let oldPostCleanupFailed = false;
+    try {
+      await sourceMessage.edit(buildLayoutPostRedirectPayload(jumpUrl));
+    } catch {
+      oldPostCleanupFailed = true;
+      logRelocationEvent("old_redirect_failed", {
+        layoutId: input.layout.id,
+        oldMessageId: existing.messageId,
+        newMessageId: message.id,
+        guildId: input.guildId,
+      });
+    }
+    return {
+      layout: rebound,
+      messageId: message.id,
+      jumpUrl,
+      oldPostCleanupFailed,
+    };
+  }
+
   /** Purpose: collapse the canonical post using its old record before a link-only CAS replacement commits. */
   async collapseBeforeLinkReplacement(input: {
     layout: LayoutRecord;
@@ -268,7 +390,7 @@ export function createDiscordLayoutPostResolver(
   channels: { fetch: (channelId: string) => Promise<unknown> };
     user?: { id?: string | null } | null;
   },
-  options: { requireBotAuthored?: boolean } = {},
+  options: { requireBotAuthored?: boolean; requireEditable?: boolean } = {},
 ): LayoutPostMessageResolver {
   return {
     resolve: async ({ channelId, messageId }) => {
@@ -280,7 +402,7 @@ export function createDiscordLayoutPostResolver(
       const message = await (messages as { fetch: (id: string) => Promise<unknown> }).fetch(messageId).catch(() => null);
       if (!message || typeof message !== "object" || typeof (message as { edit?: unknown }).edit !== "function") return null;
       const resolved = message as ResolvedLayoutPostMessage;
-      if (resolved.editable === false) return null;
+      if (options.requireEditable !== false && resolved.editable === false) return null;
       if (options.requireBotAuthored) {
         const botUserId = client.user?.id;
         if (!botUserId || resolved.author?.id !== botUserId) return null;
@@ -295,8 +417,55 @@ function getCompleteProvenance(layout: LayoutRecord): { guildId: string; channel
   return { guildId: layout.discordGuildId, channelId: layout.discordChannelId, messageId: layout.discordMessageId };
 }
 
-async function deleteBestEffort(message: PublishedLayoutMessage): Promise<void> {
-  try { await message.delete(); } catch { /* Cleanup is best effort after a binding race. */ }
+export type LayoutRelocationResult = {
+  layout: LayoutRecord;
+  messageId: string;
+  jumpUrl: string;
+  oldPostCleanupFailed: boolean;
+};
+
+async function deleteBestEffort(
+  message: PublishedLayoutMessage,
+  context?: {
+    layoutId: string;
+    phase: string;
+    newMessageId: string;
+    oldMessageId?: string;
+    guildId?: string;
+  },
+): Promise<void> {
+  try {
+    await message.delete();
+  } catch {
+    if (context) {
+      logRelocationEvent("new_message_cleanup_failed", context);
+    }
+  }
+}
+
+function getMessageAttachmentSource(
+  message: ResolvedLayoutPostMessage,
+): LayoutPostAttachmentSource | null {
+  const attachment = message.attachments?.first?.();
+  if (!attachment?.url) return null;
+  if (attachment.contentType && !attachment.contentType.toLowerCase().startsWith("image/")) {
+    throw new Error("The canonical layout attachment is not an image.");
+  }
+  return {
+    url: attachment.url,
+    filename: attachment.name,
+    contentType: attachment.contentType,
+    size: attachment.size,
+  };
+}
+
+function logRelocationEvent(
+  event: "old_redirect_failed" | "new_message_cleanup_failed" | "cas_conflict" | "rebind_failed",
+  input: { layoutId: string; oldMessageId?: string; newMessageId: string; guildId?: string; phase?: string },
+): void {
+  dozzleLog.warn(
+    `[layout-relocation] event=${event} layout_id=${input.layoutId} guild_id=${input.guildId ?? "unknown"} old_message_id=${input.oldMessageId ?? "unknown"} new_message_id=${input.newMessageId} phase=${input.phase ?? "old_redirect"}`,
+  );
 }
 
 async function restorePreviousPresentation(message: PublishedLayoutMessage, layout: LayoutRecord): Promise<void> {

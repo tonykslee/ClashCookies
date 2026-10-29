@@ -84,6 +84,17 @@ export class ConcurrentLayoutReplacementError extends Error {
   }
 }
 
+/** Purpose: report that a canonical post relocation lost its provenance/version race. */
+export class ConcurrentLayoutRelocationError extends Error {
+  readonly layoutId: string;
+
+  constructor(layoutId: string) {
+    super(`Layout post relocation was stale for layout record: ${layoutId}`);
+    this.name = "ConcurrentLayoutRelocationError";
+    this.layoutId = layoutId;
+  }
+}
+
 /** Purpose: prevent an opening confirmation captured before a replacement from confirming the new link. */
 export class StaleLayoutConfirmationError extends Error {
   readonly layoutId: string;
@@ -461,6 +472,58 @@ export class LayoutService {
       winningLayout.discordMessageId === target.discordMessageId;
     if (winningPostMatches) return winningLayout;
     throw new LayoutDiscordPostAlreadyBoundError(input.id);
+  }
+
+  /**
+   * Purpose: atomically move canonical Discord provenance without changing layout lifecycle,
+   * presentation, freshness, or alert state.
+   */
+  async rebindDiscordPost(input: {
+    id: string;
+    expectedOldGuildId: string;
+    expectedOldChannelId: string;
+    expectedOldMessageId: string;
+    expectedLayoutLink: string;
+    expectedSubmittedAt: Date | null;
+    expectedTitle: string | null;
+    expectedDescription: string | null;
+    expectedImageUrl: string | null;
+    expectedPostedByDiscordUserId: string | null;
+    expectedLastConfirmedAt: Date | null;
+    expectedLastConfirmedByDiscordUserId: string | null;
+    newGuildId: string;
+    newChannelId: string;
+    newMessageId: string;
+  }): Promise<LayoutRecord> {
+    const result = await this.db.layoutRecord.updateMany({
+      where: {
+        id: input.id,
+        discordGuildId: input.expectedOldGuildId,
+        discordChannelId: input.expectedOldChannelId,
+        discordMessageId: input.expectedOldMessageId,
+        layoutLink: input.expectedLayoutLink,
+        submittedAt: input.expectedSubmittedAt,
+        title: input.expectedTitle,
+        description: input.expectedDescription,
+        imageUrl: input.expectedImageUrl,
+        postedByDiscordUserId: input.expectedPostedByDiscordUserId,
+        lastConfirmedAt: input.expectedLastConfirmedAt,
+        lastConfirmedByDiscordUserId: input.expectedLastConfirmedByDiscordUserId,
+      },
+      data: {
+        discordGuildId: input.newGuildId,
+        discordChannelId: input.newChannelId,
+        discordMessageId: input.newMessageId,
+      },
+    });
+    if (result.count !== 1) {
+      const current = await this.findById(input.id);
+      if (!current) throw new LayoutRecordNotFoundError(input.id);
+      throw new ConcurrentLayoutRelocationError(input.id);
+    }
+    const rebound = await this.findById(input.id);
+    if (!rebound) throw new LayoutRecordNotFoundError(input.id);
+    return rebound;
   }
 
   /** Purpose: record a successful layout opening without changing submission or presentation provenance. */
