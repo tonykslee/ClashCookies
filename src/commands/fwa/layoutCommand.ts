@@ -117,12 +117,18 @@ export type FwaLayoutCommandDeps = {
   now?: () => Date;
 };
 
+type FwaLayoutResponseVisibility = "private" | "public";
+
 /** Purpose: execute the modular canonical FWA layout command without putting layout policy in Fwa.ts. */
 export async function runFwaLayoutCommand(
   interaction: ChatInputCommandInteraction,
   deps: FwaLayoutCommandDeps = {},
 ): Promise<void> {
   const invocationNow = deps.now?.() ?? new Date();
+  const visibility: FwaLayoutResponseVisibility =
+    interaction.options.getString("visibility", false) === "public"
+      ? "public"
+      : "private";
   const layoutService = deps.layoutService ?? fwaLayoutService;
   const publicationService =
     deps.publicationService ?? layoutPostPublicationService;
@@ -198,6 +204,7 @@ export async function runFwaLayoutCommand(
         townhall,
         type,
         messageResolver,
+        visibility,
       });
       return;
     }
@@ -207,6 +214,7 @@ export async function runFwaLayoutCommand(
       layoutService,
       type: typeInput ? type : null,
       now: invocationNow,
+      visibility,
     });
   } catch (error) {
     const safeError =
@@ -350,6 +358,7 @@ async function runLookupMode(input: {
   townhall: number;
   type: ReturnType<typeof normalizeLayoutType>;
   messageResolver?: LayoutPostMessageResolver;
+  visibility: FwaLayoutResponseVisibility;
 }): Promise<void> {
   if (!isSupportedTownhall(input.townhall)) {
     throw new UnsupportedFwaLayoutTownhallError(input.townhall);
@@ -371,9 +380,10 @@ async function runLookupMode(input: {
     publicationService: input.publicationService,
     messageResolver: input.messageResolver,
   });
-  await replyPrivate(
+  await replyReadMode(
     input.interaction,
     `TH${input.townhall} ${input.type} canonical layout: [View post](${published.jumpUrl})`,
+    input.visibility,
   );
 }
 
@@ -382,6 +392,7 @@ async function runListMode(input: {
   layoutService: FwaLayoutService;
   type: ReturnType<typeof normalizeLayoutType> | null;
   now: Date;
+  visibility: FwaLayoutResponseVisibility;
 }): Promise<void> {
   const rows = await input.layoutService.listCanonical({ type: input.type });
   const sections = (input.type ? [input.type] : FWA_LAYOUT_TYPES).map((type) => ({
@@ -391,7 +402,7 @@ async function runListMode(input: {
   const embeds = buildCatalogEmbeds(sections);
   await input.interaction.reply({
     embeds,
-    ephemeral: true,
+    ephemeral: input.visibility !== "public",
     allowedMentions: { parse: [] },
   });
 }
@@ -645,6 +656,18 @@ async function replyPrivate(
   await interaction.reply({
     content,
     ephemeral: true,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function replyReadMode(
+  interaction: ChatInputCommandInteraction,
+  content: string,
+  visibility: FwaLayoutResponseVisibility,
+): Promise<void> {
+  await interaction.reply({
+    content,
+    ephemeral: visibility !== "public",
     allowedMentions: { parse: [] },
   });
 }

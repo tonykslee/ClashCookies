@@ -55,6 +55,7 @@ function makeInteraction(input: {
   channel?: unknown;
   alertType?: string | null;
   alertChannel?: Record<string, unknown> | null;
+  visibility?: "private" | "public" | null;
 }) {
   const reply = vi.fn().mockResolvedValue(undefined);
   const interaction: any = {
@@ -73,6 +74,7 @@ function makeInteraction(input: {
         if (name === "description") return input.description ?? null;
         if (name === "img-url") return input.imageUrl ?? null;
         if (name === "alert-type") return input.alertType ?? null;
+        if (name === "visibility") return input.visibility ?? null;
         return null;
       }),
       getChannel: vi.fn(() => input.alertChannel ?? null),
@@ -343,6 +345,109 @@ describe("/fwa layout", () => {
     expect(publish).toHaveBeenCalledTimes(1);
     expect(String(reply.mock.calls[0]?.[0].content)).not.toContain(LINK);
     expect(String(reply.mock.calls[0]?.[0].content)).toContain("View post");
+    expect(reply.mock.calls[0]?.[0].ephemeral).toBe(true);
+  });
+
+  it.each([
+    { label: "omitted", visibility: null, ephemeral: true },
+    { label: "private", visibility: "private" as const, ephemeral: true },
+    { label: "public", visibility: "public" as const, ephemeral: false },
+  ])("renders the $label catalog with the requested response visibility", async ({ visibility, ephemeral }) => {
+    const { interaction, reply } = makeInteraction({ visibility });
+    const listCanonical = vi.fn().mockResolvedValue([]);
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { listCanonical } as any,
+    });
+
+    expect(listCanonical).toHaveBeenCalledWith({ type: null });
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral }));
+    expect(reply.mock.calls[0]?.[0].embeds).toEqual(expect.any(Array));
+  });
+
+  it("renders a filtered public catalog without mutating layout data", async () => {
+    const listCanonical = vi.fn().mockResolvedValue([
+      buildCanonical({ Type: "BASIC" }),
+    ]);
+    const setCanonicalLayout = vi.fn();
+    const publish = vi.fn();
+    const { interaction, reply } = makeInteraction({ type: "BASIC", visibility: "public" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { listCanonical, setCanonicalLayout } as any,
+      publicationService: { publish } as any,
+    });
+
+    expect(listCanonical).toHaveBeenCalledWith({ type: "BASIC" });
+    expect(reply.mock.calls[0]?.[0].ephemeral).toBe(false);
+    expect(reply.mock.calls[0]?.[0].embeds).toHaveLength(1);
+    expect(setCanonicalLayout).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("renders a successful public single-TH lookup while preserving its View Post link", async () => {
+    const publish = vi.fn().mockResolvedValue({
+      layout: buildRecord(),
+      messageId: "message-1",
+      jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+    });
+    const { interaction, reply } = makeInteraction({ th: 18, visibility: "public" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { findCanonical: vi.fn().mockResolvedValue(buildCanonical()) } as any,
+      publicationService: { publish } as any,
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: false,
+      content: expect.stringContaining("[View post](https://discord.com/channels/guild-1/channel-1/message-1)"),
+    }));
+    expect(reply.mock.calls[0]?.[0].content).not.toContain(LINK);
+  });
+
+  it("keeps a missing canonical public lookup private", async () => {
+    const { interaction, reply } = makeInteraction({ th: 18, visibility: "public" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { findCanonical: vi.fn().mockResolvedValue(null) } as any,
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: expect.stringContaining("No canonical layout"),
+    }));
+  });
+
+  it("keeps administrative updates private when public visibility is supplied", async () => {
+    const { interaction, reply } = makeInteraction({ link: LINK, visibility: "public" });
+
+    await runFwaLayoutCommand(interaction, {
+      layoutService: { setCanonicalLayout: vi.fn().mockResolvedValue(buildCanonical()) } as any,
+      publicationService: {
+        publish: vi.fn().mockResolvedValue({
+          layout: buildRecord(),
+          messageId: "message-1",
+          jumpUrl: "https://discord.com/channels/guild-1/channel-1/message-1",
+        }),
+      } as any,
+    });
+
+    expect(reply.mock.calls[0]?.[0].ephemeral).toBe(true);
+  });
+
+  it("keeps permission and validation failures private when public visibility is supplied", async () => {
+    const permissionCase = makeInteraction({ link: LINK, admin: false, visibility: "public" });
+    await runFwaLayoutCommand(permissionCase.interaction, {
+      layoutService: { setCanonicalLayout: vi.fn() } as any,
+    });
+    expect(permissionCase.reply.mock.calls[0]?.[0].ephemeral).toBe(true);
+
+    const validationCase = makeInteraction({ th: 18, title: "invalid", visibility: "public" });
+    await runFwaLayoutCommand(validationCase.interaction, {
+      layoutService: { findCanonical: vi.fn() } as any,
+    });
+    expect(validationCase.reply.mock.calls[0]?.[0].ephemeral).toBe(true);
+    expect(validationCase.reply.mock.calls[0]?.[0].content).not.toContain(LINK);
   });
 
   it("lists status without raw Clash links", async () => {
