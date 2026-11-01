@@ -40,6 +40,10 @@ function makeInteraction(input: {
   };
 }
 
+function getEmbedData(): any {
+  return safeReplyMock.safeReply.mock.calls[0]?.[1]?.embeds?.[0]?.toJSON?.() ?? {};
+}
+
 describe("/potion command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -117,23 +121,19 @@ describe("/potion command", () => {
 
     expect(safeReplyMock.safeReply).toHaveBeenCalledWith(
       interaction,
-      expect.objectContaining({
-        ephemeral: true,
-        content: expect.stringContaining("**Potion Calculator**"),
-      }),
+      expect.objectContaining({ ephemeral: true, embeds: expect.any(Array) }),
     );
-
-    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
-    expect(content).toContain("Type: **Builder Potion**");
-    expect(content).toContain("Original time left: **2d 6h**");
-    expect(content).toContain("Boost applied: **2 potions");
-    expect(content).toContain("10x for 2h");
-    expect(content).toContain("Completes in: **1d 12h**");
-    expect(content).toContain("Time saved: **18h**");
-    expect(content).not.toContain("Approximation:");
-
+    const embed = getEmbedData();
     const expectedUnix = Math.floor(new Date("2026-07-03T00:00:00.000Z").getTime() / 1000);
-    expect(content).toContain(`Completion time: <t:${expectedUnix}:F> (<t:${expectedUnix}:R>)`);
+    expect(embed.title).toBe("Builder Potion Calculator");
+    expect(embed.description).toBe("**Finishes in 1d 12h**");
+    expect(embed.fields).toEqual(expect.arrayContaining([
+      { name: "Completion", value: `<t:${expectedUnix}:F> (<t:${expectedUnix}:R>)`, inline: false },
+      { name: "Time saved", value: "18h", inline: true },
+      { name: "Original upgrade", value: "2d 6h", inline: true },
+      { name: "Potions & boost", value: "2 potions · 10x for 2h", inline: false },
+    ]));
+    expect(embed.footer.text).toContain("immediate activation");
   });
 
   it("passes active boost time to the service and renders the active and total windows", async () => {
@@ -156,10 +156,13 @@ describe("/potion command", () => {
         boostRemaining: "37m",
       }),
     );
-    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
-    expect(content).toContain("Current boost remaining: **37m**");
-    expect(content).toContain("Total boosted window: **2h 37m**");
-    expect(content).toContain("Approximation: in-game time-left decreases rapidly while boosted");
+    const embed = getEmbedData();
+    expect(embed.fields).toContainEqual({
+      name: "Active boost",
+      value: "Remaining: 37m\nTotal boosted window: 2h 37m",
+      inline: true,
+    });
+    expect(embed.footer.text).toContain("countdowns may vary slightly");
   });
 
   it("returns the dedicated validation response for invalid boost-remaining", async () => {
@@ -214,13 +217,19 @@ describe("/potion command", () => {
 
     await Potion.run({} as any, interaction as any, {} as any);
 
-    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
-    expect(content).toContain("Recommendation: **2 additional potions**");
-    expect(content).toContain("With **1 potion**");
-    expect(content).toContain("7h** upgrade time remains when boosts expire");
-    expect(content).toContain("estimated completion in **8h**");
-    expect(content).toContain("With **2 potions**: estimated completion in **1h 42m**");
-    expect(content).toContain("Potion boost remaining at completion: **18m**");
+    const embed = getEmbedData();
+    expect(embed.title).toBe("Builder Potion Calculator");
+    expect(embed.description).toBe("**Recommended: 2 additional potions**");
+    expect(embed.fields).toContainEqual(expect.objectContaining({
+      name: "1 potion (N−1)",
+      value: expect.stringContaining("At boost expiry: 7h upgrade time remaining"),
+    }));
+    expect(embed.fields).toContainEqual(expect.objectContaining({
+      name: "2 potions (recommended)",
+      value: expect.stringContaining("Completion: 1h 42m"),
+    }));
+    expect(embed.fields.find((field: any) => field.name === "2 potions (recommended)")?.value)
+      .toContain("Unused boost at completion: 18m");
   });
 
   it("passes helper arguments and renders the recurring helper assumption", async () => {
@@ -243,8 +252,45 @@ describe("/potion command", () => {
         helperNextIn: "0m",
       }),
     );
-    const content = String(safeReplyMock.safeReply.mock.calls[0]?.[1]?.content ?? "");
-    expect(content).toContain("Helper assumption: **level 5 · next work session in 0s**");
-    expect(content).toContain("added to, rather than multiplied by, potion speed");
+    const embed = getEmbedData();
+    expect(embed.fields).toContainEqual({
+      name: "Helper",
+      value: "Level 5\nNext work session: 0s",
+      inline: true,
+    });
+  });
+
+  it.each([
+    ["builder", "Builder Potion"],
+    ["research", "Research Potion"],
+    ["pet", "Pet Potion"],
+    ["clocktower", "Clock Tower Potion"],
+  ])("renders the %s potion type in the embed", async (type, label) => {
+    await Potion.run(
+      {} as any,
+      makeInteraction({ type, timeLeft: "2h", numPots: 1 }) as any,
+      {} as any,
+    );
+
+    expect(getEmbedData().title).toBe(`${label} Calculator`);
+  });
+
+  it("renders a zero-pot recommendation without an N−1 comparison", async () => {
+    await Potion.run(
+      {} as any,
+      makeInteraction({
+        type: "builder",
+        timeLeft: "1h",
+        boostRemaining: "2h",
+      }) as any,
+      {} as any,
+    );
+
+    const embed = getEmbedData();
+    expect(embed.description).toBe("**Recommended: 0 additional potions**");
+    expect(embed.fields.some((field: any) => field.name.includes("N−1"))).toBe(false);
+    expect(embed.fields).toContainEqual(expect.objectContaining({
+      name: "0 potions (recommended)",
+    }));
   });
 });

@@ -235,7 +235,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "Optional `boost-remaining` accepts the same positive duration format and represents real-world time remaining on an already-active boost of the selected potion type; it is combined with the newly added potion duration.",
       "Builder potions use 10x for 1 hour per potion; research and pet potions use 24x for 1 hour per potion; clock tower potions use 10x for 30 minutes per potion.",
       "Optional `helper-level` models Builder's Apprentice levels 1-8 for builder potions or Lab Assistant levels 1-12 for research potions. Helpers work for 1 hour every 23 hours, begin immediately by default, and add progress separately from potion speed. `helper-next-in` accepts `0m` or a duration and requires `helper-level`; helper arguments are rejected for pet and clock tower potions.",
-      "The calculator is stateless, does not persist inputs, and returns a localized Discord completion timestamp with saved time.",
+      "The calculator is stateless, does not persist inputs, and returns a compact embed with localized Discord completion timestamps, saved time, and recommendation comparisons.",
     ],
     examples: [
       "/potion calc type:builder time-left:2d6h num-pots:2",
