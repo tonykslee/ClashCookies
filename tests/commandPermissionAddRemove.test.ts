@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CommandRole } from "../src/commands/CommandRole";
 import { CommandPermissionService } from "../src/services/CommandPermissionService";
 
 const LEADER_ROLE = "111111111111111111";
 const FIRST_ROLE = "222222222222222222";
 const SECOND_ROLE = "333333333333333333";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function buildSettings(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -299,5 +304,83 @@ describe("additive command permission management", () => {
     await expect(
       service.getPolicySummary("roster:ping", "guild-1"),
     ).resolves.toEqual(expect.stringContaining("Legacy restrictive whitelist"));
+  });
+
+  it("resolves concise add-response roles from the effective default and grants", async () => {
+    const settings = buildSettings();
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.getEffectiveAllowedRoleSummary("link:embed", "guild-1"),
+    ).resolves.toEqual({ everyone: false, roleIds: [] });
+
+    await service.addRoleAccess("link:embed", FIRST_ROLE, "guild-1");
+    await expect(
+      service.getEffectiveAllowedRoleSummary("link:embed", "guild-1"),
+    ).resolves.toEqual({ everyone: false, roleIds: [FIRST_ROLE] });
+  });
+
+  it("includes inherited and FWA Leader grants while filtering restrictive exclusions", async () => {
+    const settings = buildSettings({
+      [`fwa_leader_role:guild-1`]: LEADER_ROLE,
+      [`command_roles:roster:manage`]: FIRST_ROLE,
+      [`command_roles_additions:roster:manage`]: SECOND_ROLE,
+      [`command_roles_exclusions:roster:manage`]: SECOND_ROLE,
+      [`command_roles_exclusions:autorole:refresh`]: LEADER_ROLE,
+    });
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.getEffectiveAllowedRoleSummary("roster:ping", "guild-1"),
+    ).resolves.toEqual({ everyone: false, roleIds: [FIRST_ROLE, SECOND_ROLE] });
+
+    await expect(
+      service.getEffectiveAllowedRoleSummary("autorole:refresh", "guild-1"),
+    ).resolves.toEqual({ everyone: false, roleIds: [] });
+  });
+
+  it("reports public defaults as Everyone", async () => {
+    const service = new CommandPermissionService(buildSettings() as any);
+
+    await expect(
+      service.getEffectiveAllowedRoleSummary("help", "guild-1"),
+    ).resolves.toEqual({ everyone: true, roleIds: [] });
+  });
+
+  it("renders only the current effective allowed-role list after add", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "addRoleAccess").mockResolvedValue({
+      roleId: FIRST_ROLE,
+      outcome: "added",
+      policy: {} as any,
+    });
+    vi.spyOn(
+      CommandPermissionService.prototype,
+      "getEffectiveAllowedRoleSummary",
+    ).mockResolvedValue({ everyone: false, roleIds: [FIRST_ROLE, SECOND_ROLE] });
+
+    const editReply = vi.fn(async () => undefined);
+    const interaction = {
+      guildId: "guild-1",
+      commandName: "permission",
+      deferred: true,
+      replied: false,
+      inGuild: vi.fn().mockReturnValue(true),
+      deferReply: vi.fn(async () => undefined),
+      editReply,
+      options: {
+        getSubcommand: vi.fn().mockReturnValue("add"),
+        getString: vi.fn().mockReturnValue("link:embed"),
+        getRole: vi.fn((name: string) =>
+          name === "role" ? { id: FIRST_ROLE } : name === "role2" ? { id: SECOND_ROLE } : null,
+        ),
+      },
+    } as any;
+
+    await CommandRole.run({} as any, interaction, {} as any);
+
+    expect(editReply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: `/link:embed\nAllowed: Administrator, <@&${FIRST_ROLE}>, <@&${SECOND_ROLE}>`,
+    });
   });
 });

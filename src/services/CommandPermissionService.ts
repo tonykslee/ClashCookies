@@ -445,6 +445,11 @@ export type PermissionRoleMutation = {
   policy: CommandPermissionPolicy;
 };
 
+export type EffectiveAllowedRoleSummary = {
+  everyone: boolean;
+  roleIds: string[];
+};
+
 /** Purpose: identify a target's built-in default policy. */
 function getPermissionDefaultKind(target: string): PermissionDefaultKind {
   if (isFwaLeaderDefaultTarget(target)) return "fwa_leader";
@@ -743,6 +748,36 @@ export class CommandPermissionService {
     if (policy.defaultKind !== "fwa_leader" || !guildId) return false;
     const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
     return leaderRoleId === roleId;
+  }
+
+  /** Purpose: resolve the concise effective role list used after permission additions. */
+  async getEffectiveAllowedRoleSummary(
+    commandName: string,
+    guildId?: string | null,
+  ): Promise<EffectiveAllowedRoleSummary> {
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
+
+    if (policy.defaultKind === "everyone") {
+      return { everyone: true, roleIds: [] };
+    }
+
+    const candidateRoleIds: string[] = [];
+    if (policy.defaultKind === "fwa_leader" && guildId) {
+      const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+      if (leaderRoleId) candidateRoleIds.push(leaderRoleId);
+    }
+    candidateRoleIds.push(...policy.legacyRoleIds, ...policy.addedRoleIds);
+
+    const roleIds: string[] = [];
+    for (const roleId of [...new Set(candidateRoleIds)]) {
+      if (await this.roleHasPermission(policy, roleId, guildId)) {
+        roleIds.push(roleId);
+      }
+    }
+
+    return { everyone: false, roleIds };
   }
 
   /** Purpose: add one role without replacing defaults or existing grants. */
