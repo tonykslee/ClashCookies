@@ -448,6 +448,7 @@ export type PermissionRoleMutation = {
 export type EffectiveAllowedRoleSummary = {
   everyone: boolean;
   roleIds: string[];
+  excludedRoleIds: string[];
 };
 
 /** Purpose: identify a target's built-in default policy. */
@@ -759,8 +760,15 @@ export class CommandPermissionService {
       includeKnownParents: true,
     });
 
+    const excludedRoleIds: string[] = [];
+    for (const roleId of [...new Set(policy.excludedRoleIds)]) {
+      if (!(await this.roleHasPermission(policy, roleId, guildId))) {
+        excludedRoleIds.push(roleId);
+      }
+    }
+
     if (policy.defaultKind === "everyone") {
-      return { everyone: true, roleIds: [] };
+      return { everyone: true, roleIds: [], excludedRoleIds };
     }
 
     const candidateRoleIds: string[] = [];
@@ -777,7 +785,7 @@ export class CommandPermissionService {
       }
     }
 
-    return { everyone: false, roleIds };
+    return { everyone: false, roleIds, excludedRoleIds: [] };
   }
 
   /** Purpose: add one role without replacing defaults or existing grants. */

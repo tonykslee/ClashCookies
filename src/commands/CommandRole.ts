@@ -333,9 +333,13 @@ export const CommandRole: Command = {
         : ["Administrator", ...allowed.roleIds.map((roleId) => `<@&${roleId}>`)].filter(
             (role, index, roles) => roles.indexOf(role) === index,
           ).join(", ");
+      const excludedRoleIds = [...new Set(allowed.excludedRoleIds)];
+      const excludedLine = allowed.everyone && excludedRoleIds.length > 0
+        ? `\nExcluded: ${excludedRoleIds.map((roleId) => `<@&${roleId}>`).join(", ")}`
+        : "";
       await safeReply(interaction, {
         ephemeral: true,
-        content: `/${commandInput}\nAllowed: ${allowedRoles}`,
+        content: `/${commandInput}\nAllowed: ${allowedRoles}${excludedLine}`,
       });
       return;
     }
