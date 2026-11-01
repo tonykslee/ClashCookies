@@ -221,6 +221,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "notify:war",
   "link:embed",
   "link:sync-clashperk",
+  "link:delete:admin",
   "bot-logs",
   "bot:status",
   "warplan",
@@ -476,6 +477,10 @@ function getPermissionManagementTargets(commandName: string): string[] {
     "autorole:refresh:user",
     "autorole:refresh:role",
     "defer:config",
+    "link:create:other-user",
+    "link:delete:admin",
+    "link:embed",
+    "link:sync-clashperk",
     "sync:time:post",
     "sync:post:status",
   ]);
@@ -488,16 +493,6 @@ function getPermissionManagementTargets(commandName: string): string[] {
     if (isKnownTarget(parent)) targets.push(parent);
   }
   return targets;
-}
-
-/** Purpose: apply the same known parent expansion to command and management checks. */
-function expandPermissionTargets(targets: string[] | string): string[] {
-  const requestedTargets = typeof targets === "string" ? [targets] : targets;
-  return [
-    ...new Set(
-      requestedTargets.flatMap((target) => getPermissionManagementTargets(target)),
-    ),
-  ];
 }
 
 export function getPermissionTargetPrefixesForCommand(
@@ -662,9 +657,15 @@ export class CommandPermissionService {
   async getPermissionPolicy(
     targets: string[] | string,
     _guildId?: string | null,
+    options?: { includeKnownParents?: boolean },
   ): Promise<CommandPermissionPolicy> {
     const requestedTarget = typeof targets === "string" ? targets : targets[0] ?? "";
-    const requestedTargets = expandPermissionTargets(targets);
+    const requestedTargets =
+      options?.includeKnownParents === true
+        ? getPermissionManagementTargets(requestedTarget)
+        : typeof targets === "string"
+          ? [targets]
+          : targets;
     const effectiveTargets = getEffectivePermissionTargets(requestedTargets);
     const storedPolicies = await Promise.all(
       effectiveTargets.map((target) => this.getStoredPermissionPolicy(target)),
@@ -756,7 +757,9 @@ export class CommandPermissionService {
       return {
         roleId: normalizedRoleId,
         outcome: "no_op",
-        policy: await this.getPermissionPolicy(commandName, guildId),
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
       };
     }
 
@@ -771,7 +774,9 @@ export class CommandPermissionService {
           normalizedRoleId,
         ]);
       } else if (!stored.hasLegacyRestrictivePolicy) {
-        const restoredPolicy = await this.getPermissionPolicy(commandName, guildId);
+        const restoredPolicy = await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        });
         if (!(await this.roleHasPermission(restoredPolicy, normalizedRoleId, guildId))) {
           await this.persistRoleIdList(commandRoleAdditionsKey(commandName), [
             ...stored.addedRoleIds,
@@ -782,7 +787,9 @@ export class CommandPermissionService {
       return {
         roleId: normalizedRoleId,
         outcome: "restored",
-        policy: await this.getPermissionPolicy(commandName, guildId),
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
       };
     }
 
@@ -791,7 +798,9 @@ export class CommandPermissionService {
         return {
           roleId: normalizedRoleId,
           outcome: "already_allowed",
-          policy: await this.getPermissionPolicy(commandName, guildId),
+          policy: await this.getPermissionPolicy(commandName, guildId, {
+            includeKnownParents: true,
+          }),
         };
       }
       await this.persistLegacyRoleIds(commandName, [
@@ -801,11 +810,15 @@ export class CommandPermissionService {
       return {
         roleId: normalizedRoleId,
         outcome: "added",
-        policy: await this.getPermissionPolicy(commandName, guildId),
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
       };
     }
 
-    const policy = await this.getPermissionPolicy(commandName, guildId);
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
     if (await this.roleHasPermission(policy, normalizedRoleId, guildId)) {
       return {
         roleId: normalizedRoleId,
@@ -828,7 +841,9 @@ export class CommandPermissionService {
     return {
       roleId: normalizedRoleId,
       outcome: "added",
-      policy: await this.getPermissionPolicy(commandName, guildId),
+      policy: await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      }),
     };
   }
 
@@ -844,14 +859,18 @@ export class CommandPermissionService {
       return {
         roleId: normalizedRoleId,
         outcome: "no_op",
-        policy: await this.getPermissionPolicy(commandName, guildId),
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
       };
     }
     if (stored.excludedRoleIds.includes(normalizedRoleId)) {
       return {
         roleId: normalizedRoleId,
         outcome: "already_excluded",
-        policy: await this.getPermissionPolicy(commandName, guildId),
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
       };
     }
 
@@ -871,7 +890,9 @@ export class CommandPermissionService {
     }
 
     if (hadLegacyGrant || hadAddedGrant) {
-      const remainingPolicy = await this.getPermissionPolicy(commandName, guildId);
+      const remainingPolicy = await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      });
       if (!hadLegacyGrant && (await this.roleHasPermission(remainingPolicy, normalizedRoleId, guildId))) {
         await this.persistRoleIdList(commandRoleExclusionsKey(commandName), [
           ...stored.excludedRoleIds,
@@ -880,7 +901,9 @@ export class CommandPermissionService {
         return {
           roleId: normalizedRoleId,
           outcome: "excluded",
-          policy: await this.getPermissionPolicy(commandName, guildId),
+          policy: await this.getPermissionPolicy(commandName, guildId, {
+            includeKnownParents: true,
+          }),
         };
       }
       return {
@@ -890,7 +913,9 @@ export class CommandPermissionService {
       };
     }
 
-    const policy = await this.getPermissionPolicy(commandName, guildId);
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
     if (!(await this.roleHasPermission(policy, normalizedRoleId, guildId))) {
       return {
         roleId: normalizedRoleId,
@@ -906,7 +931,9 @@ export class CommandPermissionService {
     return {
       roleId: normalizedRoleId,
       outcome: "excluded",
-      policy: await this.getPermissionPolicy(commandName, guildId),
+      policy: await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      }),
     };
   }
 
@@ -985,7 +1012,9 @@ export class CommandPermissionService {
     commandName: string,
     guildId?: string | null,
   ): Promise<string> {
-    const policy = await this.getPermissionPolicy(commandName, guildId);
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
     const lines: string[] = [];
     if (policy.inheritedFrom) {
       lines.push(`Inherited from \`/${policy.inheritedFrom}\`.`);
