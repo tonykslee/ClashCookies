@@ -179,6 +179,7 @@ export const COMMAND_PERMISSION_TARGETS = [
   "roster:reset",
   "roster:post",
   "roster:manage",
+  "roster:ping",
   "roster:edit",
   "roster:delete",
   "roster:report",
@@ -243,6 +244,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "roster:reset",
   "roster:post",
   "roster:manage",
+  "roster:ping",
   "roster:edit",
   "roster:delete",
   "roster:report",
@@ -389,6 +391,18 @@ function isFwaLeaderDefaultTarget(target: string): boolean {
 /** Purpose: is known target. */
 function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
+}
+
+/** Purpose: expand permission targets with backward-compatible policy fallbacks. */
+function getEffectivePermissionTargets(targets: string[]): string[] {
+  const effective: string[] = [];
+  for (const target of targets) {
+    effective.push(target);
+    if (target === "roster:ping") {
+      effective.push("roster:manage");
+    }
+  }
+  return [...new Set(effective)];
 }
 
 export function getPermissionTargetPrefixesForCommand(
@@ -548,29 +562,7 @@ export class CommandPermissionService {
     commandName: string,
     interaction: GuildInteraction,
   ): Promise<boolean> {
-    if (hasOwnerBypass(interaction)) return true;
-
-    if (!interaction.inGuild()) return true;
-
-    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      return true;
-    }
-
-    const allowedRoles = await this.getAllowedRoleIds(commandName);
-    if (allowedRoles.length === 0) {
-      if (isFwaLeaderDefaultTarget(commandName)) {
-        const guildId = interaction.guildId;
-        if (!guildId) return false;
-        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
-        if (!leaderRoleId) return false;
-        const userRoles = await getInteractionRoleIds(interaction);
-        return userRoles.includes(leaderRoleId);
-      }
-      return isAdminDefaultTarget(commandName) ? false : true;
-    }
-
-    const userRoles = await getInteractionRoleIds(interaction);
-    return allowedRoles.some((id) => userRoles.includes(id));
+    return this.canUseAnyTarget([commandName], interaction);
   }
 
   async canUseAnyTarget(
@@ -587,8 +579,10 @@ export class CommandPermissionService {
       return true;
     }
 
+    const effectiveTargets = getEffectivePermissionTargets(targets);
+
     // First, find the most-specific explicit whitelist and enforce it.
-    for (const target of targets) {
+    for (const target of effectiveTargets) {
       const allowedRoles = await this.getAllowedRoleIds(target);
       if (allowedRoles.length > 0) {
         const userRoles = await getInteractionRoleIds(interaction);
@@ -598,7 +592,7 @@ export class CommandPermissionService {
 
     // If no explicit whitelist is set, enforce first matching admin-default target.
     const userRoles = await getInteractionRoleIds(interaction);
-    for (const target of targets) {
+    for (const target of effectiveTargets) {
       if (isFwaLeaderDefaultTarget(target)) {
         const guildId = interaction.guildId;
         if (!guildId) return false;
@@ -609,7 +603,7 @@ export class CommandPermissionService {
     }
 
     // If no explicit whitelist is set, enforce first matching admin-default target.
-    for (const target of targets) {
+    for (const target of effectiveTargets) {
       if (isAdminDefaultTarget(target)) {
         return false;
       }
@@ -625,6 +619,10 @@ export class CommandPermissionService {
   ): Promise<string> {
     const roles = await this.getAllowedRoleIds(commandName);
     if (roles.length === 0) {
+      if (commandName === "roster:ping") {
+        const inherited = await this.getPolicySummary("roster:manage", guildId);
+        return `Inherited from \`/roster:manage\`: ${inherited}`;
+      }
       if (isFwaLeaderDefaultTarget(commandName)) {
         if (!guildId) return "Default: FWA Leader role + Administrator.";
         const leaderRoleId = await this.getFwaLeaderRoleId(guildId);

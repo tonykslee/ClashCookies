@@ -860,7 +860,7 @@ async function runRosterMutationSideEffects(input: {
 
 async function canUseRosterPostTarget(
   interaction: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction | ModalSubmitInteraction,
-  target: "roster:manage" | "roster:refresh" | "roster:report",
+  target: "roster:manage" | "roster:ping" | "roster:refresh" | "roster:report",
 ): Promise<boolean> {
   return rosterPermissionService.canUseAnyTarget([target], interaction as any);
 }
@@ -3184,6 +3184,14 @@ export async function handleRosterPingActionButtonInteraction(interaction: Butto
   const parsed = parseRosterPingActionButtonCustomId(interaction.customId);
   if (!parsed) return;
 
+  if (!(await canUseRosterPostTarget(interaction, "roster:ping"))) {
+    await interaction.reply({
+      content: "You do not have permission to send roster pings.",
+      ephemeral: true,
+    });
+    return;
+  }
+
   await interaction.deferUpdate().catch(() => undefined);
   const result = await rosterService.confirmRosterPingSelectionPanel({
     sessionId: parsed.sessionId,
@@ -4015,9 +4023,9 @@ export async function handleRosterReportPingButtonInteraction(
   const parsed = parseRosterReportPingButtonCustomId(interaction.customId);
   if (!parsed) return;
 
-  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
+  if (!(await canUseRosterPostTarget(interaction, "roster:ping"))) {
     await interaction.reply({
-      content: "You do not have permission to manage this roster.",
+      content: "You do not have permission to send roster pings.",
       ephemeral: true,
     });
     return;
@@ -4068,8 +4076,8 @@ async function handleRosterPingSubcommand(
     return;
   }
 
-  if (!(await canUseRosterPostTarget(interaction, "roster:manage"))) {
-    await interaction.editReply("You do not have permission to manage this roster.");
+  if (!(await canUseRosterPostTarget(interaction, "roster:ping"))) {
+    await interaction.editReply("You do not have permission to send roster pings.");
     return;
   }
 
