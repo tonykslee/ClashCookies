@@ -18,6 +18,7 @@ import {
   COMMAND_PERMISSION_TARGETS,
   CommandPermissionService,
   MANAGE_COMMAND_ROLES_COMMAND,
+  type PermissionRoleMutation,
 } from "../services/CommandPermissionService";
 const LIST_PAGE_SIZE = 8;
 const LIST_PREV_ID = "permission-list-prev";
@@ -27,9 +28,26 @@ function isPermissionTarget(value: string): value is (typeof COMMAND_PERMISSION_
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(value);
 }
 
-function formatRoleList(roleIds: string[]): string {
-  if (roleIds.length === 0) return "(none)";
-  return roleIds.map((id) => `<@&${id}>`).join(", ");
+/** Purpose: explain one additive permission mutation to the command user. */
+function formatRoleMutation(
+  mutation: PermissionRoleMutation,
+  commandName: string,
+  action: "add" | "remove",
+): string {
+  const role = `<@&${mutation.roleId}>`;
+  if (action === "add") {
+    if (mutation.outcome === "added") return `Added access for ${role} to \`/${commandName}\`.`;
+    if (mutation.outcome === "restored") return `Restored access for ${role} to \`/${commandName}\`.`;
+    return `No change: ${role} already has access to \`/${commandName}\`.`;
+  }
+
+  if (mutation.outcome === "removed") return `Removed explicit access for ${role} from \`/${commandName}\`.`;
+  if (mutation.outcome === "excluded") return `Excluded ${role} from effective access to \`/${commandName}\`.`;
+  if (mutation.outcome === "already_excluded") return `No change: ${role} is already excluded from \`/${commandName}\`.`;
+  if (mutation.outcome === "administrator_bypass") {
+    return `No change: Discord Administrator bypass cannot be revoked for \`/${commandName}\`.`;
+  }
+  return `No change: ${role} has no removable access to \`/${commandName}\`; Discord Administrator bypass remains unconditional.`;
 }
 
 function getRoleIdsForAdd(interaction: ChatInputCommandInteraction): string[] {
@@ -81,11 +99,11 @@ function getListEmbed(
 
 export const CommandRole: Command = {
   name: MANAGE_COMMAND_ROLES_COMMAND,
-  description: "Set which roles can use each command",
+  description: "Add or remove role access for each command",
   options: [
     {
       name: "add",
-      description: "Allow a role to use a command",
+      description: "Add role access without replacing defaults or existing roles",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -129,7 +147,7 @@ export const CommandRole: Command = {
     },
     {
       name: "remove",
-      description: "Remove a role from a command whitelist",
+      description: "Remove one role's access without changing other roles",
       type: ApplicationCommandOptionType.Subcommand,
       options: [
         {
@@ -191,10 +209,7 @@ export const CommandRole: Command = {
       }
 
       if (commandInput) {
-        const roleIds = await permissionService.getAllowedRoleIds(commandInput);
-        const summary = roleIds.length
-          ? `Whitelisted roles: ${formatRoleList(roleIds)}`
-          : await permissionService.getPolicySummary(commandInput, interaction.guildId);
+        const summary = await permissionService.getPolicySummary(commandInput, interaction.guildId);
         await safeReply(interaction, {
           ephemeral: true,
           content: `\`/${commandInput}\` roles:\n${summary}`,
@@ -306,17 +321,18 @@ export const CommandRole: Command = {
         return;
       }
 
-      let next = await permissionService.getAllowedRoleIds(commandInput);
+      const mutations: PermissionRoleMutation[] = [];
       for (const roleId of roleIds) {
-        next = await permissionService.addAllowedRoleId(commandInput, roleId);
+        mutations.push(
+          await permissionService.addRoleAccess(commandInput, roleId, interaction.guildId),
+        );
       }
-
-      const addedText = roleIds.map((id) => `<@&${id}>`).join(", ");
+      const summary = await permissionService.getPolicySummary(commandInput, interaction.guildId);
       await safeReply(interaction, {
         ephemeral: true,
-        content:
-          `Added ${addedText} to \`/${commandInput}\`.\n` +
-          `Allowed roles: ${formatRoleList(next)}`,
+        content: `${mutations
+          .map((mutation) => formatRoleMutation(mutation, commandInput, "add"))
+          .join("\n")}\n${summary}`,
       });
       return;
     }
@@ -331,15 +347,15 @@ export const CommandRole: Command = {
     }
 
     if (subcommand === "remove") {
-      const next = await permissionService.removeAllowedRoleId(commandInput, role.id);
-      const summary = next.length
-        ? `Allowed roles: ${formatRoleList(next)}`
-        : await permissionService.getPolicySummary(commandInput, interaction.guildId);
+      const mutation = await permissionService.removeRoleAccess(
+        commandInput,
+        role.id,
+        interaction.guildId,
+      );
+      const summary = await permissionService.getPolicySummary(commandInput, interaction.guildId);
       await safeReply(interaction, {
         ephemeral: true,
-        content:
-          `Removed <@&${role.id}> from \`/${commandInput}\`.\n` +
-          summary,
+        content: `${formatRoleMutation(mutation, commandInput, "remove")}\n${summary}`,
       });
       return;
     }

@@ -374,6 +374,10 @@ describe("/link run", () => {
     prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$executeRaw.mockReset();
+    prismaMock.$executeRaw.mockResolvedValue(0);
 
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.trackedClan.findUnique.mockResolvedValue(null);
@@ -583,10 +587,6 @@ describe("/link run", () => {
   it("allows FWA Leaders to create links for another Discord user", async () => {
     vi.spyOn(
       CommandPermissionService.prototype,
-      "getAllowedRoleIds",
-    ).mockResolvedValue([]);
-    vi.spyOn(
-      CommandPermissionService.prototype,
       "getFwaLeaderRoleId",
     ).mockResolvedValue("leader-role-1");
     prismaMock.playerLink.findUnique.mockResolvedValue(null);
@@ -598,7 +598,6 @@ describe("/link run", () => {
       userId: "111111111111111111",
       memberRoleIds: ["leader-role-1"],
     });
-
     await Link.run({} as any, interaction as any, {} as any);
 
     expect(prismaMock.playerLink.create).toHaveBeenCalledWith({

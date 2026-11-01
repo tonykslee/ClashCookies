@@ -22,6 +22,9 @@ function buildInteraction(input?: { isAdmin?: boolean; roleIds?: string[] }) {
 }
 
 describe("link permission defaults", () => {
+  const LINK_ROLE = "444444444444444444";
+  const FWA_LEADER_ROLE = "555555555555555555";
+
   it("keeps verify and status registered as explicit permission targets", () => {
     expect(COMMAND_PERMISSION_TARGETS).toContain("link:verify");
     expect(COMMAND_PERMISSION_TARGETS).toContain("link:status");
@@ -83,6 +86,77 @@ describe("link permission defaults", () => {
     await expect(
       service.canUseAnyTarget(["link:sync-clashperk"], interaction),
     ).resolves.toBe(false);
+  });
+
+  it("does not let a broad link grant authorize sensitive direct overrides", async () => {
+    const settings = {
+      get: vi.fn(async (key: string) =>
+        key === "command_roles:link" ? LINK_ROLE : null,
+      ),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: false, roleIds: [LINK_ROLE] });
+
+    await expect(
+      service.canUseAnyTarget(["link:create:other-user"], interaction),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["link:delete:admin"], interaction),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["link:embed"], interaction),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(["link:sync-clashperk"], interaction),
+    ).resolves.toBe(false);
+  });
+
+  it("requires and honors explicit sensitive-target grants", async () => {
+    const settings = {
+      get: vi.fn(async (key: string) =>
+        key === "command_roles:link:create:other-user" ? LINK_ROLE : null,
+      ),
+    };
+    const service = new CommandPermissionService(settings as any);
+    const interaction = buildInteraction({ isAdmin: false, roleIds: [LINK_ROLE] });
+
+    await expect(
+      service.canUseAnyTarget(["link:create:other-user"], interaction),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps FWA Leader access for creating a link for another user", async () => {
+    const settings = {
+      get: vi.fn(async (key: string) =>
+        key === "fwa_leader_role:guild-1" ? FWA_LEADER_ROLE : null,
+      ),
+    };
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.canUseAnyTarget(
+        ["link:create:other-user"],
+        buildInteraction({ roleIds: [FWA_LEADER_ROLE] }),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps Administrator bypass unrestricted for sensitive link overrides", async () => {
+    const service = new CommandPermissionService({ get: vi.fn().mockResolvedValue(null) } as any);
+    const interaction = buildInteraction({ isAdmin: true });
+
+    await expect(
+      service.canUseAnyTarget(["link:create:other-user"], interaction),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["link:delete:admin"], interaction),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["link:embed"], interaction),
+    ).resolves.toBe(true);
+    await expect(
+      service.canUseAnyTarget(["link:sync-clashperk"], interaction),
+    ).resolves.toBe(true);
   });
 
   it("allows admins for verify and status too", async () => {

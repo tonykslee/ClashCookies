@@ -15,6 +15,7 @@ import {
   setFwaMailPreviewPayloadForTest,
 } from "../src/commands/Fwa";
 import { prisma } from "../src/prisma";
+import { CommandPermissionService } from "../src/services/CommandPermissionService";
 import { WarEventLogService } from "../src/services/WarEventLogService";
 
 const prismaMock = vi.hoisted(() => ({
@@ -241,6 +242,28 @@ describe("fwa mail confirm button", () => {
       .spyOn(WarEventLogService.prototype, "refreshBattleDayPosts")
       .mockResolvedValue(undefined);
     vi.spyOn(globalThis, "setInterval").mockImplementation((() => 1) as any);
+  });
+
+  it.each([
+    [true, handleFwaMailConfirmButton, buildFwaMailConfirmCustomId("owner-1", "preview-key")],
+    [false, handleFwaMailConfirmNoPingButton, buildFwaMailConfirmNoPingCustomId("owner-1", "preview-key")],
+  ])("rejects non-guild final mail confirmations (pingRole=%s)", async (_pingRole, handler, customId) => {
+    const interaction = createInteraction({
+      customId,
+      send: vi.fn(),
+    });
+    interaction.guildId = null;
+    interaction.inGuild = () => false;
+
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget");
+    await handler(interaction as any);
+
+    expect(permissionSpy).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content:
+        "You do not have permission to send war mail. Default access is `/fwa leader-role` + Administrator.",
+    });
   });
 
   afterEach(() => {

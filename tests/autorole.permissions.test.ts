@@ -70,12 +70,18 @@ describe("autorole permission defaults", () => {
 
     await expect(
       service.getPolicySummary("autorole:refresh", "guild-1"),
-    ).resolves.toBe("Default: FWA Leader role <@&123456789012345678> + Administrator.");
+    ).resolves.toBe(
+      "Effective default: FWA Leader role <@&123456789012345678> + Administrator. Administrator bypass: always allowed.",
+    );
     await expect(
       service.getPolicySummary("autorole:refresh:user", "guild-1"),
-    ).resolves.toBe("Default: Administrator only.");
+    ).resolves.toBe(
+      "Effective default: Administrator only. Administrator bypass: always allowed.",
+    );
     await expect(
       service.getPolicySummary("autorole:config", "guild-1"),
-    ).resolves.toBe("Default: Administrator only.");
+    ).resolves.toBe(
+      "Effective default: Administrator only. Administrator bypass: always allowed.",
+    );
   });
 });

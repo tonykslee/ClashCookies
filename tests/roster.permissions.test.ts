@@ -131,7 +131,7 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:ping"], buildInteraction({ roleIds: ["222222222222222222"] })),
     ).resolves.toBe(false);
     await expect(service.getPolicySummary("roster:ping", "guild-1")).resolves.toBe(
-      "Inherited from `/roster:manage`: Allowed roles: <@&111111111111111111>",
+      "Inherited from `/roster:manage`. Effective default: Legacy restrictive whitelist (built-in defaults excluded). Explicitly allowed roles: <@&111111111111111111> Administrator bypass: always allowed.",
     );
   });
 
@@ -152,7 +152,7 @@ describe("roster permission defaults", () => {
       service.canUseAnyTarget(["roster:ping"], buildInteraction({ roleIds: ["333333333333333333"] })),
     ).resolves.toBe(true);
     await expect(service.getPolicySummary("roster:ping", "guild-1")).resolves.toBe(
-      "Allowed roles: <@&333333333333333333>",
+      "Effective default: Legacy restrictive whitelist (built-in defaults excluded). Explicitly allowed roles: <@&333333333333333333> Administrator bypass: always allowed.",
     );
   });
 });
