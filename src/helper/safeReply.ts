@@ -1,12 +1,18 @@
 import { ChatInputCommandInteraction } from "discord.js";
+import type { EmbedBuilder } from "discord.js";
 import { formatError } from "./formatError";
 import { truncateDiscordContent } from "./discordContent";
 
 export async function safeReply(
   interaction: ChatInputCommandInteraction,
-  options: { content: string; ephemeral?: boolean }
+  options: { content?: string; embeds?: EmbedBuilder[]; ephemeral?: boolean }
 ): Promise<void> {
-  const safeOptions = { ...options, content: truncateDiscordContent(options.content) };
+  const safeOptions = {
+    ...options,
+    ...(options.content === undefined
+      ? {}
+      : { content: truncateDiscordContent(options.content) }),
+  };
   const isCompo = interaction.commandName === "compo";
   const compoSubcommand = (() => {
     if (!isCompo) return "";

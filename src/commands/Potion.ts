@@ -2,6 +2,7 @@ import {
   ApplicationCommandOptionType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
 } from "discord.js";
 import { Command } from "../Command";
 import { safeReply } from "../helper/safeReply";
@@ -16,80 +17,136 @@ import {
   type PotionType,
 } from "../services/PotionCalculatorService";
 
-/** Purpose: render the potion calculator result into a compact Discord reply. */
-function buildPotionResultContent(result: Extract<PotionCalculationResult, { kind: "valid" }>): string {
+function completionTimestamp(unixSeconds: number): string {
+  return `<t:${unixSeconds}:F> (<t:${unixSeconds}:R>)`;
+}
+
+function potionCountLabel(numPots: number): string {
+  return `${numPots} ${numPots === 1 ? "potion" : "potions"}`;
+}
+
+function addHelperField(
+  embed: EmbedBuilder,
+  helperLevel: number | undefined,
+  helperNextInSeconds: number | undefined,
+): void {
+  if (helperLevel === undefined) return;
+  embed.addFields({
+    name: "Helper",
+    value: `Level ${helperLevel}\nNext work session: ${formatPotionDuration(helperNextInSeconds ?? 0)}`,
+    inline: true,
+  });
+}
+
+function addActiveBoostField(
+  embed: EmbedBuilder,
+  boostRemainingSeconds: number | undefined,
+  boostRemainingDisplay: string | undefined,
+  effectiveBoostWindowSeconds: number | undefined,
+): boolean {
+  if (boostRemainingSeconds === undefined || effectiveBoostWindowSeconds === undefined) {
+    return false;
+  }
+  embed.addFields({
+    name: "Active boost",
+    value: [
+      `Remaining: ${boostRemainingDisplay ?? formatPotionDuration(boostRemainingSeconds)}`,
+      `Total boosted window: ${formatPotionDuration(effectiveBoostWindowSeconds)}`,
+    ].join("\n"),
+    inline: true,
+  });
+  return true;
+}
+
+/** Purpose: render the explicit potion calculation as one compact embed. */
+function buildPotionResultEmbed(
+  result: Extract<PotionCalculationResult, { kind: "valid" }>,
+): EmbedBuilder {
   const potionLabel = result.numPots === 1 ? "potion" : "potions";
-  const boostWindowDisplay = formatPotionDuration(result.boostWindowSeconds);
-  const content = [
-    "**Potion Calculator**",
-    `Type: **${result.typeLabel}**`,
-    `Original time left: **${result.originalTimeLeftDisplay}**`,
-    `Boost applied: **${result.numPots} ${potionLabel} · ${result.speedMultiplier}x for ${boostWindowDisplay}**`,
-    `Completes in: **${result.completionDurationDisplay}**`,
-    `Completion time: <t:${result.completionUnixSeconds}:F> (<t:${result.completionUnixSeconds}:R>)`,
-    `Time saved: **${result.timeSavedDisplay}**`,
-    "Assumes all selected potions are activated immediately.",
-  ];
-
-  if (result.helperLevel !== undefined) {
-    content.push(
-      `Helper assumption: **level ${result.helperLevel} · next work session in ${formatPotionDuration(result.helperNextInSeconds ?? 0)}**`,
-      "Helper contribution repeats for 1 hour every 23 hours and is added to, rather than multiplied by, potion speed.",
+  const embed = new EmbedBuilder()
+    .setTitle(`${result.typeLabel} Calculator`)
+    .setDescription(`**Finishes in ${result.completionDurationDisplay}**`)
+    .addFields(
+      { name: "Completion", value: completionTimestamp(result.completionUnixSeconds), inline: false },
+      { name: "Time saved", value: result.timeSavedDisplay, inline: true },
+      { name: "Original upgrade", value: result.originalTimeLeftDisplay, inline: true },
+      {
+        name: "Potions & boost",
+        value: `${result.numPots} ${potionLabel} · ${result.speedMultiplier}x for ${formatPotionDuration(result.boostWindowSeconds)}`,
+        inline: false,
+      },
     );
-  }
 
-  if (result.boostRemainingSeconds !== undefined && result.effectiveBoostWindowSeconds !== undefined) {
-    content.splice(
-      4,
-      0,
-      `Current boost remaining: **${result.boostRemainingDisplay ?? formatPotionDuration(result.boostRemainingSeconds)}**`,
-      `Total boosted window: **${formatPotionDuration(result.effectiveBoostWindowSeconds)}**`,
-    );
-    content.push(
-      "Approximation: in-game time-left decreases rapidly while boosted, so the estimate may differ slightly depending on when these values were read/submitted.",
-    );
-  }
-
-  return content.join("\n");
+  const hasActiveBoost = addActiveBoostField(
+    embed,
+    result.boostRemainingSeconds,
+    result.boostRemainingDisplay,
+    result.effectiveBoostWindowSeconds,
+  );
+  addHelperField(embed, result.helperLevel, result.helperNextInSeconds);
+  embed.setFooter({
+    text: hasActiveBoost
+      ? "Estimate assumes immediate activation. Active boost countdowns may vary slightly in game."
+      : "Estimate assumes immediate activation of the selected potions.",
+  });
+  return embed;
 }
 
 /** Purpose: render the minimum-pot recommendation and its boundary comparison. */
-function buildPotionRecommendationContent(
+function buildPotionRecommendationEmbed(
   result: Extract<PotionRecommendationResult, { kind: "recommendation" }>,
-): string {
-  const potionLabel = result.recommendedNumPots === 1 ? "potion" : "potions";
-  const lines = [
-    "**Potion Calculator**",
-    `Type: **${result.typeLabel}**`,
-    `Original time left: **${result.originalTimeLeftDisplay}**`,
-    `Recommendation: **${result.recommendedNumPots} additional ${potionLabel}**`,
-  ];
-
-  if (result.boostRemainingSeconds !== undefined) {
-    lines.push(`Current boost remaining: **${result.boostRemainingDisplay}**`);
-  }
-  if (result.helperLevel !== undefined) {
-    lines.push(
-      `Helper assumption: **level ${result.helperLevel} · next work session in ${formatPotionDuration(result.helperNextInSeconds ?? 0)}**`,
-      "Helper contribution repeats for 1 hour every 23 hours and is added to, rather than multiplied by, potion speed.",
+): EmbedBuilder {
+  const scenario = result.recommendedScenario;
+  const embed = new EmbedBuilder()
+    .setTitle(`${result.typeLabel} Calculator`)
+    .setDescription(
+      `**Recommended: ${result.recommendedNumPots} additional ${result.recommendedNumPots === 1 ? "potion" : "potions"}**`,
+    )
+    .addFields(
+      { name: "Original upgrade", value: result.originalTimeLeftDisplay, inline: true },
+      {
+        name: "Potion boost",
+        value: `${result.speedMultiplier}x · ${formatPotionDuration(result.boostSecondsPerPotion)} per potion`,
+        inline: true,
+      },
     );
-  }
 
   if (result.previousScenario) {
-    const previousLabel = result.previousScenario.numPots === 1 ? "potion" : "potions";
-    lines.push(
-      `With **${result.previousScenario.numPots} ${previousLabel}**: **${result.previousScenario.upgradeTimeRemainingAtBoostExpiryDisplay}** upgrade time remains when boosts expire; estimated completion in **${result.previousScenario.completionDurationDisplay}** at <t:${result.previousScenario.completionUnixSeconds}:F> (<t:${result.previousScenario.completionUnixSeconds}:R>).`,
-    );
+    const previous = result.previousScenario;
+    embed.addFields({
+      name: `${potionCountLabel(previous.numPots)} (N−1)`,
+      value: [
+        `Completion: ${previous.completionDurationDisplay}`,
+        `At boost expiry: ${previous.upgradeTimeRemainingAtBoostExpiryDisplay} upgrade time remaining`,
+        `Complete: ${completionTimestamp(previous.completionUnixSeconds)}`,
+      ].join("\n"),
+      inline: false,
+    });
   }
 
-  const scenario = result.recommendedScenario;
-  lines.push(
-    `With **${scenario.numPots} ${potionLabel}**: estimated completion in **${scenario.completionDurationDisplay}** at <t:${scenario.completionUnixSeconds}:F> (<t:${scenario.completionUnixSeconds}:R>).`,
-    `Potion boost remaining at completion: **${scenario.potionBoostRemainingAtCompletionDisplay}**`,
-    "Assumes all recommended potions are activated immediately; results are estimates based on the supplied time and boost values.",
-  );
+  embed.addFields({
+    name: `${potionCountLabel(scenario.numPots)} (recommended)`,
+    value: [
+      `Completion: ${scenario.completionDurationDisplay}`,
+      `Unused boost at completion: ${scenario.potionBoostRemainingAtCompletionDisplay}`,
+      `Complete: ${completionTimestamp(scenario.completionUnixSeconds)}`,
+    ].join("\n"),
+    inline: false,
+  });
 
-  return lines.join("\n");
+  const hasActiveBoost = addActiveBoostField(
+    embed,
+    result.boostRemainingSeconds,
+    result.boostRemainingDisplay,
+    scenario.effectiveBoostWindowSeconds,
+  );
+  addHelperField(embed, result.helperLevel, result.helperNextInSeconds);
+  embed.setFooter({
+    text: hasActiveBoost
+      ? "Estimate assumes immediate activation. Active boost countdowns may vary slightly in game."
+      : "Estimate assumes immediate activation of the recommended potions.",
+  });
+  return embed;
 }
 
 /** Purpose: normalize the potion type option into one of the fixed calculator keys. */
@@ -218,10 +275,11 @@ export const Potion: Command = {
 
       await safeReply(interaction, {
         ephemeral: true,
-        content:
+        embeds: [
           result.kind === "recommendation"
-            ? buildPotionRecommendationContent(result)
-            : buildPotionResultContent(result),
+            ? buildPotionRecommendationEmbed(result)
+            : buildPotionResultEmbed(result),
+        ],
       });
     } catch (err) {
       console.error(`potion command failed: ${formatError(err)}`);
