@@ -14,6 +14,7 @@
 - `/link create` self-links are public; selecting another Discord user uses the same FWA leader-role + Administrator override policy when no explicit whitelist is set.
 - `/cwl members` and `/cwl rotations show` are public by default; `/cwl rotations create`, `/cwl rotations import`, and `/cwl rotations export` default to Administrator.
 - `/layout` is an Administrator-only creation/presentation mutation; its canonical post buttons remain public under their existing scope rules.
+- `/roster ping` has the independent `roster:ping` target. With no explicit ping whitelist, it inherits the existing `roster:manage` policy; adding `command:roster:ping` creates an explicit policy that overrides inherited manager access. Administrators retain access, and the roster report button plus final confirmation use the same rechecked policy.
 
 ## Default Administrator-Only Targets
 - `/clan configure`, `/clan cwl-tags`, `/clan remove`
@@ -28,6 +29,7 @@
 - `/cwl rotations create`
 - `/cwl rotations import`
 - `/cwl rotations export`
+- `/roster ping` (inherits `roster:manage` unless an explicit `roster:ping` whitelist is configured)
 
 ## Role Whitelisting
 - Use `/permission add` to whitelist roles per command target.
@@ -71,6 +73,10 @@ Examples:
   - `/permission add command:recruitment role:@RoleX`
 - Lock `/notify` to role `@RoleX`:
   - `/permission add command:notify role:@RoleX`
+- Grant only `@RosterPing` access to roster pings:
+  - `/permission add command:roster:ping role:@RosterPing`
+- Inspect the effective ping policy:
+  - `/permission list command:roster:ping`
 
 ## Notes
 - `/fwa match-type` is Administrator-only by default.
