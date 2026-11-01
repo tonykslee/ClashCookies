@@ -3773,6 +3773,7 @@ describe("/roster command", () => {
   });
 
   it("opens the roster ping preview with the requested target set", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
     (rosterService.createRosterPingSelectionPanel as any).mockResolvedValue({
       outcome: "ready",
       panel: {
@@ -3815,6 +3816,7 @@ describe("/roster command", () => {
     const cocService = {} as any;
     await Roster.run({} as any, interaction as any, cocService);
 
+    expect(permissionSpy).toHaveBeenCalledWith(["roster:ping"], expect.anything());
     expect(rosterService.createRosterPingSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
@@ -3848,6 +3850,9 @@ describe("/roster command", () => {
       user: { id: "111111111111111111" },
       guildId: "guild-1",
       inGuild: () => true,
+      memberPermissions: {
+        has: vi.fn().mockReturnValue(true),
+      },
       deferUpdate: vi.fn().mockResolvedValue(undefined),
       editReply: vi.fn().mockResolvedValue(undefined),
       followUp: vi.fn().mockResolvedValue(undefined),
@@ -3869,6 +3874,27 @@ describe("/roster command", () => {
     expect(String(interaction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe(
       "Posted ping for 2 players.",
     );
+  });
+
+  it("rechecks roster:ping before posting from an old confirmation panel", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(false);
+    const interaction = {
+      customId: "roster-ping:confirm:session-old",
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      inGuild: () => true,
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await handleRosterPingActionButtonInteraction(interaction);
+
+    expect(permissionSpy).toHaveBeenCalledWith(["roster:ping"], interaction);
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "You do not have permission to send roster pings.",
+      ephemeral: true,
+    });
+    expect(rosterService.confirmRosterPingSelectionPanel).not.toHaveBeenCalled();
   });
 
   it("opens the roster customization panel when Settings -> Customize is selected", async () => {
@@ -5587,6 +5613,7 @@ describe("/roster command", () => {
   });
 
   it("opens the roster ping preview from the report button using the same ping flow", async () => {
+    const permissionSpy = vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(true);
     (rosterService.createRosterPingSelectionPanel as any).mockResolvedValue({
       outcome: "ready",
       panel: {
@@ -5625,6 +5652,7 @@ describe("/roster command", () => {
 
     await handleRosterReportPingButtonInteraction(interaction, {} as any);
 
+    expect(permissionSpy).toHaveBeenCalledWith(["roster:ping"], interaction);
     expect(rosterService.createRosterPingSelectionPanel).toHaveBeenCalledWith({
       rosterId: "roster-1",
       discordUserId: "111111111111111111",
