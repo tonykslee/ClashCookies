@@ -321,18 +321,25 @@ export const CommandRole: Command = {
         return;
       }
 
-      const mutations: PermissionRoleMutation[] = [];
       for (const roleId of roleIds) {
-        mutations.push(
-          await permissionService.addRoleAccess(commandInput, roleId, interaction.guildId),
-        );
+        await permissionService.addRoleAccess(commandInput, roleId, interaction.guildId);
       }
-      const summary = await permissionService.getPolicySummary(commandInput, interaction.guildId);
+      const allowed = await permissionService.getEffectiveAllowedRoleSummary(
+        commandInput,
+        interaction.guildId,
+      );
+      const allowedRoles = allowed.everyone
+        ? "Everyone"
+        : ["Administrator", ...allowed.roleIds.map((roleId) => `<@&${roleId}>`)].filter(
+            (role, index, roles) => roles.indexOf(role) === index,
+          ).join(", ");
+      const excludedRoleIds = [...new Set(allowed.excludedRoleIds)];
+      const excludedLine = allowed.everyone && excludedRoleIds.length > 0
+        ? `\nExcluded: ${excludedRoleIds.map((roleId) => `<@&${roleId}>`).join(", ")}`
+        : "";
       await safeReply(interaction, {
         ephemeral: true,
-        content: `${mutations
-          .map((mutation) => formatRoleMutation(mutation, commandInput, "add"))
-          .join("\n")}\n${summary}`,
+        content: `/${commandInput}\nAllowed: ${allowedRoles}${excludedLine}`,
       });
       return;
     }
