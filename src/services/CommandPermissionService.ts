@@ -221,6 +221,7 @@ const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "notify:war",
   "link:embed",
   "link:sync-clashperk",
+  "link:delete:admin",
   "bot-logs",
   "bot:status",
   "warplan",
@@ -334,6 +335,21 @@ function commandRolesKey(commandName: string): string {
   return `command_roles:${normalizePermissionTargetNamespace(commandName)}`;
 }
 
+/** Purpose: build the additive role-grant setting key. */
+function commandRoleAdditionsKey(commandName: string): string {
+  return `command_roles_additions:${normalizePermissionTargetNamespace(commandName)}`;
+}
+
+/** Purpose: build the role-exclusion setting key. */
+function commandRoleExclusionsKey(commandName: string): string {
+  return `command_roles_exclusions:${normalizePermissionTargetNamespace(commandName)}`;
+}
+
+/** Purpose: build the legacy-restrictive marker setting key. */
+function commandRolesRestrictiveMarkerKey(commandName: string): string {
+  return `command_roles_restrictive:${normalizePermissionTargetNamespace(commandName)}`;
+}
+
 /** Purpose: fwa leader role key. */
 function fwaLeaderRoleKey(guildId: string): string {
   return `${FWA_LEADER_ROLE_SETTING_KEY}:${guildId}`;
@@ -393,6 +409,56 @@ function isKnownTarget(target: string): target is CommandPermissionTarget {
   return (COMMAND_PERMISSION_TARGETS as readonly string[]).includes(target);
 }
 
+type PermissionDefaultKind = "everyone" | "fwa_leader" | "administrator";
+
+type StoredPermissionPolicy = {
+  legacyRoleIds: string[];
+  addedRoleIds: string[];
+  excludedRoleIds: string[];
+  hasLegacyRestrictivePolicy: boolean;
+  hasCustomPolicy: boolean;
+};
+
+export type CommandPermissionPolicyLayer = StoredPermissionPolicy & {
+  target: string;
+};
+
+export type CommandPermissionPolicy = StoredPermissionPolicy & {
+  requestedTarget: string;
+  sourceTarget: string;
+  inheritedFrom: string | null;
+  defaultKind: PermissionDefaultKind | "legacy_restrictive";
+  layers: CommandPermissionPolicyLayer[];
+};
+
+export type PermissionRoleMutation = {
+  roleId: string;
+  outcome:
+    | "added"
+    | "restored"
+    | "already_allowed"
+    | "removed"
+    | "excluded"
+    | "already_excluded"
+    | "administrator_bypass"
+    | "no_op";
+  policy: CommandPermissionPolicy;
+};
+
+/** Purpose: identify a target's built-in default policy. */
+function getPermissionDefaultKind(target: string): PermissionDefaultKind {
+  if (isFwaLeaderDefaultTarget(target)) return "fwa_leader";
+  if (isAdminDefaultTarget(target)) return "administrator";
+  return "everyone";
+}
+
+/** Purpose: format permission role mentions for policy summaries. */
+function formatPermissionRoleIds(roleIds: string[]): string {
+  return roleIds.length > 0
+    ? roleIds.map((roleId) => `<@&${roleId}>`).join(", ")
+    : "(none)";
+}
+
 /** Purpose: expand permission targets with backward-compatible policy fallbacks. */
 function getEffectivePermissionTargets(targets: string[]): string[] {
   const effective: string[] = [];
@@ -403,6 +469,30 @@ function getEffectivePermissionTargets(targets: string[]): string[] {
     }
   }
   return [...new Set(effective)];
+}
+
+/** Purpose: resolve known parent targets for permission management summaries and mutations. */
+function getPermissionManagementTargets(commandName: string): string[] {
+  const exactOnlyTargets = new Set([
+    "autorole:refresh:user",
+    "autorole:refresh:role",
+    "defer:config",
+    "link:create:other-user",
+    "link:delete:admin",
+    "link:embed",
+    "link:sync-clashperk",
+    "sync:time:post",
+    "sync:post:status",
+  ]);
+  if (exactOnlyTargets.has(commandName)) return [commandName];
+
+  const targets = [commandName];
+  const segments = commandName.split(":");
+  for (let length = segments.length - 1; length > 0; length -= 1) {
+    const parent = segments.slice(0, length).join(":");
+    if (isKnownTarget(parent)) targets.push(parent);
+  }
+  return targets;
 }
 
 export function getPermissionTargetPrefixesForCommand(
@@ -518,6 +608,335 @@ export class CommandPermissionService {
     return parseRoleIds(raw);
   }
 
+  /** Purpose: load legacy, additive, and excluded role policy state. */
+  private async getStoredPermissionPolicy(commandName: string): Promise<StoredPermissionPolicy> {
+    const [legacyRaw, additionsRaw, exclusionsRaw, restrictiveMarkerRaw] = await Promise.all([
+      this.settings.get(commandRolesKey(commandName)),
+      this.settings.get(commandRoleAdditionsKey(commandName)),
+      this.settings.get(commandRoleExclusionsKey(commandName)),
+      this.settings.get(commandRolesRestrictiveMarkerKey(commandName)),
+    ]);
+    const legacyRoleIds = parseRoleIds(legacyRaw);
+    const addedRoleIds = parseRoleIds(additionsRaw);
+    const excludedRoleIds = parseRoleIds(exclusionsRaw);
+    const hasLegacyRestrictivePolicy =
+      Boolean(restrictiveMarkerRaw?.trim()) || legacyRaw !== null;
+
+    return {
+      legacyRoleIds,
+      addedRoleIds,
+      excludedRoleIds,
+      hasLegacyRestrictivePolicy,
+      hasCustomPolicy:
+        hasLegacyRestrictivePolicy || addedRoleIds.length > 0 || excludedRoleIds.length > 0,
+    };
+  }
+
+  /** Purpose: persist one role-id list while deleting empty additive state. */
+  private async persistRoleIdList(key: string, roleIds: string[]): Promise<void> {
+    const uniqueRoleIds = [...new Set(roleIds)].filter((roleId) => /^\d+$/.test(roleId));
+    if (uniqueRoleIds.length === 0) {
+      await this.settings.delete(key);
+      return;
+    }
+    await this.settings.set(key, stringifyRoleIds(uniqueRoleIds));
+  }
+
+  /** Purpose: persist a legacy restrictive whitelist without widening its defaults. */
+  private async persistLegacyRoleIds(commandName: string, roleIds: string[]): Promise<void> {
+    const uniqueRoleIds = [...new Set(roleIds)].filter((roleId) => /^\d+$/.test(roleId));
+    if (uniqueRoleIds.length === 0) {
+      await this.settings.delete(commandRolesKey(commandName));
+      await this.settings.set(commandRolesRestrictiveMarkerKey(commandName), "1");
+      return;
+    }
+    await this.settings.set(commandRolesKey(commandName), stringifyRoleIds(uniqueRoleIds));
+  }
+
+  /** Purpose: resolve the first specific policy while retaining additive parent inheritance. */
+  async getPermissionPolicy(
+    targets: string[] | string,
+    _guildId?: string | null,
+    options?: { includeKnownParents?: boolean },
+  ): Promise<CommandPermissionPolicy> {
+    const requestedTarget = typeof targets === "string" ? targets : targets[0] ?? "";
+    const requestedTargets =
+      options?.includeKnownParents === true
+        ? getPermissionManagementTargets(requestedTarget)
+        : typeof targets === "string"
+          ? [targets]
+          : targets;
+    const effectiveTargets = getEffectivePermissionTargets(requestedTargets);
+    const storedPolicies = await Promise.all(
+      effectiveTargets.map((target) => this.getStoredPermissionPolicy(target)),
+    );
+    const restrictiveIndex = storedPolicies.findIndex(
+      (policy) => policy.hasLegacyRestrictivePolicy,
+    );
+    const fwaDefaultIndex = storedPolicies.findIndex((_, index) =>
+      isFwaLeaderDefaultTarget(effectiveTargets[index] ?? ""),
+    );
+    const adminDefaultIndex = storedPolicies.findIndex((_, index) =>
+      isAdminDefaultTarget(effectiveTargets[index] ?? ""),
+    );
+    const defaultIndex = fwaDefaultIndex >= 0 ? fwaDefaultIndex : adminDefaultIndex;
+    const sourceIndex = restrictiveIndex >= 0
+      ? restrictiveIndex
+      : defaultIndex >= 0
+        ? defaultIndex
+        : 0;
+    const sourceTarget = effectiveTargets[sourceIndex] ?? requestedTargets[0] ?? "";
+    const sourcePolicy = storedPolicies[sourceIndex] ?? {
+      legacyRoleIds: [],
+      addedRoleIds: [],
+      excludedRoleIds: [],
+      hasLegacyRestrictivePolicy: false,
+      hasCustomPolicy: false,
+    };
+    const includedPolicies = restrictiveIndex >= 0
+      ? storedPolicies.slice(0, sourceIndex + 1)
+      : storedPolicies;
+    const includedLayers = includedPolicies.map((policy, index) => ({
+      ...policy,
+      target: effectiveTargets[index] ?? "",
+    }));
+    const addedRoleIds = [
+      ...new Set(includedPolicies.flatMap((policy) => policy.addedRoleIds)),
+    ];
+    const excludedRoleIds = [
+      ...new Set(includedPolicies.flatMap((policy) => policy.excludedRoleIds)),
+    ];
+
+    return {
+      requestedTarget: requestedTarget || sourceTarget,
+      sourceTarget,
+      inheritedFrom:
+        sourceTarget && sourceTarget !== (requestedTarget || sourceTarget)
+          ? sourceTarget
+          : null,
+      defaultKind: restrictiveIndex >= 0
+        ? "legacy_restrictive"
+        : getPermissionDefaultKind(sourceTarget),
+      legacyRoleIds: restrictiveIndex >= 0 ? sourcePolicy.legacyRoleIds : [],
+      addedRoleIds,
+      excludedRoleIds,
+      hasLegacyRestrictivePolicy: restrictiveIndex >= 0,
+      hasCustomPolicy: storedPolicies.some((policy) => policy.hasCustomPolicy),
+      layers: includedLayers,
+    };
+  }
+
+  /** Purpose: determine whether a role receives access from a resolved policy. */
+  private async roleHasPermission(
+    policy: CommandPermissionPolicy,
+    roleId: string,
+    guildId?: string | null,
+  ): Promise<boolean> {
+    for (const layer of policy.layers) {
+      if (layer.legacyRoleIds.includes(roleId) || layer.addedRoleIds.includes(roleId)) {
+        return true;
+      }
+      if (layer.excludedRoleIds.includes(roleId)) return false;
+      if (layer.hasLegacyRestrictivePolicy) return false;
+    }
+    if (policy.defaultKind === "everyone") return true;
+    if (policy.defaultKind !== "fwa_leader" || !guildId) return false;
+    const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+    return leaderRoleId === roleId;
+  }
+
+  /** Purpose: add one role without replacing defaults or existing grants. */
+  async addRoleAccess(
+    commandName: string,
+    roleId: string,
+    guildId?: string | null,
+  ): Promise<PermissionRoleMutation> {
+    const normalizedRoleId = String(roleId ?? "").trim();
+    const stored = await this.getStoredPermissionPolicy(commandName);
+    if (!/^\d+$/.test(normalizedRoleId)) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "no_op",
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
+      };
+    }
+
+    if (stored.excludedRoleIds.includes(normalizedRoleId)) {
+      await this.persistRoleIdList(
+        commandRoleExclusionsKey(commandName),
+        stored.excludedRoleIds.filter((id) => id !== normalizedRoleId),
+      );
+      if (stored.hasLegacyRestrictivePolicy && !stored.legacyRoleIds.includes(normalizedRoleId)) {
+        await this.persistLegacyRoleIds(commandName, [
+          ...stored.legacyRoleIds,
+          normalizedRoleId,
+        ]);
+      } else if (!stored.hasLegacyRestrictivePolicy) {
+        const restoredPolicy = await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        });
+        if (!(await this.roleHasPermission(restoredPolicy, normalizedRoleId, guildId))) {
+          await this.persistRoleIdList(commandRoleAdditionsKey(commandName), [
+            ...stored.addedRoleIds,
+            normalizedRoleId,
+          ]);
+        }
+      }
+      return {
+        roleId: normalizedRoleId,
+        outcome: "restored",
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
+      };
+    }
+
+    if (stored.hasLegacyRestrictivePolicy) {
+      if (stored.legacyRoleIds.includes(normalizedRoleId)) {
+        return {
+          roleId: normalizedRoleId,
+          outcome: "already_allowed",
+          policy: await this.getPermissionPolicy(commandName, guildId, {
+            includeKnownParents: true,
+          }),
+        };
+      }
+      await this.persistLegacyRoleIds(commandName, [
+        ...stored.legacyRoleIds,
+        normalizedRoleId,
+      ]);
+      return {
+        roleId: normalizedRoleId,
+        outcome: "added",
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
+      };
+    }
+
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
+    if (await this.roleHasPermission(policy, normalizedRoleId, guildId)) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "already_allowed",
+        policy,
+      };
+    }
+
+    if (stored.addedRoleIds.includes(normalizedRoleId)) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "already_allowed",
+        policy,
+      };
+    }
+    await this.persistRoleIdList(commandRoleAdditionsKey(commandName), [
+      ...stored.addedRoleIds,
+      normalizedRoleId,
+    ]);
+    return {
+      roleId: normalizedRoleId,
+      outcome: "added",
+      policy: await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      }),
+    };
+  }
+
+  /** Purpose: remove one role while preserving defaults, exclusions, and restrictive policy state. */
+  async removeRoleAccess(
+    commandName: string,
+    roleId: string,
+    guildId?: string | null,
+  ): Promise<PermissionRoleMutation> {
+    const normalizedRoleId = String(roleId ?? "").trim();
+    const stored = await this.getStoredPermissionPolicy(commandName);
+    if (!/^\d+$/.test(normalizedRoleId)) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "no_op",
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
+      };
+    }
+    if (stored.excludedRoleIds.includes(normalizedRoleId)) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "already_excluded",
+        policy: await this.getPermissionPolicy(commandName, guildId, {
+          includeKnownParents: true,
+        }),
+      };
+    }
+
+    const hadLegacyGrant = stored.legacyRoleIds.includes(normalizedRoleId);
+    const hadAddedGrant = stored.addedRoleIds.includes(normalizedRoleId);
+    if (hadLegacyGrant) {
+      await this.persistLegacyRoleIds(
+        commandName,
+        stored.legacyRoleIds.filter((id) => id !== normalizedRoleId),
+      );
+    }
+    if (hadAddedGrant) {
+      await this.persistRoleIdList(
+        commandRoleAdditionsKey(commandName),
+        stored.addedRoleIds.filter((id) => id !== normalizedRoleId),
+      );
+    }
+
+    if (hadLegacyGrant || hadAddedGrant) {
+      const remainingPolicy = await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      });
+      if (!hadLegacyGrant && (await this.roleHasPermission(remainingPolicy, normalizedRoleId, guildId))) {
+        await this.persistRoleIdList(commandRoleExclusionsKey(commandName), [
+          ...stored.excludedRoleIds,
+          normalizedRoleId,
+        ]);
+        return {
+          roleId: normalizedRoleId,
+          outcome: "excluded",
+          policy: await this.getPermissionPolicy(commandName, guildId, {
+            includeKnownParents: true,
+          }),
+        };
+      }
+      return {
+        roleId: normalizedRoleId,
+        outcome: "removed",
+        policy: remainingPolicy,
+      };
+    }
+
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
+    if (!(await this.roleHasPermission(policy, normalizedRoleId, guildId))) {
+      return {
+        roleId: normalizedRoleId,
+        outcome: "no_op",
+        policy,
+      };
+    }
+
+    await this.persistRoleIdList(commandRoleExclusionsKey(commandName), [
+      ...stored.excludedRoleIds,
+      normalizedRoleId,
+    ]);
+    return {
+      roleId: normalizedRoleId,
+      outcome: "excluded",
+      policy: await this.getPermissionPolicy(commandName, guildId, {
+        includeKnownParents: true,
+      }),
+    };
+  }
+
   /** Purpose: set allowed role ids. */
   async setAllowedRoleIds(
     commandName: string,
@@ -579,37 +998,13 @@ export class CommandPermissionService {
       return true;
     }
 
-    const effectiveTargets = getEffectivePermissionTargets(targets);
-
-    // First, find the most-specific explicit whitelist and enforce it.
-    for (const target of effectiveTargets) {
-      const allowedRoles = await this.getAllowedRoleIds(target);
-      if (allowedRoles.length > 0) {
-        const userRoles = await getInteractionRoleIds(interaction);
-        return allowedRoles.some((id) => userRoles.includes(id));
-      }
-    }
-
-    // If no explicit whitelist is set, enforce first matching admin-default target.
+    const policy = await this.getPermissionPolicy(targets, interaction.guildId);
     const userRoles = await getInteractionRoleIds(interaction);
-    for (const target of effectiveTargets) {
-      if (isFwaLeaderDefaultTarget(target)) {
-        const guildId = interaction.guildId;
-        if (!guildId) return false;
-        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
-        if (!leaderRoleId) return false;
-        return userRoles.includes(leaderRoleId);
-      }
+    if (userRoles.length === 0) return policy.defaultKind === "everyone";
+    for (const roleId of userRoles) {
+      if (await this.roleHasPermission(policy, roleId, interaction.guildId)) return true;
     }
-
-    // If no explicit whitelist is set, enforce first matching admin-default target.
-    for (const target of effectiveTargets) {
-      if (isAdminDefaultTarget(target)) {
-        return false;
-      }
-    }
-
-    return true;
+    return false;
   }
 
   /** Purpose: get policy summary. */
@@ -617,24 +1012,43 @@ export class CommandPermissionService {
     commandName: string,
     guildId?: string | null,
   ): Promise<string> {
-    const roles = await this.getAllowedRoleIds(commandName);
-    if (roles.length === 0) {
-      if (commandName === "roster:ping") {
-        const inherited = await this.getPolicySummary("roster:manage", guildId);
-        return `Inherited from \`/roster:manage\`: ${inherited}`;
-      }
-      if (isFwaLeaderDefaultTarget(commandName)) {
-        if (!guildId) return "Default: FWA Leader role + Administrator.";
-        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
-        if (!leaderRoleId) {
-          return "Default: Administrator only (set /fwa leader-role).";
-        }
-        return `Default: FWA Leader role <@&${leaderRoleId}> + Administrator.`;
-      }
-      return isAdminDefaultTarget(commandName)
-        ? "Default: Administrator only."
-        : "Default: Everyone can use this command.";
+    const policy = await this.getPermissionPolicy(commandName, guildId, {
+      includeKnownParents: true,
+    });
+    const lines: string[] = [];
+    if (policy.inheritedFrom) {
+      lines.push(`Inherited from \`/${policy.inheritedFrom}\`.`);
     }
-    return `Allowed roles: ${roles.map((id) => `<@&${id}>`).join(", ")}`;
+
+    if (policy.defaultKind === "legacy_restrictive") {
+      lines.push("Effective default: Legacy restrictive whitelist (built-in defaults excluded).");
+      lines.push(
+        `Explicitly allowed roles: ${formatPermissionRoleIds(policy.legacyRoleIds)}`,
+      );
+    } else if (policy.defaultKind === "fwa_leader") {
+      if (!guildId) {
+        lines.push("Effective default: FWA Leader role + Administrator.");
+      } else {
+        const leaderRoleId = await this.getFwaLeaderRoleId(guildId);
+        lines.push(
+          leaderRoleId
+            ? `Effective default: FWA Leader role <@&${leaderRoleId}> + Administrator.`
+            : "Effective default: Administrator only (set /fwa leader-role).",
+        );
+      }
+    } else if (policy.defaultKind === "administrator") {
+      lines.push("Effective default: Administrator only.");
+    } else {
+      lines.push("Effective default: Everyone can use this command.");
+    }
+
+    if (policy.addedRoleIds.length > 0) {
+      lines.push(`Explicitly added roles: ${formatPermissionRoleIds(policy.addedRoleIds)}`);
+    }
+    if (policy.excludedRoleIds.length > 0) {
+      lines.push(`Excluded roles/defaults: ${formatPermissionRoleIds(policy.excludedRoleIds)}`);
+    }
+    lines.push("Administrator bypass: always allowed.");
+    return lines.join(" ");
   }
 }

@@ -33,7 +33,6 @@ import { CoCService } from "../services/CoCService";
 import { listPlayerLinksForClanMembers } from "../services/PlayerLinkService";
 import {
   CommandPermissionService,
-  FWA_LEADER_ROLE_SETTING_KEY,
 } from "../services/CommandPermissionService";
 import {
   buildBaseSwapClanAutocompleteChoices,
@@ -2902,49 +2901,12 @@ function hasOwnerBypassUserId(userId: string): boolean {
   return getOwnerBypassIds().has(userId);
 }
 
-async function getButtonInteractionRoleIds(
-  interaction: ButtonInteraction,
-): Promise<string[]> {
-  if (!interaction.inGuild()) return [];
-
-  const member = interaction.member;
-  if (member && "roles" in member) {
-    const roles = member.roles;
-    if (Array.isArray(roles)) return roles;
-    if (roles && "cache" in roles) {
-      return [...roles.cache.keys()];
-    }
-  }
-
-  const guild = interaction.guild;
-  if (!guild) return [];
-  const fetched = await guild.members.fetch(interaction.user.id);
-  return [...fetched.roles.cache.keys()];
-}
-
 async function canUseFwaMailSendFromButton(
   interaction: ButtonInteraction,
 ): Promise<boolean> {
   if (!interaction.inGuild() || !interaction.guildId) return false;
-  if (hasOwnerBypassUserId(interaction.user.id)) return true;
-  if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator))
-    return true;
-
   const permissionService = new CommandPermissionService();
-  const explicitRoles =
-    await permissionService.getAllowedRoleIds("fwa:mail:send");
-  const userRoles = await getButtonInteractionRoleIds(interaction);
-  if (explicitRoles.length > 0) {
-    return explicitRoles.some((roleId) => userRoles.includes(roleId));
-  }
-
-  const leaderRoleId =
-    (await permissionService.getFwaLeaderRoleId(interaction.guildId)) ??
-    (await new SettingsService().get(
-      `${FWA_LEADER_ROLE_SETTING_KEY}:${interaction.guildId}`,
-    ));
-  if (!leaderRoleId) return false;
-  return userRoles.includes(leaderRoleId);
+  return permissionService.canUseAnyTarget(["fwa:mail:send"], interaction);
 }
 
 /** Purpose: gate `/fwa match` mail debug details to the same leadership/admin policy as mail send. */
