@@ -2904,6 +2904,7 @@ function hasOwnerBypassUserId(userId: string): boolean {
 async function canUseFwaMailSendFromButton(
   interaction: ButtonInteraction,
 ): Promise<boolean> {
+  if (!interaction.inGuild() || !interaction.guildId) return false;
   const permissionService = new CommandPermissionService();
   return permissionService.canUseAnyTarget(["fwa:mail:send"], interaction);
 }

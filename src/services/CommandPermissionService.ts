@@ -418,11 +418,16 @@ type StoredPermissionPolicy = {
   hasCustomPolicy: boolean;
 };
 
+export type CommandPermissionPolicyLayer = StoredPermissionPolicy & {
+  target: string;
+};
+
 export type CommandPermissionPolicy = StoredPermissionPolicy & {
   requestedTarget: string;
   sourceTarget: string;
   inheritedFrom: string | null;
   defaultKind: PermissionDefaultKind | "legacy_restrictive";
+  layers: CommandPermissionPolicyLayer[];
 };
 
 export type PermissionRoleMutation = {
@@ -463,6 +468,36 @@ function getEffectivePermissionTargets(targets: string[]): string[] {
     }
   }
   return [...new Set(effective)];
+}
+
+/** Purpose: resolve known parent targets for permission management summaries and mutations. */
+function getPermissionManagementTargets(commandName: string): string[] {
+  const exactOnlyTargets = new Set([
+    "autorole:refresh:user",
+    "autorole:refresh:role",
+    "defer:config",
+    "sync:time:post",
+    "sync:post:status",
+  ]);
+  if (exactOnlyTargets.has(commandName)) return [commandName];
+
+  const targets = [commandName];
+  const segments = commandName.split(":");
+  for (let length = segments.length - 1; length > 0; length -= 1) {
+    const parent = segments.slice(0, length).join(":");
+    if (isKnownTarget(parent)) targets.push(parent);
+  }
+  return targets;
+}
+
+/** Purpose: apply the same known parent expansion to command and management checks. */
+function expandPermissionTargets(targets: string[] | string): string[] {
+  const requestedTargets = typeof targets === "string" ? [targets] : targets;
+  return [
+    ...new Set(
+      requestedTargets.flatMap((target) => getPermissionManagementTargets(target)),
+    ),
+  ];
 }
 
 export function getPermissionTargetPrefixesForCommand(
@@ -628,7 +663,8 @@ export class CommandPermissionService {
     targets: string[] | string,
     _guildId?: string | null,
   ): Promise<CommandPermissionPolicy> {
-    const requestedTargets = typeof targets === "string" ? [targets] : targets;
+    const requestedTarget = typeof targets === "string" ? targets : targets[0] ?? "";
+    const requestedTargets = expandPermissionTargets(targets);
     const effectiveTargets = getEffectivePermissionTargets(requestedTargets);
     const storedPolicies = await Promise.all(
       effectiveTargets.map((target) => this.getStoredPermissionPolicy(target)),
@@ -659,6 +695,10 @@ export class CommandPermissionService {
     const includedPolicies = restrictiveIndex >= 0
       ? storedPolicies.slice(0, sourceIndex + 1)
       : storedPolicies;
+    const includedLayers = includedPolicies.map((policy, index) => ({
+      ...policy,
+      target: effectiveTargets[index] ?? "",
+    }));
     const addedRoleIds = [
       ...new Set(includedPolicies.flatMap((policy) => policy.addedRoleIds)),
     ];
@@ -667,10 +707,10 @@ export class CommandPermissionService {
     ];
 
     return {
-      requestedTarget: requestedTargets[0] ?? sourceTarget,
+      requestedTarget: requestedTarget || sourceTarget,
       sourceTarget,
       inheritedFrom:
-        sourceTarget && sourceTarget !== (requestedTargets[0] ?? sourceTarget)
+        sourceTarget && sourceTarget !== (requestedTarget || sourceTarget)
           ? sourceTarget
           : null,
       defaultKind: restrictiveIndex >= 0
@@ -681,6 +721,7 @@ export class CommandPermissionService {
       excludedRoleIds,
       hasLegacyRestrictivePolicy: restrictiveIndex >= 0,
       hasCustomPolicy: storedPolicies.some((policy) => policy.hasCustomPolicy),
+      layers: includedLayers,
     };
   }
 
@@ -690,9 +731,12 @@ export class CommandPermissionService {
     roleId: string,
     guildId?: string | null,
   ): Promise<boolean> {
-    if (policy.excludedRoleIds.includes(roleId)) return false;
-    if (policy.legacyRoleIds.includes(roleId) || policy.addedRoleIds.includes(roleId)) {
-      return true;
+    for (const layer of policy.layers) {
+      if (layer.legacyRoleIds.includes(roleId) || layer.addedRoleIds.includes(roleId)) {
+        return true;
+      }
+      if (layer.excludedRoleIds.includes(roleId)) return false;
+      if (layer.hasLegacyRestrictivePolicy) return false;
     }
     if (policy.defaultKind === "everyone") return true;
     if (policy.defaultKind !== "fwa_leader" || !guildId) return false;
@@ -929,19 +973,11 @@ export class CommandPermissionService {
 
     const policy = await this.getPermissionPolicy(targets, interaction.guildId);
     const userRoles = await getInteractionRoleIds(interaction);
-    if (policy.excludedRoleIds.some((roleId) => userRoles.includes(roleId))) {
-      return false;
+    if (userRoles.length === 0) return policy.defaultKind === "everyone";
+    for (const roleId of userRoles) {
+      if (await this.roleHasPermission(policy, roleId, interaction.guildId)) return true;
     }
-    if (policy.legacyRoleIds.some((roleId) => userRoles.includes(roleId))) {
-      return true;
-    }
-    if (policy.addedRoleIds.some((roleId) => userRoles.includes(roleId))) {
-      return true;
-    }
-    if (policy.defaultKind === "everyone") return true;
-    if (policy.defaultKind !== "fwa_leader") return false;
-    const leaderRoleId = await this.getFwaLeaderRoleId(interaction.guildId ?? "");
-    return Boolean(leaderRoleId && userRoles.includes(leaderRoleId));
+    return false;
   }
 
   /** Purpose: get policy summary. */

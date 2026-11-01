@@ -74,7 +74,10 @@ describe("additive command permission management", () => {
       service.canUseAnyTarget(["roster:manage"], buildInteraction({ roleIds: [FIRST_ROLE] })),
     ).resolves.toBe(true);
     await expect(
-      service.canUseAnyTarget(["roster:manage"], buildInteraction({ roleIds: [SECOND_ROLE] })),
+      service.canUseAnyTarget(
+        ["roster:manage"],
+        buildInteraction({ roleIds: [FIRST_ROLE, SECOND_ROLE] }),
+      ),
     ).resolves.toBe(true);
     expect(settings.values.get("command_roles_additions:roster:manage")).toBe(
       `${FIRST_ROLE},${SECOND_ROLE}`,
@@ -98,6 +101,22 @@ describe("additive command permission management", () => {
     ).resolves.toBe(true);
     await expect(
       service.canUseAnyTarget(["roster:manage"], buildInteraction({ isAdmin: true })),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps a user allowed through a separate role after removing another role", async () => {
+    const settings = buildSettings();
+    const service = new CommandPermissionService(settings as any);
+    await service.addRoleAccess("roster:manage", FIRST_ROLE, "guild-1");
+    await service.addRoleAccess("roster:manage", SECOND_ROLE, "guild-1");
+
+    await service.removeRoleAccess("roster:manage", FIRST_ROLE, "guild-1");
+
+    await expect(
+      service.canUseAnyTarget(
+        ["roster:manage"],
+        buildInteraction({ roleIds: [FIRST_ROLE, SECOND_ROLE] }),
+      ),
     ).resolves.toBe(true);
   });
 
@@ -218,5 +237,67 @@ describe("additive command permission management", () => {
     await expect(
       service.canUseAnyTarget(["help", "roster:manage"], buildInteraction({ isAdmin: true })),
     ).resolves.toBe(true);
+  });
+
+  it("lets a child-specific grant override an inherited parent exclusion and lists the same policy", async () => {
+    const settings = buildSettings({
+      [`command_roles_exclusions:sync`]: FIRST_ROLE,
+    });
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.addRoleAccess("sync:retrospective", FIRST_ROLE, "guild-1"),
+    ).resolves.toMatchObject({ outcome: "added" });
+    await expect(
+      service.canUseAnyTarget(
+        ["sync:retrospective", "sync"],
+        buildInteraction({ roleIds: [FIRST_ROLE] }),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      service.getPolicySummary("sync:retrospective", "guild-1"),
+    ).resolves.toEqual(expect.stringContaining(`Explicitly added roles: <@&${FIRST_ROLE}>`));
+    await expect(
+      service.getPolicySummary("sync:retrospective", "guild-1"),
+    ).resolves.toEqual(expect.stringContaining(`Excluded roles/defaults: <@&${FIRST_ROLE}>`));
+  });
+
+  it("does not let an excluded role deny a separate child grant", async () => {
+    const settings = buildSettings({
+      [`command_roles_exclusions:sync`]: FIRST_ROLE,
+      [`command_roles_additions:sync:retrospective`]: SECOND_ROLE,
+    });
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.canUseAnyTarget(
+        ["sync:retrospective", "sync"],
+        buildInteraction({ roleIds: [FIRST_ROLE, SECOND_ROLE] }),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("does not let a restrictive child policy fall through to its parent", async () => {
+    const settings = buildSettings({
+      [`command_roles:roster:manage`]: FIRST_ROLE,
+      [`command_roles:roster:ping`]: SECOND_ROLE,
+    });
+    const service = new CommandPermissionService(settings as any);
+
+    await expect(
+      service.canUseAnyTarget(
+        ["roster:ping", "roster:manage"],
+        buildInteraction({ roleIds: [FIRST_ROLE] }),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      service.canUseAnyTarget(
+        ["roster:ping", "roster:manage"],
+        buildInteraction({ roleIds: [SECOND_ROLE] }),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      service.getPolicySummary("roster:ping", "guild-1"),
+    ).resolves.toEqual(expect.stringContaining("Legacy restrictive whitelist"));
   });
 });
