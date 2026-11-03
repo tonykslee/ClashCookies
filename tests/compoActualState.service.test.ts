@@ -259,6 +259,8 @@ describe("CompoActualStateService", () => {
     expect(result.contentLines[1]).toContain(
       "Columns: Total=resolved weight; Missing=unresolved/fallback",
     );
+    expect(result.contentLines[1]).toContain("DF=deferred-weight count");
+    expect(result.contentLines[1]).toContain("TH=resolved composition counts");
   });
 
   it("selects ACTUAL sources by explicit precedence and only counts war fallback rows as missing", async () => {
@@ -544,7 +546,8 @@ describe("CompoActualStateService", () => {
       "0",
     ]);
     expect(result.contentLines).toHaveLength(2);
-    expect(result.contentLines[1]).toContain("Columns: Total=resolved weight");
+    expect(result.contentLines[1]).toContain("DF=deferred-weight count");
+    expect(result.contentLines[1]).toContain("TH=resolved composition counts");
   });
 
   it("shows planning totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
@@ -630,7 +633,8 @@ describe("CompoActualStateService", () => {
     expect(result.contentLines).toHaveLength(2);
     expect(result.contentLines[0]).toContain("ACTUAL · View: **Auto-Detect Band** · refreshed");
     expect(result.contentLines[1]).toContain("Plan=projected 50-player total");
-    expect(result.contentLines[1]).toContain("DF=delta vs HeatMapRef");
+    expect(result.contentLines[1]).toContain("DF=deferred-weight count");
+    expect(result.contentLines[1]).toContain("TH=roster delta vs HeatMapRef");
   });
 
   it("keeps auto-detect projected band selection but shows resolved-count deltas against the selected band", async () => {
@@ -677,7 +681,8 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
-    expect(result.contentLines[1]).toContain("DF=delta vs HeatMapRef");
+    expect(result.contentLines[1]).toContain("DF=deferred-weight count");
+    expect(result.contentLines[1]).toContain("TH=roster delta vs HeatMapRef");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {

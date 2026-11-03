@@ -212,11 +212,11 @@ function buildActualViewSummaryLines(
   ];
   if (view === "raw") {
     contentLines.push(
-      "Columns: Total=resolved weight; Missing=unresolved/fallback; DF=roster deficit; Players=roster count.",
+      "Columns: Total=resolved weight; Missing=unresolved/fallback; DF=deferred-weight count; TH=resolved composition counts.",
     );
   } else {
     contentLines.push(
-      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; TH=roster delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
     );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {

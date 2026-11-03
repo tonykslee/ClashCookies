@@ -263,9 +263,9 @@ describe("compo refresh button behavior", () => {
     await handleCompoRefreshButton(second as any, {} as any, guard);
     expect(second.update).not.toHaveBeenCalled();
     expect(String(second.reply.mock.calls[0]?.[0]?.content ?? "")).toContain(
-      "refresh already in progress",
+      "refresh is already running",
     );
-    expect(String(second.reply.mock.calls[0]?.[0]?.content ?? "")).toContain("<t:301:R>");
+    expect(String(second.reply.mock.calls[0]?.[0]?.content ?? "")).not.toContain("<t:");
 
     releaseRefresh({
       stateRows: null,
@@ -276,6 +276,32 @@ describe("compo refresh button behavior", () => {
     });
     await firstRun;
     expect(refreshStateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the guard when state refresh preparation fails", async () => {
+    const guard = new CompoRefreshGuard({ clock: () => 1_000 });
+    const interaction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    interaction.message.components = [
+      {
+        toJSON: () => {
+          throw new Error("component preparation failed");
+        },
+      },
+    ];
+
+    await handleCompoRefreshButton(interaction as any, {} as any, guard);
+
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to refresh DB-backed ACTUAL state. Try again in a moment.",
+    });
+    expect(guard.tryStart("actual")).toMatchObject({
+      accepted: false,
+      reason: "cooldown",
+    });
   });
 
   it("rejects cooldown retries before starting another upstream refresh", async () => {

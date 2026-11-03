@@ -152,7 +152,7 @@ function getCompoRefreshGuardRejectionMessage(input: {
 }): string {
   const modeLabel = input.mode.toUpperCase();
   if (input.reason === "busy") {
-    return `${modeLabel} refresh already in progress. Try again ${formatCompoRefreshRelativeTimestamp(input.availableAt)}.`;
+    return `${modeLabel} refresh is already running. Try again after it finishes.`;
   }
   return `${modeLabel} refresh is on cooldown. Next available ${formatCompoRefreshRelativeTimestamp(input.availableAt)}.`;
 }
@@ -2726,6 +2726,14 @@ export async function handleCompoRefreshButton(
   }
 
   let acceptedRefreshMode: CompoRefreshMode | null = null;
+  let supplementalRows: Array<APIActionRowComponent<APIComponentInMessageActionRow>> = [];
+  let adviceClanChoices: CompoAdviceClanChoice[] = [];
+  let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
+  let loadingRefreshPayload: Extract<
+    CompoRefreshPayload,
+    { kind: "state" | "advice" | "place" | "fill" }
+  >;
+  let loadingUpdateApplied = false;
   if (isStateRefresh) {
     const decision = refreshGuard.tryStart(parsed.mode);
     if (!decision.accepted) {
@@ -2740,94 +2748,91 @@ export async function handleCompoRefreshButton(
       return;
     }
     acceptedRefreshMode = decision.mode;
-    logCompoRefreshStage(interaction, "refresh_started", {
-      mode: decision.mode,
-      nextAvailableAt: formatCompoRefreshRelativeTimestamp(decision.availableAt),
-    });
   }
 
-  const supplementalRows = extractSupplementalRowsFromMessage(interaction);
-  const adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
-  let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
-  let loadingRefreshPayload: Extract<
-    CompoRefreshPayload,
-    { kind: "state" | "advice" | "place" | "fill" }
-  >;
-  if (parsed.kind === "view" && parsed.target === "advice") {
-    adviceRefreshPayload = {
-      kind: "advice",
-      userId: parsed.userId,
-      mode: "actual",
-      adviceView: parsed.adviceView,
-      targetTag: parsed.targetTag,
-      customBandIndex: parsed.customBandIndex ?? 0,
-      customBandCount: parsed.customBandCount,
-    };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "advice-band") {
-    const nextBandIndex = stepCompoAdviceCustomBandIndexByCount({
-      currentBandIndex: parsed.customBandIndex,
-      bandCount: parsed.customBandCount,
-      direction: parsed.direction,
-    });
-    adviceRefreshPayload = {
-      kind: "advice",
-      userId: parsed.userId,
-      mode: "actual",
-      adviceView: "custom",
-      targetTag: parsed.targetTag,
-      customBandIndex: nextBandIndex,
-      customBandCount: parsed.customBandCount,
-    };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "advice") {
-    adviceRefreshPayload = parsed;
-    loadingRefreshPayload = parsed;
-  } else if (parsed.kind === "advice-clan") {
-    adviceRefreshPayload =
-      parsed.mode === "actual"
-        ? {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "actual",
-            adviceView: parsed.adviceView ?? "auto",
-            targetTag: parsed.targetTag,
-            customBandIndex: parsed.customBandIndex ?? 0,
-            customBandCount: parsed.customBandCount ?? 0,
-          }
-        : {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "war",
-            targetTag: parsed.targetTag,
-          };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "view" && parsed.target === "state") {
-    loadingRefreshPayload = {
-      kind: "state",
-      userId: parsed.userId,
-      mode: "actual",
-      actualView: parsed.actualView,
-    };
-  } else {
-    loadingRefreshPayload = parsed;
-  }
-  const loadingUpdatePayload: any = {
-    components: buildCompoRefreshComponents({
-      refreshPayload: loadingRefreshPayload,
-      loading: true,
-      adviceClanChoices,
-      selectedAdviceClanTag:
-        adviceRefreshPayload?.targetTag ??
-        (parsed.kind === "advice-clan" ? parsed.targetTag : null),
-      supplementalRows,
-    }),
-  };
-  if (parsed.kind === "fill") {
-    loadingUpdatePayload.content = "Refreshing compo fill...";
-  }
   try {
+    if (acceptedRefreshMode) {
+      logCompoRefreshStage(interaction, "refresh_started", {
+        mode: acceptedRefreshMode,
+      });
+    }
+    supplementalRows = extractSupplementalRowsFromMessage(interaction);
+    adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
+    if (parsed.kind === "view" && parsed.target === "advice") {
+      adviceRefreshPayload = {
+        kind: "advice",
+        userId: parsed.userId,
+        mode: "actual",
+        adviceView: parsed.adviceView,
+        targetTag: parsed.targetTag,
+        customBandIndex: parsed.customBandIndex ?? 0,
+        customBandCount: parsed.customBandCount,
+      };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "advice-band") {
+      const nextBandIndex = stepCompoAdviceCustomBandIndexByCount({
+        currentBandIndex: parsed.customBandIndex,
+        bandCount: parsed.customBandCount,
+        direction: parsed.direction,
+      });
+      adviceRefreshPayload = {
+        kind: "advice",
+        userId: parsed.userId,
+        mode: "actual",
+        adviceView: "custom",
+        targetTag: parsed.targetTag,
+        customBandIndex: nextBandIndex,
+        customBandCount: parsed.customBandCount,
+      };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "advice") {
+      adviceRefreshPayload = parsed;
+      loadingRefreshPayload = parsed;
+    } else if (parsed.kind === "advice-clan") {
+      adviceRefreshPayload =
+        parsed.mode === "actual"
+          ? {
+              kind: "advice",
+              userId: parsed.userId,
+              mode: "actual",
+              adviceView: parsed.adviceView ?? "auto",
+              targetTag: parsed.targetTag,
+              customBandIndex: parsed.customBandIndex ?? 0,
+              customBandCount: parsed.customBandCount ?? 0,
+            }
+          : {
+              kind: "advice",
+              userId: parsed.userId,
+              mode: "war",
+              targetTag: parsed.targetTag,
+            };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "view" && parsed.target === "state") {
+      loadingRefreshPayload = {
+        kind: "state",
+        userId: parsed.userId,
+        mode: "actual",
+        actualView: parsed.actualView,
+      };
+    } else {
+      loadingRefreshPayload = parsed;
+    }
+    const loadingUpdatePayload: any = {
+      components: buildCompoRefreshComponents({
+        refreshPayload: loadingRefreshPayload,
+        loading: true,
+        adviceClanChoices,
+        selectedAdviceClanTag:
+          adviceRefreshPayload?.targetTag ??
+          (parsed.kind === "advice-clan" ? parsed.targetTag : null),
+        supplementalRows,
+      }),
+    };
+    if (parsed.kind === "fill") {
+      loadingUpdatePayload.content = "Refreshing compo fill...";
+    }
     await interaction.update(loadingUpdatePayload);
+    loadingUpdateApplied = true;
 
     if (parsed.kind === "state") {
       let payload: CompoRenderPayload;
@@ -3004,19 +3009,32 @@ export async function handleCompoRefreshButton(
         ? `compo refresh button failed mode=${acceptedRefreshMode} errorType=${getCompoRefreshErrorType(err)}`
         : `compo refresh button failed: ${formatError(err)}`,
     );
-    await interaction.editReply({
-      components: buildCompoRefreshComponents({
-        refreshPayload: loadingRefreshPayload,
-        loading: false,
-        adviceClanChoices,
-        selectedAdviceClanTag: adviceRefreshPayload?.targetTag ?? null,
-        supplementalRows,
-      }),
-    });
-    await interaction.followUp({
-      ephemeral: true,
-      content: getCompoRefreshFailureMessage(parsed),
-    });
+    const failureMessage = getCompoRefreshFailureMessage(parsed);
+    if (loadingUpdateApplied) {
+      await interaction.editReply({
+        components: buildCompoRefreshComponents({
+          refreshPayload: loadingRefreshPayload!,
+          loading: false,
+          adviceClanChoices,
+          selectedAdviceClanTag: adviceRefreshPayload?.targetTag ?? null,
+          supplementalRows,
+        }),
+      });
+      await interaction.followUp({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    } else if (!interaction.deferred && !interaction.replied) {
+      await interaction.reply({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    } else {
+      await interaction.followUp({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    }
   } finally {
     if (acceptedRefreshMode) {
       refreshGuard.finish(acceptedRefreshMode);
