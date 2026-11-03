@@ -293,8 +293,8 @@ describe("CompoWarStateService", () => {
       ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
       ["Alpha Clan", "8,100,000", "0", "50", "0", "0", "0", "0", "0", "0"],
     ]);
-    expect(result.contentLines[0]).toBe("Mode Displayed: **WAR**");
-    expect(result.contentLines[1]).toContain("Persisted WAR data last refreshed");
+    expect(result.contentLines[0]).toContain("WAR · refreshed");
+    expect(result.contentLines[1]).toContain("Columns: Total=effective weight");
   });
 
   it("derives WAR deltas from effective-weight buckets instead of literal town halls", async () => {
