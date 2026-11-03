@@ -254,14 +254,10 @@ describe("CompoActualStateService", () => {
       "1",
       "0",
     ]);
-    expect(result.contentLines).toContain(
-      "Raw Data: current resolved roster composition.",
-    );
-    expect(result.contentLines).toContain(
-      "No estimated fill-ins or heatmap deltas.",
-    );
-    expect(result.contentLines).toContain(
-      "Missing-to-50 roster fill info: 44",
+    expect(result.contentLines).toHaveLength(2);
+    expect(result.contentLines[0]).toContain("ACTUAL · View: **Raw Data** · refreshed");
+    expect(result.contentLines[1]).toContain(
+      "Columns: Total=resolved weight; Missing=unresolved/fallback",
     );
   });
 
@@ -507,7 +503,7 @@ describe("CompoActualStateService", () => {
     expect(readCompoLinkedValuesSpy).not.toHaveBeenCalled();
     expect(result.trackedClanTags).toEqual(["#AAA111", "#BBB222"]);
     expect(result.renderableClanTags).toEqual(["#AAA111", "#BBB222"]);
-    expect(result.contentLines[0]).toContain("RAW Data last refreshed:");
+    expect(result.contentLines[0]).toContain("ACTUAL · View: **Raw Data** · refreshed");
     expect(result.stateRows?.[0]).toEqual([
       "Clan",
       "Resolved Total",
@@ -547,12 +543,8 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
-    expect(result.contentLines).toContain(
-      "Raw Data: current resolved roster composition.",
-    );
-    expect(result.contentLines).toContain(
-      "No estimated fill-ins or heatmap deltas.",
-    );
+    expect(result.contentLines).toHaveLength(2);
+    expect(result.contentLines[1]).toContain("Columns: Total=resolved weight");
   });
 
   it("shows planning totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
@@ -635,11 +627,10 @@ describe("CompoActualStateService", () => {
     expect(result.stateRows?.[1]?.[9]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[10]).toEqual(expect.any(String));
     expect(result.stateRows?.[1]?.[11]).toEqual(expect.any(String));
-    expect(result.contentLines).toContain(
-      "Resolved roster weight is shown separately from the planning total shown for display.",
-    );
-    expect(result.contentLines).toContain("Selected band source: resolved-count best fit.");
-    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
+    expect(result.contentLines).toHaveLength(2);
+    expect(result.contentLines[0]).toContain("ACTUAL · View: **Auto-Detect Band** · refreshed");
+    expect(result.contentLines[1]).toContain("Plan=projected 50-player total");
+    expect(result.contentLines[1]).toContain("DF=delta vs HeatMapRef");
   });
 
   it("keeps auto-detect projected band selection but shows resolved-count deltas against the selected band", async () => {
@@ -686,7 +677,7 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
-    expect(result.contentLines).toContain("Deltas: resolved roster vs HeatMapRef.");
+    expect(result.contentLines[1]).toContain("DF=delta vs HeatMapRef");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {
@@ -775,7 +766,7 @@ describe("CompoActualStateService", () => {
         clanCount: 1,
         rowCount: 1,
         changedRowCount: 1,
-        failedClans: [],
+        failedClans: ["#AAA111"],
       });
     const refreshCurrentClanMembersSpy = vi
       .spyOn(
@@ -789,12 +780,13 @@ describe("CompoActualStateService", () => {
         failedClans: [],
       });
 
-    await new CompoActualStateService().refreshState("guild-1");
+    const result = await new CompoActualStateService().refreshState("guild-1");
 
     expect(syncAllTrackedClansSpy).toHaveBeenCalledWith({
       force: true,
     });
     expect(refreshCurrentClanMembersSpy).toHaveBeenCalledWith(["#AAA111"]);
+    expect(result.contentLines.at(-1)).toContain("ACTUAL data may be stale");
   });
 
   it("logs a narrow Rocky Road ACTUAL diagnostics line when the selected HeatMapRef band is missing", async () => {

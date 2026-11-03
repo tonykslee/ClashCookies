@@ -64,6 +64,11 @@ import {
   type CompoReplacementResolution,
 } from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
+import {
+  compoRefreshGuard,
+  type CompoRefreshGuard,
+  type CompoRefreshMode,
+} from "../services/CompoRefreshGuard";
 import { buildFwaWeightPageUrl } from "../services/FwaWeightCatalogService";
 import { blacklistHeatmapRefService } from "../services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
@@ -124,6 +129,39 @@ function readVisibilitySafe(
   }
 }
 
+function isEphemeralCompoMessage(interaction: ButtonInteraction): boolean {
+  const flags = interaction.message?.flags as
+    | { has?: (flag: number) => boolean }
+    | number
+    | null
+    | undefined;
+  if (typeof flags === "number") {
+    return (flags & MessageFlags.Ephemeral) === MessageFlags.Ephemeral;
+  }
+  return typeof flags?.has === "function" && flags.has(MessageFlags.Ephemeral);
+}
+
+function formatCompoRefreshRelativeTimestamp(timestampMs: number): string {
+  return `<t:${Math.floor(timestampMs / 1000)}:R>`;
+}
+
+function getCompoRefreshGuardRejectionMessage(input: {
+  mode: CompoRefreshMode;
+  reason: "busy" | "cooldown";
+  availableAt: number;
+}): string {
+  const modeLabel = input.mode.toUpperCase();
+  if (input.reason === "busy") {
+    return `${modeLabel} refresh already in progress. Try again ${formatCompoRefreshRelativeTimestamp(input.availableAt)}.`;
+  }
+  return `${modeLabel} refresh is on cooldown. Next available ${formatCompoRefreshRelativeTimestamp(input.availableAt)}.`;
+}
+
+function getCompoRefreshErrorType(error: unknown): string {
+  if (error instanceof Error && error.name.trim()) return error.name.trim().slice(0, 80);
+  return typeof error === "string" ? "string_error" : "unknown_error";
+}
+
 function logCompoStage(
   interaction: ChatInputCommandInteraction,
   stage: string,
@@ -139,6 +177,25 @@ function logCompoStage(
   const fields = { ...base, ...detail };
   const serialized = Object.entries(fields)
     .map(([k, v]) => `${k}=${String(v ?? "")}`)
+    .join(" ");
+  console.log(`[compo-command] ${serialized}`);
+}
+
+function logCompoRefreshStage(
+  interaction: ButtonInteraction,
+  stage: string,
+  detail: Record<string, string | number | boolean | null | undefined> = {},
+): void {
+  const fields = {
+    stage,
+    command: "compo",
+    subcommand: "button",
+    guild: interaction.guildId ?? "DM",
+    user: interaction.user.id,
+    ...detail,
+  };
+  const serialized = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value ?? "")}`)
     .join(" ");
   console.log(`[compo-command] ${serialized}`);
 }
@@ -2644,6 +2701,7 @@ function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
 export async function handleCompoRefreshButton(
   interaction: ButtonInteraction,
   _cocService: CoCService,
+  refreshGuard: CompoRefreshGuard = compoRefreshGuard,
 ): Promise<void> {
   const parsed = parseCompoRefreshCustomId(interaction.customId);
   if (!parsed) {
@@ -2655,12 +2713,37 @@ export async function handleCompoRefreshButton(
     }
     return;
   }
-  if (interaction.user.id !== parsed.userId) {
+  const isStateRefresh = parsed.kind === "state";
+  if (
+    interaction.user.id !== parsed.userId &&
+    (!isStateRefresh || isEphemeralCompoMessage(interaction))
+  ) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this refresh button.",
     });
     return;
+  }
+
+  let acceptedRefreshMode: CompoRefreshMode | null = null;
+  if (isStateRefresh) {
+    const decision = refreshGuard.tryStart(parsed.mode);
+    if (!decision.accepted) {
+      logCompoRefreshStage(interaction, `refresh_${decision.reason}_rejected`, {
+        mode: decision.mode,
+        nextAvailableAt: formatCompoRefreshRelativeTimestamp(decision.availableAt),
+      });
+      await interaction.reply({
+        ephemeral: true,
+        content: getCompoRefreshGuardRejectionMessage(decision),
+      });
+      return;
+    }
+    acceptedRefreshMode = decision.mode;
+    logCompoRefreshStage(interaction, "refresh_started", {
+      mode: decision.mode,
+      nextAvailableAt: formatCompoRefreshRelativeTimestamp(decision.availableAt),
+    });
   }
 
   const supplementalRows = extractSupplementalRowsFromMessage(interaction);
@@ -2743,10 +2826,10 @@ export async function handleCompoRefreshButton(
   if (parsed.kind === "fill") {
     loadingUpdatePayload.content = "Refreshing compo fill...";
   }
-  await interaction.update(loadingUpdatePayload);
-
   try {
-  if (parsed.kind === "state") {
+    await interaction.update(loadingUpdatePayload);
+
+    if (parsed.kind === "state") {
       let payload: CompoRenderPayload;
       if (parsed.mode === "war") {
         const warState = await new CompoWarStateService().refreshState();
@@ -2789,6 +2872,7 @@ export async function handleCompoRefreshButton(
           supplementalRows,
         }),
       });
+      logCompoRefreshStage(interaction, "refresh_succeeded", { mode: parsed.mode });
       return;
     }
 
@@ -2909,7 +2993,17 @@ export async function handleCompoRefreshButton(
       return;
     }
   } catch (err) {
-    console.error(`compo refresh button failed: ${formatError(err)}`);
+    if (acceptedRefreshMode) {
+      logCompoRefreshStage(interaction, "refresh_failed", {
+        mode: acceptedRefreshMode,
+        errorType: getCompoRefreshErrorType(err),
+      });
+    }
+    console.error(
+      acceptedRefreshMode
+        ? `compo refresh button failed mode=${acceptedRefreshMode} errorType=${getCompoRefreshErrorType(err)}`
+        : `compo refresh button failed: ${formatError(err)}`,
+    );
     await interaction.editReply({
       components: buildCompoRefreshComponents({
         refreshPayload: loadingRefreshPayload,
@@ -2923,6 +3017,10 @@ export async function handleCompoRefreshButton(
       ephemeral: true,
       content: getCompoRefreshFailureMessage(parsed),
     });
+  } finally {
+    if (acceptedRefreshMode) {
+      refreshGuard.finish(acceptedRefreshMode);
+    }
   }
 }
 
@@ -3423,6 +3521,16 @@ export const Compo: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: COMPO_MODE_CHOICES,
+        },
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
         },
       ],
     },

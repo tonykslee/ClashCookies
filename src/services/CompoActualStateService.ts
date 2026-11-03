@@ -129,11 +129,9 @@ export type CompoActualStateReadResult = {
   view: CompoActualStateView;
 };
 
-function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
-  if (!latestSourceSyncedAt) {
-    return "RAW Data last refreshed: (not available)";
-  }
-  return `RAW Data last refreshed: <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
+function buildRefreshTimestamp(latestSourceSyncedAt: Date | null): string {
+  if (!latestSourceSyncedAt) return "refreshed (not available)";
+  return `refreshed <t:${Math.floor(latestSourceSyncedAt.getTime() / 1000)}:F>`;
 }
 
 function normalizeActualStateClanDisplayName(value: string): string {
@@ -210,27 +208,16 @@ function buildActualViewSummaryLines(
   missingTo50Count: number,
 ): string[] {
   const contentLines = [
-    buildPersistedRefreshLine(latestSourceSyncedAt),
-    `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
+    `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(latestSourceSyncedAt)}`,
   ];
   if (view === "raw") {
-    contentLines.push("Raw Data: current resolved roster composition.");
-    contentLines.push("No estimated fill-ins or heatmap deltas.");
-    contentLines.push("Resolved roster weight is shown directly in the table.");
-    contentLines.push("Missing = unresolved weights plus WAR fallback-only members.");
-    contentLines.push(`Missing-to-50 roster fill info: ${missingTo50Count}`);
-  } else if (view === "auto") {
-    contentLines.push("Resolved roster weight is shown separately from the planning total shown for display.");
-    contentLines.push("Selected band source: resolved-count best fit.");
-    contentLines.push("Deltas: resolved roster vs HeatMapRef.");
-    contentLines.push("Resolved roster deficits remain available in Raw Data.");
-    contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
+    contentLines.push(
+      "Columns: Total=resolved weight; Missing=unresolved/fallback; DF=roster deficit; Players=roster count.",
+    );
   } else {
-    contentLines.push("Resolved roster weight is shown separately from the projected best-fit total.");
-    contentLines.push("Selected band source: projected total.");
-    contentLines.push("Deltas: resolved roster vs HeatMapRef.");
-    contentLines.push("Resolved roster deficits remain available in Raw Data.");
-    contentLines.push("Missing = unresolved weights plus empty-to-50 roster slots.");
+    contentLines.push(
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+    );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {
     contentLines.push(
@@ -867,8 +854,7 @@ export class CompoActualStateService {
         renderableClanTags: [],
         view,
         contentLines: [
-          buildPersistedRefreshLine(null),
-          `ACTUAL View: **${getCompoActualStateViewLabel(view)}**`,
+          `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(null)}`,
           "No tracked clans are configured for DB-backed ACTUAL state.",
         ],
       };
@@ -957,12 +943,26 @@ export class CompoActualStateService {
     const context = await loadCompoActualStateContext(guildId);
 
     if (context.trackedClanTags.length > 0) {
-      await this.clanMembersSync.syncAllTrackedClans({
+      const failures = new Set<string>();
+      const feedResult = await this.clanMembersSync.syncAllTrackedClans({
         force: true,
       });
-      await this.clanMembersSync.refreshCurrentClanMembersForClanTags(
+      for (const clanTag of feedResult.failedClans) failures.add(clanTag);
+      const currentMembersResult = await this.clanMembersSync.refreshCurrentClanMembersForClanTags(
         context.trackedClanTags,
       );
+      for (const clanTag of currentMembersResult.failedClans) failures.add(clanTag);
+
+      const next = await this.readState(guildId, options);
+      if (failures.size > 0) {
+        next.contentLines = [
+          ...next.contentLines,
+          `Refresh warnings: ACTUAL data may be stale for ${[...failures]
+            .map((tag) => `#${tag.replace(/^#/, "")}`)
+            .join(", ")}; retry after the shared cooldown.`,
+        ];
+      }
+      return next;
     }
 
     return this.readState(guildId, options);
