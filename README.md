@@ -175,10 +175,10 @@ Cadence defaults and cost controls:
 - The active 30-minute activity-observe cycle reconciles linked-player `PlayerCurrent` state: tracked-clan departures are immediate, stale external/clanless/unknown rows use a 60-minute freshness gate, and no more than 100 extra linked-player refreshes run per cycle; current tracked members are not fetched twice.
 - tracked-clan `Wars.json` watch: 5-minute cadence only inside active per-clan windows, starts 5 minutes before sync time, stops once update is acquired
 - optional global `Wars.json` sweep: disabled by default, configurable and chunked
-- command paths remain DB-first; `/compo state mode:war`, `/compo state mode:actual`, and `/compo place` now read persisted feed-backed state instead of relying on hot-path sheet reads
+- command paths remain DB-first; `/compo state mode:war`, `/compo state mode:actual`, and `/compo place` read persisted feed-backed state instead of relying on hot-path sheet reads
 - `/compo place` now includes an explicit in-message refresh button that refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
 - `/compo place` replacement suggestions include active, linked, non-filler accounts from surplus ACTUAL Auto-Detect display buckets, with the surplus bucket and delta shown in the drill-down; `Show replacements` defaults to a prioritized shortlist and can filter by clan, replacement type, or 30-day violation count, while `All` exposes healthy surplus/unlinked candidates
-- `/compo state mode:actual` keeps its in-message refresh button and now refreshes ACTUAL tracked-clan current-member/weight state plus live CoC member counts before rerendering from persisted data
+- `/compo state [mode:actual|war] [visibility:private|public]` renders compact state text beside the full PNG and keeps actionable missing/partial-data warnings visible. Private remains the default; public state messages allow shared `Refresh Data` clicks with independent five-minute ACTUAL/WAR cooldowns across all users, guilds, and dashboard messages. Rejected clicks are ephemeral and leave the existing dashboard unchanged.
 
 Manual/dev operations (script tooling):
 ```bash

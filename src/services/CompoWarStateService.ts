@@ -68,9 +68,9 @@ function normalizeWarStateClanDisplayName(value: string): string {
     : trimmedRight;
 }
 
-function toEpochLine(prefix: string, value: Date | null): string {
-  if (!value) return `${prefix}: (not available)`;
-  return `${prefix}: <t:${Math.floor(value.getTime() / 1000)}:F>`;
+function toRefreshLine(value: Date | null): string {
+  if (!value) return "refreshed (not available)";
+  return `refreshed <t:${Math.floor(value.getTime() / 1000)}:F>`;
 }
 
 /** Purpose: derive the legacy display delta columns while preserving granular internal TH counts. */
@@ -267,8 +267,7 @@ export class CompoWarStateService {
         snapshotClanTags: [],
         renderableClanTags: [],
         contentLines: [
-          "Mode Displayed: **WAR**",
-          toEpochLine("Persisted WAR data last refreshed", null),
+          "WAR · refreshed (not available)",
           "No tracked clans are configured for DB-backed WAR state.",
         ],
       };
@@ -298,8 +297,8 @@ export class CompoWarStateService {
     }
 
     const contentLines = [
-      "Mode Displayed: **WAR**",
-      toEpochLine("Persisted WAR data last refreshed", context.latestRefreshAt),
+      `WAR · ${toRefreshLine(context.latestRefreshAt)}`,
+      "Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; TH columns=delta vs HeatMapRef.",
     ];
 
     if (context.skipped.length > 0) {

@@ -7,6 +7,10 @@ import {
 import { CompoFillService } from "../src/services/CompoFillService";
 import { CompoAdviceService } from "../src/services/CompoAdviceService";
 import { CompoActualStateService } from "../src/services/CompoActualStateService";
+import {
+  CompoRefreshGuard,
+  resetCompoRefreshGuardForTest,
+} from "../src/services/CompoRefreshGuard";
 
 function makeMessageRow(customId: string, label: string, disabled = false): { toJSON: () => unknown } {
   return {
@@ -143,6 +147,7 @@ function makeInteraction(customId: string) {
 describe("compo refresh button behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    resetCompoRefreshGuardForTest();
   });
 
   it("shows loading state, refreshes DB-backed ACTUAL state, and rerenders state output", async () => {
@@ -182,6 +187,150 @@ describe("compo refresh button behavior", () => {
     });
     expect(Array.isArray(refreshedPayload.files)).toBe(true);
     expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("allows another user to refresh a public state message while preserving its selected view", async () => {
+    const refreshStateSpy = vi.spyOn(CompoActualStateService.prototype, "refreshState").mockResolvedValue({
+      stateRows: [
+        ["Clan", "Total", "Planning Total", "Missing", "DF", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        ["ACTUAL CLAN", "1,500,000", "1,600,000", "2", "0", "50", "0", "0", "0", "0", "0", "0"],
+      ],
+      contentLines: ["ACTUAL · View: **Auto-Detect Band** · refreshed <t:1709900000:F>"],
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      view: "auto",
+    });
+    const guard = new CompoRefreshGuard({ clock: () => 1_000 });
+    const interaction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({
+        kind: "state",
+        userId: "user-1",
+        mode: "actual",
+        actualView: "auto",
+      }),
+    );
+    interaction.user.id = "user-2";
+
+    await handleCompoRefreshButton(interaction as any, {} as any, guard);
+
+    expect(refreshStateSpy).toHaveBeenCalledWith("guild-1", { view: "auto" });
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("keeps private state refresh requester-only", async () => {
+    const refreshStateSpy = vi.spyOn(CompoActualStateService.prototype, "refreshState");
+    const interaction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    interaction.user.id = "user-2";
+    interaction.message.flags = { has: () => true };
+
+    await handleCompoRefreshButton(interaction as any, {} as any, new CompoRefreshGuard({ clock: () => 1_000 }));
+
+    expect(refreshStateSpy).not.toHaveBeenCalled();
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(String(interaction.reply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Only the command requester",
+    );
+  });
+
+  it("rejects a concurrent public refresh without touching the second dashboard", async () => {
+    let releaseRefresh!: (value: any) => void;
+    const refreshStateSpy = vi
+      .spyOn(CompoActualStateService.prototype, "refreshState")
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseRefresh = resolve;
+          }),
+      );
+    const guard = new CompoRefreshGuard({ clock: () => 1_000 });
+    const first = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    const second = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    second.user.id = "user-2";
+
+    const firstRun = handleCompoRefreshButton(first as any, {} as any, guard);
+    for (let attempt = 0; attempt < 20 && refreshStateSpy.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(refreshStateSpy).toHaveBeenCalledTimes(1);
+
+    await handleCompoRefreshButton(second as any, {} as any, guard);
+    expect(second.update).not.toHaveBeenCalled();
+    expect(String(second.reply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "refresh is already running",
+    );
+    expect(String(second.reply.mock.calls[0]?.[0]?.content ?? "")).not.toContain("<t:");
+
+    releaseRefresh({
+      stateRows: null,
+      contentLines: ["ACTUAL · View: **Auto-Detect Band** · refreshed (not available)"],
+      trackedClanTags: [],
+      renderableClanTags: [],
+      view: "auto",
+    });
+    await firstRun;
+    expect(refreshStateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the guard when state refresh preparation fails", async () => {
+    const guard = new CompoRefreshGuard({ clock: () => 1_000 });
+    const interaction = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    interaction.message.components = [
+      {
+        toJSON: () => {
+          throw new Error("component preparation failed");
+        },
+      },
+    ];
+
+    await handleCompoRefreshButton(interaction as any, {} as any, guard);
+
+    expect(interaction.update).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Failed to refresh DB-backed ACTUAL state. Try again in a moment.",
+    });
+    expect(guard.tryStart("actual")).toMatchObject({
+      accepted: false,
+      reason: "cooldown",
+    });
+  });
+
+  it("rejects cooldown retries before starting another upstream refresh", async () => {
+    let now = 1_000;
+    const guard = new CompoRefreshGuard({ clock: () => now });
+    const refreshStateSpy = vi.spyOn(CompoActualStateService.prototype, "refreshState").mockResolvedValue({
+      stateRows: null,
+      contentLines: ["ACTUAL · View: **Auto-Detect Band** · refreshed (not available)"],
+      trackedClanTags: [],
+      renderableClanTags: [],
+      view: "auto",
+    });
+    const first = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    await handleCompoRefreshButton(first as any, {} as any, guard);
+
+    now += 60_000;
+    const retry = makeInteraction(
+      buildCompoRefreshCustomIdForTest({ kind: "state", userId: "user-1", mode: "actual" }),
+    );
+    retry.user.id = "user-2";
+    await handleCompoRefreshButton(retry as any, {} as any, guard);
+
+    expect(refreshStateSpy).toHaveBeenCalledTimes(1);
+    expect(retry.update).not.toHaveBeenCalled();
+    expect(String(retry.reply.mock.calls[0]?.[0]?.content ?? "")).toContain(
+      "Next available <t:301:R>",
+    );
   });
 
   it("refreshes the fill view through the fill service and rerenders with a warning", async () => {

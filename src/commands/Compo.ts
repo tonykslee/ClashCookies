@@ -64,6 +64,11 @@ import {
   type CompoReplacementResolution,
 } from "../services/CompoReplacementService";
 import { CompoWarStateService } from "../services/CompoWarStateService";
+import {
+  compoRefreshGuard,
+  type CompoRefreshGuard,
+  type CompoRefreshMode,
+} from "../services/CompoRefreshGuard";
 import { buildFwaWeightPageUrl } from "../services/FwaWeightCatalogService";
 import { blacklistHeatmapRefService } from "../services/BlacklistHeatmapRefService";
 import { HeatMapRefDisplayService } from "../services/HeatMapRefDisplayService";
@@ -124,6 +129,39 @@ function readVisibilitySafe(
   }
 }
 
+function isEphemeralCompoMessage(interaction: ButtonInteraction): boolean {
+  const flags = interaction.message?.flags as
+    | { has?: (flag: number) => boolean }
+    | number
+    | null
+    | undefined;
+  if (typeof flags === "number") {
+    return (flags & MessageFlags.Ephemeral) === MessageFlags.Ephemeral;
+  }
+  return typeof flags?.has === "function" && flags.has(MessageFlags.Ephemeral);
+}
+
+function formatCompoRefreshRelativeTimestamp(timestampMs: number): string {
+  return `<t:${Math.floor(timestampMs / 1000)}:R>`;
+}
+
+function getCompoRefreshGuardRejectionMessage(input: {
+  mode: CompoRefreshMode;
+  reason: "busy" | "cooldown";
+  availableAt: number;
+}): string {
+  const modeLabel = input.mode.toUpperCase();
+  if (input.reason === "busy") {
+    return `${modeLabel} refresh is already running. Try again after it finishes.`;
+  }
+  return `${modeLabel} refresh is on cooldown. Next available ${formatCompoRefreshRelativeTimestamp(input.availableAt)}.`;
+}
+
+function getCompoRefreshErrorType(error: unknown): string {
+  if (error instanceof Error && error.name.trim()) return error.name.trim().slice(0, 80);
+  return typeof error === "string" ? "string_error" : "unknown_error";
+}
+
 function logCompoStage(
   interaction: ChatInputCommandInteraction,
   stage: string,
@@ -139,6 +177,25 @@ function logCompoStage(
   const fields = { ...base, ...detail };
   const serialized = Object.entries(fields)
     .map(([k, v]) => `${k}=${String(v ?? "")}`)
+    .join(" ");
+  console.log(`[compo-command] ${serialized}`);
+}
+
+function logCompoRefreshStage(
+  interaction: ButtonInteraction,
+  stage: string,
+  detail: Record<string, string | number | boolean | null | undefined> = {},
+): void {
+  const fields = {
+    stage,
+    command: "compo",
+    subcommand: "button",
+    guild: interaction.guildId ?? "DM",
+    user: interaction.user.id,
+    ...detail,
+  };
+  const serialized = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value ?? "")}`)
     .join(" ");
   console.log(`[compo-command] ${serialized}`);
 }
@@ -2644,6 +2701,7 @@ function getCompoRefreshFailureMessage(payload: CompoRefreshPayload): string {
 export async function handleCompoRefreshButton(
   interaction: ButtonInteraction,
   _cocService: CoCService,
+  refreshGuard: CompoRefreshGuard = compoRefreshGuard,
 ): Promise<void> {
   const parsed = parseCompoRefreshCustomId(interaction.customId);
   if (!parsed) {
@@ -2655,7 +2713,11 @@ export async function handleCompoRefreshButton(
     }
     return;
   }
-  if (interaction.user.id !== parsed.userId) {
+  const isStateRefresh = parsed.kind === "state";
+  if (
+    interaction.user.id !== parsed.userId &&
+    (!isStateRefresh || isEphemeralCompoMessage(interaction))
+  ) {
     await interaction.reply({
       ephemeral: true,
       content: "Only the command requester can use this refresh button.",
@@ -2663,90 +2725,116 @@ export async function handleCompoRefreshButton(
     return;
   }
 
-  const supplementalRows = extractSupplementalRowsFromMessage(interaction);
-  const adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
+  let acceptedRefreshMode: CompoRefreshMode | null = null;
+  let supplementalRows: Array<APIActionRowComponent<APIComponentInMessageActionRow>> = [];
+  let adviceClanChoices: CompoAdviceClanChoice[] = [];
   let adviceRefreshPayload: Extract<CompoRefreshPayload, { kind: "advice" }> | null = null;
   let loadingRefreshPayload: Extract<
     CompoRefreshPayload,
     { kind: "state" | "advice" | "place" | "fill" }
   >;
-  if (parsed.kind === "view" && parsed.target === "advice") {
-    adviceRefreshPayload = {
-      kind: "advice",
-      userId: parsed.userId,
-      mode: "actual",
-      adviceView: parsed.adviceView,
-      targetTag: parsed.targetTag,
-      customBandIndex: parsed.customBandIndex ?? 0,
-      customBandCount: parsed.customBandCount,
-    };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "advice-band") {
-    const nextBandIndex = stepCompoAdviceCustomBandIndexByCount({
-      currentBandIndex: parsed.customBandIndex,
-      bandCount: parsed.customBandCount,
-      direction: parsed.direction,
-    });
-    adviceRefreshPayload = {
-      kind: "advice",
-      userId: parsed.userId,
-      mode: "actual",
-      adviceView: "custom",
-      targetTag: parsed.targetTag,
-      customBandIndex: nextBandIndex,
-      customBandCount: parsed.customBandCount,
-    };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "advice") {
-    adviceRefreshPayload = parsed;
-    loadingRefreshPayload = parsed;
-  } else if (parsed.kind === "advice-clan") {
-    adviceRefreshPayload =
-      parsed.mode === "actual"
-        ? {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "actual",
-            adviceView: parsed.adviceView ?? "auto",
-            targetTag: parsed.targetTag,
-            customBandIndex: parsed.customBandIndex ?? 0,
-            customBandCount: parsed.customBandCount ?? 0,
-          }
-        : {
-            kind: "advice",
-            userId: parsed.userId,
-            mode: "war",
-            targetTag: parsed.targetTag,
-          };
-    loadingRefreshPayload = adviceRefreshPayload;
-  } else if (parsed.kind === "view" && parsed.target === "state") {
-    loadingRefreshPayload = {
-      kind: "state",
-      userId: parsed.userId,
-      mode: "actual",
-      actualView: parsed.actualView,
-    };
-  } else {
-    loadingRefreshPayload = parsed;
+  let loadingUpdateApplied = false;
+  if (isStateRefresh) {
+    const decision = refreshGuard.tryStart(parsed.mode);
+    if (!decision.accepted) {
+      logCompoRefreshStage(interaction, `refresh_${decision.reason}_rejected`, {
+        mode: decision.mode,
+        nextAvailableAt: formatCompoRefreshRelativeTimestamp(decision.availableAt),
+      });
+      await interaction.reply({
+        ephemeral: true,
+        content: getCompoRefreshGuardRejectionMessage(decision),
+      });
+      return;
+    }
+    acceptedRefreshMode = decision.mode;
   }
-  const loadingUpdatePayload: any = {
-    components: buildCompoRefreshComponents({
-      refreshPayload: loadingRefreshPayload,
-      loading: true,
-      adviceClanChoices,
-      selectedAdviceClanTag:
-        adviceRefreshPayload?.targetTag ??
-        (parsed.kind === "advice-clan" ? parsed.targetTag : null),
-      supplementalRows,
-    }),
-  };
-  if (parsed.kind === "fill") {
-    loadingUpdatePayload.content = "Refreshing compo fill...";
-  }
-  await interaction.update(loadingUpdatePayload);
 
   try {
-  if (parsed.kind === "state") {
+    if (acceptedRefreshMode) {
+      logCompoRefreshStage(interaction, "refresh_started", {
+        mode: acceptedRefreshMode,
+      });
+    }
+    supplementalRows = extractSupplementalRowsFromMessage(interaction);
+    adviceClanChoices = extractCompoAdviceClanChoicesFromMessage(interaction);
+    if (parsed.kind === "view" && parsed.target === "advice") {
+      adviceRefreshPayload = {
+        kind: "advice",
+        userId: parsed.userId,
+        mode: "actual",
+        adviceView: parsed.adviceView,
+        targetTag: parsed.targetTag,
+        customBandIndex: parsed.customBandIndex ?? 0,
+        customBandCount: parsed.customBandCount,
+      };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "advice-band") {
+      const nextBandIndex = stepCompoAdviceCustomBandIndexByCount({
+        currentBandIndex: parsed.customBandIndex,
+        bandCount: parsed.customBandCount,
+        direction: parsed.direction,
+      });
+      adviceRefreshPayload = {
+        kind: "advice",
+        userId: parsed.userId,
+        mode: "actual",
+        adviceView: "custom",
+        targetTag: parsed.targetTag,
+        customBandIndex: nextBandIndex,
+        customBandCount: parsed.customBandCount,
+      };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "advice") {
+      adviceRefreshPayload = parsed;
+      loadingRefreshPayload = parsed;
+    } else if (parsed.kind === "advice-clan") {
+      adviceRefreshPayload =
+        parsed.mode === "actual"
+          ? {
+              kind: "advice",
+              userId: parsed.userId,
+              mode: "actual",
+              adviceView: parsed.adviceView ?? "auto",
+              targetTag: parsed.targetTag,
+              customBandIndex: parsed.customBandIndex ?? 0,
+              customBandCount: parsed.customBandCount ?? 0,
+            }
+          : {
+              kind: "advice",
+              userId: parsed.userId,
+              mode: "war",
+              targetTag: parsed.targetTag,
+            };
+      loadingRefreshPayload = adviceRefreshPayload;
+    } else if (parsed.kind === "view" && parsed.target === "state") {
+      loadingRefreshPayload = {
+        kind: "state",
+        userId: parsed.userId,
+        mode: "actual",
+        actualView: parsed.actualView,
+      };
+    } else {
+      loadingRefreshPayload = parsed;
+    }
+    const loadingUpdatePayload: any = {
+      components: buildCompoRefreshComponents({
+        refreshPayload: loadingRefreshPayload,
+        loading: true,
+        adviceClanChoices,
+        selectedAdviceClanTag:
+          adviceRefreshPayload?.targetTag ??
+          (parsed.kind === "advice-clan" ? parsed.targetTag : null),
+        supplementalRows,
+      }),
+    };
+    if (parsed.kind === "fill") {
+      loadingUpdatePayload.content = "Refreshing compo fill...";
+    }
+    await interaction.update(loadingUpdatePayload);
+    loadingUpdateApplied = true;
+
+    if (parsed.kind === "state") {
       let payload: CompoRenderPayload;
       if (parsed.mode === "war") {
         const warState = await new CompoWarStateService().refreshState();
@@ -2789,6 +2877,7 @@ export async function handleCompoRefreshButton(
           supplementalRows,
         }),
       });
+      logCompoRefreshStage(interaction, "refresh_succeeded", { mode: parsed.mode });
       return;
     }
 
@@ -2909,20 +2998,47 @@ export async function handleCompoRefreshButton(
       return;
     }
   } catch (err) {
-    console.error(`compo refresh button failed: ${formatError(err)}`);
-    await interaction.editReply({
-      components: buildCompoRefreshComponents({
-        refreshPayload: loadingRefreshPayload,
-        loading: false,
-        adviceClanChoices,
-        selectedAdviceClanTag: adviceRefreshPayload?.targetTag ?? null,
-        supplementalRows,
-      }),
-    });
-    await interaction.followUp({
-      ephemeral: true,
-      content: getCompoRefreshFailureMessage(parsed),
-    });
+    if (acceptedRefreshMode) {
+      logCompoRefreshStage(interaction, "refresh_failed", {
+        mode: acceptedRefreshMode,
+        errorType: getCompoRefreshErrorType(err),
+      });
+    }
+    console.error(
+      acceptedRefreshMode
+        ? `compo refresh button failed mode=${acceptedRefreshMode} errorType=${getCompoRefreshErrorType(err)}`
+        : `compo refresh button failed: ${formatError(err)}`,
+    );
+    const failureMessage = getCompoRefreshFailureMessage(parsed);
+    if (loadingUpdateApplied) {
+      await interaction.editReply({
+        components: buildCompoRefreshComponents({
+          refreshPayload: loadingRefreshPayload!,
+          loading: false,
+          adviceClanChoices,
+          selectedAdviceClanTag: adviceRefreshPayload?.targetTag ?? null,
+          supplementalRows,
+        }),
+      });
+      await interaction.followUp({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    } else if (!interaction.deferred && !interaction.replied) {
+      await interaction.reply({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    } else {
+      await interaction.followUp({
+        ephemeral: true,
+        content: failureMessage,
+      });
+    }
+  } finally {
+    if (acceptedRefreshMode) {
+      refreshGuard.finish(acceptedRefreshMode);
+    }
   }
 }
 
@@ -3423,6 +3539,16 @@ export const Compo: Command = {
           type: ApplicationCommandOptionType.String,
           required: false,
           choices: COMPO_MODE_CHOICES,
+        },
+        {
+          name: "visibility",
+          description: "Response visibility",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+          choices: [
+            { name: "private", value: "private" },
+            { name: "public", value: "public" },
+          ],
         },
       ],
     },

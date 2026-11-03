@@ -5,6 +5,7 @@ import {
 } from "../src/commands/Compo";
 import { CompoWarStateService } from "../src/services/CompoWarStateService";
 import * as SheetRefreshService from "../src/services/SheetRefreshService";
+import { resetCompoRefreshGuardForTest } from "../src/services/CompoRefreshGuard";
 
 function makeMessageRow(customId: string, label: string, disabled = false): { toJSON: () => unknown } {
   return {
@@ -48,6 +49,7 @@ function makeInteraction(customId: string) {
 describe("compo war refresh button behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    resetCompoRefreshGuardForTest();
   });
 
   it("refreshes DB-backed war mode without calling the shared sheet refresh flow", async () => {

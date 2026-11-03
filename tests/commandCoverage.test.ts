@@ -348,10 +348,29 @@ describe("command coverage", () => {
     ).toBe(true);
   });
 
+  it("registers optional visibility choices on /compo state", () => {
+    const compo = Commands.find((command) => command.name === "compo");
+    const state = (compo?.options ?? []).find((option) => option.name === "state") as any;
+    const visibility = (state?.options ?? []).find((option: any) => option.name === "visibility");
+    expect(visibility).toBeTruthy();
+    expect(visibility.required).toBe(false);
+    expect(visibility.choices).toEqual([
+      { name: "private", value: "private" },
+      { name: "public", value: "public" },
+    ]);
+  });
+
   it("documents /compo fill in the compo help detail text", () => {
     const compoHelpText = helpEmbedText("compo");
     expect(compoHelpText).toContain("/compo fill");
     expect(compoHelpText).toContain("remaining open slots");
+  });
+
+  it("documents shared public /compo state refresh behavior", () => {
+    const compoHelpText = helpEmbedText("compo");
+    expect(compoHelpText).toContain("visibility:private|public");
+    expect(compoHelpText).toContain("shared five-minute cooldown");
+    expect(compoHelpText).toContain("compact one- or two-line summary");
   });
 
   it("documents the /link list Columns dropdown in the link help detail text", () => {
