@@ -28,6 +28,7 @@ export type AutoRoleApplyInput = {
   guildId: string;
   config: AutoRoleGuildConfigSnapshot;
   managedRoleIds: Set<string>;
+  reconciledRoleIds?: Set<string>;
   clanRoleIds?: Set<string>;
   suppressRemovalRoleIds?: Set<string>;
   suppressNicknameUpdate?: boolean;
@@ -385,12 +386,16 @@ export class AutoRoleApplyService {
         });
       }
     } else {
-      await prisma.autoRolePendingRemoval.deleteMany({
-        where: {
-          guildId: input.guildId,
-          discordUserId: input.member.id,
-        },
-      });
+      const reconciledRoleIds = normalizeRoleIds(input.reconciledRoleIds ?? input.managedRoleIds);
+      if (reconciledRoleIds.size > 0) {
+        await prisma.autoRolePendingRemoval.deleteMany({
+          where: {
+            guildId: input.guildId,
+            discordUserId: input.member.id,
+            discordRoleId: { in: [...reconciledRoleIds] },
+          },
+        });
+      }
     }
 
     const clanRolePresent = [...clanRoleIds].some((roleId) => effectiveRoleIds.has(roleId));

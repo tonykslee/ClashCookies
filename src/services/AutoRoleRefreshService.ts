@@ -39,7 +39,7 @@ import {
   getPlayerLinksForDiscordUserWithTrust,
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
-import { runWithCoCQueueContext } from "./CoCQueueContext";
+import { getCoCQueueContext, runWithCoCQueueContext } from "./CoCQueueContext";
 import { resolveCurrentCwlSeasonKey } from "./CwlRegistryService";
 import { cwlEventResolutionService } from "./CwlEventResolutionService";
 
@@ -367,7 +367,7 @@ async function loadCompleteGuildMembersForRoleRefresh(input: {
       error,
     });
     throw new Error(
-      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a complete guild member fetch.`,
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : input.subtype === "tracked_lead" ? "lead" : "CWL"} role refresh requires a complete guild member fetch.`,
     );
   }
 
@@ -391,7 +391,7 @@ async function loadCompleteGuildMembersForRoleRefresh(input: {
       error,
     });
     throw new Error(
-      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a usable complete guild member fetch.`,
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : input.subtype === "tracked_lead" ? "lead" : "CWL"} role refresh requires a usable complete guild member fetch.`,
     );
   }
 
@@ -412,7 +412,7 @@ async function loadCompleteGuildMembersForRoleRefresh(input: {
       reason: "full_member_fetch_incomplete",
     });
     throw new Error(
-      `Tracked ${input.subtype === "tracked_clan" ? "clan" : "lead"} role refresh requires a complete guild member fetch, but Discord returned only ${hydratedMemberCount}/${guildMemberCount} members.`,
+      `Tracked ${input.subtype === "tracked_clan" ? "clan" : input.subtype === "tracked_lead" ? "lead" : "CWL"} role refresh requires a complete guild member fetch, but Discord returned only ${hydratedMemberCount}/${guildMemberCount} members.`,
     );
   }
 
@@ -615,16 +615,18 @@ type TrackedClanRosterValidation =
         | "roster_missing"
         | "roster_not_array"
         | "roster_empty"
+        | "roster_tag_mismatch"
+        | "roster_member_count_mismatch"
         | "roster_member_invalid"
         | "roster_member_role_invalid";
     };
 
-function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
+function validateTrackedClanRoster(clan: unknown, expectedClanTag?: string): TrackedClanRosterValidation {
   if (!clan || typeof clan !== "object") {
     return { usable: false, reason: "roster_missing" };
   }
 
-  const record = clan as { memberList?: unknown };
+  const record = clan as { tag?: unknown; memberCount?: unknown; memberList?: unknown };
   const hasMemberListField = Object.prototype.hasOwnProperty.call(record, "memberList");
   const roster = Array.isArray(record.memberList) ? record.memberList : null;
 
@@ -637,6 +639,21 @@ function validateTrackedClanRoster(clan: unknown): TrackedClanRosterValidation {
 
   if (roster.length === 0) {
     return { usable: false, reason: "roster_empty" };
+  }
+
+  const normalizedExpectedClanTag = normalizeClanTag(expectedClanTag ?? "");
+  if (normalizedExpectedClanTag) {
+    const returnedClanTag = normalizeClanTag(String(record.tag ?? ""));
+    if (!returnedClanTag || returnedClanTag !== normalizedExpectedClanTag) {
+      return { usable: false, reason: "roster_tag_mismatch" };
+    }
+
+    if (record.memberCount !== undefined && record.memberCount !== null) {
+      const reportedMemberCount = Number(record.memberCount);
+      if (!Number.isInteger(reportedMemberCount) || reportedMemberCount !== roster.length) {
+        return { usable: false, reason: "roster_member_count_mismatch" };
+      }
+    }
   }
 
   if (roster.some((member) => {
@@ -667,6 +684,7 @@ async function fetchClanWithTelemetry(input: {
   guildId?: string;
   telemetry?: AutoRoleRefreshTelemetry | null;
   fetchLabel: string;
+  validateClanIdentity?: boolean;
 }): Promise<any | null> {
   const clanTag = normalizeClanTag(input.clanTag) ?? String(input.clanTag ?? "").trim();
   const startedAtMs = Date.now();
@@ -680,7 +698,10 @@ async function fetchClanWithTelemetry(input: {
       }
       return null;
     }
-    const rosterValidation = validateTrackedClanRoster(clan);
+    const rosterValidation = validateTrackedClanRoster(
+      clan,
+      input.validateClanIdentity ? clanTag : undefined,
+    );
     if (!rosterValidation.usable) {
       dozzleLog.warn(
         `[autorole] event=live_clan_roster_failure guild_id=${input.guildId ?? "unknown"} fetch_label=${input.fetchLabel} clan_tag=${clanTag} reason=${rosterValidation.reason} action=fail_closed`,
@@ -829,6 +850,200 @@ async function loadLinkedAccountsForPlayerTags(input: {
   return byUserId;
 }
 
+/** Purpose: merge bulk PlayerLink results without introducing per-member queries. */
+function mergeLinkedAccountsByUserId(
+  ...sources: Array<Map<string, PlayerLinkWithTrust[]>>
+): Map<string, PlayerLinkWithTrust[]> {
+  const merged = new Map<string, PlayerLinkWithTrust[]>();
+  for (const source of sources) {
+    for (const [discordUserId, accounts] of source.entries()) {
+      const existing = merged.get(discordUserId) ?? [];
+      const existingTags = new Set(existing.map((account) => normalizePlayerTag(account.playerTag)));
+      for (const account of accounts) {
+        const playerTag = normalizePlayerTag(account.playerTag);
+        if (!playerTag || existingTags.has(playerTag)) continue;
+        existing.push(account);
+        existingTags.add(playerTag);
+      }
+      if (existing.length > 0) {
+        merged.set(discordUserId, existing);
+      }
+    }
+  }
+  return merged;
+}
+
+type CurrentCwlLiveRosterState = {
+  cwlClanTags: string[];
+  cwlMemberTags: Set<string>;
+  cwlClanFetchCount: number;
+};
+
+/** Purpose: fetch and validate every unique current-season CWL tracked-clan roster once. */
+async function loadCurrentSeasonCwlLiveRosterState(input: {
+  scope: AutoRoleRefreshScope;
+  guildId: string;
+  cocService?: CoCService | null;
+  season: string;
+  telemetry?: AutoRoleRefreshTelemetry | null;
+}): Promise<CurrentCwlLiveRosterState> {
+  const cocService = input.cocService ?? null;
+  if (!cocService || typeof cocService.getClan !== "function") {
+    throw new Error("CWL clan role refresh requires CoC clan data.");
+  }
+
+  const rows = await prisma.cwlTrackedClan.findMany({
+    where: { season: input.season },
+    select: { tag: true },
+  });
+  const cwlClanTags = [...new Set(rows.map((row) => normalizeClanTag(row.tag)).filter(Boolean))].sort();
+  const invalidRowCount = rows.filter((row) => !normalizeClanTag(row.tag)).length;
+  if (rows.length === 0 || invalidRowCount > 0) {
+    dozzleLog.warn(
+      `[autorole] event=cwl_role_roster_failure guild_id=${input.guildId} season=${input.season} roster_fetch_count=${cwlClanTags.length} failed_clan_tags=invalid_or_missing action=abort_before_apply`,
+    );
+    throw new Error(
+      `Current-season CWL tracked clan roster set is incomplete for ${input.scope.kind === "role" ? `role:${input.scope.discordRoleId}` : "guild refresh"}.`,
+    );
+  }
+
+  const startedAtMs = Date.now();
+  const fetchRosters = () => mapWithConcurrency(
+    cwlClanTags,
+    CWL_ROLE_ROSTER_FETCH_CONCURRENCY,
+    async (clanTag) => ({
+      clanTag,
+      clan: await fetchClanWithTelemetry({
+        cocService,
+        clanTag,
+        guildId: input.guildId,
+        telemetry: input.telemetry,
+        fetchLabel: "cwl_role_roster",
+        validateClanIdentity: true,
+      }),
+    }),
+  );
+  const fetchedClans = getCoCQueueContext()
+    ? await fetchRosters()
+    : await runWithCoCQueueContext(
+        { priority: "interactive", source: "autorole_cwl_role_refresh" },
+        fetchRosters,
+      );
+  const failedClanTags = fetchedClans
+    .filter((entry) => !entry.clan)
+    .map((entry) => entry.clanTag);
+  if (failedClanTags.length > 0) {
+    dozzleLog.warn(
+      `[autorole] event=cwl_role_roster_failure guild_id=${input.guildId} season=${input.season} roster_fetch_count=${cwlClanTags.length} failed_clan_tags=${formatTrackedClanFetchFailureTags(failedClanTags)} action=abort_before_apply elapsed_ms=${Date.now() - startedAtMs}`,
+    );
+    throw buildTrackedClanFetchFailureError({
+      scope: input.scope,
+      failedClanTags,
+    });
+  }
+
+  const cwlMemberTags = new Set<string>();
+  for (const entry of fetchedClans) {
+    const rosterValidation = validateTrackedClanRoster(entry.clan, entry.clanTag);
+    if (!rosterValidation.usable) {
+      failedClanTags.push(entry.clanTag);
+      continue;
+    }
+    for (const member of rosterValidation.members) {
+      const playerTag = normalizePlayerTag(String((member as { tag?: unknown }).tag ?? ""));
+      if (playerTag) cwlMemberTags.add(playerTag);
+    }
+  }
+  if (failedClanTags.length > 0) {
+    const uniqueFailedClanTags = [...new Set(failedClanTags)].sort();
+    dozzleLog.warn(
+      `[autorole] event=cwl_role_roster_failure guild_id=${input.guildId} season=${input.season} roster_fetch_count=${cwlClanTags.length} failed_clan_tags=${formatTrackedClanFetchFailureTags(uniqueFailedClanTags)} action=abort_before_apply elapsed_ms=${Date.now() - startedAtMs}`,
+    );
+    throw buildTrackedClanFetchFailureError({
+      scope: input.scope,
+      failedClanTags: uniqueFailedClanTags,
+    });
+  }
+
+  dozzleLog.info(
+    `[autorole] event=cwl_role_roster_loaded guild_id=${input.guildId} season=${input.season} roster_fetch_count=${cwlClanTags.length} cwl_member_count=${cwlMemberTags.size} elapsed_ms=${Date.now() - startedAtMs}`,
+  );
+  return {
+    cwlClanTags,
+    cwlMemberTags,
+    cwlClanFetchCount: cwlClanTags.length,
+  };
+}
+
+type CwlRoleRefreshState = {
+  cwlClanTags: string[];
+  cwlMemberTags: Set<string>;
+  cwlClanFetchCount: number;
+  failedClanTags: string[];
+  membersById: Map<string, AutoRoleGuildMemberLike>;
+  linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>;
+  candidateUserIds: Set<string>;
+  currentHolderCount: number;
+  memberLoad: RoleScopeGuildMemberLoadState;
+};
+
+/** Purpose: load live current-season CWL membership and the narrowly scoped Discord candidates. */
+async function loadCwlRoleRefreshState(input: {
+  scope: AutoRoleRefreshScope;
+  guild: Guild;
+  guildId: string;
+  cocService?: CoCService | null;
+  season: string;
+  telemetry?: AutoRoleRefreshTelemetry | null;
+}): Promise<CwlRoleRefreshState> {
+  const startedAtMs = Date.now();
+  const liveRoster = await loadCurrentSeasonCwlLiveRosterState(input);
+  const { cwlClanTags, cwlMemberTags, cwlClanFetchCount } = liveRoster;
+
+  const memberLoad = await loadCompleteGuildMembersForRoleRefresh({
+    guild: input.guild,
+    guildId: input.guildId,
+    roleId: input.scope.kind === "role" ? input.scope.discordRoleId : "",
+    subtype: "cwl_role",
+    telemetry: input.telemetry,
+  });
+  const membersById = memberLoad.membersById;
+  const currentHolderIds = collectCurrentRoleHolders(
+    membersById,
+    new Set([input.scope.kind === "role" ? input.scope.discordRoleId : ""]),
+  );
+  const linkedRosterAccounts = await loadLinkedAccountsForPlayerTags({
+    playerTags: [...cwlMemberTags],
+  });
+  const linkedHolderAccounts = await loadLinkedAccountsForGuildMemberIds({
+    guildMemberIds: [...currentHolderIds],
+  });
+  const linkedAccountsByUserId = mergeLinkedAccountsByUserId(
+    linkedRosterAccounts,
+    linkedHolderAccounts,
+  );
+  const candidateUserIds = new Set<string>(currentHolderIds);
+  for (const userId of linkedRosterAccounts.keys()) {
+    if (membersById.has(userId)) candidateUserIds.add(userId);
+  }
+
+  dozzleLog.info(
+    `[autorole] event=cwl_role_roster_loaded guild_id=${input.guildId} season=${input.season} roster_fetch_count=${cwlClanTags.length} cwl_member_count=${cwlMemberTags.size} current_holder_count=${currentHolderIds.size} candidate_count=${candidateUserIds.size} elapsed_ms=${Date.now() - startedAtMs}`,
+  );
+
+  return {
+    cwlClanTags,
+    cwlMemberTags,
+    cwlClanFetchCount,
+    failedClanTags: [],
+    membersById,
+    linkedAccountsByUserId,
+    candidateUserIds,
+    currentHolderCount: currentHolderIds.size,
+    memberLoad,
+  };
+}
+
 function collectLinkedPlayerTags(linkedAccountsByUserId: Map<string, PlayerLinkWithTrust[]>): string[] {
   const playerTags: string[] = [];
   for (const rows of linkedAccountsByUserId.values()) {
@@ -880,6 +1095,7 @@ async function collectGuildRefreshCandidateUserIds(input: {
   managedRoleIds: Set<string>;
   cachedMembersById: Map<string, AutoRoleGuildMemberLike>;
   cacheCoverageComplete: boolean;
+  additionalCandidateUserIds?: Iterable<string>;
 }): Promise<{
   candidateUserIds: Set<string>;
   sourceUserCount: number;
@@ -905,6 +1121,12 @@ async function collectGuildRefreshCandidateUserIds(input: {
   }
   for (const userId of collectCurrentRoleHolders(input.cachedMembersById, input.managedRoleIds)) {
     candidateUserIds.add(userId);
+  }
+  for (const userId of input.additionalCandidateUserIds ?? []) {
+    const normalizedUserId = normalizeDiscordUserId(userId);
+    if (normalizedUserId) {
+      candidateUserIds.add(normalizedUserId);
+    }
   }
 
   return {
@@ -1176,7 +1398,9 @@ type TrackedFwaClanRefreshState = {
   failedClanTags: string[];
 };
 
-type RoleScopeDiscoverySubtype = "tracked_clan" | "tracked_lead";
+type RoleScopeDiscoverySubtype = "tracked_clan" | "tracked_lead" | "cwl_role";
+
+const CWL_ROLE_ROSTER_FETCH_CONCURRENCY = 4;
 
 type RoleScopeGuildMemberLoadState = {
   membersById: Map<string, AutoRoleGuildMemberLike>;
@@ -1861,6 +2085,7 @@ async function loadTrackedClanMembershipScope(input: {
   cocService?: CoCService | null;
   guildId?: string;
   telemetry?: AutoRoleRefreshTelemetry | null;
+  liveCwlRoster?: CurrentCwlLiveRosterState | null;
 }): Promise<{
   fwaClanTags: Set<string>;
   cwlClanTags: Set<string>;
@@ -1872,10 +2097,12 @@ async function loadTrackedClanMembershipScope(input: {
     prisma.trackedClan.findMany({
       select: { tag: true },
     }),
-    prisma.cwlTrackedClan.findMany({
-      where: { season: input.season },
-      select: { tag: true },
-    }),
+    input.liveCwlRoster
+      ? Promise.resolve(input.liveCwlRoster.cwlClanTags.map((tag) => ({ tag })))
+      : prisma.cwlTrackedClan.findMany({
+          where: { season: input.season },
+          select: { tag: true },
+        }),
   ]);
 
   const fwaClanTags = normalizeClanTags(fwaRows.map((row) => row.tag));
@@ -1895,6 +2122,16 @@ async function loadTrackedClanMembershipScope(input: {
       if (!playerTag) continue;
       fwaMemberTags.add(playerTag);
     }
+  }
+
+  if (input.liveCwlRoster) {
+    return {
+      fwaClanTags,
+      cwlClanTags,
+      fwaMemberTags,
+      cwlMemberTags: new Set(input.liveCwlRoster.cwlMemberTags),
+      cwlClanFetchCount: input.liveCwlRoster.cwlClanFetchCount,
+    };
   }
 
   const cwlMemberTags = new Set<string>();
@@ -2599,6 +2836,7 @@ async function runRefreshPass(input: {
         guildId: input.guildId,
         config: input.snapshot.config,
         managedRoleIds,
+        reconciledRoleIds: managedRoleIds,
         rules: input.snapshot.rules,
         member,
         evaluation,
@@ -2805,6 +3043,106 @@ export class AutoRoleRefreshService {
         );
       }
 
+      const configuredCwlClanRoleId = String(snapshot.config.cwlClanRoleId ?? "").trim();
+      if (
+        input.scope.kind === "role" &&
+        configuredCwlClanRoleId.length > 0 &&
+        input.scope.discordRoleId === configuredCwlClanRoleId
+      ) {
+        const cwlSeason = resolveCurrentCwlSeasonKey();
+        const cwlRoleState = await loadCwlRoleRefreshState({
+          scope: input.scope,
+          guild: input.guild,
+          guildId: input.guildId,
+          cocService: input.cocService ?? null,
+          season: cwlSeason,
+          telemetry: input.telemetry ?? null,
+        });
+        const currentHolderCount = cwlRoleState.currentHolderCount;
+        const candidateCount = cwlRoleState.candidateUserIds.size;
+        logRoleHolderDiscovery({
+          guildId: input.guildId,
+          roleId: input.scope.discordRoleId,
+          subtype: "cwl_role",
+          guildMemberCount: cwlRoleState.memberLoad.guildMemberCount,
+          initialCachedCount: cwlRoleState.memberLoad.cachedMemberCount,
+          fullFetchRequired: cwlRoleState.memberLoad.fullFetchRequired,
+          hydratedCount: cwlRoleState.memberLoad.hydratedMemberCount,
+          holderCount: currentHolderCount,
+          candidateCount,
+          cacheCoverageComplete: cwlRoleState.memberLoad.cacheCoverageComplete,
+          action: "continue",
+        });
+
+        const cwlRoleSnapshot: AutoRoleGuildStateSnapshot = {
+          ...snapshot,
+          config: {
+            ...snapshot.config,
+            verifiedRoleId: null,
+            familyRoleId: null,
+            cwlClanRoleId: configuredCwlClanRoleId,
+            nonMemberRoleId: null,
+            nonMemberEnabled: false,
+            applyNicknames: false,
+          },
+          rules: [],
+        };
+        const trackedMembershipScope = {
+          fwaClanTags: new Set<string>(),
+          cwlClanTags: new Set(cwlRoleState.cwlClanTags),
+          fwaMemberTags: new Set<string>(),
+          cwlMemberTags: cwlRoleState.cwlMemberTags,
+          cwlClanFetchCount: cwlRoleState.cwlClanFetchCount,
+        };
+        const memberSourceSummary = buildMemberSourceSummary({
+          scope: input.scope,
+          guildMemberCount: cwlRoleState.memberLoad.guildMemberCount,
+          cachedMemberCount: cwlRoleState.memberLoad.cachedMemberCount,
+          cacheCoverageComplete: cwlRoleState.memberLoad.cacheCoverageComplete,
+          candidateUserCount: candidateCount,
+          targetedFetchRequestedCount: 0,
+          targetedFetchSucceededCount: 0,
+          targetedFetchFailedCount: 0,
+          visitorRoleAdditionsSuppressed: false,
+          playerCurrentPersistedRowCount: 0,
+          trackedClanOverlayCount: 0,
+        });
+
+        dozzleLog.info(
+          `[autorole] event=cwl_role_refresh_start guild_id=${input.guildId} season=${cwlSeason} roster_fetch_count=${cwlRoleState.cwlClanFetchCount} cwl_member_count=${cwlRoleState.cwlMemberTags.size} current_holder_count=${currentHolderCount} candidate_count=${candidateCount}`,
+        );
+        const result = await runRefreshPass({
+          guildId: input.guildId,
+          scope: input.scope,
+          runTrigger: input.runContext.trigger,
+          guild: input.guild,
+          snapshot: cwlRoleSnapshot,
+          trackedClans: [],
+          membersById: cwlRoleState.membersById,
+          linkedAccountsByUserId: cwlRoleState.linkedAccountsByUserId,
+          playerCurrentByTag: new Map(),
+          clanMembershipIndex: new Map(),
+          trackedMembershipScope,
+          runId: run.id,
+          now: input.now,
+          candidateUserIdsOverride: cwlRoleState.candidateUserIds,
+          suppressRemovalRoleIds: new Set(),
+          suppressNicknameUpdate: true,
+          nicknameSuppressionReason: "CWL role refresh does not sync nicknames",
+          trackedClanMembershipAuthoritative: true,
+          trackedFwaMemberTags: new Set(),
+          visitorRoleAvailable: false,
+          visitorRoleAdditionsSuppressed: true,
+        });
+        dozzleLog.info(
+          `[autorole] event=cwl_role_refresh_complete guild_id=${input.guildId} season=${cwlSeason} roster_fetch_count=${cwlRoleState.cwlClanFetchCount} candidate_count=${candidateCount} role_add_count=${result.addedCount} role_remove_count=${result.removedCount} failures=${result.failedCount} elapsed_ms=${Date.now() - refreshStartedAtMs}`,
+        );
+        return {
+          ...result,
+          memberSourceSummary,
+        };
+      }
+
       const trackedClans = await loadTrackedClansForAutorole();
       const managedRoleIds = buildManagedRoleIds(snapshot, trackedClans);
       let suppressRemovalRoleIds = buildLeadRoleRemovalSuppression({
@@ -3002,11 +3340,25 @@ export class AutoRoleRefreshService {
 
       if (input.scope.kind === "guild") {
         const cwlSeason = resolveCurrentCwlSeasonKey();
+        const liveCwlRoster = configuredCwlClanRoleId.length > 0
+          ? await loadCurrentSeasonCwlLiveRosterState({
+              scope: input.scope,
+              guildId: input.guildId,
+              cocService: input.cocService ?? null,
+              season: cwlSeason,
+              telemetry: input.telemetry ?? null,
+            })
+          : null;
+        const liveCwlLinkedAccounts = liveCwlRoster
+          ? await loadLinkedAccountsForPlayerTags({ playerTags: [...liveCwlRoster.cwlMemberTags] })
+          : new Map<string, PlayerLinkWithTrust[]>();
+        const liveCwlCandidateUserIds = new Set(liveCwlLinkedAccounts.keys());
         const trackedMembershipScope = await loadTrackedClanMembershipScope({
           season: cwlSeason,
           cocService: input.cocService ?? null,
           guildId: input.guildId,
           telemetry: input.telemetry ?? null,
+          liveCwlRoster,
         });
         const trackedFwaRefresh = await loadTrackedFwaClanRefreshState({
           guildId: input.guildId,
@@ -3054,6 +3406,7 @@ export class AutoRoleRefreshService {
                 managedRoleIds,
                 cachedMembersById,
                 cacheCoverageComplete,
+                additionalCandidateUserIds: liveCwlCandidateUserIds,
               })
             ).candidateUserIds;
         const guildMemberSource = cacheCoverageComplete
@@ -3119,7 +3472,7 @@ export class AutoRoleRefreshService {
         );
 
         dozzleLog.info(
-          `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${guildCandidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_clans=${trackedFwaRefresh.fwaClanTags.size} fwa_member_tags=${trackedFwaRefresh.fwaMemberTags.size} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} tracked_fwa_fetches=${trackedFwaRefresh.clanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
+          `[autorole] event=refresh_start guild_id=${input.guildId} scope=${input.scope.kind} guild_members=${membersById.size} candidate_members=${guildCandidateUserIds.size} linked_users=${linkedAccountsByUserId.size} managed_roles=${managedRoleIds.size} fwa_clans=${trackedFwaRefresh.fwaClanTags.size} fwa_member_tags=${trackedFwaRefresh.fwaMemberTags.size} cwl_membership_source=${liveCwlRoster ? "live" : "persisted"} cwl_member_tags=${trackedMembershipScope.cwlMemberTags.size} cwl_clan_fetches=${trackedMembershipScope.cwlClanFetchCount} tracked_fwa_fetches=${trackedFwaRefresh.clanFetchCount} player_current_tags=${playerCurrentByTag.size}`,
         );
 
         const result = await runRefreshPass({
