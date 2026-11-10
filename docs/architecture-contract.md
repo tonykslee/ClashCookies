@@ -300,6 +300,7 @@ Rules:
 - `CwlEventClan` owns the authoritative current-event pointer for a clan.
 - `CwlEventWarTag` owns the war-tag-to-event mapping used to resolve later refreshes idempotently.
 - `CurrentCwlRound` and `CwlRoundMemberCurrent` own live battle-day CWL timing and lineup truth for one event instance.
+- The configured autorole CWL clan role is a focused live-membership consumer: a role-scoped `/autorole refresh` fetches each unique current-season `CwlTrackedClan` roster through the CoC queue, uses only successfully validated live rosters for that run, resolves `PlayerLink` rows in bulk, and aborts before Discord mutations if any required roster is unavailable or incomplete. It does not use historical/round participation as a substitute, issue player lookups, refresh unrelated FWA state, reconcile unrelated roles, or update nicknames.
 - `CurrentCwlPrepSnapshot` owns the one live overlapping prep-day lineup snapshot for one event instance when the next day is simultaneously in preparation.
 - `CwlRoundHistory` and `CwlRoundMemberHistory` own ended CWL round truth for one event instance.
 - `CwlPlayerClanSeason` owns the derived observed current-season CWL roster summary for one event instance.
