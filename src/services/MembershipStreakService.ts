@@ -18,6 +18,12 @@ import {
   type CwlContinuityEvidenceResult,
   type CwlContinuityEvidenceService,
 } from "./CwlContinuityEvidenceService";
+import {
+  nonFwaMembershipEvidenceService,
+  NonFwaMembershipEvidenceService,
+  type NonFwaBoundaryEvidence,
+  type NonFwaMembershipEvidenceResult,
+} from "./NonFwaMembershipEvidenceService";
 
 const DEFAULT_MAX_BOUNDARIES = 100;
 const HARD_MAX_BOUNDARIES = 500;
@@ -42,16 +48,25 @@ export type MembershipFwaEvidence = {
 };
 
 export type MembershipAllianceEvidence = {
+  status?: "RESOLVED" | "AMBIGUOUS" | "ABSENT" | "UNKNOWN";
   positive: boolean;
   clanTags: string[];
   ambiguous: boolean;
-  sources: Array<"FWA_EVIDENCE" | "ALLIANCE_INTERVAL">;
+  sources: Array<"FWA_EVIDENCE" | "ALLIANCE_INTERVAL" | "BL_MM_WAR_PARTICIPATION">;
+};
+
+export type MembershipPhysicalEvidence = {
+  status: MembershipFwaEvidence["status"];
+  clanTag: string | null;
+  clanTags: string[];
+  source: MembershipFwaEvidenceSource | "BL_MM_WAR_PARTICIPATION" | "COMBINED" | null;
 };
 
 export type MembershipBoundaryEvidence = {
   playerTag: string;
   boundaryTime: Date;
   fwa: MembershipFwaEvidence;
+  physical?: MembershipPhysicalEvidence;
   alliance: MembershipAllianceEvidence;
   continuity?: {
     cwlExempt: true;
@@ -64,6 +79,9 @@ export type MembershipStreakResult = {
   latestBoundaryTime: Date | null;
   latestFwaEvidenceStatus: MembershipFwaEvidence["status"];
   latestFwaClanTag: string | null;
+  latestPhysicalEvidenceStatus: MembershipPhysicalEvidence["status"];
+  latestPhysicalClanTag: string | null;
+  latestAllianceEvidenceStatus: NonNullable<MembershipAllianceEvidence["status"]>;
   clanStreakSyncs: number;
   clanStreakIsLowerBound: boolean;
   allianceStreakSyncs: number;
@@ -107,6 +125,7 @@ type MembershipStreakDb = {
     findMany: (args?: any) => Promise<any[]>;
     groupBy: (args?: any) => Promise<any[]>;
   };
+  trackedClan: { findMany: (args?: any) => Promise<any[]> };
 };
 
 const defaultDb = prisma as unknown as MembershipStreakDb;
@@ -132,6 +151,7 @@ type ActiveWarSyncReader = Pick<
   "findPersistedActiveSyncNumber"
 >;
 type CwlContinuityReader = Pick<CwlContinuityEvidenceService, "getEvidence">;
+type NonFwaMembershipReader = Pick<NonFwaMembershipEvidenceService, "getEvidence">;
 
 type RosterCompleteness = "COMPLETE" | "PARTIAL" | "UNKNOWN";
 type ActiveRosterEvidence = {
@@ -152,6 +172,7 @@ type LoadedEvidence = {
   boundaryHistoryTruncated: boolean;
   historicalCanonicalization: HistoricalCanonicalizationStats;
   cwlContinuity: CwlContinuityEvidenceResult;
+  nonFwaEvidence: NonFwaMembershipEvidenceResult;
 };
 
 type HistoricalCanonicalizationStats = {
@@ -394,11 +415,117 @@ function buildFwaEvidence(
 function buildAllianceEvidence(fwa: MembershipFwaEvidence): MembershipAllianceEvidence {
   const fwaPositive = fwa.status === "RESOLVED" || fwa.status === "AMBIGUOUS";
   return {
+    status: fwa.status,
     positive: fwaPositive,
     clanTags: [...fwa.clanTags],
     ambiguous: fwa.status === "AMBIGUOUS",
     sources: fwaPositive ? ["FWA_EVIDENCE"] : [],
   };
+}
+
+/** Purpose: retain the existing FWA axis while combining only the S/A physical observation. */
+function combinePhysicalEvidence(
+  fwa: MembershipFwaEvidence,
+  nonFwa: NonFwaBoundaryEvidence | undefined,
+): MembershipPhysicalEvidence {
+  const nonFwaPhysical = nonFwa?.physical;
+  if (!nonFwa || !nonFwa.observed || !nonFwaPhysical || nonFwaPhysical.status === "ABSENT") {
+    return { ...fwa };
+  }
+  if (nonFwaPhysical.status === "UNKNOWN") {
+    return { status: "UNKNOWN", clanTag: null, clanTags: [], source: null };
+  }
+  if (nonFwaPhysical.status === "AMBIGUOUS") {
+    return { status: "AMBIGUOUS", clanTag: null, clanTags: [...nonFwaPhysical.clanTags], source: "BL_MM_WAR_PARTICIPATION" };
+  }
+  const fwaPositive = fwa.status === "RESOLVED" || fwa.status === "AMBIGUOUS";
+  const tags = uniqueSortedTags([
+    ...(fwaPositive ? fwa.clanTags : []),
+    ...nonFwaPhysical.clanTags,
+  ]);
+  if (tags.length === 1) {
+    return {
+      status: "RESOLVED",
+      clanTag: tags[0],
+      clanTags: tags,
+      source: fwaPositive ? "COMBINED" : "BL_MM_WAR_PARTICIPATION",
+    };
+  }
+  if (tags.length > 1) {
+    return { status: "AMBIGUOUS", clanTag: null, clanTags: tags, source: "COMBINED" };
+  }
+  return { ...fwa };
+}
+
+/** Purpose: combine alliance membership without changing the FWA-only C/Home evidence. */
+function combineAllianceEvidence(
+  fwa: MembershipFwaEvidence,
+  nonFwa: NonFwaBoundaryEvidence | undefined,
+): MembershipAllianceEvidence {
+  const base = buildAllianceEvidence(fwa);
+  const nonFwaAlliance = nonFwa?.alliance;
+  if (!nonFwa || !nonFwa.observed) return base;
+  if (nonFwa.physical.status === "AMBIGUOUS" ||
+    (nonFwa.physical.status === "RESOLVED" && base.positive &&
+      !base.clanTags.includes(nonFwa.physical.clanTag ?? ""))) {
+    return {
+      status: "AMBIGUOUS",
+      positive: false,
+      clanTags: [...nonFwa.physical.clanTags],
+      ambiguous: true,
+      sources: [],
+    };
+  }
+  if (nonFwaAlliance?.status === "ABSENT") {
+    return fwa.status === "UNKNOWN"
+      ? { status: "ABSENT", positive: false, clanTags: [], ambiguous: false, sources: [] }
+      : base;
+  }
+  if (!nonFwaAlliance) return base;
+  if (nonFwaAlliance.status === "AMBIGUOUS") {
+    return {
+      status: "AMBIGUOUS",
+      positive: false,
+      clanTags: [...nonFwaAlliance.clanTags],
+      ambiguous: true,
+      sources: [],
+    };
+  }
+  if (nonFwaAlliance.status === "UNKNOWN") {
+    return { status: "UNKNOWN", positive: false, clanTags: [], ambiguous: false, sources: [] };
+  }
+  const tags = uniqueSortedTags([
+    ...(base.positive ? base.clanTags : []),
+    ...nonFwaAlliance.clanTags,
+  ]);
+  const ambiguous = base.ambiguous || nonFwaAlliance.ambiguous || tags.length > 1;
+  return {
+    status: ambiguous ? "AMBIGUOUS" : "RESOLVED",
+    positive: true,
+    clanTags: tags,
+    ambiguous,
+    sources: uniqueSortedTags([
+      ...(base.positive ? base.sources : []),
+      "BL_MM_WAR_PARTICIPATION",
+    ]) as MembershipAllianceEvidence["sources"],
+  };
+}
+
+/** Purpose: fall back to legacy pure-test evidence while using combined physical evidence in production. */
+function physicalEvidenceOf(evidence: MembershipBoundaryEvidence | undefined): MembershipPhysicalEvidence {
+  return evidence?.physical ?? evidence?.fwa ?? {
+    status: "UNKNOWN",
+    clanTag: null,
+    clanTags: [],
+    source: null,
+  };
+}
+
+/** Purpose: return an explicit alliance status while preserving legacy evidence fixtures. */
+function allianceStatusOf(evidence: MembershipBoundaryEvidence | undefined): MembershipAllianceEvidence["status"] {
+  return evidence?.alliance.status ?? (evidence?.alliance.positive
+    ? evidence.alliance.ambiguous ? "AMBIGUOUS" : "RESOLVED"
+    : evidence?.fwa.status ?? "UNKNOWN");
 }
 
 /** Purpose: identify an explicitly proven CWL-neutral boundary without changing FWA evidence. */
@@ -427,17 +554,21 @@ export function computeMembershipStreaksFromEvidence(
   }));
   const latestBoundaryTime = boundaries[0] ?? null;
   const latest = latestBoundaryTime ? evidenceByKey.get(evidenceKey(playerTag, latestBoundaryTime)) : undefined;
+  const latestPhysical = physicalEvidenceOf(latest);
+  const latestAllianceStatus = allianceStatusOf(latest) ?? "UNKNOWN";
   const latestCwlContinuityExempt = isCwlNeutralEvidence(latest);
   const latestEvidencePending = Boolean(
-    latest && latest.fwa.status === "UNKNOWN" && !latest.alliance.positive,
+    latest && latestPhysical.status === "UNKNOWN" && latestAllianceStatus === "UNKNOWN",
   );
   const priorEvidence = evidenceRows[1];
+  const priorPhysical = physicalEvidenceOf(priorEvidence);
+  const priorAllianceStatus = allianceStatusOf(priorEvidence);
   const latestPendingClanValueAvailable = Boolean(
     latestEvidencePending &&
-    (priorEvidence?.fwa.status === "RESOLVED" || priorEvidence?.fwa.status === "ABSENT"),
+    (priorPhysical.status === "RESOLVED" || priorPhysical.status === "ABSENT"),
   );
   const latestPendingAllianceValueAvailable = Boolean(
-    latestEvidencePending && priorEvidence && priorEvidence.fwa.status !== "UNKNOWN",
+    latestEvidencePending && priorEvidence && priorAllianceStatus !== "UNKNOWN",
   );
 
   const hasContiguousCanonicalBoundary = (index: number): boolean => {
@@ -459,20 +590,20 @@ export function computeMembershipStreaksFromEvidence(
     ? evidenceByKey.get(evidenceKey(playerTag, boundaries[leadingCwlNeutralCount]))
     : undefined;
   if (leadingCwlNeutralCount > 0) {
-    if (firstNonNeutralEvidence?.fwa.status === "RESOLVED") {
+    if (physicalEvidenceOf(firstNonNeutralEvidence).status === "RESOLVED") {
       clanStartIndex = leadingCwlNeutralCount;
-    } else if (firstNonNeutralEvidence?.fwa.status === "UNKNOWN" || firstNonNeutralEvidence?.fwa.status === "AMBIGUOUS") {
+    } else if (physicalEvidenceOf(firstNonNeutralEvidence).status === "UNKNOWN" || physicalEvidenceOf(firstNonNeutralEvidence).status === "AMBIGUOUS") {
       clanStreakIsLowerBound = true;
     }
-  } else if (latest?.fwa.status === "RESOLVED") {
+  } else if (latestPhysical.status === "RESOLVED") {
     clanStartIndex = 0;
-  } else if (latestEvidencePending && evidenceRows[1]?.fwa.status === "RESOLVED") {
+  } else if (latestEvidencePending && priorPhysical.status === "RESOLVED") {
     clanStartIndex = 1;
   }
   if (clanStartIndex !== null) {
-    const latestClanTag = evidenceByKey.get(
+    const latestClanTag = physicalEvidenceOf(evidenceByKey.get(
       evidenceKey(playerTag, boundaries[clanStartIndex]),
-    )!.fwa.clanTag!;
+    )).clanTag!;
     clanStreakSyncs = 1;
     let stopped = orderedIdentities[clanStartIndex]?.syncNumber === null;
     for (let index = 1; index <= clanStartIndex; index += 1) {
@@ -496,11 +627,12 @@ export function computeMembershipStreaksFromEvidence(
         }
         const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
         if (isCwlNeutralEvidence(evidence)) continue;
-        if (evidence?.fwa.status === "RESOLVED" && evidence.fwa.clanTag === latestClanTag) {
+        const physical = physicalEvidenceOf(evidence);
+        if (physical.status === "RESOLVED" && physical.clanTag === latestClanTag) {
           clanStreakSyncs += 1;
           continue;
         }
-        if (evidence?.fwa.status === "RESOLVED" || evidence?.fwa.status === "ABSENT") break;
+        if (physical.status === "RESOLVED" || physical.status === "ABSENT") break;
         clanStreakIsLowerBound = true;
         stopped = true;
         break;
@@ -509,7 +641,7 @@ export function computeMembershipStreaksFromEvidence(
     if (!stopped && clanStreakSyncs === boundaries.length && historyBoundReached) {
       clanStreakIsLowerBound = true;
     }
-  } else if (latestBoundaryTime && !latestEvidencePending && latest?.fwa.status !== "ABSENT") {
+  } else if (latestBoundaryTime && !latestEvidencePending && latestPhysical.status !== "ABSENT") {
     clanStreakIsLowerBound = true;
   }
 
@@ -519,7 +651,7 @@ export function computeMembershipStreaksFromEvidence(
   if (leadingCwlNeutralCount > 0) {
     if (firstNonNeutralEvidence?.alliance.positive) {
       allianceStartIndex = leadingCwlNeutralCount;
-    } else if (firstNonNeutralEvidence?.fwa.status === "UNKNOWN" || firstNonNeutralEvidence?.fwa.status === "AMBIGUOUS") {
+    } else if (allianceStatusOf(firstNonNeutralEvidence) === "UNKNOWN" || allianceStatusOf(firstNonNeutralEvidence) === "AMBIGUOUS") {
       allianceStreakIsLowerBound = true;
     }
   } else if (latest?.alliance.positive) {
@@ -555,7 +687,7 @@ export function computeMembershipStreaksFromEvidence(
           allianceStreakSyncs += 1;
           continue;
         }
-        if (evidence?.fwa.status === "ABSENT") break;
+        if (allianceStatusOf(evidence) === "ABSENT") break;
         allianceStreakIsLowerBound = true;
         stopped = true;
         break;
@@ -564,7 +696,7 @@ export function computeMembershipStreaksFromEvidence(
     if (!stopped && allianceStreakSyncs === boundaries.length && historyBoundReached) {
       allianceStreakIsLowerBound = true;
     }
-  } else if (latestBoundaryTime && !latestEvidencePending && latest?.fwa.status !== "ABSENT") {
+  } else if (latestBoundaryTime && !latestEvidencePending && latestAllianceStatus !== "ABSENT") {
     allianceStreakIsLowerBound = true;
   }
 
@@ -573,11 +705,14 @@ export function computeMembershipStreaksFromEvidence(
     latestBoundaryTime,
     latestFwaEvidenceStatus: latest?.fwa.status ?? "UNKNOWN",
     latestFwaClanTag: latest?.fwa.status === "RESOLVED" ? latest.fwa.clanTag : null,
+    latestPhysicalEvidenceStatus: latestPhysical.status,
+    latestPhysicalClanTag: latestPhysical.status === "RESOLVED" ? latestPhysical.clanTag : null,
+    latestAllianceEvidenceStatus: latestAllianceStatus,
     clanStreakSyncs,
     clanStreakIsLowerBound,
     allianceStreakSyncs,
     allianceStreakIsLowerBound,
-    latestEvidenceAvailable: Boolean(latest && (latest.fwa.status !== "UNKNOWN" || latest.alliance.positive)),
+    latestEvidenceAvailable: Boolean(latest && (latestPhysical.status !== "UNKNOWN" || latest.alliance.positive)),
     latestEvidencePending,
     latestPendingClanValueAvailable,
     latestPendingAllianceValueAvailable,
@@ -589,11 +724,13 @@ export function computeMembershipStreaksFromEvidence(
 export class MembershipStreakService {
   private readonly activeWarSyncReader: ActiveWarSyncReader | null;
   private readonly cwlContinuityReader: CwlContinuityReader | null;
+  private readonly nonFwaMembershipReader: NonFwaMembershipReader | null;
 
   constructor(
     private readonly db: MembershipStreakDb = defaultDb,
     activeWarSyncReader?: ActiveWarSyncReader | null,
     cwlContinuityReader?: CwlContinuityReader | null,
+    nonFwaMembershipReader?: NonFwaMembershipReader | null,
   ) {
     this.activeWarSyncReader = activeWarSyncReader === undefined
       ? db === defaultDb ? new ActiveWarSyncResolutionService() : null
@@ -601,6 +738,9 @@ export class MembershipStreakService {
     this.cwlContinuityReader = cwlContinuityReader === undefined
       ? db === defaultDb ? cwlContinuityEvidenceService : null
       : cwlContinuityReader;
+    this.nonFwaMembershipReader = nonFwaMembershipReader === undefined
+      ? db === defaultDb ? nonFwaMembershipEvidenceService : new NonFwaMembershipEvidenceService(this.db)
+      : nonFwaMembershipReader;
   }
 
   /** Purpose: return streaks and the same canonical boundary window through one bulk evidence load. */
@@ -614,7 +754,7 @@ export class MembershipStreakService {
       loaded.boundaryIdentities,
     ));
     console.debug(
-      `[membership-streak] event=bulk_resolution guild_id=${normalizeGuildId(input.guildId) || "unknown"} players=${loaded.playerTags.length} boundaries=${loaded.boundaries.length} lower_bound=${loaded.historyBoundReached ? 1 : 0} cwl_neutral_boundaries=${loaded.cwlContinuity.neutralBoundaryCount} cwl_neutral_players=${loaded.cwlContinuity.neutralPlayerCount} cwl_candidates_rejected=${loaded.cwlContinuity.candidatesRejected} cwl_ambiguous=${loaded.cwlContinuity.ambiguousCandidates}`,
+      `[membership-streak] event=bulk_resolution guild_id=${normalizeGuildId(input.guildId) || "unknown"} players=${loaded.playerTags.length} boundaries=${loaded.boundaries.length} lower_bound=${loaded.historyBoundReached ? 1 : 0} cwl_neutral_boundaries=${loaded.cwlContinuity.neutralBoundaryCount} cwl_neutral_players=${loaded.cwlContinuity.neutralPlayerCount} cwl_candidates_rejected=${loaded.cwlContinuity.candidatesRejected} cwl_ambiguous=${loaded.cwlContinuity.ambiguousCandidates} bl_mm_accepted=${loaded.nonFwaEvidence.acceptedProofs} bl_mm_rejected=${loaded.nonFwaEvidence.rejectedProofs} bl_mm_conflicting=${loaded.nonFwaEvidence.conflictingProofs}`,
     );
     const canonicalization = loaded.historicalCanonicalization;
     console.debug(
@@ -726,6 +866,7 @@ export class MembershipStreakService {
         boundaryHistoryTruncated: false,
         historicalCanonicalization: emptyHistoricalCanonicalizationStats(),
         cwlContinuity: emptyCwlContinuityEvidence(),
+        nonFwaEvidence: { byBoundary: new Map(), acceptedProofs: 0, rejectedProofs: 0, conflictingProofs: 0 },
       };
     }
 
@@ -757,6 +898,21 @@ export class MembershipStreakService {
       boundaryTime,
       syncNumber: cycleByBoundaryTime.get(dateKey(boundaryTime))?.syncNumber ?? null,
     }));
+
+    let nonFwaEvidence = { byBoundary: new Map<string, NonFwaBoundaryEvidence>(), acceptedProofs: 0, rejectedProofs: 0, conflictingProofs: 0 } as NonFwaMembershipEvidenceResult;
+    if (this.nonFwaMembershipReader && boundedCycles.length > 0) {
+      try {
+        nonFwaEvidence = await this.nonFwaMembershipReader.getEvidence({
+          guildId,
+          playerTags,
+          boundaries: boundedCycles,
+        });
+      } catch (error) {
+        console.warn(
+          `[membership-streak] event=bl_mm_evidence_read_failed guild_id=${guildId} reason=${String(error)}`,
+        );
+      }
+    }
 
     let cwlContinuity = emptyCwlContinuityEvidence();
     if (this.cwlContinuityReader && boundaries.length > 0) {
@@ -1136,11 +1292,13 @@ export class MembershipStreakService {
           completeCoverage !== undefined,
           positiveSource,
         );
+        const nonFwa = nonFwaEvidence.byBoundary.get(`${dateKey(boundaryTime)}|${playerTag}`);
         return {
           playerTag,
           boundaryTime,
           fwa,
-          alliance: buildAllianceEvidence(fwa),
+          physical: combinePhysicalEvidence(fwa, nonFwa),
+          alliance: combineAllianceEvidence(fwa, nonFwa),
           ...(cwlContinuity.exemptPairs.has(cwlContinuityPairKey(playerTag, boundaryTime))
             ? { continuity: { cwlExempt: true as const, source: "CWL_EXCURSION" as const } }
             : {}),
@@ -1157,6 +1315,7 @@ export class MembershipStreakService {
       boundaryHistoryTruncated: historyBoundReached,
       historicalCanonicalization,
       cwlContinuity,
+      nonFwaEvidence,
     };
   }
 }

@@ -24,6 +24,7 @@ type Fixture = {
   evaluations?: any[];
   histories?: any[];
   participation?: any[];
+  trackedClans?: any[];
   lookups?: any[];
 };
 
@@ -69,16 +70,17 @@ function groupedBoundaryRows(rows: any[], args: any): any[] {
 }
 
 function groupedParticipationRows(rows: any[], args: any): any[] {
-  const grouped = new Map<string, { warId: string; clanTag: string; count: number }>();
+  const by = Array.isArray(args?.by) && args.by.length > 0 ? args.by : ["warId", "clanTag"];
+  const grouped = new Map<string, { values: any; count: number }>();
   for (const row of filteredRows(rows, args)) {
-    const key = `${row.warId}|${row.clanTag}`;
-    const current = grouped.get(key) ?? { warId: row.warId, clanTag: row.clanTag, count: 0 };
+    const values = Object.fromEntries(by.map((field: string) => [field, row[field] ?? null]));
+    const key = JSON.stringify(values);
+    const current = grouped.get(key) ?? { values, count: 0 };
     current.count += 1;
     grouped.set(key, current);
   }
   return [...grouped.values()].map((row) => ({
-    warId: row.warId,
-    clanTag: row.clanTag,
+    ...row.values,
     _count: { playerTag: row.count },
   }));
 }
@@ -101,6 +103,13 @@ function makeDb(fixture: Fixture = {}) {
     clanWarParticipation: {
       findMany: vi.fn(async (args: any) => filteredRows(fixture.participation ?? [], args)),
       groupBy: vi.fn(async (args: any) => groupedParticipationRows(fixture.participation ?? [], args)),
+    },
+    trackedClan: {
+      findMany: vi.fn(async () => fixture.trackedClans ?? [
+        { tag: rockyRoad },
+        { tag: partyBlizzard },
+        { tag: otherAllianceClan },
+      ]),
     },
     warLookup: { findMany: vi.fn(async (args: any) => filteredRows(fixture.lookups ?? [], args)) },
   };
@@ -131,6 +140,36 @@ function historical(
       opponentTag: "#0PP2",
     },
     participation: participants.map((tag) => ({ guildId, warId: String(warId), clanTag, playerTag: tag })),
+  };
+}
+
+function nonFwaHistorical(
+  syncNumber: number,
+  day: number,
+  clanTag: string,
+  matchType: "BL" | "MM" = "BL",
+  participants: string[] = [playerTag],
+  warId = 300000 + syncNumber,
+) {
+  const history = {
+    warId,
+    syncNumber,
+    matchType,
+    clanTag,
+    warStartTime: time(day),
+    opponentTag: "#0PP2",
+  };
+  return {
+    history,
+    participation: participants.map((tag) => ({
+      guildId,
+      warId: String(warId),
+      clanTag,
+      opponentTag: "#0PP2",
+      matchType,
+      warStartTime: time(day),
+      playerTag: tag,
+    })),
   };
 }
 
@@ -772,7 +811,7 @@ describe("MembershipStreakService", () => {
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
     expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
-    expect(built.db.clanWarHistory.findMany).not.toHaveBeenCalled();
+    expect(built.db.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
   });
 
   it("uses canonical compliance evidence when a raw point is unmatched", async () => {
@@ -911,7 +950,7 @@ describe("MembershipStreakService", () => {
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
 
     expect(evidence[playerTag][0].fwa.status).toBe("UNKNOWN");
-    expect(built.db.clanWarHistory.findMany).not.toHaveBeenCalled();
+    expect(built.db.clanWarHistory.findMany).toHaveBeenCalledTimes(1);
   });
 
   it("preserves duplicate canonical boundary identity as unresolved", async () => {
@@ -1130,6 +1169,143 @@ describe("MembershipStreakService", () => {
       allianceStreakSyncs: 1,
       allianceStreakIsLowerBound: false,
     });
+  });
+
+  it("counts an FWA to BL to FWA sequence for S/A while keeping C FWA-only", async () => {
+    const older = historical(586, 1, rockyRoad);
+    const middle = nonFwaHistorical(587, 2, rockyRoad, "BL");
+    const latest = historical(588, 3, rockyRoad);
+    const built = serviceFor({
+      cycles: [older, middle, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point, latest.point],
+      histories: [older.history, middle.history, latest.history],
+      participation: [...older.participation, ...middle.participation, ...latest.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestFwaEvidenceStatus: "RESOLVED",
+      latestPhysicalEvidenceStatus: "RESOLVED",
+      clanStreakSyncs: 3,
+      allianceStreakSyncs: 3,
+    });
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+    expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("counts an FWA to MM to FWA sequence without relabeling MM as FWA", async () => {
+    const older = historical(586, 1, rockyRoad);
+    const middle = nonFwaHistorical(587, 2, rockyRoad, "MM");
+    const latest = historical(588, 3, rockyRoad);
+    const built = serviceFor({
+      cycles: [older, middle, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point, latest.point],
+      histories: [older.history, middle.history, latest.history],
+      participation: [...older.participation, ...middle.participation, ...latest.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 3, allianceStreakSyncs: 3 });
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+    expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("lets a latest BL roster anchor S/A while the latest FWA axis remains UNKNOWN", async () => {
+    const older = historical(587, 2, rockyRoad);
+    const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
+    const built = serviceFor({
+      cycles: [latest, older].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point],
+      histories: [latest.history, older.history],
+      participation: [...latest.participation, ...older.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestFwaEvidenceStatus: "UNKNOWN",
+      latestPhysicalEvidenceStatus: "RESOLVED",
+      latestPhysicalClanTag: rockyRoad,
+      clanStreakSyncs: 2,
+      allianceStreakSyncs: 2,
+    });
+  });
+
+  it("keeps verified absence exact when complete FWA and BL/MM rosters omit the player", async () => {
+    const fwa = historical(588, 3, rockyRoad, [otherPlayerTag]);
+    const bl = nonFwaHistorical(588, 3, rockyRoad, "BL", [otherPlayerTag]);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      points: [fwa.point],
+      histories: [fwa.history, bl.history],
+      participation: [...fwa.participation, ...bl.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestFwaEvidenceStatus: "ABSENT",
+      latestPhysicalEvidenceStatus: "ABSENT",
+      clanStreakSyncs: 0,
+      allianceStreakSyncs: 0,
+    });
+  });
+
+  it("preserves A across a BL/MM switch between tracked clans but resets S", async () => {
+    const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
+    const middle = nonFwaHistorical(587, 2, rockyRoad, "MM");
+    const older = nonFwaHistorical(586, 1, otherAllianceClan, "BL");
+    const built = serviceFor({
+      cycles: [latest, middle, older].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      histories: [latest.history, middle.history, older.history],
+      participation: [...latest.participation, ...middle.participation, ...older.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 3 });
+  });
+
+  it("fails closed for duplicate same-boundary BL/MM proof", async () => {
+    const first = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 300588);
+    const second = nonFwaHistorical(588, 3, rockyRoad, "MM", [playerTag], 400588);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      histories: [first.history, second.history],
+      participation: [...first.participation, ...second.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestPhysicalEvidenceStatus: "UNKNOWN",
+      clanStreakSyncs: 0,
+      allianceStreakSyncs: 0,
+      latestEvidencePending: true,
+    });
+  });
+
+  it("rejects incomplete, unowned, unknown-type, and outside-alliance evidence conservatively", async () => {
+    const incomplete = nonFwaHistorical(588, 3, rockyRoad, "BL", [otherPlayerTag], 300588);
+    const unowned = nonFwaHistorical(587, 2, rockyRoad, "MM", [playerTag], 300587);
+    unowned.participation = unowned.participation.map((row) => ({ ...row, guildId: "other-guild" }));
+    const unknown = { ...nonFwaHistorical(586, 1, rockyRoad, "BL", [playerTag], 300586), history: { ...nonFwaHistorical(586, 1, rockyRoad, "BL", [playerTag], 300586).history, matchType: "UNKNOWN" } };
+    const outside = nonFwaHistorical(585, 4, "#2L2L", "BL", [playerTag], 300585);
+    const built = serviceFor({
+      cycles: [588, 587, 586, 585].map((syncNumber, index) => ({ guildId, syncNumber, syncTime: time(6 - index) })),
+      histories: [incomplete.history, unowned.history, unknown.history, outside.history],
+      participation: [...incomplete.participation, ...unowned.participation, ...unknown.participation, ...outside.participation],
+      trackedClans: [{ tag: rockyRoad }, { tag: partyBlizzard }, { tag: otherAllianceClan }],
+    });
+
+    const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
+    expect(evidence[playerTag][0].physical?.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][1].physical?.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][2].physical?.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][3].physical?.status).toBe("RESOLVED");
+    expect(evidence[playerTag][3].alliance.status).toBe("ABSENT");
   });
 
   it("preserves historical identity conflict protections", async () => {

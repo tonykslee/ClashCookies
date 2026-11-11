@@ -95,19 +95,20 @@ function resolveClanTenure(input: {
 function resolvePhysicalClanStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
+  const latestPhysicalStatus = streak.latestPhysicalEvidenceStatus ?? streak.latestFwaEvidenceStatus;
   if (streak.latestCwlContinuityExempt) {
     return {
       syncs: streak.clanStreakSyncs > 0 ? streak.clanStreakSyncs : null,
       isLowerBound: streak.clanStreakIsLowerBound,
     };
   }
-  if (streak.latestFwaEvidenceStatus === "RESOLVED") {
+  if (latestPhysicalStatus === "RESOLVED") {
     return {
       syncs: streak.clanStreakSyncs,
       isLowerBound: streak.clanStreakIsLowerBound,
     };
   }
-  if (streak.latestFwaEvidenceStatus === "ABSENT") {
+  if (latestPhysicalStatus === "ABSENT") {
     return { syncs: 0, isLowerBound: false };
   }
   if (streak.latestEvidencePending && streak.latestPendingClanValueAvailable) {
