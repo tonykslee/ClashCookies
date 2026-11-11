@@ -1314,11 +1314,20 @@ describe("MembershipStreakService", () => {
   it("keeps same-player physical-clan conflicts unresolved", async () => {
     const home = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 300588);
     const other = nonFwaHistorical(588, 3, otherAllianceClan, "MM", [playerTag], 400588);
+    const cwlContinuityReader = {
+      getEvidence: vi.fn(async () => ({
+        exemptPairs: new Set([cwlContinuityPairKey(playerTag, time(3))]),
+        neutralBoundaryCount: 1,
+        neutralPlayerCount: 1,
+        candidatesRejected: 0,
+        ambiguousCandidates: 0,
+      })),
+    };
     const built = serviceFor({
       cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
       histories: [home.history, other.history],
       participation: [...home.participation, ...other.participation],
-    });
+    }, [], false, cwlContinuityReader);
 
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
@@ -1327,6 +1336,37 @@ describe("MembershipStreakService", () => {
       latestAllianceEvidenceStatus: "AMBIGUOUS",
       clanStreakSyncs: 0,
       allianceStreakSyncs: 0,
+      latestCwlContinuityExempt: false,
+    });
+  });
+
+  it("does not CWL-neutralize conflicting FWA and BL/MM clans", async () => {
+    const fwa = historical(588, 3, rockyRoad, [playerTag], 100588);
+    const bl = nonFwaHistorical(588, 3, otherAllianceClan, "BL", [playerTag], 300588);
+    const cwlContinuityReader = {
+      getEvidence: vi.fn(async () => ({
+        exemptPairs: new Set([cwlContinuityPairKey(playerTag, time(3))]),
+        neutralBoundaryCount: 1,
+        neutralPlayerCount: 1,
+        candidatesRejected: 0,
+        ambiguousCandidates: 0,
+      })),
+    };
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      points: [fwa.point],
+      histories: [fwa.history, bl.history],
+      participation: [...fwa.participation, ...bl.participation],
+    }, [], false, cwlContinuityReader);
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestPhysicalEvidenceStatus: "AMBIGUOUS",
+      latestAllianceEvidenceStatus: "AMBIGUOUS",
+      clanStreakSyncs: 0,
+      allianceStreakSyncs: 0,
+      latestCwlContinuityExempt: false,
     });
   });
 

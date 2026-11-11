@@ -52,6 +52,7 @@ export type MembershipAllianceEvidence = {
   positive: boolean;
   clanTags: string[];
   ambiguous: boolean;
+  conflicting?: boolean;
   sources: Array<"FWA_EVIDENCE" | "ALLIANCE_INTERVAL" | "BL_MM_WAR_PARTICIPATION">;
 };
 
@@ -60,6 +61,7 @@ export type MembershipPhysicalEvidence = {
   clanTag: string | null;
   clanTags: string[];
   source: MembershipFwaEvidenceSource | "BL_MM_WAR_PARTICIPATION" | "COMBINED" | null;
+  conflicting?: boolean;
 };
 
 export type MembershipBoundaryEvidence = {
@@ -433,10 +435,22 @@ function combinePhysicalEvidence(
     return { ...fwa };
   }
   if (nonFwaPhysical.status === "UNKNOWN") {
-    return { status: "UNKNOWN", clanTag: null, clanTags: [], source: null };
+    return {
+      status: "UNKNOWN",
+      clanTag: null,
+      clanTags: [],
+      source: null,
+      conflicting: nonFwaPhysical.conflicting === true,
+    };
   }
   if (nonFwaPhysical.status === "AMBIGUOUS") {
-    return { status: "AMBIGUOUS", clanTag: null, clanTags: [...nonFwaPhysical.clanTags], source: "BL_MM_WAR_PARTICIPATION" };
+    return {
+      status: "AMBIGUOUS",
+      clanTag: null,
+      clanTags: [...nonFwaPhysical.clanTags],
+      source: "BL_MM_WAR_PARTICIPATION",
+      conflicting: true,
+    };
   }
   const fwaPositive = fwa.status === "RESOLVED" || fwa.status === "AMBIGUOUS";
   const tags = uniqueSortedTags([
@@ -452,7 +466,7 @@ function combinePhysicalEvidence(
     };
   }
   if (tags.length > 1) {
-    return { status: "AMBIGUOUS", clanTag: null, clanTags: tags, source: "COMBINED" };
+    return { status: "AMBIGUOUS", clanTag: null, clanTags: tags, source: "COMBINED", conflicting: true };
   }
   return { ...fwa };
 }
@@ -473,6 +487,7 @@ function combineAllianceEvidence(
       positive: false,
       clanTags: [...nonFwa.physical.clanTags],
       ambiguous: true,
+      conflicting: true,
       sources: [],
     };
   }
@@ -487,11 +502,19 @@ function combineAllianceEvidence(
       positive: false,
       clanTags: [...nonFwaAlliance.clanTags],
       ambiguous: true,
+      conflicting: true,
       sources: [],
     };
   }
   if (nonFwaAlliance.status === "UNKNOWN") {
-    return { status: "UNKNOWN", positive: false, clanTags: [], ambiguous: false, sources: [] };
+    return {
+      status: "UNKNOWN",
+      positive: false,
+      clanTags: [],
+      ambiguous: false,
+      conflicting: nonFwaAlliance.conflicting === true || nonFwa.physical.conflicting === true,
+      sources: [],
+    };
   }
   const tags = uniqueSortedTags([
     ...(base.positive ? base.clanTags : []),
@@ -503,6 +526,7 @@ function combineAllianceEvidence(
     positive: true,
     clanTags: tags,
     ambiguous,
+    conflicting: nonFwaAlliance.conflicting === true || nonFwa.physical.conflicting === true,
     sources: uniqueSortedTags([
       ...(base.positive ? base.sources : []),
       "BL_MM_WAR_PARTICIPATION",
@@ -530,8 +554,14 @@ function allianceStatusOf(evidence: MembershipBoundaryEvidence | undefined): Mem
 /** Purpose: identify an explicitly proven CWL-neutral boundary without changing FWA evidence. */
 function isCwlNeutralEvidence(evidence: MembershipBoundaryEvidence | undefined): boolean {
   const physical = physicalEvidenceOf(evidence);
+  const physicalConflict = physical.conflicting === true || physical.status === "AMBIGUOUS";
+  const allianceConflict = evidence?.alliance.conflicting === true ||
+    evidence?.alliance.ambiguous === true ||
+    evidence?.alliance.status === "AMBIGUOUS";
   return evidence?.continuity?.cwlExempt === true &&
-    physical.status !== "RESOLVED" &&
+    !physicalConflict &&
+    !allianceConflict &&
+    (physical.status === "UNKNOWN" || physical.status === "ABSENT") &&
     !evidence?.alliance.positive;
 }
 

@@ -7,6 +7,7 @@ export type NonFwaPhysicalEvidence = {
   status: NonFwaMembershipEvidenceStatus;
   clanTag: string | null;
   clanTags: string[];
+  conflicting: boolean;
 };
 
 export type NonFwaAllianceEvidence = {
@@ -14,6 +15,7 @@ export type NonFwaAllianceEvidence = {
   positive: boolean;
   clanTags: string[];
   ambiguous: boolean;
+  conflicting: boolean;
 };
 
 export type NonFwaBoundaryEvidence = {
@@ -188,8 +190,8 @@ export class NonFwaMembershipEvidenceService {
     for (const boundary of boundaries) {
       result.byBoundary.set(boundaryKey(boundary.syncTime), {
         observed: false,
-        physical: { status: "ABSENT", clanTag: null, clanTags: [] },
-        alliance: { status: "ABSENT", positive: false, clanTags: [], ambiguous: false },
+        physical: { status: "ABSENT", clanTag: null, clanTags: [], conflicting: false },
+        alliance: { status: "ABSENT", positive: false, clanTags: [], ambiguous: false, conflicting: false },
       });
     }
     const warIds = [...new Set(candidateHistoryRows
@@ -247,6 +249,7 @@ export class NonFwaMembershipEvidenceService {
     const acceptedHistories: CanonicalHistory[] = [];
     const rejectedByPlayerBoundary = new Set<string>();
     const unknownByPlayerBoundary = new Set<string>();
+    const conflictingByPlayerBoundary = new Set<string>();
     for (const history of histories) {
       const key = boundaryKey(history.syncTime);
       const groups = groupsByWarId.get(String(history.warId)) ?? [];
@@ -259,7 +262,10 @@ export class NonFwaMembershipEvidenceService {
       if (!relevantPlayers || relevantPlayers.size === 0) continue;
       result.rejectedProofs += 1;
       for (const playerTag of relevantPlayers) rejectedByPlayerBoundary.add(`${key}|${playerTag}`);
-      if (groups.length > 1 || exactGroups.length > 1) result.conflictingProofs += 1;
+      if (groups.length > 1 || exactGroups.length > 1) {
+        result.conflictingProofs += 1;
+        for (const playerTag of relevantPlayers) conflictingByPlayerBoundary.add(`${key}|${playerTag}`);
+      }
     }
     for (const row of unknownTypeHistories) {
       const syncNumber = positiveInteger(row?.syncNumber);
@@ -305,7 +311,11 @@ export class NonFwaMembershipEvidenceService {
           result.conflictingProofs += 1;
           for (const history of rows.filter((row) => row.clanTag === clanTag)) {
             const players = playerRowsByAcceptedHistory.get(`${history.warId}|${key}`) ?? [];
-            for (const playerTag of players) rejectedByPlayerBoundary.add(`${key}|${playerTag}`);
+            for (const playerTag of players) {
+              const playerKey = `${key}|${playerTag}`;
+              rejectedByPlayerBoundary.add(playerKey);
+              conflictingByPlayerBoundary.add(playerKey);
+            }
           }
         }
       }
@@ -330,24 +340,28 @@ export class NonFwaMembershipEvidenceService {
         const coverageUnknown = rejectedByPlayerBoundary.has(playerKey) || unknownByPlayerBoundary.has(playerKey);
         const clanTags = positiveByBoundaryAndPlayer.get(`${playerTag}|${key}`) ?? new Set<string>();
         const physicalTags = uniqueSorted(clanTags);
-        if (physicalTags.length > 1) result.conflictingProofs += 1;
+        if (physicalTags.length > 1) {
+          result.conflictingProofs += 1;
+          conflictingByPlayerBoundary.add(playerKey);
+        }
+        const physicalConflicting = conflictingByPlayerBoundary.has(playerKey);
         const physical: NonFwaPhysicalEvidence = coverageUnknown
-          ? { status: "UNKNOWN", clanTag: null, clanTags: [] }
+          ? { status: "UNKNOWN", clanTag: null, clanTags: [], conflicting: physicalConflicting }
           : physicalTags.length === 1
-            ? { status: "RESOLVED", clanTag: physicalTags[0], clanTags: physicalTags }
+            ? { status: "RESOLVED", clanTag: physicalTags[0], clanTags: physicalTags, conflicting: physicalConflicting }
             : physicalTags.length > 1
-              ? { status: "AMBIGUOUS", clanTag: null, clanTags: physicalTags }
+              ? { status: "AMBIGUOUS", clanTag: null, clanTags: physicalTags, conflicting: true }
               : candidates.length > 0
-                ? { status: "ABSENT", clanTag: null, clanTags: [] }
-                : { status: "ABSENT", clanTag: null, clanTags: [] };
+                ? { status: "ABSENT", clanTag: null, clanTags: [], conflicting: physicalConflicting }
+                : { status: "ABSENT", clanTag: null, clanTags: [], conflicting: physicalConflicting };
         const allianceTags = physicalTags.filter((clanTag) => trackedClanTags.has(clanTag));
         const alliance: NonFwaAllianceEvidence = coverageUnknown
-          ? { status: "UNKNOWN", positive: false, clanTags: [], ambiguous: false }
+          ? { status: "UNKNOWN", positive: false, clanTags: [], ambiguous: false, conflicting: physicalConflicting }
           : allianceTags.length === 1
-            ? { status: "RESOLVED", positive: true, clanTags: allianceTags, ambiguous: false }
+            ? { status: "RESOLVED", positive: true, clanTags: allianceTags, ambiguous: false, conflicting: physicalConflicting }
             : allianceTags.length > 1
-              ? { status: "AMBIGUOUS", positive: false, clanTags: allianceTags, ambiguous: true }
-              : { status: "ABSENT", positive: false, clanTags: [], ambiguous: false };
+              ? { status: "AMBIGUOUS", positive: false, clanTags: allianceTags, ambiguous: true, conflicting: true }
+              : { status: "ABSENT", positive: false, clanTags: [], ambiguous: false, conflicting: physicalConflicting };
         result.byBoundary.set(`${key}|${playerTag}`, {
           observed: candidates.length > 0 || coverageUnknown,
           physical,
