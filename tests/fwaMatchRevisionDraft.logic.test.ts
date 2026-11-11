@@ -4,6 +4,10 @@ import {
   buildCurrentWarConfirmedStateForTest,
   buildSyncValidationStateForTest,
   buildDraftFromOutcomeToggleForTest,
+  buildDraftFromOutcomeSelectionForTest,
+  canOpenWarMailPreviewForManualFwaOutcomeForTest,
+  getFwaMailBlockedSendReasonForTest,
+  shouldOfferManualFwaOutcomeSelectionForTest,
   buildDraftFromMatchTypeSelectionForTest,
   buildEffectiveMatchMismatchWarningsForTest,
   buildMailSendGateDecisionForTest,
@@ -292,6 +296,216 @@ describe("fwa match revision draft scoping", () => {
       expectedOutcome: null,
     });
     expect(resolved.draftDiffersFromBaseline).toBe(true);
+  });
+});
+
+describe("fwa unknown outcome manual confirmation", () => {
+  it("reproduces the stale-points deadlock before a manual outcome selection", () => {
+    const blockedReason = getMailBlockedReasonFromRevisionStateForTest({
+      inferredMatchType: false,
+      hasMailChannel: true,
+      mailStatus: "not_posted",
+      appliedDraft: null,
+      draftDiffersFromBaseline: false,
+      hasConfirmedBaseline: true,
+      effectiveMatchType: "FWA",
+      effectiveExpectedOutcome: "UNKNOWN",
+    });
+
+    expect(blockedReason).toBe(
+      "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+    );
+  });
+
+  it("allows an explicit WIN/LOSE selection to resolve the same-war draft", () => {
+    const draft = buildDraftFromOutcomeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+      },
+      selectedOutcome: "WIN",
+    });
+
+    expect(draft).toEqual({
+      warId: "3003",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "WIN",
+    });
+  });
+
+  it("uses live revision fields when first unsent FWA mail has no confirmed baseline", () => {
+    const draft = buildDraftFromOutcomeSelectionForTest({
+      view: {
+        confirmedRevisionBaseline: null,
+        liveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+        appliedDraftRevision: null,
+      },
+      selectedOutcome: "LOSE",
+    });
+
+    expect(draft).toEqual({
+      warId: "3003",
+      opponentTag: "2TAG",
+      matchType: "FWA",
+      expectedOutcome: "LOSE",
+    });
+  });
+
+  it("unblocks mail only after the selected outcome is applied to the draft", () => {
+    const draft = buildDraftFromOutcomeSelectionForTest({
+      view: {
+        embed: {} as never,
+        copyText: "",
+        confirmedRevisionBaseline: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+      },
+      selectedOutcome: "LOSE",
+    });
+
+    expect(
+      getMailBlockedReasonFromRevisionStateForTest({
+        inferredMatchType: false,
+        hasMailChannel: true,
+        mailStatus: "not_posted",
+        appliedDraft: draft,
+        draftDiffersFromBaseline: true,
+        hasConfirmedBaseline: true,
+        effectiveMatchType: "FWA",
+        effectiveExpectedOutcome: draft?.expectedOutcome ?? "UNKNOWN",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the mail preview entry reachable for explicit FWA while outcome is pending", () => {
+    expect(
+      canOpenWarMailPreviewForManualFwaOutcomeForTest({
+        mailBlockedReason:
+          "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+        inferredMatchType: false,
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      canOpenWarMailPreviewForManualFwaOutcomeForTest({
+        mailBlockedReason:
+          "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+        inferredMatchType: true,
+        effectiveRevisionFields: {
+          warId: "3003",
+          opponentTag: "2TAG",
+          matchType: "FWA",
+          expectedOutcome: "UNKNOWN",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps manual outcome controls hidden until inferred FWA is confirmed", () => {
+    expect(
+      shouldOfferManualFwaOutcomeSelectionForTest({
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        inferredMatchType: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldOfferManualFwaOutcomeSelectionForTest({
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+        inferredMatchType: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("supports inferred FWA confirmation before selecting the current-war outcome", () => {
+    const inferredView = {
+      embed: {} as never,
+      copyText: "",
+      inferredMatchType: true,
+      matchTypeCurrent: "FWA" as const,
+      confirmedRevisionBaseline: null,
+      liveRevisionFields: {
+        warId: "3003",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "UNKNOWN" as const,
+      },
+      effectiveRevisionFields: {
+        warId: "3003",
+        opponentTag: "2TAG",
+        matchType: "FWA" as const,
+        expectedOutcome: "UNKNOWN" as const,
+      },
+    };
+    const confirmation = resolveMatchTypeSelectionForTest({
+      view: inferredView,
+      targetType: "FWA",
+    });
+
+    expect(confirmation.explicitConfirmation).toEqual({
+      matchType: "FWA",
+      expectedOutcome: "UNKNOWN",
+    });
+    const draft = buildDraftFromOutcomeSelectionForTest({
+      view: {
+        ...inferredView,
+        inferredMatchType: false,
+      },
+      selectedOutcome: "WIN",
+    });
+    expect(draft?.expectedOutcome).toBe("WIN");
+  });
+
+  it("does not misclassify unrelated gate text as a war-identity blocker", () => {
+    expect(
+      getFwaMailBlockedSendReasonForTest(
+        "Mail channel is not configured. Use /clan configure with a mail channel.",
+      ),
+    ).toBeNull();
+    expect(
+      getFwaMailBlockedSendReasonForTest(
+        "Current mail is already up to date. Change match config before sending again.",
+      ),
+    ).toBe("duplicate_mail");
   });
 });
 

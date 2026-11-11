@@ -195,6 +195,7 @@ import {
   createTransientFwaKey,
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
+  buildFwaMailOutcomeSelectionCustomId,
   buildFwaMailRefreshCustomId,
   buildFwaMatchAllianceCustomId,
   buildFwaMatchCopyCustomId,
@@ -216,6 +217,7 @@ import {
   parseFwaComplianceViewCustomId,
   parseFwaMailConfirmCustomId,
   parseFwaMailConfirmNoPingCustomId,
+  parseFwaMailOutcomeSelectionCustomId,
   parseFwaMailRefreshCustomId,
   parseFwaMatchAllianceCustomId,
   parseFwaMatchCopyCustomId,
@@ -232,6 +234,7 @@ import {
   parseOutcomeActionCustomId,
   parsePointsPostButtonCustomId,
   isPointsPostButtonCustomId,
+  type OutcomeActionParams,
   type FwaWeightViewScope,
 } from "./fwa/customIds";
 import {
@@ -295,6 +298,7 @@ export {
   isFwaMailGateResumeButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
+  isFwaMailOutcomeSelectionButtonCustomId,
   isFwaMailRefreshButtonCustomId,
   isFwaMatchAllianceButtonCustomId,
   isFwaMatchCopyButtonCustomId,
@@ -3287,6 +3291,8 @@ const INFERRED_MATCHTYPE_MAIL_BLOCK_REASON =
   "Match type is inferred. Confirm match type before sending mail.";
 const UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON =
   "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.";
+const UP_TO_DATE_MAIL_BLOCK_REASON =
+  "Current mail is already up to date. Change match config before sending again.";
 const MATCHTYPE_WARNING_LEGEND = `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
 const POINTS_CLAN_NOT_FOUND_STATUS_LINE =
   ":interrobang: Clan not found on points.fwafarm";
@@ -3296,6 +3302,36 @@ function shouldRedirectToFwaMatchForMailGateReason(
   reason: string | null | undefined,
 ): boolean {
   return reason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON;
+}
+
+type FwaMailBlockedSendReason =
+  | "match_type"
+  | "outcome"
+  | "war_identity"
+  | "permissions"
+  | "duplicate_mail";
+
+/** Purpose: emit bounded reason-code telemetry for every user-visible mail-send block. */
+function logFwaMailBlockedSend(params: {
+  stage: string;
+  reason: FwaMailBlockedSendReason;
+  guildId: string | null | undefined;
+  clanTag: string | null | undefined;
+  userId?: string | null;
+}): void {
+  console.info(
+    `[fwa-mail-gate] stage=${params.stage} reason=${params.reason} guild=${params.guildId ?? "none"} clan=#${params.clanTag ? normalizeTag(params.clanTag) : "unknown"} user=${params.userId ?? "unknown"}`,
+  );
+}
+
+/** Purpose: map shared mail-gate text to the bounded send-block telemetry taxonomy. */
+function getFwaMailBlockedSendReason(
+  reason: string | null | undefined,
+): FwaMailBlockedSendReason | null {
+  if (reason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON) return "match_type";
+  if (reason === UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON) return "outcome";
+  if (reason === UP_TO_DATE_MAIL_BLOCK_REASON) return "duplicate_mail";
+  return null;
 }
 
 function logFwaMatchTelemetry(event: string, detail: string): void {
@@ -3923,7 +3959,7 @@ function getMailBlockedReasonFromRevisionState(params: {
   if (params.mailStatus === "posted") {
     if (!params.hasConfirmedBaseline) return null;
     if (params.appliedDraft && params.draftDiffersFromBaseline) return null;
-    return "Current mail is already up to date. Change match config before sending again.";
+    return UP_TO_DATE_MAIL_BLOCK_REASON;
   }
   return null;
 }
@@ -3955,8 +3991,16 @@ function shouldDisplayInferredMatchType(params: {
 }
 
 /** Purpose: return the persisted baseline used when evaluating whether a draft is a true revision. */
+type MatchRevisionViewFields = Pick<
+  MatchView,
+  | "confirmedRevisionBaseline"
+  | "liveRevisionFields"
+  | "effectiveRevisionFields"
+  | "appliedDraftRevision"
+>;
+
 function getRevisionBaselineForView(
-  view: MatchView,
+  view: MatchRevisionViewFields,
 ): MatchRevisionFields | null {
   return (
     normalizeRevisionFields(view.confirmedRevisionBaseline) ??
@@ -3966,7 +4010,7 @@ function getRevisionBaselineForView(
 
 /** Purpose: return the currently effective revision snapshot for the rendered single view. */
 function getEffectiveRevisionForView(
-  view: MatchView,
+  view: MatchRevisionViewFields,
 ): MatchRevisionFields | null {
   return (
     normalizeRevisionFields(view.appliedDraftRevision) ??
@@ -4188,6 +4232,23 @@ function buildDraftFromOutcomeToggle(params: {
     ...effective,
     matchType: "FWA",
     expectedOutcome: nextOutcome,
+  });
+  if (!nextDraft || areRevisionFieldsEqual(nextDraft, baseline)) return null;
+  return nextDraft;
+}
+
+/** Purpose: build a same-war revision when a leader explicitly chooses WIN or LOSE from UNKNOWN. */
+function buildDraftFromOutcomeSelection(params: {
+  view: MatchRevisionViewFields;
+  selectedOutcome: "WIN" | "LOSE";
+}): MatchRevisionFields | null {
+  const baseline = getRevisionBaselineForView(params.view);
+  const effective = getEffectiveRevisionForView(params.view);
+  if (!baseline || !effective || effective.matchType !== "FWA") return null;
+  const nextDraft = normalizeRevisionFields({
+    ...effective,
+    matchType: "FWA",
+    expectedOutcome: params.selectedOutcome,
   });
   if (!nextDraft || areRevisionFieldsEqual(nextDraft, baseline)) return null;
   return nextDraft;
@@ -4597,10 +4658,7 @@ function formatMailBlockedReason(
   reason: string | null | undefined,
 ): string | null {
   if (!reason) return null;
-  if (
-    reason ===
-    "Current mail is already up to date. Change match config before sending again."
-  ) {
+  if (reason === UP_TO_DATE_MAIL_BLOCK_REASON) {
     return `:envelope_with_arrow: ${reason}`;
   }
   return `:warning: ${reason}`;
@@ -7551,7 +7609,13 @@ function buildOverviewMailDecisionProjection(params: {
     lifecycleStatus: mailSendGate.mailStatus.status,
     hasConfirmedBaseline: Boolean(mailSendGate.confirmedRevisionBaseline),
     draftDiffersFromBaseline: mailSendGate.draftDiffersFromBaseline,
-    mailActionEnabled: mailBlockedReason === null,
+    mailActionEnabled:
+      mailBlockedReason === null ||
+      canOpenWarMailPreviewForManualFwaOutcome({
+        mailBlockedReason,
+        inferredMatchType: params.inferredMatchType,
+        effectiveRevisionFields: params.decision.effectiveRevisionFields,
+      }),
   };
 }
 
@@ -7761,7 +7825,35 @@ function buildWarMailPreviewComponents(params: {
   key: string;
   enabled: boolean;
   showBack?: boolean;
+  outcomeSelection?: boolean;
 }): Array<ActionRowBuilder<ButtonBuilder>> {
+  const rows: Array<ActionRowBuilder<ButtonBuilder>> = [];
+  if (params.outcomeSelection) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildFwaMailOutcomeSelectionCustomId({
+              userId: params.userId,
+              key: params.key,
+              outcome: "WIN",
+            }),
+          )
+          .setLabel("Confirm WIN")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(
+            buildFwaMailOutcomeSelectionCustomId({
+              userId: params.userId,
+              key: params.key,
+              outcome: "LOSE",
+            }),
+          )
+          .setLabel("Confirm LOSE")
+          .setStyle(ButtonStyle.Danger),
+      ),
+    );
+  }
   const buttons = [
     new ButtonBuilder()
       .setCustomId(buildFwaMailConfirmCustomId(params.userId, params.key))
@@ -7782,7 +7874,38 @@ function buildWarMailPreviewComponents(params: {
         .setStyle(ButtonStyle.Secondary),
     );
   }
-  return [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)];
+  rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons));
+  return rows;
+}
+
+/** Purpose: expose manual WIN/LOSE controls only after FWA match type is explicit. */
+function shouldOfferManualFwaOutcomeSelection(params: {
+  matchType: WarMailMatchType;
+  expectedOutcome: WarMailExpectedOutcome;
+  inferredMatchType: boolean;
+}): boolean {
+  return (
+    params.matchType === "FWA" &&
+    params.expectedOutcome === "UNKNOWN" &&
+    !params.inferredMatchType
+  );
+}
+
+/** Purpose: let an explicit-FWA UNKNOWN outcome open the disabled mail preview so its manual controls are reachable. */
+function canOpenWarMailPreviewForManualFwaOutcome(params: {
+  mailBlockedReason: string | null;
+  inferredMatchType: boolean;
+  effectiveRevisionFields: MatchRevisionFields | null | undefined;
+}): boolean {
+  return (
+    params.mailBlockedReason === UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON &&
+    shouldOfferManualFwaOutcomeSelection({
+      matchType: params.effectiveRevisionFields?.matchType ?? "UNKNOWN",
+      expectedOutcome:
+        params.effectiveRevisionFields?.expectedOutcome ?? "UNKNOWN",
+      inferredMatchType: params.inferredMatchType,
+    })
+  );
 }
 
 /** Purpose: prefer tracked-clan fallback sync when it is the proof source for current-war validation. */
@@ -9026,6 +9149,7 @@ function buildFwaMatchCopyComponents(
         .setCustomId(
           buildOutcomeActionCustomId({
             userId,
+            key,
             tag: outcomeAction.tag,
             currentOutcome: outcomeAction.currentOutcome,
           }),
@@ -9034,6 +9158,39 @@ function buildFwaMatchCopyComponents(
         .setStyle(ButtonStyle.Primary),
     );
     rows.push(outcomeRow);
+  } else if (
+    payload.currentScope === "single" &&
+    payload.currentTag &&
+    view.matchTypeCurrent === "FWA" &&
+    !view.inferredMatchType &&
+    toWinLoseOutcome(view.effectiveRevisionFields?.expectedOutcome) === null
+  ) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildOutcomeActionCustomId({
+              userId,
+              key,
+              tag: payload.currentTag,
+              currentOutcome: "WIN",
+            }),
+          )
+          .setLabel("Confirm WIN")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(
+            buildOutcomeActionCustomId({
+              userId,
+              key,
+              tag: payload.currentTag,
+              currentOutcome: "LOSE",
+            }),
+          )
+          .setLabel("Confirm LOSE")
+          .setStyle(ButtonStyle.Danger),
+      ),
+    );
   }
   if (syncAction) {
     rows.push(
@@ -9747,6 +9904,40 @@ export async function handleFwaMatchTypeEditButton(
   });
 }
 
+type FwaOutcomeActionTarget = {
+  key: string;
+  payload: FwaMatchCopyPayload;
+  view: MatchView;
+};
+
+/** Purpose: resolve one originating match payload, keeping keyed manual actions isolated while legacy IDs retain fallback behavior. */
+function resolveFwaOutcomeActionTarget(
+  parsed: OutcomeActionParams,
+): FwaOutcomeActionTarget | null {
+  const matches = (key: string, payload: FwaMatchCopyPayload): FwaOutcomeActionTarget | null => {
+    if (
+      payload.userId !== parsed.userId ||
+      payload.currentScope !== "single" ||
+      payload.currentTag !== parsed.tag
+    ) {
+      return null;
+    }
+    const view = payload.singleViews[parsed.tag];
+    return view ? { key, payload, view } : null;
+  };
+
+  if (parsed.key) {
+    const payload = fwaMatchCopyPayloads.get(parsed.key);
+    return payload ? matches(parsed.key, payload) : null;
+  }
+
+  for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
+    const target = matches(key, payload);
+    if (target) return target;
+  }
+  return null;
+}
+
 export async function handleFwaOutcomeActionButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -9773,80 +9964,106 @@ export async function handleFwaOutcomeActionButton(
     return;
   }
 
-  await interaction.deferUpdate();
-  const clearProcessing = await showProcessingNotice(
-    interaction,
-    "Reversing outcome...",
+  const target = resolveFwaOutcomeActionTarget(parsed);
+  const currentOutcome = toWinLoseOutcome(
+    target?.view.effectiveRevisionFields?.expectedOutcome,
   );
-  try {
-    for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
-      if (payload.userId !== parsed.userId) continue;
-      if (
-        payload.currentScope !== "single" ||
-        payload.currentTag !== parsed.tag
-      )
-        continue;
-      const currentView = payload.singleViews[parsed.tag];
-      if (!currentView) continue;
+  const manualOutcomeSelection =
+    target?.view.matchTypeCurrent === "FWA" && currentOutcome === null;
+  const inferredManualOutcomeSelection =
+    manualOutcomeSelection && Boolean(target?.view.inferredMatchType);
 
-      const nextDraft = buildDraftFromOutcomeToggle({
-        view: currentView,
-        currentOutcome: parsed.currentOutcome,
+  await interaction.deferUpdate();
+  if (inferredManualOutcomeSelection) {
+    await interaction.followUp({
+      ephemeral: true,
+      content: "Confirm the FWA match type before selecting an outcome.",
+    });
+    return;
+  }
+  if (manualOutcomeSelection) {
+    const allowed = await canUseFwaMailSendFromButton(interaction);
+    if (!allowed) {
+      logFwaMailBlockedSend({
+        stage: "outcome_selection",
+        reason: "permissions",
+        guildId: interaction.guildId,
+        clanTag: parsed.tag,
+        userId: interaction.user.id,
       });
-      const nextDraftByTag = { ...payload.revisionDraftByTag };
-      if (nextDraft) {
-        nextDraftByTag[parsed.tag] = nextDraft;
-      } else {
-        delete nextDraftByTag[parsed.tag];
-      }
-      const draftPayload: FwaMatchCopyPayload = {
-        ...payload,
-        revisionDraftByTag: nextDraftByTag,
-      };
-      const refreshed = await rebuildTrackedPayloadForTag(
-        draftPayload,
-        interaction.guildId ?? null,
-        parsed.tag,
-        interaction.client,
-      );
-      if (!refreshed) {
-        await interaction.followUp({
-          ephemeral: true,
-          content:
-            "Could not refresh this match view. Please run /fwa match again.",
-        });
-        return;
-      }
-      const nextView = refreshed.singleViews[parsed.tag];
-      if (!nextView) {
-        await interaction.followUp({
-          ephemeral: true,
-          content:
-            "Could not refresh this clan view. Please run /fwa match again.",
-        });
-        return;
-      }
-      fwaMatchCopyPayloads.set(key, refreshed);
-      const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
-      await interaction.editReply({
+      await interaction.followUp({
+        ephemeral: true,
         content:
-          showMode === "copy"
-            ? limitDiscordContent(nextView.copyText)
-            : undefined,
-        embeds: showMode === "embed" ? [nextView.embed] : [],
-        components: buildFwaMatchCopyComponents(
-          refreshed,
-          refreshed.userId,
-          key,
-          showMode,
-        ),
+          "You do not have permission to confirm war-mail outcomes. Default access is `/fwa leader-role` + Administrator.",
       });
       return;
     }
-
-    await interaction.followUp({
-      ephemeral: true,
-      content: "This match view expired. Please run /fwa match again.",
+  }
+  const clearProcessing = await showProcessingNotice(
+    interaction,
+    "Updating expected outcome...",
+  );
+  try {
+    if (!target) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "This match view expired. Please run /fwa match again.",
+      });
+      return;
+    }
+    const nextDraft =
+      target.view.matchTypeCurrent === "FWA" && currentOutcome === null
+        ? buildDraftFromOutcomeSelection({
+            view: target.view,
+            selectedOutcome: parsed.currentOutcome,
+          })
+        : buildDraftFromOutcomeToggle({
+            view: target.view,
+            currentOutcome: parsed.currentOutcome,
+          });
+    const nextDraftByTag = { ...target.payload.revisionDraftByTag };
+    if (nextDraft) {
+      nextDraftByTag[parsed.tag] = nextDraft;
+    } else {
+      delete nextDraftByTag[parsed.tag];
+    }
+    const draftPayload: FwaMatchCopyPayload = {
+      ...target.payload,
+      revisionDraftByTag: nextDraftByTag,
+    };
+    const refreshed = await rebuildTrackedPayloadForTag(
+      draftPayload,
+      interaction.guildId ?? null,
+      parsed.tag,
+      interaction.client,
+    );
+    if (!refreshed) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Could not refresh this match view. Please run /fwa match again.",
+      });
+      return;
+    }
+    const nextView = refreshed.singleViews[parsed.tag];
+    if (!nextView) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Could not refresh this clan view. Please run /fwa match again.",
+      });
+      return;
+    }
+    fwaMatchCopyPayloads.set(target.key, refreshed);
+    const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+    await interaction.editReply({
+      content:
+        showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
+      embeds: showMode === "embed" ? [nextView.embed] : [],
+      components: buildFwaMatchCopyComponents(
+        refreshed,
+        refreshed.userId,
+        target.key,
+        showMode,
+      ),
     });
   } finally {
     await clearProcessing();
@@ -10453,16 +10670,33 @@ async function showWarMailPreview(
   guildId: string,
   userId: string,
   tag: string,
-  cocService: CoCService,
   sourceMatchPayloadKey?: string,
   revisionOverride?: MatchRevisionFields | null,
+  previewKeyOverride?: string,
+  sourcePreviewPayload?: FwaMailPreviewPayload | null,
 ): Promise<void> {
-  const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag, {
-    fetchReason: "pre_fwa_validation",
-    revisionOverride: revisionOverride ?? null,
-    targetedWarReconcileClient: interaction.client,
-  });
+  const rendered = await createFwaMailConfirmRuntime(interaction.client).render(
+    guildId,
+    tag,
+    {
+      fetchReason: "pre_fwa_validation",
+      revisionOverride: revisionOverride ?? null,
+      targetedWarReconcileClient: interaction.client,
+    },
+  );
   const mailSendGate = rendered.mailRevisionDecision;
+  const blockedSendReason = getFwaMailBlockedSendReason(
+    mailSendGate.mailBlockedReason,
+  );
+  if (blockedSendReason) {
+    logFwaMailBlockedSend({
+      stage: "preview",
+      reason: blockedSendReason,
+      guildId,
+      clanTag: tag,
+      userId,
+    });
+  }
   if (
     shouldRedirectToFwaMatchForMailGateReason(mailSendGate.mailBlockedReason)
   ) {
@@ -10475,7 +10709,7 @@ async function showWarMailPreview(
     });
     if (!handoff) {
       const fallbackMessage = `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
-      if (interaction.isButton()) {
+      if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
         await interaction.update({
           content: fallbackMessage,
           embeds: [],
@@ -10500,7 +10734,7 @@ async function showWarMailPreview(
       view: handoff.view,
       showMode,
     });
-    if (interaction.isButton()) {
+    if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
       await interaction.update(response);
     } else {
       await interaction.editReply(response);
@@ -10508,7 +10742,9 @@ async function showWarMailPreview(
     return;
   }
 
-  const previewKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const previewKey =
+    previewKeyOverride ??
+    `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const sourceShowMode =
     interaction.isButton() && interaction.message.embeds.length > 0
       ? "embed"
@@ -10517,15 +10753,16 @@ async function showWarMailPreview(
     userId,
     guildId,
     tag,
-    sourceMatchPayloadKey,
-    sourceChannelId:
-      interaction.isButton() && interaction.channelId
+    sourceMatchPayloadKey:
+      sourcePreviewPayload?.sourceMatchPayloadKey ?? sourceMatchPayloadKey,
+    sourceChannelId: sourcePreviewPayload?.sourceChannelId ??
+      (interaction.isButton() && interaction.channelId
         ? interaction.channelId
-        : undefined,
-    sourceMessageId: interaction.isButton()
-      ? interaction.message.id
-      : undefined,
-    sourceShowMode: interaction.isButton() ? sourceShowMode : undefined,
+        : undefined),
+    sourceMessageId: sourcePreviewPayload?.sourceMessageId ??
+      (interaction.isButton() ? interaction.message.id : undefined),
+    sourceShowMode: sourcePreviewPayload?.sourceShowMode ??
+      (interaction.isButton() ? sourceShowMode : undefined),
     revisionOverride: revisionOverride ?? null,
   });
 
@@ -10567,7 +10804,7 @@ async function showWarMailPreview(
       .join("\n"),
   );
 
-  if (interaction.isButton()) {
+  if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
     await interaction.update({
       content,
       allowedMentions: { parse: [] },
@@ -10577,6 +10814,11 @@ async function showWarMailPreview(
         key: previewKey,
         enabled,
         showBack: Boolean(sourceMatchPayloadKey),
+        outcomeSelection: shouldOfferManualFwaOutcomeSelection({
+          matchType: rendered.matchType,
+          expectedOutcome: rendered.expectedOutcome,
+          inferredMatchType: rendered.inferredMatchType,
+        }),
       }),
     });
     return;
@@ -10591,6 +10833,11 @@ async function showWarMailPreview(
       key: previewKey,
       enabled,
       showBack: Boolean(sourceMatchPayloadKey),
+      outcomeSelection: shouldOfferManualFwaOutcomeSelection({
+        matchType: rendered.matchType,
+        expectedOutcome: rendered.expectedOutcome,
+        inferredMatchType: rendered.inferredMatchType,
+      }),
     }),
   });
 }
@@ -10614,9 +10861,17 @@ export async function handleFwaMatchSendMailButton(
     });
     return;
   }
+  await interaction.deferUpdate();
   const allowed = await canUseFwaMailSendFromButton(interaction);
   if (!allowed) {
-    await interaction.reply({
+    logFwaMailBlockedSend({
+      stage: "match_send_entry",
+      reason: "permissions",
+      guildId: interaction.guildId,
+      clanTag: parsed.tag,
+      userId: interaction.user.id,
+    });
+    await interaction.followUp({
       ephemeral: true,
       content:
         "You do not have permission to send war mail. Default access is `/fwa leader-role` + Administrator.",
@@ -10625,7 +10880,7 @@ export async function handleFwaMatchSendMailButton(
   }
   const payload = fwaMatchCopyPayloads.get(parsed.key);
   if (!payload) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "This match view expired. Please run /fwa match again.",
     });
@@ -10643,7 +10898,7 @@ export async function handleFwaMatchSendMailButton(
   }
   const view = activePayload.singleViews[parsed.tag];
   if (!view) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content:
         "This clan view is no longer available. Please run /fwa match again.",
@@ -10653,15 +10908,99 @@ export async function handleFwaMatchSendMailButton(
   const revisionOverride = normalizeRevisionFields(
     view.appliedDraftRevision ?? null,
   );
-  const cocService = new CoCService();
   await showWarMailPreview(
     interaction,
     interaction.guildId,
     interaction.user.id,
     parsed.tag,
-    cocService,
     parsed.key,
     revisionOverride,
+  );
+}
+
+/** Purpose: apply an explicit WIN/LOSE draft from the mail preview without persisting points evidence. */
+export async function handleFwaMailOutcomeSelectionButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const parsed = parseFwaMailOutcomeSelectionCustomId(interaction.customId);
+  if (!parsed) return;
+  if (interaction.user.id !== parsed.userId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "Only the command requester can use this button.",
+    });
+    return;
+  }
+  if (!interaction.guildId) {
+    await interaction.reply({
+      ephemeral: true,
+      content: "This action can only be used in a server.",
+    });
+    return;
+  }
+  await interaction.deferUpdate();
+  const allowed = await canUseFwaMailSendFromButton(interaction);
+  if (!allowed) {
+    logFwaMailBlockedSend({
+      stage: "outcome_selection",
+      reason: "permissions",
+      guildId: interaction.guildId,
+      clanTag: null,
+      userId: interaction.user.id,
+    });
+    await interaction.followUp({
+      ephemeral: true,
+      content:
+        "You do not have permission to confirm war-mail outcomes. Default access is `/fwa leader-role` + Administrator.",
+    });
+    return;
+  }
+  const payload = fwaMailPreviewPayloads.get(parsed.key);
+  if (!payload) {
+    await interaction.followUp({
+      ephemeral: true,
+      content: "This mail preview expired. Open /fwa match and use Send Mail again.",
+    });
+    return;
+  }
+
+  const runtime = createFwaMailConfirmRuntime(interaction.client);
+  const rendered = await runtime.render(
+    payload.guildId,
+    normalizeTag(payload.tag),
+    {
+      fetchReason: "pre_fwa_validation",
+      revisionOverride: payload.revisionOverride ?? null,
+      targetedWarReconcileClient: interaction.client,
+    },
+  );
+  const currentDecision = rendered.mailRevisionDecision;
+  const draft = buildDraftFromOutcomeSelection({
+    view: {
+      confirmedRevisionBaseline: currentDecision.confirmedRevisionBaseline,
+      liveRevisionFields: currentDecision.liveRevisionFields,
+      effectiveRevisionFields: currentDecision.effectiveRevisionFields,
+      appliedDraftRevision: null,
+    },
+    selectedOutcome: parsed.outcome,
+  });
+  if (!draft) {
+    await interaction.followUp({
+      ephemeral: true,
+      content:
+        "The active FWA outcome is no longer unresolved. Please refresh the mail preview.",
+    });
+    return;
+  }
+  await showWarMailPreview(
+    interaction,
+    payload.guildId,
+    payload.userId,
+    normalizeTag(payload.tag),
+    payload.sourceMatchPayloadKey,
+    draft,
+    parsed.key,
+    payload,
   );
 }
 
@@ -10916,6 +11255,13 @@ async function handleFwaMailConfirmAction(
   }
   const allowed = await canUseFwaMailSendFromButton(interaction);
   if (!allowed) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "permissions",
+      guildId: interaction.guildId,
+      clanTag: null,
+      userId: interaction.user.id,
+    });
     await interaction.reply({
       ephemeral: true,
       content:
@@ -10988,6 +11334,13 @@ async function handleFwaMailConfirmAction(
     rendered.warId === undefined ||
     !Number.isFinite(rendered.warId)
   ) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: normalizedGuildId,
+      clanTag: normalizedClanTag,
+      userId: parsed.userId,
+    });
     await interaction.editReply({
       content: "Cannot send mail: active war id is unresolved for this clan.",
       embeds: [],
@@ -11001,6 +11354,18 @@ async function handleFwaMailConfirmAction(
   }
   const mailSendGate = rendered.mailRevisionDecision;
   if (mailSendGate.mailBlockedReason) {
+    const blockedSendReason = getFwaMailBlockedSendReason(
+      mailSendGate.mailBlockedReason,
+    );
+    if (blockedSendReason) {
+      logFwaMailBlockedSend({
+        stage: "final_confirm",
+        reason: blockedSendReason,
+        guildId: normalizedGuildId,
+        clanTag: normalizedClanTag,
+        userId: parsed.userId,
+      });
+    }
     if (
       shouldRedirectToFwaMatchForMailGateReason(mailSendGate.mailBlockedReason)
     ) {
@@ -11044,6 +11409,11 @@ async function handleFwaMailConfirmAction(
         key: parsed.key,
         enabled: false,
         showBack: Boolean(payload.sourceMatchPayloadKey),
+        outcomeSelection: shouldOfferManualFwaOutcomeSelection({
+          matchType: rendered.matchType,
+          expectedOutcome: rendered.expectedOutcome,
+          inferredMatchType: rendered.inferredMatchType,
+        }),
       }),
     });
     return;
@@ -11068,6 +11438,13 @@ async function handleFwaMailConfirmAction(
     opponentTag: rendered.opponentTag ?? null,
   });
   if (!exactCurrentWarIdentity) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: normalizedGuildId,
+      clanTag: normalizedClanTag,
+      userId: parsed.userId,
+    });
     logWarMailPreSendGuardOutcome({
       guildId: normalizedGuildId,
       clanTag: normalizedClanTag,
@@ -11095,6 +11472,13 @@ async function handleFwaMailConfirmAction(
     exactCurrentWarIdentity,
   );
   if (!rereadCurrentWarRow) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
@@ -11120,6 +11504,13 @@ async function handleFwaMailConfirmAction(
     !(rereadCurrentWarRow.updatedAt instanceof Date) ||
     !Number.isFinite(rereadCurrentWarRow.updatedAt.getTime())
   ) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
@@ -11152,6 +11543,13 @@ async function handleFwaMailConfirmAction(
     revision: rendered.mailRevisionDecision.effectiveRevisionFields,
   });
   if (!sendKey) {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     logWarMailPreSendGuardOutcome({
       guildId: exactCurrentWarIdentity.guildId,
       clanTag: exactCurrentWarIdentity.clanTag,
@@ -11205,6 +11603,13 @@ async function handleFwaMailConfirmAction(
     return;
   }
   if (sendClaimResult.result === "already_in_flight") {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "duplicate_mail",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     console.warn(
       `[fwa-mail] event=send_claim_blocked guild=${exactCurrentWarIdentity.guildId} clan=#${exactCurrentWarIdentity.clanTag} war_id=${exactCurrentWarIdentity.warId} war_start=${exactCurrentWarIdentity.startTime.toISOString()} opponent=#${exactCurrentWarIdentity.opponentTag} interaction_channel_id=${interaction.channelId} interaction_user_id=${parsed.userId} result=blocked reason=in_flight`,
     );
@@ -11216,6 +11621,13 @@ async function handleFwaMailConfirmAction(
     return;
   }
   if (sendClaimResult.result === "already_completed") {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "duplicate_mail",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     console.warn(
       `[fwa-mail] event=send_claim_blocked guild=${exactCurrentWarIdentity.guildId} clan=#${exactCurrentWarIdentity.clanTag} war_id=${exactCurrentWarIdentity.warId} war_start=${exactCurrentWarIdentity.startTime.toISOString()} opponent=#${exactCurrentWarIdentity.opponentTag} interaction_channel_id=${interaction.channelId} interaction_user_id=${parsed.userId} result=blocked reason=already_completed`,
     );
@@ -11227,6 +11639,13 @@ async function handleFwaMailConfirmAction(
     return;
   }
   if (sendClaimResult.result === "invalid_identity") {
+    logFwaMailBlockedSend({
+      stage: "final_confirm",
+      reason: "war_identity",
+      guildId: exactCurrentWarIdentity.guildId,
+      clanTag: exactCurrentWarIdentity.clanTag,
+      userId: parsed.userId,
+    });
     console.warn(
       `[fwa-mail] event=send_claim_blocked guild=${exactCurrentWarIdentity.guildId} clan=#${exactCurrentWarIdentity.clanTag} war_id=${exactCurrentWarIdentity.warId} war_start=${exactCurrentWarIdentity.startTime.toISOString()} opponent=#${exactCurrentWarIdentity.opponentTag} interaction_channel_id=${interaction.channelId} interaction_user_id=${parsed.userId} result=failed reason=invalid_identity`,
     );
@@ -13068,6 +13487,17 @@ export const buildDraftFromMatchTypeSelectionForTest =
   buildDraftFromMatchTypeSelection;
 export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
+export const buildDraftFromOutcomeSelectionForTest =
+  buildDraftFromOutcomeSelection;
+export const buildFwaMatchCopyComponentsForTest = buildFwaMatchCopyComponents;
+export const resolveFwaOutcomeActionTargetForTest =
+  resolveFwaOutcomeActionTarget;
+export const canOpenWarMailPreviewForManualFwaOutcomeForTest =
+  canOpenWarMailPreviewForManualFwaOutcome;
+export const shouldOfferManualFwaOutcomeSelectionForTest =
+  shouldOfferManualFwaOutcomeSelection;
+export const getFwaMailBlockedSendReasonForTest =
+  getFwaMailBlockedSendReason;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const resolveFwaOutcomeFromCurrentWarStateForTest =
   resolveFwaOutcomeFromCurrentWarState;
@@ -21209,7 +21639,24 @@ export const Fwa: Command = {
               : null,
           mailAction: {
             tag,
-            enabled: !mailBlockedReason,
+            enabled:
+              !mailBlockedReason ||
+              canOpenWarMailPreviewForManualFwaOutcome({
+                mailBlockedReason,
+                inferredMatchType,
+                effectiveRevisionFields: {
+                  warId:
+                    warIdForReuseNumber === null
+                      ? null
+                      : String(warIdForReuseNumber),
+                  opponentTag: opponentTag ? normalizeTag(opponentTag) : null,
+                  matchType: renderedMatchTypeForMailGate,
+                  expectedOutcome:
+                    renderedMatchTypeForMailGate === "FWA"
+                      ? (effectiveExpectedOutcome ?? "UNKNOWN")
+                      : null,
+                },
+              }),
             reason: mailBlockedReason,
           },
         };
