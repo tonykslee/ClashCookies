@@ -775,6 +775,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "If match type is inferred, `/fwa match` shows a warning and quick verify link, with action buttons to confirm FWA/BL/MM.",
       "Selecting the same inferred match type again counts as explicit confirmation for that active war.",
       "Final mail confirm/send persists explicit match confirmation for that same active war identity, so rerender/refresh does not regress to inferred fallback.",
+      "When match type is explicitly confirmed as FWA but the expected outcome is UNKNOWN, authorized leaders can choose `Confirm WIN` or `Confirm LOSE` from the single-clan match view or mail preview. The choice stays a same-war draft until final confirmation and does not turn stale points into validated website evidence.",
       "Tracked clan mail channel is configured via `/clan configure ... mail-channel`.",
       "`/fwa match` opens an ephemeral war mail preview; inferred matches can preview, but send stays blocked until the current active war is confirmed.",
       "`/fwa match` copy/paste view now collapses to one compact line per clan in alliance overview and one compact line in single-clan view, with opponent name/tag sanitized for mobile copy; `copy_paste:true` renders that view directly without buttons.",
