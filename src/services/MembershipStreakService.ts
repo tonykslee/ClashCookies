@@ -476,10 +476,9 @@ function combineAllianceEvidence(
       sources: [],
     };
   }
+  if (nonFwaAlliance?.status === "ABSENT" && nonFwa.physical.status !== "RESOLVED") return base;
   if (nonFwaAlliance?.status === "ABSENT") {
-    return fwa.status === "UNKNOWN"
-      ? { status: "ABSENT", positive: false, clanTags: [], ambiguous: false, sources: [] }
-      : base;
+    return { status: "ABSENT", positive: false, clanTags: [], ambiguous: false, sources: [] };
   }
   if (!nonFwaAlliance) return base;
   if (nonFwaAlliance.status === "AMBIGUOUS") {
@@ -530,8 +529,10 @@ function allianceStatusOf(evidence: MembershipBoundaryEvidence | undefined): Mem
 
 /** Purpose: identify an explicitly proven CWL-neutral boundary without changing FWA evidence. */
 function isCwlNeutralEvidence(evidence: MembershipBoundaryEvidence | undefined): boolean {
+  const physical = physicalEvidenceOf(evidence);
   return evidence?.continuity?.cwlExempt === true &&
-    (evidence.fwa.status === "UNKNOWN" || evidence.fwa.status === "ABSENT");
+    physical.status !== "RESOLVED" &&
+    !evidence?.alliance.positive;
 }
 
 /** Purpose: compute bounded physical-clan and alliance streaks from boundary evidence. */

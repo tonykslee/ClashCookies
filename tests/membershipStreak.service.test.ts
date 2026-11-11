@@ -3,6 +3,7 @@ import {
   computeMembershipStreaksFromEvidence,
   MembershipStreakService,
 } from "../src/services/MembershipStreakService";
+import { HomeMembershipAnalyticsService } from "../src/services/HomeMembershipAnalyticsService";
 import { cwlContinuityPairKey } from "../src/services/CwlContinuityEvidenceService";
 
 const guildId = "guild-1";
@@ -1171,16 +1172,18 @@ describe("MembershipStreakService", () => {
     });
   });
 
-  it("counts an FWA to BL to FWA sequence for S/A while keeping C FWA-only", async () => {
+  it("reproduces FWA absence plus BL Home roster as C2/S3/A3", async () => {
     const older = historical(586, 1, rockyRoad);
-    const middle = nonFwaHistorical(587, 2, rockyRoad, "BL");
+    const middleFwaElsewhere = historical(587, 2, partyBlizzard, [otherPlayerTag], 100587);
+    const middleBlHome = nonFwaHistorical(587, 2, rockyRoad, "BL", [playerTag], 300587);
     const latest = historical(588, 3, rockyRoad);
-    const built = serviceFor({
-      cycles: [older, middle, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
-      points: [older.point, latest.point],
-      histories: [older.history, middle.history, latest.history],
-      participation: [...older.participation, ...middle.participation, ...latest.participation],
-    });
+    const dbFixture = {
+      cycles: [older, middleFwaElsewhere, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point, middleFwaElsewhere.point, latest.point],
+      histories: [older.history, middleFwaElsewhere.history, middleBlHome.history, latest.history],
+      participation: [...older.participation, ...middleFwaElsewhere.participation, ...middleBlHome.participation, ...latest.participation],
+    };
+    const built = serviceFor(dbFixture);
 
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
@@ -1191,7 +1194,24 @@ describe("MembershipStreakService", () => {
       allianceStreakSyncs: 3,
     });
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
-    expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+    expect(evidence[playerTag][1].fwa.status).toBe("ABSENT");
+
+    const analytics = new HomeMembershipAnalyticsService(
+      { getActiveHomeMembershipsForPlayers: vi.fn(async () => [{
+        id: "home-1",
+        guildId,
+        playerTag,
+        clanTag: rockyRoad,
+        startedAtSyncTime: time(1),
+        qualifiedAtSyncTime: time(1),
+        endedAtSyncTime: null,
+        establishmentSource: "AUTO_3_SYNC",
+        endReason: null,
+      }]) },
+      built.service,
+    );
+    const [analyticsResult] = await analytics.getAnalyticsForPlayers(input());
+    expect(analyticsResult).toMatchObject({ clanTenureSyncs: 2, clanStreakSyncs: 3, allianceStreakSyncs: 3 });
   });
 
   it("counts an FWA to MM to FWA sequence without relabeling MM as FWA", async () => {
@@ -1210,6 +1230,104 @@ describe("MembershipStreakService", () => {
     expect(result).toMatchObject({ clanStreakSyncs: 3, allianceStreakSyncs: 3 });
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
     expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("ignores an orphaned BL history from another guild beside valid FWA evidence", async () => {
+    const fwa = historical(588, 3, rockyRoad);
+    const orphan = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 400588);
+    orphan.participation = orphan.participation.map((row) => ({ ...row, guildId: "other-guild" }));
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      points: [fwa.point],
+      histories: [fwa.history, orphan.history],
+      participation: [...fwa.participation, ...orphan.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ latestFwaEvidenceStatus: "RESOLVED", latestPhysicalEvidenceStatus: "RESOLVED", clanStreakSyncs: 1, allianceStreakSyncs: 1 });
+  });
+
+  it("ignores unknown-type and rejected BL/MM histories without guild/player proof beside valid FWA", async () => {
+    const fwa = historical(588, 3, rockyRoad);
+    const rejected = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 400588);
+    rejected.participation = rejected.participation.map((row) => ({ ...row, guildId: "other-guild" }));
+    const unknown = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 500588);
+    unknown.history = { ...unknown.history, matchType: "UNKNOWN" };
+    unknown.participation = unknown.participation.map((row) => ({ ...row, guildId: "other-guild" }));
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      points: [fwa.point],
+      histories: [fwa.history, rejected.history, unknown.history],
+      participation: [...fwa.participation, ...rejected.participation, ...unknown.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ latestFwaEvidenceStatus: "RESOLVED", latestPhysicalEvidenceStatus: "RESOLVED", clanStreakSyncs: 1, allianceStreakSyncs: 1 });
+  });
+
+  it("keeps FWA UNKNOWN when a complete BL/MM roster excludes the player", async () => {
+    const bl = nonFwaHistorical(588, 3, rockyRoad, "BL", [otherPlayerTag]);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      histories: [bl.history],
+      participation: bl.participation,
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestFwaEvidenceStatus: "UNKNOWN",
+      latestPhysicalEvidenceStatus: "UNKNOWN",
+      latestAllianceEvidenceStatus: "UNKNOWN",
+      latestEvidencePending: true,
+      clanStreakSyncs: 0,
+      allianceStreakSyncs: 0,
+    });
+  });
+
+  it("counts verified BL membership even when the same boundary is CWL-neutral", async () => {
+    const older = historical(587, 2, rockyRoad);
+    const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
+    const cwlContinuityReader = {
+      getEvidence: vi.fn(async () => ({
+        exemptPairs: new Set([cwlContinuityPairKey(playerTag, time(3))]),
+        neutralBoundaryCount: 1,
+        neutralPlayerCount: 1,
+        candidatesRejected: 0,
+        ambiguousCandidates: 0,
+      })),
+    };
+    const built = serviceFor({
+      cycles: [latest, older].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point],
+      histories: [latest.history, older.history],
+      participation: [...latest.participation, ...older.participation],
+    }, [], false, cwlContinuityReader);
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, latestCwlContinuityExempt: false });
+  });
+
+  it("keeps same-player physical-clan conflicts unresolved", async () => {
+    const home = nonFwaHistorical(588, 3, rockyRoad, "BL", [playerTag], 300588);
+    const other = nonFwaHistorical(588, 3, otherAllianceClan, "MM", [playerTag], 400588);
+    const built = serviceFor({
+      cycles: [{ guildId, syncNumber: 588, syncTime: time(3) }],
+      histories: [home.history, other.history],
+      participation: [...home.participation, ...other.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({
+      latestPhysicalEvidenceStatus: "AMBIGUOUS",
+      latestAllianceEvidenceStatus: "AMBIGUOUS",
+      clanStreakSyncs: 0,
+      allianceStreakSyncs: 0,
+    });
   });
 
   it("lets a latest BL roster anchor S/A while the latest FWA axis remains UNKNOWN", async () => {

@@ -154,15 +154,10 @@ export class NonFwaMembershipEvidenceService {
     const trackedClanTags = new Set(
       trackedRows.map((row) => normalizeClanTag(row?.tag)).filter(Boolean),
     );
-    const unknownTypeBoundaries = new Set<string>();
-    for (const row of historyRows) {
-      const syncNumber = positiveInteger(row?.syncNumber);
+    const unknownTypeHistories = historyRows.filter((row) => {
       const matchType = normalizedComparable(row?.matchType);
-      const syncTime = syncNumber === null ? null : syncTimeByNumber.get(syncNumber);
-      if (syncTime && matchType !== "FWA" && matchType !== "BL" && matchType !== "MM" && matchType !== "SKIP") {
-        unknownTypeBoundaries.add(boundaryKey(syncTime));
-      }
-    }
+      return matchType !== "FWA" && matchType !== "BL" && matchType !== "MM" && matchType !== "SKIP";
+    });
     const histories: CanonicalHistory[] = historyRows
       .map((row): CanonicalHistory | null => {
         const warId = positiveInteger(row?.warId);
@@ -183,6 +178,11 @@ export class NonFwaMembershipEvidenceService {
         };
       })
       .filter((row): row is CanonicalHistory => row !== null);
+    const candidateHistoryRows = historyRows.filter((row) => {
+      const matchType = normalizedComparable(row?.matchType);
+      return matchType === "BL" || matchType === "MM" ||
+        (matchType !== "FWA" && matchType !== "SKIP");
+    });
 
     const result = emptyResult();
     for (const boundary of boundaries) {
@@ -192,9 +192,11 @@ export class NonFwaMembershipEvidenceService {
         alliance: { status: "ABSENT", positive: false, clanTags: [], ambiguous: false },
       });
     }
-    if (histories.length === 0 && unknownTypeBoundaries.size === 0) return result;
-
-    const warIds = [...new Set(histories.map((history) => String(history.warId)))];
+    const warIds = [...new Set(candidateHistoryRows
+      .map((row) => positiveInteger(row?.warId))
+      .filter((warId): warId is number => warId !== null)
+      .map(String))];
+    if (warIds.length === 0) return result;
     const [playerRows, groupedRows] = await Promise.all([
       this.db.clanWarParticipation.findMany({
         where: { guildId, warId: { in: warIds }, playerTag: { in: playerTags } },
@@ -232,24 +234,41 @@ export class NonFwaMembershipEvidenceService {
       groupsByWarId.set(warId, groups);
     }
 
+    const playerTagsByWarId = new Map<string, Set<string>>();
+    for (const row of playerRows) {
+      const warId = positiveInteger(row?.warId);
+      const playerTag = normalizePlayerTag(row?.playerTag);
+      if (warId === null || !playerTags.includes(playerTag)) continue;
+      const tags = playerTagsByWarId.get(String(warId)) ?? new Set<string>();
+      tags.add(playerTag);
+      playerTagsByWarId.set(String(warId), tags);
+    }
+
     const acceptedHistories: CanonicalHistory[] = [];
-    const rejectedByBoundary = new Set<string>();
-    const conflictingClanKeys = new Set<string>();
+    const rejectedByPlayerBoundary = new Set<string>();
+    const unknownByPlayerBoundary = new Set<string>();
     for (const history of histories) {
       const key = boundaryKey(history.syncTime);
       const groups = groupsByWarId.get(String(history.warId)) ?? [];
       const exactGroups = groups.filter((group) => historyMatchesGroup(history, group));
-      if (groups.length !== 1 || exactGroups.length !== 1) {
-        rejectedByBoundary.add(key);
-        result.rejectedProofs += 1;
-        if (groups.length > 1 || exactGroups.length > 1) {
-          conflictingClanKeys.add(`${key}|${history.clanTag}`);
-          result.conflictingProofs += 1;
-        }
+      if (groups.length === 1 && exactGroups.length === 1) {
+        acceptedHistories.push(history);
         continue;
       }
-      acceptedHistories.push(history);
-      result.acceptedProofs += 1;
+      const relevantPlayers = playerTagsByWarId.get(String(history.warId));
+      if (!relevantPlayers || relevantPlayers.size === 0) continue;
+      result.rejectedProofs += 1;
+      for (const playerTag of relevantPlayers) rejectedByPlayerBoundary.add(`${key}|${playerTag}`);
+      if (groups.length > 1 || exactGroups.length > 1) result.conflictingProofs += 1;
+    }
+    for (const row of unknownTypeHistories) {
+      const syncNumber = positiveInteger(row?.syncNumber);
+      const warId = positiveInteger(row?.warId);
+      const syncTime = syncNumber === null ? null : syncTimeByNumber.get(syncNumber);
+      const relevantPlayers = warId === null ? undefined : playerTagsByWarId.get(String(warId));
+      if (!syncTime || !relevantPlayers || relevantPlayers.size === 0) continue;
+      result.rejectedProofs += 1;
+      for (const playerTag of relevantPlayers) unknownByPlayerBoundary.add(`${boundaryKey(syncTime)}|${playerTag}`);
     }
 
     const acceptedByBoundary = new Map<string, CanonicalHistory[]>();
@@ -258,19 +277,9 @@ export class NonFwaMembershipEvidenceService {
       const rows = acceptedByBoundary.get(key) ?? [];
       rows.push(history);
       acceptedByBoundary.set(key, rows);
+      result.acceptedProofs += 1;
     }
-    for (const [key, rows] of acceptedByBoundary) {
-      const byClan = new Map<string, number>();
-      for (const history of rows) byClan.set(history.clanTag, (byClan.get(history.clanTag) ?? 0) + 1);
-      for (const [clanTag, count] of byClan) {
-        if (count > 1) {
-          conflictingClanKeys.add(`${key}|${clanTag}`);
-          result.acceptedProofs = Math.max(0, result.acceptedProofs - count);
-          result.conflictingProofs += 1;
-        }
-      }
-    }
-    const positiveByBoundaryAndPlayer = new Map<string, Set<string>>();
+    const playerRowsByAcceptedHistory = new Map<string, Set<string>>();
     for (const row of playerRows) {
       const playerTag = normalizePlayerTag(row?.playerTag);
       if (!playerTags.includes(playerTag)) continue;
@@ -281,22 +290,47 @@ export class NonFwaMembershipEvidenceService {
         history.warStartTime.getTime() === (validDate(row?.warStartTime) ? row.warStartTime.getTime() : NaN) &&
         sameOptionalTag(history.opponentTag, row?.opponentTag));
       for (const history of candidates) {
-        const key = `${playerTag}|${boundaryKey(history.syncTime)}`;
-        const clans = positiveByBoundaryAndPlayer.get(key) ?? new Set<string>();
+        const historyKey = `${history.warId}|${boundaryKey(history.syncTime)}`;
+        const players = playerRowsByAcceptedHistory.get(historyKey) ?? new Set<string>();
+        players.add(playerTag);
+        playerRowsByAcceptedHistory.set(historyKey, players);
+      }
+    }
+    for (const [key, rows] of acceptedByBoundary) {
+      const byClan = new Map<string, number>();
+      for (const history of rows) byClan.set(history.clanTag, (byClan.get(history.clanTag) ?? 0) + 1);
+      for (const [clanTag, count] of byClan) {
+        if (count > 1) {
+          result.acceptedProofs = Math.max(0, result.acceptedProofs - count);
+          result.conflictingProofs += 1;
+          for (const history of rows.filter((row) => row.clanTag === clanTag)) {
+            const players = playerRowsByAcceptedHistory.get(`${history.warId}|${key}`) ?? [];
+            for (const playerTag of players) rejectedByPlayerBoundary.add(`${key}|${playerTag}`);
+          }
+        }
+      }
+    }
+    const positiveByBoundaryAndPlayer = new Map<string, Set<string>>();
+    for (const history of acceptedHistories) {
+      const key = boundaryKey(history.syncTime);
+      const players = playerRowsByAcceptedHistory.get(`${history.warId}|${key}`) ?? [];
+      for (const playerTag of players) {
+        const playerKey = `${playerTag}|${key}`;
+        const clans = positiveByBoundaryAndPlayer.get(playerKey) ?? new Set<string>();
         clans.add(history.clanTag);
-        positiveByBoundaryAndPlayer.set(key, clans);
+        positiveByBoundaryAndPlayer.set(playerKey, clans);
       }
     }
 
     for (const boundary of boundaries) {
       const key = boundaryKey(boundary.syncTime);
       const candidates = acceptedByBoundary.get(key) ?? [];
-      const candidateClanKeys = new Set(candidates.map((history) => history.clanTag));
-      const hasCoverageConflict = [...candidateClanKeys].some((clanTag) => conflictingClanKeys.has(`${key}|${clanTag}`));
-      const coverageUnknown = rejectedByBoundary.has(key) || hasCoverageConflict || unknownTypeBoundaries.has(key);
       for (const playerTag of playerTags) {
+        const playerKey = `${key}|${playerTag}`;
+        const coverageUnknown = rejectedByPlayerBoundary.has(playerKey) || unknownByPlayerBoundary.has(playerKey);
         const clanTags = positiveByBoundaryAndPlayer.get(`${playerTag}|${key}`) ?? new Set<string>();
         const physicalTags = uniqueSorted(clanTags);
+        if (physicalTags.length > 1) result.conflictingProofs += 1;
         const physical: NonFwaPhysicalEvidence = coverageUnknown
           ? { status: "UNKNOWN", clanTag: null, clanTags: [] }
           : physicalTags.length === 1
