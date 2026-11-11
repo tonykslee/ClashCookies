@@ -3,14 +3,19 @@ import { EmbedBuilder } from "discord.js";
 import {
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
+  buildFwaMailOutcomeSelectionCustomId,
+  buildOutcomeActionCustomId,
 } from "../src/commands/fwa/customIds";
 import {
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
+  handleFwaMailOutcomeSelectionButton,
+  handleFwaOutcomeActionButton,
   buildFwaMailSendClaimKeyForTest,
   buildFwaMatchTypeConfirmationUpsertInputForTest,
   clearFwaMailPreviewPayloadsForTest,
   clearFwaMatchCopyPayloadsForTest,
+  setFwaMatchCopyPayloadForTest,
   setFwaMailConfirmRuntimeFactoryForTest,
   setFwaMailPreviewPayloadForTest,
 } from "../src/commands/Fwa";
@@ -143,7 +148,7 @@ function createInteraction(params: {
   const reply = vi.fn().mockResolvedValue(undefined);
   const deleteReply = vi.fn().mockResolvedValue(undefined);
   const followUp = vi.fn().mockResolvedValue(undefined);
-  return {
+  const interaction: any = {
     customId: params.customId,
     user: { id: "owner-1" },
     guildId: "guild-1",
@@ -163,12 +168,18 @@ function createInteraction(params: {
         }),
       },
     },
-    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    isButton: () => true,
+    deferred: false,
+    replied: false,
+    deferUpdate: vi.fn().mockImplementation(async () => {
+      interaction.deferred = true;
+    }),
     editReply,
     reply,
     deleteReply,
     followUp,
-  } as any;
+  };
+  return interaction;
 }
 
 function createDeferred<T>() {
@@ -1920,5 +1931,123 @@ describe("fwa mail confirm button", () => {
     expect(base).toBe(same);
     expect(base).not.toBe(different);
     expect(base).toMatch(/^wml:[0-9a-f]{64}$/);
+  });
+
+  it("defers before slow permission I/O and renders the selected outcome into the preview", async () => {
+    const previewKey = "outcome-preview-key";
+    setFwaMailPreviewPayloadForTest(previewKey, {
+      userId: "owner-1",
+      guildId: "guild-1",
+      tag: "R80L8VYG",
+      revisionOverride: null,
+    });
+    const unresolved = buildRenderedMail({
+      expectedOutcome: "UNKNOWN",
+      mailBlockedReason:
+        "FWA expected outcome is unresolved. Wait for sync parity evidence before sending mail.",
+    });
+    unresolved.mailRevisionDecision.confirmedRevisionBaseline = null;
+    unresolved.mailRevisionDecision.liveRevisionFields = {
+      warId: "1000110",
+      opponentTag: "2LYPLQQUC",
+      matchType: "FWA",
+      expectedOutcome: "UNKNOWN",
+    };
+    const selected = buildRenderedMail({ expectedOutcome: "WIN" });
+    confirmRuntimeRenderSpy
+      .mockReset()
+      .mockResolvedValueOnce(unresolved)
+      .mockResolvedValueOnce(selected);
+
+    const permissionDeferred = createDeferred<boolean>();
+    const permissionSpy = vi
+      .spyOn(CommandPermissionService.prototype, "canUseAnyTarget")
+      .mockReturnValue(permissionDeferred.promise as any);
+    const interaction = createInteraction({
+      customId: buildFwaMailOutcomeSelectionCustomId({
+        userId: "owner-1",
+        key: previewKey,
+        outcome: "WIN",
+      }),
+      send: vi.fn(),
+    });
+
+    const pending = handleFwaMailOutcomeSelectionButton(interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(permissionSpy).toHaveBeenCalled();
+    expect(interaction.reply).not.toHaveBeenCalled();
+
+    permissionDeferred.resolve(true);
+    await pending;
+
+    expect(interaction.editReply).toHaveBeenCalled();
+    expect(interaction.update).toBeUndefined();
+    expect(confirmRuntimeRenderSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("denies mail-preview outcome selection through the existing mail-send permission policy", async () => {
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(
+      false,
+    );
+    const interaction = createInteraction({
+      customId: buildFwaMailOutcomeSelectionCustomId({
+        userId: "owner-1",
+        key: "permission-preview-key",
+        outcome: "LOSE",
+      }),
+      send: vi.fn(),
+    });
+
+    await handleFwaMailOutcomeSelectionButton(interaction);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ ephemeral: true }),
+    );
+  });
+
+  it("denies match-card manual outcome selection through the same policy", async () => {
+    setFwaMatchCopyPayloadForTest("match-outcome-key", {
+      userId: "owner-1",
+      guildId: "guild-1",
+      includePostButton: false,
+      currentScope: "single",
+      currentTag: "R80L8VYG",
+      allianceView: {} as any,
+      allianceViewIsScoped: true,
+      revisionDraftByTag: {},
+      singleViews: {
+        R80L8VYG: {
+          matchTypeCurrent: "FWA",
+          inferredMatchType: false,
+          effectiveRevisionFields: {
+            warId: "1000110",
+            opponentTag: "2LYPLQQUC",
+            matchType: "FWA",
+            expectedOutcome: "UNKNOWN",
+          },
+        },
+      } as any,
+    } as any);
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(
+      false,
+    );
+    const interaction = createInteraction({
+      customId: buildOutcomeActionCustomId({
+        userId: "owner-1",
+        tag: "R80L8VYG",
+        currentOutcome: "WIN",
+      }),
+      send: vi.fn(),
+    });
+
+    await handleFwaOutcomeActionButton(interaction);
+
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ ephemeral: true }),
+    );
   });
 });

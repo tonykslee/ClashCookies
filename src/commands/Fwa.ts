@@ -3330,7 +3330,7 @@ function getFwaMailBlockedSendReason(
   if (reason === INFERRED_MATCHTYPE_MAIL_BLOCK_REASON) return "match_type";
   if (reason === UNRESOLVED_FWA_OUTCOME_MAIL_BLOCK_REASON) return "outcome";
   if (reason === UP_TO_DATE_MAIL_BLOCK_REASON) return "duplicate_mail";
-  return reason ? "war_identity" : null;
+  return null;
 }
 
 function logFwaMatchTelemetry(event: string, detail: string): void {
@@ -3990,8 +3990,16 @@ function shouldDisplayInferredMatchType(params: {
 }
 
 /** Purpose: return the persisted baseline used when evaluating whether a draft is a true revision. */
+type MatchRevisionViewFields = Pick<
+  MatchView,
+  | "confirmedRevisionBaseline"
+  | "liveRevisionFields"
+  | "effectiveRevisionFields"
+  | "appliedDraftRevision"
+>;
+
 function getRevisionBaselineForView(
-  view: MatchView,
+  view: MatchRevisionViewFields,
 ): MatchRevisionFields | null {
   return (
     normalizeRevisionFields(view.confirmedRevisionBaseline) ??
@@ -4001,7 +4009,7 @@ function getRevisionBaselineForView(
 
 /** Purpose: return the currently effective revision snapshot for the rendered single view. */
 function getEffectiveRevisionForView(
-  view: MatchView,
+  view: MatchRevisionViewFields,
 ): MatchRevisionFields | null {
   return (
     normalizeRevisionFields(view.appliedDraftRevision) ??
@@ -4230,14 +4238,11 @@ function buildDraftFromOutcomeToggle(params: {
 
 /** Purpose: build a same-war revision when a leader explicitly chooses WIN or LOSE from UNKNOWN. */
 function buildDraftFromOutcomeSelection(params: {
-  view: Pick<
-    MatchView,
-    "confirmedRevisionBaseline" | "effectiveRevisionFields"
-  >;
+  view: MatchRevisionViewFields;
   selectedOutcome: "WIN" | "LOSE";
 }): MatchRevisionFields | null {
-  const baseline = getRevisionBaselineForView(params.view as MatchView);
-  const effective = getEffectiveRevisionForView(params.view as MatchView);
+  const baseline = getRevisionBaselineForView(params.view);
+  const effective = getEffectiveRevisionForView(params.view);
   if (!baseline || !effective || effective.matchType !== "FWA") return null;
   const nextDraft = normalizeRevisionFields({
     ...effective,
@@ -9155,6 +9160,7 @@ function buildFwaMatchCopyComponents(
     payload.currentScope === "single" &&
     payload.currentTag &&
     view.matchTypeCurrent === "FWA" &&
+    !view.inferredMatchType &&
     toWinLoseOutcome(view.effectiveRevisionFields?.expectedOutcome) === null
   ) {
     rows.push(
@@ -9920,7 +9926,53 @@ export async function handleFwaOutcomeActionButton(
     return;
   }
 
+  let manualOutcomeSelection = false;
+  let inferredManualOutcomeSelection = false;
+  for (const payload of fwaMatchCopyPayloads.values()) {
+    if (
+      payload.userId !== parsed.userId ||
+      payload.currentScope !== "single" ||
+      payload.currentTag !== parsed.tag
+    ) {
+      continue;
+    }
+    const currentView = payload.singleViews[parsed.tag];
+    const currentOutcome = toWinLoseOutcome(
+      currentView?.effectiveRevisionFields?.expectedOutcome,
+    );
+    manualOutcomeSelection =
+      currentView?.matchTypeCurrent === "FWA" && currentOutcome === null;
+    inferredManualOutcomeSelection =
+      manualOutcomeSelection && Boolean(currentView?.inferredMatchType);
+    break;
+  }
+
   await interaction.deferUpdate();
+  if (inferredManualOutcomeSelection) {
+    await interaction.followUp({
+      ephemeral: true,
+      content: "Confirm the FWA match type before selecting an outcome.",
+    });
+    return;
+  }
+  if (manualOutcomeSelection) {
+    const allowed = await canUseFwaMailSendFromButton(interaction);
+    if (!allowed) {
+      logFwaMailBlockedSend({
+        stage: "outcome_selection",
+        reason: "permissions",
+        guildId: interaction.guildId,
+        clanTag: parsed.tag,
+        userId: interaction.user.id,
+      });
+      await interaction.followUp({
+        ephemeral: true,
+        content:
+          "You do not have permission to confirm war-mail outcomes. Default access is `/fwa leader-role` + Administrator.",
+      });
+      return;
+    }
+  }
   const clearProcessing = await showProcessingNotice(
     interaction,
     "Updating expected outcome...",
@@ -10609,17 +10661,20 @@ async function showWarMailPreview(
   guildId: string,
   userId: string,
   tag: string,
-  cocService: CoCService,
   sourceMatchPayloadKey?: string,
   revisionOverride?: MatchRevisionFields | null,
   previewKeyOverride?: string,
   sourcePreviewPayload?: FwaMailPreviewPayload | null,
 ): Promise<void> {
-  const rendered = await buildWarMailEmbedForTag(cocService, guildId, tag, {
-    fetchReason: "pre_fwa_validation",
-    revisionOverride: revisionOverride ?? null,
-    targetedWarReconcileClient: interaction.client,
-  });
+  const rendered = await createFwaMailConfirmRuntime(interaction.client).render(
+    guildId,
+    tag,
+    {
+      fetchReason: "pre_fwa_validation",
+      revisionOverride: revisionOverride ?? null,
+      targetedWarReconcileClient: interaction.client,
+    },
+  );
   const mailSendGate = rendered.mailRevisionDecision;
   const blockedSendReason = getFwaMailBlockedSendReason(
     mailSendGate.mailBlockedReason,
@@ -10645,7 +10700,7 @@ async function showWarMailPreview(
     });
     if (!handoff) {
       const fallbackMessage = `:warning: ${INFERRED_MATCHTYPE_MAIL_BLOCK_REASON}`;
-      if (interaction.isButton()) {
+      if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
         await interaction.update({
           content: fallbackMessage,
           embeds: [],
@@ -10670,7 +10725,7 @@ async function showWarMailPreview(
       view: handoff.view,
       showMode,
     });
-    if (interaction.isButton()) {
+    if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
       await interaction.update(response);
     } else {
       await interaction.editReply(response);
@@ -10740,7 +10795,7 @@ async function showWarMailPreview(
       .join("\n"),
   );
 
-  if (interaction.isButton()) {
+  if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
     await interaction.update({
       content,
       allowedMentions: { parse: [] },
@@ -10843,13 +10898,11 @@ export async function handleFwaMatchSendMailButton(
   const revisionOverride = normalizeRevisionFields(
     view.appliedDraftRevision ?? null,
   );
-  const cocService = new CoCService();
   await showWarMailPreview(
     interaction,
     interaction.guildId,
     interaction.user.id,
     parsed.tag,
-    cocService,
     parsed.key,
     revisionOverride,
   );
@@ -10875,6 +10928,7 @@ export async function handleFwaMailOutcomeSelectionButton(
     });
     return;
   }
+  await interaction.deferUpdate();
   const allowed = await canUseFwaMailSendFromButton(interaction);
   if (!allowed) {
     logFwaMailBlockedSend({
@@ -10884,7 +10938,7 @@ export async function handleFwaMailOutcomeSelectionButton(
       clanTag: null,
       userId: interaction.user.id,
     });
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content:
         "You do not have permission to confirm war-mail outcomes. Default access is `/fwa leader-role` + Administrator.",
@@ -10893,15 +10947,15 @@ export async function handleFwaMailOutcomeSelectionButton(
   }
   const payload = fwaMailPreviewPayloads.get(parsed.key);
   if (!payload) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "This mail preview expired. Open /fwa match and use Send Mail again.",
     });
     return;
   }
 
-  const rendered = await buildWarMailEmbedForTag(
-    new CoCService(),
+  const runtime = createFwaMailConfirmRuntime(interaction.client);
+  const rendered = await runtime.render(
     payload.guildId,
     normalizeTag(payload.tag),
     {
@@ -10914,12 +10968,14 @@ export async function handleFwaMailOutcomeSelectionButton(
   const draft = buildDraftFromOutcomeSelection({
     view: {
       confirmedRevisionBaseline: currentDecision.confirmedRevisionBaseline,
+      liveRevisionFields: currentDecision.liveRevisionFields,
       effectiveRevisionFields: currentDecision.effectiveRevisionFields,
-    } as MatchView,
+      appliedDraftRevision: null,
+    },
     selectedOutcome: parsed.outcome,
   });
   if (!draft) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content:
         "The active FWA outcome is no longer unresolved. Please refresh the mail preview.",
@@ -10931,7 +10987,6 @@ export async function handleFwaMailOutcomeSelectionButton(
     payload.guildId,
     payload.userId,
     normalizeTag(payload.tag),
-    new CoCService(),
     payload.sourceMatchPayloadKey,
     draft,
     parsed.key,
@@ -11292,13 +11347,15 @@ async function handleFwaMailConfirmAction(
     const blockedSendReason = getFwaMailBlockedSendReason(
       mailSendGate.mailBlockedReason,
     );
-    logFwaMailBlockedSend({
-      stage: "final_confirm",
-      reason: blockedSendReason ?? "war_identity",
-      guildId: normalizedGuildId,
-      clanTag: normalizedClanTag,
-      userId: parsed.userId,
-    });
+    if (blockedSendReason) {
+      logFwaMailBlockedSend({
+        stage: "final_confirm",
+        reason: blockedSendReason,
+        guildId: normalizedGuildId,
+        clanTag: normalizedClanTag,
+        userId: parsed.userId,
+      });
+    }
     if (
       shouldRedirectToFwaMatchForMailGateReason(mailSendGate.mailBlockedReason)
     ) {
@@ -13424,6 +13481,10 @@ export const buildDraftFromOutcomeSelectionForTest =
   buildDraftFromOutcomeSelection;
 export const canOpenWarMailPreviewForManualFwaOutcomeForTest =
   canOpenWarMailPreviewForManualFwaOutcome;
+export const shouldOfferManualFwaOutcomeSelectionForTest =
+  shouldOfferManualFwaOutcomeSelection;
+export const getFwaMailBlockedSendReasonForTest =
+  getFwaMailBlockedSendReason;
 export const resolveEffectiveFwaOutcomeForTest = resolveEffectiveFwaOutcome;
 export const resolveFwaOutcomeFromCurrentWarStateForTest =
   resolveFwaOutcomeFromCurrentWarState;
