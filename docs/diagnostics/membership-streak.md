@@ -14,9 +14,9 @@ Therefore:
 
 - `C` remains high because it is a nonconsecutive count of prior resolved FWA observations in the current Home clan.
 - `S1/A1` means the latest FWA boundary is current sync `#588`, and the immediately preceding canonical boundary `#587` is an authoritative absence from the FWA roster axis.
-- The current behavior is consistent with the documented FWA-roster definition of S/A. If the intended product meaning is “continuous alliance residence across BL/MM excursions,” that is a policy gap requiring a new bounded non-FWA excursion exemption, not a repair to the existing FWA evidence or a WarLookup fallback.
+- Before the approved policy change, the behavior was consistent with the then-documented FWA-roster definition of S/A. The approved product meaning is now continuous canonical membership across BL/MM excursions, implemented by the separate reader described below; this is not a repair to FWA evidence or a WarLookup fallback.
 
-Classification: primary semantic/policy mismatch if BL should be continuity-neutral; not a proven calculation bug. The full history also contains one older missing sync number and eight negative-coverage-uncertain boundaries, which explain lower-bound `C+` markers but do not cause the first S/A stop at `#587`.
+Classification before the approved policy change: semantic/policy mismatch, not a proven FWA calculation bug. The full history also contains one older missing sync number and eight negative-coverage-uncertain boundaries, which explain lower-bound `C+` markers but do not cause the first S/A stop at `#587`.
 
 ## Command-to-database path
 
@@ -134,8 +134,7 @@ Confirmed:
 
 Unverified or product-dependent:
 
-- Whether the intended business meaning of “Alliance Streak” includes BL/MM roster residence. The current architecture explicitly defines S/A as canonical-sync FWA war-roster statistics, so treating BL as continuity-neutral would be a behavior change requiring product confirmation.
-- Whether all older `unmatched_validated_points` and negative-coverage-uncertain boundaries are repairable. They are not involved in the proven recent failure path and were not mutated.
+- Whether all older unmatched validated points and negative-coverage-uncertain boundaries are repairable. They are not involved in the proven recent failure path and were not mutated.
 
 ## Root cause classification
 
@@ -145,18 +144,23 @@ Unverified or product-dependent:
 - D. CWL continuity failure: no for this incident. CWL exemption succeeds where its evidence qualifies and does not apply at `#587`.
 - E. Combination: yes only as a semantic mismatch plus unrelated conservative historical lower bounds—BL is real canonical roster evidence, but outside the current FWA-only S/A metric.
 
-## Recommended minimal fix
+## Approved policy implementation
 
-First decide the metric contract:
+The approved contract now treats exact canonical BL/MM own-clan roster participation as combined S/A evidence while preserving the original FWA axis for C and Home logic. The implementation adds a separate bounded read-only reader in `NonFwaMembershipEvidenceService`:
 
-1. If S/A intentionally mean consecutive FWA-roster participation, make no calculation change. The observed `C56+/S1/A1` family is expected for players who were in a BL war at the preceding sync. Improve operator-facing diagnostics to expose “non-FWA excursion at sync” if desired; do not use it to alter S/A.
-2. If alliance/physical continuity should survive a BL or MM excursion, add a separate bounded, read-only, player-specific non-FWA continuity evidence service. It should use canonical `ClanWarHistory` plus complete canonical `ClanWarParticipation`, exact `SyncCycle` identity, explicit match type, and the same adjacent-boundary checks as CWL. It must be an exemption for S/A only; it must not change FWA status, C, Home ownership, canonical gaps, or WarLookup authority. This is the smallest safe policy extension.
+- exact canonical `ClanWarHistory` sync/clan/match/time/opponent identity is joined to guild-owned `ClanWarParticipation`;
+- safe non-empty roster completeness is required, tracked-clan membership is used only for A, and outside-alliance BL/MM can continue S while breaking A;
+- duplicate, conflicting, incomplete, unowned, unknown-type, and nonconsecutive evidence remains conservative; WarLookup is not authoritative;
+- CWL-neutral boundaries preserve but never increment S/A, and latest authoritative BL/MM evidence can anchor display gating;
+- C, Home establishment/transfers, canonical gaps, and persisted war state remain unchanged.
+
+The original production reproduction remains the evidence for why this policy was approved: the `#587` BL roster is complete and contains the affected players. With the policy active, the three-sync `#586 FWA -> #587 BL -> #588 FWA` fixture derives `C2/S3/A3` (subject to the existing C lower-bound rules).
 
 Do not repair `#587` participation: the existing canonical BL roster is complete. Do not backfill or synthesize an FWA row for `#82`; that would corrupt historical war tracking.
 
 ## Historical repair and risk assessment
 
-No safe historical repair is necessary for the proven failure. A separate future review may investigate missing sync `#544` and the 56 unmatched points, but any repair must use the existing exact scheduled-sync and canonical-war evidence rules and remain dry-run first.
+No safe historical repair is necessary for the proven failure or for this policy change. A separate future review may investigate missing sync `#544` and the 56 unmatched points, but any repair must use the existing exact scheduled-sync and canonical-war evidence rules and remain dry-run first.
 
 Risks:
 
