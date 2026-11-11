@@ -234,6 +234,7 @@ import {
   parseOutcomeActionCustomId,
   parsePointsPostButtonCustomId,
   isPointsPostButtonCustomId,
+  type OutcomeActionParams,
   type FwaWeightViewScope,
 } from "./fwa/customIds";
 import {
@@ -9169,6 +9170,7 @@ function buildFwaMatchCopyComponents(
           .setCustomId(
             buildOutcomeActionCustomId({
               userId,
+              key,
               tag: payload.currentTag,
               currentOutcome: "WIN",
             }),
@@ -9179,6 +9181,7 @@ function buildFwaMatchCopyComponents(
           .setCustomId(
             buildOutcomeActionCustomId({
               userId,
+              key,
               tag: payload.currentTag,
               currentOutcome: "LOSE",
             }),
@@ -9900,6 +9903,40 @@ export async function handleFwaMatchTypeEditButton(
   });
 }
 
+type FwaOutcomeActionTarget = {
+  key: string;
+  payload: FwaMatchCopyPayload;
+  view: MatchView;
+};
+
+/** Purpose: resolve one originating match payload, keeping keyed manual actions isolated while legacy IDs retain fallback behavior. */
+function resolveFwaOutcomeActionTarget(
+  parsed: OutcomeActionParams,
+): FwaOutcomeActionTarget | null {
+  const matches = (key: string, payload: FwaMatchCopyPayload): FwaOutcomeActionTarget | null => {
+    if (
+      payload.userId !== parsed.userId ||
+      payload.currentScope !== "single" ||
+      payload.currentTag !== parsed.tag
+    ) {
+      return null;
+    }
+    const view = payload.singleViews[parsed.tag];
+    return view ? { key, payload, view } : null;
+  };
+
+  if (parsed.key) {
+    const payload = fwaMatchCopyPayloads.get(parsed.key);
+    return payload ? matches(parsed.key, payload) : null;
+  }
+
+  for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
+    const target = matches(key, payload);
+    if (target) return target;
+  }
+  return null;
+}
+
 export async function handleFwaOutcomeActionButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -9926,26 +9963,14 @@ export async function handleFwaOutcomeActionButton(
     return;
   }
 
-  let manualOutcomeSelection = false;
-  let inferredManualOutcomeSelection = false;
-  for (const payload of fwaMatchCopyPayloads.values()) {
-    if (
-      payload.userId !== parsed.userId ||
-      payload.currentScope !== "single" ||
-      payload.currentTag !== parsed.tag
-    ) {
-      continue;
-    }
-    const currentView = payload.singleViews[parsed.tag];
-    const currentOutcome = toWinLoseOutcome(
-      currentView?.effectiveRevisionFields?.expectedOutcome,
-    );
-    manualOutcomeSelection =
-      currentView?.matchTypeCurrent === "FWA" && currentOutcome === null;
-    inferredManualOutcomeSelection =
-      manualOutcomeSelection && Boolean(currentView?.inferredMatchType);
-    break;
-  }
+  const target = resolveFwaOutcomeActionTarget(parsed);
+  const currentOutcome = toWinLoseOutcome(
+    target?.view.effectiveRevisionFields?.expectedOutcome,
+  );
+  const manualOutcomeSelection =
+    target?.view.matchTypeCurrent === "FWA" && currentOutcome === null;
+  const inferredManualOutcomeSelection =
+    manualOutcomeSelection && Boolean(target?.view.inferredMatchType);
 
   await interaction.deferUpdate();
   if (inferredManualOutcomeSelection) {
@@ -9978,83 +10003,66 @@ export async function handleFwaOutcomeActionButton(
     "Updating expected outcome...",
   );
   try {
-    for (const [key, payload] of fwaMatchCopyPayloads.entries()) {
-      if (payload.userId !== parsed.userId) continue;
-      if (
-        payload.currentScope !== "single" ||
-        payload.currentTag !== parsed.tag
-      )
-        continue;
-      const currentView = payload.singleViews[parsed.tag];
-      if (!currentView) continue;
-
-      const currentOutcome = toWinLoseOutcome(
-        currentView.effectiveRevisionFields?.expectedOutcome,
-      );
-      const nextDraft =
-        currentView.matchTypeCurrent === "FWA" && currentOutcome === null
-          ? buildDraftFromOutcomeSelection({
-              view: currentView,
-              selectedOutcome: parsed.currentOutcome,
-            })
-          : buildDraftFromOutcomeToggle({
-              view: currentView,
-              currentOutcome: parsed.currentOutcome,
-            });
-      const nextDraftByTag = { ...payload.revisionDraftByTag };
-      if (nextDraft) {
-        nextDraftByTag[parsed.tag] = nextDraft;
-      } else {
-        delete nextDraftByTag[parsed.tag];
-      }
-      const draftPayload: FwaMatchCopyPayload = {
-        ...payload,
-        revisionDraftByTag: nextDraftByTag,
-      };
-      const refreshed = await rebuildTrackedPayloadForTag(
-        draftPayload,
-        interaction.guildId ?? null,
-        parsed.tag,
-        interaction.client,
-      );
-      if (!refreshed) {
-        await interaction.followUp({
-          ephemeral: true,
-          content:
-            "Could not refresh this match view. Please run /fwa match again.",
-        });
-        return;
-      }
-      const nextView = refreshed.singleViews[parsed.tag];
-      if (!nextView) {
-        await interaction.followUp({
-          ephemeral: true,
-          content:
-            "Could not refresh this clan view. Please run /fwa match again.",
-        });
-        return;
-      }
-      fwaMatchCopyPayloads.set(key, refreshed);
-      const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
-      await interaction.editReply({
-        content:
-          showMode === "copy"
-            ? limitDiscordContent(nextView.copyText)
-            : undefined,
-        embeds: showMode === "embed" ? [nextView.embed] : [],
-        components: buildFwaMatchCopyComponents(
-          refreshed,
-          refreshed.userId,
-          key,
-          showMode,
-        ),
+    if (!target) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "This match view expired. Please run /fwa match again.",
       });
       return;
     }
-
-    await interaction.followUp({
-      ephemeral: true,
-      content: "This match view expired. Please run /fwa match again.",
+    const nextDraft =
+      target.view.matchTypeCurrent === "FWA" && currentOutcome === null
+        ? buildDraftFromOutcomeSelection({
+            view: target.view,
+            selectedOutcome: parsed.currentOutcome,
+          })
+        : buildDraftFromOutcomeToggle({
+            view: target.view,
+            currentOutcome: parsed.currentOutcome,
+          });
+    const nextDraftByTag = { ...target.payload.revisionDraftByTag };
+    if (nextDraft) {
+      nextDraftByTag[parsed.tag] = nextDraft;
+    } else {
+      delete nextDraftByTag[parsed.tag];
+    }
+    const draftPayload: FwaMatchCopyPayload = {
+      ...target.payload,
+      revisionDraftByTag: nextDraftByTag,
+    };
+    const refreshed = await rebuildTrackedPayloadForTag(
+      draftPayload,
+      interaction.guildId ?? null,
+      parsed.tag,
+      interaction.client,
+    );
+    if (!refreshed) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Could not refresh this match view. Please run /fwa match again.",
+      });
+      return;
+    }
+    const nextView = refreshed.singleViews[parsed.tag];
+    if (!nextView) {
+      await interaction.followUp({
+        ephemeral: true,
+        content: "Could not refresh this clan view. Please run /fwa match again.",
+      });
+      return;
+    }
+    fwaMatchCopyPayloads.set(target.key, refreshed);
+    const showMode = interaction.message.embeds.length > 0 ? "embed" : "copy";
+    await interaction.editReply({
+      content:
+        showMode === "copy" ? limitDiscordContent(nextView.copyText) : undefined,
+      embeds: showMode === "embed" ? [nextView.embed] : [],
+      components: buildFwaMatchCopyComponents(
+        refreshed,
+        refreshed.userId,
+        target.key,
+        showMode,
+      ),
     });
   } finally {
     await clearProcessing();
@@ -10852,6 +10860,7 @@ export async function handleFwaMatchSendMailButton(
     });
     return;
   }
+  await interaction.deferUpdate();
   const allowed = await canUseFwaMailSendFromButton(interaction);
   if (!allowed) {
     logFwaMailBlockedSend({
@@ -10861,7 +10870,7 @@ export async function handleFwaMatchSendMailButton(
       clanTag: parsed.tag,
       userId: interaction.user.id,
     });
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content:
         "You do not have permission to send war mail. Default access is `/fwa leader-role` + Administrator.",
@@ -10870,7 +10879,7 @@ export async function handleFwaMatchSendMailButton(
   }
   const payload = fwaMatchCopyPayloads.get(parsed.key);
   if (!payload) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content: "This match view expired. Please run /fwa match again.",
     });
@@ -10888,7 +10897,7 @@ export async function handleFwaMatchSendMailButton(
   }
   const view = activePayload.singleViews[parsed.tag];
   if (!view) {
-    await interaction.reply({
+    await interaction.followUp({
       ephemeral: true,
       content:
         "This clan view is no longer available. Please run /fwa match again.",
@@ -13479,6 +13488,8 @@ export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const buildDraftFromOutcomeSelectionForTest =
   buildDraftFromOutcomeSelection;
+export const resolveFwaOutcomeActionTargetForTest =
+  resolveFwaOutcomeActionTarget;
 export const canOpenWarMailPreviewForManualFwaOutcomeForTest =
   canOpenWarMailPreviewForManualFwaOutcome;
 export const shouldOfferManualFwaOutcomeSelectionForTest =

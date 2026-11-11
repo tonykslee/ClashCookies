@@ -4,18 +4,22 @@ import {
   buildFwaMailConfirmCustomId,
   buildFwaMailConfirmNoPingCustomId,
   buildFwaMailOutcomeSelectionCustomId,
+  buildFwaMatchSendMailCustomId,
   buildOutcomeActionCustomId,
+  parseOutcomeActionCustomId,
 } from "../src/commands/fwa/customIds";
 import {
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
   handleFwaMailOutcomeSelectionButton,
+  handleFwaMatchSendMailButton,
   handleFwaOutcomeActionButton,
   buildFwaMailSendClaimKeyForTest,
   buildFwaMatchTypeConfirmationUpsertInputForTest,
   clearFwaMailPreviewPayloadsForTest,
   clearFwaMatchCopyPayloadsForTest,
   setFwaMatchCopyPayloadForTest,
+  resolveFwaOutcomeActionTargetForTest,
   setFwaMailConfirmRuntimeFactoryForTest,
   setFwaMailPreviewPayloadForTest,
 } from "../src/commands/Fwa";
@@ -2037,6 +2041,7 @@ describe("fwa mail confirm button", () => {
     const interaction = createInteraction({
       customId: buildOutcomeActionCustomId({
         userId: "owner-1",
+        key: "match-outcome-key",
         tag: "R80L8VYG",
         currentOutcome: "WIN",
       }),
@@ -2048,6 +2053,205 @@ describe("fwa mail confirm button", () => {
     expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
     expect(interaction.followUp).toHaveBeenCalledWith(
       expect.objectContaining({ ephemeral: true }),
+    );
+  });
+
+  it("uses the keyed newer explicit view when an older inferred view is open", async () => {
+    const buildView = (inferredMatchType: boolean) => ({
+      matchTypeCurrent: "FWA",
+      inferredMatchType,
+      effectiveRevisionFields: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+      },
+    });
+    const basePayload = {
+      userId: "owner-1",
+      guildId: "guild-1",
+      includePostButton: false,
+      currentScope: "single",
+      currentTag: "R80L8VYG",
+      allianceView: {} as any,
+      allianceViewIsScoped: true,
+      revisionDraftByTag: {},
+    };
+    setFwaMatchCopyPayloadForTest("older-inferred", {
+      ...basePayload,
+      singleViews: { R80L8VYG: buildView(true) },
+    } as any);
+    setFwaMatchCopyPayloadForTest("newer-explicit", {
+      ...basePayload,
+      singleViews: { R80L8VYG: buildView(false) },
+    } as any);
+    vi.spyOn(CommandPermissionService.prototype, "canUseAnyTarget").mockResolvedValue(
+      false,
+    );
+
+    const interaction = createInteraction({
+      customId: buildOutcomeActionCustomId({
+        userId: "owner-1",
+        key: "newer-explicit",
+        tag: "R80L8VYG",
+        currentOutcome: "WIN",
+      }),
+      send: vi.fn(),
+    });
+
+    await handleFwaOutcomeActionButton(interaction);
+
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ephemeral: true,
+        content: expect.stringContaining("permission"),
+      }),
+    );
+    expect(interaction.followUp).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Confirm the FWA match type before selecting an outcome.",
+      }),
+    );
+  });
+
+  it("resolves a keyed manual outcome action against its originating view", () => {
+    const buildView = (inferredMatchType: boolean) => ({
+      matchTypeCurrent: "FWA",
+      inferredMatchType,
+      effectiveRevisionFields: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+      },
+    });
+    const basePayload = {
+      userId: "owner-1",
+      guildId: "guild-1",
+      includePostButton: false,
+      currentScope: "single",
+      currentTag: "R80L8VYG",
+      allianceView: {} as any,
+      allianceViewIsScoped: true,
+      revisionDraftByTag: {},
+    };
+    setFwaMatchCopyPayloadForTest("older-inferred", {
+      ...basePayload,
+      singleViews: { R80L8VYG: buildView(true) },
+    } as any);
+    setFwaMatchCopyPayloadForTest("newer-explicit", {
+      ...basePayload,
+      singleViews: { R80L8VYG: buildView(false) },
+    } as any);
+
+    const parsed = parseOutcomeActionCustomId(
+      buildOutcomeActionCustomId({
+        userId: "owner-1",
+        key: "newer-explicit",
+        tag: "R80L8VYG",
+        currentOutcome: "WIN",
+      }),
+    );
+    expect(parsed).toEqual({
+      userId: "owner-1",
+      key: "newer-explicit",
+      tag: "R80L8VYG",
+      currentOutcome: "WIN",
+    });
+    expect(resolveFwaOutcomeActionTargetForTest(parsed as any)?.key).toBe(
+      "newer-explicit",
+    );
+    expect(
+      resolveFwaOutcomeActionTargetForTest(parsed as any)?.view.inferredMatchType,
+    ).toBe(false);
+  });
+
+  it("keeps legacy Reverse Outcome IDs parseable without a payload key", () => {
+    expect(
+      parseOutcomeActionCustomId(
+        buildOutcomeActionCustomId({
+          userId: "owner-1",
+          tag: "R80L8VYG",
+          currentOutcome: "WIN",
+        }),
+      ),
+    ).toEqual({
+      userId: "owner-1",
+      tag: "R80L8VYG",
+      currentOutcome: "WIN",
+    });
+  });
+
+  it("defers the initial Send Mail interaction before slow permission checks", async () => {
+    const permissionDeferred = createDeferred<boolean>();
+    const permissionSpy = vi
+      .spyOn(CommandPermissionService.prototype, "canUseAnyTarget")
+      .mockReturnValue(permissionDeferred.promise as any);
+    const interaction = createInteraction({
+      customId: buildFwaMatchSendMailCustomId(
+        "owner-1",
+        "send-entry-key",
+        "R80L8VYG",
+      ),
+      send: vi.fn(),
+    });
+
+    const pending = handleFwaMatchSendMailButton(interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
+    expect(permissionSpy).toHaveBeenCalled();
+
+    permissionDeferred.resolve(false);
+    await pending;
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ ephemeral: true }),
+    );
+  });
+
+  it("final-sends a manual FWA outcome revision with stale points evidence", async () => {
+    const previewKey = "manual-final-key";
+    const manualDraft = {
+      warId: "1000110",
+      opponentTag: "2LYPLQQUC",
+      matchType: "FWA" as const,
+      expectedOutcome: "WIN" as const,
+    };
+    setFwaMailPreviewPayloadForTest(previewKey, {
+      userId: "owner-1",
+      guildId: "guild-1",
+      tag: "R80L8VYG",
+      revisionOverride: manualDraft,
+    });
+    confirmRuntimeRenderSpy.mockResolvedValueOnce(
+      buildRenderedMail({ expectedOutcome: "WIN" }),
+    );
+    prismaMock.currentWar.findUnique.mockResolvedValueOnce(buildCurrentWarRow());
+    prismaMock.currentWar.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.trackedClan.findUnique.mockResolvedValueOnce({ mailConfig: null });
+    prismaMock.trackedClan.update.mockResolvedValueOnce({});
+    pointsSyncMock.getCurrentSyncForClan.mockResolvedValueOnce(null);
+    pointsSyncMock.markConfirmedByClanMail.mockResolvedValueOnce(undefined);
+    lifecycleMock.getLifecycleForWar.mockResolvedValueOnce(null);
+    repWorkActivityMock.recordMailSent.mockResolvedValueOnce(undefined);
+    const send = vi.fn().mockResolvedValue({
+      id: "manual-sent",
+      delete: vi.fn().mockResolvedValue(undefined),
+    });
+    const interaction = createInteraction({
+      customId: buildFwaMailConfirmCustomId("owner-1", previewKey),
+      send,
+    });
+
+    await handleFwaMailConfirmButton(interaction);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.acquireSendClaim).toHaveBeenCalledTimes(1);
+    expect(pointsSyncMock.markConfirmedByClanMail).toHaveBeenCalledTimes(1);
+    expect(prismaMock.currentWar.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ outcome: "WIN" }),
+      }),
     );
   });
 });
