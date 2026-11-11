@@ -43,6 +43,7 @@ import {
   handleFwaWeightViewButton,
   handleFwaMailConfirmButton,
   handleFwaMailConfirmNoPingButton,
+  handleFwaMailOutcomeSelectionButton,
   handleFwaMailBackButton,
   handleFwaMailGateResumeButton,
   handleFwaMailRefreshButton,
@@ -57,6 +58,7 @@ import {
   isFwaMatchSkipSyncUndoButtonCustomId,
   isFwaMailConfirmButtonCustomId,
   isFwaMailConfirmNoPingButtonCustomId,
+  isFwaMailOutcomeSelectionButtonCustomId,
   isFwaMailBackButtonCustomId,
   isFwaMailGateResumeButtonCustomId,
   isFwaMailRefreshButtonCustomId,
@@ -1790,6 +1792,28 @@ const handleButtonInteraction = async (
         await interaction.reply({
           ephemeral: true,
           content: "Failed to send war mail.",
+        });
+      }
+    }
+  }
+
+  if (isFwaMailOutcomeSelectionButtonCustomId(interaction.customId)) {
+    try {
+      await handleFwaMailOutcomeSelectionButton(interaction);
+    } catch (err) {
+      console.error(`FWA mail outcome selection button failed: ${formatError(err)}`);
+      if (interaction.deferred) {
+        await interaction
+          .editReply({
+            content: "Failed to update the expected outcome.",
+            embeds: [],
+            components: [],
+          })
+          .catch(() => undefined);
+      } else if (!interaction.replied) {
+        await interaction.reply({
+          ephemeral: true,
+          content: "Failed to update the expected outcome.",
         });
       }
     }

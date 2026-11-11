@@ -3,6 +3,7 @@ const FWA_MATCH_COPY_BUTTON_PREFIX = "fwa-match-copy";
 const FWA_MATCH_TYPE_ACTION_PREFIX = "fwa-match-type-action";
 const FWA_MATCH_TYPE_EDIT_PREFIX = "fwa-match-type-edit";
 const FWA_OUTCOME_ACTION_PREFIX = "fwa-outcome-action";
+const FWA_MAIL_OUTCOME_SELECT_PREFIX = "fwa-mail-outcome-select";
 const FWA_MATCH_SYNC_ACTION_PREFIX = "fwa-match-sync-action";
 const FWA_MATCH_SKIP_SYNC_ACTION_PREFIX = "fwa-match-skip-sync-action";
 const FWA_MATCH_SKIP_SYNC_CONFIRM_PREFIX = "fwa-match-skip-sync-confirm";
@@ -36,6 +37,14 @@ export type OutcomeActionParams = {
   userId: string;
   tag: string;
   currentOutcome: "WIN" | "LOSE";
+  /** Present on new manual-selection buttons; omitted for legacy Reverse Outcome IDs. */
+  key?: string;
+};
+
+export type FwaMailOutcomeSelectionParams = {
+  userId: string;
+  key: string;
+  outcome: "WIN" | "LOSE";
 };
 
 export type MatchSyncActionParams = {
@@ -251,22 +260,59 @@ export function isFwaMatchTypeEditButtonCustomId(customId: string): boolean {
 
 /** Purpose: build custom-id for expected-outcome action button. */
 export function buildOutcomeActionCustomId(params: OutcomeActionParams): string {
-  return `${FWA_OUTCOME_ACTION_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.currentOutcome}`;
+  return params.key
+    ? `${FWA_OUTCOME_ACTION_PREFIX}:${params.userId}:${params.key}:${normalizeTag(params.tag)}:${params.currentOutcome}`
+    : `${FWA_OUTCOME_ACTION_PREFIX}:${params.userId}:${normalizeTag(params.tag)}:${params.currentOutcome}`;
 }
 
 /** Purpose: parse expected-outcome action custom-id payload. */
 export function parseOutcomeActionCustomId(customId: string): OutcomeActionParams | null {
-  const values = parseCustomIdParts(customId, FWA_OUTCOME_ACTION_PREFIX, 4);
-  if (!values) return null;
-  const [userId, rawTag, rawOutcome] = values;
-  const currentOutcome = rawOutcome === "WIN" || rawOutcome === "LOSE" ? rawOutcome : null;
+  const parts = customId.split(":");
+  if (parts[0] !== FWA_OUTCOME_ACTION_PREFIX) return null;
+  const isKeyed = parts.length === 5;
+  const isLegacy = parts.length === 4;
+  if (!isKeyed && !isLegacy) return null;
+  const values = parts.slice(1).map((part) => part.trim());
+  if (values.some((value) => !value)) return null;
+  const [userId, keyOrTag, rawTagOrOutcome, rawOutcome] = values;
+  const key = isKeyed ? keyOrTag : undefined;
+  const rawTag = isKeyed ? rawTagOrOutcome : keyOrTag;
+  const outcomeText = isKeyed ? rawOutcome : rawTagOrOutcome;
+  const currentOutcome =
+    outcomeText === "WIN" || outcomeText === "LOSE" ? outcomeText : null;
   if (!currentOutcome) return null;
-  return { userId, tag: normalizeTag(rawTag), currentOutcome };
+  return key
+    ? { userId, tag: normalizeTag(rawTag), currentOutcome, key }
+    : { userId, tag: normalizeTag(rawTag), currentOutcome };
 }
 
 /** Purpose: detect expected-outcome action button prefix. */
 export function isFwaOutcomeActionButtonCustomId(customId: string): boolean {
   return customId.startsWith(`${FWA_OUTCOME_ACTION_PREFIX}:`);
+}
+
+/** Purpose: build custom-id for selecting a manual outcome from the mail preview. */
+export function buildFwaMailOutcomeSelectionCustomId(
+  params: FwaMailOutcomeSelectionParams,
+): string {
+  return `${FWA_MAIL_OUTCOME_SELECT_PREFIX}:${params.userId}:${params.key}:${params.outcome}`;
+}
+
+/** Purpose: parse a manual outcome selection from the mail preview. */
+export function parseFwaMailOutcomeSelectionCustomId(
+  customId: string,
+): FwaMailOutcomeSelectionParams | null {
+  const values = parseCustomIdParts(customId, FWA_MAIL_OUTCOME_SELECT_PREFIX, 4);
+  if (!values) return null;
+  const [userId, key, rawOutcome] = values;
+  const outcome = rawOutcome === "WIN" || rawOutcome === "LOSE" ? rawOutcome : null;
+  if (!outcome) return null;
+  return { userId, key, outcome };
+}
+
+/** Purpose: detect manual outcome selection buttons in the mail preview. */
+export function isFwaMailOutcomeSelectionButtonCustomId(customId: string): boolean {
+  return customId.startsWith(`${FWA_MAIL_OUTCOME_SELECT_PREFIX}:`);
 }
 
 /** Purpose: build custom-id for sync data action button. */
