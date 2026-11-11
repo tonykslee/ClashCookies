@@ -53,6 +53,9 @@ function streak(overrides: Partial<{
   latestBoundaryTime: Date | null;
   latestFwaEvidenceStatus: "RESOLVED" | "AMBIGUOUS" | "ABSENT" | "UNKNOWN";
   latestFwaClanTag: string | null;
+  latestPhysicalEvidenceStatus: "RESOLVED" | "AMBIGUOUS" | "ABSENT" | "UNKNOWN";
+  latestPhysicalClanTag: string | null;
+  latestAllianceEvidenceStatus: "RESOLVED" | "AMBIGUOUS" | "ABSENT" | "UNKNOWN";
   clanStreakSyncs: number;
   clanStreakIsLowerBound: boolean;
   allianceStreakSyncs: number;
@@ -68,6 +71,11 @@ function streak(overrides: Partial<{
     latestBoundaryTime: overrides.latestBoundaryTime === undefined ? time(3) : overrides.latestBoundaryTime,
     latestFwaEvidenceStatus: overrides.latestFwaEvidenceStatus ?? "RESOLVED",
     latestFwaClanTag: overrides.latestFwaClanTag === undefined ? homeClanTag : overrides.latestFwaClanTag,
+    latestPhysicalEvidenceStatus: overrides.latestPhysicalEvidenceStatus ?? overrides.latestFwaEvidenceStatus ?? "RESOLVED",
+    latestPhysicalClanTag: overrides.latestPhysicalClanTag === undefined
+      ? overrides.latestFwaClanTag === undefined ? homeClanTag : overrides.latestFwaClanTag
+      : overrides.latestPhysicalClanTag,
+    latestAllianceEvidenceStatus: overrides.latestAllianceEvidenceStatus ?? "RESOLVED",
     clanStreakSyncs: overrides.clanStreakSyncs ?? 3,
     clanStreakIsLowerBound: overrides.clanStreakIsLowerBound ?? false,
     allianceStreakSyncs: overrides.allianceStreakSyncs ?? 3,
@@ -171,6 +179,27 @@ describe("HomeMembershipAnalyticsService", () => {
     const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
 
     expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0 });
+  });
+
+  it("renders an authoritative latest BL/MM anchor for S/A", async () => {
+    const built = serviceFor({
+      homes: [home()],
+      streaks: [streak({
+        latestFwaEvidenceStatus: "UNKNOWN",
+        latestFwaClanTag: null,
+        latestPhysicalEvidenceStatus: "RESOLVED",
+        latestPhysicalClanTag: homeClanTag,
+        latestEvidenceAvailable: true,
+        clanStreakSyncs: 2,
+        allianceStreakSyncs: 2,
+      })],
+      boundaryTimes: [time(3), time(2)],
+      evidenceByPlayer: { [playerTag]: [evidence(3, "UNKNOWN"), evidence(2, "RESOLVED", homeClanTag)] },
+    });
+
+    const result = byTag(await built.service.getAnalyticsForPlayers({ guildId, playerTags: [playerTag] }));
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
   });
 
   it("counts only resolved FWA-roster observations matching the active Home clan", async () => {
