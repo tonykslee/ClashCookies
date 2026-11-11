@@ -14,6 +14,8 @@ import {
   handleFwaMailOutcomeSelectionButton,
   handleFwaMatchSendMailButton,
   handleFwaOutcomeActionButton,
+  buildDraftFromOutcomeToggleForTest,
+  buildFwaMatchCopyComponentsForTest,
   buildFwaMailSendClaimKeyForTest,
   buildFwaMatchTypeConfirmationUpsertInputForTest,
   clearFwaMailPreviewPayloadsForTest,
@@ -2164,6 +2166,91 @@ describe("fwa mail confirm button", () => {
     expect(
       resolveFwaOutcomeActionTargetForTest(parsed as any)?.view.inferredMatchType,
     ).toBe(false);
+  });
+
+  it("scopes Reverse Outcome drafts to the newer confirmed view", () => {
+    const olderView = {
+      matchTypeCurrent: "FWA",
+      inferredMatchType: true,
+      effectiveRevisionFields: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA",
+        expectedOutcome: "UNKNOWN",
+      },
+    };
+    const newerView = {
+      matchTypeCurrent: "FWA",
+      inferredMatchType: false,
+      outcomeAction: {
+        tag: "R80L8VYG",
+        currentOutcome: "WIN" as const,
+      },
+      confirmedRevisionBaseline: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA" as const,
+        expectedOutcome: "UNKNOWN" as const,
+      },
+      effectiveRevisionFields: {
+        warId: "1000110",
+        opponentTag: "2LYPLQQUC",
+        matchType: "FWA" as const,
+        expectedOutcome: "WIN" as const,
+      },
+    };
+    const basePayload = {
+      userId: "owner-1",
+      guildId: "guild-1",
+      includePostButton: false,
+      currentScope: "single" as const,
+      currentTag: "R80L8VYG",
+      allianceView: {
+        embed: new EmbedBuilder(),
+        copyText: "",
+      },
+      allianceViewIsScoped: true,
+      revisionDraftByTag: {},
+    };
+    const olderPayload = {
+      ...basePayload,
+      singleViews: { R80L8VYG: olderView },
+    } as any;
+    const newerPayload = {
+      ...basePayload,
+      singleViews: { R80L8VYG: newerView },
+    } as any;
+    setFwaMatchCopyPayloadForTest("older-inferred", olderPayload);
+    setFwaMatchCopyPayloadForTest("newer-confirmed", newerPayload);
+
+    const reverseButton = buildFwaMatchCopyComponentsForTest(
+      newerPayload,
+      "owner-1",
+      "newer-confirmed",
+      "embed",
+    )
+      .flatMap((row: any) => row.toJSON().components ?? [])
+      .find((component: any) => component.label === "Reverse Outcome");
+    const parsed = parseOutcomeActionCustomId(reverseButton.custom_id);
+    const target = resolveFwaOutcomeActionTargetForTest(parsed as any);
+    const nextDraft = buildDraftFromOutcomeToggleForTest({
+      view: target!.view,
+      currentOutcome: parsed!.currentOutcome,
+    });
+
+    expect(parsed).toEqual({
+      userId: "owner-1",
+      key: "newer-confirmed",
+      tag: "R80L8VYG",
+      currentOutcome: "WIN",
+    });
+    expect(target?.key).toBe("newer-confirmed");
+    expect(nextDraft?.expectedOutcome).toBe("LOSE");
+    expect(olderPayload.revisionDraftByTag).toEqual({});
+    expect({
+      ...newerPayload.revisionDraftByTag,
+      R80L8VYG: nextDraft,
+    }).toEqual({ R80L8VYG: expect.objectContaining({ expectedOutcome: "LOSE" }) });
   });
 
   it("keeps legacy Reverse Outcome IDs parseable without a payload key", () => {

@@ -9149,6 +9149,7 @@ function buildFwaMatchCopyComponents(
         .setCustomId(
           buildOutcomeActionCustomId({
             userId,
+            key,
             tag: outcomeAction.tag,
             currentOutcome: outcomeAction.currentOutcome,
           }),
@@ -13488,6 +13489,7 @@ export const resolveMatchTypeSelectionForTest = resolveMatchTypeSelection;
 export const buildDraftFromOutcomeToggleForTest = buildDraftFromOutcomeToggle;
 export const buildDraftFromOutcomeSelectionForTest =
   buildDraftFromOutcomeSelection;
+export const buildFwaMatchCopyComponentsForTest = buildFwaMatchCopyComponents;
 export const resolveFwaOutcomeActionTargetForTest =
   resolveFwaOutcomeActionTarget;
 export const canOpenWarMailPreviewForManualFwaOutcomeForTest =
