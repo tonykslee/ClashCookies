@@ -33,6 +33,7 @@ function war(warId: number, end = "2026-01-07T12:00:00.000Z", overrides: Partial
     warEndTime: new Date(end),
     createdAt: new Date("2026-01-07T13:00:00.000Z"),
     updatedAt: new Date("2026-01-07T13:00:00.000Z"),
+    participationCompleteness: "COMPLETE",
     ...overrides,
   };
 }
@@ -94,7 +95,20 @@ function repEvent(dedupeKey: string, overrides: Partial<HistoricalRepWorkEventRo
     warStartTime: new Date("2026-01-06T12:00:00.000Z"),
     eventAt: new Date("2026-01-07T10:00:00.000Z"),
     dedupeKey,
-    metadata: { source: "fwa_base_swap", clanKind: "FWA" },
+    metadata: {
+      activityType: "BASES_CHECKED",
+      source: "base_swap",
+      sourceVariant: "single",
+      clanKind: "FWA",
+      syncMessageId: "sync-1",
+      sourceMessageId: "message-1",
+      sourceTrackedMessageId: null,
+      warId: "100",
+      warStartTimeIso: "2026-01-06T12:00:00.000Z",
+      opponentTag: "#OPPONENT",
+      eventAtIso: "2026-01-07T10:00:00.000Z",
+      prepTimeLeftSeconds: 7200,
+    },
     createdAt: new Date("2026-01-07T10:00:01.000Z"),
     updatedAt: new Date("2026-01-07T10:00:01.000Z"),
     ...overrides,
@@ -141,6 +155,17 @@ describe("historical Duskits earnings simulation", () => {
     expect(report.unknownReasons.PLAYER_LINK_CREATED_AFTER_EVENT).toBeUndefined();
   });
 
+  it("does not infer a complete roster from non-empty participation rows", () => {
+    const report = simulateHistoricalDuskits(input({
+      wars: [war(100, "2026-01-07T12:00:00.000Z", { participationCompleteness: "UNKNOWN" })],
+    }));
+    expect(report.coverage.canonicalRosterComplete).toBe(0);
+    expect(report.coverage.canonicalRosterUnknown).toBe(1);
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(1);
+    expect(report.unknownReasons.WAR_ROSTER_COMPLETENESS_UNPROVEN).toBe(1);
+  });
+
   it("does not treat late or revoked current links as verified historical ownership", () => {
     const report = simulateHistoricalDuskits(input({
       participation: [participation(100, "#LATE"), participation(100, "#REVOKED")],
@@ -160,13 +185,15 @@ describe("historical Duskits earnings simulation", () => {
       repEvents: [
         repEvent("rep|1"),
         repEvent("rep|1", { sourceMessageId: "message-2" }),
-        repEvent("rep|2", { metadata: { source: "fwa_match_checklist", viewType: "Mail", clanKind: "FWA" }, activityType: "MAIL_CHECKED" }),
-        repEvent("rep|cwl", { metadata: { source: "fwa_base_swap", clanKind: "CWL" } }),
+        repEvent("rep|bases-checklist", { metadata: { activityType: "BASES_CHECKED", source: "bases_checklist", viewType: "Bases", scopeKey: "scope-1", rowContextKey: "row-1" } }),
+        repEvent("rep|mail-checklist", { metadata: { activityType: "MAIL_CHECKED", source: "mail_checklist", viewType: "Mail", scopeKey: "scope-1", rowContextKey: "row-1" }, activityType: "MAIL_CHECKED" }),
+        repEvent("rep|mail-sent", { metadata: { activityType: "MAIL_SENT", source: "fwa_match_mail_send", mailChannelId: "mail-channel-1", mailMessageId: "mail-message-1" }, activityType: "MAIL_SENT" }),
+        repEvent("rep|cwl", { metadata: { activityType: "BASES_CHECKED", source: "base_swap", sourceVariant: "single", clanKind: "CWL" } }),
       ],
     }));
-    expect(report.coverage.recognizedFwaRepEvents).toBe(2);
+    expect(report.coverage.recognizedFwaRepEvents).toBe(4);
     expect(report.coverage.duplicateRepEvents).toBe(1);
-    expect(report.repWork.strictDuskits).toBe(4);
+    expect(report.repWork.strictDuskits).toBe(8);
     expect(report.repWork.baseSwapPublisherEvents).toBe(1);
     expect(report.unknownReasons.REP_EVENT_CWL_SOURCE).toBe(1);
   });
