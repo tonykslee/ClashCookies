@@ -50,7 +50,7 @@ The verdict below is for the complete reward eligibility path, not merely whethe
 
 - `TrackedMessage.metadata.entries[].acknowledged` is the durable state used by the reaction listener. It is not an append-only event and has no acknowledgment timestamp, reaction ID, or actor field separate from the entry’s pre-populated `discordUserId`.
 - Split posts share a `referenceId`, and the handler updates related active rows. This is useful for consistent rendering but means a simulation should collapse split rows by `referenceId`/entry identity and avoid counting two posts twice.
-- `RepWorkActivityEvent(source="fwa_base_swap")` records the person who published the announcement, not each recipient who acknowledged or changed a base. It is not evidence of an early swap.
+- `RepWorkActivityEvent(metadata.source="base_swap")` records the person who published the announcement, not each recipient who acknowledged or changed a base. It is not evidence of an early swap.
 - `phaseTimingLine`, `warStartTimeIso`, and `createdAtIso` allow a diagnostic comparison of post timing to war context, but not proof that a layout was changed before a deadline.
 
 ### Rep work and recurring eligibility
@@ -91,10 +91,10 @@ SELECT
   h."clanTag",
   h."opponentTag",
   h."matchType",
-  COUNT(p."id") AS participation_rows,
+  COUNT(DISTINCT p."id") AS participation_rows,
   e."status" AS evaluation_status,
   e."completedAt",
-  COUNT(v."id") AS violation_rows
+  COUNT(DISTINCT v."id") AS violation_rows
 FROM "ClanWarHistory" h
 LEFT JOIN "ClanWarParticipation" p
   ON p."guildId" = :guild_id
@@ -110,7 +110,7 @@ GROUP BY h."warId", e."status", e."completedAt"
 ORDER BY h."warEndTime", h."warId";
 ```
 
-Interpretation: a non-empty participation count is not by itself COMPLETE. Join a separate per-war canonical roster coverage check, and emit `UNKNOWN(canonical_roster_incomplete)` when the full roster cannot be proven.
+Interpretation: count each distinct participation/violation row (the two independent one-to-many joins otherwise multiply both totals). A non-empty participation count is not by itself COMPLETE. Join a separate per-war canonical roster coverage check, and emit `UNKNOWN(canonical_roster_incomplete)` when the full roster cannot be proven.
 
 ### 2. Clean FWA cohort with explicit UNKNOWN states
 
@@ -126,7 +126,9 @@ SELECT
   l."discordUserId", l."verificationStatus", l."verificationMethod",
   l."createdAt" AS link_created_at, l."verifiedAt", l."lastVerifiedAt"
 FROM "ClanWarParticipation" p
-JOIN "ClanWarHistory" h ON h."warId" = p."warId"::int
+JOIN "ClanWarHistory" h ON p."warId" = h."warId"::text
+  AND p."clanTag" = h."clanTag"
+  AND p."warStartTime" = h."warStartTime"
 LEFT JOIN "WarPlanComplianceEvaluation" e
   ON e."guildId" = p."guildId" AND e."warId" = h."warId"
 LEFT JOIN "WarPlanViolation" v
