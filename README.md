@@ -7,6 +7,10 @@ ClashCookies is a TypeScript-based Discord bot and operations tooling platform f
 
 The project is designed as a maintainable application, not a one-off bot script: it has clear service boundaries, Prisma-backed persistence, operational scripts, and a broad automated test suite. The intent is reliable ongoing iteration for real clan operations.
 
+## Product roadmaps
+
+- [Dusk Economy & Alliance Mobility](docs/roadmaps/dusk-economy.md) — living vision, decisions, phased implementation and open questions for Duskits, rewards, giveaways, and the voluntary transfer pool (**planning only; not shipped**).
+
 ## Highlights
 - TypeScript + Node.js application with a command-first Discord UX
 - Workflow automation for war lifecycle, mail refresh, and sync flows
