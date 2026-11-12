@@ -42,10 +42,10 @@ Make Dusk more than an operations bot: a rewarding, welcoming part of alliance l
 | Routine earn-rate target | **Proposal** | ~15–20 Duskits/week; routine weekly cap 30 |
 | Clan-wide sponsorship price | **Proposal** | 500 Duskits **plus** eligibility milestone; price/scale requires review |
 | Transfer reward | **Proposal** | +20 verified transfer; +10 after 14 days in destination |
-| Giveaway fulfillment / costs | **Blocked on coordination** | Discuss additional +1 entries, sponsor capacity and limits with Elle; existing Rising Maple process remains authoritative until integration approved |
+| +1 giveaway inclusion | **Approved in principle** | Elle gave permission to include +1 giveaway rewards in Dusk (reported 2026-11-12). Specific event limits, fulfillment, funding, and whether clan-wide sponsorship is included remain unconfirmed. Rising Maple remains authoritative until integration approved |
 | Concrete command and DB names | **Design draft** | Confirm in implementation PRs, not fixed APIs yet |
 
-**Important:** Talking through a prize is not permission to issue one. Do not activate giveaway redemption until Elle / giveaway organizers agree on fulfillment, funding, eligibility and limits. No assumption that Rising Maple offers an integration API.
+**Important:** Elle's approval establishes the direction, **not** finalized issuance rules. Do not activate giveaway redemption until the giveaway organizers agree on fulfillment, funding, eligibility and limits. Do not assume clan-wide sponsorship was approved or that Rising Maple offers an integration API.
 
 ## Reward design — starting calibration, NOT live policy
 
@@ -114,7 +114,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 | Milestone | Priority | Status | Outcome / exit criterion |
 | --- | --- | --- | --- |
-| **M0 — Policy and evidence audit** | P0 | Not started | Elle/giveaway discussion; catalog source evidence gaps, sample weekly earn rates, settle fair caps and identity assumptions, record actual reward eligibility |
+| **M0 — Policy and evidence audit** | P0 | In progress | In-principle +1 approval received; catalog source evidence gaps, sample weekly earn rates, settle fair caps and identity assumptions, record actual reward eligibility |
 | **M1 — Ledger and Dusk hub** | P0 | Not started | Transaction-safe wallet/ledger, idempotency, admin audit/adjust/reverse, read-only `/dusk` balance/history, tests/docs/permission coverage; no payout rules yet |
 | **M2 — Verified earning engine** | P0 | Not started | Start with a small set of reliable signals; per-user limits, no duplicate payouts, replay/recovery and manual reconciliation; expand BL/clean-war only after eligibility proof |
 | **M3 — Personal Market redemption** | P1 | Not started | Price/eligibility controls, explicit fulfillment owner, hold/commit/refund, per-giveaway limits, no automated prize issue until approved |
@@ -136,7 +136,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 ## Open questions / decisions to make before launch
 
-- [ ] **Giveaway owner approval:** May Dusk mint +1 entries? Who funds/fulfills them, which giveaways qualify, and what happens if a giveaway is cancelled? Discuss with Elle; do not presume approval.
+- [ ] **Giveaway fulfillment boundaries:** Elle approved including +1 rewards in principle (user-reported). Confirm who funds/fulfills entries, which giveaways qualify, per-event caps, cancellations/refunds, and whether the approval extends to clan-wide sponsorship.
 - [ ] **Rising Maple coexistence:** Manual fulfillment first, supported integration, or shared redemption coordinator? Avoid double-awards.
 - [ ] **Entry eligibility / promotional terms:** Who qualifies, how many bonus entries may exist per user/event, and do giveaway rules require a free alternative or other constraints?
 - [ ] **Coin budget:** Calibrate real earning distributions, multi-account effect, personal entry price and clan sponsor liability using observed data.
@@ -164,7 +164,7 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 | 2026-11-12 | Name currency **Duskits**, plural; explain clearly on first use | Agreed |
 | 2026-11-12 | Hybrid reward model: performance + service; voluntary transfer pool | Agreed direction |
 | 2026-11-12 | Aim for personal +1 after ~1–2 months, clan-wide sponsor after ~6 months | Targets, pricing/terms provisional |
-| 2026-11-12 | Consult Elle before adding giveaway obligations; no automatic funding assumption | Pending conversation |
+| 2026-11-12 | Elle gave permission to incorporate +1 giveaway rewards into Dusk (user-reported); prize eligibility, funding/fulfillment, event caps, and clan-wide scope still need confirmation | Approved in principle; operational terms open |
 
 ### Success measures (initial)
 
