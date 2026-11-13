@@ -1,7 +1,7 @@
 # Historical Duskits Earnings Simulation
 
 > **M0a, part 2 — bounded offline simulation**
-> **Status:** Tool and deterministic fixture tests prepared; real historical sample pending
+> **Status:** First real sample executed twice; war-end provenance diagnosis recorded; M0a part 2 remains open pending review
 > **Date:** 2026-11-12
 
 ## Purpose and current result
@@ -14,7 +14,19 @@ The implementation is split deliberately:
 - `src/scripts/duskHistoricalEarningsSimulation.ts` contains the manual operator adapter. It creates a direct Prisma client from a dedicated simulation URL, verifies the transaction is read-only and using the expected database role, then performs bounded `findMany`/`SELECT` reads.
 - `tests/duskHistoricalEarningsSimulation.test.ts` covers identity joins, missing evidence, violations, historical-sensitive links, multi-account collapse, rep-event deduplication, UTC weeks, cap behavior, repeatability, and unsafe configuration refusal.
 
-No wallet, ledger, currency model, migration, bot command, scheduler, poller, external API call, or production write was added. No real database sample was run in this investigation because a dedicated read-only simulation connection was not supplied; M0a part 2 remains incomplete until an operator runs and reviews a bounded sample.
+No wallet, ledger, currency model, migration, bot command, scheduler, poller, external API call, or production write was added. The first real sample used a dedicated SELECT-only connection and was executed twice with the same fixed snapshot; no credentials, player identifiers, or raw rows are recorded here. M0a part 2 remains incomplete pending review of the identity diagnosis and policy implications.
+
+## First real sample — aggregate findings
+
+The bounded sample covered guild `1324040917602013261` from `2026-09-14T00:00:00.000Z` through `2026-11-09T00:00:00.000Z` (eight complete UTC weeks). Both SELECT-only executions produced identical aggregate reports:
+
+- 199 ended wars and 9,950 participation rows were observed.
+- 81 wars had an exact history/participation end timestamp.
+- 115 wars differed by 1–51 seconds, and 3 wars differed by 70–101 seconds.
+- All 5,900 reported identity conflicts were end-time-only mismatches; each affected war had 50 participation rows with one consistent offset.
+- All 199 production rosters remain `UNKNOWN` because `ClanWarParticipation` has no authoritative completeness marker.
+
+The sample establishes an observed, consistent timestamp-provenance difference, not a blanket time tolerance and not proof that any source row was corrected. The simulator now uses shared persisted `warId`, exact normalized clan/opponent tags, and exact start time as canonical identity. It reconciles a differing end time only when every participation row for that war has one valid common persisted end time. A missing or contradictory end-time set remains `UNKNOWN`; wrong clan, opponent, or start remains an identity conflict. The sample was run before this corrective classifier change, so post-change aggregate award feasibility still requires a bounded rerun and review.
 
 ## Modeled activities and verdicts
 
@@ -22,7 +34,7 @@ The simulator has two draft earning rows only: clean FWA participation at **+4**
 
 | Candidate activity | Authoritative source/service | Available evidence and identity key | Event-level deduplication | Attribution and time rule | Correction/freshness limitation | Simulation verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| Clean FWA participation | `ClanWarHistory`, `ClanWarParticipation`, completed `WarPlanComplianceEvaluation` and `WarPlanViolation` | Ended `warId`; exact clan/opponent/start/end tuple; canonical participation rows including attacks used/missed; completed evaluation with `completedAt`; player violation rows | Participation unique by `[guildId, warId, playerTag]`; evaluation unique by `[guildId, warId]`; violation unique by `[evaluationId, playerTag]`; simulator additionally collapses one award per `(Discord user, warId)` | Participation `playerTag` joins to `PlayerLink`; strict requires `VERIFIED`, verification timestamp no later than war end, and no later link update; provisional allows a current non-revoked link created by the event time | `PlayerLink` is not an ownership history. Canonical changes can reset/re-finalize evaluations and replace violations. `ClanWarParticipation` has no durable completeness marker, so production-normalized rosters remain `UNKNOWN` unless an independent completeness assertion is supplied | **PARTIAL** overall; **STRICT/PROVISIONAL** only inside the simulator when all gates pass |
+| Clean FWA participation | `ClanWarHistory`, `ClanWarParticipation`, completed `WarPlanComplianceEvaluation` and `WarPlanViolation` | Shared persisted `warId`; exact clan/opponent tags and start time; end time from either writer only when participation rows have one valid common value; canonical participation rows including attacks used/missed; completed evaluation with `completedAt`; player violation rows | Participation unique by `[guildId, warId, playerTag]`; evaluation unique by `[guildId, warId]`; violation unique by `[evaluationId, playerTag]`; simulator additionally collapses one award per `(Discord user, warId)` | Participation `playerTag` joins to `PlayerLink`; strict requires `VERIFIED`, verification timestamp no later than war end, and no later link update; provisional allows a current non-revoked link created by the event time | `PlayerLink` is not an ownership history. Canonical changes can reset/re-finalize evaluations and replace violations. `ClanWarParticipation` has no durable completeness marker, so production-normalized rosters remain `UNKNOWN` unless an independent completeness assertion is supplied. End-time variance is provenance-reconcilable only when the per-war participation timestamps are valid and consistent; no numeric tolerance is used | **PARTIAL** overall; **STRICT/PROVISIONAL** only inside the simulator when all gates pass |
 | Attributable FWA rep action | `RepWorkActivityService` → `RepWorkActivityEvent` | Direct `discordUserId`, guild/clan, activity type, source message, optional war identity, `eventAt`, metadata/source | Database `dedupeKey @unique`; simulator counts each key once and treats repeats as duplicate | Accept only known FWA `BASES_CHECKED`, `MAIL_CHECKED`, or `MAIL_SENT` source metadata; exclude CWL; direct event user is the actor | No reversal/correction state; a known event proves the persisted rep action, not historical rep assignment or a gameplay result | **VERIFIED** for the narrowly defined event action after source filtering; **not verified** for recurring rep status |
 | Verified Blacklist triple | `ClanWarHistory`, archived `WarLookup.payload`; current `WarAttacks` only while active | History identifies ended BL war; archive may contain attack detail and timestamps | No durable per-player historical triple key; `WarAttacks` keys are current-only and rows are deleted after archival | Would require a strict archive extractor for player attack identity plus event-time PlayerLink evidence | Archive payload shape/completeness and correction semantics need validation; current attacks cannot backfill old wars | **PARTIAL**, not modeled |
 | Base-swap acknowledgment | `TrackedMessage` and FWA base-swap reaction logic | Mutable `metadata.entries[]` with player/user, section, and `acknowledged`; message/war timing context | No per-entry acknowledgment key or append-only event; split posts may share `referenceId` | Stored listed user is not a separate reaction actor; no acknowledgment timestamp | Message-level `createdAt`/`updatedAt` cannot establish when a particular entry was acknowledged; edits/replacements overwrite state | **PARTIAL**, not modeled |
@@ -38,7 +50,7 @@ The report keeps `VERIFIED`, `PROVISIONAL`, `INELIGIBLE`, and `UNKNOWN` conceptu
 
 For a history discovered in the selected ended-war window, the simulator requires all of the following before considering a participation row:
 
-1. The row belongs to the selected guild and joins the history by exact `warId`, normalized clan tag, opponent tag, war start, and war end.
+1. The row belongs to the selected guild and joins the history by shared `warId`, exact normalized clan/opponent tags, and exact war start. A differing end time is accepted only when all participation rows for that war carry one valid common persisted end time; no elapsed-seconds tolerance is applied. Missing or contradictory end-time evidence is `UNKNOWN`.
 2. Both history and participation say `FWA`.
 3. The participation roster is non-empty, has valid identity fields, has no duplicate `(warId, clanTag, playerTag)` row in the bounded read, and has an explicit independent `participationCompleteness=COMPLETE` assertion. A missing, malformed, or completeness-unproven roster is `UNKNOWN` for the war.
 4. The evaluation is `COMPLETED` and has a non-null `completedAt`. Missing, pending, insufficient, failed, or skipped evaluation is `UNKNOWN`, even when no violation rows are visible.
@@ -68,13 +80,15 @@ The persisted `dedupeKey` is required. A repeated key is counted once; a missing
 - `WarAttacks` is not a historical owner. Ended-war cleanup deletes current attack rows after participation is snapshotted. A query that finds no old attacks must report unavailable evidence, not zero attacks.
 - `ClanWarHistory` has no guild ID. The operator adapter discovers histories only through selected-guild participation/evaluation war IDs. A history with neither child evidence is outside attributable guild scope and is an unresolved coverage gap, not silently included.
 - `ClanWarParticipation.warId` is a string while `ClanWarHistory.warId` is an integer. The adapter normalizes the values; the pure classifier also checks exact tuple identity to avoid a numeric ID collision with stale or cross-clan rows.
+- `war-events/history.ts` has two persisted end-time paths: `ClanWarHistory` uses the final war-end result or a `WarAttacks` fallback, while the participation snapshot prefers `CurrentWar.endTime` and otherwise uses the history path. This independently explains a consistent per-war offset without proving which source is “corrected.”
+- Exact `warId`, clan, opponent, and start-time agreement is the canonical identity. End-time variance is safe only with one valid, internally consistent participation end time for the war. Wrong opponent, wrong clan, wrong start, missing end, or contradictory participation end times remain `UNKNOWN`/identity conflict.
 - `ClanWarParticipation` has no durable roster-completeness marker, expected team size, or capture-batch identity. A non-empty, well-shaped subset can therefore look complete while representing a partial snapshot.
 - The simulator requires both a valid row shape and an explicit `participationCompleteness=COMPLETE` assertion. The production adapter supplies `UNKNOWN`; only controlled fixtures or a later independently verified importer may assert `COMPLETE`. Missing completeness evidence is never treated as a completed roster.
 - A completed evaluation is mutable. Canonical history correction can reset it and replace violations; the current row does not provide a source fingerprint or reward reversal identity.
 - `TrackedMessage` acknowledgment is mutable JSON state. It has no per-entry event timestamp, reaction actor, reaction ID, before/after layout identity, or append-only history. It cannot prove an early in-game base swap.
 - Current `TrackedClanRep` assignment has no start/end interval. A current title cannot prove historical recurring eligibility.
 - Current `PlayerLink` is not a historical ownership ledger. Deletion removes the row; reassignment history is not recoverable. The simulator therefore exposes late, revoked, missing, history-sensitive, and conflicting identity reasons.
-- `RepWorkActivityEvent` has durable dedupe but no correction/reversal state. A source correction requires a future policy and reconciliation owner.
+- `RepWorkActivityEvent` has durable dedupe but no correction/reversal state. A source correction requires a future policy and reconciliation owner. `updatedAt > createdAt` is reported only as an observed source update; it is not evidence that a correction was proven. The simulator reports `observedSourceUpdates` separately from `provenCorrectionRows` (currently zero).
 - A `base_swap` source without exact `clanKind=FWA` is ambiguous because the writer also records CWL base swaps; the simulator keeps CWL, missing, and invalid clan-kind values `UNKNOWN`.
 - Home transfer confirmation changes the Home period but does not prove that the member physically joined the destination at the confirmation instant. Home/roster freshness and 14-day residence remain separate checks.
 - Base-swap publication events identify the publisher, not each recipient’s swap action.
@@ -104,7 +118,7 @@ $env:DUSK_SIMULATION_READ_ONLY_ROLE = "clashcookies_dusk_readonly"
 npm run diagnose:dusk-historical-earnings -- --guild <guild-id> --from 2026-01-05T00:00:00.000Z --to 2026-02-16T00:00:00.000Z --snapshot 2026-02-16T00:00:00.000Z
 ```
 
-The command is deliberately not part of startup, CI, staging automation, or a scheduler. For repeatable operator comparisons, every run must provide the same fixed `--snapshot` value; omitting it uses the current clock and is not a comparable historical run. It prints an aggregate report with evidence counts, UNKNOWN reason counts, strict/provisional totals, duplicate/correction counts, weekly uncapped/capped distributions, current rep/non-rep descriptions, and 100-Duskit feasibility. It never emits raw identifiers or a proposed issuance file.
+The command is deliberately not part of startup, CI, staging automation, or a scheduler. For repeatable operator comparisons, every run must provide the same fixed `--snapshot` value; omitting it uses the current clock and is not a comparable historical run. It prints an aggregate report with evidence counts, UNKNOWN reason counts, strict/provisional totals, duplicate counts, observed source updates, proven corrections, weekly uncapped/capped distributions, current rep/non-rep descriptions, and 100-Duskit feasibility. It never emits raw identifiers or a proposed issuance file.
 
 ## Recommendation for the first earning activities
 
@@ -115,8 +129,8 @@ The second candidate is clean FWA participation only after the historical sample
 ## M0a part 2 bounded simulation plan
 
 1. Create a dedicated SELECT-only database role and provide a separate simulation URL to the operator. Confirm the role, transaction read-only setting, and grants without changing application schema or production behavior.
-2. Run one explicit guild over a representative 4–12 complete-week UTC window. Capture the aggregate output and tool version/commit with the operator review; do not export identifiers.
+2. Run one explicit guild over a representative 4–12 complete-week UTC window with a fixed `--snapshot`. Capture the aggregate output and tool version/commit with the operator review; do not export identifiers.
 3. Review ended-war discovery, roster completeness, completed evaluation coverage, violation counts, strict/provisional/UNKNOWN attribution, duplicate identities, rep source mix, current rep descriptive cohorts, and per-user weekly cap distributions.
-4. Run the exact same command again with the same fixed `--snapshot` value and compare deterministic output. Investigate any source corrections, malformed joins, unexpected duplicate keys, or unsafe credential behavior.
-5. Use the sample to decide whether the two draft activities and the 30-Duskit cap support the 100-Duskit target. Record policy decisions separately from observed evidence.
-6. Keep M0a part 2 open until the real sample is reviewed. A successful local fixture test is not a historical data result and does not authorize issuance.
+4. Run the exact same command again with the same fixed `--snapshot` value and compare deterministic output. Investigate source-update observations, proven-correction evidence, timestamp provenance, malformed joins, unexpected duplicate keys, or unsafe credential behavior.
+5. Use the sample and any post-diagnosis rerun to decide whether the two draft activities and the 30-Duskit cap support the 100-Duskit target. Record policy decisions separately from observed evidence.
+6. Keep M0a part 2 open until the timestamp-identity findings, post-change sample, and policy review are complete. A successful local fixture test or an initial SELECT-only run is not a reward authorization.

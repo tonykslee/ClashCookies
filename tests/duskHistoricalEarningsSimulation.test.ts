@@ -139,6 +139,87 @@ describe("historical Duskits earnings simulation", () => {
     expect(report.weekly[0].strict.totalCappedDuskits).toBe(4);
   });
 
+  it("reconciles a consistent persisted end-time variance without applying a tolerance", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") }),
+        participation(100, "#BETA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") }),
+      ],
+      playerLinks: [link("#ALPHA"), link("#BETA", "222222222222222")],
+    }));
+    expect(report.cleanFwa.verifiedEvents).toBe(2);
+    expect(report.cleanFwa.strictDuskits).toBe(8);
+    expect(report.unknownReasons.WAR_IDENTITY_CONFLICT).toBeUndefined();
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBeUndefined();
+  });
+
+  it("rejects every participant when a war mixes exact and differing end timestamps", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA"),
+        participation(100, "#BETA", { warEndTime: new Date("2026-01-07T12:00:30.000Z") }),
+      ],
+      playerLinks: [link("#ALPHA"), link("#BETA", "222222222222222")],
+    }));
+    expect(report.cleanFwa.verifiedEvents).toBe(0);
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(2);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBe(2);
+  });
+
+  it("rejects every participant when a war has missing or invalid end timestamps", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA"),
+        participation(100, "#BETA", { warEndTime: null }),
+        participation(100, "#GAMMA", { warEndTime: new Date("invalid") }),
+      ],
+      playerLinks: [
+        link("#ALPHA"),
+        link("#BETA", "222222222222222"),
+        link("#GAMMA", "333333333333333"),
+      ],
+    }));
+    expect(report.cleanFwa.verifiedEvents).toBe(0);
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(3);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBe(3);
+  });
+
+  it("keeps wrong opponent, clan, and start-time joins as identity conflicts", () => {
+    const report = simulateHistoricalDuskits(input({
+      wars: [
+        war(100),
+        war(101, "2026-01-14T12:00:00.000Z"),
+        war(102, "2026-01-14T12:00:00.000Z"),
+      ],
+      participation: [
+        participation(100, "#ALPHA", { opponentTag: "#WRONG", warEndTime: new Date("2026-01-07T12:00:00.000Z") }),
+        participation(101, "#BETA", { clanTag: "#WRONG", warEndTime: new Date("2026-01-14T12:00:00.000Z") }),
+        participation(102, "#GAMMA", { warStartTime: new Date("2026-01-06T12:01:00.000Z"), warEndTime: new Date("2026-01-14T12:00:00.000Z") }),
+      ],
+      evaluations: [evaluation(100), evaluation(101), evaluation(102)],
+      playerLinks: [link("#ALPHA"), link("#BETA"), link("#GAMMA")],
+    }));
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(3);
+    expect(report.unknownReasons.WAR_IDENTITY_CONFLICT).toBe(3);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBeUndefined();
+  });
+
+  it("keeps contradictory participation end times UNKNOWN", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") }),
+        participation(100, "#BETA", { warEndTime: new Date("2026-01-07T12:01:11.000Z") }),
+      ],
+      playerLinks: [link("#ALPHA"), link("#BETA", "222222222222222")],
+    }));
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(2);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBe(2);
+  });
+
   it("keeps roster, evaluation, violation, and identity gaps explicit", () => {
     const report = simulateHistoricalDuskits(input({
       wars: [war(100), war(101, "2026-01-14T12:00:00.000Z")],

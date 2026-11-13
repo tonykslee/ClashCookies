@@ -114,7 +114,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 | Milestone | Priority | Status | Outcome / exit criterion |
 | --- | --- | --- | --- |
-| **M0 — Policy and evidence audit** | P0 | In progress — simulator prepared; sample pending | Elle approved +1 rewards in principle; M0a part 1 evidence diagnostic is complete and M0a part 2 has a bounded read-only simulator with fixture tests. A real historical sample and policy review remain required; fulfillment/eligibility details remain open |
+| **M0 — Policy and evidence audit** | P0 | In progress — first sample executed; diagnosis and review pending | Elle approved +1 rewards in principle; M0a part 1 evidence diagnostic is complete and M0a part 2 has a bounded read-only simulator with fixture tests. The first real sample was executed twice, but war-end provenance findings, a post-change rerun, and policy review remain required; fulfillment/eligibility details remain open |
 | **M1 — Ledger and Dusk hub** | P0 | Not started | Transaction-safe wallet/ledger, idempotency, admin audit/adjust/reverse, read-only `/dusk` balance/history, tests/docs/permission coverage; no payout rules yet |
 | **M2 — Verified earning engine** | P0 | Not started | Start with a small set of reliable signals; per-user limits, no duplicate payouts, replay/recovery and manual reconciliation; expand BL/clean-war only after eligibility proof |
 | **M3 — Personal Market redemption** | P1 | Not started | Price/eligibility controls, explicit fulfillment owner, hold/commit/refund, per-giveaway limits, no automated prize issue until approved |
@@ -125,7 +125,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 ### Implementation slices — scoped PRs, not one giant change
 
 - [x] M0a part 1: Document eligibility/evidence sources, query designs and hard UNKNOWN states. See [Dusk reward evidence diagnostic](../diagnostics/dusk-reward-evidence.md). No database sample or reward issuance was performed.
-- [ ] M0a part 2: Run and review a bounded read-only weekly Duskits earning simulation, without ledger, currency writes, back-pay or production changes. The operator tool and fixture coverage are prepared; see [historical earnings simulation diagnostic](../diagnostics/dusk-historical-earnings-simulation.md). No real sample has been run yet.
+- [ ] M0a part 2: Run and review a bounded read-only weekly Duskits earning simulation, without ledger, currency writes, back-pay or production changes. The first eight-week sample was executed twice with a fixed snapshot and aggregate findings are recorded; the timestamp-identity diagnosis, post-change rerun, and policy review remain open. See [historical earnings simulation diagnostic](../diagnostics/dusk-historical-earnings-simulation.md).
 - [ ] M0b: Confirm giveaway sponsorship policies with Elle, Rising Maple touch points, and member-facing terms. Record decisions in this file.
 - [ ] M1a: Ledger transaction + policy schema, safe migration and ownership boundaries (no commands).
 - [ ] M1b: Wallet/query/admin adjustments, permissions, help, tests and readme.
@@ -168,6 +168,7 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 | 2026-11-12 | Elle gave permission to incorporate +1 giveaway rewards into Dusk (user-reported); prize eligibility, funding/fulfillment, event caps, and clan-wide scope still need confirmation | Approved in principle; operational terms open |
 | 2026-11-12 | M0a part 1 repository evidence audit completed: FWA rep-work is strongest, clean FWA participation conditional, BL/base-swap/transfers require stronger proof; no production sample run | Evidence diagnostic complete; simulation pending |
 | 2026-11-12 | Prepared a manual bounded read-only M0a part 2 simulator with strict/provisional/UNKNOWN reporting, source deduplication, weekly cap analysis and deterministic fixture tests; no historical database sample was run | Implementation prepared; M0a part 2 remains incomplete |
+| 2026-11-12 | First eight-week SELECT-only sample executed twice with a fixed snapshot: 199 ended wars, 9,950 participation rows, and 5,900 end-time-only identity conflicts; all production rosters remained UNKNOWN | Timestamp provenance diagnosis and post-change review remain open; no issuance authorized |
 
 ### Success measures (initial)
 
