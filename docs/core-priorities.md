@@ -11,6 +11,8 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - save to `.git/AI_COMMIT_MSG`
   - run `./scripts/commit-feature.sh`
 - Avoid destructive git operations unless explicitly requested.
+- **Standing documentation-only merge approval (2026-11-12):** For changes strictly limited to documentation, roadmap/vision/priorities, policy decisions, or roadmap-progress reconciliation, reuse an appropriate feature branch/PR or create one targeting `dev`, review the actual GitHub diff and mergeability/CI/review state, and **merge without requesting separate user approval**. Keep the PR audit trail; never commit directly to `dev` or `main`. Validate doc formatting and agreement vs proposal vs shipped status; do not run unrelated code tests.
+- **Code-changing boundary:** That standing approval does not extend to application code, database schema/migrations, runtime configuration, deployment/infrastructure, or any production/currency issuance/fulfillment operation. These still require explicit user approval to merge or execute. Never promote `dev` to `main` implicitly.
 
 2) Bot architecture expectations
 - Preserve clear service boundaries:
