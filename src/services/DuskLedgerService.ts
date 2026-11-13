@@ -58,6 +58,17 @@ export type DuskLedgerPendingReversalResult = {
 
 export type DuskLedgerMutationResult = DuskLedgerAppliedResult | DuskLedgerPendingReversalResult;
 
+export type DuskLedgerEntryCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+export type DuskLedgerEntryPage = {
+  entries: DuskLedgerEntry[];
+  hasMore: boolean;
+  nextCursor: DuskLedgerEntryCursor | null;
+};
+
 export class DuskLedgerValidationError extends Error {
   readonly code = "DUSK_LEDGER_VALIDATION";
 }
@@ -338,6 +349,21 @@ export class DuskLedgerService {
     return wallet?.balance ?? 0;
   }
 
+  /** Purpose: sum only still-valid earning entries; spending and administrative entries are not earnings. */
+  async getLifetimeEarned(discordUserId: string): Promise<number> {
+    const result = await prisma.duskLedgerEntry.aggregate({
+      where: {
+        walletId: normalizeDiscordUserId(discordUserId),
+        transactionType: DuskLedgerTransactionType.EARNING,
+        amount: { gt: 0 },
+        reversals: { none: {} },
+        reversalRequests: { none: {} },
+      },
+      _sum: { amount: true },
+    });
+    return result._sum.amount ?? 0;
+  }
+
   /** Purpose: expose append-only history for a later member/admin read surface. */
   async listEntries(discordUserId: string, take = 100): Promise<DuskLedgerEntry[]> {
     const normalizedTake = Math.min(Math.max(Math.trunc(take), 1), 500);
@@ -346,6 +372,42 @@ export class DuskLedgerService {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: normalizedTake,
     });
+  }
+
+  /** Purpose: read one bounded, stable history page without loading the user's full ledger. */
+  async listEntryPage(
+    discordUserId: string,
+    before: DuskLedgerEntryCursor | null = null,
+    take = 10,
+  ): Promise<DuskLedgerEntryPage> {
+    const normalizedTake = Math.min(Math.max(Math.trunc(take), 1), 100);
+    const walletId = normalizeDiscordUserId(discordUserId);
+    const entries = await prisma.duskLedgerEntry.findMany({
+      where: {
+        walletId,
+        ...(before
+          ? {
+              OR: [
+                { createdAt: { lt: before.createdAt } },
+                { createdAt: before.createdAt, id: { lt: before.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: normalizedTake + 1,
+    });
+    const hasMore = entries.length > normalizedTake;
+    const pageEntries = hasMore ? entries.slice(0, normalizedTake) : entries;
+    const lastEntry = pageEntries.at(-1);
+    return {
+      entries: pageEntries,
+      hasMore,
+      nextCursor:
+        hasMore && lastEntry
+          ? { createdAt: lastEntry.createdAt, id: lastEntry.id }
+          : null,
+    };
   }
 
   /** Purpose: expose unresolved reversal requests for a future audited M1b review surface. */

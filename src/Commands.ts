@@ -40,6 +40,7 @@ import { Cwl } from "./commands/Cwl";
 import { CopyChannel } from "./commands/CopyChannel";
 import { Autorole } from "./commands/Autorole";
 import { Raids } from "./commands/Raids";
+import { Dusk } from "./commands/Dusk";
 
 // ...existing code...
 export const Commands = [
@@ -84,5 +85,6 @@ export const Commands = [
   Cwl,
   CopyChannel,
   Raids,
+  Dusk,
   CommandRole,
 ];

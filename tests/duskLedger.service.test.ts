@@ -36,6 +36,7 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
   },
   duskLedgerEntry: {
+    aggregate: vi.fn(),
     findUnique: vi.fn(),
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -138,6 +139,7 @@ describe("DuskLedgerService", () => {
     );
     prismaMock.duskLedgerEntry.findUnique.mockResolvedValue(null);
     prismaMock.duskLedgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.duskLedgerEntry.aggregate.mockResolvedValue({ _sum: { amount: null } });
     prismaMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
     prismaMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
     prismaMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
@@ -154,6 +156,73 @@ describe("DuskLedgerService", () => {
       data: { discordUserId: "discord-1" },
     });
     expect(JSON.stringify(prismaMock.duskWallet.create.mock.calls[0])).not.toContain("playerTag");
+  });
+
+  it("returns zero lifetime earnings for an uninitialized wallet without creating it", async () => {
+    const service = new DuskLedgerService();
+
+    await expect(service.getBalance("discord-uninitialized")).resolves.toBe(0);
+    await expect(service.getLifetimeEarned("discord-uninitialized")).resolves.toBe(0);
+
+    expect(prismaMock.duskWallet.create).not.toHaveBeenCalled();
+    expect(prismaMock.duskLedgerEntry.aggregate).toHaveBeenCalledWith({
+      where: {
+        walletId: "discord-uninitialized",
+        transactionType: "EARNING",
+        amount: { gt: 0 },
+        reversals: { none: {} },
+        reversalRequests: { none: {} },
+      },
+      _sum: { amount: true },
+    });
+  });
+
+  it("sums only qualifying, non-invalidated earning entries", async () => {
+    prismaMock.duskLedgerEntry.aggregate.mockResolvedValue({ _sum: { amount: 45 } });
+    const service = new DuskLedgerService();
+
+    await expect(service.getLifetimeEarned(" discord-1 ")).resolves.toBe(45);
+    expect(prismaMock.duskLedgerEntry.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          walletId: "discord-1",
+          transactionType: "EARNING",
+          reversals: { none: {} },
+          reversalRequests: { none: {} },
+        }),
+      }),
+    );
+  });
+
+  it("reads a stable bounded history page with a compound cursor", async () => {
+    const entries = [
+      makeEntry({ id: "entry-2", createdAt: new Date("2026-11-12T21:00:00.000Z") }),
+      makeEntry({ id: "entry-1" }),
+    ];
+    prismaMock.duskLedgerEntry.findMany.mockResolvedValue(entries);
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.listEntryPage(" discord-1 ", {
+        id: "entry-3",
+        createdAt: new Date("2026-11-12T22:00:00.000Z"),
+      }, 1),
+    ).resolves.toEqual({
+      entries: [entries[0]],
+      hasMore: true,
+      nextCursor: { id: "entry-2", createdAt: entries[0].createdAt },
+    });
+    expect(prismaMock.duskLedgerEntry.findMany).toHaveBeenCalledWith({
+      where: {
+        walletId: "discord-1",
+        OR: [
+          { createdAt: { lt: new Date("2026-11-12T22:00:00.000Z") } },
+          { createdAt: new Date("2026-11-12T22:00:00.000Z"), id: { lt: "entry-3" } },
+        ],
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 2,
+    });
   });
 
   it("recovers a concurrent first-wallet create without surfacing P2002", async () => {
