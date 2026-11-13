@@ -8,6 +8,7 @@ import {
 } from "@prisma/client";
 
 import { prisma } from "../prisma";
+import { repWorkActivityService } from "./RepWorkActivityService";
 
 const MAX_DUSKIT_AMOUNT = 2_147_483_647;
 const SERIALIZABLE_RETRY_LIMIT = 3;
@@ -68,6 +69,167 @@ export type DuskLedgerEntryPage = {
   entries: DuskLedgerEntry[];
   hasMore: boolean;
   nextCursor: DuskLedgerEntryCursor | null;
+};
+
+const DUSK_AUDIT_ENTRY_SELECT = {
+  id: true,
+  walletId: true,
+  amount: true,
+  transactionType: true,
+  beneficiaryMode: true,
+  beneficiaryKey: true,
+  sourceEventType: true,
+  sourceEventId: true,
+  idempotencyKey: true,
+  attribution: true,
+  policyVersion: true,
+  reason: true,
+  actorDiscordUserId: true,
+  reversalOfId: true,
+  createdAt: true,
+  policy: {
+    select: {
+      version: true,
+      policyKey: true,
+      definition: true,
+      createdByDiscordUserId: true,
+      createdAt: true,
+    },
+  },
+  sourceEventClaim: {
+    select: {
+      id: true,
+      beneficiaryKey: true,
+      createdAt: true,
+      sourceEvent: {
+        select: {
+          id: true,
+          sourceEventType: true,
+          sourceEventId: true,
+          beneficiaryMode: true,
+          createdAt: true,
+          claims: {
+            select: {
+              id: true,
+              beneficiaryKey: true,
+              walletId: true,
+              ledgerEntryId: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: 100,
+          },
+          _count: {
+            select: { claims: true },
+          },
+        },
+      },
+    },
+  },
+  reversalOf: {
+    select: {
+      id: true,
+      amount: true,
+      transactionType: true,
+      createdAt: true,
+    },
+  },
+  reversals: {
+    select: {
+      id: true,
+      amount: true,
+      transactionType: true,
+      createdAt: true,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 100,
+  },
+} satisfies Prisma.DuskLedgerEntrySelect;
+
+export type DuskAuditLedgerEntry = Prisma.DuskLedgerEntryGetPayload<{
+  select: typeof DUSK_AUDIT_ENTRY_SELECT;
+}>;
+
+export type DuskAuditEntryPage = {
+  entries: DuskAuditLedgerEntry[];
+  hasMore: boolean;
+  nextCursor: DuskLedgerEntryCursor | null;
+};
+
+const DUSK_AUDIT_REVERSAL_SELECT = {
+  id: true,
+  walletId: true,
+  originalEntryId: true,
+  requestedAmount: true,
+  sourceEventType: true,
+  sourceEventId: true,
+  idempotencyKey: true,
+  attribution: true,
+  policyVersion: true,
+  reason: true,
+  actorDiscordUserId: true,
+  createdAt: true,
+  originalEntry: {
+    select: {
+      id: true,
+      amount: true,
+      transactionType: true,
+      reason: true,
+      createdAt: true,
+    },
+  },
+  resolution: {
+    select: {
+      id: true,
+      resolutionType: true,
+      actorDiscordUserId: true,
+      reason: true,
+      resolutionEntryId: true,
+      createdAt: true,
+    },
+  },
+} satisfies Prisma.DuskLedgerReversalRequestSelect;
+
+export type DuskAuditReversalRequest = Prisma.DuskLedgerReversalRequestGetPayload<{
+  select: typeof DUSK_AUDIT_REVERSAL_SELECT;
+}>;
+
+export type DuskOperationalEvidenceStatus =
+  | "SUPPORTED"
+  | "UNKNOWN"
+  | "CONTRADICTED";
+
+export type DuskOperationalEvidence = {
+  status: DuskOperationalEvidenceStatus;
+  owner: string | null;
+  summary: string;
+  record: Record<string, unknown> | null;
+};
+
+export type DuskSourceEventAudit = {
+  entry: Pick<
+    DuskAuditLedgerEntry,
+    "id" | "walletId" | "sourceEventType" | "sourceEventId" | "attribution"
+  >;
+  sourceEvent: {
+    id: string;
+    sourceEventType: string;
+    sourceEventId: string;
+    beneficiaryMode: DuskLedgerBeneficiaryMode;
+    createdAt: Date;
+  } | null;
+  claims: Array<{
+    id: string;
+    beneficiaryKey: string | null;
+    walletId: string;
+    ledgerEntryId: string;
+    createdAt: Date;
+  }>;
+  claimRecordedForEntry: boolean;
+  claimsTotal: number;
+  claimsSampleTruncated: boolean;
+  policy: DuskAuditLedgerEntry["policy"];
+  operationalEvidence: DuskOperationalEvidence;
 };
 
 export class DuskLedgerValidationError extends Error {
@@ -422,6 +584,43 @@ export class DuskLedgerService {
     };
   }
 
+  /** Purpose: read a bounded, relation-enriched ledger page for the administrator audit surface. */
+  async listAuditEntryPage(
+    discordUserId: string,
+    before: DuskLedgerEntryCursor | null = null,
+    take = 8,
+  ): Promise<DuskAuditEntryPage> {
+    const normalizedTake = Math.min(Math.max(Math.trunc(take), 1), 50);
+    const walletId = normalizeDiscordUserId(discordUserId);
+    const entries = await prisma.duskLedgerEntry.findMany({
+      where: {
+        walletId,
+        ...(before
+          ? {
+              OR: [
+                { createdAt: { lt: before.createdAt } },
+                { createdAt: before.createdAt, id: { lt: before.id } },
+              ],
+            }
+          : {}),
+      },
+      select: DUSK_AUDIT_ENTRY_SELECT,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: normalizedTake + 1,
+    });
+    const hasMore = entries.length > normalizedTake;
+    const pageEntries = hasMore ? entries.slice(0, normalizedTake) : entries;
+    const lastEntry = pageEntries.at(-1);
+    return {
+      entries: pageEntries,
+      hasMore,
+      nextCursor:
+        hasMore && lastEntry
+          ? { createdAt: lastEntry.createdAt, id: lastEntry.id }
+          : null,
+    };
+  }
+
   /** Purpose: expose unresolved reversal requests for a future audited M1b review surface. */
   async listPendingReversals(discordUserId: string, take = 100): Promise<DuskLedgerReversalRequest[]> {
     const normalizedTake = Math.min(Math.max(Math.trunc(take), 1), 500);
@@ -430,6 +629,196 @@ export class DuskLedgerService {
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       take: normalizedTake,
     });
+  }
+
+  /** Purpose: read bounded pending and resolved reversal requests without changing their state. */
+  async listReversalRequests(
+    discordUserId: string,
+    take = 50,
+  ): Promise<DuskAuditReversalRequest[]> {
+    const normalizedTake = Math.min(Math.max(Math.trunc(take), 1), 100);
+    return prisma.duskLedgerReversalRequest.findMany({
+      where: { walletId: normalizeDiscordUserId(discordUserId) },
+      select: DUSK_AUDIT_REVERSAL_SELECT,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: normalizedTake,
+    });
+  }
+
+  /** Purpose: resolve one wallet-owned source event, its claims, and independent operational evidence. */
+  async getSourceEventAudit(
+    discordUserId: string,
+    entryId: string,
+    guildId?: string | null,
+  ): Promise<DuskSourceEventAudit | null> {
+    const walletId = normalizeDiscordUserId(discordUserId);
+    const normalizedEntryId = normalizeRequiredString(entryId, "entryId", 64);
+    const entry = await prisma.duskLedgerEntry.findFirst({
+      where: { id: normalizedEntryId, walletId },
+      select: {
+        id: true,
+        walletId: true,
+        sourceEventType: true,
+        sourceEventId: true,
+        attribution: true,
+        policy: {
+          select: {
+            version: true,
+            policyKey: true,
+            definition: true,
+            createdByDiscordUserId: true,
+            createdAt: true,
+          },
+        },
+        sourceEventClaim: {
+          select: {
+            ledgerEntryId: true,
+            sourceEvent: {
+              select: {
+                id: true,
+                sourceEventType: true,
+                sourceEventId: true,
+                beneficiaryMode: true,
+                createdAt: true,
+                claims: {
+                  select: {
+                    id: true,
+                    beneficiaryKey: true,
+                    walletId: true,
+                    ledgerEntryId: true,
+                    createdAt: true,
+                  },
+                  orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                  take: 100,
+                },
+                _count: {
+                  select: { claims: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!entry) return null;
+
+    const storedSourceEvent = entry.sourceEventClaim?.sourceEvent ??
+      (await prisma.duskLedgerSourceEvent.findUnique({
+        where: {
+          sourceEventType_sourceEventId: {
+            sourceEventType: entry.sourceEventType,
+            sourceEventId: entry.sourceEventId,
+          },
+        },
+        select: {
+          id: true,
+          sourceEventType: true,
+          sourceEventId: true,
+          beneficiaryMode: true,
+          createdAt: true,
+          claims: {
+            select: {
+              id: true,
+              beneficiaryKey: true,
+              walletId: true,
+              ledgerEntryId: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: 100,
+          },
+          _count: {
+            select: { claims: true },
+          },
+        },
+      }));
+    const claims = storedSourceEvent?.claims ?? [];
+    const claimsTotal = storedSourceEvent?._count?.claims ?? claims.length;
+    const operationalEvidence = await this.resolveOperationalEvidence({
+      walletId,
+      sourceEventType: entry.sourceEventType,
+      sourceEventId: entry.sourceEventId,
+      guildId,
+    });
+
+    return {
+      entry: {
+        id: entry.id,
+        walletId: entry.walletId,
+        sourceEventType: entry.sourceEventType,
+        sourceEventId: entry.sourceEventId,
+        attribution: entry.attribution,
+      },
+      sourceEvent: storedSourceEvent
+        ? {
+            id: storedSourceEvent.id,
+            sourceEventType: storedSourceEvent.sourceEventType,
+            sourceEventId: storedSourceEvent.sourceEventId,
+            beneficiaryMode: storedSourceEvent.beneficiaryMode,
+            createdAt: storedSourceEvent.createdAt,
+          }
+        : null,
+      claims,
+      claimRecordedForEntry: Boolean(entry.sourceEventClaim),
+      claimsTotal,
+      claimsSampleTruncated: claimsTotal > claims.length,
+      policy: entry.policy,
+      operationalEvidence,
+    };
+  }
+
+  private async resolveOperationalEvidence(input: {
+    walletId: string;
+    sourceEventType: string;
+    sourceEventId: string;
+    guildId?: string | null;
+  }): Promise<DuskOperationalEvidence> {
+    const normalizedType = input.sourceEventType
+      .trim()
+      .toLowerCase()
+      .replaceAll("_", "-");
+    const repWorkTypes = new Set([
+      "rep-work",
+      "rep-work-activity",
+      "rep-work-activity-event",
+      "repwork",
+    ]);
+    if (!repWorkTypes.has(normalizedType)) {
+      return {
+        status: "UNKNOWN",
+        owner: null,
+        summary: "No supported operational evidence owner is registered for this source type.",
+        record: null,
+      };
+    }
+
+    const record = await repWorkActivityService.findEventForAudit(input.sourceEventId);
+    if (!record) {
+      return {
+        status: "UNKNOWN",
+        owner: "RepWorkActivityService",
+        summary: "The referenced rep-work event is not available.",
+        record: null,
+      };
+    }
+
+    const matchesWallet = record.discordUserId === input.walletId;
+    const matchesGuild = !input.guildId || record.guildId === input.guildId;
+    if (!matchesWallet || !matchesGuild) {
+      return {
+        status: "CONTRADICTED",
+        owner: "RepWorkActivityService",
+        summary: "The stored operational event does not match this wallet and guild scope.",
+        record: null,
+      };
+    }
+
+    return {
+      status: "SUPPORTED",
+      owner: "RepWorkActivityService",
+      summary: "Matched a persisted RepWorkActivityEvent owned by RepWorkActivityService.",
+      record,
+    };
   }
 
   private async appendSignedEntry(input: NormalizedLedgerInput): Promise<DuskLedgerMutationResult> {

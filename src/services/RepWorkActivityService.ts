@@ -5,6 +5,26 @@ import { normalizeDiscordUserId } from "./PlayerLinkService";
 
 type RepWorkActivityMetadata = Record<string, unknown>;
 
+const REP_WORK_AUDIT_EVENT_SELECT = {
+  id: true,
+  guildId: true,
+  activityType: true,
+  discordUserId: true,
+  clanTag: true,
+  syncMessageId: true,
+  sourceMessageId: true,
+  sourceTrackedMessageId: true,
+  warId: true,
+  warStartTime: true,
+  opponentTag: true,
+  eventAt: true,
+  createdAt: true,
+} satisfies Prisma.RepWorkActivityEventSelect;
+
+export type RepWorkActivityAuditEvent = Prisma.RepWorkActivityEventGetPayload<{
+  select: typeof REP_WORK_AUDIT_EVENT_SELECT;
+}>;
+
 function normalizeTextId(input: string | null | undefined): string | null {
   const trimmed = String(input ?? "").trim();
   return trimmed || null;
@@ -114,6 +134,16 @@ export type RepWorkRecordInput = {
 };
 
 export class RepWorkActivityService {
+  /** Purpose: expose one persisted rep-work event to bounded audit consumers without transferring ownership. */
+  async findEventForAudit(eventId: string): Promise<RepWorkActivityAuditEvent | null> {
+    const normalizedEventId = normalizeTextId(eventId);
+    if (!normalizedEventId) return null;
+    return prisma.repWorkActivityEvent.findUnique({
+      where: { id: normalizedEventId },
+      select: REP_WORK_AUDIT_EVENT_SELECT,
+    });
+  }
+
   async recordBasesChecked(params: RepWorkRecordInput): Promise<boolean> {
     return this.recordActivity(RepWorkActivityType.BASES_CHECKED, "base_swap", params);
   }

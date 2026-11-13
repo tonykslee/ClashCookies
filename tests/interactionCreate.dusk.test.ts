@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type ListenerHandler = (interaction: unknown) => Promise<void>;
 
-function makeDuskInteraction() {
+function makeDuskInteraction(commandName = "dusk") {
   const collectorHandlers = new Map<string, (value?: unknown) => Promise<void> | void>();
   const collector = {
     on: vi.fn((event: string, callback: (value?: unknown) => Promise<void> | void) => {
@@ -15,14 +15,24 @@ function makeDuskInteraction() {
   };
   const interaction: any = {
     id: "dusk-interaction-1",
-    commandName: "dusk",
+    commandName,
     guildId: "guild-1",
-    guild: { id: "guild-1", name: "Guild One" },
+    guild: {
+      id: "guild-1",
+      name: "Guild One",
+      members: {
+        fetch: vi.fn().mockResolvedValue({
+          id: "target-1",
+          displayName: "Target Member",
+          user: { username: "target" },
+        }),
+      },
+    },
     user: { id: "discord-1", tag: "tester#0001" },
     deferred: false,
     replied: false,
     inGuild: () => true,
-    memberPermissions: { has: () => false },
+    memberPermissions: { has: () => commandName === "dusk-admin" },
     member: { roles: [] },
     isAutocomplete: () => false,
     isButton: () => false,
@@ -32,8 +42,9 @@ function makeDuskInteraction() {
     isChatInputCommand: () => true,
     options: {
       data: [],
-      getSubcommand: vi.fn(() => null),
+      getSubcommand: vi.fn(() => (commandName === "dusk-admin" ? "audit" : null)),
       getSubcommandGroup: vi.fn(() => null),
+      getUser: vi.fn(() => ({ id: "target-1" })),
       getString: vi.fn(() => {
         throw new Error("/dusk must not inspect visibility options");
       }),
@@ -154,5 +165,25 @@ describe("interactionCreate /dusk private response integration", () => {
       }),
     );
     expectNoPublicPostButton(interaction.editReply.mock.calls.at(-1)?.[0]);
+  }, 30000);
+
+  it("keeps /dusk-admin audit private and outside the global post wrapper", async () => {
+    const { duskLedgerService } = await import("../src/services/DuskLedgerService");
+    vi.spyOn(duskLedgerService, "getBalance").mockResolvedValue(12);
+    vi.spyOn(duskLedgerService, "getLifetimeEarned").mockResolvedValue(20);
+    vi.spyOn(duskLedgerService, "listAuditEntryPage").mockResolvedValue({
+      entries: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    vi.spyOn(duskLedgerService, "listReversalRequests").mockResolvedValue([]);
+    const handler = await loadInteractionHandler();
+    const { interaction } = makeDuskInteraction("dusk-admin");
+
+    await handler(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expectNoPublicPostButton(interaction.editReply.mock.calls[0][0]);
+    expect(interaction.editReply.mock.calls[0][0].allowedMentions).toEqual({ parse: [] });
   }, 30000);
 });
