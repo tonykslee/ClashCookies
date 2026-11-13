@@ -340,14 +340,16 @@ function assessWarIdentity(
   row: HistoricalParticipationRow,
   participation: readonly HistoricalParticipationRow[],
 ): WarIdentityAssessment {
+  const participationEndTime = consistentParticipationEndTime(participation);
   const coreIdentityExact = validWarId(row.warId) === history.warId &&
     normalizeSimulationTag(row.clanTag) === normalizeSimulationTag(history.clanTag) &&
     sameDate(row.warStartTime, history.warStartTime) &&
     Boolean(row.opponentTag) && Boolean(history.opponentTag) &&
     normalizeSimulationTag(row.opponentTag) === normalizeSimulationTag(history.opponentTag);
   if (!coreIdentityExact) return { matches: false, endTimeVariance: false, reason: "WAR_IDENTITY_CONFLICT" };
+  if (!participationEndTime) return { matches: false, endTimeVariance: false, reason: "WAR_END_TIME_CONFLICT" };
   if (sameDate(row.warEndTime, history.warEndTime)) return { matches: true, endTimeVariance: false };
-  if (isSimulationDate(history.warEndTime) && consistentParticipationEndTime(participation)) {
+  if (isSimulationDate(history.warEndTime)) {
     return { matches: true, endTimeVariance: true };
   }
   return { matches: false, endTimeVariance: false, reason: "WAR_END_TIME_CONFLICT" };

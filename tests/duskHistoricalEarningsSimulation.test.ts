@@ -141,12 +141,49 @@ describe("historical Duskits earnings simulation", () => {
 
   it("reconciles a consistent persisted end-time variance without applying a tolerance", () => {
     const report = simulateHistoricalDuskits(input({
-      participation: [participation(100, "#ALPHA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") })],
+      participation: [
+        participation(100, "#ALPHA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") }),
+        participation(100, "#BETA", { warEndTime: new Date("2026-01-07T12:00:31.000Z") }),
+      ],
+      playerLinks: [link("#ALPHA"), link("#BETA", "222222222222222")],
     }));
-    expect(report.cleanFwa.verifiedEvents).toBe(1);
-    expect(report.cleanFwa.strictDuskits).toBe(4);
+    expect(report.cleanFwa.verifiedEvents).toBe(2);
+    expect(report.cleanFwa.strictDuskits).toBe(8);
     expect(report.unknownReasons.WAR_IDENTITY_CONFLICT).toBeUndefined();
     expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBeUndefined();
+  });
+
+  it("rejects every participant when a war mixes exact and differing end timestamps", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA"),
+        participation(100, "#BETA", { warEndTime: new Date("2026-01-07T12:00:30.000Z") }),
+      ],
+      playerLinks: [link("#ALPHA"), link("#BETA", "222222222222222")],
+    }));
+    expect(report.cleanFwa.verifiedEvents).toBe(0);
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(2);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBe(2);
+  });
+
+  it("rejects every participant when a war has missing or invalid end timestamps", () => {
+    const report = simulateHistoricalDuskits(input({
+      participation: [
+        participation(100, "#ALPHA"),
+        participation(100, "#BETA", { warEndTime: null }),
+        participation(100, "#GAMMA", { warEndTime: new Date("invalid") }),
+      ],
+      playerLinks: [
+        link("#ALPHA"),
+        link("#BETA", "222222222222222"),
+        link("#GAMMA", "333333333333333"),
+      ],
+    }));
+    expect(report.cleanFwa.verifiedEvents).toBe(0);
+    expect(report.cleanFwa.strictDuskits).toBe(0);
+    expect(report.cleanFwa.unknownEvents).toBe(3);
+    expect(report.unknownReasons.WAR_END_TIME_CONFLICT).toBe(3);
   });
 
   it("keeps wrong opponent, clan, and start-time joins as identity conflicts", () => {
