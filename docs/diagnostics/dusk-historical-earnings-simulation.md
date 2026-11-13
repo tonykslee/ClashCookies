@@ -22,7 +22,7 @@ The simulator has two draft earning rows only: clean FWA participation at **+4**
 
 | Candidate activity | Authoritative source/service | Available evidence and identity key | Event-level deduplication | Attribution and time rule | Correction/freshness limitation | Simulation verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| Clean FWA participation | `ClanWarHistory`, `ClanWarParticipation`, completed `WarPlanComplianceEvaluation` and `WarPlanViolation` | Ended `warId`; exact clan/opponent/start/end tuple; canonical participation rows including attacks used/missed; completed evaluation with `completedAt`; player violation rows | Participation unique by `[guildId, warId, playerTag]`; evaluation unique by `[guildId, warId]`; violation unique by `[evaluationId, playerTag]`; simulator additionally collapses one award per `(Discord user, warId)` | Participation `playerTag` joins to `PlayerLink`; strict requires `VERIFIED`, verification timestamp no later than war end, and no later link update; provisional allows a current non-revoked link created by the event time | `PlayerLink` is not an ownership history. Canonical changes can reset/re-finalize evaluations and replace violations. Roster completeness is bounded to rows read and cannot be inferred from one participant | **PARTIAL** overall; **STRICT/PROVISIONAL** only inside the simulator when all gates pass |
+| Clean FWA participation | `ClanWarHistory`, `ClanWarParticipation`, completed `WarPlanComplianceEvaluation` and `WarPlanViolation` | Ended `warId`; exact clan/opponent/start/end tuple; canonical participation rows including attacks used/missed; completed evaluation with `completedAt`; player violation rows | Participation unique by `[guildId, warId, playerTag]`; evaluation unique by `[guildId, warId]`; violation unique by `[evaluationId, playerTag]`; simulator additionally collapses one award per `(Discord user, warId)` | Participation `playerTag` joins to `PlayerLink`; strict requires `VERIFIED`, verification timestamp no later than war end, and no later link update; provisional allows a current non-revoked link created by the event time | `PlayerLink` is not an ownership history. Canonical changes can reset/re-finalize evaluations and replace violations. `ClanWarParticipation` has no durable completeness marker, so production-normalized rosters remain `UNKNOWN` unless an independent completeness assertion is supplied | **PARTIAL** overall; **STRICT/PROVISIONAL** only inside the simulator when all gates pass |
 | Attributable FWA rep action | `RepWorkActivityService` → `RepWorkActivityEvent` | Direct `discordUserId`, guild/clan, activity type, source message, optional war identity, `eventAt`, metadata/source | Database `dedupeKey @unique`; simulator counts each key once and treats repeats as duplicate | Accept only known FWA `BASES_CHECKED`, `MAIL_CHECKED`, or `MAIL_SENT` source metadata; exclude CWL; direct event user is the actor | No reversal/correction state; a known event proves the persisted rep action, not historical rep assignment or a gameplay result | **VERIFIED** for the narrowly defined event action after source filtering; **not verified** for recurring rep status |
 | Verified Blacklist triple | `ClanWarHistory`, archived `WarLookup.payload`; current `WarAttacks` only while active | History identifies ended BL war; archive may contain attack detail and timestamps | No durable per-player historical triple key; `WarAttacks` keys are current-only and rows are deleted after archival | Would require a strict archive extractor for player attack identity plus event-time PlayerLink evidence | Archive payload shape/completeness and correction semantics need validation; current attacks cannot backfill old wars | **PARTIAL**, not modeled |
 | Base-swap acknowledgment | `TrackedMessage` and FWA base-swap reaction logic | Mutable `metadata.entries[]` with player/user, section, and `acknowledged`; message/war timing context | No per-entry acknowledgment key or append-only event; split posts may share `referenceId` | Stored listed user is not a separate reaction actor; no acknowledgment timestamp | Message-level `createdAt`/`updatedAt` cannot establish when a particular entry was acknowledged; edits/replacements overwrite state | **PARTIAL**, not modeled |
@@ -40,7 +40,7 @@ For a history discovered in the selected ended-war window, the simulator require
 
 1. The row belongs to the selected guild and joins the history by exact `warId`, normalized clan tag, opponent tag, war start, and war end.
 2. Both history and participation say `FWA`.
-3. The participation roster is non-empty, has valid identity fields, and has no duplicate `(warId, clanTag, playerTag)` row in the bounded read. A missing or malformed roster is `UNKNOWN` for the war.
+3. The participation roster is non-empty, has valid identity fields, has no duplicate `(warId, clanTag, playerTag)` row in the bounded read, and has an explicit independent `participationCompleteness=COMPLETE` assertion. A missing, malformed, or completeness-unproven roster is `UNKNOWN` for the war.
 4. The evaluation is `COMPLETED` and has a non-null `completedAt`. Missing, pending, insufficient, failed, or skipped evaluation is `UNKNOWN`, even when no violation rows are visible.
 5. The player has no violation row in that completed evaluation.
 6. The draft participation rule is `attacksUsed > 0 AND attacksMissed = 0`.
@@ -54,10 +54,12 @@ When multiple independently linked player tags map to one Discord user, the simu
 
 The simulator accepts only the existing persisted source classifications:
 
-- `BASES_CHECKED` with `metadata.source=fwa_base_swap`, excluding `clanKind=CWL`;
-- `BASES_CHECKED` with `metadata.source=fwa_match_checklist` and `viewType=Bases`;
-- `MAIL_CHECKED` with `metadata.source=fwa_match_checklist` and `viewType=Mail`;
+- `BASES_CHECKED` with `metadata.source=base_swap`, excluding `clanKind=CWL`;
+- `BASES_CHECKED` with `metadata.source=bases_checklist` and `viewType=Bases`;
+- `MAIL_CHECKED` with `metadata.source=mail_checklist` and `viewType=Mail`;
 - `MAIL_SENT` with `metadata.source=fwa_match_mail_send`.
+
+These are the values persisted by `RepWorkActivityService`; caller-supplied source labels are overwritten while the event envelope is built. The checklist view type remains required, and `clanKind=CWL` remains excluded.
 
 The persisted `dedupeKey` is required. A repeated key is counted once; a missing key, invalid Discord ID, unknown source, or CWL source is `UNKNOWN`. The event’s direct `discordUserId` is the attribution authority. Current `TrackedClanRep` membership is reported only as a descriptive current rep/non-rep cohort; it is not used to backfill a recurring stipend or to upgrade an event’s historical status.
 
@@ -66,7 +68,8 @@ The persisted `dedupeKey` is required. A repeated key is counted once; a missing
 - `WarAttacks` is not a historical owner. Ended-war cleanup deletes current attack rows after participation is snapshotted. A query that finds no old attacks must report unavailable evidence, not zero attacks.
 - `ClanWarHistory` has no guild ID. The operator adapter discovers histories only through selected-guild participation/evaluation war IDs. A history with neither child evidence is outside attributable guild scope and is an unresolved coverage gap, not silently included.
 - `ClanWarParticipation.warId` is a string while `ClanWarHistory.warId` is an integer. The adapter normalizes the values; the pure classifier also checks exact tuple identity to avoid a numeric ID collision with stale or cross-clan rows.
-- A visible participation row does not prove a complete roster. Empty, malformed, duplicate, or only partially recovered participation is `UNKNOWN` at war scope.
+- `ClanWarParticipation` has no durable roster-completeness marker, expected team size, or capture-batch identity. A non-empty, well-shaped subset can therefore look complete while representing a partial snapshot.
+- The simulator requires both a valid row shape and an explicit `participationCompleteness=COMPLETE` assertion. The production adapter supplies `UNKNOWN`; only controlled fixtures or a later independently verified importer may assert `COMPLETE`. Missing completeness evidence is never treated as a completed roster.
 - A completed evaluation is mutable. Canonical history correction can reset it and replace violations; the current row does not provide a source fingerprint or reward reversal identity.
 - `TrackedMessage` acknowledgment is mutable JSON state. It has no per-entry event timestamp, reaction actor, reaction ID, before/after layout identity, or append-only history. It cannot prove an early in-game base swap.
 - Current `TrackedClanRep` assignment has no start/end interval. A current title cannot prove historical recurring eligibility.
@@ -83,7 +86,7 @@ The manual adapter performs this sequence inside one Prisma interactive transact
 1. `SELECT current_setting('transaction_read_only'), current_user`. It refuses to continue unless the transaction reports `on` and `current_user` equals `DUSK_SIMULATION_READ_ONLY_ROLE`.
 2. `ClanWarParticipation.findMany` scoped to the explicit `guildId` and `warEndTime >= from AND warEndTime < to`, selecting only identity, attack, match, timestamps, and creation fields.
 3. `WarPlanComplianceEvaluation.findMany` scoped to `guildId` and related `warHistory.warEndTime` in the same half-open window, selecting status, completion/correction timestamps, and violation player tags.
-4. `ClanWarHistory.findMany` by the union of war IDs obtained in steps 2–3 and the same ended-war time bounds. This avoids an unbounded cross-guild history scan because `ClanWarHistory` has no guild column.
+4. `ClanWarHistory.findMany` by the union of war IDs obtained in steps 2–3 and the same ended-war time bounds. This avoids an unbounded cross-guild history scan because `ClanWarHistory` has no guild column. The adapter does not infer roster completeness from the number or shape of returned participation rows.
 5. `RepWorkActivityEvent.findMany` scoped to guild and `eventAt` in the half-open window, selecting source, actor, dedupe, metadata, and timing fields. A small actor-ID projection is used to bound the descriptive PlayerLink lookup.
 6. `PlayerLink.findMany` only for participation tags and rep-event actor IDs. `TrackedClanRep.findMany` only for the resulting linked tags; it is descriptive and does not establish historical stipend eligibility.
 
