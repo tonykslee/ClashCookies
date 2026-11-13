@@ -2,6 +2,7 @@ import {
   DuskLedgerBeneficiaryMode,
   DuskLedgerEntry,
   DuskLedgerReversalRequest,
+  DuskReversalResolutionType,
   DuskLedgerTransactionType,
   Prisma,
 } from "@prisma/client";
@@ -357,7 +358,18 @@ export class DuskLedgerService {
         transactionType: DuskLedgerTransactionType.EARNING,
         amount: { gt: 0 },
         reversals: { none: {} },
-        reversalRequests: { none: {} },
+        reversalRequests: {
+          none: {
+            OR: [
+              { resolution: { is: null } },
+              {
+                resolution: {
+                  is: { resolutionType: DuskReversalResolutionType.APPLIED },
+                },
+              },
+            ],
+          },
+        },
       },
       _sum: { amount: true },
     });

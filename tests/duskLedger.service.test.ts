@@ -63,6 +63,7 @@ import {
   DuskLedgerService,
   DuskLedgerValidationError,
 } from "../src/services/DuskLedgerService";
+import { DuskReversalResolutionType } from "@prisma/client";
 
 const baseInput = {
   discordUserId: "discord-1",
@@ -171,13 +172,41 @@ describe("DuskLedgerService", () => {
         transactionType: "EARNING",
         amount: { gt: 0 },
         reversals: { none: {} },
-        reversalRequests: { none: {} },
+        reversalRequests: {
+          none: {
+            OR: [
+              { resolution: { is: null } },
+              { resolution: { is: { resolutionType: DuskReversalResolutionType.APPLIED } } },
+            ],
+          },
+        },
       },
       _sum: { amount: true },
     });
   });
 
-  it("sums only qualifying, non-invalidated earning entries", async () => {
+  it("excludes an earning with a pending reversal request from lifetime earned", async () => {
+    prismaMock.duskLedgerEntry.aggregate.mockResolvedValue({ _sum: { amount: 0 } });
+    const service = new DuskLedgerService();
+
+    await expect(service.getLifetimeEarned("discord-1")).resolves.toBe(0);
+    expect(prismaMock.duskLedgerEntry.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          reversalRequests: {
+            none: {
+              OR: [
+                { resolution: { is: null } },
+                { resolution: { is: { resolutionType: DuskReversalResolutionType.APPLIED } } },
+              ],
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  it("keeps a legitimate earning with a declined reversal request in lifetime earned", async () => {
     prismaMock.duskLedgerEntry.aggregate.mockResolvedValue({ _sum: { amount: 45 } });
     const service = new DuskLedgerService();
 
@@ -188,7 +217,36 @@ describe("DuskLedgerService", () => {
           walletId: "discord-1",
           transactionType: "EARNING",
           reversals: { none: {} },
-          reversalRequests: { none: {} },
+          reversalRequests: {
+            none: {
+              OR: [
+                { resolution: { is: null } },
+                { resolution: { is: { resolutionType: DuskReversalResolutionType.APPLIED } } },
+              ],
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  it("excludes an earning with an applied reversal request from lifetime earned", async () => {
+    prismaMock.duskLedgerEntry.aggregate.mockResolvedValue({ _sum: { amount: 0 } });
+    const service = new DuskLedgerService();
+
+    await expect(service.getLifetimeEarned("discord-1")).resolves.toBe(0);
+    expect(prismaMock.duskLedgerEntry.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          reversals: { none: {} },
+          reversalRequests: {
+            none: {
+              OR: [
+                { resolution: { is: null } },
+                { resolution: { is: { resolutionType: DuskReversalResolutionType.APPLIED } } },
+              ],
+            },
+          },
         }),
       }),
     );
