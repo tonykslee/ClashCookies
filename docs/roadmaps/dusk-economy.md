@@ -27,7 +27,7 @@ Make Dusk more than an operations bot: a rewarding, welcoming part of alliance l
 - **Dusk Market:** proposed reward shop.
 - **Dusk Wallet:** spendable balance + earnings/spending history.
 - **Alliance Transfer Pool:** members volunteer eligibility/preferences for potential moves; leaders coordinate and approve beneficial moves.
-- **Clan Sponsor:** a member-funded +1 entry for each eligible unique member of an eligible clan, subject to event rules.
+- **Clan Sponsor:** proposed later expansion where one member funds a +1 entry for each eligible unique member of an eligible clan, subject to separate event and funding rules.
 
 ## Agreed vs proposed vs dependent decisions
 
@@ -42,10 +42,11 @@ Make Dusk more than an operations bot: a rewarding, welcoming part of alliance l
 | Routine earn-rate target | **Proposal** | ~15–20 Duskits/week; routine weekly cap 30 |
 | Clan-wide sponsorship price | **Proposal** | 500 Duskits **plus** eligibility milestone; price/scale requires review |
 | Transfer reward | **Proposal** | +20 verified transfer; +10 after 14 days in destination |
-| +1 giveaway inclusion | **Approved in principle** | Elle gave permission to include +1 giveaway rewards in Dusk (reported 2026-11-12). Specific event limits, fulfillment, funding, and whether clan-wide sponsorship is included remain unconfirmed. Rising Maple remains authoritative until integration approved |
+| +1 giveaway inclusion | **Explicitly endorsed (user-confirmed)** | Elle has given permission **and advocacy** for including +1 giveaway rewards in Dusk. No need to re-request general approval of the concept; this is not permission for automated fulfillment or unlimited entries |
+| First giveaway delivery scope | **Agreed direction** | Personal +1 entry first as a proof of concept; build a small event-scoped redemption/fulfillment boundary that can later support clan sponsorship without implementing it now |
 | Concrete command and DB names | **Design draft** | Confirm in implementation PRs, not fixed APIs yet |
 
-**Important:** Elle's approval establishes the direction, **not** finalized issuance rules. Do not activate giveaway redemption until the giveaway organizers agree on fulfillment, funding, eligibility and limits. Do not assume clan-wide sponsorship was approved or that Rising Maple offers an integration API.
+**Important:** Elle's permission and advocacy for Dusk +1 giveaways are confirmed by the project owner; the general concept does **not** need to be re-approved. Operational terms (event availability, who fulfills/funds an entry, eligibility, limits, cancellations and Rising Maple coordination) are still open. This does not authorize automatic fulfillment or assume bulk clan-wide sponsorship, its funding, or an integration API has been agreed.
 
 ## Reward design — starting calibration, NOT live policy
 
@@ -66,11 +67,28 @@ Routine categories share a **proposed cap of 30 per Discord user per week**; spe
 
 ### Economy targets and sustainability
 
-- **100 Duskits / personal +1:** a typical dependable member earning ~15–20 per week reaches it in ~5–7 weeks (not a guaranteed entitlement).
+- **100 Duskits / personal +1 (proposal):** ~15–20 Duskits/week would reach the draft price in ~5–7 weeks, but the eight-week rep-work simulation did **not** establish that pace for typical members. Keep both the price and time horizon provisional; do not inflate earn rates to compensate for limited observed participation.
 - **500 Duskits + ~6-month eligibility / clan-wide +1:** exceptional recognition, not ordinary bulk pricing. One sponsor may grant an extra entry to each *eligible unique Discord participant*, not each CoC account. Eligibility and giveaway caps must be checked at redemption.
 - The clan-wide price is deliberately discounted relative to buying dozens of individual entries; this requires explicit organizer approval and an alliance-wide issuance budget.
 - No Duskits-for-real-money purchase, cash-out, player-to-player currency transfers, or gambling mechanics in the initial design.
 - Members should not be required to triple, be a rep, or accept a transfer to achieve ordinary personal progress.
+
+### M0b giveaway governance — personal-first proof of concept
+
+**Agreed product direction (2026-11-12):**
+- Elle explicitly permits and advocates including Dusk-funded +1 giveaway entries (confirmed by the project owner); stop treating permission for the concept as an unresolved blocker.
+- **Personal +1 first.** Deliver one member-initiated extra-entry request for a specified giveaway as the proof of concept. Clan-wide sponsorship is a future extension in M6, not required for personal launch.
+- Keep **one Discord identity across linked CoC accounts**. A giveaway entry belongs to an eligible unique member, never to each account. Dusk must not itself declare a Rising Maple entry issued.
+
+**Proposed initial controls — not final policy or implementation approval:**
+- Retain the draft **100-Duskit personal price** for later calibration. Suggest at most one Dusk-funded personal bonus entry per unique member per giveaway, subject to the organizer's event rules and combined entry limits.
+- Start with **manual organizer fulfillment** and an explicit per-giveaway confirmation/reference. A requested entry remains pending until the organizer verifies it against the authoritative giveaway roster (including Rising Maple where used); do not claim a working Rising Maple API or assume cross-system dedupe without that check.
+- When implemented in M3, reserve the Duskits while a request is pending; finalize spending only upon verified fulfillment. If rejected, expired or cancelled before fulfillment, release the reservation; if a confirmed entry is invalidated by organizer cancellation/error, record an auditable compensating refund. No automatic fulfillment or payout now.
+- Publish concise event-specific terms before enabling redemption: eligibility, availability, entry limit, deadline, organizer, cancellation/refund policy, and any applicable promotion requirements (including free-entry rules if relevant).
+
+**Unresolved operational decisions:** Which organizer owns confirmation and prize funding per event; which specific giveaways accept Dusk entries; how the organizer checks the combined Rising Maple/Dusk entry limits and records the authoritative confirmation; event-specific restrictions and cancellation policy. Elle's endorsement of the concept should not be conflated with approval of these mechanics.
+
+**Future-proofing without prebuilding M6:** Keep the redemption boundary event-scoped with one purchaser, identifiable eligible beneficiary/beneficiaries and an organizer fulfillment reference. Later a clan sponsor could fund multiple **distinct, eligible** recipients under the same event and dedupe limits, with a separate sponsor price, service milestone, budget and authorization. Do **not** implement a clan treasury, bulk issuance workflow or automated Rising Maple integration during M1a/M3 personal proof of concept.
 
 ### Separate the three scoreboards
 
@@ -114,19 +132,19 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 | Milestone | Priority | Status | Outcome / exit criterion |
 | --- | --- | --- | --- |
-| **M0 — Policy and evidence audit** | P0 | In progress — M0a parts 1 and 2 complete; M0b pending | Evidence audit and bounded historical SELECT-only simulation are reviewed. Rep-work is the strongest modeled evidence; clean-FWA remains UNKNOWN without independent roster-completeness proof. Rates, eligibility, redemption terms, and sponsor/fulfillment policy remain provisional; no issuance approved |
+| **M0 — Policy and evidence audit** | P0 | In progress — M0a complete; M0b personal-first direction recorded, operational terms pending | Evidence audit and bounded historical SELECT-only simulation reviewed. Elle endorses +1 giveaways; personal entry is the proof of concept, sponsorship deferred. Rep-work is the strongest modeled evidence; clean-FWA remains UNKNOWN. Pricing, event eligibility, fulfillment controls and budget remain provisional; no issuance approved |
 | **M1 — Ledger and Dusk hub** | P0 | Not started | Transaction-safe wallet/ledger, idempotency, admin audit/adjust/reverse, read-only `/dusk` balance/history, tests/docs/permission coverage; no payout rules yet |
 | **M2 — Verified earning engine** | P0 | Not started | Start with a small set of reliable signals; per-user limits, no duplicate payouts, replay/recovery and manual reconciliation; expand BL/clean-war only after eligibility proof |
-| **M3 — Personal Market redemption** | P1 | Not started | Price/eligibility controls, explicit fulfillment owner, hold/commit/refund, per-giveaway limits, no automated prize issue until approved |
+| **M3 — Personal Market redemption** | P1 | Not started | Personal +1 proof of concept: event-scoped eligibility and provisional price controls, manual organizer confirmation, hold/commit/refund, per-giveaway dedupe and audit trail; no automated prize issuance |
 | **M4 — Alliance Transfer Pool** | P1 | Not started | Opt-in/preferences, read-only opportunities, optional coordinated campaigns, verified completions, Home-safe updates; transfer rewards only after evidence |
 | **M5 — Engagement & recognition** | P2 | Not started | Weekly quests, profiles, configurable per-clan/alliance rankings, achievements; raw Clash stats separated from earned Duskits |
-| **M6 — Clan Sponsor / treasury** | P2 | Not started | Optional six-month sponsor reward after governance and payout budget validated; pooled clan treasury is an alternative to explore, not a committed feature |
+| **M6 — Clan Sponsor / treasury** | P2 | Deferred | Extend the proven personal redemption boundary to multiple eligible unique beneficiaries only after sponsorship price, six-month service rule, organizer funding, entry limits and approval are confirmed. Pooled treasury is optional, not a requirement |
 
 ### Implementation slices — scoped PRs, not one giant change
 
 - [x] M0a part 1: Document eligibility/evidence sources, query designs and hard UNKNOWN states. See [Dusk reward evidence diagnostic](../diagnostics/dusk-reward-evidence.md). No database sample or reward issuance was performed.
 - [x] M0a part 2: Ran and reviewed a real eight-week, one-guild SELECT-only historical earnings simulation and a post-fix rerun against the same fixed scope. The corrected classifier eliminated 5,900 war-end-only identity conflicts without issuing or recognizing any clean-FWA rewards: all 199 rosters remain unproven. Recognized FWA rep work and draft calibration are documented in the [historical earnings simulation diagnostic](../diagnostics/dusk-historical-earnings-simulation.md). This closes the **simulation/review task only**, not reward eligibility, rate approval, or issuance.
-- [ ] M0b: Confirm giveaway sponsorship policies with Elle, Rising Maple touch points, and member-facing terms. Record decisions in this file.
+- [ ] M0b: Elle's endorsement and the personal-first proof-of-concept direction are recorded. Finish per-event organizer/funding authority, Rising Maple duplicate-check process, personal eligibility/limits, cancellation/refund terms and member-facing rules. Clan sponsorship stays deferred to M6; M0b is **not complete**.
 - [ ] M1a: Ledger transaction + policy schema, safe migration and ownership boundaries (no commands).
 - [ ] M1b: Wallet/query/admin adjustments, permissions, help, tests and readme.
 - [ ] M2a: One reliable reward source end-to-end including active-only reconciler, dedupe, observability and rollback/reversal tests.
@@ -137,7 +155,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 ## Open questions / decisions to make before launch
 
-- [ ] **Giveaway fulfillment boundaries:** Elle approved including +1 rewards in principle (user-reported). Confirm who funds/fulfills entries, which giveaways qualify, per-event caps, cancellations/refunds, and whether the approval extends to clan-wide sponsorship.
+- [ ] **Giveaway fulfillment boundaries:** Elle's permission and advocacy for +1 inclusion are confirmed by the project owner. Confirm the event-by-event fulfillment/funding owner, qualifying giveaways, per-event caps and cancellations/refunds. Clan-wide bulk sponsorship remains deferred rather than a personal-launch blocker.
 - [ ] **Rising Maple coexistence:** Manual fulfillment first, supported integration, or shared redemption coordinator? Avoid double-awards.
 - [ ] **Entry eligibility / promotional terms:** Who qualifies, how many bonus entries may exist per user/event, and do giveaway rules require a free alternative or other constraints?
 - [ ] **Coin budget:** Calibrate real earning distributions, multi-account effect, personal entry price and clan sponsor liability using observed data.
@@ -145,7 +163,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 - [ ] **Rep stipend:** Define verified weekly minimum, rate, idempotent period, and overlap with per-action earnings.
 - [ ] **Quests:** Which are achievable by casual members without forcing moving clans or improper gameplay?
 - [ ] **Transfer eligibility:** How are 14-day residence, temporary transfers, Home changes, stale membership and per-user cooldowns handled?
-- [ ] **Clan sponsor:** Definition of six months of good service (e.g. qualifying active weeks, not an unbroken perfect streak); sponsor price; eligible recipients at redemption; per-event/clan limits; affordability.
+- [ ] **Clan sponsor (M6, not personal PoC):** Define six months of good service (e.g. qualifying active weeks, not an unbroken perfect streak), sponsor price, eligible recipients, per-event/clan limits, funding and affordability only after the personal flow is proven.
 - [ ] **Launch mechanics:** Enablement flag, no back-pay, announcement/onboarding copy, economy admin permissions and support playbook.
 
 ## How to maintain this document
@@ -165,7 +183,8 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 | 2026-11-12 | Name currency **Duskits**, plural; explain clearly on first use | Agreed |
 | 2026-11-12 | Hybrid reward model: performance + service; voluntary transfer pool | Agreed direction |
 | 2026-11-12 | Aim for personal +1 after ~1–2 months, clan-wide sponsor after ~6 months | Targets, pricing/terms provisional |
-| 2026-11-12 | Elle gave permission to incorporate +1 giveaway rewards into Dusk (user-reported); prize eligibility, funding/fulfillment, event caps, and clan-wide scope still need confirmation | Approved in principle; operational terms open |
+| 2026-11-12 | Project owner reconfirmed Elle's **permission and advocacy** for +1 giveaways in Dusk; general concept approval is settled, while specific event funding, fulfillment, limits and automation remain undecided | Explicit endorsement confirmed (user-reported); operational terms open |
+| 2026-11-12 | Prioritize a **personal +1 proof of concept**; keep redemption event-scoped and extensible to future clan sponsors without implementing bulk funding or treasury now | Agreed delivery direction; clan sponsorship deferred to M6 |
 | 2026-11-12 | M0a part 1 repository evidence audit completed: FWA rep-work is strongest, clean FWA participation conditional, BL/base-swap/transfers require stronger proof; no production sample run | Evidence diagnostic complete; simulation pending |
 | 2026-11-12 | Prepared a manual bounded read-only M0a part 2 simulator with strict/provisional/UNKNOWN reporting, source deduplication, weekly cap analysis and deterministic fixture tests; no historical database sample was run | Implementation prepared; M0a part 2 remains incomplete |
 | 2026-11-12 | First eight-week SELECT-only sample executed twice with a fixed snapshot: 199 ended wars, 9,950 participation rows, and 5,900 end-time-only identity conflicts; all production rosters remained UNKNOWN | Initial provenance diagnosis; subsequently addressed by PR #1962 |
@@ -179,4 +198,4 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 - Verified *voluntary* beneficial transfers, sustained 14-day stays, and net before/after composition improvement; also monitor member withdrawals.
 - User comprehension: members understand “Duskits” and where to find earnings/market without a staff explanation.
 
-**Next action:** Work through M0b giveaway governance (fulfillment owner, funding, eligibility, terms, and Rising Maple coexistence), then scope M1a's separate wallet/ledger ownership. Do not treat the completed simulation as approval for rates, clean-FWA eligibility, retroactive rewards, production deployment, or issuance. **No code or reward issuance is authorized by this roadmap alone.**
+**Next action:** Finish only the remaining M0b personal +1 operational rules (event owner/funding, eligibility, terms, manual Rising Maple coordination), then scope M1a's separate wallet/ledger ownership. Treat sponsorship as an M6 follow-on rather than a personal proof-of-concept dependency. Do not treat the completed simulation as approval for rates, clean-FWA eligibility, retroactive rewards, production deployment, or issuance. **No code or reward issuance is authorized by this roadmap alone.**
