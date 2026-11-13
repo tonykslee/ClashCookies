@@ -122,6 +122,16 @@ type HelpOption = {
 };
 
 const COMMAND_DOCS: Record<string, CommandDoc> = {
+  dusk: {
+    summary: "View your private Duskits wallet and transaction history.",
+    details: [
+      "Use `/dusk` to view only the wallet owned by your Discord identity.",
+      "The wallet hub shows available balance, lifetime qualifying earnings, and a bounded recent transaction list.",
+      "Use `View History` to browse bounded pages of your own ledger. Wallet details and history are always private and never accept another user's ID.",
+      "An uninitialized wallet is shown as zero without creating a wallet or ledger entry.",
+    ],
+    examples: ["/dusk"],
+  },
   help: {
     summary: "Browse command docs and examples.",
     details: [

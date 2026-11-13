@@ -12,6 +12,7 @@ export const FWA_LEADER_ROLE_SETTING_KEY = "fwa_leader_role";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
+  "dusk",
   "emoji",
   "emoji:add",
   "lastseen",
