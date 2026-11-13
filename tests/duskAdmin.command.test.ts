@@ -29,6 +29,88 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+function makeMaximumLengthEntry(index: number) {
+  return makeEntry({
+    id: `entry-${index}-${"e".repeat(90)}`,
+    sourceEventType: `source-type-${"s".repeat(60)}`,
+    sourceEventId: `source-${"i".repeat(100)}-${index}`,
+    policyVersion: `policy-${"p".repeat(55)}`,
+    reason: `verified qualifying work ${"reason-detail ".repeat(30)}`,
+    actorDiscordUserId: `actor-${"a".repeat(70)}`,
+    reversalOfId: `original-${"o".repeat(70)}`,
+    reversals: [
+      { id: `reversal-${"r".repeat(140)}-${index}` },
+    ],
+  });
+}
+
+function makeMaximumLengthReversal(index: number) {
+  return {
+    id: `request-${index}-${"q".repeat(90)}`,
+    walletId: "member-1",
+    originalEntryId: `entry-${index}-${"e".repeat(70)}`,
+    requestedAmount: 10,
+    sourceEventType: `source-type-${"s".repeat(55)}`,
+    sourceEventId: `source-${"i".repeat(100)}-${index}`,
+    idempotencyKey: `request-key-${index}`,
+    attribution: null,
+    policyVersion: `policy-${"p".repeat(55)}`,
+    reason: `reversal reason ${"reason-detail ".repeat(30)}`,
+    actorDiscordUserId: `requester-${"a".repeat(65)}`,
+    createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    originalEntry: {
+      id: `entry-${index}-${"e".repeat(70)}`,
+      amount: 10,
+      transactionType: "EARNING",
+      reason: `original reason ${"original-detail ".repeat(30)}`,
+      createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    },
+    resolution: {
+      id: `resolution-${index}`,
+      resolutionType: "REJECTED",
+      actorDiscordUserId: `reviewer-${"r".repeat(65)}`,
+      reason: `review reason ${"review-detail ".repeat(30)}`,
+      resolutionEntryId: `resolution-entry-${"x".repeat(70)}`,
+      createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    },
+  } as any;
+}
+
+function embedCharacterCount(embed: any): number {
+  const data = embed.toJSON();
+  return [
+    data.title,
+    data.description,
+    data.footer?.text,
+    data.author?.name,
+    ...(data.fields ?? []).flatMap((field: { name: string; value: string }) => [field.name, field.value]),
+  ].reduce((total: number, value: string | undefined) => total + (value?.length ?? 0), 0);
+}
+
+function expectEmbedWithinDiscordLimits(embed: any): void {
+  const data = embed.toJSON();
+  expect(embedCharacterCount(embed)).toBeLessThanOrEqual(6000);
+  expect(data.fields?.every((field: { value: string }) => field.value.length <= 1024)).toBe(true);
+}
+
+function makeButtonComponent(interaction: any, customId: string) {
+  return {
+    customId,
+    user: { id: "admin-1" },
+    guildId: "guild-1",
+    guild: interaction.guild,
+    member: { roles: [] },
+    memberPermissions: { has: vi.fn(() => true) },
+    inGuild: () => true,
+    isStringSelectMenu: () => false,
+    isButton: () => true,
+    reply: vi.fn(),
+    update: vi.fn(),
+    replied: false,
+    deferred: false,
+  };
+}
+
 function makeInteraction(input: { admin?: boolean; memberPresent?: boolean } = {}) {
   const handlers = new Map<string, (value: any) => Promise<void> | void>();
   const collector = {
@@ -287,5 +369,29 @@ describe("/dusk-admin audit", () => {
     const claimsField = embed.fields.find((field: { name: string }) => field.name === "Source-event claims");
     expect(claimsField?.value).toContain("Sample: 100 of 101 claim(s)");
     expect(claimsField?.value).toContain("not shown in this bounded sample");
+  });
+
+  it("bounds wallet, history, and reversal embeds with eight maximum-length rows", async () => {
+    const entries = Array.from({ length: 8 }, (_, index) => makeMaximumLengthEntry(index));
+    const reversals = Array.from({ length: 8 }, (_, index) => makeMaximumLengthReversal(index));
+    vi.mocked(duskLedgerService.listAuditEntryPage).mockResolvedValue({
+      entries,
+      hasMore: false,
+      nextCursor: null,
+    });
+    vi.mocked(duskLedgerService.listReversalRequests).mockResolvedValue(reversals);
+    const { interaction, handlers } = makeInteraction({ admin: true });
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+    expectEmbedWithinDiscordLimits(interaction.editReply.mock.calls[0][0].embeds[0]);
+
+    const collect = handlers.get("collect");
+    const historyButton = makeButtonComponent(interaction, "dusk-admin:audit-interaction-1:history");
+    await collect?.(historyButton);
+    expectEmbedWithinDiscordLimits(historyButton.update.mock.calls[0][0].embeds[0]);
+
+    const reversalButton = makeButtonComponent(interaction, "dusk-admin:audit-interaction-1:reversals");
+    await collect?.(reversalButton);
+    expectEmbedWithinDiscordLimits(reversalButton.update.mock.calls[0][0].embeds[0]);
   });
 });

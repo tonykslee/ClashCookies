@@ -40,6 +40,7 @@ type AdminInteractionEvidence = {
 };
 
 const DISCORD_EMBED_FIELD_LIMIT = 1024;
+const DISCORD_EMBED_TOTAL_LIMIT = 6000;
 
 type AuditMember = {
   id: string;
@@ -108,18 +109,79 @@ function buildMemberLabel(member: AuditMember): string {
   return `${sanitize(member.displayName, 80)} (${sanitize(member.username, 80)}) · ID ${sanitize(member.id, 80)}`;
 }
 
+type AuditEmbedField = {
+  name: string;
+  value: string;
+  inline?: boolean;
+};
+
+function embedTextLength(embed: EmbedBuilder): number {
+  const data = embed.toJSON();
+  return [
+    data.title,
+    data.description,
+    data.footer?.text,
+    data.author?.name,
+    ...(data.fields ?? []).flatMap((field) => [field.name, field.value]),
+  ].reduce((total, value) => total + (value?.length ?? 0), 0);
+}
+
+function allocateFieldValueBudgets(desiredLengths: number[], available: number): number[] {
+  if (desiredLengths.length === 0) return [];
+  if (desiredLengths.reduce((total, length) => total + length, 0) <= available) {
+    return desiredLengths;
+  }
+
+  const minimumBudget = desiredLengths.length;
+  const usable = Math.max(minimumBudget, available);
+  const fairBudget = Math.floor(usable / desiredLengths.length);
+  const remainder = usable % desiredLengths.length;
+  const budgets = desiredLengths.map((desiredLength, index) =>
+    Math.min(desiredLength, fairBudget + (index < remainder ? 1 : 0)),
+  );
+  let unallocated = usable - budgets.reduce((total, length) => total + length, 0);
+  for (let index = 0; unallocated > 0 && index < budgets.length; index += 1) {
+    const extra = Math.min(unallocated, desiredLengths[index] - budgets[index]);
+    budgets[index] += extra;
+    unallocated -= extra;
+  }
+  return budgets;
+}
+
+function addBudgetedFields(embed: EmbedBuilder, fields: AuditEmbedField[]): void {
+  const normalizedFields = fields.map((field) => ({
+    ...field,
+    name: truncate(field.name, 256),
+    value: truncate(field.value, DISCORD_EMBED_FIELD_LIMIT),
+  }));
+  const existingTextLength = embedTextLength(embed);
+  const fieldNameLength = normalizedFields.reduce((total, field) => total + field.name.length, 0);
+  const availableValueLength = DISCORD_EMBED_TOTAL_LIMIT - existingTextLength - fieldNameLength;
+  const budgets = allocateFieldValueBudgets(
+    normalizedFields.map((field) => field.value.length),
+    availableValueLength,
+  );
+  embed.addFields(
+    normalizedFields.map((field, index) => ({
+      ...field,
+      value: truncate(field.value, Math.min(DISCORD_EMBED_FIELD_LIMIT, budgets[index])),
+    })),
+  );
+}
+
 function addEntryFields(embed: EmbedBuilder, entries: DuskAuditLedgerEntry[]): void {
   if (entries.length === 0) {
-    embed.addFields({ name: "Transactions", value: "No transactions recorded." });
+    addBudgetedFields(embed, [{ name: "Transactions", value: "No transactions recorded." }]);
     return;
   }
-  entries.forEach((entry, index) => {
-    embed.addFields({
+  addBudgetedFields(
+    embed,
+    entries.map((entry, index) => ({
       name: `${index + 1}. ${sanitize(entry.id, 100)}`,
       value: formatEntryValue(entry),
       inline: false,
-    });
-  });
+    })),
+  );
 }
 
 function buildWalletEmbed(input: {
@@ -131,8 +193,8 @@ function buildWalletEmbed(input: {
 }): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle("Duskits administrator audit")
-    .setDescription(`Target member: ${buildMemberLabel(input.member)}`)
-    .addFields(
+    .setDescription(`Target member: ${buildMemberLabel(input.member)}`);
+  addBudgetedFields(embed, [
       { name: "Available balance", value: `${input.balance} Duskits`, inline: true },
       { name: "Lifetime qualifying earned", value: `${input.lifetimeEarned} Duskits`, inline: true },
       {
@@ -140,7 +202,7 @@ function buildWalletEmbed(input: {
         value: `Showing ${input.reversalCount} latest request(s); bounded sample capped at 50.`,
         inline: true,
       },
-    );
+  ]);
   addEntryFields(embed, input.entries);
   return embed;
 }
@@ -189,16 +251,17 @@ function buildReversalEmbed(
     )
     .setFooter({ text: `Reversal page ${pageNumber}/${MAX_REVERSAL_PAGES}` });
   if (requests.length === 0) {
-    embed.addFields({ name: "Reversal requests", value: "No reversal requests recorded." });
+    addBudgetedFields(embed, [{ name: "Reversal requests", value: "No reversal requests recorded." }]);
     return embed;
   }
-  requests.forEach((request, index) => {
-    embed.addFields({
+  addBudgetedFields(
+    embed,
+    requests.map((request, index) => ({
       name: `${index + 1}. ${sanitize(request.id, 100)}`,
       value: buildReversalValue(request),
       inline: false,
-    });
-  });
+    })),
+  );
   return embed;
 }
 
@@ -230,8 +293,8 @@ function buildSourceEmbed(member: AuditMember, detail: DuskSourceEventAudit): Em
     .join("\n");
   const embed = new EmbedBuilder()
     .setTitle("Duskits source-event audit")
-    .setDescription(`Target member: ${buildMemberLabel(member)}`)
-    .addFields(
+    .setDescription(`Target member: ${buildMemberLabel(member)}`);
+  addBudgetedFields(embed, [
       {
         name: "Ledger source reference",
         value: `${sanitize(detail.entry.sourceEventType, 64)}:${sanitize(detail.entry.sourceEventId, 120)}\nThis reference alone is not proof.`,
@@ -260,7 +323,7 @@ function buildSourceEmbed(member: AuditMember, detail: DuskSourceEventAudit): Em
         name: "Ledger attribution metadata",
         value: safeJson(detail.entry.attribution),
       },
-    );
+  ]);
   return embed;
 }
 
