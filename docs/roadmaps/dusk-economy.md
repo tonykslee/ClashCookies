@@ -1,6 +1,6 @@
 # Dusk Economy & Alliance Mobility — Living Roadmap
 
-> **Status:** Planning / not implemented  
+> **Status:** Partial implementation in `dev` (M1a ledger merged); no earning/redemption launch or production deployment verified  
 > **Last updated:** 2026-11-13  
 > **Product:** ClashCookies / Dusk · Rising Dawn alliance  
 > **Purpose:** Canonical, editable vision and decision log for the Duskits economy and voluntary alliance transfer pool.
