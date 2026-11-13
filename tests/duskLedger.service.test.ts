@@ -680,6 +680,45 @@ describe("DuskLedgerService", () => {
     expect(prismaMock.duskLedgerEntry.create).not.toHaveBeenCalled();
   });
 
+  it("uses the direct claim relation when a bounded source claim sample overflows", async () => {
+    const service = new DuskLedgerService();
+    const allClaims = Array.from({ length: 101 }, (_, index) => ({
+      id: `claim-${index}`,
+      beneficiaryKey: `beneficiary-${index}`,
+      walletId: index === 0 ? "member-1" : `member-${index + 2}`,
+      ledgerEntryId: `entry-${index + 2}`,
+      createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    }));
+    const claims = allClaims.slice(0, 100);
+    prismaMock.duskLedgerEntry.findFirst.mockResolvedValue({
+      id: "entry-1",
+      walletId: "member-1",
+      sourceEventType: "unknown-source",
+      sourceEventId: "source-1",
+      attribution: null,
+      policy: null,
+      sourceEventClaim: {
+        ledgerEntryId: "entry-1",
+        sourceEvent: {
+          id: "source-row-1",
+          sourceEventType: "unknown-source",
+          sourceEventId: "source-1",
+          beneficiaryMode: "MULTI_BENEFICIARY",
+          createdAt: new Date("2026-11-12T20:00:00.000Z"),
+          claims,
+          _count: { claims: 101 },
+        },
+      },
+    });
+
+    const result = await service.getSourceEventAudit("member-1", "entry-1", "guild-1");
+
+    expect(result?.claimRecordedForEntry).toBe(true);
+    expect(result?.claims).toHaveLength(100);
+    expect(result?.claimsTotal).toBe(101);
+    expect(result?.claimsSampleTruncated).toBe(true);
+  });
+
   it("marks owner evidence contradicted when the operational row crosses wallet or guild scope", async () => {
     const service = new DuskLedgerService();
     prismaMock.duskLedgerEntry.findFirst.mockResolvedValue({

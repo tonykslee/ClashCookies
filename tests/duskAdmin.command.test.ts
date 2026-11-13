@@ -99,6 +99,8 @@ describe("/dusk-admin audit", () => {
       sourceEvent: null,
       claims: [],
       claimRecordedForEntry: false,
+      claimsTotal: 0,
+      claimsSampleTruncated: false,
       policy: null,
       operationalEvidence: {
         status: "UNKNOWN",
@@ -137,7 +139,7 @@ describe("/dusk-admin audit", () => {
     const { interaction } = makeInteraction({ admin: true });
     await DuskAdmin.run({} as any, interaction, {} as any);
 
-    expect(interaction.guild.members.fetch).toHaveBeenCalledWith("member-1");
+    expect(interaction.guild.members.fetch).toHaveBeenCalledWith({ user: "member-1", force: true });
     expect(duskLedgerService.getBalance).toHaveBeenCalledWith("member-1");
     expect(duskLedgerService.getLifetimeEarned).toHaveBeenCalledWith("member-1");
     expect(duskLedgerService.listAuditEntryPage).toHaveBeenCalledWith("member-1", null, 5);
@@ -211,5 +213,79 @@ describe("/dusk-admin audit", () => {
       expect.objectContaining({ name: "Operational evidence", value: expect.stringContaining("UNKNOWN") }),
       expect.objectContaining({ name: "Ledger source reference", value: expect.stringContaining("not proof") }),
     ]));
+  });
+
+  it("fails closed when a forced membership refresh no longer returns the selected member", async () => {
+    const { interaction } = makeInteraction({ admin: true });
+    interaction.guild.members.fetch.mockResolvedValue(null);
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+
+    expect(interaction.guild.members.fetch).toHaveBeenCalledWith({ user: "member-1", force: true });
+    expect(duskLedgerService.getBalance).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("could not verify"),
+        ephemeral: true,
+      }),
+    );
+  });
+
+  it("keeps the complete long claims field within Discord's field limit", async () => {
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    await DuskAdmin.run({} as any, interaction, {} as any);
+    const collect = handlers.get("collect");
+    const claims = Array.from({ length: 100 }, (_, index) => ({
+      id: `claim-${index}`,
+      beneficiaryKey: `beneficiary-${"x".repeat(120)}-${index}`,
+      walletId: index === 0 ? "member-1" : `other-wallet-${index}`,
+      ledgerEntryId: `entry-${index}`,
+      createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    }));
+    vi.mocked(duskLedgerService.getSourceEventAudit).mockResolvedValue({
+      entry: {
+        id: "entry-1",
+        walletId: "member-1",
+        sourceEventType: "unknown-source",
+        sourceEventId: "source-1",
+        attribution: null,
+      },
+      sourceEvent: null,
+      claims,
+      claimRecordedForEntry: true,
+      claimsTotal: 101,
+      claimsSampleTruncated: true,
+      policy: null,
+      operationalEvidence: {
+        status: "UNKNOWN",
+        owner: null,
+        summary: "No supported operational evidence owner is registered for this source type.",
+        record: null,
+      },
+    });
+    const select = {
+      customId: "dusk-admin:audit-interaction-1:source",
+      values: ["entry-1"],
+      user: { id: "admin-1" },
+      guildId: "guild-1",
+      guild: interaction.guild,
+      member: { roles: [] },
+      memberPermissions: { has: vi.fn(() => true) },
+      inGuild: () => true,
+      isStringSelectMenu: () => true,
+      isButton: () => false,
+      reply: vi.fn(),
+      update: vi.fn(),
+      replied: false,
+      deferred: false,
+    };
+
+    await collect?.(select);
+
+    const embed = select.update.mock.calls[0][0].embeds[0].toJSON();
+    expect(embed.fields.every((field: { value: string }) => field.value.length <= 1024)).toBe(true);
+    const claimsField = embed.fields.find((field: { name: string }) => field.name === "Source-event claims");
+    expect(claimsField?.value).toContain("Sample: 100 of 101 claim(s)");
+    expect(claimsField?.value).toContain("not shown in this bounded sample");
   });
 });

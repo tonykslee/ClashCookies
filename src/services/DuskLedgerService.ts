@@ -119,6 +119,9 @@ const DUSK_AUDIT_ENTRY_SELECT = {
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             take: 100,
           },
+          _count: {
+            select: { claims: true },
+          },
         },
       },
     },
@@ -223,6 +226,8 @@ export type DuskSourceEventAudit = {
     createdAt: Date;
   }>;
   claimRecordedForEntry: boolean;
+  claimsTotal: number;
+  claimsSampleTruncated: boolean;
   policy: DuskAuditLedgerEntry["policy"];
   operationalEvidence: DuskOperationalEvidence;
 };
@@ -686,6 +691,9 @@ export class DuskLedgerService {
                   orderBy: [{ createdAt: "asc" }, { id: "asc" }],
                   take: 100,
                 },
+                _count: {
+                  select: { claims: true },
+                },
               },
             },
           },
@@ -719,9 +727,13 @@ export class DuskLedgerService {
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             take: 100,
           },
+          _count: {
+            select: { claims: true },
+          },
         },
       }));
     const claims = storedSourceEvent?.claims ?? [];
+    const claimsTotal = storedSourceEvent?._count?.claims ?? claims.length;
     const operationalEvidence = await this.resolveOperationalEvidence({
       walletId,
       sourceEventType: entry.sourceEventType,
@@ -747,9 +759,9 @@ export class DuskLedgerService {
           }
         : null,
       claims,
-      claimRecordedForEntry: claims.some(
-        (claim) => claim.ledgerEntryId === entry.id,
-      ),
+      claimRecordedForEntry: Boolean(entry.sourceEventClaim),
+      claimsTotal,
+      claimsSampleTruncated: claimsTotal > claims.length,
       policy: entry.policy,
       operationalEvidence,
     };

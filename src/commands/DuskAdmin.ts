@@ -39,6 +39,8 @@ type AdminInteractionEvidence = {
   memberPermissions?: { has: (permission: bigint) => boolean } | null;
 };
 
+const DISCORD_EMBED_FIELD_LIMIT = 1024;
+
 type AuditMember = {
   id: string;
   displayName: string;
@@ -133,7 +135,11 @@ function buildWalletEmbed(input: {
     .addFields(
       { name: "Available balance", value: `${input.balance} Duskits`, inline: true },
       { name: "Lifetime qualifying earned", value: `${input.lifetimeEarned} Duskits`, inline: true },
-      { name: "Reversal requests", value: `${input.reversalCount} stored request(s)`, inline: true },
+      {
+        name: "Reversal requests",
+        value: `Showing ${input.reversalCount} latest request(s); bounded sample capped at 50.`,
+        inline: true,
+      },
     );
   addEntryFields(embed, input.entries);
   return embed;
@@ -209,6 +215,19 @@ function buildSourceEmbed(member: AuditMember, detail: DuskSourceEventAudit): Em
         )
         .join("\n")
     : "No source-event claims are available.";
+  const claimsHeader = `${claimStatus}\nSample: ${detail.claims.length} of ${detail.claimsTotal} claim(s)`;
+  const claimsOverflow = detail.claimsSampleTruncated
+    ? `…and ${Math.max(0, detail.claimsTotal - detail.claims.length)} more claim(s) not shown in this bounded sample.`
+    : "";
+  const fixedClaimsLength = claimsHeader.length + (claimsOverflow ? claimsOverflow.length + 1 : 0);
+  const claimsBodyBudget = Math.max(0, DISCORD_EMBED_FIELD_LIMIT - fixedClaimsLength - 1);
+  const claimsValue = [
+    claimsHeader,
+    truncate(claims, claimsBodyBudget),
+    claimsOverflow,
+  ]
+    .filter(Boolean)
+    .join("\n");
   const embed = new EmbedBuilder()
     .setTitle("Duskits source-event audit")
     .setDescription(`Target member: ${buildMemberLabel(member)}`)
@@ -225,7 +244,7 @@ function buildSourceEmbed(member: AuditMember, detail: DuskSourceEventAudit): Em
       },
       {
         name: "Source-event claims",
-        value: `${claimStatus}\n${truncate(claims, 1024)}${detail.claims.length > 8 ? `\n…and ${detail.claims.length - 8} more bounded claims.` : ""}`,
+        value: claimsValue,
       },
       {
         name: "Operational evidence",
@@ -439,7 +458,7 @@ export const DuskAdmin: Command = {
     let targetMember;
     try {
       const targetUser = interaction.options.getUser("user", true);
-      targetMember = await guild.members.fetch(targetUser.id);
+      targetMember = await guild.members.fetch({ user: targetUser.id, force: true });
     } catch {
       dozzleLog.warn(
         `[dusk-admin] target_membership_unverified guild=${interaction.guildId ?? "unknown"}`,
