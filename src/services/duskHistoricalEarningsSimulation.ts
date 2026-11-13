@@ -102,6 +102,7 @@ export type HistoricalEarningsSimulationInput = {
 export type UnknownReason =
   | "WAR_IDENTITY_MISSING"
   | "WAR_IDENTITY_CONFLICT"
+  | "WAR_END_TIME_CONFLICT"
   | "WAR_ROSTER_MISSING"
   | "WAR_ROSTER_MALFORMED"
   | "WAR_ROSTER_COMPLETENESS_UNPROVEN"
@@ -175,7 +176,8 @@ export type HistoricalEarningsSimulationReport = {
     recognizedFwaRepEvents: number;
     unknownRepEventRows: number;
     duplicateRepEvents: number;
-    correctedSourceRows: number;
+    observedSourceUpdates: number;
+    provenCorrectionRows: number;
     currentRepUsers: number;
     currentNonRepUsers: number;
   };
@@ -313,6 +315,42 @@ function sameDate(left: Date | null | undefined, right: Date | null | undefined)
 function validWarId(value: unknown): number | null {
   const result = Number(value);
   return Number.isInteger(result) && result > 0 ? result : null;
+}
+
+type WarIdentityAssessment = {
+  matches: boolean;
+  endTimeVariance: boolean;
+  reason?: UnknownReason;
+};
+
+/**
+ * The war ID, exact clan/opponent tags, and exact start time are the canonical
+ * identity. End time is accepted only when every participation row carries the
+ * same valid persisted value, which supports a provenance difference between
+ * the history and participation writers without introducing a time tolerance.
+ */
+function consistentParticipationEndTime(rows: readonly HistoricalParticipationRow[]): Date | null {
+  if (rows.length === 0 || rows.some((row) => !isSimulationDate(row.warEndTime))) return null;
+  const firstTime = rows[0].warEndTime!.getTime();
+  return rows.every((row) => row.warEndTime!.getTime() === firstTime) ? rows[0].warEndTime! : null;
+}
+
+function assessWarIdentity(
+  history: HistoricalWarRow,
+  row: HistoricalParticipationRow,
+  participation: readonly HistoricalParticipationRow[],
+): WarIdentityAssessment {
+  const coreIdentityExact = validWarId(row.warId) === history.warId &&
+    normalizeSimulationTag(row.clanTag) === normalizeSimulationTag(history.clanTag) &&
+    sameDate(row.warStartTime, history.warStartTime) &&
+    Boolean(row.opponentTag) && Boolean(history.opponentTag) &&
+    normalizeSimulationTag(row.opponentTag) === normalizeSimulationTag(history.opponentTag);
+  if (!coreIdentityExact) return { matches: false, endTimeVariance: false, reason: "WAR_IDENTITY_CONFLICT" };
+  if (sameDate(row.warEndTime, history.warEndTime)) return { matches: true, endTimeVariance: false };
+  if (isSimulationDate(history.warEndTime) && consistentParticipationEndTime(participation)) {
+    return { matches: true, endTimeVariance: true };
+  }
+  return { matches: false, endTimeVariance: false, reason: "WAR_END_TIME_CONFLICT" };
 }
 
 function parseMetadata(value: unknown): Record<string, unknown> {
@@ -535,9 +573,10 @@ export function simulateHistoricalDuskits(input: HistoricalEarningsSimulationInp
   let revokedLinks = 0;
   let historicalOwnershipSensitiveLinks = 0;
   let duplicatePlayerIdentities = links.duplicateRows + links.conflicts.size;
-  let correctedSourceRows = histories.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
-  correctedSourceRows += input.evaluations.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
-  correctedSourceRows += input.repEvents.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
+  let observedSourceUpdates = histories.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
+  observedSourceUpdates += input.evaluations.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
+  observedSourceUpdates += input.repEvents.filter((row) => isSimulationDate(row.updatedAt) && isSimulationDate(row.createdAt) && row.updatedAt.getTime() > row.createdAt.getTime()).length;
+  const provenCorrectionRows = 0;
 
   for (const history of histories) {
     const warId = history.warId;
@@ -573,15 +612,10 @@ export function simulateHistoricalDuskits(input: HistoricalEarningsSimulationInp
     for (const row of participation) {
       playerRowsConsidered += 1;
       const playerTag = normalizeSimulationTag(row.playerTag);
-      const identityExact = validWarId(row.warId) === warId &&
-        normalizeSimulationTag(row.clanTag) === normalizeSimulationTag(history.clanTag) &&
-        sameDate(row.warStartTime, history.warStartTime) &&
-        sameDate(row.warEndTime, history.warEndTime) &&
-        Boolean(row.opponentTag) && Boolean(history.opponentTag) &&
-        normalizeSimulationTag(row.opponentTag) === normalizeSimulationTag(history.opponentTag);
-      if (!identityExact) {
+      const identity = assessWarIdentity(history, row, participation);
+      if (!identity.matches) {
         cleanFwa.unknownEvents += 1;
-        incrementReason(unknownReasons, "WAR_IDENTITY_CONFLICT");
+        incrementReason(unknownReasons, identity.reason ?? "WAR_IDENTITY_CONFLICT");
         continue;
       }
       if (comparable(row.matchType) !== "FWA" || comparable(history.matchType) !== "FWA") {
@@ -768,7 +802,8 @@ export function simulateHistoricalDuskits(input: HistoricalEarningsSimulationInp
       recognizedFwaRepEvents: seenRepKeys.size,
       unknownRepEventRows: repWork.unknownEvents,
       duplicateRepEvents: repWork.duplicateEvents,
-      correctedSourceRows,
+      observedSourceUpdates,
+      provenCorrectionRows,
       currentRepUsers,
       currentNonRepUsers: Math.max(0, allUsers.size - currentRepUsers),
     },
