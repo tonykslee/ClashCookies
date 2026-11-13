@@ -189,6 +189,8 @@ describe("historical Duskits earnings simulation", () => {
         repEvent("rep|mail-checklist", { metadata: { activityType: "MAIL_CHECKED", source: "mail_checklist", viewType: "Mail", scopeKey: "scope-1", rowContextKey: "row-1" }, activityType: "MAIL_CHECKED" }),
         repEvent("rep|mail-sent", { metadata: { activityType: "MAIL_SENT", source: "fwa_match_mail_send", mailChannelId: "mail-channel-1", mailMessageId: "mail-message-1" }, activityType: "MAIL_SENT" }),
         repEvent("rep|cwl", { metadata: { activityType: "BASES_CHECKED", source: "base_swap", sourceVariant: "single", clanKind: "CWL" } }),
+        repEvent("rep|missing-clan-kind", { metadata: { activityType: "BASES_CHECKED", source: "base_swap", sourceVariant: "single" } }),
+        repEvent("rep|invalid-clan-kind", { metadata: { activityType: "BASES_CHECKED", source: "base_swap", sourceVariant: "single", clanKind: "UNKNOWN" } }),
       ],
     }));
     expect(report.coverage.recognizedFwaRepEvents).toBe(4);
@@ -196,6 +198,7 @@ describe("historical Duskits earnings simulation", () => {
     expect(report.repWork.strictDuskits).toBe(8);
     expect(report.repWork.baseSwapPublisherEvents).toBe(1);
     expect(report.unknownReasons.REP_EVENT_CWL_SOURCE).toBe(1);
+    expect(report.unknownReasons.REP_EVENT_SOURCE_UNKNOWN).toBe(2);
   });
 
   it("uses UTC Monday buckets, a 30-Duskit weekly cap, and deterministic repeated output", () => {

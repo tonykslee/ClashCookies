@@ -396,6 +396,7 @@ function isKnownFwaRepEvent(event: HistoricalRepWorkEventRow): { source: string;
   const clanKind = comparable(metadata.clanKind);
   if (clanKind === "CWL") return null;
   if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASE_SWAP") {
+    if (clanKind !== "FWA") return null;
     return { source: source.toLowerCase(), isBaseSwapPublisher: true };
   }
   if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASES_CHECKLIST" && comparable(metadata.viewType) === "BASES") {

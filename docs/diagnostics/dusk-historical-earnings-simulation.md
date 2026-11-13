@@ -54,12 +54,12 @@ When multiple independently linked player tags map to one Discord user, the simu
 
 The simulator accepts only the existing persisted source classifications:
 
-- `BASES_CHECKED` with `metadata.source=base_swap`, excluding `clanKind=CWL`;
+- `BASES_CHECKED` with `metadata.source=base_swap` and `metadata.clanKind=FWA` exactly. `CWL`, missing, malformed, or otherwise unrecognized `clanKind` is `UNKNOWN`;
 - `BASES_CHECKED` with `metadata.source=bases_checklist` and `viewType=Bases`;
 - `MAIL_CHECKED` with `metadata.source=mail_checklist` and `viewType=Mail`;
 - `MAIL_SENT` with `metadata.source=fwa_match_mail_send`.
 
-These are the values persisted by `RepWorkActivityService`; caller-supplied source labels are overwritten while the event envelope is built. The checklist view type remains required, and `clanKind=CWL` remains excluded.
+These are the values persisted by `RepWorkActivityService`; caller-supplied source labels are overwritten while the event envelope is built. The checklist view type remains required. The `base_swap` source is shared by FWA and CWL, so only an explicit `clanKind=FWA` is eligible; absent or invalid clan-kind metadata is never treated as FWA.
 
 The persisted `dedupeKey` is required. A repeated key is counted once; a missing key, invalid Discord ID, unknown source, or CWL source is `UNKNOWN`. The event’s direct `discordUserId` is the attribution authority. Current `TrackedClanRep` membership is reported only as a descriptive current rep/non-rep cohort; it is not used to backfill a recurring stipend or to upgrade an event’s historical status.
 
@@ -75,6 +75,7 @@ The persisted `dedupeKey` is required. A repeated key is counted once; a missing
 - Current `TrackedClanRep` assignment has no start/end interval. A current title cannot prove historical recurring eligibility.
 - Current `PlayerLink` is not a historical ownership ledger. Deletion removes the row; reassignment history is not recoverable. The simulator therefore exposes late, revoked, missing, history-sensitive, and conflicting identity reasons.
 - `RepWorkActivityEvent` has durable dedupe but no correction/reversal state. A source correction requires a future policy and reconciliation owner.
+- A `base_swap` source without exact `clanKind=FWA` is ambiguous because the writer also records CWL base swaps; the simulator keeps CWL, missing, and invalid clan-kind values `UNKNOWN`.
 - Home transfer confirmation changes the Home period but does not prove that the member physically joined the destination at the confirmation instant. Home/roster freshness and 14-day residence remain separate checks.
 - Base-swap publication events identify the publisher, not each recipient’s swap action.
 - Giveaway fulfillment, sponsor liability, quest rewards, transfer rewards, BL triples, and recurring stipends are intentionally unmodeled.
@@ -100,10 +101,10 @@ Example (after the normal build):
 $env:DUSK_SIMULATION_DATABASE_URL = "postgresql://dusk_sim_readonly:<secret>@<host>/<database>?options=-c%20default_transaction_read_only%3Don"
 $env:DUSK_SIMULATION_READ_ONLY = "1"
 $env:DUSK_SIMULATION_READ_ONLY_ROLE = "clashcookies_dusk_readonly"
-npm run diagnose:dusk-historical-earnings -- --guild <guild-id> --from 2026-01-05T00:00:00.000Z --to 2026-02-16T00:00:00.000Z
+npm run diagnose:dusk-historical-earnings -- --guild <guild-id> --from 2026-01-05T00:00:00.000Z --to 2026-02-16T00:00:00.000Z --snapshot 2026-02-16T00:00:00.000Z
 ```
 
-The command is deliberately not part of startup, CI, staging automation, or a scheduler. It prints an aggregate report with evidence counts, UNKNOWN reason counts, strict/provisional totals, duplicate/correction counts, weekly uncapped/capped distributions, current rep/non-rep descriptions, and 100-Duskit feasibility. It never emits raw identifiers or a proposed issuance file.
+The command is deliberately not part of startup, CI, staging automation, or a scheduler. For repeatable operator comparisons, every run must provide the same fixed `--snapshot` value; omitting it uses the current clock and is not a comparable historical run. It prints an aggregate report with evidence counts, UNKNOWN reason counts, strict/provisional totals, duplicate/correction counts, weekly uncapped/capped distributions, current rep/non-rep descriptions, and 100-Duskit feasibility. It never emits raw identifiers or a proposed issuance file.
 
 ## Recommendation for the first earning activities
 
@@ -116,6 +117,6 @@ The second candidate is clean FWA participation only after the historical sample
 1. Create a dedicated SELECT-only database role and provide a separate simulation URL to the operator. Confirm the role, transaction read-only setting, and grants without changing application schema or production behavior.
 2. Run one explicit guild over a representative 4–12 complete-week UTC window. Capture the aggregate output and tool version/commit with the operator review; do not export identifiers.
 3. Review ended-war discovery, roster completeness, completed evaluation coverage, violation counts, strict/provisional/UNKNOWN attribution, duplicate identities, rep source mix, current rep descriptive cohorts, and per-user weekly cap distributions.
-4. Run the exact same command again and compare deterministic output. Investigate any source corrections, malformed joins, unexpected duplicate keys, or unsafe credential behavior.
+4. Run the exact same command again with the same fixed `--snapshot` value and compare deterministic output. Investigate any source corrections, malformed joins, unexpected duplicate keys, or unsafe credential behavior.
 5. Use the sample to decide whether the two draft activities and the 30-Duskit cap support the 100-Duskit target. Record policy decisions separately from observed evidence.
 6. Keep M0a part 2 open until the real sample is reviewed. A successful local fixture test is not a historical data result and does not authorize issuance.
