@@ -2631,6 +2631,16 @@ enum DuskLedgerTransactionType {
   REVERSAL
 }
 
+enum DuskLedgerBeneficiaryMode {
+  SINGLE_RECIPIENT
+  MULTI_BENEFICIARY
+}
+
+enum DuskReversalResolutionType {
+  APPLIED
+  DECLINED
+}
+
 /// One wallet per Discord identity. The balance is an atomic projection of DuskLedgerEntry.amount.
 model DuskWallet {
   discordUserId String            @id
@@ -2638,6 +2648,8 @@ model DuskWallet {
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   entries       DuskLedgerEntry[]
+  sourceEventClaims DuskLedgerSourceEventClaim[]
+  reversalRequests DuskLedgerReversalRequest[]
 
   @@index([updatedAt])
 }
@@ -2648,6 +2660,8 @@ model DuskLedgerEntry {
   walletId           String
   amount             Int
   transactionType    DuskLedgerTransactionType
+  beneficiaryMode    DuskLedgerBeneficiaryMode?
+  beneficiaryKey     String?                   @db.VarChar(128)
   sourceEventType    String                    @db.VarChar(64)
   sourceEventId      String                    @db.VarChar(128)
   idempotencyKey     String                    @db.VarChar(128)
@@ -2662,12 +2676,86 @@ model DuskLedgerEntry {
   policy     DuskRewardPolicyVersion? @relation(fields: [policyVersion], references: [version], onDelete: Restrict)
   reversalOf DuskLedgerEntry?         @relation("DuskLedgerEntryReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
   reversals  DuskLedgerEntry[]        @relation("DuskLedgerEntryReversal")
+  sourceEventClaim DuskLedgerSourceEventClaim?
+  reversalRequests DuskLedgerReversalRequest[] @relation("DuskReversalRequestOriginal")
+  reversalResolution DuskLedgerReversalResolution? @relation("DuskReversalResolutionEntry")
 
   @@unique([walletId, idempotencyKey])
-  @@unique([walletId, sourceEventType, sourceEventId])
   @@unique([reversalOfId])
+  // Partial uniqueness for null/non-null beneficiaryKey is enforced in the SQL migration.
+  @@index([walletId, sourceEventType, sourceEventId, beneficiaryKey])
   @@index([walletId, createdAt])
   @@index([sourceEventType, sourceEventId])
+}
+
+/// Canonical event identity and beneficiary semantics for future earning issuance.
+model DuskLedgerSourceEvent {
+  id                String                    @id @default(cuid())
+  sourceEventType   String                    @db.VarChar(64)
+  sourceEventId     String                    @db.VarChar(128)
+  beneficiaryMode   DuskLedgerBeneficiaryMode
+  createdAt         DateTime                  @default(now())
+  claims            DuskLedgerSourceEventClaim[]
+
+  @@unique([sourceEventType, sourceEventId])
+  @@index([createdAt])
+}
+
+/// One claim per canonical recipient identity; a null key is the single-recipient claim.
+model DuskLedgerSourceEventClaim {
+  id              String                 @id @default(cuid())
+  sourceEventId   String
+  beneficiaryKey  String?                @db.VarChar(128)
+  walletId        String
+  ledgerEntryId   String                 @unique
+  createdAt       DateTime               @default(now())
+
+  sourceEvent DuskLedgerSourceEvent @relation(fields: [sourceEventId], references: [id], onDelete: Restrict)
+  wallet      DuskWallet            @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
+  ledgerEntry DuskLedgerEntry       @relation(fields: [ledgerEntryId], references: [id], onDelete: Restrict)
+
+  @@index([sourceEventId, beneficiaryKey])
+  @@index([walletId, createdAt])
+}
+
+/// Immutable audit record for a reversal that could not be applied without overdrawing.
+/// The absence of a resolution row means it remains pending manual review.
+model DuskLedgerReversalRequest {
+  id                String   @id @default(cuid())
+  walletId          String
+  originalEntryId   String
+  requestedAmount   Int
+  sourceEventType   String   @db.VarChar(64)
+  sourceEventId     String   @db.VarChar(128)
+  idempotencyKey    String   @db.VarChar(128)
+  attribution       Json?
+  policyVersion     String?  @db.VarChar(64)
+  reason            String   @db.VarChar(500)
+  actorDiscordUserId String
+  createdAt          DateTime @default(now())
+
+  wallet     DuskWallet                    @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
+  originalEntry DuskLedgerEntry            @relation("DuskReversalRequestOriginal", fields: [originalEntryId], references: [id], onDelete: Restrict)
+  resolution DuskLedgerReversalResolution?
+
+  @@unique([walletId, idempotencyKey])
+  @@unique([sourceEventType, sourceEventId])
+  @@unique([originalEntryId])
+  @@index([walletId, createdAt])
+}
+
+/// Immutable future M1b resolution record for a pending reversal request.
+model DuskLedgerReversalResolution {
+  id                 String                       @id @default(cuid())
+  reversalRequestId  String                       @unique
+  resolutionEntryId  String?                      @unique
+  resolutionType     DuskReversalResolutionType
+  actorDiscordUserId String
+  reason             String                       @db.VarChar(500)
+  createdAt          DateTime                     @default(now())
+
+  reversalRequest DuskLedgerReversalRequest @relation(fields: [reversalRequestId], references: [id], onDelete: Restrict)
+  resolutionEntry DuskLedgerEntry?          @relation("DuskReversalResolutionEntry", fields: [resolutionEntryId], references: [id], onDelete: Restrict)
 }
 
 /// Opaque, immutable policy provenance. It stores versioned definitions but does not activate reward rates.

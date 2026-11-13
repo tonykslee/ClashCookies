@@ -11,6 +11,20 @@ const txMock = vi.hoisted(() => ({
   },
   duskLedgerEntry: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    create: vi.fn(),
+    findMany: vi.fn(),
+  },
+  duskLedgerSourceEvent: {
+    upsert: vi.fn(),
+    findUnique: vi.fn(),
+  },
+  duskLedgerSourceEventClaim: {
+    findFirst: vi.fn(),
+    create: vi.fn(),
+  },
+  duskLedgerReversalRequest: {
+    findUnique: vi.fn(),
     create: vi.fn(),
     findMany: vi.fn(),
   },
@@ -23,7 +37,17 @@ const prismaMock = vi.hoisted(() => ({
   },
   duskLedgerEntry: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
     findMany: vi.fn(),
+  },
+  duskLedgerSourceEvent: {
+    findUnique: vi.fn(),
+  },
+  duskLedgerSourceEventClaim: {
+    findFirst: vi.fn(),
+  },
+  duskLedgerReversalRequest: {
+    findUnique: vi.fn(),
   },
   $transaction: vi.fn(),
 }));
@@ -33,6 +57,7 @@ vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
 import {
   DuskInsufficientBalanceError,
   DuskLedgerAlreadyReversedError,
+  DuskLedgerEventAlreadyClaimedError,
   DuskLedgerIdempotencyConflictError,
   DuskLedgerService,
   DuskLedgerValidationError,
@@ -43,6 +68,9 @@ const baseInput = {
   sourceEventType: "test",
   sourceEventId: "event-1",
   idempotencyKey: "request-1",
+  policyVersion: null,
+  actorDiscordUserId: null,
+  attribution: null,
   reason: "focused test",
 };
 
@@ -52,6 +80,8 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
     walletId: "discord-1",
     amount: 10,
     transactionType: "EARNING",
+    beneficiaryMode: "SINGLE_RECIPIENT",
+    beneficiaryKey: null,
     sourceEventType: "test",
     sourceEventId: "event-1",
     idempotencyKey: "request-1",
@@ -75,6 +105,18 @@ function configureSuccessfulTransaction() {
   txMock.duskLedgerEntry.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
     makeEntry(data),
   );
+  txMock.duskLedgerSourceEvent.upsert.mockImplementation(
+    async ({ create }: { create: { beneficiaryMode: string } }) => ({
+      id: "source-1",
+      beneficiaryMode: create.beneficiaryMode,
+    }),
+  );
+  txMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
+  txMock.duskLedgerSourceEventClaim.create.mockResolvedValue({ id: "claim-1" });
+  txMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
+  txMock.duskLedgerReversalRequest.create.mockImplementation(
+    async ({ data }: { data: Record<string, unknown> }) => ({ id: "pending-1", createdAt: new Date(), ...data }),
+  );
 }
 
 describe("DuskLedgerService", () => {
@@ -84,6 +126,10 @@ describe("DuskLedgerService", () => {
     prismaMock.duskWallet.upsert.mockResolvedValue({ discordUserId: "discord-1", balance: 0 });
     prismaMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
     prismaMock.duskLedgerEntry.findUnique.mockResolvedValue(null);
+    prismaMock.duskLedgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
+    prismaMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
+    prismaMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
   });
 
   it("creates a zero-balance wallet keyed only by Discord identity", async () => {
@@ -135,6 +181,7 @@ describe("DuskLedgerService", () => {
     const service = new DuskLedgerService();
 
     await expect(service.recordEarning({ ...baseInput, amount: 10 })).resolves.toEqual({
+      outcome: "applied",
       entry: existing,
       balance: 10,
       duplicate: true,
@@ -151,6 +198,70 @@ describe("DuskLedgerService", () => {
     await expect(service.recordEarning({ ...baseInput, amount: 10 })).rejects.toBeInstanceOf(
       DuskLedgerIdempotencyConflictError,
     );
+  });
+
+  it("rejects cross-wallet claims for an authoritative single-recipient event", async () => {
+    const existingClaim = { id: "claim-1", walletId: "discord-1" };
+    txMock.duskLedgerSourceEventClaim.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(existingClaim);
+    const service = new DuskLedgerService();
+
+    await service.recordEarning({ ...baseInput, amount: 10 });
+    await expect(
+      service.recordEarning({ ...baseInput, discordUserId: "discord-2", idempotencyKey: "request-2", amount: 10 }),
+    ).rejects.toBeInstanceOf(DuskLedgerEventAlreadyClaimedError);
+    expect(txMock.duskLedgerEntry.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows distinct beneficiary claims for a multi-beneficiary event", async () => {
+    txMock.duskLedgerSourceEvent.upsert.mockResolvedValue({
+      id: "source-multi",
+      beneficiaryMode: "MULTI_BENEFICIARY",
+    });
+    const service = new DuskLedgerService();
+
+    await service.recordEarning({
+      ...baseInput,
+      discordUserId: "discord-1",
+      amount: 10,
+      beneficiaryMode: "MULTI_BENEFICIARY",
+      beneficiaryKey: "participant-a",
+    });
+    await expect(
+      service.recordEarning({
+        ...baseInput,
+        discordUserId: "discord-1",
+        idempotencyKey: "request-2",
+        amount: 10,
+        beneficiaryMode: "MULTI_BENEFICIARY",
+        beneficiaryKey: "participant-b",
+      }),
+    ).resolves.toMatchObject({ outcome: "applied", duplicate: false });
+    expect(txMock.duskLedgerSourceEventClaim.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects policy, actor, reason, and attribution conflicts on an idempotent replay", async () => {
+    const existing = makeEntry({
+      policyVersion: "policy-v1",
+      actorDiscordUserId: "actor-1",
+      attribution: { proof: "a", nested: { first: true } },
+      reason: "original reason",
+    });
+    txMock.duskLedgerEntry.findUnique.mockResolvedValue(existing);
+    const service = new DuskLedgerService();
+
+    for (const change of [
+      { policyVersion: "policy-v2" },
+      { actorDiscordUserId: "actor-2" },
+      { reason: "different reason" },
+      { attribution: { nested: { first: true }, proof: "changed" } },
+    ]) {
+      await expect(service.recordEarning({ ...baseInput, amount: 10, ...change })).rejects.toBeInstanceOf(
+        DuskLedgerIdempotencyConflictError,
+      );
+    }
   });
 
   it("retries serialization conflicts and preserves serializable isolation", async () => {
@@ -195,6 +306,8 @@ describe("DuskLedgerService", () => {
       id: "reversal-1",
       amount: -10,
       transactionType: "REVERSAL",
+      beneficiaryMode: null,
+      actorDiscordUserId: "admin-1",
       sourceEventId: "reversal-event",
       idempotencyKey: "reversal-request",
       reversalOfId: "entry-1",
@@ -211,8 +324,97 @@ describe("DuskLedgerService", () => {
         originalEntryId: "entry-1",
         actorDiscordUserId: "admin-1",
       }),
-    ).resolves.toMatchObject({ entry: reversal, balance: 0, duplicate: true });
+    ).resolves.toMatchObject({ outcome: "applied", entry: reversal, balance: 0, duplicate: true });
     expect(txMock.duskLedgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  it("records a pending auditable reversal when the original balance was spent", async () => {
+    const original = makeEntry({ id: "entry-1", amount: 10 });
+    txMock.duskLedgerEntry.findUnique.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+      if (where.id === "entry-1") return original;
+      return null;
+    });
+    txMock.duskWallet.updateMany.mockResolvedValue({ count: 0 });
+    txMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.reverse({
+        ...baseInput,
+        sourceEventId: "reversal-event",
+        idempotencyKey: "reversal-request",
+        originalEntryId: "entry-1",
+        actorDiscordUserId: "admin-1",
+      }),
+    ).resolves.toMatchObject({ outcome: "pending_review", duplicate: false, balance: 0 });
+    expect(txMock.duskLedgerReversalRequest.create).toHaveBeenCalledTimes(1);
+    expect(txMock.duskLedgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  it("returns the same pending reversal for a retry and rejects conflicting replay data", async () => {
+    const pending = {
+      id: "pending-1",
+      walletId: "discord-1",
+      originalEntryId: "entry-1",
+      requestedAmount: -10,
+      sourceEventType: "test",
+      sourceEventId: "reversal-event",
+      idempotencyKey: "reversal-request",
+      attribution: null,
+      policyVersion: null,
+      reason: "focused test",
+      actorDiscordUserId: "admin-1",
+      createdAt: new Date(),
+    };
+    txMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(pending);
+    txMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.reverse({
+        ...baseInput,
+        sourceEventId: "reversal-event",
+        idempotencyKey: "reversal-request",
+        originalEntryId: "entry-1",
+        actorDiscordUserId: "admin-1",
+      }),
+    ).resolves.toMatchObject({ outcome: "pending_review", reversalRequest: pending, duplicate: true });
+    await expect(
+      service.reverse({
+        ...baseInput,
+        sourceEventId: "reversal-event",
+        idempotencyKey: "reversal-request",
+        originalEntryId: "entry-1",
+        actorDiscordUserId: "admin-2",
+      }),
+    ).rejects.toBeInstanceOf(DuskLedgerIdempotencyConflictError);
+  });
+
+  it("recovers a concurrent reversal insert deterministically after a unique conflict", async () => {
+    const reversal = makeEntry({
+      id: "reversal-1",
+      amount: -10,
+      transactionType: "REVERSAL",
+      beneficiaryMode: null,
+      sourceEventId: "reversal-event",
+      idempotencyKey: "reversal-request",
+      actorDiscordUserId: "admin-1",
+      reversalOfId: "entry-1",
+    });
+    prismaMock.$transaction.mockRejectedValue(Object.assign(new Error("unique conflict"), { code: "P2002" }));
+    prismaMock.duskLedgerEntry.findUnique.mockResolvedValue(reversal);
+    prismaMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.reverse({
+        ...baseInput,
+        sourceEventId: "reversal-event",
+        idempotencyKey: "reversal-request",
+        originalEntryId: "entry-1",
+        actorDiscordUserId: "admin-1",
+      }),
+    ).resolves.toMatchObject({ outcome: "applied", entry: reversal, duplicate: true });
   });
 
   it("rejects ambiguous or already-reversed originals", async () => {
@@ -260,7 +462,11 @@ describe("DuskLedgerService", () => {
     expect(migration).toContain('CHECK ("balance" >= 0)');
     expect(migration).toContain('CHECK ("amount" <> 0)');
     expect(migration).toContain('CREATE TRIGGER "DuskLedgerEntry_immutable"');
-    expect(migration).toContain('CREATE UNIQUE INDEX "DuskLedgerEntry_walletId_sourceEventType_sourceEventId_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "DuskLedgerEntry_wallet_source_single_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "DuskLedgerEntry_wallet_source_multi_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "DuskLedgerSourceEventClaim_single_event_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "DuskLedgerSourceEventClaim_multi_event_beneficiary_key"');
+    expect(migration).toContain('CREATE TRIGGER "DuskLedgerReversalRequest_immutable"');
     expect(migration).not.toMatch(/DROP\s+(TABLE|COLUMN|INDEX)/i);
     expect(migration).not.toMatch(/DELETE\s+FROM/i);
   });
