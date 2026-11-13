@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const txMock = vi.hoisted(() => ({
   duskWallet: {
-    upsert: vi.fn(),
+    create: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
     findUnique: vi.fn(),
@@ -16,7 +16,7 @@ const txMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   duskLedgerSourceEvent: {
-    upsert: vi.fn(),
+    create: vi.fn(),
     findUnique: vi.fn(),
   },
   duskLedgerSourceEventClaim: {
@@ -32,7 +32,7 @@ const txMock = vi.hoisted(() => ({
 
 const prismaMock = vi.hoisted(() => ({
   duskWallet: {
-    upsert: vi.fn(),
+    create: vi.fn(),
     findUnique: vi.fn(),
   },
   duskLedgerEntry: {
@@ -97,20 +97,26 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
 
 function configureSuccessfulTransaction() {
   prismaMock.$transaction.mockImplementation(async (work: (tx: typeof txMock) => Promise<unknown>) => work(txMock));
-  txMock.duskWallet.upsert.mockResolvedValue({ discordUserId: "discord-1", balance: 0 });
+  txMock.duskWallet.create.mockImplementation(async ({ data }: { data: { discordUserId: string } }) => ({
+    discordUserId: data.discordUserId,
+    balance: 0,
+  }));
   txMock.duskWallet.update.mockResolvedValue({ discordUserId: "discord-1", balance: 10 });
   txMock.duskWallet.updateMany.mockResolvedValue({ count: 1 });
-  txMock.duskWallet.findUnique.mockResolvedValue({ balance: 10 });
+  txMock.duskWallet.findUnique.mockImplementation(async ({ select }: { select?: unknown }) =>
+    select ? { balance: 10 } : null,
+  );
   txMock.duskLedgerEntry.findUnique.mockResolvedValue(null);
   txMock.duskLedgerEntry.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
     makeEntry(data),
   );
-  txMock.duskLedgerSourceEvent.upsert.mockImplementation(
-    async ({ create }: { create: { beneficiaryMode: string } }) => ({
+  txMock.duskLedgerSourceEvent.create.mockImplementation(
+    async ({ data }: { data: { beneficiaryMode: string } }) => ({
       id: "source-1",
-      beneficiaryMode: create.beneficiaryMode,
+      beneficiaryMode: data.beneficiaryMode,
     }),
   );
+  txMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
   txMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
   txMock.duskLedgerSourceEventClaim.create.mockResolvedValue({ id: "claim-1" });
   txMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
@@ -123,8 +129,13 @@ describe("DuskLedgerService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configureSuccessfulTransaction();
-    prismaMock.duskWallet.upsert.mockResolvedValue({ discordUserId: "discord-1", balance: 0 });
-    prismaMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    prismaMock.duskWallet.create.mockImplementation(async ({ data }: { data: { discordUserId: string } }) => ({
+      discordUserId: data.discordUserId,
+      balance: 0,
+    }));
+    prismaMock.duskWallet.findUnique.mockImplementation(async ({ select }: { select?: unknown }) =>
+      select ? { balance: 0 } : null,
+    );
     prismaMock.duskLedgerEntry.findUnique.mockResolvedValue(null);
     prismaMock.duskLedgerEntry.findFirst.mockResolvedValue(null);
     prismaMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
@@ -139,12 +150,49 @@ describe("DuskLedgerService", () => {
       discordUserId: "discord-1",
       balance: 0,
     });
-    expect(prismaMock.duskWallet.upsert).toHaveBeenCalledWith({
-      where: { discordUserId: "discord-1" },
-      create: { discordUserId: "discord-1" },
-      update: {},
+    expect(prismaMock.duskWallet.create).toHaveBeenCalledWith({
+      data: { discordUserId: "discord-1" },
     });
-    expect(JSON.stringify(prismaMock.duskWallet.upsert.mock.calls[0])).not.toContain("playerTag");
+    expect(JSON.stringify(prismaMock.duskWallet.create.mock.calls[0])).not.toContain("playerTag");
+  });
+
+  it("recovers a concurrent first-wallet create without surfacing P2002", async () => {
+    const wallet = { discordUserId: "discord-race", balance: 0 };
+    prismaMock.duskWallet.create
+      .mockRejectedValueOnce(Object.assign(new Error("wallet unique race"), { code: "P2002" }))
+      .mockResolvedValueOnce(wallet);
+    prismaMock.duskWallet.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(wallet);
+    const service = new DuskLedgerService();
+
+    await expect(Promise.all([service.ensureWallet("discord-race"), service.ensureWallet("discord-race")])).resolves.toEqual([
+      wallet,
+      wallet,
+    ]);
+    expect(prismaMock.duskWallet.findUnique).toHaveBeenCalledWith({ where: { discordUserId: "discord-race" } });
+  });
+
+  it("reads an existing canonical event after a create race without updating the immutable row", async () => {
+    txMock.duskLedgerSourceEvent.create.mockRejectedValue(
+      Object.assign(new Error("source event unique race"), { code: "P2002" }),
+    );
+    txMock.duskLedgerSourceEvent.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "source-race", beneficiaryMode: "MULTI_BENEFICIARY" });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.recordEarning({
+        ...baseInput,
+        beneficiaryMode: "MULTI_BENEFICIARY",
+        beneficiaryKey: "participant-race",
+        amount: 10,
+      }),
+    ).resolves.toMatchObject({ outcome: "applied", duplicate: false });
+    expect(txMock.duskLedgerSourceEvent.create).toHaveBeenCalledTimes(1);
+    expect(txMock.duskLedgerSourceEvent.findUnique).toHaveBeenCalledTimes(2);
   });
 
   it("shares one wallet across operations for the same Discord identity", async () => {
@@ -158,8 +206,8 @@ describe("DuskLedgerService", () => {
       amount: 5,
     });
 
-    expect(txMock.duskWallet.upsert).toHaveBeenCalledTimes(2);
-    expect(txMock.duskWallet.upsert.mock.calls.every(([args]) => args.where.discordUserId === "discord-1")).toBe(true);
+    expect(txMock.duskWallet.create).toHaveBeenCalledTimes(2);
+    expect(txMock.duskWallet.create.mock.calls.every(([args]) => args.data.discordUserId === "discord-1")).toBe(true);
     expect(txMock.duskLedgerEntry.create.mock.calls[1][0].data).toEqual(
       expect.objectContaining({ walletId: "discord-1", amount: -5, transactionType: "SPEND" }),
     );
@@ -186,7 +234,7 @@ describe("DuskLedgerService", () => {
       balance: 10,
       duplicate: true,
     });
-    expect(txMock.duskWallet.upsert).not.toHaveBeenCalled();
+    expect(txMock.duskWallet.create).not.toHaveBeenCalled();
     expect(txMock.duskWallet.update).not.toHaveBeenCalled();
     expect(txMock.duskLedgerEntry.create).not.toHaveBeenCalled();
   });
@@ -216,7 +264,7 @@ describe("DuskLedgerService", () => {
   });
 
   it("allows distinct beneficiary claims for a multi-beneficiary event", async () => {
-    txMock.duskLedgerSourceEvent.upsert.mockResolvedValue({
+    txMock.duskLedgerSourceEvent.create.mockResolvedValue({
       id: "source-multi",
       beneficiaryMode: "MULTI_BENEFICIARY",
     });

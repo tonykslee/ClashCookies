@@ -195,11 +195,15 @@ export class DuskLedgerService {
   /** Purpose: create a zero-balance wallet without creating a ledger entry. */
   async ensureWallet(discordUserId: string): Promise<{ discordUserId: string; balance: number }> {
     const walletId = normalizeDiscordUserId(discordUserId);
-    const wallet = await prisma.duskWallet.upsert({
-      where: { discordUserId: walletId },
-      create: { discordUserId: walletId },
-      update: {},
-    });
+    let wallet = await prisma.duskWallet.findUnique({ where: { discordUserId: walletId } });
+    if (wallet) return { discordUserId: wallet.discordUserId, balance: wallet.balance };
+    try {
+      wallet = await prisma.duskWallet.create({ data: { discordUserId: walletId } });
+    } catch (error) {
+      if (!isPrismaErrorCode(error, "P2002")) throw error;
+      wallet = await prisma.duskWallet.findUnique({ where: { discordUserId: walletId } });
+      if (!wallet) throw error;
+    }
     return { discordUserId: wallet.discordUserId, balance: wallet.balance };
   }
 
@@ -439,11 +443,7 @@ export class DuskLedgerService {
       sourceEventId = await this.ensureEarningSourceEvent(tx, input);
     }
 
-    await tx.duskWallet.upsert({
-      where: { discordUserId: input.discordUserId },
-      create: { discordUserId: input.discordUserId },
-      update: {},
-    });
+    await this.createWalletIfAbsent(tx, input.discordUserId);
 
     if (input.amount < 0) {
       const debit = await tx.duskWallet.updateMany({
@@ -497,20 +497,21 @@ export class DuskLedgerService {
     if (!input.beneficiaryMode) {
       throw new DuskLedgerValidationError("Earning entries require beneficiary semantics.");
     }
-    const sourceEvent = await tx.duskLedgerSourceEvent.upsert({
-      where: {
-        sourceEventType_sourceEventId: {
-          sourceEventType: input.sourceEventType,
-          sourceEventId: input.sourceEventId,
-        },
-      },
-      create: {
-        sourceEventType: input.sourceEventType,
-        sourceEventId: input.sourceEventId,
-        beneficiaryMode: input.beneficiaryMode,
-      },
-      update: {},
+    const sourceEventKey = {
+      sourceEventType: input.sourceEventType,
+      sourceEventId: input.sourceEventId,
+    };
+    let sourceEvent = await tx.duskLedgerSourceEvent.findUnique({
+      where: { sourceEventType_sourceEventId: sourceEventKey },
     });
+    if (!sourceEvent) {
+      sourceEvent = await tx.duskLedgerSourceEvent.create({
+        data: {
+          ...sourceEventKey,
+          beneficiaryMode: input.beneficiaryMode,
+        },
+      });
+    }
     if (sourceEvent.beneficiaryMode !== input.beneficiaryMode) {
       throw new DuskLedgerEventAlreadyClaimedError(
         `Source event ${input.sourceEventType}:${input.sourceEventId} has different beneficiary semantics.`,
@@ -539,6 +540,12 @@ export class DuskLedgerService {
       }
     }
     return sourceEvent.id;
+  }
+
+  private async createWalletIfAbsent(tx: DuskLedgerTransaction, walletId: string): Promise<void> {
+    const existing = await tx.duskWallet.findUnique({ where: { discordUserId: walletId } });
+    if (existing) return;
+    await tx.duskWallet.create({ data: { discordUserId: walletId } });
   }
 
   private async buildMutationResult(
@@ -649,7 +656,7 @@ export class DuskLedgerService {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         });
       } catch (error) {
-        if (!isPrismaErrorCode(error, "P2034") || attempt === SERIALIZABLE_RETRY_LIMIT) {
+        if (!(isPrismaErrorCode(error, "P2034") || isPrismaErrorCode(error, "P2002")) || attempt === SERIALIZABLE_RETRY_LIMIT) {
           throw error;
         }
       }
