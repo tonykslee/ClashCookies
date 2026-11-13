@@ -49,6 +49,8 @@ Rep-work source mix was 81 FWA base-swap publications, 106 Bases checklist actio
 
 **Policy review / scope of completion:** M0a part 2 has fulfilled its read-only sampling and diagnostic objective. Preserve the **provisional** +2 per recognized rep action, +4 clean-FWA participation, 30-Duskit routine weekly cap, and 100-Duskit personal entry target for further deliberation; do not raise rep rates solely to compensate for low historical activity. The clean-FWA action stays **ineligible for issuance** without independently evidenced canonical roster completeness and historical player attribution. BL triples, early swaps, recurring rep stipends, voluntary transfers, giveaway fulfillment, and sponsorship remain unmodeled or undecided. Neither the sample nor this review authorizes live currency, backpay, product launch, or an automatic giveaway.
 
+**Later product decision (2026-11-12; separate from this historical simulation):** The project owner set the **initial personal Duskits +1 shop price at 100 Duskits for one dedicated Discord role**. This supersedes only the *price's provisional status* noted in the M0a sample review above; the eight-week sample figures, simulated earning rates, 30-Duskit draft cap, clean-FWA UNKNOWN conclusions and affordability limitations are unchanged. It does **not** authorize issuance, role assignment, backpay, or production launch.
+
 ## Modeled activities and verdicts
 
 The simulator has two draft earning rows only: clean FWA participation at **+4** per Discord user per war, and recognized FWA rep-work events at **+2** per unique persisted `RepWorkActivityEvent.dedupeKey`. These are draft rates for analysis, not live policy.
