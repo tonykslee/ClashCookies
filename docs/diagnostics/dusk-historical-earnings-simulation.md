@@ -1,7 +1,7 @@
 # Historical Duskits Earnings Simulation
 
 > **M0a, part 2 — bounded offline simulation**
-> **Status:** First real sample executed twice; war-end provenance diagnosis recorded; M0a part 2 remains open pending review
+> **Status:** M0a part 2 completed — bounded real sample, provenance diagnosis, post-fix rerun, and policy-limit review recorded; no issuance authorized
 > **Date:** 2026-11-12
 
 ## Purpose and current result
@@ -14,7 +14,7 @@ The implementation is split deliberately:
 - `src/scripts/duskHistoricalEarningsSimulation.ts` contains the manual operator adapter. It creates a direct Prisma client from a dedicated simulation URL, verifies the transaction is read-only and using the expected database role, then performs bounded `findMany`/`SELECT` reads.
 - `tests/duskHistoricalEarningsSimulation.test.ts` covers identity joins, missing evidence, violations, historical-sensitive links, multi-account collapse, rep-event deduplication, UTC weeks, cap behavior, repeatability, and unsafe configuration refusal.
 
-No wallet, ledger, currency model, migration, bot command, scheduler, poller, external API call, or production write was added. The first real sample used a dedicated SELECT-only connection and was executed twice with the same fixed snapshot; no credentials, player identifiers, or raw rows are recorded here. M0a part 2 remains incomplete pending review of the identity diagnosis and policy implications.
+No wallet, ledger, currency model, migration, bot command, scheduler, poller, external API call, or production write was added. The first real sample used a dedicated SELECT-only connection and was executed twice with the same fixed snapshot; the post-fix run reused the same bounded scope and fixed snapshot. No credentials, player identifiers, or raw rows are recorded here. The M0a part 2 **simulation and review** milestone is complete; live payout eligibility, prices, and approval remain separate open decisions.
 
 ## First real sample — aggregate findings
 
@@ -26,7 +26,28 @@ The bounded sample covered guild `1324040917602013261` from `2026-09-14T00:00:00
 - All 5,900 reported identity conflicts were end-time-only mismatches; each affected war had 50 participation rows with one consistent offset.
 - All 199 production rosters remain `UNKNOWN` because `ClanWarParticipation` has no authoritative completeness marker.
 
-The sample establishes an observed, consistent timestamp-provenance difference, not a blanket time tolerance and not proof that any source row was corrected. The simulator now uses shared persisted `warId`, exact normalized clan/opponent tags, and exact start time as canonical identity. It reconciles a differing end time only when every participation row for that war has one valid common persisted end time. A missing or contradictory end-time set remains `UNKNOWN`; wrong clan, opponent, or start remains an identity conflict. The sample was run before this corrective classifier change, so post-change aggregate award feasibility still requires a bounded rerun and review.
+The initial sample establishes an observed, consistent timestamp-provenance difference, not a blanket time tolerance and not proof that any source row was corrected. Merged PR #1962 updates the simulator to use shared persisted `warId`, exact normalized clan/opponent tags, and exact start time as canonical identity. It reconciles a differing end time only when every participation row for that war has one valid common persisted end time. A missing or contradictory end-time set remains `UNKNOWN`; wrong clan, opponent, or start remains an identity conflict. The operator completed the bounded post-fix rerun below.
+
+## Post-fix rerun and policy-limit review
+
+An operator built merged `dev` commit `1f4843a0` and reran the same SELECT-only scope, guild, eight complete UTC weeks, and `2026-11-13T00:00:00.000Z` snapshot. This is one recorded post-fix run; repeatability was demonstrated by the two matching initial-run reports and deterministic fixture coverage, not by claiming two post-fix executions.
+
+| Measure | Initial run | Post-fix rerun |
+| --- | ---: | ---: |
+| Ended wars / participation rows | 199 / 9,950 | 199 / 9,950 |
+| `WAR_IDENTITY_CONFLICT` participation events | 5,900 | 0 |
+| Complete / UNKNOWN canonical rosters | 0 / 199 | 0 / 199 |
+| Clean-FWA UNKNOWN events | 9,500 | 8,700 |
+| Clean-FWA ineligible events | 450 | 1,250 |
+| Clean-FWA verified awards | 0 | 0 |
+| Recognized FWA rep actions | 589 of 592 | 589 of 592 |
+| Raw simulated rep Duskits | 1,178 | 1,178 |
+
+The 800-row shift from `UNKNOWN` to `INELIGIBLE` reflects later classification after the end-time identity check succeeds; it does **not** establish 800 newly qualified players. `WAR_ROSTER_COMPLETENESS_UNPROVEN=199` remains the gating reason for otherwise relevant FWA rosters. The zero strict/provisional player-link counters do **not** mean that no linked players exist: those downstream checks are not reached when the roster-completeness gate fails. There were 174 `observedSourceUpdates` and zero *proven* correction rows; the latter is an evidence limitation, not a claim that no corrections occurred. Evaluation coverage was 174 completed / 25 missing or incomplete; 329 player-violation rows were observed, but clean-FWA eligibility cannot be established from them without authoritative roster completeness.
+
+Rep-work source mix was 81 FWA base-swap publications, 106 Bases checklist actions, 203 FWA match-mail sends, and 199 Mail checklist actions. Three CWL-source events remained `UNKNOWN`; zero duplicate rep-event keys were observed. Sixteen distinct users had recognized earnings across the eight weeks. Total draft earnings after the per-user weekly 30-Duskit cap were **992 Duskits**, compared with 1,178 uncapped. Only one of those 16 users is projected to reach the proposed 100-Duskit target within seven weeks at their observed eight-week average. This rep-work-heavy sample does not measure ordinary members' possible clean-war or other currently unmodeled earning opportunities.
+
+**Policy review / scope of completion:** M0a part 2 has fulfilled its read-only sampling and diagnostic objective. Preserve the **provisional** +2 per recognized rep action, +4 clean-FWA participation, 30-Duskit routine weekly cap, and 100-Duskit personal entry target for further deliberation; do not raise rep rates solely to compensate for low historical activity. The clean-FWA action stays **ineligible for issuance** without independently evidenced canonical roster completeness and historical player attribution. BL triples, early swaps, recurring rep stipends, voluntary transfers, giveaway fulfillment, and sponsorship remain unmodeled or undecided. Neither the sample nor this review authorizes live currency, backpay, product launch, or an automatic giveaway.
 
 ## Modeled activities and verdicts
 
@@ -133,4 +154,4 @@ The second candidate is clean FWA participation only after the historical sample
 3. Review ended-war discovery, roster completeness, completed evaluation coverage, violation counts, strict/provisional/UNKNOWN attribution, duplicate identities, rep source mix, current rep descriptive cohorts, and per-user weekly cap distributions.
 4. Run the exact same command again with the same fixed `--snapshot` value and compare deterministic output. Investigate source-update observations, proven-correction evidence, timestamp provenance, malformed joins, unexpected duplicate keys, or unsafe credential behavior.
 5. Use the sample and any post-diagnosis rerun to decide whether the two draft activities and the 30-Duskit cap support the 100-Duskit target. Record policy decisions separately from observed evidence.
-6. Keep M0a part 2 open until the timestamp-identity findings, post-change sample, and policy review are complete. A successful local fixture test or an initial SELECT-only run is not a reward authorization.
+6. The timestamp-identity findings, post-change sample, and policy-limit review are now recorded, completing the bounded M0a part 2 **diagnostic** milestone. This remains no authorization for clean-FWA eligibility, reward issuance, retroactive payouts, or market fulfillment.
