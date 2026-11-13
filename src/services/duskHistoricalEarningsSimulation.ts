@@ -25,6 +25,8 @@ export type HistoricalWarRow = {
   warEndTime: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** The persisted schema has no completeness marker; production adapters must use UNKNOWN. */
+  participationCompleteness?: "COMPLETE" | "UNKNOWN";
 };
 
 export type HistoricalParticipationRow = {
@@ -102,6 +104,7 @@ export type UnknownReason =
   | "WAR_IDENTITY_CONFLICT"
   | "WAR_ROSTER_MISSING"
   | "WAR_ROSTER_MALFORMED"
+  | "WAR_ROSTER_COMPLETENESS_UNPROVEN"
   | "WAR_EVALUATION_MISSING"
   | "WAR_EVALUATION_INCOMPLETE"
   | "PLAYER_LINK_MISSING"
@@ -392,10 +395,14 @@ function isKnownFwaRepEvent(event: HistoricalRepWorkEventRow): { source: string;
   const source = comparable(metadata.source);
   const clanKind = comparable(metadata.clanKind);
   if (clanKind === "CWL") return null;
-  if (comparable(event.activityType) === "BASES_CHECKED" && (source === "FWA_BASE_SWAP" || (source === "FWA_MATCH_CHECKLIST" && comparable(metadata.viewType) === "BASES"))) {
-    return { source: source.toLowerCase(), isBaseSwapPublisher: source === "FWA_BASE_SWAP" };
+  if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASE_SWAP") {
+    if (clanKind !== "FWA") return null;
+    return { source: source.toLowerCase(), isBaseSwapPublisher: true };
   }
-  if (comparable(event.activityType) === "MAIL_CHECKED" && source === "FWA_MATCH_CHECKLIST" && comparable(metadata.viewType) === "MAIL") {
+  if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASES_CHECKLIST" && comparable(metadata.viewType) === "BASES") {
+    return { source: source.toLowerCase(), isBaseSwapPublisher: false };
+  }
+  if (comparable(event.activityType) === "MAIL_CHECKED" && source === "MAIL_CHECKLIST" && comparable(metadata.viewType) === "MAIL") {
     return { source: source.toLowerCase(), isBaseSwapPublisher: false };
   }
   if (comparable(event.activityType) === "MAIL_SENT" && source === "FWA_MATCH_MAIL_SEND") {
@@ -535,11 +542,19 @@ export function simulateHistoricalDuskits(input: HistoricalEarningsSimulationInp
   for (const history of histories) {
     const warId = history.warId;
     const participation = participationByWar.get(warId) ?? [];
-    const rosterComplete = isCompleteCanonicalRoster(participation);
+    const rosterShapeValid = isCompleteCanonicalRoster(participation);
+    const rosterComplete = history.participationCompleteness === "COMPLETE" && rosterShapeValid;
     if (rosterComplete) canonicalRosterComplete += 1;
     else {
       canonicalRosterUnknown += 1;
-      incrementReason(unknownReasons, participation.length === 0 ? "WAR_ROSTER_MISSING" : "WAR_ROSTER_MALFORMED");
+      incrementReason(
+        unknownReasons,
+        history.participationCompleteness !== "COMPLETE"
+          ? "WAR_ROSTER_COMPLETENESS_UNPROVEN"
+          : participation.length === 0
+            ? "WAR_ROSTER_MISSING"
+            : "WAR_ROSTER_MALFORMED",
+      );
     }
     const evaluation = evaluationsByWar.get(warId);
     const evaluationComplete = comparable(evaluation?.status) === "COMPLETED" && isSimulationDate(evaluation?.completedAt);

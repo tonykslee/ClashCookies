@@ -100,6 +100,7 @@ function normalizeHistory(row: any): HistoricalWarRow | null {
     warEndTime,
     createdAt: date(row?.createdAt) ?? warStartTime,
     updatedAt: date(row?.updatedAt) ?? warStartTime,
+    participationCompleteness: "UNKNOWN",
   };
 }
 
