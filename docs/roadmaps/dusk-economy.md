@@ -114,7 +114,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 
 | Milestone | Priority | Status | Outcome / exit criterion |
 | --- | --- | --- | --- |
-| **M0 — Policy and evidence audit** | P0 | In progress — first sample executed; diagnosis and review pending | Elle approved +1 rewards in principle; M0a part 1 evidence diagnostic is complete and M0a part 2 has a bounded read-only simulator with fixture tests. The first real sample was executed twice, but war-end provenance findings, a post-change rerun, and policy review remain required; fulfillment/eligibility details remain open |
+| **M0 — Policy and evidence audit** | P0 | In progress — M0a parts 1 and 2 complete; M0b pending | Evidence audit and bounded historical SELECT-only simulation are reviewed. Rep-work is the strongest modeled evidence; clean-FWA remains UNKNOWN without independent roster-completeness proof. Rates, eligibility, redemption terms, and sponsor/fulfillment policy remain provisional; no issuance approved |
 | **M1 — Ledger and Dusk hub** | P0 | Not started | Transaction-safe wallet/ledger, idempotency, admin audit/adjust/reverse, read-only `/dusk` balance/history, tests/docs/permission coverage; no payout rules yet |
 | **M2 — Verified earning engine** | P0 | Not started | Start with a small set of reliable signals; per-user limits, no duplicate payouts, replay/recovery and manual reconciliation; expand BL/clean-war only after eligibility proof |
 | **M3 — Personal Market redemption** | P1 | Not started | Price/eligibility controls, explicit fulfillment owner, hold/commit/refund, per-giveaway limits, no automated prize issue until approved |
@@ -125,7 +125,7 @@ Use existing domain owners as **evidence only**, without writing currency into o
 ### Implementation slices — scoped PRs, not one giant change
 
 - [x] M0a part 1: Document eligibility/evidence sources, query designs and hard UNKNOWN states. See [Dusk reward evidence diagnostic](../diagnostics/dusk-reward-evidence.md). No database sample or reward issuance was performed.
-- [ ] M0a part 2: Run and review a bounded read-only weekly Duskits earning simulation, without ledger, currency writes, back-pay or production changes. The first eight-week sample was executed twice with a fixed snapshot and aggregate findings are recorded; the timestamp-identity diagnosis, post-change rerun, and policy review remain open. See [historical earnings simulation diagnostic](../diagnostics/dusk-historical-earnings-simulation.md).
+- [x] M0a part 2: Ran and reviewed a real eight-week, one-guild SELECT-only historical earnings simulation and a post-fix rerun against the same fixed scope. The corrected classifier eliminated 5,900 war-end-only identity conflicts without issuing or recognizing any clean-FWA rewards: all 199 rosters remain unproven. Recognized FWA rep work and draft calibration are documented in the [historical earnings simulation diagnostic](../diagnostics/dusk-historical-earnings-simulation.md). This closes the **simulation/review task only**, not reward eligibility, rate approval, or issuance.
 - [ ] M0b: Confirm giveaway sponsorship policies with Elle, Rising Maple touch points, and member-facing terms. Record decisions in this file.
 - [ ] M1a: Ledger transaction + policy schema, safe migration and ownership boundaries (no commands).
 - [ ] M1b: Wallet/query/admin adjustments, permissions, help, tests and readme.
@@ -168,7 +168,8 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 | 2026-11-12 | Elle gave permission to incorporate +1 giveaway rewards into Dusk (user-reported); prize eligibility, funding/fulfillment, event caps, and clan-wide scope still need confirmation | Approved in principle; operational terms open |
 | 2026-11-12 | M0a part 1 repository evidence audit completed: FWA rep-work is strongest, clean FWA participation conditional, BL/base-swap/transfers require stronger proof; no production sample run | Evidence diagnostic complete; simulation pending |
 | 2026-11-12 | Prepared a manual bounded read-only M0a part 2 simulator with strict/provisional/UNKNOWN reporting, source deduplication, weekly cap analysis and deterministic fixture tests; no historical database sample was run | Implementation prepared; M0a part 2 remains incomplete |
-| 2026-11-12 | First eight-week SELECT-only sample executed twice with a fixed snapshot: 199 ended wars, 9,950 participation rows, and 5,900 end-time-only identity conflicts; all production rosters remained UNKNOWN | Timestamp provenance diagnosis and post-change review remain open; no issuance authorized |
+| 2026-11-12 | First eight-week SELECT-only sample executed twice with a fixed snapshot: 199 ended wars, 9,950 participation rows, and 5,900 end-time-only identity conflicts; all production rosters remained UNKNOWN | Initial provenance diagnosis; subsequently addressed by PR #1962 |
+| 2026-11-12 | M0a part 2 reviewed after merged PR #1962 and a bounded post-fix rerun: no remaining war-identity conflicts; all 199 rosters still UNKNOWN; 589 recognized rep actions, 1,178 uncapped / 992 capped draft Duskits, 16 observed earning users, and one projected to reach 100 in seven weeks at the observed rate | Simulation milestone complete; +2/action, 30/week, and 100-entry target stay provisional; clean-FWA and other unproven evidence must not earn; no payout/backpay authorized |
 
 ### Success measures (initial)
 
@@ -178,4 +179,4 @@ This is the **vision/roadmap source of truth**, not an implementation spec or au
 - Verified *voluntary* beneficial transfers, sustained 14-day stays, and net before/after composition improvement; also monitor member withdrawals.
 - User comprehension: members understand “Duskits” and where to find earnings/market without a staff explanation.
 
-**Next action:** Run and review the [bounded historical earnings simulation](../diagnostics/dusk-historical-earnings-simulation.md) using a dedicated SELECT-only role, then record evidence-backed policy decisions; finalize giveaway fulfillment rules separately. **No code or reward issuance is authorized by this roadmap alone.**
+**Next action:** Work through M0b giveaway governance (fulfillment owner, funding, eligibility, terms, and Rising Maple coexistence), then scope M1a's separate wallet/ledger ownership. Do not treat the completed simulation as approval for rates, clean-FWA eligibility, retroactive rewards, production deployment, or issuance. **No code or reward issuance is authorized by this roadmap alone.**
