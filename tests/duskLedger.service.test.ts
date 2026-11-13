@@ -28,6 +28,9 @@ const txMock = vi.hoisted(() => ({
     create: vi.fn(),
     findMany: vi.fn(),
   },
+  repWorkActivityEvent: {
+    findUnique: vi.fn(),
+  },
 }));
 
 const prismaMock = vi.hoisted(() => ({
@@ -40,6 +43,7 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     findFirst: vi.fn(),
     findMany: vi.fn(),
+    create: vi.fn(),
   },
   duskLedgerSourceEvent: {
     findUnique: vi.fn(),
@@ -48,6 +52,10 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
   },
   duskLedgerReversalRequest: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+  },
+  repWorkActivityEvent: {
     findUnique: vi.fn(),
   },
   $transaction: vi.fn(),
@@ -144,6 +152,9 @@ describe("DuskLedgerService", () => {
     prismaMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
     prismaMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
     prismaMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
+    prismaMock.duskLedgerEntry.findMany.mockResolvedValue([]);
+    prismaMock.duskLedgerReversalRequest.findMany.mockResolvedValue([]);
+    prismaMock.repWorkActivityEvent.findUnique.mockResolvedValue(null);
   });
 
   it("creates a zero-balance wallet keyed only by Discord identity", async () => {
@@ -622,6 +633,87 @@ describe("DuskLedgerService", () => {
         actorDiscordUserId: "admin-1",
       }),
     ).rejects.toBeInstanceOf(DuskLedgerValidationError);
+  });
+
+  it("bounds administrator audit history and reversal reads without writing", async () => {
+    const service = new DuskLedgerService();
+
+    await expect(service.listAuditEntryPage("member-1", null, 999)).resolves.toEqual({
+      entries: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    await expect(service.listReversalRequests("member-1", 999)).resolves.toEqual([]);
+
+    expect(prismaMock.duskLedgerEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 51, where: { walletId: "member-1" } }),
+    );
+    expect(prismaMock.duskLedgerReversalRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 100, where: { walletId: "member-1" } }),
+    );
+    expect(prismaMock.duskWallet.create).not.toHaveBeenCalled();
+    expect(prismaMock.duskLedgerEntry.create).not.toHaveBeenCalled();
+    expect(prismaMock.duskLedgerReversalRequest.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("keeps a source reference UNKNOWN when no canonical event or owner evidence exists", async () => {
+    const service = new DuskLedgerService();
+    prismaMock.duskLedgerEntry.findFirst.mockResolvedValue({
+      id: "entry-1",
+      walletId: "member-1",
+      sourceEventType: "future-source",
+      sourceEventId: "future-event-1",
+      attribution: { claimed: true },
+      policy: null,
+      sourceEventClaim: null,
+    });
+
+    const result = await service.getSourceEventAudit("member-1", "entry-1", "guild-1");
+
+    expect(result?.sourceEvent).toBeNull();
+    expect(result?.claimRecordedForEntry).toBe(false);
+    expect(result?.operationalEvidence).toMatchObject({
+      status: "UNKNOWN",
+      summary: expect.stringContaining("No supported operational evidence owner"),
+    });
+    expect(prismaMock.duskWallet.create).not.toHaveBeenCalled();
+    expect(prismaMock.duskLedgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  it("marks owner evidence contradicted when the operational row crosses wallet or guild scope", async () => {
+    const service = new DuskLedgerService();
+    prismaMock.duskLedgerEntry.findFirst.mockResolvedValue({
+      id: "entry-1",
+      walletId: "member-1",
+      sourceEventType: "rep-work-activity",
+      sourceEventId: "rep-event-1",
+      attribution: null,
+      policy: null,
+      sourceEventClaim: null,
+    });
+    prismaMock.duskLedgerSourceEvent.findUnique.mockResolvedValue(null);
+    prismaMock.repWorkActivityEvent.findUnique.mockResolvedValue({
+      id: "rep-event-1",
+      guildId: "guild-1",
+      activityType: "BASES_CHECKED",
+      discordUserId: "different-member",
+      clanTag: "#RD",
+      syncMessageId: null,
+      sourceMessageId: "message-1",
+      sourceTrackedMessageId: null,
+      warId: null,
+      warStartTime: null,
+      opponentTag: null,
+      eventAt: new Date("2026-11-12T20:00:00.000Z"),
+      createdAt: new Date("2026-11-12T20:00:00.000Z"),
+    });
+
+    const result = await service.getSourceEventAudit("member-1", "entry-1", "guild-1");
+
+    expect(result?.operationalEvidence).toMatchObject({
+      status: "CONTRADICTED",
+      owner: "RepWorkActivityService",
+    });
   });
 
   it("protects the migration with nonnegative, uniqueness, and append-only constraints", () => {

@@ -21,6 +21,7 @@ const OVERVIEW_PAGE_SIZE = 4;
 const HELP_TIMEOUT_MS = 10 * 60 * 1000;
 const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
+  "dusk-admin:audit",
   "clan:configure",
   "clan:cwl-tags",
   "clan:raid-tags",
@@ -122,6 +123,15 @@ type HelpOption = {
 };
 
 const COMMAND_DOCS: Record<string, CommandDoc> = {
+  "dusk-admin": {
+    summary: "Administrator-only, read-only audit of a current guild member's Duskits wallet.",
+    details: [
+      "Use `/dusk-admin audit user:<member>` to inspect a current member's balance, lifetime qualifying earnings, bounded ledger history, source-event provenance, and reversal review records.",
+      "The command requires a live guild member record and an explicit Discord Administrator permission check at runtime. A clan-leader role or `/permission` grant cannot substitute for Administrator.",
+      "Every response is private and read-only. Missing or contradictory source evidence is shown as UNKNOWN/unverified; a source reference alone is not proof.",
+    ],
+    examples: ["/dusk-admin audit user:@member"],
+  },
   dusk: {
     summary: "View your private Duskits wallet and transaction history.",
     details: [
