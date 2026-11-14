@@ -22,6 +22,7 @@ export type BackupConfig = {
   stagingDirectory: string;
   b2Bucket: string;
   b2Endpoint: string;
+  b2Region: string;
   b2Prefix: string;
   ageRecipients: string[];
   weeklyUtcDay: number;
@@ -145,6 +146,7 @@ export function loadBackupConfig(env: NodeJS.ProcessEnv = process.env): BackupCo
     stagingDirectory: requiredValue(env, "BACKUP_STAGING_DIR"),
     b2Bucket: requiredValue(env, "BACKUP_B2_BUCKET"),
     b2Endpoint: requiredValue(env, "BACKUP_B2_ENDPOINT"),
+    b2Region: requiredValue(env, "AWS_DEFAULT_REGION"),
     b2Prefix: prefix,
     ageRecipients,
     weeklyUtcDay: parseDay(env, "BACKUP_WEEKLY_UTC_DAY", 0),
@@ -238,7 +240,7 @@ export function createB2ObjectStore(
     PATH: process.env.PATH,
     AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
-    AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION ?? "us-east-1",
+    AWS_DEFAULT_REGION: config.b2Region,
     AWS_EC2_METADATA_DISABLED: "true",
   };
 

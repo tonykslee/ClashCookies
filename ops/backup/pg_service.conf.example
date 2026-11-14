@@ -1,7 +1,9 @@
 # Install as /etc/clashcookies/pg_service.conf.
+# Localhost-only PostgreSQL Docker port on the verified production host (server SSL is off).
+# Reassess transport security before using a non-loopback or remote database connection.
 [clashcookies_backup]
 host=127.0.0.1
 port=5432
 dbname=clashcookies
 user=clashcookies_backup
-sslmode=require
+sslmode=disable
