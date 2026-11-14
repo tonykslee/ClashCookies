@@ -167,7 +167,6 @@ Use SSH port forwarding to access the UIs from your machine instead of exposing 
 ssh -i C:\Projects\clashcookies_codex ^
   -L 3001:127.0.0.1:3001 ^
   -L 8080:127.0.0.1:8080 ^
-  -L 19999:127.0.0.1:19999 ^
   codex@64.23.164.95
 ```
 
@@ -194,7 +193,7 @@ cd ops/observability
 ./scripts/generate-dozzle-users.sh ops-admin '<strong-password>' ops@example.com 'ClashCookies Ops'
 ```
 
-3. Start the stack:
+3. **Only when explicitly provisioning/redeploying the stack:** review the compose file first. The observed 2026-11-14 host intentionally removed Netdata, so the following legacy command is **not approved** for routine operations; it may recreate retired services.
 
 ```bash
 docker compose -f ops/observability/docker-compose.yml up -d
