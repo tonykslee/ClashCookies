@@ -1,5 +1,14 @@
 # Observability
 
+## Production backup monitoring — 2026-11-14 operator checkpoint
+
+The independent [production backup readiness roadmap](roadmaps/production-backup-readiness.md) and [backup runbook](../ops/backup/README.md) govern backup activation. The operator configured an external Healthchecks.io `ClashCookies Production Backup` check for UTC cron `15 2 * * *`, with paired HTTPS POST success and `/fail` URLs stored only in root-owned `/etc/clashcookies/backup.env` (0600). A harmless `/log` POST and a simulated failure POST from the restricted backup account both returned HTTP 200; the operator confirmed corresponding events and receipt of the failure email. The check was reported **paused** afterward.
+
+**NOT proven:** real backup success delivery, automatic missed-schedule behavior, independently confirmed B2 object freshness, or a live daily backup. The backup systemd timer remains disabled and the service inactive. Never issue a success ping merely to clear a test failure or claim a backup occurred.
+
+**Actual droplet deployment caveat:** Uptime Kuma and Dozzle were preserved, but staging and Netdata were removed by separate explicit authorization to reclaim storage. The configuration and historical instructions below may still describe staged/mirror services or Netdata as installable; they are **not** evidence those services currently run. Do not run a blanket observability Compose `up` command that could recreate retired components without a separately reviewed plan.
+
+
 ## Historical participation backfill
 
 The one-time operator utility emits bounded, structured lines with the prefix `[membership-participation-backfill]`. Per-war lines include guild, sync, clan, canonical war ID, action, archive/reconstruction/existing/planned counts, the compatibility `expected_team_size` field (derived from distinct canonical participant tags when the roster is complete), projected coverage, and reason codes. The summary includes selected syncs, canonical FWA candidates, validated/dirty point evidence, exact-tuple canonicalization and stale-ID repair counts, unmatched/ambiguous tuple counts, planned rows, unreconstructable rows, COMPLETE/PARTIAL/UNKNOWN projected rosters, skips, and conflicts. `canonical_roster_complete`, `canonical_roster_unreconstructable`, `missing_canonical_participants`, and `malformed_participant` explain roster completeness decisions. The backfill is all-or-nothing per canonical war: incomplete or malformed archives plan no participation inserts. Dry runs perform no writes; apply mode prints a post-write verification summary against the derived canonical roster count.

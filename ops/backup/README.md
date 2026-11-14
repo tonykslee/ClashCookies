@@ -36,9 +36,9 @@ Do not grant the production key `bypassGovernance`. In Governance mode, that cap
 
 ## Provisioning evidence and open recovery gates (operator session, 2026-11-14 UTC)
 
-Detailed VM inspection, authorized cleanup, installed tools, production DB roles/objects/authentication, and the pending approved-but-unexecuted DB role creation are recorded in [`docs/diagnostics/backup-operator-preflight-2026-11-14.md`](../../docs/diagnostics/backup-operator-preflight-2026-11-14.md). Treat it as an operator-observed snapshot, **not** a validated backup or deployment. The `ops/backup/README.md` checklist remains the canonical backup activation checklist.
+Detailed VM inspection and **subsequent** role/account provisioning, isolated runner build, monitoring delivery tests, and disabled systemd installation are recorded in the [operator preflight continuation](../../docs/diagnostics/backup-operator-preflight-2026-11-14.md#2026-11-14-operator-continuation--subsequent-verified-results). The [production backup readiness roadmap](../../docs/roadmaps/production-backup-readiness.md) tracks milestone progress; this runbook's checklist is the **canonical activation gate**. All host results are operator-reported snapshots, not proof of a real off-site database restore or production release.
 
-This is an **operator-reported setup and harmless test-object recovery record**, not a production database backup or a production release authorization. Evidence was checked from the operator's displayed B2/AWS/age command results; GitHub CI did not independently inspect the provider account or private key custody. Do not commit key identifiers, credentials, private age identities, or authentication output.
+This is an **operator-reported setup, harmless test-object recovery, and subsequent provisioning record**, not a completed real encrypted off-site database backup or a production release authorization. Evidence was checked from the operator's displayed B2/AWS/age command results; GitHub CI did not independently inspect the provider account or private key custody. Do not commit key identifiers, credentials, private age identities, or authentication output.
 
 ### Completed and observed
 
@@ -50,18 +50,22 @@ This is an **operator-reported setup and harmless test-object recovery record**,
 - **Harmless test-object recovery:** an age-encrypted test text object was uploaded with explicit **Governance** retention of 14 days plus one hour. S3 `head-object` and `get-object-retention` verified expected size, SHA-256 metadata, AES-256 encryption, and retain-until **2026-11-28 05:28:14 UTC**. The separate recovery key downloaded the same encrypted bytes; its SHA-256 matched the original; **both** off-server age identities independently decrypted to the original text byte-for-byte. This did **not** execute the production backup script, upload database data, or test PostgreSQL restore.
 - **Temporary access cleanup:** temporary administrative bootstrap credentials were reported revoked; three temporary local AWS profiles were removed, and ten named test/authentication files were deleted. Permanent key secrets remain in the operator's password manager, not in Git. The protected test object remains until its retention/lifecycle rules permit cleanup.
 
-### Preflight and activation checklist — still BLOCKED
+### Preflight and activation checklist — first REAL backup and release still BLOCKED
 
-- [x] B2 bucket, Governance retention, lifecycle rules, scoped keys, and harmless encrypted-object recovery verified from operator CLI output.
-- [ ] Verify a durable **off-host administrative recovery path** consistent with the runbook (the temporary bootstrap key was revoked), plus independent key/escrow retrieval and local storage protections.
-- [x] Operator inspection verified host PostgreSQL **17** `pg_dump`, `age`, AWS CLI, isolated Node **24.22.3**, and **7.6 GB** available storage after authorized staging/Netdata cleanup (dated snapshot; recheck immediately before any dump). Production `/healthz` remained HTTP 200. See the [detailed preflight](../../docs/diagnostics/backup-operator-preflight-2026-11-14.md).
-- [ ] Verify external network connectivity from the final, least-privileged service context and ensure available space for both plaintext and encrypted temporary dumps.
-- [ ] Operator **approved** creating the least-privilege `clashcookies_backup` database role and scoped `CONNECT`/`USAGE`/`SELECT` grants including defaults for future tables/sequences, but **role creation/grants have NOT happened**. Verify exact SQL, secure password handling, effective permissions and a read-only host connection. Separately provision/verify non-login OS identity, service-file authority, `.pgpass` 0600 ownership/mode, root-only env file and absence of bot/production credentials in diagnostic output.
-- [ ] Verify the B2 signing region from the **operator-populated** backup environment: the corrected template requires `AWS_DEFAULT_REGION=us-west-004` alongside the matching `s3.us-west-004.backblazeb2.com` endpoint, and runtime configuration fails closed if the region is absent. An operator-reported scoped B2 list succeeded with that region, but verify under the final service identity before activation.
-- [ ] Configure and verify external heartbeat, failure alerts, and expected-object monitoring with only non-sensitive payload fields.
-- [ ] Obtain separate authorization to install the service and perform one controlled production PostgreSQL 17 dump/encrypted off-site upload; verify the resulting object-specific Governance retention and checksum.
-- [ ] Retrieve that **actual database backup** using recovery credentials, verify checksum and age decryption, and restore/validate it into isolated disposable PostgreSQL 17.
-- [ ] Obtain separate approval before enabling the systemd timer; keep production release and PR #1983 blocked pending all release/recovery gates in `docs/ai-development-workflow.md`.
+- [x] Private B2 bucket, Governance 14-day default, 14/56/186-day explicit retention policy, 15/57/187-day lifecycle hide rules, scoped keys, and harmless encrypted test-object retrieval/decryption verified from operator output.
+- [ ] Independently verify durable **off-host administrative recovery key** custody and both age identity escrow locations and access protections. The earlier temporary admin bootstrap key was revoked; provider administrative recovery must not depend on that key.
+- [x] Host PostgreSQL `17` client (`pg_dump` 17.12), `age` 1.1.1, AWS CLI 2.40.3, dedicated Node 24.22.3 and isolated runner compiled from reviewed `dev` commit `15677f03`. Operator checked restricted account tool/read permissions and denied source write permissions.
+- [x] Dedicated `clashcookies_backup` PostgreSQL role, scoped `CONNECT`/`USAGE`/`SELECT` on 119 tables and 16 sequences plus default privileges, no write permission, SCRAM login via backup-account-owned `0600` `.pgpass`. Non-login/no-sudo Linux backup account, restricted staging path, root-only `0600` `backup.env` and safe service config verified.
+- [x] B2 credentials, `us-west-004` region/endpoint and two age **public** recipients configured; read-only B2 listing succeeded as restricted backup account. **Actual backup upload permission/metadata remains to be exercised only after explicit approval.**
+- [x] Reviewed/CI-green code/config PR [#1989](https://github.com/tonykslee/ClashCookies/pull/1989) merged. `systemd-analyze verify` passed and operator installed service and timer as root-owned `0644`, **both inactive**; service static, timer **disabled**.
+- [x] External Healthchecks.io cron `15 2 * * *` UTC configured. Restricted backup account delivered harmless `/log` and simulated `/fail` HTTPS POSTs (both HTTP 200); operator saw both events and confirmed failure email. Monitor reported paused afterward.
+- [ ] Verify **actual backup success-path notification** and independent expected-object monitoring; manual transport/failure tests and the existence of a scheduled check do not prove successful unattended backups.
+- [x] Immediately before this handoff, service inactive, timer disabled, production `/healthz` HTTP 200 and **7.2 GB free** were verified; these are dated checks. **Recheck space/health/active state before any real dump**, allowing both plaintext and encrypted temporary archive space.
+- [ ] **Separate explicit approval still required** for first controlled production PostgreSQL 17 `pg_dump`, dual-age encryption and real B2 upload (possibly daily/weekly/monthly object classes according to UTC date). Then verify object-specific SHA-256, size, retention, and cleanup under least privilege; never place unencrypted dumps in shared locations.
+- [ ] Independently retrieve **that actual encrypted production database backup**, validate cryptographic checksum and decryption off-host, and restore into disposable PostgreSQL 17 with schema/data/integrity checks. Never restore over live production.
+- [ ] Separate explicit approval before **enabling the timer**. Hold release and [draft PR #1983](https://github.com/tonykslee/ClashCookies/pull/1983) until all recovery, migration-failure, staging/waiver and deployment gates are resolved.
+
+**Installed does not mean active:** `systemctl start clashcookies-backup.service` would initiate a real production dump/encrypt/upload and must not be used as a routine diagnostic. `systemctl enable --now clashcookies-backup.timer` is likewise forbidden before authorization.
 
 ### Provider/Windows setup lessons
 
@@ -71,9 +75,9 @@ This is an **operator-reported setup and harmless test-object recovery record**,
 
 ## Manual VM setup
 
-This section is an operator runbook, not an activation performed by this repository change.
+This section is an operator runbook. The 2026-11-14 operator subsequently executed the approved preparation steps and installed the unit files **inactive/disabled**; the repository itself did not activate the backup. For current results, use the readiness roadmap and operator continuation rather than repeating these installation steps.
 
-**Verified host alignment (2026-11-14 operator preflight):** The service template selects `/opt/clashcookies-node24/bin/node` (Node 24.22.3), not the absent `/usr/bin/node`. The PostgreSQL service example uses `sslmode=disable` only for the verified `127.0.0.1` Docker-published connection (server SSL is off), and the B2 example sets the matching `us-west-004` endpoint/signing region. These are repository configuration changes, **not** proof of installed or working backup services. Before installation, validate actual Node 24 runner compatibility, host-only TCP binding, and the final service identity. Never use the active production checkout as the backup runner.
+**Verified host alignment (2026-11-14):** The service template selects `/opt/clashcookies-node24/bin/node` (Node 24.22.3), not the absent `/usr/bin/node`. The PostgreSQL service example uses `sslmode=disable` only for the verified `127.0.0.1` Docker-published connection (server SSL is off), and the B2 example sets the matching `us-west-004` endpoint/signing region. PR #1989 merged these reviewed changes. The operator built the isolated runner and installed the units **inactive/disabled**, but did not run a database backup or off-site restore. Never use the active production checkout as the backup runner.
 
 1. Install PostgreSQL 17 client tools, `age`, Node.js compatible with the application, and the AWS CLI on the host or approved backup runner.
 2. Create a non-login `clashcookies-backup` OS account with no sudo access.

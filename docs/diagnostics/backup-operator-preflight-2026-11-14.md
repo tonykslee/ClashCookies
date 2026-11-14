@@ -1,10 +1,12 @@
 # Production backup infrastructure preflight — operator record (2026-11-14 UTC)
 
 **Repository:** `tonykslee/ClashCookies` · **base:** `dev`  
-**Status:** operator-observed infrastructure checks; **NOT** evidence of a completed production backup, restored recovery, deployed backup service, or production release.  
-**Companion checklist/runbook:** [`ops/backup/README.md`](../../ops/backup/README.md). **Canonical workflow:** [`docs/ai-development-workflow.md`](../ai-development-workflow.md).
+**Status:** operator-observed initial preflight plus subsequent same-day provisioning; **NOT** evidence of a real encrypted off-site production database backup, restored recovery, active backup schedule, or production application release.  
+**Companion checklist/runbook:** [`ops/backup/README.md`](../../ops/backup/README.md). **Backup readiness roadmap:** [`docs/roadmaps/production-backup-readiness.md`](../roadmaps/production-backup-readiness.md). **Canonical workflow:** [`docs/ai-development-workflow.md`](../ai-development-workflow.md).
 
 > This record preserves results displayed by the human operator in a live Linux SSH session, plus the matching repository configuration inspected on `dev`. It is not an independent SSH/DB inspection by ChatGPT or GitHub CI. All measurements are a dated snapshot and must be rechecked before production changes. Never place production passwords, B2 secrets, private age identities, Discord tokens, or SSH keys in Git, chat, command output, or PR comments.
+
+> **Reading guide:** Sections below titled original preflight/handoff preserve the earlier snapshot before backup role creation. The [continuation section](#2026-11-14-operator-continuation--subsequent-verified-results) supersedes stale pending-action statements. No step should be repeated merely because it appears as pending in the historical baseline.
 
 ## Boundaries and outcome
 
@@ -56,7 +58,7 @@ Additional operational note: Ubuntu `needrestart` reported a newer installed ker
 - Server `SHOW ssl;` was **off**. The example `ops/backup/pg_service.conf.example` still says `sslmode=require`, which cannot work as-is. For the **local host-only published loopback** connection, propose `sslmode=disable` with `host=127.0.0.1`; validate exact Docker topology and keep the port bound to localhost. Do **not** weaken authentication rules globally or expose PostgreSQL publicly.
 - `pg_dump` runner uses PostgreSQL service name `clashcookies_backup` and `PGOPTIONS=-c default_transaction_read_only=on`. `pg_service.conf` contains no password, while the `clashcookies-backup` OS identity must own a 0600 `.pgpass`.
 
-### Authorized, but not yet executed: create backup DB role
+### Original role authorization (subsequently executed; historical)
 
 Operator explicitly approved a new account that can **log in using its own SCRAM password**, with `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`, and the minimum necessary `CONNECT` on the `clashcookies` database, `USAGE` on `public`, and `SELECT` on existing `public` tables and sequences. Include `ALTER DEFAULT PRIVILEGES FOR ROLE clashcookies IN SCHEMA public` to grant `SELECT` on future tables and sequences created by that owner. Scope future grants to the current owner/schema; separately reassess when new owners/schemas are introduced.
 
@@ -68,7 +70,7 @@ See `ops/backup/README.md` for provider evidence and caveats. Verified from user
 
 **Not tested:** real production database dump/encryption/upload, actual retained B2 database object verification, remote retrieval/decryption/restore of real production data, unattended timer and monitoring behavior, or application/migration recovery from a real failure.
 
-## Remaining gates and operator handoff (in order)
+## Original remaining-gates handoff (historical; superseded below)
 
 1. **Next approved operation:** create the specifically authorized, least-privilege PostgreSQL `clashcookies_backup` role and scoped grants with secure interactive password entry. Verify effective grants, defaults, host TCP SCRAM login and read-only behavior; do not show secrets.
 2. Provision the non-login, no-sudo `clashcookies-backup` **OS** account and isolated directories; establish root-only `/etc/clashcookies/backup.env`, root-owned public `pg_service.conf`, service-account-only `0600` `.pgpass`, and owned temporary staging directory. This is distinct from DB role creation and should be separately approved before changes.
@@ -80,3 +82,40 @@ See `ops/backup/README.md` for provider evidence and caveats. Verified from user
 8. Explicitly resolve release-gate decisions for staging absence/waiver, Netdata/monitoring architecture, deployment identity, live checkout hygiene and migration-failure recovery. Only then consider timer approval and the separate `dev` → `main` release review. **Never auto-promote** and **never merge runtime/code changes without approval**.
 
 **Operator interaction convention:** one safe, clearly labeled command per step; user has an existing Linux `tilo@clashcookies` SSH session; Windows local commands must be one physical CMD-compatible line. Stop on unexpected results, preserve existing resources, and do not request credentials in chat.
+
+
+## 2026-11-14 operator continuation — subsequent verified results
+
+This section supersedes the originally pending role/configuration and host-installation tasks above. All host/DB evidence here was supplied through the operator's displayed Linux terminal output, **not** independently inspected by GitHub or ChatGPT. Do not repeat creation or installation operations without checking current state.
+
+### PostgreSQL identity and protected configuration — COMPLETE for preflight
+
+- Operator created the dedicated login role `clashcookies_backup` with `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT` and SCRAM password. Granted scoped `CONNECT` to `clashcookies`, `USAGE` on `public`, and `SELECT` on **119 existing tables and 16 sequences**, with `ALTER DEFAULT PRIVILEGES FOR ROLE clashcookies IN SCHEMA public` covering future tables and sequences from that owner. Effective privileges and a forbidden `DELETE ... WHERE FALSE` were tested; write was denied. No existing rows were modified.
+- Linux `clashcookies-backup` is non-login, password-locked, non-sudo. `/var/lib/clashcookies-backup` is owned by this account, mode `0700`.
+- `/etc/clashcookies/pg_service.conf` is root-owned `0644`, points to host-only `127.0.0.1:5432` with `sslmode=disable` on a verified SSL-disabled PostgreSQL server. `/etc/clashcookies/.pgpass` is backup-account-owned `0600`. The operator rotated the backup role password to a strong unique value and verified password-based, read-only login as the service account (`clashcookies_backup|clashcookies|on`).
+- `/etc/clashcookies/backup.env` is root-owned `0600`; protected values include a bucket/prefix-scoped B2 upload credential, both distinct age **public** recipients, and Healthchecks.io success/failure URLs. Private age identities, recovery key, and operator secrets remain off-host; no secret values are recorded here.
+- Manual age encryption from these two configured recipients produced a **336-byte encrypted harmless message**. Both private identities had previously independently decrypted a separate harmless B2 test object off-host. This is **not** evidence of a production dump recovery.
+
+### Reviewed source and isolated backup runner — COMPLETE for preparation
+
+- PR [#1989](https://github.com/tonykslee/ClashCookies/pull/1989) was merged into `dev` as `15677f03796f14c098af8d7dad22888bd691acde` after successful CI. It corrected systemd Node to `/opt/clashcookies-node24/bin/node`, localhost-only PostgreSQL `sslmode=disable` template, and B2 signing region to `us-west-004` with a fail-closed required setting.
+- The operator created `/opt/clashcookies` owned by `tilo` with mode `0755`, cloned `dev` via unauthenticated HTTPS after SSH-key authentication failed, and verified exact revision `15677f03` and a clean working tree. This is **not** the production `main` checkout.
+- Using Node `24.22.3`/npm `11.19.1`, `npm ci --ignore-scripts --no-audit --no-fund` installed 310 packages; `prisma generate` generated Prisma Client `5.22.0`; `node scripts/compile-typescript.js` created `dist/scripts/backup.js`. No `npm start`, `prisma migrate deploy`, Discord bot, database backup, or data upload was run.
+- As `clashcookies-backup`, checks passed for Node, compiled-runner and PostgreSQL configuration readability, `.pgpass` access, staging-directory write permission, inability to modify source/compiled runner, `age`/AWS CLI/`pg_dump` executability, and JavaScript syntax. Backup-account access to root-only `backup.env` was denied as designed.
+- `systemd-analyze verify` passed. With separate operator approval, both units were installed root-owned `0644`, then `daemon-reload` ran. `clashcookies-backup.service` is **loaded/static/inactive**; `clashcookies-backup.timer` is **loaded/disabled/inactive**. No backup service start or timer enablement has been authorized.
+
+### B2 and monitoring — transport verified, real backup NOT tested
+
+- The restricted backup account received only runtime-exported credentials from a root read of `backup.env` and successfully completed an AWS S3 **list-only** operation against the private B2 bucket at `us-west-004` (output `1`). This does **not** prove the real production upload, object verification, or retention path.
+- External Healthchecks.io check `ClashCookies Production Backup` uses UTC cron `15 2 * * *` (02:15 UTC). The operator configured HTTPS POST success and `/fail` endpoints and verified protected paired URLs without revealing them.
+- Under the restricted backup account, TLS to the endpoint negotiated **TLSv1.3**. A harmless `/log` POST returned **HTTP 200** and appeared as a **Log** event; a simulated JSON `/fail` POST returned **HTTP 200**, appeared as a **Failure** event and generated an **email alert** reported received by the operator. The check was reported **paused again** after the test. The success endpoint has not been tested end-to-end; a real successful backup has not occurred; independent expected-object monitoring remains unverified.
+- The latest operator preflight showed `clashcookies-backup.service` inactive, timer inactive/disabled, production `http://127.0.0.1:8085/healthz` **HTTP 200**, root filesystem **24 GB total, 17 GB used, 7.2 GB free (70%)**. Available space must be rechecked before dumping.
+
+### Next gates and explicit approval boundaries
+
+1. **NOT AUTHORIZED YET:** First controlled PostgreSQL 17 custom-format dump of the live database, temporary restricted staging, dual-age encryption, and B2 upload of the encrypted archive. The assistant requested explicit authorization; the operator instead asked to reopen the Windows SSH tunnel and hand off documentation. Do **not** infer approval. Check current service configuration, plaintext temporary-file handling, disk headroom, B2 permissions/retention requirements and live health before requesting this authorization again. Starting `clashcookies-backup.service` executes a real backup and upload; it is not a harmless test.
+2. **Recovery evidence still BLOCKED:** After authorized upload, independently retrieve the **real** encrypted object with off-host read-only recovery credentials, verify its SHA-256/size and Governance retention, decrypt using an off-host private identity, inspect `pg_restore --list`, restore into isolated disposable **PostgreSQL 17**, and validate schema/data/integrity; never restore over production.
+3. **Key/monitoring remaining:** Verify durable off-host admin recovery key access and independent age key escrow; confirm expected-object alerts, success-path notifications, and final unattended behavior. Do not commit real key material, private monitoring URLs or emails into documentation.
+4. **Timer and release remain separate:** Timer remains disabled/inactive pending recovery and separate explicit approval. Production `main`/draft [PR #1983](https://github.com/tonykslee/ClashCookies/pull/1983) remain blocked; resolve staging absence/waiver, removed Netdata config vs actual deployment, deploy identity, live checkout hygiene, and migration-failure rollback before release.
+
+**Windows CMD development tunnel:** operator-managed `127.0.0.1:15432` → server `127.0.0.1:5432` over SSH. Keep the tunnel in a dedicated CMD window and never store SSH private keys in Git. The separate SSH `codex` identity should not be assumed to have sudo/Docker; all privileged host actions require operator approval.
