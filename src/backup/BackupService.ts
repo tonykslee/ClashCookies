@@ -10,10 +10,13 @@ export const BACKUP_RETENTION_DAYS = {
   monthly: 186,
 } as const;
 
+const BACKUP_RETENTION_SAFETY_MS = 60 * 60 * 1000;
+
 export type RetentionClass = keyof typeof BACKUP_RETENTION_DAYS;
 
 export type BackupConfig = {
   databaseService: string;
+  pgDumpPath: string;
   pgServiceFile: string;
   pgPassFile: string;
   stagingDirectory: string;
@@ -111,6 +114,14 @@ function parseDay(env: NodeJS.ProcessEnv, name: string, fallback: number): numbe
   return value;
 }
 
+function parseCalendarDay(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = env[name] === undefined ? fallback : Number(env[name]);
+  if (!Number.isInteger(value) || value < 1 || value > 31) {
+    throw new Error(`${name} must be an integer from 1 through 31`);
+  }
+  return value;
+}
+
 function parsePositiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const value = env[name] === undefined ? fallback : Number(env[name]);
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
@@ -128,6 +139,7 @@ export function loadBackupConfig(env: NodeJS.ProcessEnv = process.env): BackupCo
 
   return {
     databaseService: requiredValue(env, "BACKUP_DATABASE_SERVICE"),
+    pgDumpPath: requiredValue(env, "BACKUP_PG_DUMP_PATH"),
     pgServiceFile: requiredValue(env, "BACKUP_PG_SERVICEFILE"),
     pgPassFile: requiredValue(env, "BACKUP_PGPASSFILE"),
     stagingDirectory: requiredValue(env, "BACKUP_STAGING_DIR"),
@@ -136,7 +148,7 @@ export function loadBackupConfig(env: NodeJS.ProcessEnv = process.env): BackupCo
     b2Prefix: prefix,
     ageRecipients,
     weeklyUtcDay: parseDay(env, "BACKUP_WEEKLY_UTC_DAY", 0),
-    monthlyUtcDay: parseDay(env, "BACKUP_MONTHLY_UTC_DAY", 1),
+    monthlyUtcDay: parseCalendarDay(env, "BACKUP_MONTHLY_UTC_DAY", 1),
     maxAttempts: parsePositiveInteger(env, "BACKUP_MAX_ATTEMPTS", 3),
     heartbeatUrl: env.BACKUP_HEARTBEAT_URL?.trim() || undefined,
     failureAlertUrl: env.BACKUP_FAILURE_ALERT_URL?.trim() || undefined,
@@ -175,6 +187,13 @@ export function createCommandRunner(): CommandRunner {
 }
 
 /** Runs PostgreSQL 17 pg_dump through a service file and a read-only transaction guard. */
+function assertPostgres17DumpVersion(versionOutput: string): void {
+  const match = versionOutput.match(/PostgreSQL\)?\s+(\d+)(?:\.\d+)?/i);
+  if (!match || Number(match[1]) !== 17) {
+    throw new Error("Configured pg_dump must be PostgreSQL 17");
+  }
+}
+
 export function createPgDumpRunner(
   config: BackupConfig,
   commandRunner: CommandRunner = createCommandRunner()
@@ -187,9 +206,11 @@ export function createPgDumpRunner(
       PGPASSFILE: config.pgPassFile,
       PGOPTIONS: "-c default_transaction_read_only=on",
     };
+    const version = await commandRunner(config.pgDumpPath, ["--version"], { env });
+    assertPostgres17DumpVersion(`${version.stdout}\n${version.stderr}`);
     await commandRunner(
-      "pg_dump",
-      ["--format=custom", "--no-password", "--file", outputPath, "--dbname", config.databaseService],
+      config.pgDumpPath,
+      ["--format=custom", "--no-password", "--file", outputPath, "--dbname", `service=${config.databaseService}`],
       { env }
     );
   };
@@ -346,27 +367,35 @@ async function verifyUploadedObject(
 /** Retries an idempotent unique-object upload while refusing to overwrite a mismatched object. */
 async function uploadWithRetry(
   store: ObjectStore,
-  input: PutObjectInput,
+  input: Omit<PutObjectInput, "retainUntil">,
+  retentionDays: number,
   bytes: number,
   sha256: string,
   maxAttempts: number,
-  sleep: (milliseconds: number) => Promise<void>
-): Promise<void> {
+  sleep: (milliseconds: number) => Promise<void>,
+  now: () => Date
+): Promise<Date> {
+  let requiredRetainUntil: Date | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const existing = await store.headObject(input.key);
     if (existing) {
-      await verifyUploadedObject(store, input.key, bytes, sha256, input.retainUntil);
-      return;
+      requiredRetainUntil ??= new Date(now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS);
+      await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
+      return requiredRetainUntil;
     }
+    requiredRetainUntil = new Date(
+      now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS
+    );
     try {
-      await store.putObject(input);
-      await verifyUploadedObject(store, input.key, bytes, sha256, input.retainUntil);
-      return;
+      await store.putObject({ ...input, retainUntil: requiredRetainUntil });
+      await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
+      return requiredRetainUntil;
     } catch (error) {
       if (attempt === maxAttempts) throw error;
       await sleep(250 * 2 ** (attempt - 1));
     }
   }
+  throw new Error("Backup upload did not complete");
 }
 
 /** Runs one encrypted dump upload and removes every temporary artifact on success or failure. */
@@ -395,22 +424,20 @@ export async function runBackup(
     const objects: BackupObject[] = [];
 
     for (const retentionClass of selectRetentionClasses(createdAt, config)) {
-      const retainUntil = new Date(
-        createdAt.getTime() + BACKUP_RETENTION_DAYS[retentionClass] * 24 * 60 * 60 * 1000
-      );
       const key = objectKey(config, createdAt, retentionClass, backupId);
-      await uploadWithRetry(
+      const retainUntil = await uploadWithRetry(
         dependencies.objectStore,
         {
           bodyPath: encryptedPath,
           key,
           metadata: { backupid: backupId, retention: retentionClass, sha256 },
-          retainUntil,
         },
+        BACKUP_RETENTION_DAYS[retentionClass],
         encryptedStats.size,
         sha256,
         config.maxAttempts,
-        sleep
+        sleep,
+        now
       );
       objects.push({
         key,

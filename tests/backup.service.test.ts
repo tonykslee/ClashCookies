@@ -21,6 +21,7 @@ const temporaryDirectories: string[] = [];
 
 const baseConfig: Omit<BackupConfig, "stagingDirectory"> = {
   databaseService: "clashcookies_backup",
+  pgDumpPath: "/usr/lib/postgresql/17/bin/pg_dump",
   pgServiceFile: "/etc/clashcookies/pg_service.conf",
   pgPassFile: "/etc/clashcookies/.pgpass",
   b2Bucket: "clashcookies-prod-backups",
@@ -83,21 +84,39 @@ afterEach(async () => {
 });
 
 describe("loadBackupConfig", () => {
+  const configEnv = {
+    BACKUP_DATABASE_SERVICE: "backup",
+    BACKUP_PG_DUMP_PATH: "/usr/lib/postgresql/17/bin/pg_dump",
+    BACKUP_PG_SERVICEFILE: "/etc/pg_service.conf",
+    BACKUP_PGPASSFILE: "/etc/.pgpass",
+    BACKUP_STAGING_DIR: "/var/lib/backup",
+    BACKUP_B2_BUCKET: "bucket",
+    BACKUP_B2_ENDPOINT: "https://s3.example.invalid",
+    BACKUP_B2_PREFIX: "prod",
+    BACKUP_AGE_RECIPIENT_PRIMARY: "age1primary",
+    BACKUP_AGE_RECIPIENT_EMERGENCY: "age1emergency",
+  };
+
   it("requires public recipients and a service-file database identity", () => {
     expect(() => loadBackupConfig({})).toThrow("BACKUP_AGE_RECIPIENT_PRIMARY");
-    expect(
-      loadBackupConfig({
-        BACKUP_DATABASE_SERVICE: "backup",
-        BACKUP_PG_SERVICEFILE: "/etc/pg_service.conf",
-        BACKUP_PGPASSFILE: "/etc/.pgpass",
-        BACKUP_STAGING_DIR: "/var/lib/backup",
-        BACKUP_B2_BUCKET: "bucket",
-        BACKUP_B2_ENDPOINT: "https://s3.example.invalid",
-        BACKUP_B2_PREFIX: "prod",
-        BACKUP_AGE_RECIPIENT_PRIMARY: "age1primary",
-        BACKUP_AGE_RECIPIENT_EMERGENCY: "age1emergency",
-      }).databaseService
-    ).toBe("backup");
+    expect(loadBackupConfig(configEnv).databaseService).toBe("backup");
+    expect(loadBackupConfig(configEnv).pgDumpPath).toBe(configEnv.BACKUP_PG_DUMP_PATH);
+  });
+
+  it("accepts calendar month days 1 through 31 and rejects invalid values", () => {
+    expect(loadBackupConfig({ ...configEnv, BACKUP_MONTHLY_UTC_DAY: "31" }).monthlyUtcDay).toBe(31);
+    expect(() => loadBackupConfig({ ...configEnv, BACKUP_MONTHLY_UTC_DAY: "0" })).toThrow(
+      "BACKUP_MONTHLY_UTC_DAY must be an integer from 1 through 31"
+    );
+    expect(() => loadBackupConfig({ ...configEnv, BACKUP_MONTHLY_UTC_DAY: "32" })).toThrow(
+      "BACKUP_MONTHLY_UTC_DAY must be an integer from 1 through 31"
+    );
+  });
+
+  it("documents readable service files and strict service-account password permissions", async () => {
+    const readme = await readFile("ops/backup/README.md", "utf8");
+    expect(readme).toContain("install -o root -g root -m 0644 pg_service.conf");
+    expect(readme).toContain("install -o clashcookies-backup -g clashcookies-backup -m 0600 .pgpass");
   });
 });
 
@@ -106,12 +125,14 @@ describe("command adapters", () => {
     const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
     const commandRunner = async (command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
       calls.push({ command, args, env: options?.env });
-      return { stdout: "", stderr: "" };
+      return args[0] === "--version"
+        ? { stdout: "pg_dump (PostgreSQL) 17.9", stderr: "" }
+        : { stdout: "", stderr: "" };
     };
     await createPgDumpRunner(baseConfig, commandRunner)("/tmp/backup.dump");
     expect(calls[0]).toEqual({
-      command: "pg_dump",
-      args: ["--format=custom", "--no-password", "--file", "/tmp/backup.dump", "--dbname", "clashcookies_backup"],
+      command: baseConfig.pgDumpPath,
+      args: ["--version"],
       env: expect.objectContaining({
         PGSERVICE: "clashcookies_backup",
         PGSERVICEFILE: "/etc/clashcookies/pg_service.conf",
@@ -119,6 +140,24 @@ describe("command adapters", () => {
         PGOPTIONS: "-c default_transaction_read_only=on",
       }),
     });
+    expect(calls[1]).toEqual({
+      command: baseConfig.pgDumpPath,
+      args: ["--format=custom", "--no-password", "--file", "/tmp/backup.dump", "--dbname", "service=clashcookies_backup"],
+      env: expect.objectContaining({
+        PGSERVICE: "clashcookies_backup",
+        PGSERVICEFILE: "/etc/clashcookies/pg_service.conf",
+        PGPASSFILE: "/etc/clashcookies/.pgpass",
+        PGOPTIONS: "-c default_transaction_read_only=on",
+      }),
+    });
+  });
+
+  it("fails closed when the configured pg_dump is not PostgreSQL 17", async () => {
+    const commandRunner = vi.fn(async () => ({ stdout: "pg_dump (PostgreSQL) 16.15", stderr: "" }));
+    await expect(createPgDumpRunner(baseConfig, commandRunner)("/tmp/backup.dump")).rejects.toThrow(
+      "Configured pg_dump must be PostgreSQL 17"
+    );
+    expect(commandRunner).toHaveBeenCalledTimes(1);
   });
 
   it("sends Governance Object Lock arguments and treats only 404 as missing", async () => {
@@ -162,7 +201,7 @@ describe("runBackup", () => {
       expect.stringContaining("/weekly/2026/11/15/"),
     ]);
     expect(uploads[0]?.metadata.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(uploads[0]?.retainUntil.toISOString()).toBe("2026-11-29T02:15:00.000Z");
+    expect(uploads[0]?.retainUntil.toISOString()).toBe("2026-11-29T03:15:00.000Z");
     expect(BACKUP_RETENTION_DAYS.daily).toBe(14);
     expect(BACKUP_RETENTION_DAYS.weekly).toBe(56);
   });
@@ -177,6 +216,23 @@ describe("runBackup", () => {
     );
     expect(keys).toHaveLength(3);
     expect(keys.some((key) => key.includes("/monthly/"))).toBe(true);
+  });
+
+  it("anchors retention to upload time instead of capture start time", async () => {
+    const directory = await makeDirectory();
+    const uploads: Array<{ retainUntil: Date }> = [];
+    const store = makeStore({ put: async (input) => uploads.push({ retainUntil: input.retainUntil }) });
+    const dependencies = makeDependencies(store);
+    const times = [
+      new Date("2026-11-15T02:15:00.000Z"),
+      new Date("2026-11-15T05:00:00.000Z"),
+      new Date("2026-11-15T05:01:00.000Z"),
+    ];
+    dependencies.now = () => times.shift() ?? new Date("2026-11-15T05:01:00.000Z");
+
+    await runBackup({ ...baseConfig, stagingDirectory: directory }, dependencies);
+
+    expect(uploads[0]?.retainUntil.toISOString()).toBe("2026-11-29T06:00:00.000Z");
   });
 
   it("does not leave temporary dump or encrypted files after failure", async () => {
