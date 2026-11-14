@@ -376,7 +376,7 @@ export class CompoReplacementService {
       if ((row.missedWars ?? 0) > 0) {
         inactiveByWarsTagSet.add(playerTag);
         if (!inactiveLabelByPlayerTag.has(playerTag)) {
-          inactiveLabelByPlayerTag.set(playerTag, `${Math.max(1, Math.trunc(row.missedWars ?? 0))}w`);
+          inactiveLabelByPlayerTag.set(playerTag, `${Math.max(1, Math.trunc(row.missedWars ?? 0))}WAR`);
         }
       }
     }

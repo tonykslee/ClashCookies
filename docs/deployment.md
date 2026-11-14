@@ -2,7 +2,9 @@
 
 ## Deployment Model
 
-Production and staging deploy to droplet-hosted containers with health-gated promotion.
+> **Deployment-state caveat (operator-observed 2026-11-14):** The design below documents how production and optional staging/mirror deployments are intended to work. **Staging containers, database volumes and checkout have been explicitly decommissioned** to reclaim disk space, and staging is **not currently deployed**. Production app/database containers remain active and healthy. Do not assume staging exists, automatically recreate it, or claim staging-gate coverage without an explicit reviewed release decision/waiver. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md).
+
+Production and staging *when provisioned* use droplet-hosted containers with health-gated promotion.
 
 Runtime expectations:
 
@@ -77,6 +79,8 @@ From the droplet host, use:
 `/livez` is process liveness only. `/healthz` should succeed only when the app is ready.
 
 ## Deployment Notes
+
+- **Backup release gate:** The B2 bucket, scoped credentials, and harmless encrypted test-object recovery were verified from operator CLI results on 2026-11-14 UTC, but **no actual PostgreSQL off-site restore** was performed. The backup timer remains disabled and production release stays blocked. See `ops/backup/README.md` for the provisioning evidence and preflight checklist.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.

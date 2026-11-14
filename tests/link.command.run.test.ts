@@ -5,6 +5,7 @@ import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
+import * as compoActualStateService from "../src/services/CompoActualStateService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -95,6 +96,8 @@ import { buildDescriptionEmbeds } from "../src/commands/link/LinkListRender";
 import {
   formatLinkListViolationCountLabel,
   formatLinkListTenureLabel,
+  formatLinkListCompoLabel,
+  formatLinkListCompoFreshnessLabel,
   getLinkListSortModeLabel,
   getNextLinkListSortMode,
   normalizeLinkListSortMode,
@@ -1800,8 +1803,20 @@ describe("/link run", () => {
     ]);
     expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
     expect(getLinkListSelectableColumnsForTest()).toContain("violations");
+    expect(getLinkListSelectableColumnsForTest()).toContain("compo");
     expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
     expect(getLinkListColumnLabelForTest("violations")).toBe("Violations (30d)");
+    expect(getLinkListColumnLabelForTest("compo")).toBe("Compo");
+    expect(
+      parseLinkListColumnsSelectCustomIdForTest(
+        buildLinkListColumnsSelectCustomIdForTest(
+          "111111111111111111",
+          "#PQL0289",
+          "discord",
+          ["townhall", "player-name", "weight", "compo"],
+        ),
+      )?.columns,
+    ).toEqual(["townhall", "player-name", "weight", "compo"]);
   });
 
   it("sorts violation counts within one section by count, known zero, null, name, tag, and default index", () => {
@@ -2183,6 +2198,226 @@ describe("/link run", () => {
     expect(row).toMatch(
       /^\u2705\s+`18`\s+`Tilonius`\s+`166k`\s+`lead`\s+`#QR9R0LGJ9`\s+\u{1F9CD}$/u,
     );
+  });
+
+  it("formats Compo indicators for surplus, deficit, zero, unavailable, and the combined low bucket", () => {
+    const deltaByBucket = {
+      TH18: 2,
+      TH17: -3,
+      TH16: 0,
+      TH15: null,
+      TH14: 1,
+      "<=TH13": -4,
+    } as const;
+
+    expect(formatLinkListCompoLabel({ displayBucket: "TH18", deltaByBucket })).toBe("↑2");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH17", deltaByBucket })).toBe("↓3");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH16", deltaByBucket })).toBe("=");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH15", deltaByBucket })).toBe("—");
+    expect(formatLinkListCompoLabel({ displayBucket: "<=TH13", deltaByBucket })).toBe("↓4");
+    expect(formatLinkListCompoLabel({ displayBucket: null, deltaByBucket })).toBe("—");
+  });
+
+  it("renders shared ACTUAL Compo indicators for linked and unlinked players and keeps Weight aligned", async () => {
+    const compoSpy = vi
+      .spyOn(compoActualStateService, "readTrackedClanCurrentComposition")
+      .mockResolvedValue({
+        projection: {
+          deltaByBucket: {
+            TH18: 1,
+            TH17: -2,
+            TH16: 0,
+            TH15: null,
+            TH14: 3,
+            "<=TH13": -4,
+          },
+        },
+        members: [
+          {
+            playerTag: "#PYLQ0289",
+            resolvedWeight: 145000,
+            resolvedBucket: "TH15",
+          },
+          {
+            playerTag: "#QGRJ2222",
+            resolvedWeight: 125000,
+            resolvedBucket: "TH13",
+          },
+          {
+            playerTag: "#LCUV0289",
+            resolvedWeight: null,
+            resolvedBucket: null,
+          },
+        ],
+      } as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Linked Alpha",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Alpha Clan", clanBadge: null, mailConfig: null },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "Alpha", townHall: 15, rank: 1, weight: 0, sourceSyncedAt: new Date() },
+      { playerTag: "#QGRJ2222", playerName: "Bravo", townHall: 13, rank: 2, weight: 0, sourceSyncedAt: new Date() },
+      { playerTag: "#LCUV0289", playerName: "Charlie", townHall: 12, rank: 3, weight: 0, sourceSyncedAt: new Date() },
+    ] as any);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["townhall", "player-name", "weight", "compo"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("Compo: ↑N surplus");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => getInlineRowSegments(row).cells.slice(2).map((cell) => cell.trim()))).toEqual([
+      ["145k", "—"],
+      ["—", "—"],
+      ["125k", "↓4"],
+    ]);
+    expect(compoSpy).toHaveBeenCalledTimes(1);
+    compoSpy.mockRestore();
+  });
+
+  it("keeps same-band ACTUAL indicators identical across rendered linked and unlinked rows", async () => {
+    const members = [
+      { playerTag: "#PYLQ0289", playerName: "Band 161", townHall: 17, rank: 1 },
+      { playerTag: "#QGRJ2222", playerName: "Band 166", townHall: 17, rank: 2 },
+      { playerTag: "#LCUV0289", playerName: "Band 170", townHall: 17, rank: 3 },
+      { playerTag: "#L0Q0289", playerName: "Band 159", townHall: 16, rank: 4 },
+      { playerTag: "#L0Q0290", playerName: "Band Missing", townHall: 16, rank: 5 },
+      { playerTag: "#L0Q02J9", playerName: "Band Deficit", townHall: 15, rank: 6 },
+    ];
+    const sourceSyncedAt = new Date("2026-11-14T04:00:00.000Z");
+    const compoSpy = vi
+      .spyOn(compoActualStateService, "readTrackedClanCurrentComposition")
+      .mockResolvedValue({
+        memberCount: members.length,
+        unresolvedWeightCount: 1,
+        sourceSyncedAt,
+        sourceAgeMs: 3_600_000,
+        selectedHeatMapRefAvailable: true,
+        projection: {
+          deltaByBucket: {
+            TH18: null,
+            TH17: 2,
+            TH16: 0,
+            TH15: -1,
+            TH14: null,
+            "<=TH13": null,
+          },
+        },
+        members: [
+          { playerTag: "#PYLQ0289", resolvedWeight: 161000, resolvedBucket: "TH17" },
+          { playerTag: "#QGRJ2222", resolvedWeight: 166000, resolvedBucket: "TH17" },
+          { playerTag: "#LCUV0289", resolvedWeight: 170000, resolvedBucket: "TH17" },
+          { playerTag: "#L0Q0289", resolvedWeight: 159000, resolvedBucket: "TH16" },
+          { playerTag: "#L0Q0290", resolvedWeight: null, resolvedBucket: null },
+          { playerTag: "#L0Q02J9", resolvedWeight: 145000, resolvedBucket: "TH15" },
+        ],
+      } as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Linked 161",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+      {
+        playerTag: "#LCUV0289",
+        discordUserId: "222222222222222222",
+        discordUsername: "Linked 170",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findUnique.mockResolvedValue({
+      clanBadge: null,
+      name: "Band Clan",
+    });
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Band Clan", clanBadge: null, mailConfig: null },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      members.map((member) => ({
+        ...member,
+        role: "member",
+        sourceSyncedAt,
+      })),
+    );
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["townhall", "player-name", "weight", "compo"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    const rowsByName = new Map(
+      getInlineRows(description).map((row) => {
+        const parsed = getInlineRowSegments(row);
+        return [parsed.playerName.trim(), parsed.cells.map((cell) => cell.trim())] as const;
+      }),
+    );
+    expect(rowsByName.get("Band 161")?.slice(2)).toEqual(["161k", "↑2"]);
+    expect(rowsByName.get("Band 166")?.slice(2)).toEqual(["166k", "↑2"]);
+    expect(rowsByName.get("Band 170")?.slice(2)).toEqual(["170k", "↑2"]);
+    expect(rowsByName.get("Band 159")?.slice(2)).toEqual(["159k", "="]);
+    expect(rowsByName.get("Band Missing")?.slice(2)).toEqual(["—", "—"]);
+    expect(rowsByName.get("Band Deficit")?.slice(2)).toEqual(["145k", "↓1"]);
+    expect(description).toContain(
+      `ACTUAL partial source <t:${Math.floor(sourceSyncedAt.getTime() / 1000)}:R>`,
+    );
+    expect(description).not.toContain("ACTUAL source unavailable");
+    expect(formatLinkListCompoFreshnessLabel({ sourceSyncedAt, partial: false })).toContain(
+      "ACTUAL source",
+    );
+    expect(compoSpy).toHaveBeenCalledTimes(1);
+    compoSpy.mockRestore();
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {

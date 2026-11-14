@@ -278,7 +278,7 @@ describe("/compo place command", () => {
             resolvedBucket: "TH15",
             discordUserId: "456",
             discordMention: "<@456>",
-            inactiveLabel: "6d",
+            inactiveLabel: "2WAR",
             violationCount30d: 0,
             reasons: { filler: false, inactive: true, unlinked: false },
           },
@@ -291,7 +291,7 @@ describe("/compo place command", () => {
             resolvedBucket: "TH15",
             discordUserId: null,
             discordMention: null,
-            inactiveLabel: "6d",
+            inactiveLabel: "7d",
             violationCount30d: 0,
             reasons: { filler: true, inactive: true, unlinked: true },
           },
@@ -361,7 +361,7 @@ describe("/compo place command", () => {
     expect(String(embed?.description ?? "")).toContain("Showing 3 of 4 candidates");
     expect(String(embed?.description ?? "")).toContain("**RR**");
     expect(String(embed?.description ?? "")).toContain("<@123> Alice — 145k — 🧍 filler · ⚠ 3 violations · 📈 surplus TH15 (+3)");
-    expect(String(embed?.description ?? "")).toContain("<@456> Bob — 145k — 😴 inactive 6d");
+    expect(String(embed?.description ?? "")).toContain("<@456> Bob — 145k — 😴 inactive 2WAR");
     expect(String(embed?.description ?? "")).not.toContain("Drew");
     expect(String(embed?.description ?? "")).not.toContain("<@123> Alice — 145k — 📵 unlinked");
     expect(String(embed?.description ?? "")).not.toContain("<@456> Bob — 145k — 📵 unlinked");

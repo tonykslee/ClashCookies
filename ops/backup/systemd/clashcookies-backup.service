@@ -1,0 +1,24 @@
+[Unit]
+Description=ClashCookies encrypted PostgreSQL backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=clashcookies-backup
+Group=clashcookies-backup
+EnvironmentFile=/etc/clashcookies/backup.env
+WorkingDirectory=/opt/clashcookies
+ExecStart=/opt/clashcookies-node24/bin/node /opt/clashcookies/dist/scripts/backup.js
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/clashcookies-backup
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=

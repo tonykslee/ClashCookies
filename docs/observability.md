@@ -1,5 +1,13 @@
 # Observability
 
+## Production backup monitoring — 2026-11-14 operator checkpoint
+
+The independent [production backup readiness roadmap](roadmaps/production-backup-readiness.md) and [backup runbook](../ops/backup/README.md) govern backup activation. The operator configured an external Healthchecks.io `ClashCookies Production Backup` check for UTC cron `15 2 * * *`, with paired HTTPS POST success and `/fail` URLs stored only in root-owned `/etc/clashcookies/backup.env` (0600). A harmless `/log` POST and a simulated failure POST from the restricted backup account both returned HTTP 200; the operator confirmed corresponding events and receipt of the failure email. The check was reported **paused** afterward.
+
+**NOT proven:** real backup success delivery, automatic missed-schedule behavior, independently confirmed B2 object freshness, or a live daily backup. The backup systemd timer remains disabled and the service inactive. Never issue a success ping merely to clear a test failure or claim a backup occurred.
+
+**Actual droplet deployment caveat:** Uptime Kuma and Dozzle were preserved, but staging and Netdata were removed by separate explicit authorization to reclaim storage. The configuration and historical instructions below may still describe staged/mirror services or Netdata as installable; they are **not** evidence those services currently run. Do not run a blanket observability Compose `up` command that could recreate retired components without a separately reviewed plan.
+
 ## Historical participation backfill
 
 The one-time operator utility emits bounded, structured lines with the prefix `[membership-participation-backfill]`. Per-war lines include guild, sync, clan, canonical war ID, action, archive/reconstruction/existing/planned counts, the compatibility `expected_team_size` field (derived from distinct canonical participant tags when the roster is complete), projected coverage, and reason codes. The summary includes selected syncs, canonical FWA candidates, validated/dirty point evidence, exact-tuple canonicalization and stale-ID repair counts, unmatched/ambiguous tuple counts, planned rows, unreconstructable rows, COMPLETE/PARTIAL/UNKNOWN projected rosters, skips, and conflicts. `canonical_roster_complete`, `canonical_roster_unreconstructable`, `missing_canonical_participants`, and `malformed_participant` explain roster completeness decisions. The backfill is all-or-nothing per canonical war: incomplete or malformed archives plan no participation inserts. Dry runs perform no writes; apply mode prints a post-write verification summary against the derived canonical roster count.
@@ -147,17 +155,19 @@ CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] e
 
 ## External Droplet Observability
 
-The current droplet stack uses:
+**Observed deployment snapshot (2026-11-14):** Uptime Kuma and Dozzle are **running/preserved**; Netdata's container, image and named volumes were **removed** with operator authorization to reclaim disk. The staging app/database were also decommissioned. The configuration and instructions below describe the **repository's available/legacy stack**, not a guarantee that every service is currently deployed. In particular, `ops/observability/docker-compose.yml` may recreate Netdata if run without review. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md). Host/container metrics coverage must be reviewed before production release.
 
-- Uptime Kuma for status pages, checks, and Discord alerts
-- Dozzle for live Docker logs
-- Netdata for host and container metrics
+The repository's observability design includes:
+
+- Uptime Kuma for status pages, checks, and Discord alerts (currently preserved)
+- Dozzle for live Docker logs (currently preserved)
+- Netdata for host/container metrics (currently **not installed/running**)
 
 The stack is intentionally private by default:
 
 - Uptime Kuma binds to `127.0.0.1:3001`
 - Dozzle binds to `127.0.0.1:8080`
-- Netdata binds to `127.0.0.1:19999`
+- Netdata *when deployed* binds to `127.0.0.1:19999`; currently removed
 
 Use SSH port forwarding to access the UIs from your machine instead of exposing them publicly:
 
@@ -165,7 +175,6 @@ Use SSH port forwarding to access the UIs from your machine instead of exposing 
 ssh -i C:\Projects\clashcookies_codex ^
   -L 3001:127.0.0.1:3001 ^
   -L 8080:127.0.0.1:8080 ^
-  -L 19999:127.0.0.1:19999 ^
   codex@64.23.164.95
 ```
 
@@ -173,7 +182,7 @@ After the tunnel is open:
 
 - Uptime Kuma: `http://127.0.0.1:3001`
 - Dozzle: `http://127.0.0.1:8080`
-- Netdata: `http://127.0.0.1:19999`
+- Netdata (only if intentionally redeployed): `http://127.0.0.1:19999`
 
 ## Files
 
@@ -192,7 +201,7 @@ cd ops/observability
 ./scripts/generate-dozzle-users.sh ops-admin '<strong-password>' ops@example.com 'ClashCookies Ops'
 ```
 
-3. Start the stack:
+3. **Only when explicitly provisioning/redeploying the stack:** review the compose file first. The observed 2026-11-14 host intentionally removed Netdata, so the following legacy command is **not approved** for routine operations; it may recreate retired services.
 
 ```bash
 docker compose -f ops/observability/docker-compose.yml up -d
@@ -202,6 +211,8 @@ docker compose -f ops/observability/docker-compose.yml up -d
 5. In Uptime Kuma, add a Discord notification endpoint using your Discord webhook URL.
 
 ## Recommended Monitors
+
+**Current deployment note:** Production monitors are applicable. Staging references below are **design examples for an environment that was removed in November 2026**, not monitors/URLs expected to be live; do not create or re-enable staging automatically.
 
 ### Safe default on the droplet
 

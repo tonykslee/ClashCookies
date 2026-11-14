@@ -97,6 +97,8 @@ export type CompoActualStateTrackedClanComposition = {
   selectedHeatMapRefAvailable: boolean;
   deviationScore: number | null;
   healthy: boolean;
+  projection: CompoActualStateProjection;
+  members: CompoActualStateMemberContext[];
 };
 
 export type CompoActualStateExternalClanComposition = {
@@ -677,6 +679,8 @@ export async function readTrackedClanCurrentComposition(input: {
       clan.base.memberCount === 50 &&
       isCompoActualStateProjectionComplete(projection) &&
       isCompoActualStateDeviationHealthy(projection.deviationScore),
+    projection,
+    members: clan.members,
   };
 }
 
