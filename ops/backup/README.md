@@ -36,6 +36,8 @@ Do not grant the production key `bypassGovernance`. In Governance mode, that cap
 
 ## Provisioning evidence and open recovery gates (operator session, 2026-11-14 UTC)
 
+Detailed VM inspection, authorized cleanup, installed tools, production DB roles/objects/authentication, and the pending approved-but-unexecuted DB role creation are recorded in [`docs/diagnostics/backup-operator-preflight-2026-11-14.md`](../../docs/diagnostics/backup-operator-preflight-2026-11-14.md). Treat it as an operator-observed snapshot, **not** a validated backup or deployment. The `ops/backup/README.md` checklist remains the canonical backup activation checklist.
+
 This is an **operator-reported setup and harmless test-object recovery record**, not a production database backup or a production release authorization. Evidence was checked from the operator's displayed B2/AWS/age command results; GitHub CI did not independently inspect the provider account or private key custody. Do not commit key identifiers, credentials, private age identities, or authentication output.
 
 ### Completed and observed
@@ -52,8 +54,9 @@ This is an **operator-reported setup and harmless test-object recovery record**,
 
 - [x] B2 bucket, Governance retention, lifecycle rules, scoped keys, and harmless encrypted-object recovery verified from operator CLI output.
 - [ ] Verify a durable **off-host administrative recovery path** consistent with the runbook (the temporary bootstrap key was revoked), plus independent key/escrow retrieval and local storage protections.
-- [ ] Inspect actual VM state and verify PostgreSQL **17** `pg_dump`, `age`, AWS CLI, Node, sufficient disk space, and required network paths; do not assume access or install anything during preflight.
-- [ ] Verify dedicated least-privilege PostgreSQL backup role and non-login OS identity, service-file authority, `.pgpass` ownership/mode, root-only environment-file access, and absence of bot/production credentials in diagnostic output.
+- [x] Operator inspection verified host PostgreSQL **17** `pg_dump`, `age`, AWS CLI, isolated Node **24.22.3**, and **7.6 GB** available storage after authorized staging/Netdata cleanup (dated snapshot; recheck immediately before any dump). Production `/healthz` remained HTTP 200. See the [detailed preflight](../../docs/diagnostics/backup-operator-preflight-2026-11-14.md).
+- [ ] Verify external network connectivity from the final, least-privileged service context and ensure available space for both plaintext and encrypted temporary dumps.
+- [ ] Operator **approved** creating the least-privilege `clashcookies_backup` database role and scoped `CONNECT`/`USAGE`/`SELECT` grants including defaults for future tables/sequences, but **role creation/grants have NOT happened**. Verify exact SQL, secure password handling, effective permissions and a read-only host connection. Separately provision/verify non-login OS identity, service-file authority, `.pgpass` 0600 ownership/mode, root-only env file and absence of bot/production credentials in diagnostic output.
 - [ ] Resolve and test the B2 signing region in the **operator-populated** backup environment: the current `backup.env.example` still says `AWS_DEFAULT_REGION=us-east-1`, while the tested bucket is in `us-west-004`; do not copy the example blindly. Validate actual AWS CLI behavior against the chosen endpoint before VM activation.
 - [ ] Configure and verify external heartbeat, failure alerts, and expected-object monitoring with only non-sensitive payload fields.
 - [ ] Obtain separate authorization to install the service and perform one controlled production PostgreSQL 17 dump/encrypted off-site upload; verify the resulting object-specific Governance retention and checksum.
@@ -69,6 +72,8 @@ This is an **operator-reported setup and harmless test-object recovery record**,
 ## Manual VM setup
 
 This section is an operator runbook, not an activation performed by this repository change.
+
+**Observed runtime mismatch (2026-11-14):** the host has **no** `/usr/bin/node`; the separately approved, verified Node.js 24 binary is at `/opt/clashcookies-node24/bin/node`. Before service installation, update `ops/backup/systemd/clashcookies-backup.service` through a reviewed code/config PR and explicitly validate the Node 24 backup runner; this is **not** covered by the docs-only merge permission. Likewise the example PostgreSQL `sslmode=require` is incompatible with the observed `SHOW ssl = off`; verify local host-only TCP and use the appropriate reviewed configuration. The active production checkout must not be used as the backup runner.
 
 1. Install PostgreSQL 17 client tools, `age`, Node.js compatible with the application, and the AWS CLI on the host or approved backup runner.
 2. Create a non-login `clashcookies-backup` OS account with no sudo access.
