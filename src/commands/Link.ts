@@ -20,12 +20,14 @@ import {
 } from "discord.js";
 import { Command } from "../Command";
 import { toPositiveCompoWeight } from "../helper/compoActualWeight";
+import { collapseCompoWarWeightBucketForDisplay } from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { InactiveWarService, type InactiveWarMetricRow } from "../services/InactiveWarService";
 import { listFillerAccountTagsForGuild } from "../services/FillerAccountService";
 import { resolveLinkListDisplayWeightsByPlayerTags } from "../services/LinkListWeightService";
+import { readTrackedClanCurrentComposition } from "../services/CompoActualStateService";
 import { WarPlanViolationHistoryService } from "../services/WarPlanViolationHistoryService";
 import {
   homeMembershipAnalyticsService,
@@ -82,6 +84,8 @@ import {
   resolveLinkListTownHall,
   formatLinkListViolationCountLabel,
   formatLinkListTenureLabel,
+  formatLinkListCompoLabel,
+  formatLinkListCompoFreshnessLabel,
   sanitizeInlineCodeCell,
   sanitizeTableText,
   sortLinkListRows,
@@ -713,6 +717,7 @@ async function buildLinkListView(input: {
   const needsViolationCounts =
     sortMode === "violations" || activeColumns.includes("violations");
   const needsHomeAnalytics = sortMode === "tenure" || activeColumns.includes("tenure");
+  const needsCompo = activeColumns.includes("compo");
 
   if (!input.interaction.guildId) {
     return { ok: false, message: "This command can only be used in a server." };
@@ -859,11 +864,43 @@ async function buildLinkListView(input: {
   const links = await listPlayerLinksForClanMembers({
     memberTagsInOrder: memberTags,
   });
-  const weightByTag = await resolveLinkListDisplayWeightsByPlayerTags({
-    playerTagsInOrder: memberTags,
-    guildId: input.interaction.guildId,
-    clanTag: input.clanTag,
-  });
+  const compoComposition = needsCompo
+    ? await readTrackedClanCurrentComposition({
+        guildId: input.interaction.guildId,
+        trackedClan: {
+          tag: input.clanTag,
+          name: tracked?.name ?? input.clanTag,
+        },
+      })
+    : null;
+  const weightByTag = needsCompo
+    ? new Map(
+        (compoComposition?.members ?? []).map((member) => [
+          member.playerTag,
+          member.resolvedWeight,
+        ]),
+      )
+    : await resolveLinkListDisplayWeightsByPlayerTags({
+        playerTagsInOrder: memberTags,
+        guildId: input.interaction.guildId,
+        clanTag: input.clanTag,
+      });
+  const compoMemberByTag = new Map(
+    (compoComposition?.members ?? []).map((member) => [member.playerTag, member]),
+  );
+  const compoFreshnessLabel = needsCompo
+    ? formatLinkListCompoFreshnessLabel({
+        sourceSyncedAt: compoComposition?.sourceSyncedAt,
+        partial:
+          !compoComposition ||
+          compoComposition.memberCount !== 50 ||
+          compoComposition.unresolvedWeightCount > 0 ||
+          !compoComposition.selectedHeatMapRefAvailable ||
+          Object.values(compoComposition.projection.deltaByBucket).some(
+            (delta) => delta === null,
+          ),
+      })
+    : undefined;
   const fillerTags = input.interaction.guildId
     ? await listFillerAccountTagsForGuild({
         guildId: input.interaction.guildId,
@@ -932,6 +969,15 @@ async function buildLinkListView(input: {
         )
       : sanitizeInlineCodeCell(WEIGHT_PLACEHOLDER);
     const weightLabel = sanitizeInlineCodeCell(formatCompactWeightK(weightValue));
+    const compoMember = compoMemberByTag.get(playerTag);
+    const compoLabel = sanitizeInlineCodeCell(
+      formatLinkListCompoLabel({
+        displayBucket: compoMember?.resolvedBucket
+          ? collapseCompoWarWeightBucketForDisplay(compoMember.resolvedBucket)
+          : null,
+        deltaByBucket: compoComposition?.projection.deltaByBucket,
+      }),
+    );
     const inactivityLabel = sanitizeInlineCodeCell(
       formatInactivityMetricLabel({
         daysInactive: inactivityDays,
@@ -979,6 +1025,7 @@ async function buildLinkListView(input: {
             formatLinkListViolationCountLabel(violationsValue),
           ),
           tenureLabel,
+          compoLabel,
           clanTenureValue: homeAnalyticsRow?.clanTenureSyncs ?? null,
           clanTenureIsLowerBound: homeAnalyticsRow?.clanTenureIsLowerBound ?? false,
           clanStreakValue: homeAnalyticsRow?.clanStreakSyncs ?? null,
@@ -1014,6 +1061,7 @@ async function buildLinkListView(input: {
     statusIcons,
     sortMode,
     columns,
+    compoFreshnessLabel,
   });
 
   if (lines.length === 0) {

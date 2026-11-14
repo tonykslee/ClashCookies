@@ -172,4 +172,5 @@ describe("resolveLinkListDisplayWeightsByPlayerTags", () => {
     expect(withoutClan.get("#PQL0289")).toBe(145000);
     expect(deferredSpy).not.toHaveBeenCalled();
   });
+
 });
