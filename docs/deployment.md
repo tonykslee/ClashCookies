@@ -78,6 +78,8 @@ From the droplet host, use:
 
 ## Deployment Notes
 
+- **Backup release gate:** The B2 bucket, scoped credentials, and harmless encrypted test-object recovery were verified from operator CLI results on 2026-11-14 UTC, but **no actual PostgreSQL off-site restore** was performed. The backup timer remains disabled and production release stays blocked. See `ops/backup/README.md` for the provisioning evidence and preflight checklist.
+
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.
 - Observability is documented separately in `docs/observability.md` and stays localhost-only by default on the droplet.

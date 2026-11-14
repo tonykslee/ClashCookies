@@ -34,6 +34,38 @@ An authorized operator must perform these steps in Backblaze before activation:
 
 Do not grant the production key `bypassGovernance`. In Governance mode, that capability is what permits shortening retention or deleting a locked object.
 
+## Provisioning evidence and open recovery gates (operator session, 2026-11-14 UTC)
+
+This is an **operator-reported setup and harmless test-object recovery record**, not a production database backup or a production release authorization. Evidence was checked from the operator's displayed B2/AWS/age command results; GitHub CI did not independently inspect the provider account or private key custody. Do not commit key identifiers, credentials, private age identities, or authentication output.
+
+### Completed and observed
+
+- **Bucket:** `clashcookies-prod-backups` in B2 US West `us-west-004` (`https://s3.us-west-004.backblazeb2.com`), private, SSE-B2 AES-256. B2 `bucket get` reported Object Lock enabled, default **Governance / 14 days**, and revision 5.
+- **Lifecycle:** `b2-lifecycle.json` was applied and read back from B2: `clashcookies-prod/daily/` hides after 15 days, `weekly/` after 57 days, `monthly/` after 187 days; all delete one day after hiding and cancel unfinished large uploads after one day. Actual future lifecycle expiration/deletion has **not** been observed.
+- **Production upload key:** provider key metadata showed one-bucket and `clashcookies-prod/` prefix restrictions, S3 support, no expiry, and exactly `listBuckets`, `listFiles`, `readFiles`, `writeFiles`, `readFileRetentions`, `writeFileRetentions`. It has no delete, Governance-bypass, or bucket-management capabilities. A scoped S3 list and actual test upload succeeded.
+- **Recovery key:** a separate bucket/prefix-restricted, no-expiry S3 key showed exactly `listBuckets`, `listFiles`, `readFiles`, `readFileRetentions`; read-only Object Lock inspection and an actual download succeeded.
+- **Encryption custody:** the operator generated independent primary and emergency age v1.3.2 identities off-server and reported storing backup copies separately. Only public age recipients belong on the eventual backup runner. Independent escrow/permissions audit is still pending.
+- **Harmless test-object recovery:** an age-encrypted test text object was uploaded with explicit **Governance** retention of 14 days plus one hour. S3 `head-object` and `get-object-retention` verified expected size, SHA-256 metadata, AES-256 encryption, and retain-until **2026-11-28 05:28:14 UTC**. The separate recovery key downloaded the same encrypted bytes; its SHA-256 matched the original; **both** off-server age identities independently decrypted to the original text byte-for-byte. This did **not** execute the production backup script, upload database data, or test PostgreSQL restore.
+- **Temporary access cleanup:** temporary administrative bootstrap credentials were reported revoked; three temporary local AWS profiles were removed, and ten named test/authentication files were deleted. Permanent key secrets remain in the operator's password manager, not in Git. The protected test object remains until its retention/lifecycle rules permit cleanup.
+
+### Preflight and activation checklist — still BLOCKED
+
+- [x] B2 bucket, Governance retention, lifecycle rules, scoped keys, and harmless encrypted-object recovery verified from operator CLI output.
+- [ ] Verify a durable **off-host administrative recovery path** consistent with the runbook (the temporary bootstrap key was revoked), plus independent key/escrow retrieval and local storage protections.
+- [ ] Inspect actual VM state and verify PostgreSQL **17** `pg_dump`, `age`, AWS CLI, Node, sufficient disk space, and required network paths; do not assume access or install anything during preflight.
+- [ ] Verify dedicated least-privilege PostgreSQL backup role and non-login OS identity, service-file authority, `.pgpass` ownership/mode, root-only environment-file access, and absence of bot/production credentials in diagnostic output.
+- [ ] Resolve and test the B2 signing region in the **operator-populated** backup environment: the current `backup.env.example` still says `AWS_DEFAULT_REGION=us-east-1`, while the tested bucket is in `us-west-004`; do not copy the example blindly. Validate actual AWS CLI behavior against the chosen endpoint before VM activation.
+- [ ] Configure and verify external heartbeat, failure alerts, and expected-object monitoring with only non-sensitive payload fields.
+- [ ] Obtain separate authorization to install the service and perform one controlled production PostgreSQL 17 dump/encrypted off-site upload; verify the resulting object-specific Governance retention and checksum.
+- [ ] Retrieve that **actual database backup** using recovery credentials, verify checksum and age decryption, and restore/validate it into isolated disposable PostgreSQL 17.
+- [ ] Obtain separate approval before enabling the systemd timer; keep production release and PR #1983 blocked pending all release/recovery gates in `docs/ai-development-workflow.md`.
+
+### Provider/Windows setup lessons
+
+- The initial bucket-console 14-day default appeared as **Compliance**, not Governance. Always inspect actual default mode with the S3 API, and explicitly set/verify **Governance** before relying on the bucket. Object Lock itself remains enabled.
+- On the tested Windows B2 CLI **v5.0.2**, `bucket update --lifecycle-rules` failed in its local JSON parser (`GenericAlias` / `__pydantic_config__`) before the update. The operator instead applied the repo's exact native B2 lifecycle JSON using the B2 Native API with an `ifRevisionIs` precondition, then verified the rules through `b2 bucket get`. Do not treat a failed CLI invocation as an applied lifecycle update.
+- Time-limited bootstrap keys may expire during setup. Minimize their lifetime and privileges, verify capabilities instead of assuming them, revoke them after setup, and remove temporary plaintext AWS credential profiles. Never paste secrets or private age identities into tickets, chat, logs, or Git.
+
 ## Manual VM setup
 
 This section is an operator runbook, not an activation performed by this repository change.
