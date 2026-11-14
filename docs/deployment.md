@@ -2,7 +2,9 @@
 
 ## Deployment Model
 
-Production and staging deploy to droplet-hosted containers with health-gated promotion.
+> **Deployment-state caveat (operator-observed 2026-11-14):** The design below documents how production and optional staging/mirror deployments are intended to work. **Staging containers, database volumes and checkout have been explicitly decommissioned** to reclaim disk space, and staging is **not currently deployed**. Production app/database containers remain active and healthy. Do not assume staging exists, automatically recreate it, or claim staging-gate coverage without an explicit reviewed release decision/waiver. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md).
+
+Production and staging *when provisioned* use droplet-hosted containers with health-gated promotion.
 
 Runtime expectations:
 
