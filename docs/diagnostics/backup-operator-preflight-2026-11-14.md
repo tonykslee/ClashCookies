@@ -6,7 +6,7 @@
 
 > This record preserves results displayed by the human operator in a live Linux SSH session, plus the matching repository configuration inspected on `dev`. It is not an independent SSH/DB inspection by ChatGPT or GitHub CI. All measurements are a dated snapshot and must be rechecked before production changes. Never place production passwords, B2 secrets, private age identities, Discord tokens, or SSH keys in Git, chat, command output, or PR comments.
 
-> **Reading guide:** Sections below titled original preflight/handoff preserve the earlier snapshot before backup role creation. The [continuation section](#2026-11-14-operator-continuation--subsequent-verified-results) supersedes stale pending-action statements. No step should be repeated merely because it appears as pending in the historical baseline.
+> **Reading guide:** Sections below titled original preflight/handoff preserve the earlier snapshot before backup role creation. The **continuation section at the end of this file** supersedes stale pending-action statements. No step should be repeated merely because it appears as pending in the historical baseline.
 
 ## Boundaries and outcome
 
