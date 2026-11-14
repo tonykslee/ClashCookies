@@ -26,6 +26,7 @@ const baseConfig: Omit<BackupConfig, "stagingDirectory"> = {
   pgPassFile: "/etc/clashcookies/.pgpass",
   b2Bucket: "clashcookies-prod-backups",
   b2Endpoint: "https://s3.example.invalid",
+  b2Region: "us-west-004",
   b2Prefix: "clashcookies-prod",
   ageRecipients: ["age1primary", "age1emergency"],
   weeklyUtcDay: 0,
@@ -92,6 +93,7 @@ describe("loadBackupConfig", () => {
     BACKUP_STAGING_DIR: "/var/lib/backup",
     BACKUP_B2_BUCKET: "bucket",
     BACKUP_B2_ENDPOINT: "https://s3.example.invalid",
+    AWS_DEFAULT_REGION: "us-west-004",
     BACKUP_B2_PREFIX: "prod",
     BACKUP_AGE_RECIPIENT_PRIMARY: "age1primary",
     BACKUP_AGE_RECIPIENT_EMERGENCY: "age1emergency",
@@ -101,6 +103,9 @@ describe("loadBackupConfig", () => {
     expect(() => loadBackupConfig({})).toThrow("BACKUP_AGE_RECIPIENT_PRIMARY");
     expect(loadBackupConfig(configEnv).databaseService).toBe("backup");
     expect(loadBackupConfig(configEnv).pgDumpPath).toBe(configEnv.BACKUP_PG_DUMP_PATH);
+    expect(loadBackupConfig(configEnv).b2Region).toBe("us-west-004");
+    const { AWS_DEFAULT_REGION: _omit, ...missingRegion } = configEnv;
+    expect(() => loadBackupConfig(missingRegion)).toThrow("AWS_DEFAULT_REGION");
   });
 
   it("accepts calendar month days 1 through 31 and rejects invalid values", () => {
@@ -111,6 +116,24 @@ describe("loadBackupConfig", () => {
     expect(() => loadBackupConfig({ ...configEnv, BACKUP_MONTHLY_UTC_DAY: "32" })).toThrow(
       "BACKUP_MONTHLY_UTC_DAY must be an integer from 1 through 31"
     );
+  });
+
+  it("pins the isolated Node executable, local-only PostgreSQL service and B2 region examples", async () => {
+    const [systemdService, pgServiceExample, backupEnvExample] = await Promise.all([
+      readFile("ops/backup/systemd/clashcookies-backup.service", "utf8"),
+      readFile("ops/backup/pg_service.conf.example", "utf8"),
+      readFile("ops/backup/backup.env.example", "utf8"),
+    ]);
+    expect(systemdService).toContain(
+      "ExecStart=/opt/clashcookies-node24/bin/node /opt/clashcookies/dist/scripts/backup.js"
+    );
+    expect(systemdService).not.toContain("ExecStart=/usr/bin/node");
+    expect(pgServiceExample).toContain("host=127.0.0.1");
+    expect(pgServiceExample).toContain("sslmode=disable");
+    expect(pgServiceExample).not.toContain("sslmode=require");
+    expect(backupEnvExample).toContain("BACKUP_B2_ENDPOINT=https://s3.us-west-004.backblazeb2.com");
+    expect(backupEnvExample).toContain("AWS_DEFAULT_REGION=us-west-004");
+    expect(backupEnvExample).not.toContain("AWS_DEFAULT_REGION=us-east-1");
   });
 
   it("documents readable service files and strict service-account password permissions", async () => {
@@ -161,9 +184,9 @@ describe("command adapters", () => {
   });
 
   it("sends Governance Object Lock arguments and treats only 404 as missing", async () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const commandRunner = async (command: string, args: string[]) => {
-      calls.push({ command, args });
+    const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    const commandRunner = async (command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+      calls.push({ command, args, env: options?.env });
       return { stdout: "{}", stderr: "" };
     };
     const store = createB2ObjectStore(baseConfig, commandRunner);
@@ -175,6 +198,7 @@ describe("command adapters", () => {
     });
     expect(calls[0]?.args).toContain("--object-lock-mode");
     expect(calls[0]?.args).toContain("GOVERNANCE");
+    expect(calls[0]?.env?.AWS_DEFAULT_REGION).toBe("us-west-004");
     expect(calls[0]?.args).toContain("--object-lock-retain-until-date");
 
     const missingRunner = async () => {
