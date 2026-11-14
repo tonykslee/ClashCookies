@@ -1,0 +1,7 @@
+# Install as /etc/clashcookies/pg_service.conf.
+[clashcookies_backup]
+host=127.0.0.1
+port=5432
+dbname=clashcookies
+user=clashcookies_backup
+sslmode=require

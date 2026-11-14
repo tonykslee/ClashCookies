@@ -35,6 +35,7 @@
     "backfill:membership-history-participation": "node dist/scripts/backfillMembershipHistoryParticipation.js",
     "sync:mirror": "ts-node src/scripts/mirrorSync.ts",
     "sync:fwa-feeds": "ts-node src/scripts/fwaFeedSync.ts",
+    "backup": "node dist/scripts/backup.js",
     "start": "npm run build && npm run start:runtime",
     "start:runtime": "prisma migrate deploy && node dist/ClashCookies.js",
     "test": "vitest run",
