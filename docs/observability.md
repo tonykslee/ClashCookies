@@ -147,17 +147,19 @@ CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] e
 
 ## External Droplet Observability
 
-The current droplet stack uses:
+**Observed deployment snapshot (2026-11-14):** Uptime Kuma and Dozzle are **running/preserved**; Netdata's container, image and named volumes were **removed** with operator authorization to reclaim disk. The staging app/database were also decommissioned. The configuration and instructions below describe the **repository's available/legacy stack**, not a guarantee that every service is currently deployed. In particular, `ops/observability/docker-compose.yml` may recreate Netdata if run without review. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md). Host/container metrics coverage must be reviewed before production release.
 
-- Uptime Kuma for status pages, checks, and Discord alerts
-- Dozzle for live Docker logs
-- Netdata for host and container metrics
+The repository's observability design includes:
+
+- Uptime Kuma for status pages, checks, and Discord alerts (currently preserved)
+- Dozzle for live Docker logs (currently preserved)
+- Netdata for host/container metrics (currently **not installed/running**)
 
 The stack is intentionally private by default:
 
 - Uptime Kuma binds to `127.0.0.1:3001`
 - Dozzle binds to `127.0.0.1:8080`
-- Netdata binds to `127.0.0.1:19999`
+- Netdata *when deployed* binds to `127.0.0.1:19999`; currently removed
 
 Use SSH port forwarding to access the UIs from your machine instead of exposing them publicly:
 
@@ -173,7 +175,7 @@ After the tunnel is open:
 
 - Uptime Kuma: `http://127.0.0.1:3001`
 - Dozzle: `http://127.0.0.1:8080`
-- Netdata: `http://127.0.0.1:19999`
+- Netdata (only if intentionally redeployed): `http://127.0.0.1:19999`
 
 ## Files
 
@@ -202,6 +204,8 @@ docker compose -f ops/observability/docker-compose.yml up -d
 5. In Uptime Kuma, add a Discord notification endpoint using your Discord webhook URL.
 
 ## Recommended Monitors
+
+**Current deployment note:** Production monitors are applicable. Staging references below are **design examples for an environment that was removed in November 2026**, not monitors/URLs expected to be live; do not create or re-enable staging automatically.
 
 ### Safe default on the droplet
 
