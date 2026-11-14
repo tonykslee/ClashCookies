@@ -11,6 +11,9 @@ const prismaMock = vi.hoisted(() => ({
   playerCurrent: {
     findMany: vi.fn(),
   },
+  fwaTrackedClanWarRosterMemberCurrent: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -25,6 +28,7 @@ describe("resolveLinkListDisplayWeightsByPlayerTags", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
   });
 
   it("resolves member, catalog, and player-current weights in priority order", async () => {
@@ -171,5 +175,32 @@ describe("resolveLinkListDisplayWeightsByPlayerTags", () => {
     expect(withoutGuild.get("#PQL0289")).toBe(145000);
     expect(withoutClan.get("#PQL0289")).toBe(145000);
     expect(deferredSpy).not.toHaveBeenCalled();
+  });
+
+  it("uses the selected clan's persisted WAR effective weight as a fallback", async () => {
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      {
+        clanTag: "#PQL0289",
+        playerTag: "#PYLQ0289",
+        effectiveWeight: 145000,
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const resolved = await resolveLinkListDisplayWeightsByPlayerTags({
+      playerTagsInOrder: ["#PYLQ0289"],
+      guildId: "guild-1",
+      clanTag: "#PQL0289",
+    });
+
+    expect(resolved.get("#PYLQ0289")).toBe(145000);
+    expect(prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          playerTag: { in: ["#PYLQ0289"] },
+          effectiveWeight: { not: null },
+        }),
+      }),
+    );
   });
 });

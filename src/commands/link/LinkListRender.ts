@@ -1,5 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 import { toPositiveCompoWeight } from "../../helper/compoActualWeight";
+import type { CompoWarDisplayBucket } from "../../helper/compoWarWeightBuckets";
 
 // Pure link-list render/layout helpers.
 // Keep command registration, DB calls, and interaction routing in Link.ts.
@@ -29,7 +30,8 @@ export type LinkListColumnId =
   | "clan-role"
   | "player-tag"
   | "violations"
-  | "tenure";
+  | "tenure"
+  | "compo";
 
 export const MAX_LINK_LIST_DISPLAY_NAME_CHARS = 15;
 export const MAX_PLAYER_NAME_CHARS = MAX_LINK_LIST_DISPLAY_NAME_CHARS;
@@ -47,6 +49,7 @@ export const LINK_LIST_SELECTABLE_COLUMNS: readonly LinkListColumnId[] = [
   "player-tag",
   "violations",
   "tenure",
+  "compo",
 ];
 
 export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
@@ -60,6 +63,7 @@ export const LINK_LIST_COLUMN_LABELS: Record<LinkListColumnId, string> = {
   "player-tag": "Player Tag",
   violations: "Violations (30d)",
   tenure: "Tenure",
+  compo: "Compo",
 };
 
 const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
@@ -73,6 +77,7 @@ const LINK_LIST_COLUMN_ALIASES: Record<LinkListColumnId, string> = {
   "player-tag": "pt",
   violations: "v30",
   tenure: "tn",
+  compo: "cp",
 };
 
 const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
@@ -86,6 +91,7 @@ const LINK_LIST_COLUMN_ALIAS_TO_ID: Record<string, LinkListColumnId> = {
   pt: "player-tag",
   v30: "violations",
   tn: "tenure",
+  cp: "compo",
 };
 
 const LINK_LIST_LINKED_STATUS_EMOJI = "\u2705";
@@ -110,6 +116,7 @@ export type LinkListRowViewModel = {
   playerTag: string;
   violationsLabel: string;
   tenureLabel?: string;
+  compoLabel?: string;
   clanTenureValue?: number | null;
   clanTenureIsLowerBound?: boolean;
   clanStreakValue?: number | null;
@@ -330,6 +337,7 @@ function getLinkListRowColumnValue(
   if (columnId === "clan-role") return row.clanRoleLabel;
   if (columnId === "violations") return row.violationsLabel;
   if (columnId === "tenure") return row.tenureLabel ?? WEIGHT_PLACEHOLDER;
+  if (columnId === "compo") return row.compoLabel ?? WEIGHT_PLACEHOLDER;
   return row.playerTag;
 }
 
@@ -650,6 +658,24 @@ export function formatLinkListTenureLabel(input: {
   return `C${values[0]}/S${values[1]}/A${values[2]}`;
 }
 
+/** Purpose: render one player's ACTUAL composition surplus/deficit against the shared clan projection. */
+export function formatLinkListCompoLabel(input: {
+  displayBucket: CompoWarDisplayBucket | null | undefined;
+  deltaByBucket:
+    | Record<CompoWarDisplayBucket, number | null>
+    | null
+    | undefined;
+}): string {
+  if (!input.displayBucket || !input.deltaByBucket) return WEIGHT_PLACEHOLDER;
+  const delta = input.deltaByBucket[input.displayBucket];
+  if (delta === null || delta === undefined || !Number.isFinite(delta)) {
+    return WEIGHT_PLACEHOLDER;
+  }
+  const normalized = Math.trunc(delta);
+  if (normalized === 0) return "=";
+  return normalized > 0 ? `↑${normalized}` : `↓${Math.abs(normalized)}`;
+}
+
 export function normalizePositiveTownHall(input: number | null | undefined): number | null {
   if (input === null || input === undefined) return null;
   if (!Number.isFinite(input)) return null;
@@ -685,6 +711,11 @@ export function buildLinkListDescriptionLines(input: {
 
   if (columns.includes("tenure")) {
     lines.push("C = Clan Tenure • S = Clan Streak • A = Alliance Streak");
+  }
+  if (columns.includes("compo")) {
+    lines.push(
+      "Compo: ↑N surplus • ↓N deficit • = on target • — unavailable; partial ACTUAL snapshots reflect resolved persisted roster data.",
+    );
   }
 
   if (linkedRows.length > 0) {

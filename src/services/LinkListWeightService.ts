@@ -20,6 +20,13 @@ type PlayerCurrentRow = {
   currentWeight: number | null;
 };
 
+type WarFallbackRow = {
+  clanTag: string;
+  playerTag: string;
+  effectiveWeight: number | null;
+  updatedAt: Date;
+};
+
 /** Purpose: resolve the display weight for link-list rows using persisted weight precedence. */
 export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
   playerTagsInOrder: string[];
@@ -38,9 +45,29 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
   }
 
   const uniqueOrdered = [...new Set(normalizedOrdered)];
-  const [memberRows, catalogRows, playerCurrentRows] = await Promise.all([
+  const normalizedClanTag = input.clanTag ? normalizeClanTag(input.clanTag) : null;
+  const warRosterCurrent = prisma.fwaTrackedClanWarRosterMemberCurrent;
+  const warFallbackRowsPromise = warRosterCurrent?.findMany
+    ? warRosterCurrent.findMany({
+        where: {
+          playerTag: { in: uniqueOrdered },
+          effectiveWeight: { not: null },
+        },
+        select: {
+          clanTag: true,
+          playerTag: true,
+          effectiveWeight: true,
+          updatedAt: true,
+        },
+        orderBy: [{ updatedAt: "desc" }, { clanTag: "asc" }, { playerTag: "asc" }],
+      })
+    : Promise.resolve([]);
+  const [memberRows, catalogRows, playerCurrentRows, warFallbackRows] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
-      where: { playerTag: { in: uniqueOrdered } },
+      where: {
+        playerTag: { in: uniqueOrdered },
+        ...(normalizedClanTag ? { clanTag: normalizedClanTag } : {}),
+      },
       orderBy: [{ playerTag: "asc" }, { sourceSyncedAt: "desc" }, { clanTag: "asc" }],
       select: {
         playerTag: true,
@@ -62,6 +89,7 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
         currentWeight: true,
       },
     }),
+    warFallbackRowsPromise,
   ]);
   let deferredByPlayerTag = new Map<string, number>();
   if (input.guildId && input.clanTag) {
@@ -99,6 +127,22 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
     currentWeightByTag.set(playerTag, toPositiveCompoWeight(row.currentWeight));
   }
 
+  const warWeightByClanAndTag = new Map<string, number>();
+  const warWeightByTag = new Map<string, number>();
+  for (const row of warFallbackRows as WarFallbackRow[]) {
+    const clanTag = normalizeClanTag(row.clanTag);
+    const playerTag = normalizePlayerTag(row.playerTag);
+    const effectiveWeight = toPositiveCompoWeight(row.effectiveWeight);
+    if (!clanTag || !playerTag || effectiveWeight === null) continue;
+    const clanAndPlayerTagKey = `${clanTag}|${playerTag}`;
+    if (!warWeightByClanAndTag.has(clanAndPlayerTagKey)) {
+      warWeightByClanAndTag.set(clanAndPlayerTagKey, effectiveWeight);
+    }
+    if (!warWeightByTag.has(playerTag)) {
+      warWeightByTag.set(playerTag, effectiveWeight);
+    }
+  }
+
   for (const playerTag of normalizedOrdered) {
     const resolved = resolveEffectivePlayerWeight({
       primaryCandidates: [
@@ -108,7 +152,17 @@ export async function resolveLinkListDisplayWeightsByPlayerTags(input: {
       overrideCandidates: [
         { source: "defer", weight: deferredByPlayerTag.get(playerTag) ?? null },
       ],
-      fallbackCandidates: [{ source: "current", weight: currentWeightByTag.get(playerTag) ?? null }],
+      fallbackCandidates: [
+        { source: "current", weight: currentWeightByTag.get(playerTag) ?? null },
+        {
+          source: "war",
+          weight:
+            normalizedClanTag
+              ? warWeightByClanAndTag.get(`${normalizedClanTag}|${playerTag}`) ?? null
+              : null,
+        },
+        { source: "war", weight: warWeightByTag.get(playerTag) ?? null },
+      ],
     });
     result.set(playerTag, resolved.resolvedWeight);
   }

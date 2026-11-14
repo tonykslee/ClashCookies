@@ -388,7 +388,7 @@ describe("command coverage", () => {
     expect(linkHelpText).toContain("while filler rows can show a trailing");
     expect(linkHelpText).toContain("marker outside inline code");
     expect(linkHelpText).toContain("Sort controls row order while columns control visible fields");
-    expect(linkHelpText).toContain("Available columns are Town Hall, Player Name, Discord Display, Discord Username, Weight, Inactivity, Clan Role, Player Tag, Violations (30d), and Tenure");
+    expect(linkHelpText).toContain("Available columns are Town Hall, Player Name, Discord Display, Discord Username, Weight, Inactivity, Clan Role, Player Tag, Violations (30d), Tenure, and Compo");
     expect(linkHelpText).toContain("Discord Name -> Weight Desc -> Player Tags -> Player Name -> Clan Role -> Inactivity -> Violations (30d) -> Clan Tenure");
     expect(linkHelpText).toContain("Clan Role");
     expect(linkHelpText).toContain("Inactivity");

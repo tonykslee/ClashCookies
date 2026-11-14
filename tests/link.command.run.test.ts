@@ -5,6 +5,7 @@ import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { emojiResolverService } from "../src/services/emoji/EmojiResolverService";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
+import * as compoActualStateService from "../src/services/CompoActualStateService";
 
 const prismaMock = vi.hoisted(() => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -33,6 +34,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   playerCurrent: {
+    findMany: vi.fn(),
+  },
+  fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
   warPlanComplianceEvaluation: {
@@ -95,6 +99,7 @@ import { buildDescriptionEmbeds } from "../src/commands/link/LinkListRender";
 import {
   formatLinkListViolationCountLabel,
   formatLinkListTenureLabel,
+  formatLinkListCompoLabel,
   getLinkListSortModeLabel,
   getNextLinkListSortMode,
   normalizeLinkListSortMode,
@@ -370,6 +375,7 @@ describe("/link run", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.warPlanComplianceEvaluation.findMany.mockReset();
     prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
@@ -385,6 +391,7 @@ describe("/link run", () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.warPlanComplianceEvaluation.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
@@ -1800,8 +1807,20 @@ describe("/link run", () => {
     ]);
     expect(getLinkListSelectableColumnsForTest()).toContain("player-tag");
     expect(getLinkListSelectableColumnsForTest()).toContain("violations");
+    expect(getLinkListSelectableColumnsForTest()).toContain("compo");
     expect(getLinkListColumnLabelForTest("player-tag")).toBe("Player Tag");
     expect(getLinkListColumnLabelForTest("violations")).toBe("Violations (30d)");
+    expect(getLinkListColumnLabelForTest("compo")).toBe("Compo");
+    expect(
+      parseLinkListColumnsSelectCustomIdForTest(
+        buildLinkListColumnsSelectCustomIdForTest(
+          "111111111111111111",
+          "#PQL0289",
+          "discord",
+          ["townhall", "player-name", "weight", "compo"],
+        ),
+      )?.columns,
+    ).toEqual(["townhall", "player-name", "weight", "compo"]);
   });
 
   it("sorts violation counts within one section by count, known zero, null, name, tag, and default index", () => {
@@ -2183,6 +2202,111 @@ describe("/link run", () => {
     expect(row).toMatch(
       /^\u2705\s+`18`\s+`Tilonius`\s+`166k`\s+`lead`\s+`#QR9R0LGJ9`\s+\u{1F9CD}$/u,
     );
+  });
+
+  it("formats Compo indicators for surplus, deficit, zero, unavailable, and the combined low bucket", () => {
+    const deltaByBucket = {
+      TH18: 2,
+      TH17: -3,
+      TH16: 0,
+      TH15: null,
+      TH14: 1,
+      "<=TH13": -4,
+    } as const;
+
+    expect(formatLinkListCompoLabel({ displayBucket: "TH18", deltaByBucket })).toBe("↑2");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH17", deltaByBucket })).toBe("↓3");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH16", deltaByBucket })).toBe("=");
+    expect(formatLinkListCompoLabel({ displayBucket: "TH15", deltaByBucket })).toBe("—");
+    expect(formatLinkListCompoLabel({ displayBucket: "<=TH13", deltaByBucket })).toBe("↓4");
+    expect(formatLinkListCompoLabel({ displayBucket: null, deltaByBucket })).toBe("—");
+  });
+
+  it("renders shared ACTUAL Compo indicators for linked and unlinked players and keeps Weight aligned", async () => {
+    const compoSpy = vi
+      .spyOn(compoActualStateService, "readTrackedClanCurrentComposition")
+      .mockResolvedValue({
+        projection: {
+          deltaByBucket: {
+            TH18: 1,
+            TH17: -2,
+            TH16: 0,
+            TH15: null,
+            TH14: 3,
+            "<=TH13": -4,
+          },
+        },
+        members: [
+          {
+            playerTag: "#PYLQ0289",
+            resolvedWeight: 145000,
+            resolvedBucket: "TH15",
+          },
+          {
+            playerTag: "#QGRJ2222",
+            resolvedWeight: 125000,
+            resolvedBucket: "TH13",
+          },
+          {
+            playerTag: "#LCUV0289",
+            resolvedWeight: null,
+            resolvedBucket: null,
+          },
+        ],
+      } as any);
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      {
+        playerTag: "#PYLQ0289",
+        discordUserId: "111111111111111111",
+        discordUsername: "Linked Alpha",
+        createdAt: new Date("2026-03-15T09:07:00.000Z"),
+      },
+    ]);
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PQL0289", name: "Alpha Clan", clanBadge: null, mailConfig: null },
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", playerName: "Alpha", townHall: 15, rank: 1, weight: 0, sourceSyncedAt: new Date() },
+      { playerTag: "#QGRJ2222", playerName: "Bravo", townHall: 13, rank: 2, weight: 0, sourceSyncedAt: new Date() },
+      { playerTag: "#LCUV0289", playerName: "Charlie", townHall: 12, rank: 3, weight: 0, sourceSyncedAt: new Date() },
+    ] as any);
+    prismaMock.trackedClanRep.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+
+    const interaction = {
+      customId: buildLinkListColumnsSelectCustomIdForTest(
+        "111111111111111111",
+        "#PQL0289",
+        "discord",
+        ["townhall", "player-name"],
+      ),
+      user: { id: "111111111111111111" },
+      guildId: "guild-1",
+      guild: { members: { cache: new Map() } },
+      client: { users: { cache: new Map() } },
+      values: ["townhall", "player-name", "weight", "compo"],
+      deferUpdate: vi.fn().mockResolvedValue(undefined),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      deferred: false,
+      replied: false,
+    };
+
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+
+    const payload = interaction.editReply.mock.calls[0]?.[0] as any;
+    const description = String(payload.embeds[0].toJSON().description ?? "");
+    expect(description).toContain("Compo: ↑N surplus");
+    const rows = getInlineRows(description);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => getInlineRowSegments(row).cells.slice(2).map((cell) => cell.trim()))).toEqual([
+      ["145k", "—"],
+      ["—", "—"],
+      ["125k", "↓4"],
+    ]);
+    expect(compoSpy).toHaveBeenCalledTimes(1);
+    compoSpy.mockRestore();
   });
 
   it("renders unicode yes/no markers in /link list rows", async () => {
@@ -2904,6 +3028,7 @@ describe("/link list select menu", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
@@ -2937,6 +3062,7 @@ describe("/link list select menu", () => {
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -3530,6 +3656,7 @@ describe("/link list sort button", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.trackedClanRep.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
 
@@ -3610,6 +3737,7 @@ describe("/link list sort button", () => {
       },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.trackedClanRep.findMany.mockResolvedValue([
       {
         clanTag: "#PQL0289",
@@ -4002,6 +4130,7 @@ describe("/link list sort button", () => {
     ]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([
       {
         scopeKey: "guild:guild-1|clan:PQL0289",
