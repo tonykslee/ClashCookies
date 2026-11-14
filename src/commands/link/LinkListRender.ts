@@ -676,6 +676,19 @@ export function formatLinkListCompoLabel(input: {
   return normalized > 0 ? `↑${normalized}` : `↓${Math.abs(normalized)}`;
 }
 
+/** Purpose: expose the persisted ACTUAL source age without implying a fresh verification. */
+export function formatLinkListCompoFreshnessLabel(input: {
+  sourceSyncedAt: Date | null | undefined;
+  partial: boolean;
+}): string {
+  const sourceTime = input.sourceSyncedAt?.getTime();
+  const sourceLabel =
+    sourceTime !== undefined && Number.isFinite(sourceTime)
+      ? `<t:${Math.floor(sourceTime / 1000)}:R>`
+      : "unavailable";
+  return `ACTUAL ${input.partial ? "partial " : ""}source ${sourceLabel}`;
+}
+
 export function normalizePositiveTownHall(input: number | null | undefined): number | null {
   if (input === null || input === undefined) return null;
   if (!Number.isFinite(input)) return null;
@@ -702,6 +715,7 @@ export function buildLinkListDescriptionLines(input: {
   statusIcons: LinkListStatusIcons;
   sortMode?: LinkListSortMode;
   columns?: LinkListColumnId[];
+  compoFreshnessLabel?: string;
 }): string[] {
   const { linkedRows, unlinkedRows } = input;
   const columns =
@@ -716,6 +730,7 @@ export function buildLinkListDescriptionLines(input: {
     lines.push(
       "Compo: ↑N surplus • ↓N deficit • = on target • — unavailable; partial ACTUAL snapshots reflect resolved persisted roster data.",
     );
+    lines.push(input.compoFreshnessLabel ?? "ACTUAL source unavailable");
   }
 
   if (linkedRows.length > 0) {

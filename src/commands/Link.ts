@@ -85,6 +85,7 @@ import {
   formatLinkListViolationCountLabel,
   formatLinkListTenureLabel,
   formatLinkListCompoLabel,
+  formatLinkListCompoFreshnessLabel,
   sanitizeInlineCodeCell,
   sanitizeTableText,
   sortLinkListRows,
@@ -887,6 +888,19 @@ async function buildLinkListView(input: {
   const compoMemberByTag = new Map(
     (compoComposition?.members ?? []).map((member) => [member.playerTag, member]),
   );
+  const compoFreshnessLabel = needsCompo
+    ? formatLinkListCompoFreshnessLabel({
+        sourceSyncedAt: compoComposition?.sourceSyncedAt,
+        partial:
+          !compoComposition ||
+          compoComposition.memberCount !== 50 ||
+          compoComposition.unresolvedWeightCount > 0 ||
+          !compoComposition.selectedHeatMapRefAvailable ||
+          Object.values(compoComposition.projection.deltaByBucket).some(
+            (delta) => delta === null,
+          ),
+      })
+    : undefined;
   const fillerTags = input.interaction.guildId
     ? await listFillerAccountTagsForGuild({
         guildId: input.interaction.guildId,
@@ -1047,6 +1061,7 @@ async function buildLinkListView(input: {
     statusIcons,
     sortMode,
     columns,
+    compoFreshnessLabel,
   });
 
   if (lines.length === 0) {
