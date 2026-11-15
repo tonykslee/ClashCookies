@@ -133,7 +133,7 @@ const COMMAND_DOCS: Record<string, CommandDoc> = {
       "The command requires a live guild member record and an explicit Discord Administrator permission check at runtime. A clan-leader role or `/permission` grant cannot substitute for Administrator.",
       "Use `/dusk-admin adjust` for a signed, reasoned technical correction, `/dusk-admin reverse` for a technical reversal of one original ledger entry, and `/dusk-admin resolve` to apply or decline one pending insufficient-funds review. Each mutation previews privately and requires confirmation.",
       "Every response and confirmation is private. Corrections and reversals append immutable entries with actor, reason, signed amount, source reference, timestamp and idempotency provenance; valid voluntary refunds and routine unverified rewards are not supported.",
-      "Mirror and staging runtimes reject wallet mutations. Missing or contradictory source evidence is shown as UNKNOWN/unverified; a source reference alone is not proof.",
+      "Wallet mutations fail closed unless the runtime explicitly verifies active production mode and the separate default-off mutation gate. Mirror, staging, dev, unknown, unset, and conflicting runtime settings reject the operation. Missing or contradictory source evidence is shown as UNKNOWN/unverified; a source reference alone is not proof.",
     ],
     examples: [
       "/dusk-admin audit user:@member",

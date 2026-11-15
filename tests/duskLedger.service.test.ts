@@ -69,6 +69,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  DuskLedgerAmbiguousOutcomeError,
   DuskInsufficientBalanceError,
   DuskLedgerAlreadyReversedError,
   DuskLedgerEventAlreadyClaimedError,
@@ -363,6 +364,30 @@ describe("DuskLedgerService", () => {
     await expect(service.recordEarning({ ...baseInput, amount: 10 })).rejects.toThrow("ledger insert failed");
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
     expect(txMock.duskWallet.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a correction database timeout as ambiguous without claiming it rolled back", async () => {
+    prismaMock.$transaction.mockRejectedValue(Object.assign(new Error("transaction timed out"), { code: "P2028" }));
+    const service = new DuskLedgerService();
+
+    await expect(service.recordCorrection({
+      ...baseInput,
+      amount: -5,
+      actorDiscordUserId: "admin-1",
+    })).rejects.toMatchObject({
+      code: "DUSK_LEDGER_AMBIGUOUS_OUTCOME",
+      reference: {
+        operation: "correction",
+        sourceEventType: "test",
+        sourceEventId: "event-1",
+        idempotencyKey: "request-1",
+      },
+    });
+    await expect(service.recordCorrection({
+      ...baseInput,
+      amount: -5,
+      actorDiscordUserId: "admin-1",
+    })).rejects.toBeInstanceOf(DuskLedgerAmbiguousOutcomeError);
   });
 
   it("returns an idempotent duplicate without charging twice", async () => {

@@ -77,6 +77,16 @@ export type DuskPendingReversalResolutionResult = {
   duplicate: boolean;
 };
 
+export type DuskLedgerMutationReference = {
+  operation: "correction" | "reversal" | "pending-reversal-resolution";
+  ledgerEntryId?: string;
+  idempotencyKey?: string;
+  sourceEventType?: string;
+  sourceEventId?: string;
+  originalEntryId?: string;
+  reversalRequestId?: string;
+};
+
 export type DuskLedgerEntryCursor = {
   createdAt: Date;
   id: string;
@@ -274,6 +284,19 @@ export class DuskLedgerReversalPendingError extends Error {
   readonly code = "DUSK_LEDGER_REVERSAL_PENDING";
 }
 
+export class DuskLedgerAmbiguousOutcomeError extends Error {
+  readonly code = "DUSK_LEDGER_AMBIGUOUS_OUTCOME";
+  readonly reference: DuskLedgerMutationReference;
+  readonly databaseErrorCode: string | null;
+
+  constructor(reference: DuskLedgerMutationReference, cause?: unknown) {
+    super("The Dusk ledger mutation outcome could not be confirmed.");
+    this.name = "DuskLedgerAmbiguousOutcomeError";
+    this.reference = reference;
+    this.databaseErrorCode = getErrorCode(cause);
+  }
+}
+
 type NormalizedLedgerInput = CommonLedgerInput & {
   amount: number;
   transactionType: DuskLedgerTransactionType;
@@ -359,6 +382,32 @@ function isPrismaErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+function getErrorCode(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : null;
+}
+
+function isDefinitelyUnappliedLedgerError(error: unknown): boolean {
+  return (
+    error instanceof DuskLedgerValidationError ||
+    error instanceof DuskInsufficientBalanceError ||
+    error instanceof DuskLedgerIdempotencyConflictError ||
+    error instanceof DuskLedgerAlreadyReversedError ||
+    error instanceof DuskLedgerEventAlreadyClaimedError ||
+    error instanceof DuskLedgerReversalPendingError ||
+    error instanceof DuskLedgerAmbiguousOutcomeError
+  );
+}
+
+function wrapAmbiguousLedgerError(
+  error: unknown,
+  reference: DuskLedgerMutationReference,
+): unknown {
+  if (isDefinitelyUnappliedLedgerError(error)) return error;
+  return new DuskLedgerAmbiguousOutcomeError(reference, error);
+}
+
 function assertSameIdempotentRequest(
   existing: DuskLedgerEntry,
   requested: NormalizedLedgerInput,
@@ -427,11 +476,21 @@ export class DuskLedgerService {
     if (!common.actorDiscordUserId) {
       throw new DuskLedgerValidationError("actorDiscordUserId is required for corrections.");
     }
-    return this.appendSignedEntry({
+    const normalizedInput = {
       ...common,
       amount: normalizeAmount(input.amount, true),
       transactionType: DuskLedgerTransactionType.CORRECTION,
-    });
+    };
+    try {
+      return await this.appendSignedEntry(normalizedInput);
+    } catch (error) {
+      throw wrapAmbiguousLedgerError(error, {
+        operation: "correction",
+        idempotencyKey: common.idempotencyKey,
+        sourceEventType: common.sourceEventType,
+        sourceEventId: common.sourceEventId,
+      });
+    }
   }
 
   /** Purpose: append one compensating entry for an original entry without deleting or editing history. */
@@ -442,6 +501,13 @@ export class DuskLedgerService {
     }
     const originalEntryId = normalizeRequiredString(input.originalEntryId, "originalEntryId", 64);
     const walletId = common.discordUserId;
+    const reference: DuskLedgerMutationReference = {
+      operation: "reversal",
+      idempotencyKey: common.idempotencyKey,
+      sourceEventType: common.sourceEventType,
+      sourceEventId: common.sourceEventId,
+      originalEntryId,
+    };
 
     try {
       return await this.runSerializable(async (tx) => {
@@ -524,8 +590,12 @@ export class DuskLedgerService {
         }
       });
     } catch (error) {
-      if (!isPrismaErrorCode(error, "P2002")) throw error;
-      return this.recoverReversalConflict({ common, originalEntryId, walletId, error });
+      try {
+        if (!isPrismaErrorCode(error, "P2002")) throw error;
+        return await this.recoverReversalConflict({ common, originalEntryId, walletId, error });
+      } catch (recoveryError) {
+        throw wrapAmbiguousLedgerError(recoveryError, reference);
+      }
     }
   }
 
@@ -564,6 +634,10 @@ export class DuskLedgerService {
     ) {
       throw new DuskLedgerValidationError("resolutionType must be APPLIED or DECLINED.");
     }
+    const reference: DuskLedgerMutationReference = {
+      operation: "pending-reversal-resolution",
+      reversalRequestId: requestId,
+    };
 
     const resolve = async (tx: DuskLedgerTransaction): Promise<DuskPendingReversalResolutionResult> => {
       const request = await tx.duskLedgerReversalRequest.findUnique({
@@ -624,18 +698,22 @@ export class DuskLedgerService {
     try {
       return await this.runSerializable(resolve);
     } catch (error) {
-      if (!isPrismaErrorCode(error, "P2002")) throw error;
-      const request = await prisma.duskLedgerReversalRequest.findFirst({
-        where: { id: requestId, walletId },
-        select: DUSK_AUDIT_REVERSAL_SELECT,
-      });
-      const resolution = request?.resolution;
-      if (!resolution) throw error;
-      assertSameReversalResolution(resolution, input.resolutionType, actorDiscordUserId, reason);
-      const entry = resolution.resolutionEntryId
-        ? await prisma.duskLedgerEntry.findUnique({ where: { id: resolution.resolutionEntryId } })
-        : null;
-      return this.buildPendingResolutionResult(prisma, resolution, entry, true);
+      try {
+        if (!isPrismaErrorCode(error, "P2002")) throw error;
+        const request = await prisma.duskLedgerReversalRequest.findFirst({
+          where: { id: requestId, walletId },
+          select: DUSK_AUDIT_REVERSAL_SELECT,
+        });
+        const resolution = request?.resolution;
+        if (!resolution) throw error;
+        assertSameReversalResolution(resolution, input.resolutionType, actorDiscordUserId, reason);
+        const entry = resolution.resolutionEntryId
+          ? await prisma.duskLedgerEntry.findUnique({ where: { id: resolution.resolutionEntryId } })
+          : null;
+        return await this.buildPendingResolutionResult(prisma, resolution, entry, true);
+      } catch (recoveryError) {
+        throw wrapAmbiguousLedgerError(recoveryError, reference);
+      }
     }
   }
 

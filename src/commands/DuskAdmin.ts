@@ -19,18 +19,19 @@ import {
   DuskAuditEntryPage,
   DuskAuditLedgerEntry,
   DuskAuditReversalRequest,
+  DuskLedgerAmbiguousOutcomeError,
   DuskInsufficientBalanceError,
   DuskLedgerAlreadyReversedError,
   DuskLedgerIdempotencyConflictError,
   DuskLedgerReversalPendingError,
   DuskLedgerValidationError,
+  DuskLedgerMutationReference,
   DuskLedgerMutationResult,
   DuskPendingReversalResolutionResult,
   DuskSourceEventAudit,
   duskLedgerService,
 } from "../services/DuskLedgerService";
 import { dozzleLog } from "../helper/dozzleLogger";
-import { isMirrorPollingMode, resolveRuntimeEnvironment } from "../services/PollingModeService";
 
 const AUDIT_PAGE_SIZE = 8;
 const RECENT_ENTRY_LIMIT = 5;
@@ -39,6 +40,9 @@ const REVERSAL_PAGE_SIZE = 8;
 const MAX_REVERSAL_PAGES = 7;
 const AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
 const MUTATION_TIMEOUT_MS = 5 * 60 * 1000;
+const DUSK_WALLET_MUTATION_FLAG = "DUSK_WALLET_MUTATIONS_ENABLED";
+const PRODUCTION_ENVIRONMENT_VALUES = new Set(["prod", "production", "live"]);
+const OPTIONAL_RUNTIME_ENVIRONMENT_KEYS = ["DEPLOY_ENV", "APP_ENV", "ENVIRONMENT", "NODE_ENV"] as const;
 
 type AdminInteractionEvidence = {
   inGuild?: () => boolean;
@@ -520,8 +524,17 @@ function getAdminSubcommand(interaction: ChatInputCommandInteraction): string {
   }
 }
 
-function isDuskMutationRuntimeAllowed(): boolean {
-  return !isMirrorPollingMode(process.env) && resolveRuntimeEnvironment(process.env) !== "staging";
+export function isDuskMutationRuntimeAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const pollingMode = String(env.POLLING_MODE ?? "").trim().toLowerCase();
+  const pollingEnvironment = String(env.POLLING_ENV ?? "").trim().toLowerCase();
+  if (pollingMode !== "active" || !PRODUCTION_ENVIRONMENT_VALUES.has(pollingEnvironment)) return false;
+
+  for (const key of OPTIONAL_RUNTIME_ENVIRONMENT_KEYS) {
+    const configuredValue = String(env[key] ?? "").trim().toLowerCase();
+    if (configuredValue && !PRODUCTION_ENVIRONMENT_VALUES.has(configuredValue)) return false;
+  }
+
+  return String(env[DUSK_WALLET_MUTATION_FLAG] ?? "").trim().toLowerCase() === "true";
 }
 
 function mutationOptionDefinitions() {
@@ -702,7 +715,85 @@ function buildMutationControls(prefix: string): ActionRowBuilder<ButtonBuilder> 
   );
 }
 
-function formatMutationError(error: unknown): string {
+function buildMutationReference(draft: DuskAdminMutationDraft): DuskLedgerMutationReference {
+  if (draft.kind === "adjust") {
+    return {
+      operation: "correction",
+      idempotencyKey: draft.idempotencyKey,
+      sourceEventType: draft.sourceEventType,
+      sourceEventId: draft.sourceEventId,
+    };
+  }
+  if (draft.kind === "reverse") {
+    return {
+      operation: "reversal",
+      idempotencyKey: draft.idempotencyKey,
+      sourceEventType: draft.sourceEventType,
+      sourceEventId: draft.sourceEventId,
+      originalEntryId: draft.originalEntryId,
+    };
+  }
+  return {
+    operation: "pending-reversal-resolution",
+    idempotencyKey: draft.request.idempotencyKey,
+    sourceEventType: draft.request.sourceEventType,
+    sourceEventId: draft.request.sourceEventId,
+    originalEntryId: draft.request.originalEntryId,
+    reversalRequestId: draft.reversalRequestId,
+  };
+}
+
+function mergeMutationReferences(
+  preferred: DuskLedgerMutationReference | undefined,
+  fallback: DuskLedgerMutationReference,
+): DuskLedgerMutationReference {
+  return {
+    operation: preferred?.operation ?? fallback.operation,
+    ledgerEntryId: preferred?.ledgerEntryId ?? fallback.ledgerEntryId,
+    idempotencyKey: preferred?.idempotencyKey ?? fallback.idempotencyKey,
+    sourceEventType: preferred?.sourceEventType ?? fallback.sourceEventType,
+    sourceEventId: preferred?.sourceEventId ?? fallback.sourceEventId,
+    originalEntryId: preferred?.originalEntryId ?? fallback.originalEntryId,
+    reversalRequestId: preferred?.reversalRequestId ?? fallback.reversalRequestId,
+  };
+}
+
+function formatMutationReference(reference: DuskLedgerMutationReference): string {
+  const values = [
+    reference.reversalRequestId ? `request=${sanitize(reference.reversalRequestId, 80)}` : null,
+    reference.ledgerEntryId ? `ledger-entry=${sanitize(reference.ledgerEntryId, 80)}` : null,
+    reference.originalEntryId ? `transaction=${sanitize(reference.originalEntryId, 80)}` : null,
+    reference.sourceEventType && reference.sourceEventId
+      ? `source=${sanitize(reference.sourceEventType, 64)}:${sanitize(reference.sourceEventId, 128)}`
+      : null,
+    reference.idempotencyKey ? `idempotency=${sanitize(reference.idempotencyKey, 128)}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return values.join(" · ") || "reference unavailable";
+}
+
+function addResultReference(
+  result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult,
+  reference: DuskLedgerMutationReference,
+): DuskLedgerMutationReference {
+  const ledgerEntryId = result.outcome === "applied"
+    ? result.entry.id
+    : result.outcome === "resolved" && result.entry
+      ? result.entry.id
+      : undefined;
+  return ledgerEntryId ? { ...reference, ledgerEntryId } : reference;
+}
+
+function formatMutationError(
+  error: unknown,
+  fallbackReference: DuskLedgerMutationReference = { operation: "correction" },
+): string {
+  if (error instanceof DuskLedgerAmbiguousOutcomeError) {
+    return [
+      "**Duskits mutation outcome requires reconciliation**",
+      "The database outcome is uncertain; no rollback is assumed. Do not retry with changed provenance.",
+      `Reconcile privately using: ${formatMutationReference(mergeMutationReferences(error.reference, fallbackReference))}`,
+    ].join("\n");
+  }
   if (error instanceof DuskInsufficientBalanceError) {
     return "No wallet change was recorded: this would make the balance negative.";
   }
@@ -718,16 +809,31 @@ function formatMutationError(error: unknown): string {
   if (error instanceof DuskLedgerValidationError) {
     return `No wallet change was recorded: ${sanitize(error.message, 400)}`;
   }
-  return "Duskits mutation could not be completed. No wallet change was recorded.";
+  return [
+    "**Duskits mutation outcome requires reconciliation**",
+    "The database outcome could not be confirmed; no rollback is assumed.",
+    `Reconcile privately using: ${formatMutationReference(fallbackReference)}`,
+  ].join("\n");
 }
 
-function formatMutationResult(result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult): string {
+function formatMutationPreparationError(error: unknown): string {
+  if (error instanceof DuskLedgerValidationError) {
+    return `Duskits mutation could not be prepared: ${sanitize(error.message, 400)} No ledger operation was attempted.`;
+  }
+  return "Duskits mutation could not be prepared; no ledger operation was attempted.";
+}
+
+function formatMutationResult(
+  result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult,
+  reference: DuskLedgerMutationReference,
+): string {
   if (result.outcome === "pending_review") {
     return [
       "**Pending reversal review recorded**",
       `Request: ${sanitize(result.reversalRequest.id, 80)}`,
       `Requested amount: ${formatAmount(result.reversalRequest.requestedAmount)} Duskits`,
       `Current balance: ${result.balance} Duskits`,
+      `Reconcile: ${formatMutationReference(reference)}`,
       "No negative balance or reversal entry was created.",
     ].join("\n");
   }
@@ -737,13 +843,55 @@ function formatMutationResult(result: DuskLedgerMutationResult | DuskPendingReve
       `Resolution: ${sanitize(result.resolution.id, 80)}${result.duplicate ? " (idempotent replay)" : ""}`,
       result.entry ? `Ledger entry: ${sanitize(result.entry.id, 80)} · Amount: ${formatAmount(result.entry.amount)} Duskits` : "Ledger entry: none",
       `Balance: ${result.balance} Duskits`,
+      `Reconcile: ${formatMutationReference(reference)}`,
     ].join("\n");
   }
   return [
     `**Duskits ${result.entry.transactionType.toLowerCase()} applied**${result.duplicate ? " (idempotent replay)" : ""}`,
     `Ledger entry: ${sanitize(result.entry.id, 80)} · Amount: ${formatAmount(result.entry.amount)} Duskits`,
     `Balance: ${result.balance} Duskits`,
+    `Reconcile: ${formatMutationReference(reference)}`,
   ].join("\n");
+}
+
+async function deliverMutationOutcome(
+  component: MessageComponentInteraction,
+  content: string,
+  reference: DuskLedgerMutationReference,
+  committed: boolean,
+): Promise<void> {
+  const payload = {
+    content,
+    components: [],
+    allowedMentions: { parse: [] },
+  };
+  try {
+    await component.update(payload);
+    return;
+  } catch (error) {
+    dozzleLog.error(
+      `[dusk-admin] mutation_response_failed committed=${committed ? 1 : 0} references=${sanitize(formatMutationReference(reference), 300)} error=${sanitize(String(error), 200)}`,
+    );
+  }
+
+  const fallbackContent = committed
+    ? [
+        "**Duskits mutation completed, but Discord could not update the original confirmation.**",
+        "The ledger mutation completed; no rollback is assumed.",
+        `Reconcile privately using: ${formatMutationReference(reference)}`,
+      ].join("\n")
+    : content;
+  try {
+    await component.followUp({
+      content: fallbackContent,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+  } catch (fallbackError) {
+    dozzleLog.error(
+      `[dusk-admin] mutation_response_fallback_failed committed=${committed ? 1 : 0} references=${sanitize(formatMutationReference(reference), 300)} error=${sanitize(String(fallbackError), 200)}`,
+    );
+  }
 }
 
 async function runDuskAdminMutation(
@@ -763,10 +911,10 @@ async function runDuskAdminMutation(
   }
   if (!isDuskMutationRuntimeAllowed()) {
     dozzleLog.warn(
-      `[dusk-admin] mutation_denied guild=${interaction.guildId ?? "unknown"} reason=mirror_or_staging_runtime`,
+      `[dusk-admin] mutation_denied guild=${interaction.guildId ?? "unknown"} reason=runtime_not_explicitly_enabled_production`,
     );
     await interaction.reply({
-      content: "Duskits wallet mutations are disabled in mirror and staging runtimes.",
+      content: "Duskits wallet mutations are disabled outside the explicitly enabled active production runtime.",
       ephemeral: true,
       allowedMentions: { parse: [] },
     });
@@ -862,7 +1010,7 @@ async function runDuskAdminMutation(
     }
   } catch (error) {
     await interaction.reply({
-      content: formatMutationError(error),
+      content: formatMutationPreparationError(error),
       ephemeral: true,
       allowedMentions: { parse: [] },
     });
@@ -885,6 +1033,8 @@ async function runDuskAdminMutation(
   });
 
   collector.on("collect", async (component: MessageComponentInteraction) => {
+    let mutationAttempted = false;
+    const reference = buildMutationReference(draft);
     try {
       if (!isAuthorizedDuskAdminInteraction(component, interaction.user.id, component.user.id, interaction.guildId!)) {
         await component.reply({
@@ -914,7 +1064,7 @@ async function runDuskAdminMutation(
       }
       if (!currentTarget || currentTarget.id !== draft.targetId) {
         await component.update({
-          content: "The target is no longer a verified current guild member; no wallet change was recorded.",
+          content: "The target is no longer a verified current guild member; no ledger operation was attempted.",
           components: [],
           allowedMentions: { parse: [] },
         });
@@ -922,7 +1072,22 @@ async function runDuskAdminMutation(
         return;
       }
 
-      let result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult;
+      if (
+        !isAuthorizedDuskAdminInteraction(component, interaction.user.id, component.user.id, interaction.guildId!) ||
+        !isDuskMutationRuntimeAllowed()
+      ) {
+        await component.update({
+          content: "Wallet mutation authorization is no longer active; no ledger operation was attempted.",
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        collector.stop("authorization_changed");
+        return;
+      }
+
+      mutationAttempted = true;
+      let result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult | undefined;
+      let mutationError: unknown;
       try {
         const actorDiscordUserId = interaction.user.id;
         if (draft.kind === "adjust") {
@@ -956,26 +1121,32 @@ async function runDuskAdminMutation(
             actorDiscordUserId,
           });
         }
-        await component.update({
-          content: formatMutationResult(result),
-          components: [],
-          allowedMentions: { parse: [] },
-        });
       } catch (error) {
-        await component.update({
-          content: formatMutationError(error),
-          components: [],
-          allowedMentions: { parse: [] },
-        });
+        mutationError = error;
       }
+
+      const content = mutationError
+        ? formatMutationError(mutationError, reference)
+        : formatMutationResult(result!, addResultReference(result!, reference));
+      await deliverMutationOutcome(
+        component,
+        content,
+        result ? addResultReference(result, reference) : reference,
+        Boolean(result),
+      );
       collector.stop("completed");
-    } catch {
+    } catch (error) {
+      if (mutationAttempted) {
+        await deliverMutationOutcome(component, formatMutationError(error, reference), reference, false);
+        collector.stop("completed");
+        return;
+      }
       if (!component.replied && !component.deferred) {
         await component.reply({
-          content: "Duskits mutation data is temporarily unavailable. No wallet change was recorded.",
+          content: "Duskits mutation verification failed; no ledger operation was attempted.",
           ephemeral: true,
           allowedMentions: { parse: [] },
-        });
+        }).catch(() => undefined);
       }
     }
   });

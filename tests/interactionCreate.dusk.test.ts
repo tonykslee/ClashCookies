@@ -94,6 +94,7 @@ function expectNoPublicPostButton(payload: any): void {
 describe("interactionCreate /dusk private response integration", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     vi.resetModules();
   });
 
@@ -189,6 +190,10 @@ describe("interactionCreate /dusk private response integration", () => {
   }, 30000);
 
   it("keeps the administrator mutation preview private and without a global post control", async () => {
+    vi.stubEnv("POLLING_MODE", "active");
+    vi.stubEnv("POLLING_ENV", "prod");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("DUSK_WALLET_MUTATIONS_ENABLED", "true");
     const { duskLedgerService } = await import("../src/services/DuskLedgerService");
     vi.spyOn(duskLedgerService, "recordCorrection");
     const handler = await loadInteractionHandler();

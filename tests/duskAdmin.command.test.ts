@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DuskAdmin, hasDuskAdministratorPermission } from "../src/commands/DuskAdmin";
+import { DuskAdmin, hasDuskAdministratorPermission, isDuskMutationRuntimeAllowed } from "../src/commands/DuskAdmin";
 import { Commands } from "../src/Commands";
-import { duskLedgerService } from "../src/services/DuskLedgerService";
+import { DuskLedgerAmbiguousOutcomeError, duskLedgerService } from "../src/services/DuskLedgerService";
 import { hasPermissionTargetForCommand } from "../src/services/CommandPermissionService";
 
 function makeEntry(overrides: Record<string, unknown> = {}) {
@@ -106,9 +106,17 @@ function makeButtonComponent(interaction: any, customId: string) {
     isButton: () => true,
     reply: vi.fn(),
     update: vi.fn(),
+    followUp: vi.fn().mockResolvedValue(undefined),
     replied: false,
     deferred: false,
   };
+}
+
+function enableDuskMutationRuntime(): void {
+  vi.stubEnv("POLLING_MODE", "active");
+  vi.stubEnv("POLLING_ENV", "prod");
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("DUSK_WALLET_MUTATIONS_ENABLED", "true");
 }
 
 function makeInteraction(input: { admin?: boolean; memberPresent?: boolean } = {}) {
@@ -174,6 +182,7 @@ function makeInteraction(input: { admin?: boolean; memberPresent?: boolean } = {
 describe("/dusk-admin audit", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     vi.spyOn(duskLedgerService, "getBalance").mockResolvedValue(35);
     vi.spyOn(duskLedgerService, "getLifetimeEarned").mockResolvedValue(80);
     vi.spyOn(duskLedgerService, "listAuditEntryPage").mockResolvedValue({
@@ -420,6 +429,7 @@ describe("/dusk-admin audit", () => {
   });
 
   it("previews and confirms a private signed correction with actor and durable provenance", async () => {
+    enableDuskMutationRuntime();
     const { interaction, handlers } = makeInteraction({ admin: true });
     interaction.options.getSubcommand.mockReturnValue("adjust");
     interaction.options.getInteger.mockReturnValue(-5);
@@ -465,6 +475,7 @@ describe("/dusk-admin audit", () => {
   });
 
   it("rejects an unauthorized mutation callback and never invokes the ledger", async () => {
+    enableDuskMutationRuntime();
     const { interaction, handlers } = makeInteraction({ admin: true });
     interaction.options.getSubcommand.mockReturnValue("reverse");
     await DuskAdmin.run({} as any, interaction, {} as any);
@@ -480,6 +491,7 @@ describe("/dusk-admin audit", () => {
   });
 
   it("guards wallet mutations in mirror mode", async () => {
+    enableDuskMutationRuntime();
     vi.stubEnv("POLLING_MODE", "mirror");
     const { interaction } = makeInteraction({ admin: true });
     interaction.options.getSubcommand.mockReturnValue("adjust");
@@ -487,10 +499,98 @@ describe("/dusk-admin audit", () => {
     await DuskAdmin.run({} as any, interaction, {} as any);
 
     expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
-      content: expect.stringContaining("disabled in mirror and staging"),
+      content: expect.stringContaining("outside the explicitly enabled active production runtime"),
       ephemeral: true,
     }));
     expect(duskLedgerService.recordCorrection).not.toHaveBeenCalled();
     vi.unstubAllEnvs();
+  });
+
+  it("fails closed unless active production and the separate mutation gate are explicit", () => {
+    const base = {
+      POLLING_MODE: "active",
+      POLLING_ENV: "prod",
+      DUSK_WALLET_MUTATIONS_ENABLED: "true",
+    };
+    expect(isDuskMutationRuntimeAllowed(base)).toBe(true);
+    expect(isDuskMutationRuntimeAllowed({ ...base, DUSK_WALLET_MUTATIONS_ENABLED: undefined })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ ...base, POLLING_MODE: "mirror" })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ ...base, POLLING_ENV: "staging" })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ ...base, POLLING_ENV: "dev" })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ POLLING_MODE: "active", DUSK_WALLET_MUTATIONS_ENABLED: "true" })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ ...base, NODE_ENV: "development" })).toBe(false);
+    expect(isDuskMutationRuntimeAllowed({ ...base, DEPLOY_ENV: "unknown" })).toBe(false);
+  });
+
+  it("rechecks the runtime gate immediately before confirmation-time mutation", async () => {
+    enableDuskMutationRuntime();
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+    const recordCorrection = vi.mocked(duskLedgerService.recordCorrection);
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+    vi.stubEnv("DUSK_WALLET_MUTATIONS_ENABLED", "false");
+
+    const collect = handlers.get("collect");
+    const confirm = makeButtonComponent(interaction, "dusk-admin:mutation:audit-interaction-1:confirm");
+    await collect?.(confirm);
+
+    expect(recordCorrection).not.toHaveBeenCalled();
+    expect(confirm.update).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("no ledger operation was attempted"),
+    }));
+  });
+
+  it("does not report rollback when Discord fails after a successful ledger commit", async () => {
+    enableDuskMutationRuntime();
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+    const recordCorrection = vi.mocked(duskLedgerService.recordCorrection);
+    recordCorrection.mockResolvedValue({
+      outcome: "applied",
+      entry: makeEntry({ id: "correction-committed", amount: -5, transactionType: "CORRECTION" }),
+      balance: 30,
+      duplicate: false,
+    } as any);
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+    const collect = handlers.get("collect");
+    const confirm = makeButtonComponent(interaction, "dusk-admin:mutation:audit-interaction-1:confirm");
+    confirm.update.mockRejectedValue(new Error("Discord confirmation unavailable"));
+    await collect?.(confirm);
+
+    expect(recordCorrection).toHaveBeenCalledTimes(1);
+    expect(confirm.followUp).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      content: expect.stringContaining("mutation completed"),
+    }));
+    expect(confirm.followUp.mock.calls[0][0].content).toContain("idempotency=case-1-adjust");
+    expect(confirm.followUp.mock.calls[0][0].content).not.toContain("No wallet change was recorded");
+  });
+
+  it("reports ambiguous database outcomes with private reconciliation references", async () => {
+    enableDuskMutationRuntime();
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+    vi.mocked(duskLedgerService.recordCorrection).mockRejectedValue(
+      new DuskLedgerAmbiguousOutcomeError({
+        operation: "correction",
+        sourceEventType: "incident",
+        sourceEventId: "case-1",
+        idempotencyKey: "case-1-adjust",
+      }),
+    );
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+    const collect = handlers.get("collect");
+    const confirm = makeButtonComponent(interaction, "dusk-admin:mutation:audit-interaction-1:confirm");
+    await collect?.(confirm);
+
+    expect(confirm.update).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("outcome requires reconciliation"),
+      allowedMentions: { parse: [] },
+    }));
+    expect(confirm.update.mock.calls[0][0].content).toContain("idempotency=case-1-adjust");
+    expect(confirm.update.mock.calls[0][0].content).not.toContain("No wallet change was recorded");
   });
 });
