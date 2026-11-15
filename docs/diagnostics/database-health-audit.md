@@ -225,6 +225,7 @@ Record timestamp, commit SHA, database/server version, role, query identifiers, 
 | --- | --- | --- | --- | --- |
 | P0 | Review DBH findings before live M2a Part 3 activation; verify representative existing-schema migration compatibility and recovery gates. | Roadmap/workflow policy; high confidence. | Protects reward correctness and recoverability. | No code change in this PR. Activation remains separately approved. |
 | P0 | Measure `BotSetting` namespace/key age/size distribution and `warStartPointsCheck` completed-row accumulation. | Repository shows dynamic keys and no delete for completed jobs; live severity unknown. | Confirms or disproves the highest generic-store growth concern. | SELECT-only approval; no value export. Any cleanup requires backup, migration, rollback, and compatibility tests. |
+| P1 | Optimize `player_signal_state` payload representation and establish evidence-backed stale-tag lifecycle. | **Observed:** 1,941 live rows / ~43 MB uncompressed logical values; 1,364 last updated 30+ days ago. **Implemented code:** `stableHashFromArray()` stores sorted serialized object content rather than a compact digest; `ActivitySignalService` rewrites full JSON on observation. **Unknown:** active read/reference needs, eligibility of individual rows for retirement, safe savings. | Reduce per-tag payload and TOAST write amplification; prevent unbounded retention if proven safe. | Start with read-only field-size composition, tag-reference/lifecycle review, compatibility/versioned fingerprint design and fixture tests that prevent synthetic activity events. Do not delete or alter production records; migration/cleanup requires approved backup/recovery, replay checks, and separate authorization. |
 | P1 | Define retention classes and owners for telemetry, report runs, delivery histories, rep-work activity, CWL exports/history, raid/blacklist observations, and posted-message rows. | No common repository retention policy found; medium confidence. | Prevents silent long-term growth and clarifies audit obligations. | Preserve accounting/compliance/provenance until obligations are documented; validate with historical views and restore tests. |
 | P1 | Capture query plans and runtime statistics for war polling, history/participation windows, telemetry reports, and signal-state bulk reads. | Static query/index review; impact unknown. | Identifies real N+1, sequential scans, or missing indexes. | Use bounded read-only plans first; any index change needs migration and existing-schema validation. |
 | P1 | Plan compatibility-first consolidation of `active_sync_post`, `CurrentWar.syncNum`, `FwaLayouts` projections, and Google Sheet fallback namespaces. | Active fallback readers/writers confirmed; high confidence. | Reduces duplicate ownership and migration ambiguity. | Requires dual-read/rollback window, data comparison, and proof all callers moved. |
@@ -254,4 +255,55 @@ Record timestamp, commit SHA, database/server version, role, query identifiers, 
 
 ## 11. Audit completion status
 
-Repository inspection and the diagnostic/measurement plan are complete. Database measurement, cleanup, migration, retention change, and live reward activation remain incomplete and separately gated.
+Repository inspection and the diagnostic/measurement plan are complete. **A bounded, operator-run DBH Part 1b production snapshot has now been captured (see §12), but broader database measurement is incomplete.** Cleanup, migration, retention change, and live reward activation remain incomplete and separately gated.
+
+## 12. DBH Part 1b — operator-run production measurement record (2026-11-14/15 UTC)
+
+**Evidence class:** OBSERVED database aggregates supplied from the operator's restricted PostgreSQL session, compared with IMPLEMENTED `dev` source behavior. This entry updates the earlier repository-only audit; the original Part 1 scope and findings above remain the historical code-only baseline. **No cleanup or application code change occurred.**
+
+### Measurement boundary
+
+- Production PostgreSQL **17.9** on database `clashcookies`, user `clashcookies_dusk_readonly`; Windows localhost tunnel `127.0.0.1:15432`, operator-managed.
+- Each successful SQL measurement used `BEGIN READ ONLY`, `SET LOCAL statement_timeout=5000`, `SET LOCAL lock_timeout=1000`, and `ROLLBACK`. Only aggregate namespace labels, row counts, sizes, and dates were returned; no raw keys/values/player tags were exported.
+- Initial `BotSetting` SELECT was denied. With explicit operator approval, `GRANT SELECT ON TABLE public.\"BotSetting\" TO clashcookies_dusk_readonly` was executed by the authorized host operator. Restricted-account verification returned **SELECT=true; INSERT=false; UPDATE=false; DELETE=false**. This was a narrowly scoped **production access-control change**, not a data mutation; it must not be confused with the SQL measurement transactions. No broader role grant was approved.
+- Catalog estimates (`pg_stat_user_tables`) are not exact row counts; later `BotSetting` counts are exact within each query's database snapshot. `updatedAt` is **write time, not last access**, so old rows are not automatically unused. Logical `octet_length(value)` sizes are **uncompressed** and cannot be treated as physically recoverable bytes.
+
+### Storage and namespace observations
+
+| Table / group | Measured finding | Interpretation / limit |
+| --- | --- | --- |
+| `FwaPlayerCatalog` | ~69 MB total; ~65 MB indexes; ~41,332 estimated rows | Index cost candidate; no proof of redundant indexes/bloat |
+| `TelemetryApiAggregate` | ~43 MB total; ~100,060 estimated rows | Large active telemetry owner; no retention decision |
+| `BotSetting` | ~32 MB total; 448 kB main heap, 9,336 kB main indexes, ~23 MB TOAST (including its storage/indexes); ~4,393 initially estimated rows | TOAST-dominated physical footprint, not proof of waste |
+| `PlayerCurrent` | ~26 MB total | Not measured for live-value composition |
+| `ClanWarParticipation` | ~21 MB total | Evidence-protected historical data |
+| `WarLookup` | ~12 MB total; 176 kB main heap | Separate potential TOAST-heavy structure, needs owner review |
+| `player_signal_state` in `BotSetting` | **1,941 rows; ~43 MB logical values; max ~26 kB**; first/last write 2026-02-28/2026-11-15 UTC | Dominates `BotSetting` logical bytes; highly compressible serialized payload likely contributes to TOAST |
+| `todo_games_baseline` | **2,257 rows; 2,257 logical bytes**; all last updated 2026-03-26 | High key count but negligible value bytes; do not infer safe deletion |
+| `points_cache` / `points_matchup_cache` | 22 rows / ~12 kB; 7 rows / 1,308 bytes; February writes only | Legacy-reference review candidate, not a cleanup authorization |
+| `warStartPointsCheck` | 11 rows / 4,601 logical bytes; 8 updated within seven days | Actively rewritten, not a major current size concern |
+
+Other large tables observed included `FwaClanWarLogCurrent` (~20 MB), `AutoRoleSyncRun` (~14 MB), and `TelemetryStageAggregate` (~8.6 MB). Among the top 20 tables, the restricted account originally had SELECT on `ClanWarParticipation` and `RepWorkActivityEvent` only; `BotSetting` access was independently authorized afterward. No broader table contents were measured.
+
+### `player_signal_state` age and logical payload
+
+| Time since last `updatedAt` | Rows | Logical values | Average bytes / row |
+| --- | ---: | ---: | ---: |
+| Under 7 days | 465 | ~11 MB | 24,975 |
+| 7–30 days | 112 | ~2,590 kB | 23,682 |
+| 30–90 days | 247 | ~5,632 kB | 23,349 |
+| 90–180 days | 680 | ~14 MB | 22,254 |
+| 180+ days | 437 | ~9,443 kB | 22,127 |
+
+**Observed:** 1,364 / 1,941 (~70.3%) rows last written 30+ days ago; 1,117 (~57.5%) last written 90+ days ago; 437 (~22.5%) last written 180+ days ago. Approximately **29 MB** logical data falls in 30+ days, and **23 MB** in 90+ days. Rounded size buckets must not be used as a precise savings estimate. The averages are consistently ~22–25 kB, suggesting broadly repeated payload shape rather than a tiny outlier population.
+
+**Implemented code diagnosis (`src/services/ActivitySignalService.ts`, read on `dev`):** `PlayerSignalState.hashes` has `achievements`, `troops`, `heroes`, `spells`, `pets`, `heroEquipment`. Despite its name, `stableHashFromArray()` normalizes, serializes and sorts objects, then returns `normalized.join('|')` **not a fixed-length digest**. `processPlayer()` stores the full current JSON with `SettingsService.set()` on each observation. `TodoService` and `TodoSnapshotService` also consume this state. This establishes a plausible mechanism for the uniform ~22–25 kB values and a compatibility hazard if fingerprint format changes. It does **not** establish that 30/90-day-old accounts are unlinked, untracked, nonessential, or safe to prune.
+
+### Focused optimization backlog / acceptance criteria
+
+1. **P1: Payload/fingerprint optimization, diagnostic first.** Use bounded SELECT-only aggregates to estimate bytes per `hashes` field without revealing raw content. Trace all producers, consumers, comparisons, persist/replay behavior, version parsing and migration-on-read or explicit versioning. Design compact deterministic fingerprints; verify representation-only transitions do **not** trigger artificial `changedSignals` / activity timestamps. Test old state, null/malformed records, renamed accounts, changes in player object-array ordering, and multi-account scenarios. Evaluate actual before/after size and write-amplification on fixtures/disposable database; do not ship an untested in-place conversion.
+2. **P1: Stale-tag retention policy, evidence first.** Trace tracked-clan, linked-account, `TodoSnapshot`, player activity, and historical evidence dependencies; distinguish *not recently written* from *safe to delete*. Propose owner-approved limits or archival only after evidence/retention obligations and recovery behavior are documented. Provide dry-run aggregate counts, rollback/recovery plan and explicit production approval before any deletion.
+3. **P2: Legacy micro-state review.** Check `todo_games_baseline` and February-only points cache readers/writers through live `dev` paths, including fallback compatibility, before considering retirement. Low byte-savings priority despite high `todo_games_baseline` row count.
+4. **P2: Physical/index footprint follow-up.** Use safe catalog/statistics and representative query plans to evaluate `FwaPlayerCatalog` indexes, `WarLookup` TOAST footprint, and telemetry retention. No `REINDEX`, `VACUUM FULL`, index drop or data purge without separate approval and proven backup/recovery readiness.
+
+**No implementation, SQL cleanup, data migration, historical backfill, index operation, automatic reward, deployment, or expansion of privileges is authorized by this measurement record.** The backup roadmap still reports no verified encrypted off-host production backup and disposable restore, so cleanup/migrations remain separately blocked.
