@@ -50,12 +50,14 @@ export type DuskRewardReconciliationReasonCode =
   | "LEDGER_AMOUNT_MISMATCH"
   | "LEDGER_WALLET_MISMATCH"
   | "LEDGER_IDENTITY_MISMATCH"
+  | "LEDGER_DEDUPE_KEY_SOURCE_MISMATCH"
   | "MULTIPLE_CLAIMS_FOR_SOURCE"
   | "REVERSED_LEDGER_ENTRY"
   | "UNRESOLVED_REVERSAL_REQUEST"
   | "DECLINED_REVERSAL_REVIEW"
   | "OBSERVED_SOURCE_UPDATE_NOT_PROVEN_CORRECTION"
   | "MISSING_PERSISTED_IDENTITY"
+  | "NON_ATOMIC_LEDGER_SNAPSHOT"
   | "EVALUATOR_UNKNOWN_EVIDENCE";
 
 export type DuskRewardReconciliationLedgerEvidence =
@@ -136,6 +138,7 @@ export type DuskRewardReconciliationPreviewStore = {
   listRewardReconciliationSnapshot(input: {
     sourceEventTypes: readonly string[];
     sourceEventIds: readonly string[];
+    idempotencyKeys: readonly string[];
     snapshotAt: Date;
     limit: number;
   }): Promise<DuskRewardReconciliationLedgerSnapshot>;
@@ -179,9 +182,13 @@ function isManualReview(outcome: DuskRewardReconciliationOutcome): boolean {
 }
 
 function isLedgerSnapshotIncomplete(snapshot: DuskRewardReconciliationLedgerSnapshot): boolean {
-  return snapshot.truncated || snapshot.sourceEvents.some(
+  return snapshot.consistency !== "REPEATABLE_READ" || snapshot.truncated || snapshot.sourceEvents.some(
     (sourceEvent) => sourceEvent._count.claims > sourceEvent.claims.length,
   );
+}
+
+function ledgerSnapshotIncompleteReason(snapshot: DuskRewardReconciliationLedgerSnapshot): DuskRewardReconciliationReasonCode {
+  return snapshot.consistency !== "REPEATABLE_READ" ? "NON_ATOMIC_LEDGER_SNAPSHOT" : "LEDGER_SNAPSHOT_TRUNCATED";
 }
 
 function buildReconciliationEvent(
@@ -234,9 +241,7 @@ function buildReconciliationEvent(
   const sourceEvents = snapshot.sourceEvents.filter(
     (sourceEvent) => isRepWorkSourceEventType(sourceEvent.sourceEventType) && sourceEvent.sourceEventId === sourceEventId,
   );
-  const snapshotIncomplete = snapshot.truncated || sourceEvents.some(
-    (sourceEvent) => sourceEvent._count.claims > sourceEvent.claims.length,
-  );
+  const snapshotIncomplete = isLedgerSnapshotIncomplete(snapshot);
   const claims = sourceEvents.flatMap((sourceEvent) => sourceEvent.claims);
   const directEntries = snapshot.entries.filter(
     (entry) => isRepWorkSourceEventType(entry.sourceEventType) && entry.sourceEventId === sourceEventId,
@@ -263,6 +268,10 @@ function buildReconciliationEvent(
   const matchingClaimEntry = matchingClaim
     ? snapshot.entries.find((entry) => entry.id === matchingClaim.ledgerEntryId)
     : null;
+  const mismatchedDedupeEntry = snapshot.entries.find(
+    (entry) => entry.idempotencyKey === canonicalDedupeKey &&
+      (entry.sourceEventId !== sourceEventId || !isRepWorkSourceEventType(entry.sourceEventType)),
+  );
   const reversalEntries = matchingEntry
     ? snapshot.entries.filter((entry) => entry.reversalOfId === matchingEntry.id)
     : [];
@@ -308,7 +317,26 @@ function buildReconciliationEvent(
       reversalRequestId: reversalRequest?.id ?? null,
     };
   }
-  if (matchingEntry && matchingClaim && matchingClaimEntry?.id === matchingEntry.id && directEntries.length === 1 && claims.length === 1 && dedupeEntries.length === 1) {
+  if (mismatchedDedupeEntry) {
+    return {
+      ...base,
+      outcome: "CONFLICTING_CLAIM",
+      reasonCode: "LEDGER_DEDUPE_KEY_SOURCE_MISMATCH",
+      ledgerEvidence: "CONFLICTING_RECORDS",
+      matchedLedgerEntryId: mismatchedDedupeEntry.id,
+    };
+  }
+  if (
+    matchingEntry &&
+    matchingClaim &&
+    matchingClaimEntry?.id === matchingEntry.id &&
+    sourceEvents.length === 1 &&
+    sourceEvents[0].beneficiaryMode === DuskLedgerBeneficiaryMode.SINGLE_RECIPIENT &&
+    directEntries.length === 1 &&
+    claims.length === 1 &&
+    dedupeEntries.length === 1 &&
+    !snapshotIncomplete
+  ) {
     return {
       ...base,
       outcome: "ALREADY_RECORDED",
@@ -322,7 +350,7 @@ function buildReconciliationEvent(
     return {
       ...base,
       outcome: snapshotIncomplete ? "UNKNOWN_EVIDENCE" : "ELIGIBLE_NOT_CLAIMED",
-      reasonCode: snapshotIncomplete ? "LEDGER_SNAPSHOT_TRUNCATED" : "NO_MATCHING_CLAIM_OBSERVED",
+      reasonCode: snapshotIncomplete ? ledgerSnapshotIncompleteReason(snapshot) : "NO_MATCHING_CLAIM_OBSERVED",
       ledgerEvidence: snapshotIncomplete ? "SNAPSHOT_TRUNCATED" : "NO_MATCHING_RECORD_OBSERVED",
     };
   }
@@ -345,7 +373,7 @@ function buildReconciliationEvent(
   return {
     ...base,
     outcome: "CONFLICTING_CLAIM",
-    reasonCode: snapshotIncomplete ? "LEDGER_SNAPSHOT_TRUNCATED" : reasonCode,
+    reasonCode: snapshotIncomplete ? ledgerSnapshotIncompleteReason(snapshot) : reasonCode,
     ledgerEvidence: snapshotIncomplete
       ? "SNAPSHOT_TRUNCATED"
       : claims.length && !matchingClaimEntry
@@ -433,9 +461,13 @@ export async function previewDuskRepWorkRewardReconciliationFromStore(
   const sourceEventIds = evaluation.events
     .map((event) => event.sourceEventId)
     .filter((value): value is string => Boolean(value));
+  const idempotencyKeys = evaluation.events
+    .map((event) => event.canonicalDedupeKey)
+    .filter((value): value is string => Boolean(value));
   const ledgerSnapshot = await store.listRewardReconciliationSnapshot({
     sourceEventTypes: DUSK_REP_WORK_SOURCE_EVENT_TYPES,
     sourceEventIds,
+    idempotencyKeys,
     snapshotAt: scope.snapshotAt,
     limit: DUSK_REP_WORK_EVALUATION_MAX_EVENTS,
   });

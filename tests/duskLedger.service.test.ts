@@ -18,6 +18,7 @@ const txMock = vi.hoisted(() => ({
   duskLedgerSourceEvent: {
     create: vi.fn(),
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   duskLedgerSourceEventClaim: {
     findFirst: vi.fn(),
@@ -51,6 +52,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   duskLedgerSourceEvent: {
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   duskLedgerSourceEventClaim: {
     findFirst: vi.fn(),
@@ -77,7 +79,7 @@ import {
   DuskLedgerService,
   DuskLedgerValidationError,
 } from "../src/services/DuskLedgerService";
-import { DuskReversalResolutionType } from "@prisma/client";
+import { DuskReversalResolutionType, Prisma } from "@prisma/client";
 
 const baseInput = {
   discordUserId: "discord-1",
@@ -159,8 +161,59 @@ describe("DuskLedgerService", () => {
     prismaMock.duskLedgerSourceEventClaim.findFirst.mockResolvedValue(null);
     prismaMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(null);
     prismaMock.duskLedgerEntry.findMany.mockResolvedValue([]);
+    prismaMock.duskLedgerSourceEvent.findMany.mockResolvedValue([]);
     prismaMock.duskLedgerReversalRequest.findMany.mockResolvedValue([]);
+    txMock.duskLedgerEntry.findMany.mockResolvedValue([]);
+    txMock.duskLedgerSourceEvent.findMany.mockResolvedValue([]);
+    txMock.duskLedgerReversalRequest.findMany.mockResolvedValue([]);
     prismaMock.repWorkActivityEvent.findUnique.mockResolvedValue(null);
+  });
+
+  it("reads reconciliation evidence through one repeatable-read transaction, filters claims at snapshotAt, and includes canonical keys", async () => {
+    const snapshotAt = new Date("2026-11-14T00:00:00.000Z");
+    txMock.duskLedgerSourceEvent.findMany.mockResolvedValue([
+      {
+        id: "source-1",
+        sourceEventType: "rep-work-activity",
+        sourceEventId: "event-1",
+        beneficiaryMode: "SINGLE_RECIPIENT",
+        claims: [],
+        _count: { claims: 0 },
+      },
+    ]);
+    txMock.duskLedgerEntry.findMany
+      .mockResolvedValueOnce([makeEntry({ idempotencyKey: "dedupe-1" })])
+      .mockResolvedValueOnce([]);
+    txMock.duskLedgerReversalRequest.findMany.mockResolvedValue([]);
+
+    const result = await new DuskLedgerService().listRewardReconciliationSnapshot({
+      sourceEventTypes: ["rep-work-activity", "rep-work"],
+      sourceEventIds: ["event-1"],
+      idempotencyKeys: ["dedupe-1"],
+      snapshotAt,
+      limit: 10,
+    });
+
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    expect(txMock.duskLedgerSourceEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        claims: expect.objectContaining({ where: { createdAt: { lte: snapshotAt } } }),
+        _count: { select: { claims: { where: { createdAt: { lte: snapshotAt } } } } },
+      }),
+    }));
+    expect(txMock.duskLedgerEntry.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: expect.arrayContaining([
+          expect.objectContaining({ idempotencyKey: { in: ["dedupe-1"] } }),
+          expect.objectContaining({ sourceEventType: { in: ["rep-work-activity", "rep-work"] } }),
+        ]),
+      }),
+    }));
+    expect(prismaMock.duskLedgerEntry.findMany).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ consistency: "REPEATABLE_READ", truncated: false });
   });
 
   it("creates a zero-balance wallet keyed only by Discord identity", async () => {

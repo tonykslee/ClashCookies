@@ -109,6 +109,7 @@ function snapshot(overrides: Partial<DuskRewardReconciliationLedgerSnapshot> = {
     sourceEvents: [],
     reversalRequests: [],
     truncated: false,
+    consistency: "REPEATABLE_READ",
     ...overrides,
   };
 }
@@ -150,6 +151,21 @@ describe("Dusk reward reconciliation preview", () => {
       matchedClaimId: "claim-1",
     });
     expect(result.summary.candidateUncappedSimulationOnlyDuskits).toBe(0);
+  });
+
+  it("detects a canonical dedupe key already used for a different source event", () => {
+    const evaluation = evaluateDuskRepWorkRewards({ scope, events: [event("event-1", "dedupe-1")] });
+    const result = reconcileDuskRepWorkRewardPreview(
+      evaluation,
+      snapshot({ entries: [ledgerEntry({ sourceEventId: "different-event" })] }),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      outcome: "CONFLICTING_CLAIM",
+      reasonCode: "LEDGER_DEDUPE_KEY_SOURCE_MISMATCH",
+      matchedLedgerEntryId: "ledger-1",
+    });
+    expect(result.summary.eligibleNotClaimedEvents).toBe(0);
   });
 
   it("separates duplicate evaluated evidence from a conflicting wallet claim", () => {
@@ -260,6 +276,54 @@ describe("Dusk reward reconciliation preview", () => {
     expect(result.summary.ledgerSnapshotTruncated).toBe(true);
   });
 
+  it("does not mark a matching claim as already recorded when ledger or reversal reads are truncated", () => {
+    const evaluation = evaluateDuskRepWorkRewards({ scope, events: [event("event-1", "dedupe-1")] });
+    const result = reconcileDuskRepWorkRewardPreview(
+      evaluation,
+      recordedSnapshot({ truncated: true }),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      outcome: "CONFLICTING_CLAIM",
+      reasonCode: "LEDGER_SNAPSHOT_TRUNCATED",
+      ledgerEvidence: "SNAPSHOT_TRUNCATED",
+    });
+    expect(result.summary.eligibleNotClaimedEvents).toBe(0);
+    expect(result.summary.alreadyRecordedEvents).toBe(0);
+  });
+
+  it("does not treat a claim created after snapshotAt as an existing matching claim", () => {
+    const evaluation = evaluateDuskRepWorkRewards({ scope, events: [event("event-1", "dedupe-1")] });
+    const result = reconcileDuskRepWorkRewardPreview(
+      evaluation,
+      recordedSnapshot({
+        sourceEvents: [sourceEvent({ claims: [], _count: { claims: 0 } })],
+      }),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      outcome: "CONFLICTING_CLAIM",
+      reasonCode: "SOURCE_EVENT_WITHOUT_CLAIM",
+    });
+    expect(result.summary.alreadyRecordedEvents).toBe(0);
+    expect(result.summary.eligibleNotClaimedEvents).toBe(0);
+  });
+
+  it("fails closed when the snapshot is explicitly non-atomic", () => {
+    const evaluation = evaluateDuskRepWorkRewards({ scope, events: [event("event-1", "dedupe-1")] });
+    const result = reconcileDuskRepWorkRewardPreview(
+      evaluation,
+      snapshot({ consistency: "NON_ATOMIC" }),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      outcome: "UNKNOWN_EVIDENCE",
+      reasonCode: "NON_ATOMIC_LEDGER_SNAPSHOT",
+      ledgerEvidence: "SNAPSHOT_TRUNCATED",
+    });
+    expect(result.summary.eligibleNotClaimedEvents).toBe(0);
+  });
+
   it("is repeatable and uses only bounded read-only store calls", async () => {
     const listEventsForEvaluation = vi.fn().mockResolvedValue([event("event-1", "dedupe-1")]);
     const listRewardReconciliationSnapshot = vi.fn().mockResolvedValue(snapshot());
@@ -272,6 +336,7 @@ describe("Dusk reward reconciliation preview", () => {
     expect(listRewardReconciliationSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       sourceEventIds: ["event-1"],
       sourceEventTypes: expect.arrayContaining(["rep-work-activity"]),
+      idempotencyKeys: ["dedupe-1"],
       snapshotAt: scope.snapshotAt,
       limit: 10_000,
     }));

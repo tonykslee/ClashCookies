@@ -6,7 +6,7 @@
 
 This preview connects the M2a Part 1 `DuskRepWorkRewardEvaluator` result to the existing `DuskLedgerService` read model. It compares evaluated `RepWorkActivityEvent` rows with persisted Dusk source events, source-event claims, ledger entries, executed reversals, and pending reversal requests. It does not create wallets, claims, ledger rows, corrections, reversals, spends, schedules, commands, payouts, or reward activation.
 
-The preview is deterministic for a fixed evaluator result and fixed ledger snapshot. Event identity is limited to the persisted `RepWorkActivityEvent.id` and persisted `dedupeKey`; mutable source fields are never used to create a replacement identity. The canonical future source-event type is `rep-work-activity`; older rep-work aliases are read only for reconciliation compatibility.
+The preview is deterministic for a fixed evaluator result and fixed ledger snapshot. The ledger adapter obtains its bounded source-event, claim, earning, and reversal reads inside one read-only Prisma `REPEATABLE READ` transaction. Event identity is limited to the persisted `RepWorkActivityEvent.id` and persisted `dedupeKey`; mutable source fields are never used to create a replacement identity. The canonical future source-event type is `rep-work-activity`; older rep-work aliases are read only for reconciliation compatibility. Ledger entries are also bounded by the persisted canonical idempotency keys so an existing earning cannot be hidden by a changed source-event ID.
 
 ## Outcomes and fail-closed behavior
 
@@ -22,6 +22,8 @@ The preview is deterministic for a fixed evaluator result and fixed ledger snaps
 | `UNRESOLVED_REVERSAL` | A matching earning has a pending reversal request. The preview never reissues it. |
 
 `NO_MATCHING_RECORD_OBSERVED` is deliberately separate from verified non-issuance. A bounded snapshot only establishes what was visible in that read; it does not prove that no prior attempt, external correction, or unavailable ledger row exists.
+
+The adapter filters both claims and claim counts at `snapshotAt`. Any bounded overflow, claim-count mismatch, non-repeatable snapshot marker, or other incomplete ledger evidence prevents `ALREADY_RECORDED` and `ELIGIBLE_NOT_CLAIMED`; the result remains UNKNOWN or requires review.
 
 ## Cap diagnostics
 

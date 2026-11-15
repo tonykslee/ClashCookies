@@ -331,11 +331,13 @@ export type DuskRewardReconciliationLedgerSnapshot = {
   sourceEvents: DuskRewardReconciliationSourceEvent[];
   reversalRequests: DuskRewardReconciliationReversalRequest[];
   truncated: boolean;
+  consistency: "REPEATABLE_READ" | "NON_ATOMIC" | "UNKNOWN";
 };
 
 export type DuskRewardReconciliationLedgerSnapshotInput = {
   sourceEventTypes: readonly string[];
   sourceEventIds: readonly string[];
+  idempotencyKeys: readonly string[];
   snapshotAt: Date;
   limit: number;
 };
@@ -1069,14 +1071,25 @@ export class DuskLedgerService {
   async listRewardReconciliationSnapshot(
     input: DuskRewardReconciliationLedgerSnapshotInput,
   ): Promise<DuskRewardReconciliationLedgerSnapshot> {
+    return prisma.$transaction(
+      (tx) => this.readRewardReconciliationSnapshot(tx, input),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
+  private async readRewardReconciliationSnapshot(
+    db: Prisma.TransactionClient,
+    input: DuskRewardReconciliationLedgerSnapshotInput,
+  ): Promise<DuskRewardReconciliationLedgerSnapshot> {
     if (!(input.snapshotAt instanceof Date) || !Number.isFinite(input.snapshotAt.getTime())) {
       throw new DuskLedgerValidationError("snapshotAt must be a valid date.");
     }
     const sourceEventTypes = [...new Set(input.sourceEventTypes.map((value) => value.trim()).filter(Boolean))];
     const sourceEventIds = [...new Set(input.sourceEventIds.map((value) => value.trim()).filter(Boolean))];
+    const idempotencyKeys = [...new Set(input.idempotencyKeys.map((value) => value.trim()).filter(Boolean))];
     const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 50_000);
-    if (!sourceEventTypes.length || !sourceEventIds.length) {
-      return { entries: [], sourceEvents: [], reversalRequests: [], truncated: false };
+    if (!sourceEventTypes.length || (!sourceEventIds.length && !idempotencyKeys.length)) {
+      return { entries: [], sourceEvents: [], reversalRequests: [], truncated: false, consistency: "REPEATABLE_READ" };
     }
 
     const sourceEventSelect = {
@@ -1084,6 +1097,11 @@ export class DuskLedgerService {
       claims: {
         ...DUSK_REWARD_RECONCILIATION_SOURCE_EVENT_SELECT.claims,
         where: { createdAt: { lte: input.snapshotAt } },
+      },
+      _count: {
+        select: {
+          claims: { where: { createdAt: { lte: input.snapshotAt } } },
+        },
       },
     } satisfies Prisma.DuskLedgerSourceEventSelect;
     const reversalRequestSelect = {
@@ -1093,27 +1111,30 @@ export class DuskLedgerService {
         where: { createdAt: { lte: input.snapshotAt } },
       },
     } satisfies Prisma.DuskLedgerReversalRequestSelect;
-    const sourceEventsWithOverflow = await prisma.duskLedgerSourceEvent.findMany({
-      where: {
-        sourceEventType: { in: sourceEventTypes },
-        sourceEventId: { in: sourceEventIds },
-        createdAt: { lte: input.snapshotAt },
-      },
-      select: sourceEventSelect,
-      orderBy: [{ sourceEventType: "asc" }, { sourceEventId: "asc" }, { id: "asc" }],
-      take: limit + 1,
-    });
+    const sourceEventsWithOverflow = sourceEventIds.length
+      ? await db.duskLedgerSourceEvent.findMany({
+          where: {
+            sourceEventType: { in: sourceEventTypes },
+            sourceEventId: { in: sourceEventIds },
+            createdAt: { lte: input.snapshotAt },
+          },
+          select: sourceEventSelect,
+          orderBy: [{ sourceEventType: "asc" }, { sourceEventId: "asc" }, { id: "asc" }],
+          take: limit + 1,
+        })
+      : [];
     const sourceEvents = sourceEventsWithOverflow.slice(0, limit);
     const claimEntryIds = sourceEvents.flatMap((sourceEvent) => sourceEvent.claims.map((claim) => claim.ledgerEntryId));
     const entryWhere = [
-      {
+      ...(sourceEventIds.length ? [{
         sourceEventType: { in: sourceEventTypes },
         sourceEventId: { in: sourceEventIds },
         createdAt: { lte: input.snapshotAt },
-      },
+      }] : []),
+      ...(idempotencyKeys.length ? [{ idempotencyKey: { in: idempotencyKeys }, createdAt: { lte: input.snapshotAt } }] : []),
       ...(claimEntryIds.length ? [{ id: { in: claimEntryIds }, createdAt: { lte: input.snapshotAt } }] : []),
     ];
-    const entriesWithOverflow = await prisma.duskLedgerEntry.findMany({
+    const entriesWithOverflow = await db.duskLedgerEntry.findMany({
       where: { OR: entryWhere },
       select: DUSK_REWARD_RECONCILIATION_ENTRY_SELECT,
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -1122,14 +1143,14 @@ export class DuskLedgerService {
     const entries = entriesWithOverflow.slice(0, limit);
     const entryIds = entries.map((entry) => entry.id);
     const reversalWhere = [
-      {
+      ...(sourceEventIds.length ? [{
         sourceEventType: { in: sourceEventTypes },
         sourceEventId: { in: sourceEventIds },
         createdAt: { lte: input.snapshotAt },
-      },
+      }] : []),
       ...(entryIds.length ? [{ originalEntryId: { in: entryIds }, createdAt: { lte: input.snapshotAt } }] : []),
     ];
-    const reversalRequestsWithOverflow = await prisma.duskLedgerReversalRequest.findMany({
+    const reversalRequestsWithOverflow = await db.duskLedgerReversalRequest.findMany({
       where: { OR: reversalWhere },
       select: reversalRequestSelect,
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -1137,7 +1158,7 @@ export class DuskLedgerService {
     });
 
     const reversalEntriesWithOverflow = entryIds.length
-      ? await prisma.duskLedgerEntry.findMany({
+      ? await db.duskLedgerEntry.findMany({
           where: { reversalOfId: { in: entryIds }, createdAt: { lte: input.snapshotAt } },
           select: DUSK_REWARD_RECONCILIATION_ENTRY_SELECT,
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -1151,6 +1172,7 @@ export class DuskLedgerService {
       entries: allEntries,
       sourceEvents,
       reversalRequests: reversalRequestsWithOverflow.slice(0, limit),
+      consistency: "REPEATABLE_READ",
       truncated:
         sourceEventsWithOverflow.length > limit ||
         entriesWithOverflow.length > limit ||
