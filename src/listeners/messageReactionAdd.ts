@@ -6,6 +6,7 @@ import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   resolveFwaMatchChecklistViewType,
 } from "../services/TrackedMessageService";
+import { syncAllSpunAnnouncementService } from "../services/SyncAllSpunAnnouncementService";
 
 let isRegistered = false;
 
@@ -83,8 +84,17 @@ export default (client: Client): void => {
           fullUser.id,
           fullReaction,
         );
-        if (recorded && tracked.referenceId) {
-          await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
+        if (recorded) {
+          try {
+            if (tracked.referenceId) {
+              await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
+            }
+          } finally {
+            await syncAllSpunAnnouncementService.evaluateAfterAdd(
+              client,
+              fullReaction.message.id,
+            );
+          }
         }
         return;
       }
