@@ -12,13 +12,22 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
-import { DuskLedgerTransactionType } from "@prisma/client";
+import { DuskLedgerTransactionType, DuskReversalResolutionType } from "@prisma/client";
 import { Command } from "../Command";
 import { CoCService } from "../services/CoCService";
 import {
   DuskAuditEntryPage,
   DuskAuditLedgerEntry,
   DuskAuditReversalRequest,
+  DuskLedgerAmbiguousOutcomeError,
+  DuskInsufficientBalanceError,
+  DuskLedgerAlreadyReversedError,
+  DuskLedgerIdempotencyConflictError,
+  DuskLedgerReversalPendingError,
+  DuskLedgerValidationError,
+  DuskLedgerMutationReference,
+  DuskLedgerMutationResult,
+  DuskPendingReversalResolutionResult,
   DuskSourceEventAudit,
   duskLedgerService,
 } from "../services/DuskLedgerService";
@@ -30,6 +39,10 @@ const MAX_HISTORY_PAGES = 50;
 const REVERSAL_PAGE_SIZE = 8;
 const MAX_REVERSAL_PAGES = 7;
 const AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
+const MUTATION_TIMEOUT_MS = 5 * 60 * 1000;
+const DUSK_WALLET_MUTATION_FLAG = "DUSK_WALLET_MUTATIONS_ENABLED";
+const PRODUCTION_ENVIRONMENT_VALUES = new Set(["prod", "production", "live"]);
+const OPTIONAL_RUNTIME_ENVIRONMENT_KEYS = ["DEPLOY_ENV", "APP_ENV", "ENVIRONMENT", "NODE_ENV"] as const;
 
 type AdminInteractionEvidence = {
   inGuild?: () => boolean;
@@ -472,9 +485,680 @@ function makeMember(target: { id: string; displayName?: string; user?: { usernam
   };
 }
 
+type DuskAdminMutationDraft =
+  | {
+      kind: "adjust";
+      targetId: string;
+      target: AuditMember;
+      amount: number;
+      reason: string;
+      sourceEventType: string;
+      sourceEventId: string;
+      idempotencyKey: string;
+    }
+  | {
+      kind: "reverse";
+      targetId: string;
+      target: AuditMember;
+      originalEntryId: string;
+      reason: string;
+      sourceEventType: string;
+      sourceEventId: string;
+      idempotencyKey: string;
+    }
+  | {
+      kind: "resolve";
+      targetId: string;
+      target: AuditMember;
+      reversalRequestId: string;
+      resolutionType: DuskReversalResolutionType;
+      reason: string;
+      request: DuskAuditReversalRequest;
+    };
+
+function getAdminSubcommand(interaction: ChatInputCommandInteraction): string {
+  try {
+    return interaction.options.getSubcommand(false) ?? "audit";
+  } catch {
+    return "audit";
+  }
+}
+
+export function isDuskMutationRuntimeAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const pollingMode = String(env.POLLING_MODE ?? "").trim().toLowerCase();
+  const pollingEnvironment = String(env.POLLING_ENV ?? "").trim().toLowerCase();
+  if (pollingMode !== "active" || !PRODUCTION_ENVIRONMENT_VALUES.has(pollingEnvironment)) return false;
+
+  for (const key of OPTIONAL_RUNTIME_ENVIRONMENT_KEYS) {
+    const configuredValue = String(env[key] ?? "").trim().toLowerCase();
+    if (configuredValue && !PRODUCTION_ENVIRONMENT_VALUES.has(configuredValue)) return false;
+  }
+
+  return String(env[DUSK_WALLET_MUTATION_FLAG] ?? "").trim().toLowerCase() === "true";
+}
+
+function mutationOptionDefinitions() {
+  return [
+    {
+      name: "user",
+      description: "Current guild member whose wallet is being corrected",
+      type: ApplicationCommandOptionType.User,
+      required: true,
+    },
+    {
+      name: "amount",
+      description: "Signed Duskits adjustment; negative debits are balance-checked",
+      type: ApplicationCommandOptionType.Integer,
+      required: true,
+      minValue: -2_147_483_647,
+      maxValue: 2_147_483_647,
+    },
+    {
+      name: "reason",
+      description: "Nonempty technical correction reason",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 500,
+    },
+    {
+      name: "source-type",
+      description: "Durable source or case type",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 64,
+    },
+    {
+      name: "source-id",
+      description: "Durable source or case identifier",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 128,
+    },
+    {
+      name: "idempotency-key",
+      description: "Stable key for safe retries of this exact correction",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 128,
+    },
+  ];
+}
+
+function reverseOptionDefinitions() {
+  return [
+    {
+      name: "user",
+      description: "Current guild member whose wallet is being reviewed",
+      type: ApplicationCommandOptionType.User,
+      required: true,
+    },
+    {
+      name: "transaction",
+      description: "Original ledger entry ID to reverse",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 64,
+    },
+    {
+      name: "reason",
+      description: "Nonempty technical reversal reason",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 500,
+    },
+    {
+      name: "source-type",
+      description: "Durable reversal case type",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 64,
+    },
+    {
+      name: "source-id",
+      description: "Durable reversal case identifier",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 128,
+    },
+    {
+      name: "idempotency-key",
+      description: "Stable key for safe retries of this exact reversal",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 128,
+    },
+  ];
+}
+
+function resolveOptionDefinitions() {
+  return [
+    {
+      name: "user",
+      description: "Current guild member who owns the pending review",
+      type: ApplicationCommandOptionType.User,
+      required: true,
+    },
+    {
+      name: "request",
+      description: "Pending reversal request ID",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 64,
+    },
+    {
+      name: "action",
+      description: "Apply only if the balance can remain nonnegative, or decline",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      choices: [
+        { name: "Apply reversal", value: "apply" },
+        { name: "Decline reversal", value: "decline" },
+      ],
+    },
+    {
+      name: "reason",
+      description: "Nonempty review resolution reason",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+      maxLength: 500,
+    },
+  ];
+}
+
+function buildMutationPreview(draft: DuskAdminMutationDraft): string {
+  if (draft.kind === "adjust") {
+    return [
+      "**Confirm technical Duskits adjustment**",
+      `Target: ${buildMemberLabel(draft.target)}`,
+      `Signed amount: ${formatAmount(draft.amount)} Duskits`,
+      `Reason: ${sanitize(draft.reason, 300)}`,
+      `Source: ${sanitize(draft.sourceEventType, 64)}:${sanitize(draft.sourceEventId, 128)}`,
+      `Idempotency key: ${sanitize(draft.idempotencyKey, 128)}`,
+      "This appends one immutable correction entry. It is not a routine reward or a voluntary refund.",
+    ].join("\n");
+  }
+  if (draft.kind === "reverse") {
+    return [
+      "**Confirm technical Duskits reversal**",
+      `Target: ${buildMemberLabel(draft.target)}`,
+      `Original transaction: ${sanitize(draft.originalEntryId, 80)}`,
+      `Reason: ${sanitize(draft.reason, 300)}`,
+      `Source: ${sanitize(draft.sourceEventType, 64)}:${sanitize(draft.sourceEventId, 128)}`,
+      `Idempotency key: ${sanitize(draft.idempotencyKey, 128)}`,
+      "If the wallet cannot absorb the reversal, this creates an auditable pending review instead of a negative balance.",
+    ].join("\n");
+  }
+  return [
+    `**Confirm pending reversal ${draft.resolutionType === DuskReversalResolutionType.APPLIED ? "application" : "decline"}**`,
+    `Target: ${buildMemberLabel(draft.target)}`,
+    `Request: ${sanitize(draft.reversalRequestId, 80)}`,
+    `Requested amount: ${formatAmount(draft.request.requestedAmount)} Duskits`,
+    `Original transaction: ${sanitize(draft.request.originalEntryId, 80)}`,
+    `Review reason: ${sanitize(draft.reason, 300)}`,
+    `Original request key: ${sanitize(draft.request.idempotencyKey, 128)}`,
+    draft.resolutionType === DuskReversalResolutionType.APPLIED
+      ? "Apply appends the compensating entry only if the wallet remains nonnegative."
+      : "Decline records an immutable resolution without changing the wallet.",
+  ].join("\n");
+}
+
+function buildMutationControls(prefix: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:confirm`)
+      .setLabel("Confirm")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:cancel`)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
+
+function buildMutationReference(draft: DuskAdminMutationDraft): DuskLedgerMutationReference {
+  if (draft.kind === "adjust") {
+    return {
+      operation: "correction",
+      idempotencyKey: draft.idempotencyKey,
+      sourceEventType: draft.sourceEventType,
+      sourceEventId: draft.sourceEventId,
+    };
+  }
+  if (draft.kind === "reverse") {
+    return {
+      operation: "reversal",
+      idempotencyKey: draft.idempotencyKey,
+      sourceEventType: draft.sourceEventType,
+      sourceEventId: draft.sourceEventId,
+      originalEntryId: draft.originalEntryId,
+    };
+  }
+  return {
+    operation: "pending-reversal-resolution",
+    idempotencyKey: draft.request.idempotencyKey,
+    sourceEventType: draft.request.sourceEventType,
+    sourceEventId: draft.request.sourceEventId,
+    originalEntryId: draft.request.originalEntryId,
+    reversalRequestId: draft.reversalRequestId,
+  };
+}
+
+function mergeMutationReferences(
+  preferred: DuskLedgerMutationReference | undefined,
+  fallback: DuskLedgerMutationReference,
+): DuskLedgerMutationReference {
+  return {
+    operation: preferred?.operation ?? fallback.operation,
+    ledgerEntryId: preferred?.ledgerEntryId ?? fallback.ledgerEntryId,
+    idempotencyKey: preferred?.idempotencyKey ?? fallback.idempotencyKey,
+    sourceEventType: preferred?.sourceEventType ?? fallback.sourceEventType,
+    sourceEventId: preferred?.sourceEventId ?? fallback.sourceEventId,
+    originalEntryId: preferred?.originalEntryId ?? fallback.originalEntryId,
+    reversalRequestId: preferred?.reversalRequestId ?? fallback.reversalRequestId,
+  };
+}
+
+function formatMutationReference(reference: DuskLedgerMutationReference): string {
+  const values = [
+    reference.reversalRequestId ? `request=${sanitize(reference.reversalRequestId, 80)}` : null,
+    reference.ledgerEntryId ? `ledger-entry=${sanitize(reference.ledgerEntryId, 80)}` : null,
+    reference.originalEntryId ? `transaction=${sanitize(reference.originalEntryId, 80)}` : null,
+    reference.sourceEventType && reference.sourceEventId
+      ? `source=${sanitize(reference.sourceEventType, 64)}:${sanitize(reference.sourceEventId, 128)}`
+      : null,
+    reference.idempotencyKey ? `idempotency=${sanitize(reference.idempotencyKey, 128)}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return values.join(" · ") || "reference unavailable";
+}
+
+function addResultReference(
+  result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult,
+  reference: DuskLedgerMutationReference,
+): DuskLedgerMutationReference {
+  const ledgerEntryId = result.outcome === "applied"
+    ? result.entry.id
+    : result.outcome === "resolved" && result.entry
+      ? result.entry.id
+      : undefined;
+  return ledgerEntryId ? { ...reference, ledgerEntryId } : reference;
+}
+
+function formatMutationError(
+  error: unknown,
+  fallbackReference: DuskLedgerMutationReference = { operation: "correction" },
+): string {
+  if (error instanceof DuskLedgerAmbiguousOutcomeError) {
+    return [
+      "**Duskits mutation outcome requires reconciliation**",
+      "The database outcome is uncertain; no rollback is assumed. Do not retry with changed provenance.",
+      `Reconcile privately using: ${formatMutationReference(mergeMutationReferences(error.reference, fallbackReference))}`,
+    ].join("\n");
+  }
+  if (error instanceof DuskInsufficientBalanceError) {
+    return "No wallet change was recorded: this would make the balance negative.";
+  }
+  if (error instanceof DuskLedgerAlreadyReversedError) {
+    return "No wallet change was recorded: that transaction is already reversed.";
+  }
+  if (error instanceof DuskLedgerReversalPendingError) {
+    return "No wallet change was recorded: that transaction already has a pending review.";
+  }
+  if (error instanceof DuskLedgerIdempotencyConflictError) {
+    return "No wallet change was recorded: the idempotency or provenance key conflicts with an existing request.";
+  }
+  if (error instanceof DuskLedgerValidationError) {
+    return `No wallet change was recorded: ${sanitize(error.message, 400)}`;
+  }
+  return [
+    "**Duskits mutation outcome requires reconciliation**",
+    "The database outcome could not be confirmed; no rollback is assumed.",
+    `Reconcile privately using: ${formatMutationReference(fallbackReference)}`,
+  ].join("\n");
+}
+
+function formatMutationPreparationError(error: unknown): string {
+  if (error instanceof DuskLedgerValidationError) {
+    return `Duskits mutation could not be prepared: ${sanitize(error.message, 400)} No ledger operation was attempted.`;
+  }
+  return "Duskits mutation could not be prepared; no ledger operation was attempted.";
+}
+
+function formatMutationResult(
+  result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult,
+  reference: DuskLedgerMutationReference,
+): string {
+  if (result.outcome === "pending_review") {
+    return [
+      "**Pending reversal review recorded**",
+      `Request: ${sanitize(result.reversalRequest.id, 80)}`,
+      `Requested amount: ${formatAmount(result.reversalRequest.requestedAmount)} Duskits`,
+      `Current balance: ${result.balance} Duskits`,
+      `Reconcile: ${formatMutationReference(reference)}`,
+      "No negative balance or reversal entry was created.",
+    ].join("\n");
+  }
+  if (result.outcome === "resolved") {
+    return [
+      `**Pending reversal ${result.resolution.resolutionType === DuskReversalResolutionType.APPLIED ? "applied" : "declined"}**`,
+      `Resolution: ${sanitize(result.resolution.id, 80)}${result.duplicate ? " (idempotent replay)" : ""}`,
+      result.entry ? `Ledger entry: ${sanitize(result.entry.id, 80)} · Amount: ${formatAmount(result.entry.amount)} Duskits` : "Ledger entry: none",
+      `Balance: ${result.balance} Duskits`,
+      `Reconcile: ${formatMutationReference(reference)}`,
+    ].join("\n");
+  }
+  return [
+    `**Duskits ${result.entry.transactionType.toLowerCase()} applied**${result.duplicate ? " (idempotent replay)" : ""}`,
+    `Ledger entry: ${sanitize(result.entry.id, 80)} · Amount: ${formatAmount(result.entry.amount)} Duskits`,
+    `Balance: ${result.balance} Duskits`,
+    `Reconcile: ${formatMutationReference(reference)}`,
+  ].join("\n");
+}
+
+async function deliverMutationOutcome(
+  component: MessageComponentInteraction,
+  content: string,
+  reference: DuskLedgerMutationReference,
+  committed: boolean,
+): Promise<void> {
+  const payload = {
+    content,
+    components: [],
+    allowedMentions: { parse: [] },
+  };
+  try {
+    await component.update(payload);
+    return;
+  } catch (error) {
+    dozzleLog.error(
+      `[dusk-admin] mutation_response_failed committed=${committed ? 1 : 0} references=${sanitize(formatMutationReference(reference), 300)} error=${sanitize(String(error), 200)}`,
+    );
+  }
+
+  const fallbackContent = committed
+    ? [
+        "**Duskits mutation completed, but Discord could not update the original confirmation.**",
+        "The ledger mutation completed; no rollback is assumed.",
+        `Reconcile privately using: ${formatMutationReference(reference)}`,
+      ].join("\n")
+    : content;
+  try {
+    await component.followUp({
+      content: fallbackContent,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+  } catch (fallbackError) {
+    dozzleLog.error(
+      `[dusk-admin] mutation_response_fallback_failed committed=${committed ? 1 : 0} references=${sanitize(formatMutationReference(reference), 300)} error=${sanitize(String(fallbackError), 200)}`,
+    );
+  }
+}
+
+async function runDuskAdminMutation(
+  interaction: ChatInputCommandInteraction,
+  subcommand: "adjust" | "reverse" | "resolve",
+): Promise<void> {
+  if (!hasDuskAdministratorPermission(interaction)) {
+    dozzleLog.warn(
+      `[dusk-admin] mutation_denied guild=${interaction.guildId ?? "unknown"} reason=administrator_evidence_unavailable_or_missing`,
+    );
+    await interaction.reply({
+      content: "This wallet mutation requires the Discord Administrator permission in a guild.",
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  if (!isDuskMutationRuntimeAllowed()) {
+    dozzleLog.warn(
+      `[dusk-admin] mutation_denied guild=${interaction.guildId ?? "unknown"} reason=runtime_not_explicitly_enabled_production`,
+    );
+    await interaction.reply({
+      content: "Duskits wallet mutations are disabled outside the explicitly enabled active production runtime.",
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild || !interaction.guildId) {
+    await interaction.reply({
+      content: "This wallet mutation requires a current guild context.",
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  let targetUser: { id: string };
+  try {
+    targetUser = interaction.options.getUser("user", true);
+  } catch {
+    await interaction.reply({
+      content: "A current guild member target is required.",
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  let targetMember: { id: string; displayName?: string; user?: { username?: string } } | null;
+  try {
+    targetMember = await guild.members.fetch({ user: targetUser.id, force: true });
+  } catch {
+    targetMember = null;
+  }
+  if (!targetMember || targetMember.id !== targetUser.id) {
+    await interaction.reply({
+      content: "I could not verify that target as a current member of this guild.",
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const target = makeMember(targetMember);
+  let draft: DuskAdminMutationDraft;
+  try {
+    if (subcommand === "adjust") {
+      draft = {
+        kind: "adjust",
+        targetId: target.id,
+        target,
+        amount: interaction.options.getInteger("amount", true),
+        reason: interaction.options.getString("reason", true),
+        sourceEventType: interaction.options.getString("source-type", true),
+        sourceEventId: interaction.options.getString("source-id", true),
+        idempotencyKey: interaction.options.getString("idempotency-key", true),
+      };
+    } else if (subcommand === "reverse") {
+      draft = {
+        kind: "reverse",
+        targetId: target.id,
+        target,
+        originalEntryId: interaction.options.getString("transaction", true),
+        reason: interaction.options.getString("reason", true),
+        sourceEventType: interaction.options.getString("source-type", true),
+        sourceEventId: interaction.options.getString("source-id", true),
+        idempotencyKey: interaction.options.getString("idempotency-key", true),
+      };
+    } else {
+      const reversalRequestId = interaction.options.getString("request", true);
+      const action = interaction.options.getString("action", true);
+      const request = await duskLedgerService.getReversalRequest(target.id, reversalRequestId);
+      if (!request) {
+        await interaction.reply({
+          content: "That reversal request was not found for the verified target member.",
+          ephemeral: true,
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      if (action !== "apply" && action !== "decline") {
+        throw new DuskLedgerValidationError("action must be apply or decline.");
+      }
+      draft = {
+        kind: "resolve",
+        targetId: target.id,
+        target,
+        reversalRequestId,
+        resolutionType: action === "apply" ? DuskReversalResolutionType.APPLIED : DuskReversalResolutionType.DECLINED,
+        reason: interaction.options.getString("reason", true),
+        request,
+      };
+    }
+  } catch (error) {
+    await interaction.reply({
+      content: formatMutationPreparationError(error),
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const prefix = `dusk-admin:mutation:${interaction.id}`;
+  await interaction.reply({
+    content: buildMutationPreview(draft),
+    components: [buildMutationControls(prefix)],
+    ephemeral: true,
+    allowedMentions: { parse: [] },
+  });
+
+  const message = await interaction.fetchReply();
+  if (!("createMessageComponentCollector" in message)) return;
+  const collector = message.createMessageComponentCollector({
+    time: MUTATION_TIMEOUT_MS,
+    filter: (component: MessageComponentInteraction) => component.customId.startsWith(prefix),
+  });
+
+  collector.on("collect", async (component: MessageComponentInteraction) => {
+    let mutationAttempted = false;
+    const reference = buildMutationReference(draft);
+    try {
+      if (!isAuthorizedDuskAdminInteraction(component, interaction.user.id, component.user.id, interaction.guildId!)) {
+        await component.reply({
+          content: "This wallet mutation session is no longer authorized.",
+          ephemeral: true,
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      if (!component.isButton()) return;
+      if (component.customId === `${prefix}:cancel`) {
+        await component.update({
+          content: "Wallet mutation cancelled; no ledger state changed.",
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        collector.stop("cancelled");
+        return;
+      }
+      if (component.customId !== `${prefix}:confirm`) return;
+
+      let currentTarget;
+      try {
+        currentTarget = await interaction.guild?.members.fetch({ user: draft.targetId, force: true });
+      } catch {
+        currentTarget = null;
+      }
+      if (!currentTarget || currentTarget.id !== draft.targetId) {
+        await component.update({
+          content: "The target is no longer a verified current guild member; no ledger operation was attempted.",
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        collector.stop("target_membership_changed");
+        return;
+      }
+
+      if (
+        !isAuthorizedDuskAdminInteraction(component, interaction.user.id, component.user.id, interaction.guildId!) ||
+        !isDuskMutationRuntimeAllowed()
+      ) {
+        await component.update({
+          content: "Wallet mutation authorization is no longer active; no ledger operation was attempted.",
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        collector.stop("authorization_changed");
+        return;
+      }
+
+      mutationAttempted = true;
+      let result: DuskLedgerMutationResult | DuskPendingReversalResolutionResult | undefined;
+      let mutationError: unknown;
+      try {
+        const actorDiscordUserId = interaction.user.id;
+        if (draft.kind === "adjust") {
+          result = await duskLedgerService.recordCorrection({
+            discordUserId: draft.targetId,
+            amount: draft.amount,
+            sourceEventType: draft.sourceEventType,
+            sourceEventId: draft.sourceEventId,
+            idempotencyKey: draft.idempotencyKey,
+            reason: draft.reason,
+            actorDiscordUserId,
+            attribution: { guildId: interaction.guildId, command: "dusk-admin adjust" },
+          });
+        } else if (draft.kind === "reverse") {
+          result = await duskLedgerService.reverse({
+            discordUserId: draft.targetId,
+            originalEntryId: draft.originalEntryId,
+            sourceEventType: draft.sourceEventType,
+            sourceEventId: draft.sourceEventId,
+            idempotencyKey: draft.idempotencyKey,
+            reason: draft.reason,
+            actorDiscordUserId,
+            attribution: { guildId: interaction.guildId, command: "dusk-admin reverse" },
+          });
+        } else {
+          result = await duskLedgerService.resolvePendingReversal({
+            discordUserId: draft.targetId,
+            reversalRequestId: draft.reversalRequestId,
+            resolutionType: draft.resolutionType,
+            reason: draft.reason,
+            actorDiscordUserId,
+          });
+        }
+      } catch (error) {
+        mutationError = error;
+      }
+
+      const content = mutationError
+        ? formatMutationError(mutationError, reference)
+        : formatMutationResult(result!, addResultReference(result!, reference));
+      await deliverMutationOutcome(
+        component,
+        content,
+        result ? addResultReference(result, reference) : reference,
+        Boolean(result),
+      );
+      collector.stop("completed");
+    } catch (error) {
+      if (mutationAttempted) {
+        await deliverMutationOutcome(component, formatMutationError(error, reference), reference, false);
+        collector.stop("completed");
+        return;
+      }
+      if (!component.replied && !component.deferred) {
+        await component.reply({
+          content: "Duskits mutation verification failed; no ledger operation was attempted.",
+          ephemeral: true,
+          allowedMentions: { parse: [] },
+        }).catch(() => undefined);
+      }
+    }
+  });
+
+  collector.on("end", async () => {
+    await interaction.editReply({ components: [] }).catch(() => undefined);
+  });
+}
+
 export const DuskAdmin: Command = {
   name: "dusk-admin",
-  description: "Administrator-only read-only Duskits wallet audit",
+  description: "Administrator-only Duskits wallet audit and technical controls",
   suppressVisibilityOption: true,
   options: [
     {
@@ -490,12 +1174,35 @@ export const DuskAdmin: Command = {
         },
       ],
     },
+    {
+      name: "adjust",
+      description: "Preview and append one signed technical correction",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: mutationOptionDefinitions(),
+    },
+    {
+      name: "reverse",
+      description: "Preview and append one technical reversal",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: reverseOptionDefinitions(),
+    },
+    {
+      name: "resolve",
+      description: "Preview and resolve one pending reversal review",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: resolveOptionDefinitions(),
+    },
   ],
   run: async (
     _client: Client,
     interaction: ChatInputCommandInteraction,
     _cocService: CoCService,
   ) => {
+    const subcommand = getAdminSubcommand(interaction);
+    if (subcommand === "adjust" || subcommand === "reverse" || subcommand === "resolve") {
+      await runDuskAdminMutation(interaction, subcommand);
+      return;
+    }
     if (!hasDuskAdministratorPermission(interaction)) {
       dozzleLog.warn(
         `[dusk-admin] denied guild=${interaction.guildId ?? "unknown"} reason=administrator_evidence_unavailable_or_missing`,

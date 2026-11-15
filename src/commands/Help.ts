@@ -22,6 +22,9 @@ const HELP_TIMEOUT_MS = 10 * 60 * 1000;
 const HELP_POST_BUTTON_PREFIX = "help-post-channel";
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
   "dusk-admin:audit",
+  "dusk-admin:adjust",
+  "dusk-admin:reverse",
+  "dusk-admin:resolve",
   "clan:configure",
   "clan:cwl-tags",
   "clan:raid-tags",
@@ -124,13 +127,20 @@ type HelpOption = {
 
 const COMMAND_DOCS: Record<string, CommandDoc> = {
   "dusk-admin": {
-    summary: "Administrator-only, read-only audit of a current guild member's Duskits wallet.",
+    summary: "Administrator-only Duskits wallet audit and technical accounting controls.",
     details: [
       "Use `/dusk-admin audit user:<member>` to inspect a current member's balance, lifetime qualifying earnings, bounded ledger history, source-event provenance, and reversal review records.",
       "The command requires a live guild member record and an explicit Discord Administrator permission check at runtime. A clan-leader role or `/permission` grant cannot substitute for Administrator.",
-      "Every response is private and read-only. Missing or contradictory source evidence is shown as UNKNOWN/unverified; a source reference alone is not proof.",
+      "Use `/dusk-admin adjust` for a signed, reasoned technical correction, `/dusk-admin reverse` for a technical reversal of one original ledger entry, and `/dusk-admin resolve` to apply or decline one pending insufficient-funds review. Each mutation previews privately and requires confirmation.",
+      "Every response and confirmation is private. Corrections and reversals append immutable entries with actor, reason, signed amount, source reference, timestamp and idempotency provenance; valid voluntary refunds and routine unverified rewards are not supported.",
+      "Wallet mutations fail closed unless the runtime explicitly verifies active production mode and the separate default-off mutation gate. Mirror, staging, dev, unknown, unset, and conflicting runtime settings reject the operation. Missing or contradictory source evidence is shown as UNKNOWN/unverified; a source reference alone is not proof.",
     ],
-    examples: ["/dusk-admin audit user:@member"],
+    examples: [
+      "/dusk-admin audit user:@member",
+      "/dusk-admin adjust user:@member amount:-10 reason:Correct duplicate technical charge source-type:incident source-id:case-123 idempotency-key:case-123-adjust",
+      "/dusk-admin reverse user:@member transaction:clx-entry reason:Failed technical fulfillment source-type:incident source-id:case-123 idempotency-key:case-123-reverse",
+      "/dusk-admin resolve user:@member request:clx-request action:apply reason:Funds are now available",
+    ],
   },
   dusk: {
     summary: "View your private Duskits wallet and transaction history.",

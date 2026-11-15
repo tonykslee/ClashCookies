@@ -45,6 +45,7 @@ function makeDuskInteraction(commandName = "dusk") {
       getSubcommand: vi.fn(() => (commandName === "dusk-admin" ? "audit" : null)),
       getSubcommandGroup: vi.fn(() => null),
       getUser: vi.fn(() => ({ id: "target-1" })),
+      getInteger: vi.fn(() => 5),
       getString: vi.fn(() => {
         throw new Error("/dusk must not inspect visibility options");
       }),
@@ -93,6 +94,7 @@ function expectNoPublicPostButton(payload: any): void {
 describe("interactionCreate /dusk private response integration", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     vi.resetModules();
   });
 
@@ -185,5 +187,31 @@ describe("interactionCreate /dusk private response integration", () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
     expectNoPublicPostButton(interaction.editReply.mock.calls[0][0]);
     expect(interaction.editReply.mock.calls[0][0].allowedMentions).toEqual({ parse: [] });
+  }, 30000);
+
+  it("keeps the administrator mutation preview private and without a global post control", async () => {
+    vi.stubEnv("POLLING_MODE", "active");
+    vi.stubEnv("POLLING_ENV", "prod");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("DUSK_WALLET_MUTATIONS_ENABLED", "true");
+    const { duskLedgerService } = await import("../src/services/DuskLedgerService");
+    vi.spyOn(duskLedgerService, "recordCorrection");
+    const handler = await loadInteractionHandler();
+    const { interaction } = makeDuskInteraction("dusk-admin");
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+    interaction.options.getInteger.mockReturnValue(-3);
+    interaction.options.getString.mockImplementation((name: string) => ({
+      reason: "technical duplicate correction",
+      "source-type": "incident",
+      "source-id": "listener-case-1",
+      "idempotency-key": "listener-case-1-adjust",
+    } as Record<string, string>)[name]);
+
+    await handler(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+    expectNoPublicPostButton(interaction.reply.mock.calls[0][0]);
+    expect(interaction.reply.mock.calls[0][0].allowedMentions).toEqual({ parse: [] });
+    expect(duskLedgerService.recordCorrection).not.toHaveBeenCalled();
   }, 30000);
 });

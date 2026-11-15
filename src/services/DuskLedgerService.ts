@@ -1,6 +1,7 @@
 import {
   DuskLedgerBeneficiaryMode,
   DuskLedgerEntry,
+  DuskLedgerReversalResolution,
   DuskLedgerReversalRequest,
   DuskReversalResolutionType,
   DuskLedgerTransactionType,
@@ -44,6 +45,14 @@ export type DuskReversalInput = CommonLedgerInput & {
   originalEntryId: string;
 };
 
+export type DuskPendingReversalResolutionInput = {
+  discordUserId: string;
+  reversalRequestId: string;
+  resolutionType: DuskReversalResolutionType;
+  reason: string;
+  actorDiscordUserId: string;
+};
+
 export type DuskLedgerAppliedResult = {
   outcome: "applied";
   entry: DuskLedgerEntry;
@@ -59,6 +68,24 @@ export type DuskLedgerPendingReversalResult = {
 };
 
 export type DuskLedgerMutationResult = DuskLedgerAppliedResult | DuskLedgerPendingReversalResult;
+
+export type DuskPendingReversalResolutionResult = {
+  outcome: "resolved";
+  resolution: DuskLedgerReversalResolution;
+  entry: DuskLedgerEntry | null;
+  balance: number;
+  duplicate: boolean;
+};
+
+export type DuskLedgerMutationReference = {
+  operation: "correction" | "reversal" | "pending-reversal-resolution";
+  ledgerEntryId?: string;
+  idempotencyKey?: string;
+  sourceEventType?: string;
+  sourceEventId?: string;
+  originalEntryId?: string;
+  reversalRequestId?: string;
+};
 
 export type DuskLedgerEntryCursor = {
   createdAt: Date;
@@ -181,6 +208,7 @@ const DUSK_AUDIT_REVERSAL_SELECT = {
   resolution: {
     select: {
       id: true,
+      reversalRequestId: true,
       resolutionType: true,
       actorDiscordUserId: true,
       reason: true,
@@ -254,6 +282,19 @@ export class DuskLedgerEventAlreadyClaimedError extends Error {
 
 export class DuskLedgerReversalPendingError extends Error {
   readonly code = "DUSK_LEDGER_REVERSAL_PENDING";
+}
+
+export class DuskLedgerAmbiguousOutcomeError extends Error {
+  readonly code = "DUSK_LEDGER_AMBIGUOUS_OUTCOME";
+  readonly reference: DuskLedgerMutationReference;
+  readonly databaseErrorCode: string | null;
+
+  constructor(reference: DuskLedgerMutationReference, cause?: unknown) {
+    super("The Dusk ledger mutation outcome could not be confirmed.");
+    this.name = "DuskLedgerAmbiguousOutcomeError";
+    this.reference = reference;
+    this.databaseErrorCode = getErrorCode(cause);
+  }
 }
 
 type NormalizedLedgerInput = CommonLedgerInput & {
@@ -341,6 +382,32 @@ function isPrismaErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+function getErrorCode(error: unknown): string | null {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : null;
+}
+
+function isDefinitelyUnappliedLedgerError(error: unknown): boolean {
+  return (
+    error instanceof DuskLedgerValidationError ||
+    error instanceof DuskInsufficientBalanceError ||
+    error instanceof DuskLedgerIdempotencyConflictError ||
+    error instanceof DuskLedgerAlreadyReversedError ||
+    error instanceof DuskLedgerEventAlreadyClaimedError ||
+    error instanceof DuskLedgerReversalPendingError ||
+    error instanceof DuskLedgerAmbiguousOutcomeError
+  );
+}
+
+function wrapAmbiguousLedgerError(
+  error: unknown,
+  reference: DuskLedgerMutationReference,
+): unknown {
+  if (isDefinitelyUnappliedLedgerError(error)) return error;
+  return new DuskLedgerAmbiguousOutcomeError(reference, error);
+}
+
 function assertSameIdempotentRequest(
   existing: DuskLedgerEntry,
   requested: NormalizedLedgerInput,
@@ -409,11 +476,21 @@ export class DuskLedgerService {
     if (!common.actorDiscordUserId) {
       throw new DuskLedgerValidationError("actorDiscordUserId is required for corrections.");
     }
-    return this.appendSignedEntry({
+    const normalizedInput = {
       ...common,
       amount: normalizeAmount(input.amount, true),
       transactionType: DuskLedgerTransactionType.CORRECTION,
-    });
+    };
+    try {
+      return await this.appendSignedEntry(normalizedInput);
+    } catch (error) {
+      throw wrapAmbiguousLedgerError(error, {
+        operation: "correction",
+        idempotencyKey: common.idempotencyKey,
+        sourceEventType: common.sourceEventType,
+        sourceEventId: common.sourceEventId,
+      });
+    }
   }
 
   /** Purpose: append one compensating entry for an original entry without deleting or editing history. */
@@ -424,6 +501,13 @@ export class DuskLedgerService {
     }
     const originalEntryId = normalizeRequiredString(input.originalEntryId, "originalEntryId", 64);
     const walletId = common.discordUserId;
+    const reference: DuskLedgerMutationReference = {
+      operation: "reversal",
+      idempotencyKey: common.idempotencyKey,
+      sourceEventType: common.sourceEventType,
+      sourceEventId: common.sourceEventId,
+      originalEntryId,
+    };
 
     try {
       return await this.runSerializable(async (tx) => {
@@ -454,6 +538,14 @@ export class DuskLedgerService {
         }
         if (original.transactionType === DuskLedgerTransactionType.REVERSAL) {
           throw new DuskLedgerValidationError("A reversal cannot itself be reversed.");
+        }
+        if (
+          original.sourceEventType === common.sourceEventType &&
+          original.sourceEventId === common.sourceEventId
+        ) {
+          throw new DuskLedgerValidationError(
+            "A reversal must use a distinct durable source reference from the original transaction.",
+          );
         }
 
         const priorReversal = await tx.duskLedgerEntry.findUnique({
@@ -498,8 +590,130 @@ export class DuskLedgerService {
         }
       });
     } catch (error) {
-      if (!isPrismaErrorCode(error, "P2002")) throw error;
-      return this.recoverReversalConflict({ common, originalEntryId, walletId, error });
+      try {
+        if (!isPrismaErrorCode(error, "P2002")) throw error;
+        return await this.recoverReversalConflict({ common, originalEntryId, walletId, error });
+      } catch (recoveryError) {
+        throw wrapAmbiguousLedgerError(recoveryError, reference);
+      }
+    }
+  }
+
+  /** Purpose: read one pending or resolved reversal request for an administrator review flow. */
+  async getReversalRequest(
+    discordUserId: string,
+    reversalRequestId: string,
+  ): Promise<DuskAuditReversalRequest | null> {
+    const walletId = normalizeDiscordUserId(discordUserId);
+    const requestId = normalizeRequiredString(reversalRequestId, "reversalRequestId", 64);
+    return prisma.duskLedgerReversalRequest.findFirst({
+      where: { id: requestId, walletId },
+      select: DUSK_AUDIT_REVERSAL_SELECT,
+    });
+  }
+
+  /**
+   * Purpose: resolve one immutable pending reversal request exactly once.
+   * APPLY appends the requested compensating entry only when the wallet can remain nonnegative;
+   * DECLINE appends only the immutable review record. The request id and original request
+   * idempotency key remain the durable replay provenance because the resolution model is one-to-one.
+   */
+  async resolvePendingReversal(
+    input: DuskPendingReversalResolutionInput,
+  ): Promise<DuskPendingReversalResolutionResult> {
+    const walletId = normalizeDiscordUserId(input.discordUserId);
+    const requestId = normalizeRequiredString(input.reversalRequestId, "reversalRequestId", 64);
+    const reason = normalizeRequiredString(input.reason, "reason", 500);
+    const actorDiscordUserId = normalizeActorDiscordUserId(input.actorDiscordUserId);
+    if (!actorDiscordUserId) {
+      throw new DuskLedgerValidationError("actorDiscordUserId is required for reversal resolution.");
+    }
+    if (
+      input.resolutionType !== DuskReversalResolutionType.APPLIED &&
+      input.resolutionType !== DuskReversalResolutionType.DECLINED
+    ) {
+      throw new DuskLedgerValidationError("resolutionType must be APPLIED or DECLINED.");
+    }
+    const reference: DuskLedgerMutationReference = {
+      operation: "pending-reversal-resolution",
+      reversalRequestId: requestId,
+    };
+
+    const resolve = async (tx: DuskLedgerTransaction): Promise<DuskPendingReversalResolutionResult> => {
+      const request = await tx.duskLedgerReversalRequest.findUnique({
+        where: { id: requestId },
+        include: { resolution: true },
+      });
+      if (!request || request.walletId !== walletId) {
+        throw new DuskLedgerValidationError("The reversal request does not belong to this wallet.");
+      }
+
+      if (request.resolution) {
+        assertSameReversalResolution(request.resolution, input.resolutionType, actorDiscordUserId, reason);
+        const entry = request.resolution.resolutionEntryId
+          ? await tx.duskLedgerEntry.findUnique({ where: { id: request.resolution.resolutionEntryId } })
+          : null;
+        return this.buildPendingResolutionResult(tx, request.resolution, entry, true);
+      }
+
+      let entry: DuskLedgerEntry | null = null;
+      if (input.resolutionType === DuskReversalResolutionType.APPLIED) {
+        const priorReversal = await tx.duskLedgerEntry.findUnique({
+          where: { reversalOfId: request.originalEntryId },
+        });
+        if (priorReversal) {
+          throw new DuskLedgerAlreadyReversedError("The original ledger entry already has a reversal.");
+        }
+        const applied = await this.appendInTransaction(tx, {
+          discordUserId: request.walletId,
+          amount: request.requestedAmount,
+          transactionType: DuskLedgerTransactionType.REVERSAL,
+          sourceEventType: request.sourceEventType,
+          sourceEventId: request.sourceEventId,
+          idempotencyKey: request.idempotencyKey,
+          attribution: (request.attribution ?? null) as DuskLedgerAttribution | null,
+          policyVersion: request.policyVersion,
+          reason,
+          actorDiscordUserId,
+          reversalOfId: request.originalEntryId,
+        });
+        if (applied.outcome !== "applied") {
+          throw new Error("A pending reversal resolution unexpectedly remained pending.");
+        }
+        entry = applied.entry;
+      }
+
+      const resolution = await tx.duskLedgerReversalResolution.create({
+        data: {
+          reversalRequestId: request.id,
+          resolutionEntryId: entry?.id ?? undefined,
+          resolutionType: input.resolutionType,
+          actorDiscordUserId,
+          reason,
+        },
+      });
+      return this.buildPendingResolutionResult(tx, resolution, entry, false);
+    };
+
+    try {
+      return await this.runSerializable(resolve);
+    } catch (error) {
+      try {
+        if (!isPrismaErrorCode(error, "P2002")) throw error;
+        const request = await prisma.duskLedgerReversalRequest.findFirst({
+          where: { id: requestId, walletId },
+          select: DUSK_AUDIT_REVERSAL_SELECT,
+        });
+        const resolution = request?.resolution;
+        if (!resolution) throw error;
+        assertSameReversalResolution(resolution, input.resolutionType, actorDiscordUserId, reason);
+        const entry = resolution.resolutionEntryId
+          ? await prisma.duskLedgerEntry.findUnique({ where: { id: resolution.resolutionEntryId } })
+          : null;
+        return await this.buildPendingResolutionResult(prisma, resolution, entry, true);
+      } catch (recoveryError) {
+        throw wrapAmbiguousLedgerError(recoveryError, reference);
+      }
     }
   }
 
@@ -1037,6 +1251,32 @@ export class DuskLedgerService {
     return { outcome: "pending_review", reversalRequest, balance: wallet.balance, duplicate };
   }
 
+  private async buildPendingResolutionResult(
+    tx: DuskLedgerTransaction,
+    resolution: DuskLedgerReversalResolution,
+    entry: DuskLedgerEntry | null,
+    duplicate: boolean,
+  ): Promise<DuskPendingReversalResolutionResult> {
+    const walletId = entry?.walletId ?? null;
+    const wallet = walletId
+      ? await tx.duskWallet.findUnique({ where: { discordUserId: walletId }, select: { balance: true } })
+      : null;
+    if (!walletId || !wallet) {
+      const request = await tx.duskLedgerReversalRequest.findUnique({
+        where: { id: resolution.reversalRequestId },
+        select: { walletId: true },
+      });
+      if (!request) throw new Error("Dusk reversal request disappeared while reading its resolution.");
+      const fallbackWallet = await tx.duskWallet.findUnique({
+        where: { discordUserId: request.walletId },
+        select: { balance: true },
+      });
+      if (!fallbackWallet) throw new Error("Dusk wallet disappeared while reading the resolution result.");
+      return { outcome: "resolved", resolution, entry, balance: fallbackWallet.balance, duplicate };
+    }
+    return { outcome: "resolved", resolution, entry, balance: wallet.balance, duplicate };
+  }
+
   private async recoverReversalConflict({
     common,
     originalEntryId,
@@ -1144,6 +1384,23 @@ function assertSamePendingReversalRequest(
   ) {
     throw new DuskLedgerIdempotencyConflictError(
       `Idempotency key ${requested.idempotencyKey} was already used for a different reversal request.`,
+    );
+  }
+}
+
+function assertSameReversalResolution(
+  existing: DuskLedgerReversalResolution,
+  resolutionType: DuskReversalResolutionType,
+  actorDiscordUserId: string,
+  reason: string,
+): void {
+  if (
+    existing.resolutionType !== resolutionType ||
+    existing.actorDiscordUserId !== actorDiscordUserId ||
+    existing.reason !== reason
+  ) {
+    throw new DuskLedgerIdempotencyConflictError(
+      `Reversal request ${existing.reversalRequestId} was already resolved with different review data.`,
     );
   }
 }
