@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import { SettingsService } from "./SettingsService";
 
 const PLAYER_SIGNAL_STATE_VERSION = 1;
+const PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION = 2;
 
 const COUNTER_KEYS = [
   "donations",
@@ -36,8 +38,8 @@ type CounterKey = (typeof COUNTER_KEYS)[number];
 type HashKey = (typeof HASH_KEYS)[number];
 export type SignalKey = (typeof ALL_SIGNAL_KEYS)[number];
 
-type PlayerSignalState = {
-  version: number;
+export type PlayerSignalState = {
+  version: typeof PLAYER_SIGNAL_STATE_VERSION | typeof PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION;
   tag: string;
   name: string;
   clanTag: string;
@@ -48,7 +50,7 @@ type PlayerSignalState = {
   updatedAtMs: number;
 };
 
-type PlayerSignalInput = {
+export type PlayerSignalInput = {
   tag: string;
   name: string;
   clanTag: string;
@@ -71,7 +73,7 @@ type PlayerSignalInput = {
   nowMs: number;
 };
 
-type ProcessedSignals = {
+export type ProcessedSignals = {
   state: PlayerSignalState;
   changedSignals: SignalKey[];
   lastSeenAtMs: number | null;
@@ -106,12 +108,15 @@ export function extractGamesChampionTotalFromSignalState(raw: string | null | un
 
 /** Purpose: extract one persisted freshness timestamp from a player signal-state JSON blob. */
 export function extractSignalStateFreshnessMsFromState(raw: string | null | undefined): number | null {
-  const parsed = parseState(raw ?? null);
+  const parsed = parseVersionedObject(raw ?? null);
   if (!parsed) return null;
+  const signalTimes = parsed.signalTimes;
   const candidates = [
     parsed.lastSeenAtMs,
     parsed.updatedAtMs,
-    ...Object.values(parsed.signalTimes ?? {}),
+    ...(signalTimes && typeof signalTimes === "object" && !Array.isArray(signalTimes)
+      ? Object.values(signalTimes)
+      : []),
   ].filter((value): value is number => Number.isFinite(value));
   if (candidates.length <= 0) return null;
   return Math.max(...candidates);
@@ -124,14 +129,37 @@ function toFiniteNumber(value: unknown): number {
   return num;
 }
 
+/** Purpose: retain the existing version-gated shape used by downstream freshness readers. */
+function parseVersionedObject(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const version = (parsed as Record<string, unknown>).version;
+    if (
+      version !== PLAYER_SIGNAL_STATE_VERSION &&
+      version !== PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
+    ) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeArray<T = unknown>(value: unknown): T[] {
   if (!Array.isArray(value)) return [];
   return value as T[];
 }
 
-/** Purpose: stable hash from array. */
-function stableHashFromArray(items: unknown[]): string {
-  const normalized = items
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Purpose: preserve the exact legacy serialized representation for one player array. */
+export function canonicalPlayerSignalArray(value: unknown): string {
+  const normalized = normalizeArray(value)
     .map((item) => {
       if (!item || typeof item !== "object") return JSON.stringify(item);
       const entries = Object.entries(item as Record<string, unknown>)
@@ -141,6 +169,35 @@ function stableHashFromArray(items: unknown[]): string {
     })
     .sort();
   return normalized.join("|");
+}
+
+/** Purpose: generate the v2 fingerprint from the exact legacy representation. */
+export function fingerprintPlayerSignalArray(value: unknown): string {
+  return createHash("sha256").update(canonicalPlayerSignalArray(value), "utf8").digest("hex");
+}
+
+/** Purpose: build the six persisted v1 representations from one observation. */
+function buildLegacyHashes(input: PlayerSignalInput): Record<HashKey, string> {
+  return {
+    achievements: canonicalPlayerSignalArray(input.achievements),
+    troops: canonicalPlayerSignalArray(input.troops),
+    heroes: canonicalPlayerSignalArray(input.heroes),
+    spells: canonicalPlayerSignalArray(input.spells),
+    pets: canonicalPlayerSignalArray(input.pets),
+    heroEquipment: canonicalPlayerSignalArray(input.heroEquipment),
+  };
+}
+
+/** Purpose: build the six v2 fingerprints from one observation. */
+function buildFingerprintHashes(input: PlayerSignalInput): Record<HashKey, string> {
+  return {
+    achievements: fingerprintPlayerSignalArray(input.achievements),
+    troops: fingerprintPlayerSignalArray(input.troops),
+    heroes: fingerprintPlayerSignalArray(input.heroes),
+    spells: fingerprintPlayerSignalArray(input.spells),
+    pets: fingerprintPlayerSignalArray(input.pets),
+    heroEquipment: fingerprintPlayerSignalArray(input.heroEquipment),
+  };
 }
 
 /** Purpose: extract lifetime Clan Games points from CoC achievements payload. */
@@ -173,28 +230,81 @@ function getDefaultState(input: PlayerSignalInput): PlayerSignalState {
       expLevel: toFiniteNumber(input.expLevel),
       gamesChampion: extractGamesChampionTotal(input.achievements),
     },
-    hashes: {
-      achievements: stableHashFromArray(normalizeArray(input.achievements)),
-      troops: stableHashFromArray(normalizeArray(input.troops)),
-      heroes: stableHashFromArray(normalizeArray(input.heroes)),
-      spells: stableHashFromArray(normalizeArray(input.spells)),
-      pets: stableHashFromArray(normalizeArray(input.pets)),
-      heroEquipment: stableHashFromArray(normalizeArray(input.heroEquipment)),
-    },
+    hashes: buildLegacyHashes(input),
     signalTimes: {},
     lastSeenAtMs: null,
     updatedAtMs: input.nowMs,
   };
 }
 
-/** Purpose: parse state. */
+/** Purpose: validate one persisted signal-state object without coercing malformed fields. */
+function isValidSignalStateShape(parsed: unknown): parsed is PlayerSignalState {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const candidate = parsed as Record<string, unknown>;
+  const version = candidate.version;
+  if (
+    version !== PLAYER_SIGNAL_STATE_VERSION &&
+    version !== PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
+  ) {
+    return false;
+  }
+  if (
+    typeof candidate.tag !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.clanTag !== "string"
+  ) {
+    return false;
+  }
+  const counters = candidate.counters;
+  if (!counters || typeof counters !== "object" || Array.isArray(counters)) return false;
+  for (const key of COUNTER_KEYS) {
+    const value = (counters as Record<string, unknown>)[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  }
+  const hashes = candidate.hashes;
+  if (!hashes || typeof hashes !== "object" || Array.isArray(hashes)) return false;
+  for (const key of HASH_KEYS) {
+    const value = (hashes as Record<string, unknown>)[key];
+    if (typeof value !== "string") return false;
+    if (
+      version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION &&
+      !/^[0-9a-f]{64}$/.test(value)
+    ) {
+      return false;
+    }
+  }
+  const signalTimes = candidate.signalTimes;
+  if (!signalTimes || typeof signalTimes !== "object" || Array.isArray(signalTimes)) {
+    return false;
+  }
+  if (
+    Object.values(signalTimes as Record<string, unknown>).some(
+      (value) => typeof value !== "number" || !Number.isFinite(value),
+    )
+  ) {
+    return false;
+  }
+  if (
+    candidate.lastSeenAtMs !== null &&
+    (typeof candidate.lastSeenAtMs !== "number" || !Number.isFinite(candidate.lastSeenAtMs))
+  ) {
+    return false;
+  }
+  return typeof candidate.updatedAtMs === "number" && Number.isFinite(candidate.updatedAtMs);
+}
+
+/** Purpose: parse valid v1 or v2 state and reject unknown or malformed versions. */
 function parseState(raw: string | null): PlayerSignalState | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as PlayerSignalState;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== PLAYER_SIGNAL_STATE_VERSION) return null;
-    return parsed;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    if (parsed.version === PLAYER_SIGNAL_STATE_VERSION) {
+      // v1 historically accepted any object with the version marker. Keep that
+      // compatibility boundary and let processPlayer preserve known partial data.
+      return parsed as PlayerSignalState;
+    }
+    return isValidSignalStateShape(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -227,7 +337,7 @@ function shouldCountCounterChangeAsActivity(
 
 export class ActivitySignalService {
   /** Purpose: initialize service dependencies. */
-  constructor(private readonly settings = new SettingsService()) {}
+  constructor(private readonly settings: Pick<SettingsService, "get" | "set"> = new SettingsService()) {}
 
   /** Purpose: get state. */
   async getState(tag: string): Promise<PlayerSignalState | null> {
@@ -236,27 +346,38 @@ export class ActivitySignalService {
 
   /** Purpose: process player. */
   async processPlayer(input: PlayerSignalInput): Promise<ProcessedSignals> {
-    const existing = await this.getState(input.tag);
+    const raw = await this.settings.get(signalStateKey(input.tag));
+    const existing = parseState(raw);
     const nowMs = input.nowMs;
     const changedSignals: SignalKey[] = [];
     const base = existing ?? getDefaultState(input);
+    const baseCounters: Record<string, unknown> = isRecord(base.counters) ? base.counters : {};
+    const baseHashes: Record<string, unknown> = isRecord(base.hashes) ? base.hashes : {};
+    const baseSignalTimes: Record<string, unknown> = isRecord(base.signalTimes)
+      ? base.signalTimes
+      : {};
+    const baseLastSeenAtMs =
+      typeof base.lastSeenAtMs === "number" && Number.isFinite(base.lastSeenAtMs)
+        ? base.lastSeenAtMs
+        : null;
 
     const next: PlayerSignalState = {
       ...base,
+      version: PLAYER_SIGNAL_STATE_VERSION,
       tag: input.tag,
       name: input.name,
       clanTag: input.clanTag,
-      counters: { ...base.counters },
-      hashes: { ...base.hashes },
-      signalTimes: { ...(base.signalTimes ?? {}) },
+      counters: { ...baseCounters } as Record<CounterKey, number>,
+      hashes: { ...baseHashes } as Record<HashKey, string>,
+      signalTimes: { ...baseSignalTimes },
       updatedAtMs: nowMs,
     };
 
-    if (existing && existing.name !== input.name) {
+    if (existing && typeof existing.name === "string" && existing.name !== input.name) {
       next.signalTimes.name = nowMs;
       changedSignals.push("name");
     }
-    if (existing && existing.clanTag !== input.clanTag) {
+    if (existing && typeof existing.clanTag === "string" && existing.clanTag !== input.clanTag) {
       next.signalTimes.clan = nowMs;
       changedSignals.push("clan");
     }
@@ -276,40 +397,39 @@ export class ActivitySignalService {
     };
 
     for (const key of COUNTER_KEYS) {
-      const previous = toFiniteNumber(base.counters[key]);
+      const hasPrevious = Object.prototype.hasOwnProperty.call(baseCounters, key);
+      const previous = toFiniteNumber(baseCounters[key]);
       const current = toFiniteNumber(nextCounters[key]);
-      if (existing && shouldCountCounterChangeAsActivity(key, previous, current)) {
+      if (existing && hasPrevious && shouldCountCounterChangeAsActivity(key, previous, current)) {
         next.signalTimes[key] = nowMs;
         changedSignals.push(key);
       }
       next.counters[key] = current;
     }
 
-    const nextHashes: Record<HashKey, string> = {
-      achievements: stableHashFromArray(normalizeArray(input.achievements)),
-      troops: stableHashFromArray(normalizeArray(input.troops)),
-      heroes: stableHashFromArray(normalizeArray(input.heroes)),
-      spells: stableHashFromArray(normalizeArray(input.spells)),
-      pets: stableHashFromArray(normalizeArray(input.pets)),
-      heroEquipment: stableHashFromArray(normalizeArray(input.heroEquipment)),
-    };
+    const nextHashes = buildLegacyHashes(input);
+    const comparisonHashes =
+      existing?.version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
+        ? buildFingerprintHashes(input)
+        : nextHashes;
 
     for (const key of HASH_KEYS) {
-      const previous = base.hashes[key] ?? "";
-      const current = nextHashes[key];
-      if (existing && previous !== current) {
+      const hasPrevious = typeof baseHashes[key] === "string";
+      const previous = hasPrevious ? baseHashes[key] : "";
+      const current = comparisonHashes[key];
+      if (existing && hasPrevious && previous !== current) {
         next.signalTimes[key] = nowMs;
         changedSignals.push(key);
       }
-      next.hashes[key] = current;
+      next.hashes[key] = nextHashes[key];
     }
 
     const signalMsValues = Object.values(next.signalTimes).filter(
       (v): v is number => Number.isFinite(v)
     );
-    next.lastSeenAtMs = signalMsValues.length > 0 ? Math.max(...signalMsValues) : base.lastSeenAtMs;
+    next.lastSeenAtMs = signalMsValues.length > 0 ? Math.max(...signalMsValues) : baseLastSeenAtMs;
 
-    if (!existing && next.lastSeenAtMs === null) {
+    if (!existing && raw === null && next.lastSeenAtMs === null) {
       next.lastSeenAtMs = nowMs;
     }
 
