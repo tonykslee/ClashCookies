@@ -2302,6 +2302,24 @@ describe("/link run", () => {
       ["125k", "↓4"],
     ]);
     expect(compoSpy).toHaveBeenCalledTimes(1);
+
+    // Missing ACTUAL state must not erase existing Weight values when Compo is selected.
+    compoSpy.mockResolvedValueOnce(null);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([
+      { playerTag: "#PYLQ0289", latestKnownWeight: 145000, latestTownHall: 15 },
+      { playerTag: "#QGRJ2222", latestKnownWeight: 125000, latestTownHall: 13 },
+    ]);
+    await handleLinkListColumnsSelectMenu(interaction as any, {} as any);
+    const fallbackPayload = interaction.editReply.mock.calls[1]?.[0] as any;
+    const fallbackDescription = String(fallbackPayload.embeds[0].toJSON().description ?? "");
+    const fallbackRows = getInlineRows(fallbackDescription);
+    expect(fallbackRows.map((row) => getInlineRowSegments(row).cells.slice(2).map((cell) => cell.trim()))).toEqual([
+      ["145k", "—"],
+      ["—", "—"],
+      ["125k", "—"],
+    ]);
+    expect(fallbackDescription).toContain("ACTUAL partial source unavailable");
+    expect(compoSpy).toHaveBeenCalledTimes(2);
     compoSpy.mockRestore();
   });
 
