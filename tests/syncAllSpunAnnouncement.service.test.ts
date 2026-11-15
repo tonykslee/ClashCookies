@@ -1,5 +1,6 @@
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
+import { dozzleLog } from "../src/helper/dozzleLogger";
 import {
   SYNC_ALL_SPUN_EVENT_TYPE,
   SYNC_ALL_SPUN_MESSAGE,
@@ -16,7 +17,7 @@ type TrackedRow = {
   referenceId: string | null;
   featureType: string;
   status: string;
-  expiresAt: Date;
+  expiresAt: Date | null;
   createdAt: Date;
   metadata: any;
   claims: Array<{ clanTag: string; userId: string }>;
@@ -64,6 +65,26 @@ function makeRows(rootMetadata = metadata()): TrackedRow[] {
   ];
 }
 
+function sameValue(left: unknown, right: unknown): boolean {
+  if (left instanceof Date && right instanceof Date) return left.getTime() === right.getTime();
+  return left === right;
+}
+
+function matchesWhere(row: Record<string, any>, where: any): boolean {
+  if (!where) return true;
+  if (where.OR && !where.OR.some((condition: any) => matchesWhere(row, condition))) return false;
+  if (where.AND && !where.AND.every((condition: any) => matchesWhere(row, condition))) return false;
+  return Object.entries(where).every(([key, expected]) => {
+    if (key === "OR" || key === "AND") return true;
+    if (key === "expiresAt" && expected && typeof expected === "object") {
+      if ("gt" in expected) return row.expiresAt !== null && row.expiresAt.getTime() > expected.gt.getTime();
+      if ("gte" in expected) return row.expiresAt !== null && row.expiresAt.getTime() >= expected.gte.getTime();
+      return true;
+    }
+    return sameValue(row[key], expected);
+  });
+}
+
 function makeDependencies(options: {
   rows?: TrackedRow[];
   send?: ReturnType<typeof vi.fn>;
@@ -96,16 +117,14 @@ function makeDependencies(options: {
       events.delete(key);
       return { count: 1 };
     }),
+    findMany: vi.fn(async ({ where }: any) => [...events.values()].filter((row) => matchesWhere(row, where))),
   };
   const trackedMessage = {
     findUnique: vi.fn(async ({ where }: any) => rows.find((row) => row.messageId === where.messageId) ?? null),
-    findFirst: vi.fn(async () => rows
-      .filter((row) => row.referenceId === null && row.status === "ACTIVE")
+    findFirst: vi.fn(async ({ where }: any) => [...rows]
+      .filter((row) => matchesWhere(row, where))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null),
-    findMany: vi.fn(async ({ select }: any) => {
-      if (select?.claims) return rows.filter((row) => row.status === "ACTIVE");
-      return rows.filter((row) => row.referenceId === null && row.status === "ACTIVE");
-    }),
+    findMany: vi.fn(async ({ where }: any) => rows.filter((row) => matchesWhere(row, where))),
   };
   const send = options.send ?? vi.fn().mockResolvedValue({ id: "announcement-1" });
   const channel = {
@@ -207,6 +226,28 @@ describe("SyncAllSpunAnnouncementService", () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  it("skips terminal roots before repeated recovery redoes routing or claim aggregation", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    const info = vi.spyOn(dozzleLog, "info");
+
+    await expect(deps.service.reconcileDue(deps.client, now))
+      .resolves.toMatchObject({ delivered: 1, terminal: 0 });
+    await expect(deps.service.reconcileDue(deps.client, now))
+      .resolves.toMatchObject({ delivered: 0, terminal: 1, suppressed: 0, failed: 0 });
+
+    expect(deps.send).toHaveBeenCalledTimes(1);
+    expect(deps.routing.getChannelIdForType).toHaveBeenCalledTimes(2);
+    expect(deps.trackedMessage.findMany.mock.calls.filter((call: any[]) => call[0]?.select?.claims))
+      .toHaveLength(2);
+    expect(info.mock.calls.filter(([message]) => String(message).includes("event=recovery_summary")))
+      .toHaveLength(1);
+    info.mockRestore();
+  });
+
   it("preserves terminal delivery state across a new service instance", async () => {
     const deps = makeDependencies();
     deps.rows[0].claims = [
@@ -235,6 +276,36 @@ describe("SyncAllSpunAnnouncementService", () => {
       .resolves.toMatchObject({ state: "failed", reason: "sync_destination_unavailable" });
     expect(deps.send).not.toHaveBeenCalled();
     expect(deps.events.size).toBe(0);
+  });
+
+  it("excludes unrelated and expired child claims from the current root", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [{ clanTag: "#AAA111", userId: "user-a" }];
+    deps.rows.push(
+      {
+        ...deps.rows[1],
+        id: "unrelated-status-id",
+        messageId: "unrelated-status-message",
+        guildId: "guild-2",
+        referenceId: "other-root-message",
+        claims: [{ clanTag: "#BBB222", userId: "user-b" }],
+      },
+      {
+        ...deps.rows[1],
+        id: "expired-status-id",
+        messageId: "expired-status-message",
+        expiresAt: new Date("2026-08-15T11:59:59.000Z"),
+        claims: [{ clanTag: "#BBB222", userId: "user-c" }],
+      },
+    );
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({
+        state: "incomplete",
+        participatingClanCount: 2,
+        claimedClanCount: 1,
+      });
+    expect(deps.send).not.toHaveBeenCalled();
   });
 
   it("fails closed for early, replaced, expired, and malformed identities", async () => {

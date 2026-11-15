@@ -21,6 +21,8 @@ import {
   claimSyncEvent,
   markSyncEventDelivered,
   releaseSyncEvent,
+  syncEventKey,
+  syncEventPayloadStatus,
   type SyncEventDeliveryIdentity,
 } from "./SyncEventDeliveryService";
 import {
@@ -66,6 +68,7 @@ export type SyncAllSpunRecoverySummary = {
   scanned: number;
   delivered: number;
   suppressed: number;
+  terminal: number;
   incomplete: number;
   skipped: number;
   failed: number;
@@ -438,6 +441,41 @@ export class SyncAllSpunAnnouncementService {
     }
   }
 
+  private async findTerminalDeliveryKeys(
+    roots: Array<{ guildId: string; metadata: unknown }>,
+    now: Date,
+  ): Promise<Set<string>> {
+    if (!this.db.syncEvent?.findMany) return new Set();
+    const candidates = roots.flatMap((root) => {
+      const metadata = parseSyncTimeMetadata(root.metadata);
+      const syncTime = metadata ? syncTimeFromMetadata(metadata) : null;
+      return syncTime && syncTime.getTime() <= now.getTime()
+        ? [{ guildId: root.guildId, syncTime }]
+        : [];
+    });
+    if (candidates.length === 0) return new Set();
+
+    const events = await this.db.syncEvent.findMany({
+      where: {
+        eventType: SYNC_ALL_SPUN_EVENT_TYPE,
+        clanTag: "",
+        OR: candidates.map((candidate) => ({
+          guildId: candidate.guildId,
+          syncTime: candidate.syncTime,
+        })),
+      },
+      select: { guildId: true, syncTime: true, clanTag: true, eventType: true, payload: true },
+    });
+    return new Set(
+      events
+        .filter((event: any) => {
+          const status = syncEventPayloadStatus(event.payload);
+          return status === "delivered" || status === "suppressed";
+        })
+        .map((event: any) => syncEventKey(event)),
+    );
+  }
+
   async reconcileDue(
     client: Client,
     now: Date = new Date(),
@@ -446,6 +484,7 @@ export class SyncAllSpunAnnouncementService {
       scanned: 0,
       delivered: 0,
       suppressed: 0,
+      terminal: 0,
       incomplete: 0,
       skipped: 0,
       failed: 0,
@@ -457,13 +496,33 @@ export class SyncAllSpunAnnouncementService {
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
         referenceId: null,
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: now } },
+        ],
       },
       orderBy: [{ createdAt: "desc" }, { messageId: "desc" }],
       take: SYNC_ALL_SPUN_RECOVERY_LIMIT,
-      select: { messageId: true },
+      select: { messageId: true, guildId: true, metadata: true },
     });
+    const terminalKeys = await this.findTerminalDeliveryKeys(roots, now);
     for (const root of roots) {
       summary.scanned += 1;
+      const metadata = parseSyncTimeMetadata(root.metadata);
+      const syncTime = metadata ? syncTimeFromMetadata(metadata) : null;
+      if (!syncTime || syncTime.getTime() > now.getTime()) {
+        summary.skipped += 1;
+        continue;
+      }
+      if (terminalKeys.has(syncEventKey({
+        guildId: root.guildId,
+        syncTime,
+        clanTag: "",
+        eventType: SYNC_ALL_SPUN_EVENT_TYPE,
+      }))) {
+        summary.terminal += 1;
+        continue;
+      }
       const result = await this.evaluateAfterAdd(client, root.messageId, now);
       if (result.state === "delivered") summary.delivered += 1;
       else if (result.state === "suppressed") summary.suppressed += 1;
@@ -473,7 +532,7 @@ export class SyncAllSpunAnnouncementService {
     }
     if (summary.delivered || summary.suppressed || summary.failed) {
       dozzleLog.info(
-        `[sync-all-spun] event=recovery_summary scanned=${summary.scanned} delivered=${summary.delivered} suppressed=${summary.suppressed} incomplete=${summary.incomplete} skipped=${summary.skipped} failed=${summary.failed}`,
+        `[sync-all-spun] event=recovery_summary scanned=${summary.scanned} delivered=${summary.delivered} suppressed=${summary.suppressed} terminal=${summary.terminal} incomplete=${summary.incomplete} skipped=${summary.skipped} failed=${summary.failed}`,
       );
     }
     return summary;
