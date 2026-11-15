@@ -2,6 +2,7 @@ import {
   createAgeEncryptor,
   createB2ObjectStore,
   createPgDumpRunner,
+  formatBackupError,
   loadBackupConfig,
   runBackup,
   sendBackupNotification,
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch(() => {
+main().catch((error) => {
+  console.error(formatBackupError(error));
   process.exitCode = 1;
 });

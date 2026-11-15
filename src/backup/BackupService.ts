@@ -99,7 +99,32 @@ export type BackupResult = {
   objects: BackupObject[];
 };
 
-type BackupError = Error & { code?: string; stderr?: string };
+type BackupStage = "database_dump" | "age_encryption" | "daily_object" | "weekly_object" | "monthly_object" | "success_notification";
+type BackupError = Error & {
+  code?: string;
+  stderr?: string;
+  exitStatus?: number;
+  stage?: BackupStage;
+};
+
+/**
+ * Journald is persistent: never log arbitrary exception text or subprocess stderr.
+ * Only explicitly known fields/categories can cross this diagnostic boundary.
+ */
+export function formatBackupError(error: unknown): string {
+  const details = error !== null && typeof error === "object" ? error as Partial<BackupError> : {};
+  const stages: readonly string[] = [
+    "database_dump", "age_encryption", "daily_object", "weekly_object", "monthly_object", "success_notification",
+  ];
+  const codes: readonly string[] = ["backup_command_failed", "backup_object_retention_invalid"];
+  const parts = ["[backup] failed"];
+  if (typeof details.stage === "string" && stages.includes(details.stage)) parts.push(`stage=${details.stage}`);
+  if (typeof details.code === "string" && codes.includes(details.code)) parts.push(`code=${details.code}`);
+  if (Number.isInteger(details.exitStatus) && details.exitStatus! >= 0 && details.exitStatus! <= 255) {
+    parts.push(`exit_status=${details.exitStatus}`);
+  }
+  return parts.join(" ");
+}
 
 function requiredValue(env: NodeJS.ProcessEnv, name: string): string {
   const value = String(env[name] ?? "").trim();
@@ -182,6 +207,7 @@ export function createCommandRunner(): CommandRunner {
         }
         const error = new Error(`${command} exited with status ${exitCode}`) as BackupError;
         error.code = "backup_command_failed";
+        error.exitStatus = exitCode ?? undefined;
         error.stderr = stderr;
         reject(error);
       });
@@ -380,14 +406,15 @@ async function uploadWithRetry(
   let requiredRetainUntil: Date | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const existing = await store.headObject(input.key);
+    requiredRetainUntil ??= new Date(
+      Math.ceil(
+        (now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS) / 1_000
+      ) * 1_000
+    );
     if (existing) {
-      requiredRetainUntil ??= new Date(now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS);
       await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
       return requiredRetainUntil;
     }
-    requiredRetainUntil = new Date(
-      now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS
-    );
     try {
       await store.putObject({ ...input, retainUntil: requiredRetainUntil });
       await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
@@ -414,11 +441,13 @@ export async function runBackup(
   const temporaryDirectory = await mkdtemp(join(resolve(config.stagingDirectory), ".clashcookies-backup-"));
   const dumpPath = join(temporaryDirectory, `${backupId}.dump`);
   const encryptedPath = join(temporaryDirectory, `${backupId}.dump.age`);
+  let stage: BackupStage = "database_dump";
 
   try {
     await dependencies.runDump(dumpPath);
     const dumpStats = await stat(dumpPath);
     if (dumpStats.size <= 0) throw new Error("pg_dump produced an empty archive");
+    stage = "age_encryption";
     await dependencies.encryptDump(dumpPath, encryptedPath, config.ageRecipients);
     const encryptedStats = await stat(encryptedPath);
     if (encryptedStats.size <= 0) throw new Error("age produced an empty archive");
@@ -426,6 +455,7 @@ export async function runBackup(
     const objects: BackupObject[] = [];
 
     for (const retentionClass of selectRetentionClasses(createdAt, config)) {
+      stage = `${retentionClass}_object` as BackupStage;
       const key = objectKey(config, createdAt, retentionClass, backupId);
       const retainUntil = await uploadWithRetry(
         dependencies.objectStore,
@@ -450,12 +480,14 @@ export async function runBackup(
       });
     }
 
+    stage = "success_notification";
     if (dependencies.notify) {
       await dependencies.notify({ backupId, event: "backup_succeeded", objectCount: objects.length });
     }
     logger.log(`[backup] completed backupId=${backupId} objects=${objects.length} bytes=${encryptedStats.size}`);
     return { backupId, createdAt: createdAt.toISOString(), bytes: encryptedStats.size, sha256, objects };
   } catch (error) {
+    if (error instanceof Error) (error as BackupError).stage = stage;
     if (dependencies.notify) {
       try {
         await dependencies.notify({ backupId, event: "backup_failed" });
