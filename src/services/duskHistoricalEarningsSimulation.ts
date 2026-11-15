@@ -69,14 +69,18 @@ export type HistoricalPlayerLinkRow = {
 };
 
 export type HistoricalRepWorkEventRow = {
+  /** Immutable persisted event identifier when the source adapter provides it. */
+  id?: string;
   guildId: string;
   activityType: string;
   discordUserId: string;
   clanTag: string;
   syncMessageId: string | null;
   sourceMessageId: string;
+  sourceTrackedMessageId?: string | null;
   warId: string | null;
   warStartTime: Date | null;
+  opponentTag?: string | null;
   eventAt: Date;
   dedupeKey: string;
   metadata: unknown;
@@ -430,25 +434,30 @@ function isCompleteCanonicalRoster(rows: readonly HistoricalParticipationRow[]):
   return true;
 }
 
-function isKnownFwaRepEvent(event: HistoricalRepWorkEventRow): { source: string; isBaseSwapPublisher: boolean } | null {
+export type FwaRepWorkEventClassification =
+  | { status: "RECOGNIZED"; source: string; isBaseSwapPublisher: boolean }
+  | { status: "UNKNOWN"; reason: "REP_EVENT_CWL_SOURCE" | "REP_EVENT_SOURCE_UNKNOWN" };
+
+/** Purpose: classify only the persisted rep-work source variants proven to represent FWA activity. */
+export function classifyFwaRepWorkEvent(event: HistoricalRepWorkEventRow): FwaRepWorkEventClassification {
   const metadata = parseMetadata(event.metadata);
   const source = comparable(metadata.source);
   const clanKind = comparable(metadata.clanKind);
-  if (clanKind === "CWL") return null;
+  if (clanKind === "CWL") return { status: "UNKNOWN", reason: "REP_EVENT_CWL_SOURCE" };
   if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASE_SWAP") {
-    if (clanKind !== "FWA") return null;
-    return { source: source.toLowerCase(), isBaseSwapPublisher: true };
+    if (clanKind !== "FWA") return { status: "UNKNOWN", reason: "REP_EVENT_SOURCE_UNKNOWN" };
+    return { status: "RECOGNIZED", source: source.toLowerCase(), isBaseSwapPublisher: true };
   }
   if (comparable(event.activityType) === "BASES_CHECKED" && source === "BASES_CHECKLIST" && comparable(metadata.viewType) === "BASES") {
-    return { source: source.toLowerCase(), isBaseSwapPublisher: false };
+    return { status: "RECOGNIZED", source: source.toLowerCase(), isBaseSwapPublisher: false };
   }
   if (comparable(event.activityType) === "MAIL_CHECKED" && source === "MAIL_CHECKLIST" && comparable(metadata.viewType) === "MAIL") {
-    return { source: source.toLowerCase(), isBaseSwapPublisher: false };
+    return { status: "RECOGNIZED", source: source.toLowerCase(), isBaseSwapPublisher: false };
   }
   if (comparable(event.activityType) === "MAIL_SENT" && source === "FWA_MATCH_MAIL_SEND") {
-    return { source: source.toLowerCase(), isBaseSwapPublisher: false };
+    return { status: "RECOGNIZED", source: source.toLowerCase(), isBaseSwapPublisher: false };
   }
-  return null;
+  return { status: "UNKNOWN", reason: "REP_EVENT_SOURCE_UNKNOWN" };
 }
 
 function buildDistribution(values: readonly number[]): DistributionSummary {
@@ -692,11 +701,10 @@ export function simulateHistoricalDuskits(input: HistoricalEarningsSimulationInp
       incrementReason(unknownReasons, "REP_EVENT_USER_INVALID");
       continue;
     }
-    const source = isKnownFwaRepEvent(event);
-    if (!source) {
+    const source = classifyFwaRepWorkEvent(event);
+    if (source.status !== "RECOGNIZED") {
       repWork.unknownEvents += 1;
-      const metadata = parseMetadata(event.metadata);
-      incrementReason(unknownReasons, comparable(metadata.clanKind) === "CWL" ? "REP_EVENT_CWL_SOURCE" : "REP_EVENT_SOURCE_UNKNOWN");
+      incrementReason(unknownReasons, source.reason);
       continue;
     }
     if (!String(event.dedupeKey ?? "").trim()) {

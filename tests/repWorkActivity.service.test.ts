@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   repWorkActivityEvent: {
     create: vi.fn(),
+    findMany: vi.fn(),
   },
 }));
 
@@ -16,6 +17,7 @@ describe("RepWorkActivityService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.repWorkActivityEvent.create.mockResolvedValue({});
+    prismaMock.repWorkActivityEvent.findMany.mockResolvedValue([]);
   });
 
   it("records BASES_CHECKED with sync identity and prep timing", async () => {
@@ -196,5 +198,21 @@ describe("RepWorkActivityService", () => {
       activityType: "BASES_CHECKED",
     });
     expect(String(createCall.data.metadata.source)).not.toContain("base_swap");
+  });
+
+  it("reads a bounded evaluation window in stable order without using a mutation path", async () => {
+    const from = new Date("2026-06-01T00:00:00.000Z");
+    const to = new Date("2026-06-08T00:00:00.000Z");
+    await expect(
+      repWorkActivityService.listEventsForEvaluation({ guildId: "guild-1", from, to, limit: 100 }),
+    ).resolves.toEqual([]);
+
+    expect(prismaMock.repWorkActivityEvent.findMany).toHaveBeenCalledWith({
+      where: { guildId: "guild-1", eventAt: { gte: from, lt: to } },
+      orderBy: [{ eventAt: "asc" }, { id: "asc" }],
+      take: 101,
+      select: expect.objectContaining({ id: true, dedupeKey: true, metadata: true, updatedAt: true }),
+    });
+    expect(prismaMock.repWorkActivityEvent.create).not.toHaveBeenCalled();
   });
 });
