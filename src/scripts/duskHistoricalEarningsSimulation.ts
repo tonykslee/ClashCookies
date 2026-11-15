@@ -159,14 +159,17 @@ function normalizeRepEvent(row: any): HistoricalRepWorkEventRow | null {
   const eventAt = date(row?.eventAt);
   if (!text(row?.guildId) || !text(row?.activityType) || !text(row?.discordUserId) || !text(row?.clanTag) || !text(row?.sourceMessageId) || !eventAt) return null;
   return {
+    id: text(row?.id) || undefined,
     guildId: text(row.guildId),
     activityType: text(row.activityType),
     discordUserId: text(row.discordUserId),
     clanTag: text(row.clanTag),
     syncMessageId: row?.syncMessageId == null ? null : text(row.syncMessageId),
     sourceMessageId: text(row.sourceMessageId),
+    sourceTrackedMessageId: row?.sourceTrackedMessageId == null ? null : text(row.sourceTrackedMessageId),
     warId: row?.warId == null ? null : text(row.warId),
     warStartTime: date(row?.warStartTime),
+    opponentTag: row?.opponentTag == null ? null : text(row.opponentTag),
     eventAt,
     dedupeKey: text(row.dedupeKey),
     metadata: row?.metadata ?? null,
@@ -210,7 +213,7 @@ export async function loadHistoricalSimulationInput(
   });
   const repEvents = await db.repWorkActivityEvent.findMany({
     where: { guildId: scope.guildId, eventAt: { gte: scope.from, lt: scope.to } },
-    select: { guildId: true, activityType: true, discordUserId: true, clanTag: true, syncMessageId: true, sourceMessageId: true, warId: true, warStartTime: true, eventAt: true, dedupeKey: true, metadata: true, createdAt: true, updatedAt: true },
+    select: { id: true, guildId: true, activityType: true, discordUserId: true, clanTag: true, syncMessageId: true, sourceMessageId: true, sourceTrackedMessageId: true, warId: true, warStartTime: true, opponentTag: true, eventAt: true, dedupeKey: true, metadata: true, createdAt: true, updatedAt: true },
   });
   const normalizedLinks = links.map(normalizePlayerLink).filter((row): row is HistoricalPlayerLinkRow => row !== null);
   const normalizedRepEvents = repEvents.map(normalizeRepEvent).filter((row): row is HistoricalRepWorkEventRow => row !== null);
