@@ -381,21 +381,49 @@ describe("runBackup", () => {
     );
   });
 
-  it("sanitizes diagnostic error output before reporting a failure", () => {
+  it("logs only allowlisted diagnostic fields, never raw errors or subprocess stderr", () => {
     const error = Object.assign(
-      new Error("request failed https://monitor.example.invalid/private-token"),
+      new Error("request failed https://monitor.example.invalid/private-token AWS_SECRET_ACCESS_KEY=unlabelled-value"),
       {
+        stage: "daily_object",
         code: "backup_command_failed",
-        stderr: "password=super-secret token=abc123 pg_dump failed",
+        exitStatus: 1,
+        stderr: "AWS_SECRET_ACCESS_KEY=aws-secret AWS_SESSION_TOKEN=session-secret PGPASSWORD=db-secret bearer-value",
       }
     );
 
-    const formatted = formatBackupError(error);
+    expect(formatBackupError(error)).toBe(
+      "[backup] failed stage=daily_object code=backup_command_failed exit_status=1"
+    );
+    expect(formatBackupError(error)).not.toMatch(
+      /aws-secret|session-secret|db-secret|bearer-value|unlabelled-value|monitor\\.example|private-token/
+    );
+  });
 
-    expect(formatted).toContain("[backup] failed: request failed [redacted-url]");
-    expect(formatted).toContain("stderr=password=[redacted] token=[redacted] pg_dump failed");
-    expect(formatted).not.toContain("super-secret");
-    expect(formatted).not.toContain("abc123");
-    expect(formatted).not.toContain("monitor.example.invalid");
+  it("fails closed for unknown error fields and untrusted diagnostic metadata", () => {
+    const error = Object.assign(new Error("sensitive original error"), {
+      stage: "AWS_SECRET_ACCESS_KEY=secret",
+      code: "PGPASSWORD=secret",
+      exitStatus: "42; AWS_SESSION_TOKEN=secret",
+      stderr: "unlabelled secret",
+    });
+    expect(formatBackupError(error)).toBe("[backup] failed");
+    expect(formatBackupError("https://private.example.invalid/token")).toBe("[backup] failed");
+  });
+
+  it("identifies the failing backup stage without revealing exception contents", async () => {
+    const directory = await makeDirectory();
+    const dependencies = makeDependencies(makeStore());
+    dependencies.encryptDump = async () => {
+      throw new Error("PGPASSWORD=db-secret arbitrary-secret");
+    };
+
+    try {
+      await runBackup({ ...baseConfig, stagingDirectory: directory }, dependencies);
+      throw new Error("expected backup failure");
+    } catch (error) {
+      expect(formatBackupError(error)).toBe("[backup] failed stage=age_encryption");
+      expect(formatBackupError(error)).not.toContain("db-secret");
+    }
   });
 });
