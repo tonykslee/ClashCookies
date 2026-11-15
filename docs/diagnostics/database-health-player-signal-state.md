@@ -155,7 +155,7 @@ Deploy this v2-aware compatibility release before any future release enables v2 
 ### Per-observation algorithm
 
 1. Read the state once by the existing key.
-2. If it is valid v1, compute the six incoming canonical legacy representations and compare each with the stored v1 representation to produce exactly the v1 `changedSignals` result.
+2. If it is a complete or historically accepted partial v1 state, compute the six incoming canonical legacy representations and compare only fields present in the stored state. Preserve known counters, hashes, signal times, and `lastSeenAtMs`; missing partial fields are filled from the current observation without being treated as changes.
 3. If it is valid v2, compute the six v2 digests from the same canonical legacy representations and compare digests. Keep the existing counter, signal-time, last-seen, name/clan, and current timestamp semantics.
 4. For either valid version, advance a signal timestamp only for a semantic comparison change. Do not use conversion itself as a signal.
 5. Preserve counters exactly for a valid state. In particular, do not rebuild counters from the incoming array; `gamesChampion` is a persisted lifetime counter used by `/todo` GAMES.
@@ -173,6 +173,7 @@ This distinguishes two cases that the current implementation conflates: “no pr
 | v1 record, actual array/counter/name/clan change | Use the existing v1 comparison and counter activity predicates; record the same changed signal(s); persist v1 | Advance only the same signal timestamps current v1 would advance; preserve all other timestamps/counters | GAMES total and activity timestamps are equivalent. |
 | Valid v2 record, unchanged observation | Compare v2 digests generated from the unchanged canonical representation; persist through the v1 writer contract | No activity timestamp change; preserve counters and `lastSeenAtMs`; update observation freshness per the current contract | GAMES reads the same lifetime total and a current freshness timestamp. A v1-only rollback remains unsafe for that pre-existing v2 row. |
 | Valid v2 record, actual change | Digest differs only when the canonical v1 representation differs, subject to SHA-256 collision resistance; persist through the v1 writer contract | Same changed-signal and counter predicates as v1 | No false activity from format comparison; v2-aware rollback is required while v2 rows exist. |
+| Partial v1 record previously accepted by the v1 parser | Retain the v1 compatibility boundary; compare only present name/clan/counter/hash fields and preserve known signal history | Missing fields do not create activity; known `signalTimes`, `lastSeenAtMs`, and counters remain available while the observation completes the v1 envelope | GAMES uses the available persisted counter; freshness advances for the current observation while historical last-seen activity is preserved. |
 | Missing state | Treat as a first observation for the signal store, with no changed signal; initialize current counters and v1 representations | For a new `PlayerActivity`, first-observation `lastSeenAt=now` is retained. For an existing `PlayerActivity`, do not reset `lastSeenAt` from missing signal state | GAMES lifetime is current-input-only and historical continuity is UNKNOWN. Do not delete the player’s snapshot or historical rows. |
 | Malformed/unparseable state | Same no-synthetic-signal baseline as missing state; preserve the existing `PlayerActivity` timestamp when present | No recoverable v1 counters/timestamps are silently claimed; current input may initialize the new signal record | GAMES historical total/freshness is UNKNOWN until a valid observation; snapshot refresh must not turn parse failure into activity. |
 | First observation with no prior `PlayerActivity` | Initialize state with v1 representations; no signal changes | `lastSeenAt=now` follows current first-observation behavior | Snapshot/GAMES may show a baseline observation, not an inferred historical activity event. |
@@ -256,7 +257,7 @@ The Phase A implementation adds focused helper, parser, v1/v2 parity, counter-pr
 
 - Preserve `signalTimes`, `lastSeenAtMs`, all counters including `gamesChampion`, and the maximum timestamp across conversion.
 - Missing state with no `PlayerActivity` initializes once; missing/malformed state with an existing `PlayerActivity` does not advance or reset `lastSeenAt`.
-- Malformed JSON, wrong version, missing `hashes`, and malformed counter fields fail closed with no synthetic signal.
+- Unknown versions and malformed JSON fail closed with no synthetic signal. Version-marked v1 partial records remain readable for compatibility; missing or invalid nested fields are unavailable and are not treated as changes.
 - Process the same player after a service restart and confirm deterministic comparison.
 - Confirm `PlayerActivity.updatedAt` still represents observation coverage for `/inactive`, while `lastSeenAt` changes only on the existing activity rules.
 

@@ -60,6 +60,20 @@ function readState(settings: MemorySettings): PlayerSignalState {
   return JSON.parse(settings.value ?? "null") as PlayerSignalState;
 }
 
+function legacyCanonicalPlayerSignalArray(value: unknown): string {
+  const items = Array.isArray(value) ? value : [];
+  const normalized = items
+    .map((item) => {
+      if (!item || typeof item !== "object") return JSON.stringify(item);
+      const entries = Object.entries(item as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, itemValue]) => [key, itemValue]);
+      return JSON.stringify(entries);
+    })
+    .sort();
+  return normalized.join("|");
+}
+
 function toV2State(input: PlayerSignalInput, v1State: PlayerSignalState): PlayerSignalState {
   const hashes = Object.fromEntries(
     HASH_FIELDS.map((field) => [field, fingerprintPlayerSignalArray(input[field])]),
@@ -99,6 +113,19 @@ describe("ActivitySignalService canonical representations", () => {
     expect(
       canonicalPlayerSignalArray([{ nested: { b: 2, a: 1 } }]),
     ).not.toBe(canonicalPlayerSignalArray([{ nested: { a: 1, b: 2 } }]));
+  });
+
+  it("matches the original canonicalizer for undefined and JSON corner cases", () => {
+    const fixtures: unknown[][] = [
+      [undefined, "z"],
+      [undefined, "a", null, false, 0, { b: 2, a: 1 }],
+      [{ value: undefined }, undefined, "z"],
+    ];
+
+    for (const fixture of fixtures) {
+      expect(canonicalPlayerSignalArray(fixture)).toBe(legacyCanonicalPlayerSignalArray(fixture));
+    }
+    expect(canonicalPlayerSignalArray([undefined, "z"])).toBe('"z"|');
   });
 
   it("generates a lowercase SHA-256 hex digest of the canonical representation", () => {
@@ -174,6 +201,37 @@ describe("ActivitySignalService version-aware state", () => {
     expect(
       extractSignalStateFreshnessMsFromState(JSON.stringify(toV2State(input, state))),
     ).toBe(state.lastSeenAtMs);
+  });
+
+  it("preserves known history from a partial v1 state accepted by the original parser", async () => {
+    const input = makeInput();
+    const historicalLastSeenAtMs = 500;
+    const settings = new MemorySettings(
+      JSON.stringify({
+        version: 1,
+        tag: input.tag,
+        counters: { gamesChampion: 1200 },
+        hashes: { troops: canonicalPlayerSignalArray(input.troops) },
+        signalTimes: { troops: historicalLastSeenAtMs },
+        lastSeenAtMs: historicalLastSeenAtMs,
+      }),
+    );
+    expect(extractGamesChampionTotalFromSignalState(settings.value)).toBe(1200);
+    expect(extractSignalStateFreshnessMsFromState(settings.value)).toBe(historicalLastSeenAtMs);
+
+    const result = await new ActivitySignalService(settings).processPlayer({
+      ...input,
+      nowMs: 2_000,
+    });
+    const persisted = readState(settings);
+
+    expect(result.changedSignals).toEqual([]);
+    expect(result.lastSeenAtMs).toBe(historicalLastSeenAtMs);
+    expect(result.state.signalTimes.troops).toBe(historicalLastSeenAtMs);
+    expect(result.state.counters.gamesChampion).toBe(1200);
+    expect(persisted.version).toBe(1);
+    expect(extractGamesChampionTotalFromSignalState(settings.value)).toBe(1200);
+    expect(extractSignalStateFreshnessMsFromState(settings.value)).toBe(2_000);
   });
 
   it("produces the same activity result for v1 and v2 on a legitimate change", async () => {

@@ -153,11 +153,15 @@ function normalizeArray<T = unknown>(value: unknown): T[] {
   return value as T[];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 /** Purpose: preserve the exact legacy serialized representation for one player array. */
 export function canonicalPlayerSignalArray(value: unknown): string {
   const normalized = normalizeArray(value)
     .map((item) => {
-      if (!item || typeof item !== "object") return JSON.stringify(item) ?? "";
+      if (!item || typeof item !== "object") return JSON.stringify(item);
       const entries = Object.entries(item as Record<string, unknown>)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, v]) => [k, v]);
@@ -294,6 +298,12 @@ function parseState(raw: string | null): PlayerSignalState | null {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    if (parsed.version === PLAYER_SIGNAL_STATE_VERSION) {
+      // v1 historically accepted any object with the version marker. Keep that
+      // compatibility boundary and let processPlayer preserve known partial data.
+      return parsed as PlayerSignalState;
+    }
     return isValidSignalStateShape(parsed) ? parsed : null;
   } catch {
     return null;
@@ -341,6 +351,15 @@ export class ActivitySignalService {
     const nowMs = input.nowMs;
     const changedSignals: SignalKey[] = [];
     const base = existing ?? getDefaultState(input);
+    const baseCounters: Record<string, unknown> = isRecord(base.counters) ? base.counters : {};
+    const baseHashes: Record<string, unknown> = isRecord(base.hashes) ? base.hashes : {};
+    const baseSignalTimes: Record<string, unknown> = isRecord(base.signalTimes)
+      ? base.signalTimes
+      : {};
+    const baseLastSeenAtMs =
+      typeof base.lastSeenAtMs === "number" && Number.isFinite(base.lastSeenAtMs)
+        ? base.lastSeenAtMs
+        : null;
 
     const next: PlayerSignalState = {
       ...base,
@@ -348,17 +367,17 @@ export class ActivitySignalService {
       tag: input.tag,
       name: input.name,
       clanTag: input.clanTag,
-      counters: { ...base.counters },
-      hashes: { ...base.hashes },
-      signalTimes: { ...(base.signalTimes ?? {}) },
+      counters: { ...baseCounters } as Record<CounterKey, number>,
+      hashes: { ...baseHashes } as Record<HashKey, string>,
+      signalTimes: { ...baseSignalTimes },
       updatedAtMs: nowMs,
     };
 
-    if (existing && existing.name !== input.name) {
+    if (existing && typeof existing.name === "string" && existing.name !== input.name) {
       next.signalTimes.name = nowMs;
       changedSignals.push("name");
     }
-    if (existing && existing.clanTag !== input.clanTag) {
+    if (existing && typeof existing.clanTag === "string" && existing.clanTag !== input.clanTag) {
       next.signalTimes.clan = nowMs;
       changedSignals.push("clan");
     }
@@ -378,9 +397,10 @@ export class ActivitySignalService {
     };
 
     for (const key of COUNTER_KEYS) {
-      const previous = toFiniteNumber(base.counters[key]);
+      const hasPrevious = Object.prototype.hasOwnProperty.call(baseCounters, key);
+      const previous = toFiniteNumber(baseCounters[key]);
       const current = toFiniteNumber(nextCounters[key]);
-      if (existing && shouldCountCounterChangeAsActivity(key, previous, current)) {
+      if (existing && hasPrevious && shouldCountCounterChangeAsActivity(key, previous, current)) {
         next.signalTimes[key] = nowMs;
         changedSignals.push(key);
       }
@@ -394,9 +414,10 @@ export class ActivitySignalService {
         : nextHashes;
 
     for (const key of HASH_KEYS) {
-      const previous = base.hashes[key] ?? "";
+      const hasPrevious = typeof baseHashes[key] === "string";
+      const previous = hasPrevious ? baseHashes[key] : "";
       const current = comparisonHashes[key];
-      if (existing && previous !== current) {
+      if (existing && hasPrevious && previous !== current) {
         next.signalTimes[key] = nowMs;
         changedSignals.push(key);
       }
@@ -406,7 +427,7 @@ export class ActivitySignalService {
     const signalMsValues = Object.values(next.signalTimes).filter(
       (v): v is number => Number.isFinite(v)
     );
-    next.lastSeenAtMs = signalMsValues.length > 0 ? Math.max(...signalMsValues) : base.lastSeenAtMs;
+    next.lastSeenAtMs = signalMsValues.length > 0 ? Math.max(...signalMsValues) : baseLastSeenAtMs;
 
     if (!existing && raw === null && next.lastSeenAtMs === null) {
       next.lastSeenAtMs = nowMs;
