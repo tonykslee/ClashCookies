@@ -260,6 +260,88 @@ export type DuskSourceEventAudit = {
   operationalEvidence: DuskOperationalEvidence;
 };
 
+const DUSK_REWARD_RECONCILIATION_ENTRY_SELECT = {
+  id: true,
+  walletId: true,
+  amount: true,
+  transactionType: true,
+  beneficiaryMode: true,
+  beneficiaryKey: true,
+  sourceEventType: true,
+  sourceEventId: true,
+  idempotencyKey: true,
+  reversalOfId: true,
+  createdAt: true,
+} satisfies Prisma.DuskLedgerEntrySelect;
+
+const DUSK_REWARD_RECONCILIATION_SOURCE_EVENT_SELECT = {
+  id: true,
+  sourceEventType: true,
+  sourceEventId: true,
+  beneficiaryMode: true,
+  claims: {
+    select: {
+      id: true,
+      beneficiaryKey: true,
+      walletId: true,
+      ledgerEntryId: true,
+      createdAt: true,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 100,
+  },
+  _count: {
+    select: { claims: true },
+  },
+} satisfies Prisma.DuskLedgerSourceEventSelect;
+
+const DUSK_REWARD_RECONCILIATION_REVERSAL_SELECT = {
+  id: true,
+  walletId: true,
+  originalEntryId: true,
+  requestedAmount: true,
+  sourceEventType: true,
+  sourceEventId: true,
+  idempotencyKey: true,
+  createdAt: true,
+  resolution: {
+    select: {
+      id: true,
+      resolutionType: true,
+      resolutionEntryId: true,
+      createdAt: true,
+    },
+  },
+} satisfies Prisma.DuskLedgerReversalRequestSelect;
+
+export type DuskRewardReconciliationLedgerEntry = Prisma.DuskLedgerEntryGetPayload<{
+  select: typeof DUSK_REWARD_RECONCILIATION_ENTRY_SELECT;
+}>;
+
+export type DuskRewardReconciliationSourceEvent = Prisma.DuskLedgerSourceEventGetPayload<{
+  select: typeof DUSK_REWARD_RECONCILIATION_SOURCE_EVENT_SELECT;
+}>;
+
+export type DuskRewardReconciliationReversalRequest = Prisma.DuskLedgerReversalRequestGetPayload<{
+  select: typeof DUSK_REWARD_RECONCILIATION_REVERSAL_SELECT;
+}>;
+
+export type DuskRewardReconciliationLedgerSnapshot = {
+  entries: DuskRewardReconciliationLedgerEntry[];
+  sourceEvents: DuskRewardReconciliationSourceEvent[];
+  reversalRequests: DuskRewardReconciliationReversalRequest[];
+  truncated: boolean;
+  consistency: "REPEATABLE_READ" | "NON_ATOMIC" | "UNKNOWN";
+};
+
+export type DuskRewardReconciliationLedgerSnapshotInput = {
+  sourceEventTypes: readonly string[];
+  sourceEventIds: readonly string[];
+  idempotencyKeys: readonly string[];
+  snapshotAt: Date;
+  limit: number;
+};
+
 export class DuskLedgerValidationError extends Error {
   readonly code = "DUSK_LEDGER_VALIDATION";
 }
@@ -978,6 +1060,124 @@ export class DuskLedgerService {
       claimsSampleTruncated: claimsTotal > claims.length,
       policy: entry.policy,
       operationalEvidence,
+    };
+  }
+
+  /**
+   * Purpose: read a bounded source-event/ledger/reversal snapshot for a
+   * reconciliation preview. This method intentionally has no wallet or ledger
+   * mutation side effects and does not infer identity from mutable evidence.
+   */
+  async listRewardReconciliationSnapshot(
+    input: DuskRewardReconciliationLedgerSnapshotInput,
+  ): Promise<DuskRewardReconciliationLedgerSnapshot> {
+    return prisma.$transaction(
+      (tx) => this.readRewardReconciliationSnapshot(tx, input),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
+  private async readRewardReconciliationSnapshot(
+    db: Prisma.TransactionClient,
+    input: DuskRewardReconciliationLedgerSnapshotInput,
+  ): Promise<DuskRewardReconciliationLedgerSnapshot> {
+    if (!(input.snapshotAt instanceof Date) || !Number.isFinite(input.snapshotAt.getTime())) {
+      throw new DuskLedgerValidationError("snapshotAt must be a valid date.");
+    }
+    const sourceEventTypes = [...new Set(input.sourceEventTypes.map((value) => value.trim()).filter(Boolean))];
+    const sourceEventIds = [...new Set(input.sourceEventIds.map((value) => value.trim()).filter(Boolean))];
+    const idempotencyKeys = [...new Set(input.idempotencyKeys.map((value) => value.trim()).filter(Boolean))];
+    const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 50_000);
+    if (!sourceEventTypes.length || (!sourceEventIds.length && !idempotencyKeys.length)) {
+      return { entries: [], sourceEvents: [], reversalRequests: [], truncated: false, consistency: "REPEATABLE_READ" };
+    }
+
+    const sourceEventSelect = {
+      ...DUSK_REWARD_RECONCILIATION_SOURCE_EVENT_SELECT,
+      claims: {
+        ...DUSK_REWARD_RECONCILIATION_SOURCE_EVENT_SELECT.claims,
+        where: { createdAt: { lte: input.snapshotAt } },
+      },
+      _count: {
+        select: {
+          claims: { where: { createdAt: { lte: input.snapshotAt } } },
+        },
+      },
+    } satisfies Prisma.DuskLedgerSourceEventSelect;
+    const reversalRequestSelect = {
+      ...DUSK_REWARD_RECONCILIATION_REVERSAL_SELECT,
+      resolution: {
+        ...DUSK_REWARD_RECONCILIATION_REVERSAL_SELECT.resolution,
+        where: { createdAt: { lte: input.snapshotAt } },
+      },
+    } satisfies Prisma.DuskLedgerReversalRequestSelect;
+    const sourceEventsWithOverflow = sourceEventIds.length
+      ? await db.duskLedgerSourceEvent.findMany({
+          where: {
+            sourceEventType: { in: sourceEventTypes },
+            sourceEventId: { in: sourceEventIds },
+            createdAt: { lte: input.snapshotAt },
+          },
+          select: sourceEventSelect,
+          orderBy: [{ sourceEventType: "asc" }, { sourceEventId: "asc" }, { id: "asc" }],
+          take: limit + 1,
+        })
+      : [];
+    const sourceEvents = sourceEventsWithOverflow.slice(0, limit);
+    const claimEntryIds = sourceEvents.flatMap((sourceEvent) => sourceEvent.claims.map((claim) => claim.ledgerEntryId));
+    const entryWhere = [
+      ...(sourceEventIds.length ? [{
+        sourceEventType: { in: sourceEventTypes },
+        sourceEventId: { in: sourceEventIds },
+        createdAt: { lte: input.snapshotAt },
+      }] : []),
+      ...(idempotencyKeys.length ? [{ idempotencyKey: { in: idempotencyKeys }, createdAt: { lte: input.snapshotAt } }] : []),
+      ...(claimEntryIds.length ? [{ id: { in: claimEntryIds }, createdAt: { lte: input.snapshotAt } }] : []),
+    ];
+    const entriesWithOverflow = await db.duskLedgerEntry.findMany({
+      where: { OR: entryWhere },
+      select: DUSK_REWARD_RECONCILIATION_ENTRY_SELECT,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: limit + 1,
+    });
+    const entries = entriesWithOverflow.slice(0, limit);
+    const entryIds = entries.map((entry) => entry.id);
+    const reversalWhere = [
+      ...(sourceEventIds.length ? [{
+        sourceEventType: { in: sourceEventTypes },
+        sourceEventId: { in: sourceEventIds },
+        createdAt: { lte: input.snapshotAt },
+      }] : []),
+      ...(entryIds.length ? [{ originalEntryId: { in: entryIds }, createdAt: { lte: input.snapshotAt } }] : []),
+    ];
+    const reversalRequestsWithOverflow = await db.duskLedgerReversalRequest.findMany({
+      where: { OR: reversalWhere },
+      select: reversalRequestSelect,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: limit + 1,
+    });
+
+    const reversalEntriesWithOverflow = entryIds.length
+      ? await db.duskLedgerEntry.findMany({
+          where: { reversalOfId: { in: entryIds }, createdAt: { lte: input.snapshotAt } },
+          select: DUSK_REWARD_RECONCILIATION_ENTRY_SELECT,
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          take: limit + 1,
+        })
+      : [];
+    const allEntries = [...entries, ...reversalEntriesWithOverflow.slice(0, limit)].filter(
+      (entry, index, rows) => rows.findIndex((candidate) => candidate.id === entry.id) === index,
+    );
+    return {
+      entries: allEntries,
+      sourceEvents,
+      reversalRequests: reversalRequestsWithOverflow.slice(0, limit),
+      consistency: "REPEATABLE_READ",
+      truncated:
+        sourceEventsWithOverflow.length > limit ||
+        entriesWithOverflow.length > limit ||
+        reversalRequestsWithOverflow.length > limit ||
+        reversalEntriesWithOverflow.length > limit,
     };
   }
 
