@@ -3,6 +3,19 @@ import { SettingsService } from "./SettingsService";
 
 const PLAYER_SIGNAL_STATE_VERSION = 1;
 const PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION = 2;
+export const PLAYER_SIGNAL_STATE_V2_WRITE_ENV = "PLAYER_SIGNAL_STATE_V2_WRITES_ENABLED";
+
+const ENABLED_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
+
+/** Purpose: keep compact player-signal writes explicitly disabled unless enabled by environment. */
+export function isPlayerSignalStateV2WritesEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = String(env[PLAYER_SIGNAL_STATE_V2_WRITE_ENV] ?? "")
+    .trim()
+    .toLowerCase();
+  return ENABLED_FLAG_VALUES.has(raw);
+}
 
 const COUNTER_KEYS = [
   "donations",
@@ -337,7 +350,10 @@ function shouldCountCounterChangeAsActivity(
 
 export class ActivitySignalService {
   /** Purpose: initialize service dependencies. */
-  constructor(private readonly settings: Pick<SettingsService, "get" | "set"> = new SettingsService()) {}
+  constructor(
+    private readonly settings: Pick<SettingsService, "get" | "set"> = new SettingsService(),
+    private readonly env: NodeJS.ProcessEnv = process.env,
+  ) {}
 
   /** Purpose: get state. */
   async getState(tag: string): Promise<PlayerSignalState | null> {
@@ -351,6 +367,8 @@ export class ActivitySignalService {
     const nowMs = input.nowMs;
     const changedSignals: SignalKey[] = [];
     const base = existing ?? getDefaultState(input);
+    const wantsV2 =
+      isPlayerSignalStateV2WritesEnabled(this.env) && (raw === null || existing !== null);
     const baseCounters: Record<string, unknown> = isRecord(base.counters) ? base.counters : {};
     const baseHashes: Record<string, unknown> = isRecord(base.hashes) ? base.hashes : {};
     const baseSignalTimes: Record<string, unknown> = isRecord(base.signalTimes)
@@ -363,7 +381,9 @@ export class ActivitySignalService {
 
     const next: PlayerSignalState = {
       ...base,
-      version: PLAYER_SIGNAL_STATE_VERSION,
+      version: wantsV2
+        ? PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
+        : PLAYER_SIGNAL_STATE_VERSION,
       tag: input.tag,
       name: input.name,
       clanTag: input.clanTag,
@@ -412,6 +432,11 @@ export class ActivitySignalService {
       existing?.version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
         ? buildFingerprintHashes(input)
         : nextHashes;
+    const persistedHashes = wantsV2
+      ? existing?.version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
+        ? comparisonHashes
+        : buildFingerprintHashes(input)
+      : nextHashes;
 
     for (const key of HASH_KEYS) {
       const hasPrevious = typeof baseHashes[key] === "string";
@@ -421,7 +446,7 @@ export class ActivitySignalService {
         next.signalTimes[key] = nowMs;
         changedSignals.push(key);
       }
-      next.hashes[key] = nextHashes[key];
+      next.hashes[key] = persistedHashes[key];
     }
 
     const signalMsValues = Object.values(next.signalTimes).filter(
@@ -431,6 +456,17 @@ export class ActivitySignalService {
 
     if (!existing && raw === null && next.lastSeenAtMs === null) {
       next.lastSeenAtMs = nowMs;
+    }
+
+    // v1 parsing intentionally accepts partial legacy payloads. Never let that
+    // compatibility boundary create an unreadable v2 envelope: validate the
+    // fully assembled candidate and retain the legacy representation if it is
+    // not a strict v2 state.
+    if (wantsV2 && !isValidSignalStateShape(next as unknown)) {
+      next.version = PLAYER_SIGNAL_STATE_VERSION;
+      for (const key of HASH_KEYS) {
+        next.hashes[key] = nextHashes[key];
+      }
     }
 
     await this.settings.set(signalStateKey(input.tag), JSON.stringify(next));
