@@ -328,6 +328,45 @@ describe("ActivitySignalService version-aware state", () => {
     expect(result.state.counters.gamesChampion).toBe(1200);
     expect(persisted.version).toBe(2);
     expect(persisted.hashes.troops).toBe(fingerprintPlayerSignalArray(input.troops));
+
+    const unchanged = await new ActivitySignalService(settings, {
+      [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "1",
+    }).processPlayer({ ...input, nowMs: 3_000 });
+    expect(unchanged.changedSignals).toEqual([]);
+    expect(unchanged.lastSeenAtMs).toBe(historicalLastSeenAtMs);
+    expect(unchanged.state.version).toBe(2);
+  });
+
+  it("keeps nonnumeric v1 signal history on v1 across gate-on observations", async () => {
+    const input = makeInput();
+    const settings = new MemorySettings(
+      JSON.stringify({
+        version: 1,
+        tag: input.tag,
+        counters: { gamesChampion: 1200 },
+        hashes: { troops: canonicalPlayerSignalArray(input.troops) },
+        signalTimes: { troops: "500" },
+        lastSeenAtMs: 500,
+      }),
+    );
+    const env = { [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "true" };
+    const service = new ActivitySignalService(settings, env);
+
+    const first = await service.processPlayer({ ...input, nowMs: 2_000 });
+    const firstPersisted = readState(settings);
+    const second = await service.processPlayer({ ...input, nowMs: 3_000 });
+    const secondPersisted = readState(settings);
+
+    for (const result of [first, second]) {
+      expect(result.changedSignals).toEqual([]);
+      expect(result.lastSeenAtMs).toBe(500);
+      expect(result.state.version).toBe(1);
+      expect(result.state.signalTimes.troops).toBe("500");
+    }
+    expect(firstPersisted.version).toBe(1);
+    expect(secondPersisted.version).toBe(1);
+    expect(secondPersisted.signalTimes.troops).toBe("500");
+    expect(await service.getState(input.tag)).not.toBeNull();
   });
 
   it("produces the same activity result for v1 and v2 on a legitimate change", async () => {
@@ -342,12 +381,15 @@ describe("ActivitySignalService version-aware state", () => {
       nowMs: 2_000,
     };
 
-    const v1Result = await new ActivitySignalService(v1Settings).processPlayer(changedInput);
-    const v2Result = await new ActivitySignalService(v2Settings).processPlayer(changedInput);
+    const gateOffEnv = { [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "false" };
+    const v1Result = await new ActivitySignalService(v1Settings, gateOffEnv).processPlayer(changedInput);
+    const v2Result = await new ActivitySignalService(v2Settings, gateOffEnv).processPlayer(changedInput);
 
     expect(v2Result.changedSignals).toEqual(v1Result.changedSignals);
     expect(v2Result.state.signalTimes).toEqual(v1Result.state.signalTimes);
     expect(v2Result.lastSeenAtMs).toBe(v1Result.lastSeenAtMs);
+    expect(readState(v1Settings).version).toBe(1);
+    expect(readState(v2Settings).version).toBe(1);
   });
 
   it("fails closed for missing, unknown, malformed, and invalid v2 state", async () => {

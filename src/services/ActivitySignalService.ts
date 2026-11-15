@@ -367,7 +367,7 @@ export class ActivitySignalService {
     const nowMs = input.nowMs;
     const changedSignals: SignalKey[] = [];
     const base = existing ?? getDefaultState(input);
-    const writeV2 =
+    const wantsV2 =
       isPlayerSignalStateV2WritesEnabled(this.env) && (raw === null || existing !== null);
     const baseCounters: Record<string, unknown> = isRecord(base.counters) ? base.counters : {};
     const baseHashes: Record<string, unknown> = isRecord(base.hashes) ? base.hashes : {};
@@ -381,7 +381,7 @@ export class ActivitySignalService {
 
     const next: PlayerSignalState = {
       ...base,
-      version: writeV2
+      version: wantsV2
         ? PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
         : PLAYER_SIGNAL_STATE_VERSION,
       tag: input.tag,
@@ -432,7 +432,7 @@ export class ActivitySignalService {
       existing?.version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
         ? buildFingerprintHashes(input)
         : nextHashes;
-    const persistedHashes = writeV2
+    const persistedHashes = wantsV2
       ? existing?.version === PLAYER_SIGNAL_STATE_FINGERPRINT_VERSION
         ? comparisonHashes
         : buildFingerprintHashes(input)
@@ -456,6 +456,17 @@ export class ActivitySignalService {
 
     if (!existing && raw === null && next.lastSeenAtMs === null) {
       next.lastSeenAtMs = nowMs;
+    }
+
+    // v1 parsing intentionally accepts partial legacy payloads. Never let that
+    // compatibility boundary create an unreadable v2 envelope: validate the
+    // fully assembled candidate and retain the legacy representation if it is
+    // not a strict v2 state.
+    if (wantsV2 && !isValidSignalStateShape(next)) {
+      next.version = PLAYER_SIGNAL_STATE_VERSION;
+      for (const key of HASH_KEYS) {
+        next.hashes[key] = nextHashes[key];
+      }
     }
 
     await this.settings.set(signalStateKey(input.tag), JSON.stringify(next));
