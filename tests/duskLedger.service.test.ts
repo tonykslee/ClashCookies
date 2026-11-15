@@ -25,8 +25,12 @@ const txMock = vi.hoisted(() => ({
   },
   duskLedgerReversalRequest: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
     create: vi.fn(),
     findMany: vi.fn(),
+  },
+  duskLedgerReversalResolution: {
+    create: vi.fn(),
   },
   repWorkActivityEvent: {
     findUnique: vi.fn(),
@@ -53,6 +57,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   duskLedgerReversalRequest: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
     findMany: vi.fn(),
   },
   repWorkActivityEvent: {
@@ -633,6 +638,120 @@ describe("DuskLedgerService", () => {
         actorDiscordUserId: "admin-1",
       }),
     ).rejects.toBeInstanceOf(DuskLedgerValidationError);
+  });
+
+  it("resolves an insufficient-funds review by appending one safe compensating entry", async () => {
+    const pending = {
+      id: "pending-1",
+      walletId: "discord-1",
+      originalEntryId: "entry-1",
+      requestedAmount: -10,
+      sourceEventType: "incident",
+      sourceEventId: "case-1-reversal",
+      idempotencyKey: "reversal-request",
+      attribution: null,
+      policyVersion: null,
+      reason: "failed technical fulfillment",
+      actorDiscordUserId: "admin-1",
+      createdAt: new Date(),
+      resolution: null,
+    };
+    const resolution = {
+      id: "resolution-1",
+      reversalRequestId: "pending-1",
+      resolutionEntryId: "reversal-1",
+      resolutionType: DuskReversalResolutionType.APPLIED,
+      actorDiscordUserId: "admin-2",
+      reason: "funds restored for technical correction",
+      createdAt: new Date(),
+    };
+    txMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(pending);
+    txMock.duskLedgerEntry.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    txMock.duskLedgerEntry.create.mockImplementationOnce(async ({ data }: { data: Record<string, unknown> }) =>
+      makeEntry({ id: "reversal-1", ...data }),
+    );
+    txMock.duskLedgerReversalResolution.create.mockResolvedValue(resolution);
+    txMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.resolvePendingReversal({
+        discordUserId: "discord-1",
+        reversalRequestId: "pending-1",
+        resolutionType: DuskReversalResolutionType.APPLIED,
+        reason: resolution.reason,
+        actorDiscordUserId: resolution.actorDiscordUserId,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "resolved",
+      duplicate: false,
+      resolution,
+      entry: expect.objectContaining({ id: "reversal-1", amount: -10, reversalOfId: "entry-1" }),
+      balance: 0,
+    });
+    expect(txMock.duskLedgerEntry.create).toHaveBeenCalledTimes(1);
+    expect(txMock.duskLedgerReversalResolution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        reversalRequestId: "pending-1",
+        resolutionEntryId: "reversal-1",
+        resolutionType: DuskReversalResolutionType.APPLIED,
+        actorDiscordUserId: "admin-2",
+      }),
+    });
+  });
+
+  it("returns the same pending resolution on replay and rejects conflicting review data", async () => {
+    const resolution = {
+      id: "resolution-1",
+      reversalRequestId: "pending-1",
+      resolutionEntryId: null,
+      resolutionType: DuskReversalResolutionType.DECLINED,
+      actorDiscordUserId: "admin-2",
+      reason: "evidence was not sufficient",
+      createdAt: new Date(),
+    };
+    const pending = {
+      id: "pending-1",
+      walletId: "discord-1",
+      originalEntryId: "entry-1",
+      requestedAmount: -10,
+      sourceEventType: "incident",
+      sourceEventId: "case-1-reversal",
+      idempotencyKey: "reversal-request",
+      attribution: null,
+      policyVersion: null,
+      reason: "failed technical fulfillment",
+      actorDiscordUserId: "admin-1",
+      createdAt: new Date(),
+      resolution,
+    };
+    txMock.duskLedgerReversalRequest.findUnique.mockResolvedValue(pending);
+    txMock.duskLedgerEntry.findUnique.mockResolvedValue(null);
+    txMock.duskWallet.findUnique.mockResolvedValue({ balance: 0 });
+    const service = new DuskLedgerService();
+
+    await expect(
+      service.resolvePendingReversal({
+        discordUserId: "discord-1",
+        reversalRequestId: "pending-1",
+        resolutionType: DuskReversalResolutionType.DECLINED,
+        reason: resolution.reason,
+        actorDiscordUserId: resolution.actorDiscordUserId,
+      }),
+    ).resolves.toMatchObject({ outcome: "resolved", duplicate: true, resolution });
+    expect(txMock.duskLedgerReversalResolution.create).not.toHaveBeenCalled();
+
+    await expect(
+      service.resolvePendingReversal({
+        discordUserId: "discord-1",
+        reversalRequestId: "pending-1",
+        resolutionType: DuskReversalResolutionType.APPLIED,
+        reason: resolution.reason,
+        actorDiscordUserId: resolution.actorDiscordUserId,
+      }),
+    ).rejects.toBeInstanceOf(DuskLedgerIdempotencyConflictError);
   });
 
   it("bounds administrator audit history and reversal reads without writing", async () => {

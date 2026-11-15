@@ -114,6 +114,7 @@ function makeButtonComponent(interaction: any, customId: string) {
 function makeInteraction(input: { admin?: boolean; memberPresent?: boolean } = {}) {
   const handlers = new Map<string, (value: any) => Promise<void> | void>();
   const collector = {
+    stop: vi.fn(),
     on: vi.fn((event: string, callback: (value: any) => Promise<void> | void) => {
       handlers.set(event, callback);
       return collector;
@@ -145,7 +146,18 @@ function makeInteraction(input: { admin?: boolean; memberPresent?: boolean } = {
     replied: false,
     inGuild: () => true,
     options: {
+      getSubcommand: vi.fn(() => "audit"),
       getUser: vi.fn(() => ({ id: "member-1" })),
+      getInteger: vi.fn(() => 5),
+      getString: vi.fn((name: string) => ({
+        reason: "technical correction",
+        "source-type": "incident",
+        "source-id": "case-1",
+        "idempotency-key": "case-1-adjust",
+        transaction: "entry-1",
+        request: "pending-1",
+        action: "apply",
+      } as Record<string, string>)[name] ?? "value"),
     },
     reply: vi.fn(async () => {
       interaction.replied = true;
@@ -170,6 +182,10 @@ describe("/dusk-admin audit", () => {
       nextCursor: null,
     });
     vi.spyOn(duskLedgerService, "listReversalRequests").mockResolvedValue([]);
+    vi.spyOn(duskLedgerService, "recordCorrection");
+    vi.spyOn(duskLedgerService, "reverse");
+    vi.spyOn(duskLedgerService, "resolvePendingReversal");
+    vi.spyOn(duskLedgerService, "getReversalRequest");
     vi.spyOn(duskLedgerService, "getSourceEventAudit").mockResolvedValue({
       entry: {
         id: "entry-1",
@@ -197,8 +213,16 @@ describe("/dusk-admin audit", () => {
     expect(Commands.find((command) => command.name === "dusk-admin")).toBe(DuskAdmin);
     expect(hasPermissionTargetForCommand("dusk-admin")).toBe(true);
     expect(hasPermissionTargetForCommand("dusk-admin:audit")).toBe(true);
+    expect(hasPermissionTargetForCommand("dusk-admin:adjust")).toBe(true);
+    expect(hasPermissionTargetForCommand("dusk-admin:reverse")).toBe(true);
+    expect(hasPermissionTargetForCommand("dusk-admin:resolve")).toBe(true);
     expect(DuskAdmin.suppressVisibilityOption).toBe(true);
-    expect(DuskAdmin.options?.[0]?.name).toBe("audit");
+    expect(DuskAdmin.options?.map((option) => option.name)).toEqual([
+      "audit",
+      "adjust",
+      "reverse",
+      "resolve",
+    ]);
   });
 
   it("fails closed for a clan leader or missing permission evidence", async () => {
@@ -393,5 +417,80 @@ describe("/dusk-admin audit", () => {
     const reversalButton = makeButtonComponent(interaction, "dusk-admin:audit-interaction-1:reversals");
     await collect?.(reversalButton);
     expectEmbedWithinDiscordLimits(reversalButton.update.mock.calls[0][0].embeds[0]);
+  });
+
+  it("previews and confirms a private signed correction with actor and durable provenance", async () => {
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+    interaction.options.getInteger.mockReturnValue(-5);
+    interaction.options.getString.mockImplementation((name: string) => ({
+      reason: "duplicate technical charge",
+      "source-type": "incident",
+      "source-id": "case-123",
+      "idempotency-key": "case-123-adjust",
+    } as Record<string, string>)[name]);
+    const recordCorrection = vi.mocked(duskLedgerService.recordCorrection);
+    recordCorrection.mockResolvedValue({
+      outcome: "applied",
+      entry: makeEntry({ id: "correction-1", amount: -5, transactionType: "CORRECTION" }),
+      balance: 30,
+      duplicate: false,
+    } as any);
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      ephemeral: true,
+      components: expect.any(Array),
+      content: expect.stringContaining("Confirm technical Duskits adjustment"),
+    }));
+    expect(interaction.reply.mock.calls[0][0].content).not.toContain("Post to Channel");
+    const collect = handlers.get("collect");
+    const confirm = makeButtonComponent(interaction, "dusk-admin:mutation:audit-interaction-1:confirm");
+    await collect?.(confirm);
+
+    expect(recordCorrection).toHaveBeenCalledWith(expect.objectContaining({
+      discordUserId: "member-1",
+      amount: -5,
+      sourceEventType: "incident",
+      sourceEventId: "case-123",
+      idempotencyKey: "case-123-adjust",
+      actorDiscordUserId: "admin-1",
+      reason: "duplicate technical charge",
+    }));
+    expect(confirm.update).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("correction applied"),
+      components: [],
+    }));
+  });
+
+  it("rejects an unauthorized mutation callback and never invokes the ledger", async () => {
+    const { interaction, handlers } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("reverse");
+    await DuskAdmin.run({} as any, interaction, {} as any);
+
+    const collect = handlers.get("collect");
+    const unauthorized = makeButtonComponent(interaction, "dusk-admin:mutation:audit-interaction-1:confirm");
+    unauthorized.memberPermissions = { has: vi.fn(() => false) };
+    await collect?.(unauthorized);
+
+    expect(unauthorized.reply).toHaveBeenCalledWith(expect.objectContaining({ ephemeral: true }));
+    expect(duskLedgerService.reverse).not.toHaveBeenCalled();
+    expect(unauthorized.update).not.toHaveBeenCalled();
+  });
+
+  it("guards wallet mutations in mirror mode", async () => {
+    vi.stubEnv("POLLING_MODE", "mirror");
+    const { interaction } = makeInteraction({ admin: true });
+    interaction.options.getSubcommand.mockReturnValue("adjust");
+
+    await DuskAdmin.run({} as any, interaction, {} as any);
+
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("disabled in mirror and staging"),
+      ephemeral: true,
+    }));
+    expect(duskLedgerService.recordCorrection).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 });
