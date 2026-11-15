@@ -99,35 +99,29 @@ export type BackupResult = {
   objects: BackupObject[];
 };
 
-type BackupError = Error & { code?: string; stderr?: string };
+type BackupStage = "database_dump" | "age_encryption" | "daily_object" | "weekly_object" | "monthly_object" | "success_notification";
+type BackupError = Error & {
+  code?: string;
+  stderr?: string;
+  exitStatus?: number;
+  stage?: BackupStage;
+};
 
-function sanitizeBackupErrorText(value: string): string {
-  return value
-    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/gi, "[redacted-secret]")
-    .replace(/\b(?:postgres(?:ql)?|mysql):\/\/[^\s"'<>]+/gi, "[redacted-database-url]")
-    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
-    .replace(
-      /(^|\s)(--?(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential|authorization|cookie)(?:=|\s+))[^\s]+/gi,
-      "$1$2[redacted]"
-    )
-    .replace(
-      /\b(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential|authorization|cookie)\s*[:=]\s*[^\s,;]+/gi,
-      (match) => match.slice(0, match.search(/[:=]/) + 1) + "[redacted]"
-    )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1_000);
-}
-
-/** Formats backup failures with actionable diagnostics while excluding sensitive values. */
+/**
+ * Journald is persistent: never log arbitrary exception text or subprocess stderr.
+ * Only explicitly known fields/categories can cross this diagnostic boundary.
+ */
 export function formatBackupError(error: unknown): string {
-  const backupError = (error && typeof error === "object" ? error : {}) as Partial<BackupError>;
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown error";
-  const parts = [`[backup] failed: ${sanitizeBackupErrorText(message) || "Unknown error"}`];
-  if (backupError.code) parts.push(`code=${sanitizeBackupErrorText(String(backupError.code))}`);
-  if (backupError.stderr) {
-    const stderr = sanitizeBackupErrorText(backupError.stderr);
-    if (stderr) parts.push(`stderr=${stderr}`);
+  const details = error !== null && typeof error === "object" ? error as Partial<BackupError> : {};
+  const stages: readonly string[] = [
+    "database_dump", "age_encryption", "daily_object", "weekly_object", "monthly_object", "success_notification",
+  ];
+  const codes: readonly string[] = ["backup_command_failed", "backup_object_retention_invalid"];
+  const parts = ["[backup] failed"];
+  if (typeof details.stage === "string" && stages.includes(details.stage)) parts.push(`stage=${details.stage}`);
+  if (typeof details.code === "string" && codes.includes(details.code)) parts.push(`code=${details.code}`);
+  if (Number.isInteger(details.exitStatus) && details.exitStatus! >= 0 && details.exitStatus! <= 255) {
+    parts.push(`exit_status=${details.exitStatus}`);
   }
   return parts.join(" ");
 }
@@ -213,6 +207,7 @@ export function createCommandRunner(): CommandRunner {
         }
         const error = new Error(`${command} exited with status ${exitCode}`) as BackupError;
         error.code = "backup_command_failed";
+        error.exitStatus = exitCode ?? undefined;
         error.stderr = stderr;
         reject(error);
       });
@@ -446,11 +441,13 @@ export async function runBackup(
   const temporaryDirectory = await mkdtemp(join(resolve(config.stagingDirectory), ".clashcookies-backup-"));
   const dumpPath = join(temporaryDirectory, `${backupId}.dump`);
   const encryptedPath = join(temporaryDirectory, `${backupId}.dump.age`);
+  let stage: BackupStage = "database_dump";
 
   try {
     await dependencies.runDump(dumpPath);
     const dumpStats = await stat(dumpPath);
     if (dumpStats.size <= 0) throw new Error("pg_dump produced an empty archive");
+    stage = "age_encryption";
     await dependencies.encryptDump(dumpPath, encryptedPath, config.ageRecipients);
     const encryptedStats = await stat(encryptedPath);
     if (encryptedStats.size <= 0) throw new Error("age produced an empty archive");
@@ -458,6 +455,7 @@ export async function runBackup(
     const objects: BackupObject[] = [];
 
     for (const retentionClass of selectRetentionClasses(createdAt, config)) {
+      stage = `${retentionClass}_object` as BackupStage;
       const key = objectKey(config, createdAt, retentionClass, backupId);
       const retainUntil = await uploadWithRetry(
         dependencies.objectStore,
@@ -482,12 +480,14 @@ export async function runBackup(
       });
     }
 
+    stage = "success_notification";
     if (dependencies.notify) {
       await dependencies.notify({ backupId, event: "backup_succeeded", objectCount: objects.length });
     }
     logger.log(`[backup] completed backupId=${backupId} objects=${objects.length} bytes=${encryptedStats.size}`);
     return { backupId, createdAt: createdAt.toISOString(), bytes: encryptedStats.size, sha256, objects };
   } catch (error) {
+    if (error instanceof Error) (error as BackupError).stage = stage;
     if (dependencies.notify) {
       try {
         await dependencies.notify({ backupId, event: "backup_failed" });
