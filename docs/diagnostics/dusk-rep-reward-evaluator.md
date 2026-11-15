@@ -1,6 +1,6 @@
 # Duskits Verified Rep-Work Reward Evaluator
 
-**Status:** M2a part 1 implementation; read-only evaluation only (evaluator version 2)
+**Status:** M2a Part 1 merged in PR #1992 (`8d0b46be`); read-only evaluation only (evaluator version 2)
 **Date:** 2026-11-14
 
 ## Scope
@@ -30,6 +30,6 @@ The evaluator reports +2 per eligible event and a shared 30-Duskit per-user UTC-
 
 - `metadata.clanKind=CWL`, missing `clanKind`, or another ambiguous `base_swap` source is not FWA proof and remains `UNKNOWN`.
 - `updatedAt > createdAt` is reported as `OBSERVED_UPDATE_NOT_PROVEN_CORRECTION`; the evaluator emits zero proven correction rows. A source update is not an independent correction or reversal identity.
-- No active-only reconciler, issuance path, reversal path, policy approval, or production reward activation is implemented here.
+- No active-only reconciler, issuance path, reversal path, policy approval, or production reward activation is implemented here. The separate M2a Part 2 preview compares this evaluator's output with existing ledger/source claims but remains read-only; see [Dusk reward reconciliation preview](dusk-reward-reconciliation-preview.md).
 - Clean-FWA participation, BL triples, proactive base swaps, recurring rep stipends, transfers, giveaway fulfillment, and sponsorship remain outside this evaluator and retain the evidence limitations documented by the historical simulation.
 - Proposed rates and caps require explicit policy approval and later reconciliation/rollback design before any wallet mutation can be considered.
