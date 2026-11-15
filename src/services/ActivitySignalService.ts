@@ -462,7 +462,7 @@ export class ActivitySignalService {
     // compatibility boundary create an unreadable v2 envelope: validate the
     // fully assembled candidate and retain the legacy representation if it is
     // not a strict v2 state.
-    if (wantsV2 && !isValidSignalStateShape(next)) {
+    if (wantsV2 && !isValidSignalStateShape(next as unknown)) {
       next.version = PLAYER_SIGNAL_STATE_VERSION;
       for (const key of HASH_KEYS) {
         next.hashes[key] = nextHashes[key];
