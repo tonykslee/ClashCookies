@@ -245,6 +245,21 @@ describe("Dusk reward reconciliation preview", () => {
     });
   });
 
+  it("fails closed and reports relation truncation when a source has more claims than the bounded read", () => {
+    const evaluation = evaluateDuskRepWorkRewards({ scope, events: [event("event-1", "dedupe-1")] });
+    const result = reconcileDuskRepWorkRewardPreview(
+      evaluation,
+      snapshot({ sourceEvents: [sourceEvent({ _count: { claims: 101 } })] }),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      outcome: "CONFLICTING_CLAIM",
+      reasonCode: "LEDGER_SNAPSHOT_TRUNCATED",
+      ledgerEvidence: "SNAPSHOT_TRUNCATED",
+    });
+    expect(result.summary.ledgerSnapshotTruncated).toBe(true);
+  });
+
   it("is repeatable and uses only bounded read-only store calls", async () => {
     const listEventsForEvaluation = vi.fn().mockResolvedValue([event("event-1", "dedupe-1")]);
     const listRewardReconciliationSnapshot = vi.fn().mockResolvedValue(snapshot());

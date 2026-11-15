@@ -178,15 +178,18 @@ function isManualReview(outcome: DuskRewardReconciliationOutcome): boolean {
   return outcome !== "ELIGIBLE_NOT_CLAIMED" && outcome !== "ALREADY_RECORDED" && outcome !== "DUPLICATE_EVIDENCE";
 }
 
+function isLedgerSnapshotIncomplete(snapshot: DuskRewardReconciliationLedgerSnapshot): boolean {
+  return snapshot.truncated || snapshot.sourceEvents.some(
+    (sourceEvent) => sourceEvent._count.claims > sourceEvent.claims.length,
+  );
+}
+
 function buildReconciliationEvent(
   event: DuskRepWorkRewardEvent,
   snapshot: DuskRewardReconciliationLedgerSnapshot,
 ): DuskRewardReconciliationEvent {
   const sourceEventId = nonEmpty(event.sourceEventId);
   const canonicalDedupeKey = nonEmpty(event.canonicalDedupeKey);
-  const snapshotIncomplete = snapshot.truncated || snapshot.sourceEvents.some(
-    (sourceEvent) => sourceEvent._count.claims > sourceEvent.claims.length,
-  );
   const identityMissing = !sourceEventId || !canonicalDedupeKey;
   const base = {
     sourceEventType: DUSK_REP_WORK_SOURCE_EVENT_TYPE as typeof DUSK_REP_WORK_SOURCE_EVENT_TYPE,
@@ -201,6 +204,7 @@ function buildReconciliationEvent(
   };
 
   if (event.classification !== "ELIGIBLE") {
+    const snapshotIncomplete = isLedgerSnapshotIncomplete(snapshot);
     return {
       ...base,
       outcome: event.reasonCode === "DUPLICATE_DEDUPE_KEY" ? "DUPLICATE_EVIDENCE" : "UNKNOWN_EVIDENCE",
@@ -209,6 +213,7 @@ function buildReconciliationEvent(
     };
   }
   if (identityMissing) {
+    const snapshotIncomplete = isLedgerSnapshotIncomplete(snapshot);
     return {
       ...base,
       outcome: "UNKNOWN_EVIDENCE",
@@ -217,6 +222,7 @@ function buildReconciliationEvent(
     };
   }
   if (event.sourceCorrectionStatus !== "NONE") {
+    const snapshotIncomplete = isLedgerSnapshotIncomplete(snapshot);
     return {
       ...base,
       outcome: "SOURCE_EVIDENCE_CHANGED",
@@ -227,6 +233,9 @@ function buildReconciliationEvent(
 
   const sourceEvents = snapshot.sourceEvents.filter(
     (sourceEvent) => isRepWorkSourceEventType(sourceEvent.sourceEventType) && sourceEvent.sourceEventId === sourceEventId,
+  );
+  const snapshotIncomplete = snapshot.truncated || sourceEvents.some(
+    (sourceEvent) => sourceEvent._count.claims > sourceEvent.claims.length,
   );
   const claims = sourceEvents.flatMap((sourceEvent) => sourceEvent.claims);
   const directEntries = snapshot.entries.filter(
@@ -336,8 +345,10 @@ function buildReconciliationEvent(
   return {
     ...base,
     outcome: "CONFLICTING_CLAIM",
-    reasonCode,
-    ledgerEvidence: claims.length && !matchingClaimEntry
+    reasonCode: snapshotIncomplete ? "LEDGER_SNAPSHOT_TRUNCATED" : reasonCode,
+    ledgerEvidence: snapshotIncomplete
+      ? "SNAPSHOT_TRUNCATED"
+      : claims.length && !matchingClaimEntry
       ? "CLAIM_WITHOUT_LEDGER_ENTRY"
       : directEntries.length && !claims.length
         ? "ENTRY_WITHOUT_CLAIM"
@@ -402,7 +413,7 @@ export function reconcileDuskRepWorkRewardPreview(
       candidateUncappedSimulationOnlyDuskits: candidates.reduce((sum, event) => sum + event.simulationOnlyDuskits, 0),
       evaluatedUncappedSimulationOnlyDuskits: evaluation.summary.uncappedSimulationOnlyDuskits,
       evaluatedCappedRepWorkSimulationOnlyDuskits: evaluation.summary.cappedSimulationOnlyDuskits,
-      ledgerSnapshotTruncated: ledgerSnapshot.truncated,
+      ledgerSnapshotTruncated: isLedgerSnapshotIncomplete(ledgerSnapshot),
       outcomeCounts,
       reasonCounts,
     },
