@@ -257,7 +257,6 @@ Record timestamp, commit SHA, database/server version, role, query identifiers, 
 
 Repository inspection and the diagnostic/measurement plan are complete. **A bounded, operator-run DBH Part 1b production snapshot has now been captured (see §12), but broader database measurement is incomplete.** Cleanup, migration, retention change, and live reward activation remain incomplete and separately gated.
 
-
 ## 12. DBH Part 1b — operator-run production measurement record (2026-11-14/15 UTC)
 
 **Evidence class:** OBSERVED database aggregates supplied from the operator's restricted PostgreSQL session, compared with IMPLEMENTED `dev` source behavior. This entry updates the earlier repository-only audit; the original Part 1 scope and findings above remain the historical code-only baseline. **No cleanup or application code change occurred.**
