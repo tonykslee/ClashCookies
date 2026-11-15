@@ -13,6 +13,7 @@ import {
   ObjectStore,
   createB2ObjectStore,
   createPgDumpRunner,
+  formatBackupError,
   loadBackupConfig,
   runBackup,
 } from "../src/backup/BackupService";
@@ -259,6 +260,44 @@ describe("runBackup", () => {
     expect(uploads[0]?.retainUntil.toISOString()).toBe("2026-11-29T06:00:00.000Z");
   });
 
+  it("rounds retention deadlines up to whole-second precision without shortening the period", async () => {
+    const directory = await makeDirectory();
+    const uploads: Array<{ retainUntil: Date }> = [];
+    const store = makeStore({ put: async (input) => uploads.push({ retainUntil: input.retainUntil }) });
+    const dependencies = makeDependencies(store);
+    dependencies.now = () => new Date("2026-11-15T02:15:00.001Z");
+
+    await runBackup({ ...baseConfig, stagingDirectory: directory }, dependencies);
+
+    expect(uploads[0]?.retainUntil.toISOString()).toBe("2026-11-29T03:15:01.000Z");
+  });
+
+  it("keeps one required deadline when a successful upload is retried after verification fails", async () => {
+    const directory = await makeDirectory();
+    let retentionChecks = 0;
+    const uploads: Array<{ retainUntil: Date }> = [];
+    const store = makeStore({
+      put: async (input) => uploads.push({ retainUntil: input.retainUntil }),
+      retention: async () => {
+        retentionChecks += 1;
+        if (retentionChecks === 1) throw new Error("simulated transient retention read failure");
+        return { mode: "GOVERNANCE", retainUntil: uploads[0]!.retainUntil };
+      },
+    });
+    const dependencies = makeDependencies(store);
+    const times = [
+      new Date("2026-11-15T02:15:00.000Z"),
+      new Date("2026-11-15T05:00:00.001Z"),
+      new Date("2026-11-15T06:00:00.001Z"),
+    ];
+    dependencies.now = () => times.shift() ?? new Date("2026-11-15T06:00:00.001Z");
+
+    const result = await runBackup({ ...baseConfig, stagingDirectory: directory, weeklyUtcDay: 1 }, dependencies);
+
+    expect(result.objects[0]?.retainUntil).toBe("2026-11-29T06:00:01.000Z");
+    expect(uploads).toHaveLength(1);
+  });
+
   it("does not leave temporary dump or encrypted files after failure", async () => {
     const directory = await makeDirectory();
     const dependencies = makeDependencies(makeStore());
@@ -300,10 +339,63 @@ describe("runBackup", () => {
   it("rejects retention shorter than the required class", async () => {
     const directory = await makeDirectory();
     const store = makeStore({
-      retention: async () => ({ mode: "GOVERNANCE", retainUntil: new Date("2026-11-20T00:00:00.000Z") }),
+      retention: async () => ({ mode: "GOVERNANCE", retainUntil: new Date("2026-11-29T03:15:00.999Z") }),
     });
-    await expect(runBackup({ ...baseConfig, stagingDirectory: directory }, makeDependencies(store))).rejects.toThrow(
-      "retention is shorter"
+    const dependencies = makeDependencies(store);
+    dependencies.now = () => new Date("2026-11-15T02:15:00.001Z");
+    await expect(
+      runBackup({ ...baseConfig, stagingDirectory: directory, weeklyUtcDay: 1 }, dependencies)
+    ).rejects.toThrow("retention is shorter");
+  });
+
+  it("accepts retention exactly at the rounded required deadline", async () => {
+    const directory = await makeDirectory();
+    const store = makeStore({
+      retention: async () => ({ mode: "GOVERNANCE", retainUntil: new Date("2026-11-29T03:15:01.000Z") }),
+    });
+    const dependencies = makeDependencies(store);
+    dependencies.now = () => new Date("2026-11-15T02:15:00.001Z");
+
+    await expect(
+      runBackup({ ...baseConfig, stagingDirectory: directory, weeklyUtcDay: 1 }, dependencies)
+    ).resolves.toBeDefined();
+  });
+
+  it("preserves the backup failure when its failure notification also fails", async () => {
+    const directory = await makeDirectory();
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const dependencies = makeDependencies(
+      makeStore({ head: async () => ({ contentLength: 999, metadata: { sha256: "wrong" } }) })
     );
+    dependencies.logger = logger;
+    dependencies.notify = vi.fn(async (notification) => {
+      if (notification.event === "backup_failed") throw new Error("monitor unavailable");
+    });
+
+    await expect(runBackup({ ...baseConfig, stagingDirectory: directory }, dependencies)).rejects.toThrow(
+      "size mismatch"
+    );
+    expect(dependencies.notify).toHaveBeenCalledWith({ backupId: "20261115T021500000Z-abc123", event: "backup_failed" });
+    expect(logger.error).toHaveBeenCalledWith(
+      "[backup] failure alert delivery failed backupId=20261115T021500000Z-abc123"
+    );
+  });
+
+  it("sanitizes diagnostic error output before reporting a failure", () => {
+    const error = Object.assign(
+      new Error("request failed https://monitor.example.invalid/private-token"),
+      {
+        code: "backup_command_failed",
+        stderr: "password=super-secret token=abc123 pg_dump failed",
+      }
+    );
+
+    const formatted = formatBackupError(error);
+
+    expect(formatted).toContain("[backup] failed: request failed [redacted-url]");
+    expect(formatted).toContain("stderr=password=[redacted] token=[redacted] pg_dump failed");
+    expect(formatted).not.toContain("super-secret");
+    expect(formatted).not.toContain("abc123");
+    expect(formatted).not.toContain("monitor.example.invalid");
   });
 });

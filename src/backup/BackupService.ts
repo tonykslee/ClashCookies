@@ -101,6 +101,37 @@ export type BackupResult = {
 
 type BackupError = Error & { code?: string; stderr?: string };
 
+function sanitizeBackupErrorText(value: string): string {
+  return value
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/gi, "[redacted-secret]")
+    .replace(/\b(?:postgres(?:ql)?|mysql):\/\/[^\s"'<>]+/gi, "[redacted-database-url]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
+    .replace(
+      /(^|\s)(--?(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential|authorization|cookie)(?:=|\s+))[^\s]+/gi,
+      "$1$2[redacted]"
+    )
+    .replace(
+      /\b(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential|authorization|cookie)\s*[:=]\s*[^\s,;]+/gi,
+      (match) => match.slice(0, match.search(/[:=]/) + 1) + "[redacted]"
+    )
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1_000);
+}
+
+/** Formats backup failures with actionable diagnostics while excluding sensitive values. */
+export function formatBackupError(error: unknown): string {
+  const backupError = (error && typeof error === "object" ? error : {}) as Partial<BackupError>;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown error";
+  const parts = [`[backup] failed: ${sanitizeBackupErrorText(message) || "Unknown error"}`];
+  if (backupError.code) parts.push(`code=${sanitizeBackupErrorText(String(backupError.code))}`);
+  if (backupError.stderr) {
+    const stderr = sanitizeBackupErrorText(backupError.stderr);
+    if (stderr) parts.push(`stderr=${stderr}`);
+  }
+  return parts.join(" ");
+}
+
 function requiredValue(env: NodeJS.ProcessEnv, name: string): string {
   const value = String(env[name] ?? "").trim();
   if (!value) throw new Error(`Missing required backup setting: ${name}`);
@@ -380,14 +411,15 @@ async function uploadWithRetry(
   let requiredRetainUntil: Date | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const existing = await store.headObject(input.key);
+    requiredRetainUntil ??= new Date(
+      Math.ceil(
+        (now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS) / 1_000
+      ) * 1_000
+    );
     if (existing) {
-      requiredRetainUntil ??= new Date(now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS);
       await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
       return requiredRetainUntil;
     }
-    requiredRetainUntil = new Date(
-      now().getTime() + retentionDays * 24 * 60 * 60 * 1000 + BACKUP_RETENTION_SAFETY_MS
-    );
     try {
       await store.putObject({ ...input, retainUntil: requiredRetainUntil });
       await verifyUploadedObject(store, input.key, bytes, sha256, requiredRetainUntil);
