@@ -2,7 +2,7 @@
 
 **Repository:** `tonykslee/ClashCookies`
 **Base:** `dev`
-**Scope:** DBH P1 Phase A compatibility implementation and verified diagnostic; no schema change, migration, production query, data mutation, deletion, deployment, reward activation, or currency issuance
+**Scope:** DBH P1 Phase A compatibility plus Phase B feature-gated v2-write implementation and verified diagnostic; no schema change, migration, production query, data mutation, deletion, deployment, reward activation, currency issuance, or production gate activation
 **Evidence date:** 2026-11-14/15 UTC production aggregates plus `dev` source inspection
 **Related:** [DBH Part 1 audit](database-health-audit.md), [Dusk economy roadmap](../roadmaps/dusk-economy.md)
 
@@ -18,7 +18,7 @@ The verified P1 storage defect is narrower and actionable:
 4. The state is semantically important. Its counters and timestamps feed `PlayerActivity`, `/lastseen`, `/inactive` coverage/results, `/todo` GAMES totals/freshness, and todo snapshots. A fingerprint-only format change that compares v1 text directly with v2 digests would create synthetic activity.
 5. No direct Dusk reward-evidence reader uses `player_signal_state`. Current Dusk evidence uses persisted rep-work events, war history/participation/compliance, archived attack detail, Home/transfer evidence, and conservative `PlayerLink` attribution. This diagnosis therefore protects economy-adjacent activity state but does not make player-signal state reward evidence.
 
-Phase A implementation direction: preserve the existing normalization exactly, hash the resulting canonical string with SHA-256, read and compare valid v1 and v2 states, and keep every persisted write on the existing v1 envelope and serialized hash representation. This slice does not enable v2 writes, run a v1-to-v2 backfill, or perform retention cleanup.
+Phase A shipped the compatibility reader/comparator. Phase B adds an explicit, environment-only `PLAYER_SIGNAL_STATE_V2_WRITES_ENABLED` gate. Only `1`, `true`, `yes`, or `on` (case-insensitive, surrounding whitespace ignored) enable compact writes; unset, false, and invalid values remain OFF. The gate is not activated by this PR, database state, or a backfill. Gate OFF keeps the v1 envelope and serialized hashes, including when reading a valid v2 row. Gate ON writes v2 only after a normal successful observation with a missing or valid stored state; malformed/unknown stored state uses a conservative v1 baseline. Retention cleanup remains separate.
 
 ## 2. Verified source map
 
@@ -139,18 +139,18 @@ The canonical representation is the current v1 function extracted without semant
 
 The comparison contract is:
 
-- v1 record: compare the incoming canonical legacy representation to the stored v1 `hashes[field]`; persist the unchanged v1 representation.
-- v2 record: compare the incoming v2 digest to the stored digest; persist through the unchanged v1 writer contract.
+- v1 record: compare the incoming canonical legacy representation to the stored v1 `hashes[field]`; persist v1 when the gate is OFF or v2 digests when the gate is ON.
+- v2 record: compare the incoming v2 digest to the stored digest; persist v1 when the gate is OFF or v2 when the gate is ON.
 - v1 and v2 compare equal only through the same incoming observation; never compare a v1 representation directly with a v2 digest.
 - All counters, `signalTimes`, `lastSeenAtMs`, `tag`, `name`, `clanTag`, and timestamp rules remain unchanged.
 
 SHA-256 introduces the normal cryptographic collision assumption. The implementation must not use a weaker non-cryptographic checksum, because an accidental collision would suppress a real activity signal. The implementation must also retain the canonical function as a pure testable unit so the v1-to-v2 equivalence is directly testable.
 
-## 5. Phase A read compatibility and transition boundary
+## 5. Phase A read compatibility and Phase B gated-write boundary
 
 ### Required rollout boundary
 
-Deploy this v2-aware compatibility release before any future release enables v2 writes. Phase A itself keeps the v1 writer active, so it does not create v2 records or convert the existing v1 population. A direct rollback to a v1-only binary is safe for records written by Phase A; it remains **unsafe** if a later release has already written v2 records because the old parser treats v2 as missing.
+Phase A compatibility must be independently deployed and verified as the rollback target before the Phase B gate is enabled anywhere. This PR contains the gate and v2 writer but does not add an environment value or activate it in production. A v1-only binary remains safe while the gate is OFF; after any v2 write, reverting to a v1-only binary is prohibited because it treats v2 as missing.
 
 ### Per-observation algorithm
 
@@ -159,9 +159,9 @@ Deploy this v2-aware compatibility release before any future release enables v2 
 3. If it is valid v2, compute the six v2 digests from the same canonical legacy representations and compare digests. Keep the existing counter, signal-time, last-seen, name/clan, and current timestamp semantics.
 4. For either valid version, advance a signal timestamp only for a semantic comparison change. Do not use conversion itself as a signal.
 5. Preserve counters exactly for a valid state. In particular, do not rebuild counters from the incoming array; `gamesChampion` is a persisted lifetime counter used by `/todo` GAMES.
-6. Persist the complete v1 JSON state for a valid v1/v2 observation while the current freshness contract remains in force. `updatedAtMs` must continue to advance on each successful observation unless a separate lightweight freshness owner is introduced and reviewed.
-7. If state is missing or malformed, do not invent `changedSignals`, and baseline from the current observation without advancing `lastSeenAtMs` from malformed state. If a `PlayerActivity` row already exists, do not let the baseline’s `now` overwrite its established `lastSeenAt`; the existing row is evidence that this is not a first-ever observation. A new `PlayerActivity` row may retain the current first-observation behavior of setting `lastSeenAt` to `now`.
-8. Never batch-rewrite rows or activate a v2 writer as part of this phase. The v2 parser/comparator is compatibility code; the persisted writer remains v1.
+6. Select the writer only after comparison: gate OFF always persists the complete v1 JSON state; gate ON persists a complete v2 JSON state for a missing or valid v1/v2 state, with six lowercase SHA-256 digests of the exact canonical strings. `updatedAtMs` and `BotSetting.updatedAt` continue to advance on every successful observation.
+7. If state is malformed or unknown, do not invent `changedSignals`; baseline from the current observation and persist v1 even when the gate is ON. Do not advance `lastSeenAtMs` from malformed state. If a `PlayerActivity` row already exists, do not let the baseline’s `now` overwrite its established `lastSeenAt`; a new `PlayerActivity` row may retain current first-observation behavior.
+8. Never batch-rewrite, scan, or backfill rows. Normal observation is the only conversion trigger. No new per-player diagnostic logging is added; malformed-state handling remains bounded and does not log tags, names, payloads, or Discord data.
 
 This distinguishes two cases that the current implementation conflates: “no prior state exists for this player” and “a prior state exists but cannot be parsed.” A malformed record cannot recover historical counters or activity times; those fields must be reported as unavailable/UNKNOWN rather than silently claimed to be preserved.
 
@@ -169,18 +169,19 @@ This distinguishes two cases that the current implementation conflates: “no pr
 
 | Case | Read/compare behavior | Timestamp/counter rule | `/todo` GAMES and rollback result |
 | --- | --- | --- | --- |
-| v1 record, unchanged observation | Compare incoming canonical v1 representations to stored v1 strings; no hash signal changes; persist v1 | Preserve counters, `signalTimes`, and `lastSeenAtMs`; advance only `updatedAtMs` as current observation freshness | GAMES total/freshness remains equivalent. Rollback to the v1-only release is safe for Phase A writes. |
-| v1 record, actual array/counter/name/clan change | Use the existing v1 comparison and counter activity predicates; record the same changed signal(s); persist v1 | Advance only the same signal timestamps current v1 would advance; preserve all other timestamps/counters | GAMES total and activity timestamps are equivalent. |
-| Valid v2 record, unchanged observation | Compare v2 digests generated from the unchanged canonical representation; persist through the v1 writer contract | No activity timestamp change; preserve counters and `lastSeenAtMs`; update observation freshness per the current contract | GAMES reads the same lifetime total and a current freshness timestamp. A v1-only rollback remains unsafe for that pre-existing v2 row. |
-| Valid v2 record, actual change | Digest differs only when the canonical v1 representation differs, subject to SHA-256 collision resistance; persist through the v1 writer contract | Same changed-signal and counter predicates as v1 | No false activity from format comparison; v2-aware rollback is required while v2 rows exist. |
-| Partial v1 record previously accepted by the v1 parser | Retain the v1 compatibility boundary; compare only present name/clan/counter/hash fields and preserve known signal history | Missing fields do not create activity; known `signalTimes`, `lastSeenAtMs`, and counters remain available while the observation completes the v1 envelope | GAMES uses the available persisted counter; freshness advances for the current observation while historical last-seen activity is preserved. |
-| Missing state | Treat as a first observation for the signal store, with no changed signal; initialize current counters and v1 representations | For a new `PlayerActivity`, first-observation `lastSeenAt=now` is retained. For an existing `PlayerActivity`, do not reset `lastSeenAt` from missing signal state | GAMES lifetime is current-input-only and historical continuity is UNKNOWN. Do not delete the player’s snapshot or historical rows. |
-| Malformed/unparseable state | Same no-synthetic-signal baseline as missing state; preserve the existing `PlayerActivity` timestamp when present | No recoverable v1 counters/timestamps are silently claimed; current input may initialize the new signal record | GAMES historical total/freshness is UNKNOWN until a valid observation; snapshot refresh must not turn parse failure into activity. |
-| First observation with no prior `PlayerActivity` | Initialize state with v1 representations; no signal changes | `lastSeenAt=now` follows current first-observation behavior | Snapshot/GAMES may show a baseline observation, not an inferred historical activity event. |
+| v1 record, unchanged observation | Compare incoming canonical v1 representations to stored v1 strings; no hash signal changes; persist v1 with gate OFF or v2 with gate ON | Preserve counters, `signalTimes`, and `lastSeenAtMs`; advance only `updatedAtMs` as current observation freshness | GAMES total/freshness remains equivalent. Gate OFF remains safe for v1-only rollback. |
+| v1 record, actual array/counter/name/clan change | Use the existing v1 comparison and counter activity predicates; record the same changed signal(s); persist according to the gate | Advance only the same signal timestamps current v1 would advance; preserve all other timestamps/counters | GAMES total and activity timestamps are equivalent. |
+| Valid v2 record, unchanged observation | Compare v2 digests generated from the unchanged canonical representation; persist v2 with gate ON or compatible v1 with gate OFF | No activity timestamp change; preserve counters and `lastSeenAtMs`; update observation freshness per the current contract | GAMES reads the same lifetime total and a current freshness timestamp. A v1-only rollback remains unsafe for that row. |
+| Valid v2 record, actual change | Digest differs only when the canonical v1 representation differs, subject to SHA-256 collision resistance; persist according to the gate | Same changed-signal and counter predicates as v1 | No false activity from format comparison; v2-aware rollback is required while v2 rows exist. |
+| Partial v1 record previously accepted by the v1 parser | Retain the v1 compatibility boundary; compare only present name/clan/counter/hash fields and preserve known signal history; persist v2 only when the gate is ON | Missing fields do not create activity; known `signalTimes`, `lastSeenAtMs`, and counters remain available while the observation completes the selected envelope | GAMES uses the available persisted counter; freshness advances for the current observation while historical last-seen activity is preserved. |
+| Missing state, gate OFF | Treat as a first observation for the signal store, with no changed signal; initialize current counters and v1 representations | For a new `PlayerActivity`, first-observation `lastSeenAt=now` is retained | GAMES lifetime is current-input-only and historical continuity is UNKNOWN. |
+| Missing state, gate ON | Treat as a first observation; initialize current counters and six v2 digests | Same first-observation timestamp rules; no conversion signal exists | GAMES lifetime/freshness remains current and rollback requires Phase A compatibility after the first v2 write. |
+| Malformed/unknown state, either gate | Same no-synthetic-signal baseline as missing state, but persist v1 even when the gate is ON | No recoverable v1 counters/timestamps are silently claimed; preserve existing `PlayerActivity` timestamp when present | GAMES historical total/freshness is UNKNOWN until a valid observation; snapshot refresh must not turn parse failure into activity. |
+| First observation with no prior `PlayerActivity` | Initialize state with v1 representations when gate OFF or v2 digests when gate ON; no signal changes | `lastSeenAt=now` follows current first-observation behavior | Snapshot/GAMES may show a baseline observation, not an inferred historical activity event. |
 | Unchanged observation | Semantic activity is unchanged even though the current code writes `updatedAtMs` and `BotSetting.updatedAt` | Do not advance `lastSeenAt` or any signal time; preserve `PlayerActivity.updatedAt` observation-coverage behavior | Under the current consumer contract, skipping the state write would make GAMES freshness stale because it reads state `updatedAtMs`; a full skip is not safe without a reviewed freshness redesign. |
 | Actual changes | Apply existing field-by-field predicates and array comparison semantics | Do not change counter direction rules or timestamp maxima | `/lastseen`, `/inactive`, snapshots, and GAMES remain behaviorally equivalent. |
 | Process restart | Recompute canonical representation/digest from the live payload; no in-memory state is required | Persisted v1/v2 state remains the source of comparison and counters | Deterministic across restarts when the same runtime normalization is used. |
-| Older v1-only code rollback | Phase A writes only v1, so rows written by this slice remain readable. Any pre-existing v2 row is rejected and treated as missing | For a pre-existing v2 row, it can seed `lastSeenAt=now` and write v1, causing false freshness/activity | **Safe only for Phase A-created state.** Use the v2-aware release whenever v2 rows may exist. |
+| Older v1-only code rollback | Safe only while the Phase B gate has remained OFF. After a v2 write, the old parser rejects v2 and treats it as missing | It can seed `lastSeenAt=now` and write v1, causing false freshness/activity | **Prohibited after any v2 write.** Disable the gate and roll back only to the Phase A-compatible binary. |
 | `/todo` `GAMES` | Read both versions; extract `counters.gamesChampion` independently of hash format; derive freshness from the valid state | No hash conversion changes the lifetime counter or cycle baseline | Test active earning, reward-collection, off-cycle lifetime totals, stale freshness, missing state, and malformed state. |
 
 ### Unchanged-write evaluation
@@ -221,27 +222,27 @@ Payload optimization and retention cleanup are separate workstreams:
 
 ## 7. Minimal implementation sequence
 
-1. Add pure, directly tested helpers for the unchanged v1 canonical representation and the v2 SHA-256 digest. Do not alter normalization or object/array ordering.
-2. Add a version-tolerant parser with strict shape checks for valid v1/v2 state. Never rebuild valid counters from the live array payload.
-3. Compare v1 states using the legacy representation and v2 states using the digest, while keeping the persisted writer on v1.
-4. Add explicit malformed/missing-state handling so an existing `PlayerActivity.lastSeenAt` cannot be reset merely because a signal record is unavailable. Keep first-observation behavior only when no downstream activity row exists.
-5. Validate read parity, `/lastseen`, `/inactive` coverage, `/todo` GAMES freshness, snapshots, and rollback assumptions before any separate v2-writer slice.
-6. Measure version distribution and field byte aggregates after a representative observation window. Review value size, WAL/dead-tuple/autovacuum indicators, and activity parity before considering additional write-reduction design.
+1. Preserve and directly test the exact v1 canonical representation, including sorting/stringification corner cases, and derive v2 SHA-256 digests from it.
+2. Keep strict v2 shape validation alongside the historically permissive v1 compatibility boundary; missing partial fields must not fabricate activity or reset known history.
+3. Compare using the stored version, then select the writer: v1 when the gate is OFF or state is malformed/unknown, v2 only for a normal successful observation when explicitly enabled.
+4. Keep all counter predicates, signal timestamps, `lastSeenAtMs`, `updatedAtMs`, `BotSetting.updatedAt`, downstream freshness, and snapshot behavior unchanged.
+5. Validate gate-off parity, gated first-observation/conversion/change/restart behavior, malformed-state fallback, `/lastseen`, `/inactive`, `/todo` GAMES freshness, snapshots, and rollback assumptions.
+6. Measure version distribution and field byte aggregates only after a separately approved representative observation window. Review value size, WAL/dead-tuple/autovacuum indicators, and activity parity before considering additional write-reduction design.
 7. Handle retention as a later, separate diagnostic/approval. Do not combine it with payload optimization or use compacting as a reason to delete stale rows.
 
 No Prisma schema change is required for the recommended first payload slice. A future separate freshness-owner design may require a schema or ownership change and must be reviewed as a different PR.
 
 ## 8. Rollback and recovery
 
-- Phase A rollback: revert to the existing v1-only writer; Phase A has not produced v2 records or run a v1-to-v2 conversion.
-- After a future v2-writer release: roll back only to this v2-aware compatibility release, which must continue reading v2 and must not treat it as missing. It may keep v2 rows read-compatible while v2 writing is disabled.
-- A direct v1-only rollback is prohibited after v2 writes unless an explicitly reviewed compatibility shadow/restore procedure exists. Code rollback alone cannot restore database values or undo a migration.
+- Gate OFF is the default and can be restored by removing the environment value or setting it to a recognized false/invalid value; this stops new v2 writes without touching existing rows.
+- After any v2 write, roll back only to the Phase A-compatible binary, which continues reading v2 and can safely write v1 while the gate is OFF. A direct v1-only rollback is prohibited.
+- This PR does not authorize production activation, deployment, backfill, or data restoration. Code rollback alone cannot restore database values or undo a future v2 write.
 - If malformed records or parity regressions appear, stop new v2 writes, keep the records read-only for diagnosis, and compare aggregate version/conversion/error counts. Do not mass-rewrite or delete state as an emergency fix.
 - Any production data restore or cleanup requires the backup/recovery gates in `docs/ai-development-workflow.md` and `docs/roadmaps/production-backup-readiness.md`. This diagnosis does not authorize those operations.
 
 ## 9. Targeted regression test plan
 
-The Phase A implementation adds focused helper, parser, v1/v2 parity, counter-predicate, malformed-state, freshness, and GAMES extraction tests. Downstream command/snapshot suites remain the regression gate for `/lastseen`, `/inactive`, `/todo` GAMES, and snapshot freshness.
+The Phase A/Phase B implementation adds focused gate, helper, parser, v1/v2 parity, partial-state, counter-predicate, malformed-state, write-failure, freshness, and GAMES extraction tests. Downstream command/snapshot suites remain the regression gate for `/lastseen`, `/inactive`, `/todo` GAMES, and snapshot freshness.
 
 ### Exact activity equivalence
 
@@ -292,4 +293,5 @@ Limitations: the production record reports uncompressed logical text and write a
 - [x] Unchanged-write safety and GAMES freshness implications are evaluated.
 - [x] Stale-record ownership and historical references are separate from payload optimization; insufficient evidence remains UNKNOWN.
 - [x] Minimal implementation sequence, rollback, savings, limitations, and targeted regression tests are documented.
-- [x] Phase A application changes keep the v1 persisted writer and do not add schema, migration, production data, deletion, deployment, or reward/currency behavior.
+- [x] Phase A compatibility remains available and Phase B v2 writes are explicit, off by default, normal-observation-only, and unactivated in production.
+- [x] Phase B changes do not add schema, migration, production data, deletion, deployment, or reward/currency behavior.

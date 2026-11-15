@@ -5,6 +5,8 @@ import {
   extractGamesChampionTotalFromSignalState,
   extractSignalStateFreshnessMsFromState,
   fingerprintPlayerSignalArray,
+  isPlayerSignalStateV2WritesEnabled,
+  PLAYER_SIGNAL_STATE_V2_WRITE_ENV,
   type PlayerSignalInput,
   type PlayerSignalState,
 } from "../src/services/ActivitySignalService";
@@ -19,13 +21,17 @@ const HASH_FIELDS = [
 ] as const;
 
 class MemorySettings {
-  constructor(public value: string | null = null) {}
+  constructor(
+    public value: string | null = null,
+    private readonly setError: Error | null = null,
+  ) {}
 
   async get(_key: string): Promise<string | null> {
     return this.value;
   }
 
   async set(_key: string, value: string): Promise<void> {
+    if (this.setError) throw this.setError;
     this.value = value;
   }
 }
@@ -137,6 +143,28 @@ describe("ActivitySignalService canonical representations", () => {
 });
 
 describe("ActivitySignalService version-aware state", () => {
+  it.each([
+    ["unset", undefined],
+    ["false", "false"],
+    ["zero", "0"],
+    ["invalid", "definitely-not-enabled"],
+  ])("keeps v2 writes disabled when the gate is %s", async (_label, flag) => {
+    const settings = new MemorySettings();
+    const env = flag === undefined ? {} : { [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: flag };
+    expect(isPlayerSignalStateV2WritesEnabled(env)).toBe(false);
+    const service = new ActivitySignalService(settings, env);
+    const input = makeInput();
+
+    const first = await service.processPlayer(input);
+    const unchanged = await service.processPlayer({ ...input, nowMs: 2_000 });
+
+    expect(first.state.version).toBe(1);
+    expect(unchanged.state.version).toBe(1);
+    expect(unchanged.state.hashes.troops).toBe(canonicalPlayerSignalArray(input.troops));
+    expect(unchanged.changedSignals).toEqual([]);
+    expect(unchanged.lastSeenAtMs).toBe(first.lastSeenAtMs);
+  });
+
   it("keeps first observations and unchanged v1 observations on the v1 write contract", async () => {
     const settings = new MemorySettings();
     const service = new ActivitySignalService(settings);
@@ -203,6 +231,49 @@ describe("ActivitySignalService version-aware state", () => {
     ).toBe(state.lastSeenAtMs);
   });
 
+  it("writes v2 only when explicitly enabled and preserves activity parity across conversion", async () => {
+    const input = makeInput();
+    const env = { [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "TrUe" };
+    const settings = new MemorySettings();
+    const firstService = new ActivitySignalService(settings, env);
+    const first = await firstService.processPlayer(input);
+
+    expect(first.state.version).toBe(2);
+    expect(first.changedSignals).toEqual([]);
+    expect(first.state.hashes.troops).toBe(fingerprintPlayerSignalArray(input.troops));
+
+    const unchanged = await new ActivitySignalService(settings, env).processPlayer({
+      ...input,
+      nowMs: 2_000,
+    });
+    expect(unchanged.state.version).toBe(2);
+    expect(unchanged.changedSignals).toEqual([]);
+    expect(unchanged.lastSeenAtMs).toBe(first.lastSeenAtMs);
+    expect(unchanged.state.updatedAtMs).toBe(2_000);
+
+    const changed = await new ActivitySignalService(settings, env).processPlayer({
+      ...input,
+      donations: 11,
+      troops: [{ name: "Barbarian", level: 13 }],
+      nowMs: 3_000,
+    });
+    expect(changed.state.version).toBe(2);
+    expect(changed.changedSignals).toEqual(["donations", "troops"]);
+    expect(changed.state.signalTimes.donations).toBe(3_000);
+    expect(changed.state.signalTimes.troops).toBe(3_000);
+    expect(changed.lastSeenAtMs).toBe(3_000);
+
+    const repeated = await new ActivitySignalService(settings, env).processPlayer({
+      ...input,
+      donations: 11,
+      troops: [{ name: "Barbarian", level: 13 }],
+      nowMs: 4_000,
+    });
+    expect(repeated.state.version).toBe(2);
+    expect(repeated.changedSignals).toEqual([]);
+    expect(repeated.lastSeenAtMs).toBe(3_000);
+  });
+
   it("preserves known history from a partial v1 state accepted by the original parser", async () => {
     const input = makeInput();
     const historicalLastSeenAtMs = 500;
@@ -232,6 +303,31 @@ describe("ActivitySignalService version-aware state", () => {
     expect(persisted.version).toBe(1);
     expect(extractGamesChampionTotalFromSignalState(settings.value)).toBe(1200);
     expect(extractSignalStateFreshnessMsFromState(settings.value)).toBe(2_000);
+  });
+
+  it("converts partial v1 history to v2 without synthetic activity", async () => {
+    const input = makeInput();
+    const historicalLastSeenAtMs = 500;
+    const settings = new MemorySettings(
+      JSON.stringify({
+        version: 1,
+        counters: { gamesChampion: 1200 },
+        hashes: { troops: canonicalPlayerSignalArray(input.troops) },
+        signalTimes: { troops: historicalLastSeenAtMs },
+        lastSeenAtMs: historicalLastSeenAtMs,
+      }),
+    );
+    const result = await new ActivitySignalService(settings, {
+      [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "1",
+    }).processPlayer({ ...input, nowMs: 2_000 });
+    const persisted = readState(settings);
+
+    expect(result.changedSignals).toEqual([]);
+    expect(result.lastSeenAtMs).toBe(historicalLastSeenAtMs);
+    expect(result.state.signalTimes.troops).toBe(historicalLastSeenAtMs);
+    expect(result.state.counters.gamesChampion).toBe(1200);
+    expect(persisted.version).toBe(2);
+    expect(persisted.hashes.troops).toBe(fingerprintPlayerSignalArray(input.troops));
   });
 
   it("produces the same activity result for v1 and v2 on a legitimate change", async () => {
@@ -277,5 +373,34 @@ describe("ActivitySignalService version-aware state", () => {
       expect(result.state.version).toBe(1);
       expect(result.state.updatedAtMs).toBe(2_000);
     }
+  });
+
+  it("keeps malformed and unknown state on the conservative v1 baseline when the gate is on", async () => {
+    const input = makeInput();
+    for (const raw of [JSON.stringify({ version: 99 }), "not-json"]) {
+      const settings = new MemorySettings(raw);
+      const result = await new ActivitySignalService(settings, {
+        [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "true",
+      }).processPlayer(input);
+
+      expect(result.changedSignals).toEqual([]);
+      expect(result.state.version).toBe(1);
+      expect(result.lastSeenAtMs).toBeNull();
+      expect(readState(settings).hashes.troops).toBe(canonicalPlayerSignalArray(input.troops));
+    }
+  });
+
+  it("propagates a v2 conversion write failure without claiming a completed conversion", async () => {
+    const input = makeInput();
+    const { state } = await seedV1State(input);
+    const original = JSON.stringify(state);
+    const settings = new MemorySettings(original, new Error("write failed"));
+
+    await expect(
+      new ActivitySignalService(settings, {
+        [PLAYER_SIGNAL_STATE_V2_WRITE_ENV]: "on",
+      }).processPlayer({ ...input, nowMs: 2_000 }),
+    ).rejects.toThrow("write failed");
+    expect(settings.value).toBe(original);
   });
 });
