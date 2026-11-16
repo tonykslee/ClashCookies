@@ -38,6 +38,7 @@
     "backup": "node dist/scripts/backup.js",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:runner": "node ops/deploy/migration-runner.js",
+    "deploy:migration-aware": "node ops/deploy/migration-aware-deploy.js",
     "start": "npm run build && npm run start:runtime",
     "start:runtime": "node dist/ClashCookies.js",
     "test": "vitest run",
