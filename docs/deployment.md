@@ -41,6 +41,8 @@ Flow:
 2. Detect Prisma changes from the diff and stop with no production state change.
 3. Use a separately reviewed migration deployment and recovery procedure. It must explicitly address existing-schema compatibility, migration failure handling, and the fact that code rollback does not undo committed database changes.
 
+The proposed operational design is documented in [ops/deploy/production-migration-recovery-runbook.md](../ops/deploy/production-migration-recovery-runbook.md). It is a design reference only until the explicit startup, migration-runner, VM-wrapper, and test dependencies described there are separately implemented and reviewed.
+
 ## Environment Matrix
 
 | Environment | Runtime mode | Canonical health |
