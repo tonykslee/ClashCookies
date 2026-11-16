@@ -17,6 +17,7 @@ TARGET_REF="${TARGET_REF:-origin/main}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-600}"
 HEALTH_POLL_INTERVAL_SECONDS="${HEALTH_POLL_INTERVAL_SECONDS:-2}"
 TEMP_WORKTREE_CREATED="0"
+CANDIDATE_CLEANUP_ATTEMPTED="0"
 OLD_SHA=""
 NEW_SHA=""
 PROD_DATABASE_URL=""
@@ -309,6 +310,13 @@ remove_candidate_worktree() {
     return 0
   fi
 
+  CANDIDATE_CLEANUP_ATTEMPTED="1"
+
+  if ! candidate_worktree_is_owned; then
+    log "candidate_cleanup=refused reason=ownership_not_verified path=${TEMP_WORKTREE}" >&2
+    return 1
+  fi
+
   # Never force-remove this path. If the build left an unexpected file or the
   # path no longer identifies our Git worktree, leave it for operator review.
   if ! git_safe worktree remove "$TEMP_WORKTREE" >/dev/null 2>&1; then
@@ -319,8 +327,38 @@ remove_candidate_worktree() {
   log "candidate_cleanup=success"
 }
 
-cleanup() {
-  remove_candidate_worktree || true
+candidate_worktree_is_owned() {
+  [ "$TEMP_WORKTREE" = "${APP_DIR}-replacement" ] || return 1
+  [ -d "$TEMP_WORKTREE" ] || return 1
+  [ ! -L "$TEMP_WORKTREE" ] || return 1
+
+  git_safe worktree list --porcelain 2>/dev/null | \
+    awk -v expected_path="$TEMP_WORKTREE" -v expected_head="$NEW_SHA" '
+      /^worktree / {
+        matched = (substr($0, 10) == expected_path)
+        next
+      }
+      matched && /^HEAD / && substr($0, 6) == expected_head {
+        found = 1
+      }
+      END { exit found ? 0 : 1 }
+    '
+}
+
+cleanup_candidate_on_exit() {
+  local exit_status="$?"
+  trap - EXIT
+
+  if [ "$TEMP_WORKTREE_CREATED" = "1" ] && [ "$CANDIDATE_CLEANUP_ATTEMPTED" != "1" ]; then
+    remove_candidate_worktree || true
+  fi
+
+  if [ "$TEMP_WORKTREE_CREATED" = "1" ]; then
+    log "candidate_cleanup=failed reason=owned_worktree_remains path=${TEMP_WORKTREE}" >&2
+    [ "$exit_status" -ne 0 ] || exit_status=1
+  fi
+
+  exit "$exit_status"
 }
 
 rollback_to_old_revision() {
@@ -384,6 +422,7 @@ fi
 
 git_safe worktree add --quiet --detach "$TEMP_WORKTREE" "$NEW_SHA"
 TEMP_WORKTREE_CREATED="1"
+trap cleanup_candidate_on_exit EXIT
 
 if ! build_candidate_only; then
   exit 1

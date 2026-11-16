@@ -9,6 +9,7 @@ replacement_dir="${app_dir}-replacement"
 bin_dir="${root}/bin"
 log_file="${root}/commands.log"
 state_file="${root}/state"
+worktree_state_file="${root}/worktree-state"
 output_file="${root}/output.log"
 mkdir -p "$app_dir" "$bin_dir"
 printf 'DISCORD_TOKEN=fixture-only\n' > "$app_dir/.env"
@@ -19,6 +20,7 @@ services:
       DATABASE_URL: postgresql://db/clashcookies
 EOF
 : > "$log_file"
+printf '%s\n' none > "$worktree_state_file"
 if [ "$scenario" = "concurrent-active" ]; then
   printf '%s\n' two > "$state_file"
 else
@@ -72,9 +74,21 @@ case "$command" in
         esac
       done
       mkdir -p "$path"
+      printf 'owned:%s\n' "$path" > "$DEPLOY_TEST_WORKTREE_STATE"
       log worktree-add
+    elif [ "$action" = list ]; then
+      worktree_state="$(cat "$DEPLOY_TEST_WORKTREE_STATE")"
+      if [[ "$worktree_state" == owned:* ]]; then
+        worktree_path="${worktree_state#owned:}"
+        printf 'worktree %s\nHEAD new-reviewed-sha\n\n' "$worktree_path"
+      fi
     elif [ "$action" = remove ]; then
-      path="${1:-}"; rm -rf -- "$path"; log worktree-remove
+      path="${1:-}"; log worktree-remove
+      if [ "${DEPLOY_TEST_SCENARIO:-}" = cleanup-failure ]; then
+        exit 1
+      fi
+      rm -rf -- "$path"
+      printf '%s\n' removed > "$DEPLOY_TEST_WORKTREE_STATE"
     fi
     ;;
   checkout)
@@ -193,6 +207,7 @@ APP_DIR="$app_dir" \
 DEPLOY_LOCK_FILE="${root}/deploy.lock" \
 DEPLOY_TEST_LOG="$log_file" \
 DEPLOY_TEST_STATE="$state_file" \
+DEPLOY_TEST_WORKTREE_STATE="$worktree_state_file" \
 DEPLOY_TEST_SCENARIO="$scenario" \
 HEALTH_TIMEOUT_SECONDS=1 \
 HEALTH_POLL_INTERVAL_SECONDS=0 \
@@ -206,5 +221,6 @@ cat "$output_file"
 printf 'OUTPUT_END\nLOG_BEGIN\n'
 cat "$log_file"
 printf 'LOG_END\nSTATE=%s\n' "$(cat "$state_file")"
+printf 'WORKTREE=%s\n' "$(cat "$worktree_state_file")"
 if [ -f "$replacement_dir/operator-marker" ]; then printf 'MARKER=preserved\n'; fi
 exit 0

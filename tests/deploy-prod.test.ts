@@ -20,7 +20,8 @@ type Scenario =
   | "compose-wrong-service"
   | "compose-unresolved"
   | "compose-invalid"
-  | "compose-ambiguous";
+  | "compose-ambiguous"
+  | "cleanup-failure";
 
 function bashExecutable(): string {
   return process.platform === "win32"
@@ -64,9 +65,12 @@ describe("version-controlled production deployment procedure", () => {
     const output = runScenario("candidate-build-failure");
     const log = section(output, "LOG");
     expect(output).not.toContain("STATUS=0");
+    expect(output).toContain("candidate_build=failed revision=new-reviewed-sha");
     expect(log).toContain("BUILD ");
     expect(log).not.toContain("ACTIVE_RUN");
     expect(log).not.toContain("DOCKER rm");
+    expect(log).toContain("GIT worktree-remove");
+    expect(output).toContain("WORKTREE=removed");
     expect(output).toContain("STATE=active:OLD");
   });
 
@@ -94,6 +98,7 @@ describe("version-controlled production deployment procedure", () => {
     expect(output).toContain("refusing_to_clean_existing_temp_worktree");
     expect(section(output, "LOG")).not.toContain("BUILD ");
     expect(output).toContain("MARKER=preserved");
+    expect(output).toContain("WORKTREE=none");
   });
 
   it("refuses a target that would overwrite an unknown production file", () => {
@@ -155,6 +160,19 @@ describe("version-controlled production deployment procedure", () => {
     expect(log).toContain("CHECKOUT old-reviewed-sha");
     expect(log).toContain("ACTIVE_RUN old-reviewed-sha");
     expect(log).toContain("CURL old-reviewed-sha");
+  });
+
+  it("fails closed and reports when owned worktree cleanup fails", () => {
+    const output = runScenario("cleanup-failure");
+    const log = section(output, "LOG");
+    expect(output).not.toContain("STATUS=0");
+    expect(log).toContain("BUILD ");
+    expect(output).toContain("candidate_build=success");
+    expect(log).toContain("GIT worktree-remove");
+    expect(output).toContain("candidate_cleanup=failed reason=owned_worktree_remains");
+    expect(log).not.toContain("ACTIVE_RUN");
+    expect(output).toContain("STATE=active:OLD");
+    expect(output).toContain("WORKTREE=owned:");
   });
 
   it.each([
