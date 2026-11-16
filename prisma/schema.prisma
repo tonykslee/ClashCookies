@@ -1303,6 +1303,11 @@ enum SyncReactionHistoryAction {
   REMOVE
 }
 
+enum SyncReactionObservationPhase {
+  PRE_SYNC
+  POST_SYNC
+}
+
 model TrackedMessage {
   id          String                    @id @default(cuid())
   guildId     String
@@ -1504,6 +1509,7 @@ model TrackedMessageClaim {
 /// Immutable bot-observed sync reaction transitions; no TrackedMessage FK keeps history after current-state cleanup.
 model SyncReactionHistory {
   id                String                    @id @default(cuid())
+  /// PostgreSQL sequence allocation order only; not commit or observation order.
   eventOrder        Int                       @default(autoincrement()) @unique
   guildId           String
   syncTime          DateTime
@@ -1514,6 +1520,7 @@ model SyncReactionHistory {
   discordUserId     String
   clanTag           String                    @db.VarChar(16)
   action            SyncReactionHistoryAction
+  observationPhase  SyncReactionObservationPhase
   observedAt        DateTime
   createdAt         DateTime                  @default(now())
 

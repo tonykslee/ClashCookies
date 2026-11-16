@@ -29,6 +29,7 @@ const state = {
   failHistory: false,
   forceDuplicateCreate: false,
   duplicateWinner: null as Claim | null,
+  eventOrderAllocations: [] as number[],
 };
 
 const prismaMock = vi.hoisted(() => ({
@@ -143,6 +144,7 @@ beforeEach(() => {
   state.failHistory = false;
   state.forceDuplicateCreate = false;
   state.duplicateWinner = null;
+  state.eventOrderAllocations = [];
   vi.clearAllMocks();
 
   prismaMock.$transaction.mockImplementation(async (callback: (tx: any) => Promise<unknown>) => {
@@ -194,7 +196,7 @@ beforeEach(() => {
     if (state.failHistory) throw new Error("history unavailable");
     const event = {
       id: `history-${state.events.length + 1}`,
-      eventOrder: state.events.length + 1,
+      eventOrder: state.eventOrderAllocations.shift() ?? state.events.length + 1,
       createdAt: new Date("2026-11-15T12:00:01.000Z"),
       ...data,
     };
@@ -254,6 +256,44 @@ describe("sync reaction history", () => {
     expect(prismaMock.$transaction).not.toHaveBeenCalled();
     expect(state.claims).toHaveLength(0);
     expect(state.events).toHaveLength(0);
+  });
+
+  it("preserves valid pre-sync ADD and REMOVE current-state transitions", async () => {
+    const earlyObservedAt = new Date("2026-11-15T10:30:00.000Z");
+
+    await expect(trackedMessageService.recordSyncClaim("root-message", "user-a", reaction(), earlyObservedAt))
+      .resolves.toBe(true);
+    expect(state.claims).toEqual([
+      { trackedMessageId: "root-db-id", userId: "user-a", clanTag: "#PYLQ" },
+    ]);
+    expect(state.events[0]).toMatchObject({
+      action: "ADD",
+      observationPhase: "PRE_SYNC",
+      observedAt: earlyObservedAt,
+    });
+
+    const earlyRemoveObservedAt = new Date("2026-11-15T10:45:00.000Z");
+    await expect(trackedMessageService.removeSyncClaim("root-message", "user-a", reaction(), earlyRemoveObservedAt))
+      .resolves.toBe(true);
+    expect(state.claims).toHaveLength(0);
+    expect(state.events[1]).toMatchObject({
+      action: "REMOVE",
+      observationPhase: "PRE_SYNC",
+      observedAt: earlyRemoveObservedAt,
+    });
+  });
+
+  it("keeps sequence allocation order separate from observed timing", async () => {
+    state.eventOrderAllocations = [20, 10];
+    const earlyObservedAt = new Date("2026-11-15T10:30:00.000Z");
+
+    await trackedMessageService.recordSyncClaim("root-message", "user-a", reaction(), earlyObservedAt);
+    await trackedMessageService.removeSyncClaim("root-message", "user-a", reaction(), observedAt);
+
+    expect(state.events).toEqual([
+      expect.objectContaining({ eventOrder: 20, observationPhase: "PRE_SYNC", observedAt: earlyObservedAt }),
+      expect.objectContaining({ eventOrder: 10, observationPhase: "POST_SYNC", observedAt }),
+    ]);
   });
 
   it("records only absent-to-present and present-to-absent transitions", async () => {
@@ -336,7 +376,7 @@ describe("sync reaction history", () => {
     expect(state.events).toHaveLength(1);
   });
 
-  it("fails closed for expired, replaced, malformed, stale, and future identities", async () => {
+  it("fails closed for expired, replaced, malformed, and stale identities", async () => {
     const cases = [
       () => { state.rows[0].expiresAt = new Date("2026-11-15T11:59:59.000Z"); },
       () => { state.rows[0].status = TRACKED_MESSAGE_STATUS.REPLACED; },
@@ -349,12 +389,6 @@ describe("sync reaction history", () => {
           createdAt: new Date("2026-11-15T10:30:00.000Z"),
           referenceId: null,
           status: TRACKED_MESSAGE_STATUS.ACTIVE,
-        });
-      },
-      () => {
-        state.rows[0].metadata = makeMetadata({
-          syncTimeIso: "2026-11-15T13:00:00.000Z",
-          syncEpochSeconds: Math.floor(new Date("2026-11-15T13:00:00.000Z").getTime() / 1000),
         });
       },
       () => {
@@ -381,5 +415,22 @@ describe("sync reaction history", () => {
       expect(state.claims).toHaveLength(0);
       expect(state.events).toHaveLength(0);
     }
+
+    state.rows = makeRows();
+    state.claims = [];
+    state.events = [];
+    state.rows[0].metadata = makeMetadata({
+      syncTimeIso: "2026-11-15T13:00:00.000Z",
+      syncEpochSeconds: Math.floor(new Date("2026-11-15T13:00:00.000Z").getTime() / 1000),
+    });
+
+    await expect(trackedMessageService.recordSyncClaim("root-message", "user-a", reaction(), observedAt))
+      .resolves.toBe(true);
+    expect(state.claims).toHaveLength(1);
+    expect(state.events).toMatchObject([{
+      action: "ADD",
+      observationPhase: "PRE_SYNC",
+      observedAt,
+    }]);
   });
 });

@@ -1,8 +1,10 @@
 -- Preserve immutable bot-observed ADD/REMOVE transitions without coupling history to TrackedMessage cleanup.
 CREATE TYPE "SyncReactionHistoryAction" AS ENUM ('ADD', 'REMOVE');
+CREATE TYPE "SyncReactionObservationPhase" AS ENUM ('PRE_SYNC', 'POST_SYNC');
 
 CREATE TABLE "SyncReactionHistory" (
     "id" TEXT NOT NULL,
+    -- Sequence allocation order only; concurrent commit/observation order is not implied.
     "eventOrder" SERIAL NOT NULL,
     "guildId" TEXT NOT NULL,
     "syncTime" TIMESTAMP(3) NOT NULL,
@@ -13,6 +15,7 @@ CREATE TABLE "SyncReactionHistory" (
     "discordUserId" TEXT NOT NULL,
     "clanTag" VARCHAR(16) NOT NULL,
     "action" "SyncReactionHistoryAction" NOT NULL,
+    "observationPhase" "SyncReactionObservationPhase" NOT NULL,
     "observedAt" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
