@@ -43,19 +43,19 @@ Flow:
 
 ## Environment Matrix
 
-| Environment | Runtime mode | Canonical health | Temporary replacement health |
-| --- | --- | --- | --- |
-| Staging | `POLLING_MODE=mirror`, `POLLING_ENV=staging` | `127.0.0.1:8086/healthz` | `127.0.0.1:18086/healthz` |
-| Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` | `127.0.0.1:18085/healthz` |
+| Environment | Runtime mode | Canonical health |
+| --- | --- | --- |
+| Staging | `POLLING_MODE=mirror`, `POLLING_ENV=staging` | `127.0.0.1:8086/healthz` |
+| Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` |
 
 Staging mirror mode must not run the upstream pollers directly. Production continues to own active polling and schedulers.
 Mirror sync also carries the finalized war-plan history tables (`WarPlanComplianceEvaluation` and `WarPlanViolation`) so staging reads stay consistent without performing local evaluation.
 
 ## Operational Notes
 
-- Build happens inside the replacement container before `/healthz` is available.
-- A cold deploy can take a long time, so deploy scripts allow a long replacement health timeout.
-- The replacement container may be running while it is still building, but that does not count as ready.
+- Build happens in an isolated candidate-build container; no replacement application runtime is started during candidate compilation.
+- A cold deploy can take a long time, so the deploy script allows a long health timeout after the controlled stop/start handoff.
+- Candidate-build success does not validate the exact artifact that production starts: the production container mounts the live checkout and `npm run start` rebuilds it.
 - Promotion is gated on app-level `/healthz`, not Docker status.
 - The final handoff still includes a brief restart window when the old app is stopped and the canonical app is started.
 - Historical SyncCycle replay is a one-time compiled repair utility. Dry-run is the default and only exact persisted `ScheduledSyncPost` boundaries can be written; prep-derived times are never promoted, and no membership snapshots or Home rows are synthesized. After the normal build, inspect with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range>` and apply explicitly with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range> --apply`.
@@ -78,23 +78,30 @@ From the droplet host, use:
 
 The reviewed procedure is [ops/deploy/deploy-prod.sh](../ops/deploy/deploy-prod.sh). It keeps the existing argument-free VM contract and defaults (`/home/tilo/apps/clashcookies-prod`, `clashcookies-app`, port `8085`, `origin/main`), but it must be adopted by a separate reviewed VM-wrapper change before it controls production. This task does **not** modify `/home/tilo/deploy-prod.sh` or run a deployment.
 
-The compatibility change for the VM entry point is:
+### Stable, version-pinned bootstrap
+
+The VM-owned wrapper must execute a separately installed, immutable copy of the reviewed helper outside the checkout it will switch. It must not execute `ops/deploy/deploy-prod.sh` through the mutable application path. The operator adoption change should pin both the reviewed commit and the installed file hash, for example:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-exec bash /home/tilo/apps/clashcookies-prod/ops/deploy/deploy-prod.sh "$@"
+DEPLOY_HELPER_COMMIT="<approved-pr-2009-commit>"
+DEPLOY_HELPER="/home/tilo/deploy-assets/clashcookies-prod-deploy-${DEPLOY_HELPER_COMMIT}.sh"
+DEPLOY_HELPER_SHA256="<operator-recorded-sha256>"
+[ -f "$DEPLOY_HELPER" ]
+[ "$(sha256sum "$DEPLOY_HELPER" | awk '{print $1}')" = "$DEPLOY_HELPER_SHA256" ]
+exec bash "$DEPLOY_HELPER" "$@"
 ```
 
-The wrapper change must be reviewed and installed only after this PR is accepted and the target commit is available in the production checkout. The versioned helper uses the tracked `ops/deploy/container-start.sh` and `ops/deploy/ensure-yarn-deps.sh`; it does not copy startup helpers from `/home/tilo/deploy-assets`.
+Install the pinned helper only after PR approval, record the commit/hash in the operator release record, and retain the prior pinned helper for rollback. The helper performs Git operations against `APP_DIR` but remains stable while that checkout changes; a target revision may lack `ops/deploy/deploy-prod.sh` without removing the running executor. This PR does not install the wrapper, change the VM, or select the final operator pin.
 
 ### Safe non-migration rollout
 
 1. Confirm the release is approved for production, `origin/main` is the reviewed target, the current checkout is the expected reviewed `OLD_SHA`, and the production app has exactly one active runtime named `clashcookies-app`.
 2. Confirm the working tree has no tracked changes. The procedure inventories unknown files and refuses any target that would overwrite one; it never runs `git reset --hard`, `git clean`, or unconditional recursive cleanup.
 3. Run the versioned script through the compatible VM wrapper. It takes an exclusive deploy lock, fetches `origin/main`, and fails closed if `prisma/schema.prisma` or `prisma/migrations/**` changed.
-4. It creates a disposable Git worktree and runs only dependency installation plus `npm run build` in a build-only container. The candidate receives no `.env`, database URL, Discord credentials, production network, active polling mode, startup helper, or migration command.
-5. After candidate build and safe worktree removal succeed, it stops the one existing active container, checks out `NEW_SHA` without touching unknown files, starts one labeled active production container, and verifies canonical `http://127.0.0.1:8085/healthz`.
+4. While holding the lock, it resolves `DATABASE_URL` through `docker compose config --format json` for the configured production service (`app` by default). Mapping and list environment forms, env-file values, and Compose substitutions are accepted only when normalized to exactly one PostgreSQL URL for that service; missing, unresolved, malformed, duplicate, or other-service-only values fail before production is stopped. It then creates a disposable Git worktree and runs only dependency installation plus `npm run build` in a build-only container. The candidate receives no `.env`, database URL, Discord credentials, production network, active polling mode, startup helper, or migration command. Docker `bridge` networking is used for dependency installation, so this is **not an offline build**; bridge egress may be available, but the candidate is not attached to the production Docker network and receives no production secrets.
+5. After candidate build and safe worktree removal succeed, it stops the one existing active container, checks out `NEW_SHA` without touching unknown files, starts one labeled active production container, and verifies canonical `http://127.0.0.1:8085/healthz`. The candidate build is preflight evidence only: production startup mounts the live checkout and runs `npm run start`, which rebuilds from the checked-out source before `start:runtime` runs migrations and the bot.
 6. A failed start or health check stops the candidate, checks out `OLD_SHA`, restarts the prior application, and verifies the same health endpoint. A successful rollback still returns nonzero so the release is visibly failed and requires review.
 
 The script emits only bounded state, revision, container, and health-result lines. It does not print environment contents, credentials, database URLs, or build logs. Build failures are intentionally summarized rather than replaying container output.
@@ -110,13 +117,13 @@ Prisma changes are outside this procedure. The script refuses them before stoppi
 - Production health is not proven by these fixture tests. `/healthz` requires both Discord readiness and a database probe, so the operator must verify the live endpoint and observability after an approved rollout.
 - Staging containers, volumes, and checkout are currently decommissioned. There is no independent staging health gate; an explicit release waiver or a separately restored isolation environment is required.
 - The existing `npm run start:runtime` path runs `prisma migrate deploy`. The candidate build never invokes it, and Prisma diffs are fail-closed, but a no-diff production startup still follows the existing startup contract.
-- A deploy lock prevents overlapping deploy scripts, and the active-runtime guard refuses zero or multiple active runtimes before promotion and after startup. It does not repair an independently launched process; investigate any singleton violation.
+- The exclusive deploy lock is acquired before checkout, worktree, runtime, and configuration validation. The active-runtime guard recognizes the canonical label/port and recognizable ClashCookies startup identity, including unlabeled/no-port potential bot runtimes; it refuses zero, multiple, or unidentified candidates before promotion and after startup. It does not repair an independently launched process; investigate any singleton violation.
 - Unknown and untracked production files are preserved. If a target collides with one, or the replacement path already exists, deployment stops for operator review rather than deleting data.
 - Until the compatibility wrapper is installed, `/home/tilo/deploy-prod.sh` remains the legacy live procedure. This PR intentionally changes no VM script, application, database, credentials, timer, or backup service.
 
 ### Existing deployment notes
 
-- **Backup release gate:** The B2 bucket, scoped credentials, and harmless encrypted test-object recovery were verified from operator CLI results on 2026-11-14 UTC, but **no actual PostgreSQL off-site restore** was performed. The backup timer remains disabled and production release stays blocked. See `ops/backup/README.md` for the provisioning evidence and preflight checklist.
+- **Backup release gate:** A controlled encrypted production archive was uploaded and independently retrieved/restored into disposable PostgreSQL 17 on 2026-11-15, establishing the documented M5/M6 evidence. Independent administrative/key escrow, expected-object monitoring, unattended scheduling, and other release gates remain open; the backup timer remains disabled and production release stays blocked. See `docs/roadmaps/production-backup-readiness.md` and `ops/backup/README.md` for the current evidence.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.

@@ -42,15 +42,25 @@ case "$command" in
     if [ "${1:-}" = "HEAD" ]; then printf '%s\n' old-reviewed-sha; else printf '%s\n' new-reviewed-sha; fi
     ;;
   diff)
+    log diff "$*"
     if [[ " $* " == *" --name-only "* ]] && [ "${DEPLOY_TEST_SCENARIO:-}" = migration ]; then
       printf '%s\n' prisma/schema.prisma
+    elif [ "${DEPLOY_TEST_SCENARIO:-}" = changed-checkout ]; then
+      exit 1
     fi
     ;;
   ls-files)
     if [ "${DEPLOY_TEST_SCENARIO:-}" = untracked-collision ]; then printf '%s\n' unknown.txt; fi
     ;;
   ls-tree)
-    if [ "${DEPLOY_TEST_SCENARIO:-}" = untracked-collision ]; then printf '%s\n' unknown.txt; else printf '%s\n' package.json; fi
+    if [ "${DEPLOY_TEST_SCENARIO:-}" = untracked-collision ]; then
+      printf '%s\n' unknown.txt
+    elif [ "${DEPLOY_TEST_SCENARIO:-}" = legacy-target ] || [ "${DEPLOY_TEST_SCENARIO:-}" = legacy-health-failure ]; then
+      log legacy_target_missing_deploy_script
+      printf '%s\n' package.json
+    else
+      printf '%s\n' package.json
+    fi
     ;;
   worktree)
     action="${1:-}"; shift || true
@@ -78,15 +88,51 @@ EOF
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'DOCKER %s\n' "$*" >> "$DEPLOY_TEST_LOG"
+safe_args=()
+for argument in "$@"; do
+  case "$argument" in
+    DATABASE_URL=*) safe_args+=(DATABASE_URL='<redacted>') ;;
+    *) safe_args+=("$argument") ;;
+  esac
+done
+printf 'DOCKER %s\n' "${safe_args[*]}" >> "$DEPLOY_TEST_LOG"
 state="$(cat "$DEPLOY_TEST_STATE")"
 case "${1:-}" in
+  compose)
+    if [ "${2:-}" = "-f" ] && [ "${4:-}" = "config" ]; then
+      case "${DEPLOY_TEST_SCENARIO:-}" in
+        compose-environment-list)
+          printf '%s\n' '{"services":{"app":{"environment":["DATABASE_URL=postgresql://db/clashcookies"]},"worker":{"environment":["LOG_LEVEL=info"]}}}'
+          ;;
+        compose-multi-service)
+          printf '%s\n' '{"services":{"app":{"environment":{"DATABASE_URL":"postgresql://db/clashcookies"}},"worker":{"environment":{"CACHE_URL":"redis://cache"}}}}'
+          ;;
+        compose-wrong-service)
+          printf '%s\n' '{"services":{"app":{"environment":{"LOG_LEVEL":"info"}},"worker":{"environment":{"DATABASE_URL":"postgresql://db/clashcookies"}}}}'
+          ;;
+        compose-unresolved)
+          printf '%s\n' '{"services":{"app":{"environment":{"DATABASE_URL":"${DATABASE_URL}"}}}}'
+          ;;
+        compose-invalid)
+          printf '%s\n' '{"services":{"app":{"environment":{"DATABASE_URL":"mysql://db/clashcookies"}}}}'
+          ;;
+        compose-ambiguous)
+          printf '%s\n' '{"services":{"app":{"environment":["DATABASE_URL=postgresql://db/one","DATABASE_URL=postgresql://db/two"]}}}'
+          ;;
+        *)
+          printf '%s\n' '{"services":{"app":{"environment":{"DATABASE_URL":"postgresql://db/clashcookies"}}}}'
+          ;;
+      esac
+    else
+      exit 1
+    fi
+    ;;
   ps)
     if [ "$state" = two ]; then
-      printf '%s\n' 'clashcookies-app|127.0.0.1:8085->8080/tcp|active'
-      printf '%s\n' 'other-active|127.0.0.1:18085->8080/tcp|active'
+      printf '%s\n' 'clashcookies-app|127.0.0.1:8085->8080/tcp|active|node:20-bookworm|bash ./ops/deploy/container-start.sh'
+      printf '%s\n' 'other-active|||node:20-bookworm|node dist/ClashCookies.js'
     elif [[ "$state" == active:* ]]; then
-      printf '%s\n' 'clashcookies-app|127.0.0.1:8085->8080/tcp|active'
+      printf '%s\n' 'clashcookies-app|127.0.0.1:8085->8080/tcp|active|node:20-bookworm|bash ./ops/deploy/container-start.sh'
     fi
     ;;
   rm)
@@ -117,7 +163,7 @@ set -euo pipefail
 state="$(cat "$DEPLOY_TEST_STATE")"
 revision="${state#active:}"
 printf 'CURL %s\n' "$revision" >> "$DEPLOY_TEST_LOG"
-if [ "${DEPLOY_TEST_SCENARIO:-}" = health-failure ]; then
+if [ "${DEPLOY_TEST_SCENARIO:-}" = health-failure ] || [ "${DEPLOY_TEST_SCENARIO:-}" = legacy-health-failure ]; then
   [ "$revision" = OLD ] || exit 1
 elif [ "${DEPLOY_TEST_SCENARIO:-}" = rollback-failure ]; then
   exit 1
@@ -126,6 +172,8 @@ EOF
 
 cat > "$bin_dir/flock" <<'EOF'
 #!/usr/bin/env bash
+printf 'FLOCK %s\n' "$*" >> "$DEPLOY_TEST_LOG"
+[ "${DEPLOY_TEST_SCENARIO:-}" != lock-busy ] || exit 1
 exit 0
 EOF
 cat > "$bin_dir/sleep" <<'EOF'

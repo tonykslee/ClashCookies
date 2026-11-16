@@ -97,15 +97,93 @@ assert_safe_temp_worktree_path() {
 
 extract_database_url() {
   local compose_file="$1"
-  sed -n 's/^[[:space:]]*DATABASE_URL:[[:space:]]*//p' "$compose_file" \
-    | head -n1 \
-    | tr -d '"' \
-    | tr -d '\r'
+  local compose_json
+  local resolved_url
+
+  compose_json="$(docker compose -f "$compose_file" config --format json 2>/dev/null)" || return 1
+  resolved_url="$(
+    printf '%s' "$compose_json" | \
+      DEPLOY_COMPOSE_SERVICE="${DEPLOY_COMPOSE_SERVICE:-app}" \
+      node -e '
+        const fs = require("node:fs");
+        let config;
+        try {
+          config = JSON.parse(fs.readFileSync(0, "utf8"));
+        } catch {
+          process.exit(10);
+        }
+
+        const services = config && config.services;
+        const targetName = process.env.DEPLOY_COMPOSE_SERVICE || "app";
+        if (!services || typeof services !== "object" || !services[targetName]) process.exit(11);
+
+        function environmentEntries(service) {
+          const environment = service && service.environment;
+          if (Array.isArray(environment)) {
+            return environment
+              .filter((entry) => typeof entry === "string")
+              .map((entry) => {
+                const separator = entry.indexOf("=");
+                return separator < 0
+                  ? [entry, null]
+                  : [entry.slice(0, separator), entry.slice(separator + 1)];
+              });
+          }
+          if (environment && typeof environment === "object") {
+            return Object.entries(environment).map(([key, value]) => [
+              key,
+              value === null || value === undefined ? null : String(value),
+            ]);
+          }
+          return [];
+        }
+
+        const targetEntries = environmentEntries(services[targetName]);
+        const databaseEntries = targetEntries.filter(([key]) => key === "DATABASE_URL");
+        if (databaseEntries.length !== 1 || !databaseEntries[0][1]) process.exit(12);
+
+        for (const [serviceName, service] of Object.entries(services)) {
+          if (serviceName === targetName) continue;
+          if (environmentEntries(service).some(([key]) => key === "DATABASE_URL")) process.exit(13);
+        }
+
+        const value = databaseEntries[0][1];
+        if (!(value.startsWith("postgres://") || value.startsWith("postgresql://"))
+          || value.includes("${")
+          || value.includes("\r")
+          || value.includes("\n")) process.exit(14);
+        process.stdout.write(value);
+      '
+  )" || return 1
+
+  [ -n "$resolved_url" ] || return 1
+  printf '%s' "$resolved_url"
 }
 
 list_active_runtime_names() {
-  docker ps --format '{{.Names}}|{{.Ports}}|{{.Label "com.clashcookies.runtime"}}' \
-    | awk -F'|' -v port="$NORMAL_PORT" '$3 == "active" || index($2, ":" port "->8080") > 0 { print $1 }'
+  local name
+  local ports
+  local runtime_label
+  local image
+  local command
+
+  # Do not inspect or print container environments. A container is relevant when
+  # its explicit identity, published production port, image, or startup command
+  # identifies it as a possible ClashCookies bot runtime. This catches an
+  # unlabeled secondary runtime even when it has no published port.
+  while IFS='|' read -r name ports runtime_label image command; do
+    [ -n "$name" ] || continue
+    if [ "$runtime_label" = "active" ] \
+      || [[ "$ports" == *":${NORMAL_PORT}->8080"* ]] \
+      || [[ "$image" == *clashcookies* ]] \
+      || [[ "$command" == *container-start.sh* ]] \
+      || [[ "$command" == *start:runtime* ]] \
+      || [[ "$command" == *ClashCookies.js* ]] \
+      || [[ "$command" == *npm*start* ]] \
+      || [[ "$command" == *yarn*start* ]]; then
+      printf '%s\n' "$name"
+    fi
+  done < <(docker ps --format '{{.Names}}|{{.Ports}}|{{.Label "com.clashcookies.runtime"}}|{{.Image}}|{{.Command}}')
 }
 
 assert_single_active_runtime() {
@@ -273,16 +351,17 @@ require_command git
 require_command docker
 require_command curl
 require_command flock
+require_command node
 require_file "$APP_DIR/.env"
 require_file "$APP_DIR/docker-compose.yml"
-assert_safe_temp_worktree_path
-assert_checkout_safe
 
 lock_parent="$(dirname "$LOCK_FILE")"
 [ -d "$lock_parent" ] || fatal "missing_lock_directory=${lock_parent}"
 exec {lock_fd}>"$LOCK_FILE"
 flock -n "$lock_fd" || fatal "another_deployment_is_running"
 
+assert_safe_temp_worktree_path
+assert_checkout_safe
 assert_single_active_runtime || fatal "active_runtime_singleton_required_before_deploy"
 
 log "fetch=origin/main"
@@ -298,7 +377,9 @@ if [ -n "$changed_prisma_files" ]; then
 fi
 
 assert_target_does_not_overwrite_unknown_files "$NEW_SHA"
-PROD_DATABASE_URL="$(extract_database_url "$APP_DIR/docker-compose.yml")"
+if ! PROD_DATABASE_URL="$(extract_database_url "$APP_DIR/docker-compose.yml")"; then
+  fatal "production_database_url_not_found"
+fi
 [ -n "$PROD_DATABASE_URL" ] || fatal "production_database_url_not_found"
 
 git_safe worktree add --quiet --detach "$TEMP_WORKTREE" "$NEW_SHA"

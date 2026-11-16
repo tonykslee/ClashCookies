@@ -10,7 +10,17 @@ type Scenario =
   | "stale-candidate"
   | "untracked-collision"
   | "concurrent-active"
-  | "migration";
+  | "migration"
+  | "lock-busy"
+  | "changed-checkout"
+  | "legacy-target"
+  | "legacy-health-failure"
+  | "compose-environment-list"
+  | "compose-multi-service"
+  | "compose-wrong-service"
+  | "compose-unresolved"
+  | "compose-invalid"
+  | "compose-ambiguous";
 
 function bashExecutable(): string {
   return process.platform === "win32"
@@ -45,6 +55,7 @@ describe("version-controlled production deployment procedure", () => {
     expect(buildLine).not.toContain("DATABASE_URL");
     expect(buildLine).not.toContain("POLLING_MODE=active");
     expect(buildLine).not.toContain("container-start.sh");
+    expect(output).not.toContain("postgresql://");
     expect(log).toContain("ACTIVE_RUN new-reviewed-sha");
     expect(log).toContain("CURL new-reviewed-sha");
   });
@@ -93,7 +104,7 @@ describe("version-controlled production deployment procedure", () => {
     expect(section(output, "LOG")).not.toContain("CHECKOUT");
   });
 
-  it("refuses to deploy when more than one active runtime is present", () => {
+  it("refuses an unlabeled secondary active runtime without a published port", () => {
     const output = runScenario("concurrent-active");
     expect(output).not.toContain("STATUS=0");
     expect(output).toContain("active_runtime_singleton_required_before_deploy");
@@ -101,10 +112,70 @@ describe("version-controlled production deployment procedure", () => {
     expect(section(output, "LOG")).not.toContain("DOCKER rm");
   });
 
+  it("takes the exclusive lock before checkout and runtime validation", () => {
+    const output = runScenario("lock-busy");
+    const log = section(output, "LOG");
+    expect(output).not.toContain("STATUS=0");
+    expect(output).toContain("another_deployment_is_running");
+    expect(log).toContain("FLOCK");
+    expect(log).not.toContain("GIT diff");
+    expect(log).not.toContain("DOCKER ps");
+  });
+
+  it("rejects changed checkout state after the lock is held", () => {
+    const output = runScenario("changed-checkout");
+    const log = section(output, "LOG");
+    expect(output).not.toContain("STATUS=0");
+    expect(output).toContain("tracked_worktree_changes_present");
+    expect(log.indexOf("FLOCK")).toBeGreaterThanOrEqual(0);
+    expect(log.indexOf("FLOCK")).toBeLessThan(log.indexOf("GIT diff"));
+    expect(log).not.toContain("DOCKER rm");
+  });
+
   it("fails closed before stopping production when Prisma changes are detected", () => {
     const output = runScenario("migration");
     expect(output).not.toContain("STATUS=0");
     expect(output).toContain("migration_changes_detected_fail_closed");
     expect(section(output, "LOG")).not.toContain("DOCKER rm");
+  });
+
+  it("keeps the stable executor working when the target revision lacks deploy-prod.sh", () => {
+    const output = runScenario("legacy-target");
+    expect(output).toContain("STATUS=0");
+    expect(section(output, "LOG")).toContain("ACTIVE_RUN new-reviewed-sha");
+    expect(section(output, "LOG")).toContain("CHECKOUT new-reviewed-sha");
+    expect(section(output, "LOG")).toContain("legacy_target_missing_deploy_script");
+  });
+
+  it("rolls back through the stable executor when a target lacks deploy-prod.sh", () => {
+    const output = runScenario("legacy-health-failure");
+    const log = section(output, "LOG");
+    expect(output).not.toContain("STATUS=0");
+    expect(log).toContain("legacy_target_missing_deploy_script");
+    expect(log).toContain("CHECKOUT old-reviewed-sha");
+    expect(log).toContain("ACTIVE_RUN old-reviewed-sha");
+    expect(log).toContain("CURL old-reviewed-sha");
+  });
+
+  it.each([
+    "compose-wrong-service",
+    "compose-unresolved",
+    "compose-invalid",
+    "compose-ambiguous",
+  ] as const)("fails closed for invalid Compose DATABASE_URL configuration: %s", (scenario) => {
+    const output = runScenario(scenario);
+    expect(output).not.toContain("STATUS=0");
+    expect(output).toContain("production_database_url_not_found");
+    expect(section(output, "LOG")).not.toContain("DOCKER rm");
+  });
+
+  it.each([
+    "compose-environment-list",
+    "compose-multi-service",
+  ] as const)("resolves supported Compose DATABASE_URL format: %s", (scenario) => {
+    const output = runScenario(scenario);
+    expect(output).toContain("STATUS=0");
+    expect(output).not.toContain("postgresql://");
+    expect(section(output, "LOG")).toContain("ACTIVE_RUN new-reviewed-sha");
   });
 });
