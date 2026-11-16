@@ -340,6 +340,35 @@ describe("SyncAllSpunAnnouncementService", () => {
       .resolves.toMatchObject({ state: "skipped" });
   });
 
+  it("keeps pre-sync claims for M1 delivery after the sync boundary", async () => {
+    const futureSyncTime = new Date("2026-08-15T13:00:00.000Z");
+    const deps = makeDependencies({
+      rows: makeRows(metadata({
+        syncTimeIso: futureSyncTime.toISOString(),
+        syncEpochSeconds: Math.floor(futureSyncTime.getTime() / 1000),
+      })),
+    });
+    for (const row of deps.rows) row.expiresAt = new Date("2026-08-15T15:00:00.000Z");
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+
+    await expect(deps.service.evaluateAfterAdd(
+      deps.client,
+      "root-message",
+      new Date("2026-08-15T12:30:00.000Z"),
+    )).resolves.toMatchObject({ state: "skipped", reason: "unresolved_current_root" });
+    expect(deps.send).not.toHaveBeenCalled();
+
+    await expect(deps.service.evaluateAfterAdd(
+      deps.client,
+      "root-message",
+      new Date("2026-08-15T14:00:00.000Z"),
+    )).resolves.toMatchObject({ state: "delivered" });
+    expect(deps.send).toHaveBeenCalledTimes(1);
+  });
+
   it("does not send from mirror or staging runtimes", async () => {
     const mirror = makeDependencies({ env: { POLLING_MODE: "mirror", DEPLOY_ENV: "prod" } });
     mirror.rows[0].claims = [

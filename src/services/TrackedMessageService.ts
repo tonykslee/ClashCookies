@@ -9,9 +9,11 @@ import {
 import { resolveFwaMatchStateEmoji } from "./FwaMatchStateEmojiService";
 import { prisma } from "../prisma";
 import { formatError } from "../helper/formatError";
+import { dozzleLog } from "../helper/dozzleLogger";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { repWorkActivityService } from "./RepWorkActivityService";
 import { buildSyncLeaderAccountsButtonComponents } from "./SyncLeaderAccountsViewService";
+import { isMirrorPollingMode } from "./PollingModeService";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
@@ -521,6 +523,120 @@ function activeRootSyncWhere(guildId: string) {
     referenceId: null,
     ...activeWhere(TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST),
   };
+}
+
+type SyncReactionDb = {
+  trackedMessage: {
+    findUnique: (args: any) => Promise<any>;
+    findFirst: (args: any) => Promise<any>;
+  };
+  trackedMessageClaim: {
+    findUnique: (args: any) => Promise<any>;
+    create: (args: any) => Promise<any>;
+    deleteMany: (args: any) => Promise<{ count: number }>;
+  };
+  syncReactionHistory: {
+    create: (args: any) => Promise<any>;
+  };
+};
+
+type SyncReactionContext = {
+  tracked: any;
+  root: any;
+  metadata: SyncTimeTrackedMetadata;
+  syncTime: Date;
+  observationPhase: "PRE_SYNC" | "POST_SYNC";
+};
+
+/** Purpose: accept only a metadata sync time whose ISO and epoch fields agree exactly. */
+function resolveExactSyncTime(metadata: SyncTimeTrackedMetadata, rawMetadata: unknown): Date | null {
+  const rawEpochSeconds =
+    rawMetadata && typeof rawMetadata === "object"
+      ? Number((rawMetadata as { syncEpochSeconds?: unknown }).syncEpochSeconds)
+      : Number.NaN;
+  if (!Number.isSafeInteger(rawEpochSeconds)) return null;
+  const syncTime = new Date(metadata.syncTimeIso);
+  if (!Number.isFinite(syncTime.getTime())) return null;
+  if (Math.floor(syncTime.getTime() / 1000) !== rawEpochSeconds) return null;
+  return syncTime;
+}
+
+/** Purpose: resolve one active source/status reaction to its current canonical sync root. */
+async function resolveSyncReactionContext(
+  db: SyncReactionDb,
+  messageId: string,
+  observedAt: Date,
+): Promise<SyncReactionContext | null> {
+  const select = {
+    id: true,
+    guildId: true,
+    channelId: true,
+    messageId: true,
+    featureType: true,
+    status: true,
+    referenceId: true,
+    expiresAt: true,
+    createdAt: true,
+    metadata: true,
+  };
+  const tracked = await db.trackedMessage.findUnique({
+    where: { messageId },
+    select,
+  });
+  if (
+    !tracked ||
+    tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE
+  ) {
+    return null;
+  }
+  if (tracked.expiresAt instanceof Date && tracked.expiresAt.getTime() <= observedAt.getTime()) {
+    return null;
+  }
+
+  const root = tracked.referenceId
+    ? await db.trackedMessage.findUnique({
+        where: { messageId: tracked.referenceId },
+        select,
+      })
+    : tracked;
+  if (
+    !root ||
+    root.guildId !== tracked.guildId ||
+    root.referenceId !== null ||
+    root.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    root.status !== TRACKED_MESSAGE_STATUS.ACTIVE
+  ) {
+    return null;
+  }
+  if (root.expiresAt instanceof Date && root.expiresAt.getTime() <= observedAt.getTime()) {
+    return null;
+  }
+
+  const metadata = parseSyncTimeMetadata(root.metadata);
+  if (!metadata) return null;
+  const syncTime = resolveExactSyncTime(metadata, root.metadata);
+  if (!syncTime) return null;
+
+  const latestRoot = await db.trackedMessage.findFirst({
+    where: activeRootSyncWhere(root.guildId),
+    orderBy: [{ createdAt: "desc" }, { messageId: "desc" }],
+    select: { messageId: true },
+  });
+  if (!latestRoot || latestRoot.messageId !== root.messageId) return null;
+
+  return {
+    tracked,
+    root,
+    metadata,
+    syncTime,
+    observationPhase: syncTime.getTime() <= observedAt.getTime() ? "POST_SYNC" : "PRE_SYNC",
+  };
+}
+
+/** Purpose: classify the current-claim unique race without masking other transaction failures. */
+function isUniqueConstraintError(error: unknown): boolean {
+  return String((error as { code?: unknown } | null | undefined)?.code ?? "") === "P2002";
 }
 
 function normalizeTagBare(tag: string): string {
@@ -4283,48 +4399,147 @@ export class TrackedMessageService {
     return null;
   }
 
-  async recordSyncClaim(messageId: string, userId: string, reaction: { emoji: { id: string | null; name: string | null } }): Promise<boolean> {
-    const tracked = await prisma.trackedMessage.findUnique({ where: { messageId } });
-    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
-    if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return false;
-    const metadata = parseSyncTimeMetadata(tracked.metadata);
-    if (!metadata) return false;
-    const matchedClan = metadata.clans.find((clan) => emojiMatches(reaction, clan));
-    if (!matchedClan) return false;
-    await prisma.trackedMessageClaim.upsert({
-      where: {
-        trackedMessageId_userId_clanTag: {
-          trackedMessageId: tracked.id,
-          userId,
-          clanTag: matchedClan.clanTag,
-        },
-      },
-      update: {},
-      create: {
-        trackedMessageId: tracked.id,
-        userId,
-        clanTag: matchedClan.clanTag,
-      },
-    });
-    return true;
+  async recordSyncClaim(
+    messageId: string,
+    userId: string,
+    reaction: { emoji: { id: string | null; name: string | null } },
+    observedAt: Date = new Date(),
+  ): Promise<boolean> {
+    if (isMirrorPollingMode()) return false;
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) return false;
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const context = await resolveSyncReactionContext(tx, messageId, observedAt);
+        if (!context) return { valid: false, transitioned: false, observationPhase: null };
+        const matchedClan = context.metadata.clans.find((clan) => emojiMatches(reaction, clan));
+        if (!matchedClan) return { valid: false, transitioned: false, observationPhase: null };
+
+        const clanTag = normalizeClanTag(matchedClan.clanTag);
+        if (!clanTag) return { valid: false, transitioned: false, observationPhase: null };
+        const existingClaim = await tx.trackedMessageClaim.findUnique({
+          where: {
+            trackedMessageId_userId_clanTag: {
+              trackedMessageId: context.tracked.id,
+              userId,
+              clanTag,
+            },
+          },
+          select: { id: true },
+        });
+        if (!existingClaim) {
+          await tx.trackedMessageClaim.create({
+            data: {
+              trackedMessageId: context.tracked.id,
+              userId,
+              clanTag,
+            },
+          });
+          await tx.syncReactionHistory.create({
+            data: {
+              guildId: context.root.guildId,
+              syncTime: context.syncTime,
+              syncRootTrackedId: context.root.id,
+              syncRootMessageId: context.root.messageId,
+              trackedMessageId: context.tracked.id,
+              messageId: context.tracked.messageId,
+              discordUserId: userId,
+              clanTag,
+              action: "ADD",
+              observationPhase: context.observationPhase,
+              observedAt,
+            },
+          });
+        }
+        return {
+          valid: true,
+          transitioned: !existingClaim,
+          guildId: context.root.guildId,
+          rootMessageId: context.root.messageId,
+          actualMessageId: context.tracked.messageId,
+          syncTime: context.syncTime,
+          clanTag,
+          observationPhase: context.observationPhase,
+        };
+      });
+      if (result.transitioned && result.syncTime) {
+        dozzleLog.debug(
+          `[sync-reaction-history] event=transition_recorded action=ADD phase=${result.observationPhase ?? "UNKNOWN"} guild_id=${result.guildId} root_message_id=${result.rootMessageId} message_id=${result.actualMessageId} sync_time=${result.syncTime.toISOString()} clan_tag=${result.clanTag}`,
+        );
+      }
+      return result.valid;
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return true;
+      dozzleLog.error(
+        `[sync-reaction-history] event=transition_failed action=ADD message_id=${messageId} error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
 
-  async removeSyncClaim(messageId: string, userId: string, reaction: { emoji: { id: string | null; name: string | null } }): Promise<boolean> {
-    const tracked = await prisma.trackedMessage.findUnique({ where: { messageId } });
-    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
-    if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return false;
-    const metadata = parseSyncTimeMetadata(tracked.metadata);
-    if (!metadata) return false;
-    const matchedClan = metadata.clans.find((clan) => emojiMatches(reaction, clan));
-    if (!matchedClan) return false;
-    await prisma.trackedMessageClaim.deleteMany({
-      where: {
-        trackedMessageId: tracked.id,
-        userId,
-        clanTag: matchedClan.clanTag,
-      },
-    });
-    return true;
+  async removeSyncClaim(
+    messageId: string,
+    userId: string,
+    reaction: { emoji: { id: string | null; name: string | null } },
+    observedAt: Date = new Date(),
+  ): Promise<boolean> {
+    if (isMirrorPollingMode()) return false;
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) return false;
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const context = await resolveSyncReactionContext(tx, messageId, observedAt);
+        if (!context) return { valid: false, transitioned: false, observationPhase: null };
+        const matchedClan = context.metadata.clans.find((clan) => emojiMatches(reaction, clan));
+        if (!matchedClan) return { valid: false, transitioned: false, observationPhase: null };
+
+        const clanTag = normalizeClanTag(matchedClan.clanTag);
+        if (!clanTag) return { valid: false, transitioned: false, observationPhase: null };
+        const removed = await tx.trackedMessageClaim.deleteMany({
+          where: {
+            trackedMessageId: context.tracked.id,
+            userId,
+            clanTag,
+          },
+        });
+        if (removed.count === 1) {
+          await tx.syncReactionHistory.create({
+            data: {
+              guildId: context.root.guildId,
+              syncTime: context.syncTime,
+              syncRootTrackedId: context.root.id,
+              syncRootMessageId: context.root.messageId,
+              trackedMessageId: context.tracked.id,
+              messageId: context.tracked.messageId,
+              discordUserId: userId,
+              clanTag,
+              action: "REMOVE",
+              observationPhase: context.observationPhase,
+              observedAt,
+            },
+          });
+        }
+        return {
+          valid: true,
+          transitioned: removed.count === 1,
+          guildId: context.root.guildId,
+          rootMessageId: context.root.messageId,
+          actualMessageId: context.tracked.messageId,
+          syncTime: context.syncTime,
+          clanTag,
+          observationPhase: context.observationPhase,
+        };
+      });
+      if (result.transitioned && result.syncTime) {
+        dozzleLog.debug(
+          `[sync-reaction-history] event=transition_recorded action=REMOVE phase=${result.observationPhase ?? "UNKNOWN"} guild_id=${result.guildId} root_message_id=${result.rootMessageId} message_id=${result.actualMessageId} sync_time=${result.syncTime.toISOString()} clan_tag=${result.clanTag}`,
+        );
+      }
+      return result.valid;
+    } catch (error) {
+      dozzleLog.error(
+        `[sync-reaction-history] event=transition_failed action=REMOVE message_id=${messageId} error=${formatError(error)}`,
+      );
+      throw error;
+    }
   }
 
   async resolveLatestActiveSyncPost(guildId: string) {

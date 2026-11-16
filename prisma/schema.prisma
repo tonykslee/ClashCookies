@@ -1298,6 +1298,16 @@ enum RepWorkActivityType {
   MAIL_SENT
 }
 
+enum SyncReactionHistoryAction {
+  ADD
+  REMOVE
+}
+
+enum SyncReactionObservationPhase {
+  PRE_SYNC
+  POST_SYNC
+}
+
 model TrackedMessage {
   id          String                    @id @default(cuid())
   guildId     String
@@ -1494,6 +1504,30 @@ model TrackedMessageClaim {
   @@index([trackedMessageId])
   @@index([userId])
   @@index([clanTag])
+}
+
+/// Immutable bot-observed sync reaction transitions; no TrackedMessage FK keeps history after current-state cleanup.
+model SyncReactionHistory {
+  id                String                    @id @default(cuid())
+  /// PostgreSQL sequence allocation order only; not commit or observation order.
+  eventOrder        Int                       @default(autoincrement()) @unique
+  guildId           String
+  syncTime          DateTime
+  syncRootTrackedId String
+  syncRootMessageId String
+  trackedMessageId  String
+  messageId         String
+  discordUserId     String
+  clanTag           String                    @db.VarChar(16)
+  action            SyncReactionHistoryAction
+  observationPhase  SyncReactionObservationPhase
+  observedAt        DateTime
+  createdAt         DateTime                  @default(now())
+
+  @@index([guildId, syncTime, clanTag, eventOrder])
+  @@index([syncRootTrackedId, observedAt])
+  @@index([trackedMessageId, observedAt])
+  @@index([discordUserId, syncTime, observedAt])
 }
 
 model RepWorkActivityEvent {
