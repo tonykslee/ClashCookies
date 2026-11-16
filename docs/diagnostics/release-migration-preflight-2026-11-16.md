@@ -1,10 +1,10 @@
 # Production release migration preflight — 2026-11-16
 
-**Scope:** operator-reported Windows PostgreSQL 17.12 representative restore and release regression snapshot for [draft release PR #1983](https://github.com/tonykslee/ClashCookies/pull/1983). This is a documentation checkpoint, not a newly executed database or GitHub CI test. All statements below derive from operator-shared handoff evidence; the GitHub connector independently confirmed the listed dev and release-PR refs at the checkpoint.
+**Scope:** Windows PostgreSQL 17.12 representative restore and release regression snapshot for [draft release PR #1983](https://github.com/tonykslee/ClashCookies/pull/1983). M1a–M1c retain their original operator-reported provenance; M1d below records a separately executed disposable validation on current `dev`. This is not production release authorization or a production database test.
 
 ## Source revisions and regression evidence
 
-- `dev`: `ae748503bbd7760c4da2b87706e83dd7eabf4dfd`; historical `main`: `0d2a49bbc33fe42bfbac56a2583e7d114b71cfad`. The historical client compatibility check below used that `main` commit; it has not been independently verified as the exact live production deployment.
+- `dev`: `dfa01cb1b8f39c47283e4ca01ae187fb023db1ef`; historical `main`: `0d2a49bbc33fe42bfbac56a2583e7d114b71cfad`. The historical client compatibility check below used that `main` commit; it has not been independently verified as the exact live production deployment.
 - Release PR #1983 remained draft and unmerged. PR #2009 deployment safeguards and PR #2011 Compo fallback were reported merged to dev; PR #2007 closed as superseded after parity review.
 - Operator-reported regression baseline against dev: **371 test files passed; 5,721 tests passed; TypeScript passed; ESLint zero errors / 67 warnings; production build passed; `git diff --check` passed**. This establishes code-health evidence only, not approval to release.
 
@@ -101,12 +101,72 @@ prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\pris
 
 - This PASS is limited to a PostgreSQL-transactional failure after `CREATE TABLE` and `INSERT`, where both side effects rolled back. It does not validate a migration that commits earlier statements, uses non-transactional DDL, times out, loses its connection, encounters a lock/deadlock, is interrupted by an operator, or is run concurrently by multiple deployers. `migrate resolve --rolled-back` does not undo committed SQL statements.
 - No production database, production account, SSH/VM/Docker process, backup timer, issuance/reward/transfer/backfill path, or deployment was touched. Production failure recovery, backup restore/recovery during migration, and the exact production deploy identity remain untested.
-- M1c closes the tested partial-failure case but does not authorize release. Independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness and recovery-key custody, full historical-client compatibility, broader partial-migration recovery, and release approval remain open. Draft PR #1983 must remain blocked and unmerged.
+- M1c closes its tested transactional partial-failure case but does not authorize release. M1d below covers one explicitly committed-side-effect case; independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness and recovery-key custody, full historical-client compatibility, broader migration-failure recovery, and release approval remain open. Draft PR #1983 must remain blocked and unmerged.
+
+## M1d — committed migration side-effect recovery validation: PASS
+
+This section records a separately executed disposable validation against a new database, `clashcookies_m1d_committed_failure`, cloned from the preserved `clashcookies_m1a_baseline`. The run used PostgreSQL **17.12** at `127.0.0.1:55433`, user `m1a_migration_admin`, Prisma **5.22.0**, and current `dev` commit `dfa01cb1b8f39c47283e4ca01ae187fb023db1ef`. The primary `dev` checkout, the preserved M1a/M1b databases, the M1c database, production/staging systems, credentials, and deployment state were not modified. The untracked primary-checkout file `C:\Projects\ClashCookies\powershell` was preserved.
+
+### Preflight and execution order
+
+- Before creation, the host, port, user, server version, target absence, baseline migration state, and representative historical counts were independently checked. The target was absent; the baseline and final target identity were `m1a_migration_admin`, `127.0.0.1:55433`, PostgreSQL **17.12**.
+- The cloned target initially contained **183** migration records: **178** finished, **5** historically rolled back, and **0** unresolved. Initial representative counts were `TrackedClan=8`, `PlayerLink=3,248`, `TrackedMessage=2,057`, `ClanWarHistory=1,050`, `CurrentWar=8`, and `SyncCycle=69`.
+- The two legitimate migrations were applied in order: `20261112120000_add_dusk_wallet_ledger_foundation`, then `20261115120000_add_sync_reaction_history`.
+- A uniquely named, untracked fixture migration was then deployed, its failed state was inspected, a repeat deploy was attempted, recovery was performed, the synthetic object was reconciled forward, and two consecutive deploys plus `prisma migrate status` were run after recovery.
+
+### Synthetic SQL and observed failure
+
+The disposable fixture SQL was:
+
+```sql
+CREATE TABLE "M1dCommittedSideEffect" (
+    "id" INTEGER NOT NULL,
+    "marker" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "M1dCommittedSideEffect_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "M1dCommittedSideEffect_marker_key" UNIQUE ("marker")
+);
+INSERT INTO "M1dCommittedSideEffect" ("id", "marker")
+VALUES (1, 'm1d-committed-side-effect');
+COMMIT;
+SELECT 1 / 0;
+```
+
+Observed behavior, not a general Prisma guarantee:
+
+- PostgreSQL accepted the explicit `COMMIT` in the Prisma migration SQL. The table, both constraints, and the row persisted after the later statement failed. This reproduced committed partial side effects; it was not the transactional rollback behavior from M1c.
+- The first synthetic deploy returned Prisma **P3018** and PostgreSQL **22012** with `ERROR: division by zero`. The failed migration row was initially unresolved.
+- A subsequent deploy returned Prisma **P3009** and did not apply new migrations.
+- The persisted fixture was inspected before any resolve command: the table existed with exactly one row (`id=1`, marker `m1d-committed-side-effect`), and the two expected constraints were present. The migration could not safely be replayed as written because its `CREATE TABLE` would collide with that committed object.
+
+### Recovery demonstrated
+
+The inspected database state exactly matched the fixture's intended state before its deliberate failure, so the smallest safe recovery was pattern **B**: complete the intended migration state and resolve it as applied. The failed SQL was not replayed, and no historical migration or legitimate object was changed.
+
+```text
+prisma migrate resolve --applied 20261116120000_m1d_committed_side_effect_failure --schema=C:\Projects\ClashCookies-M1d-Committed-Failure\prisma\schema.prisma
+```
+
+Prisma marked the failed occurrence rolled back and recorded a same-name, same-checksum applied occurrence. A separate disposable forward-reconciliation migration, `20261116123000_m1d_committed_side_effect_cleanup`, then dropped only `M1dCommittedSideEffect`. This cleanup was applied with `prisma migrate deploy`; it was fixture cleanup, not a production migration or a change to historical migration records. No `migrate reset` and no `migrate resolve --rolled-back` was used for M1d.
+
+### Post-recovery integrity results
+
+- Final migration history: **188** records, **182** finished, **6** rolled back, **0** unresolved. The six rolled-back records are the five preserved historical records plus the failed M1d occurrence; the same-name applied M1d occurrence and cleanup migration are finished.
+- `prisma migrate status` reported **Database schema is up to date**. Two consecutive `prisma migrate deploy` runs each reported **No pending migrations to apply**.
+- Final public-table count was **127**: the baseline's **119** plus exactly the eight expected tables from the two legitimate migrations. The table-set delta contained only `DuskLedgerEntry`, `DuskLedgerReversalRequest`, `DuskLedgerReversalResolution`, `DuskLedgerSourceEvent`, `DuskLedgerSourceEventClaim`, `DuskRewardPolicyVersion`, `DuskWallet`, and `SyncReactionHistory`. No `M1d*` table remained.
+- Representative historical counts remained unchanged: `TrackedClan=8`, `PlayerLink=3,248`, `TrackedMessage=2,057`, `ClanWarHistory=1,050`, `CurrentWar=8`, and `SyncCycle=69`.
+- Catalog counts changed only as expected for the legitimate migrations: baseline to final was **154→180 constraints**, **447→481 indexes**, **16→17 sequences**, **44→49 enum types**, and **0→6 user triggers**. Ledger nonnegative/amount/shape checks and six append-only triggers were present. Sync reaction enums contained `ADD`/`REMOVE` and `PRE_SYNC`/`POST_SYNC`, with the primary key, unique event-order index, and four expected lookup indexes present.
+
+### Limitations and production implications
+
+- This PASS proves one explicit-commit PostgreSQL/Prisma failure mode and its recovery on a disposable fixture. It does not validate every migration containing explicit transaction control, non-transactional DDL, concurrent deploy, lock/deadlock, timeout, connection loss, process interruption, statement-level side effect, or production-specific failure.
+- The recovery command did not undo committed SQL. It was safe only after the persisted schema/data were inspected and reconciled. In production, operators must account for every committed effect before choosing `--applied`, `--rolled-back`, forward repair, or a stop-and-escalate path.
+- M1d did not repeat M1b's complete all-row content fingerprints or test an old runtime against the final schema; those remain separate evidence gaps. No production migration execution, deployment, rollback, backup, staging recreation, issuance, reward, transfer, or backfill was authorized.
 
 ## Release blockers and evidence limitations
 
 - M1b combined migration chain: **PASS for the operator-reported disposable existing-schema validation**. Production migration execution remains unauthorized.
-- Failure-path migration recovery: **PASS for the tested transactional side-effect probe in M1c and the earlier no-change M1b scenario; broader partially-applied recovery OPEN**. Irreversible schema effects remain a release consideration; code rollback alone cannot revert committed migrations.
+- Failure-path migration recovery: **PASS for the tested transactional side-effect probe in M1c, the earlier no-change M1b scenario, and one explicitly committed-side-effect M1d scenario; broader migration-failure recovery OPEN**. Irreversible schema effects remain a release consideration; code rollback alone cannot revert committed migrations.
 - Application compatibility: **PASS for current-client focused reads/writes and representative historical-client reads; full old-version runtime compatibility OPEN**.
 - Staging environment: decommissioned; independent gate or explicit waiver **OPEN**.
 - Deployment identity/checkout and live health/monitoring release gate: **OPEN**.
@@ -116,4 +176,4 @@ prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\pris
 
 ## Next safe step
 
-Treat M1b and M1c as completed disposable validation inputs to the remaining release review, not as release approval. Resolve the independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness, disaster-recovery custody, broader migration-failure recovery, and full old-version compatibility gates before considering PR #1983. Preserve the untracked `C:\Projects\ClashCookies\powershell` file.
+Treat M1b, M1c, and M1d as completed disposable validation inputs to the remaining release review, not as release approval. The focused next task is a migration-aware production deployment and recovery runbook: define the preflight backup/identity/schema checks, capture and classify partially applied SQL before any Prisma resolve command, require explicit reconciliation of committed effects, and document stop/escalate criteria for unsupported failure modes. Resolve the independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness, disaster-recovery custody, broader migration-failure recovery, and full old-version compatibility gates before considering PR #1983. Preserve the untracked `C:\Projects\ClashCookies\powershell` file.
