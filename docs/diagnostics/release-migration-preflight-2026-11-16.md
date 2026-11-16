@@ -61,10 +61,52 @@ Target migrations were applied in order:
 
 No production promotion, deployment, data mutation, ledger issuance, historical backfill, automatic rewards, or `dev` to `main` merge is authorized by this checkpoint.
 
+## M1c — partial migration failure recovery validation: PASS (operator-executed)
+
+This section records a separate validation run against the disposable `clashcookies_m1c_partial_failure` database on PostgreSQL **17.12** at `127.0.0.1:55433`, using Prisma **5.22.0** from `dev` commit `9ad83270d647ad7cef71cab8737a9148903816d7`. The primary checkout, protected M1a/M1b databases, historical compatibility worktree, production systems, backup services, and release PR #1983 were not modified.
+
+### Observed results
+
+- The explicit database identity was `clashcookies_m1c_partial_failure`, user `m1a_migration_admin`, server `127.0.0.1:55433`. Authentication reused the single matching local `pgpass.conf` host/port/user entry; the password was held only in process memory and was not printed, logged, committed, or passed as a command argument.
+- Read-only preflight: **119** public tables; **183** migration records (**178** finished, **5** historically rolled back, **0** unresolved); representative counts were `TrackedClan=8`, `PlayerLink=3,248`, `TrackedMessage=2,057`, `ClanWarHistory=1,050`, `CurrentWar=8`, and `SyncCycle=69`.
+- `prisma migrate deploy` applied `20261112120000_add_dusk_wallet_ledger_foundation` and `20261115120000_add_sync_reaction_history`, then started `20261116120000_m1c_partial_failure_probe`.
+- The probe returned Prisma **P3018** and PostgreSQL **22012** (`division by zero`). The failed migration was recorded as unresolved. A second deploy returned **P3009** and did not apply anything else.
+- Inspection before recovery found all eight legitimate M1b tables present and no `M1cPartialFailureProbe` table. The probe's `CREATE TABLE` and `INSERT` were rolled back; no synthetic row persisted. Existing representative counts remained unchanged.
+
+### Tested recovery behavior
+
+- Because the inspected probe had no persisted SQL side effects, the smallest correct recovery was `prisma migrate resolve --rolled-back 20261116120000_m1c_partial_failure_probe`. No `DROP`, `DELETE`, reset, recreate, or change to a legitimate object or historical migration was performed.
+- The intentionally invalid, untracked probe migration file and its now-empty directory were then removed from the disposable worktree so Prisma could not replay the test migration. This was test-fixture cleanup, not a production migration rollback.
+- Post-recovery state: **186** migration records (**180** finished, **6** rolled back including the probe, **0** unresolved), **127** public tables (`119` original plus the eight legitimate M1b tables), no synthetic table, and unchanged representative counts. `prisma migrate status` reported the schema up to date, and two consecutive `prisma migrate deploy` runs reported no pending migrations.
+- Catalog checks still found the relevant safeguards: **4** ledger check constraints, **6** append-only ledger/source triggers, and **5** sync-reaction indexes.
+
+### Commands executed (credentials redacted)
+
+The following commands were run from `C:\Projects\ClashCookies-M1c-Partial-Failure`; the connection password was supplied from the verified local `pgpass.conf` entry in memory and is represented here as `<redacted>`:
+
+```text
+psql --no-password --host=127.0.0.1 --port=55433 --username=m1a_migration_admin --dbname=clashcookies_m1c_partial_failure --set=ON_ERROR_STOP=1 --command="<read-only identity, migration, object, and representative-count queries>"
+prisma migrate status --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+prisma migrate resolve --rolled-back 20261116120000_m1c_partial_failure_probe --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+apply_patch (delete prisma/migrations/20261116120000_m1c_partial_failure_probe/migration.sql)
+[System.IO.Directory]::Delete('C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\migrations\20261116120000_m1c_partial_failure_probe', $false)  # after verifying the directory was empty
+prisma migrate status --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+```
+
+### Untested production scenarios and remaining blockers
+
+- This PASS is limited to a PostgreSQL-transactional failure after `CREATE TABLE` and `INSERT`, where both side effects rolled back. It does not validate a migration that commits earlier statements, uses non-transactional DDL, times out, loses its connection, encounters a lock/deadlock, is interrupted by an operator, or is run concurrently by multiple deployers. `migrate resolve --rolled-back` does not undo committed SQL statements.
+- No production database, production account, SSH/VM/Docker process, backup timer, issuance/reward/transfer/backfill path, or deployment was touched. Production failure recovery, backup restore/recovery during migration, and the exact production deploy identity remain untested.
+- M1c closes the tested partial-failure case but does not authorize release. Independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness and recovery-key custody, full historical-client compatibility, broader partial-migration recovery, and release approval remain open. Draft PR #1983 must remain blocked and unmerged.
+
 ## Release blockers and evidence limitations
 
 - M1b combined migration chain: **PASS for the operator-reported disposable existing-schema validation**. Production migration execution remains unauthorized.
-- Failure-path migration recovery: **PASS for the tested no-change synthetic scenario; broader partially-applied recovery OPEN**. Irreversible schema effects remain a release consideration; code rollback alone cannot revert committed migrations.
+- Failure-path migration recovery: **PASS for the tested transactional side-effect probe in M1c and the earlier no-change M1b scenario; broader partially-applied recovery OPEN**. Irreversible schema effects remain a release consideration; code rollback alone cannot revert committed migrations.
 - Application compatibility: **PASS for current-client focused reads/writes and representative historical-client reads; full old-version runtime compatibility OPEN**.
 - Staging environment: decommissioned; independent gate or explicit waiver **OPEN**.
 - Deployment identity/checkout and live health/monitoring release gate: **OPEN**.
@@ -74,4 +116,4 @@ No production promotion, deployment, data mutation, ledger issuance, historical 
 
 ## Next safe step
 
-Treat M1b as a completed representative validation input to the remaining release review, not as release approval. Resolve the independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness, disaster-recovery custody, broader migration-failure recovery, and full old-version compatibility gates before considering PR #1983. Preserve the untracked `C:\Projects\ClashCookies\powershell` file.
+Treat M1b and M1c as completed disposable validation inputs to the remaining release review, not as release approval. Resolve the independent staging/waiver, deployment identity/checkout, live health/monitoring, backup freshness, disaster-recovery custody, broader migration-failure recovery, and full old-version compatibility gates before considering PR #1983. Preserve the untracked `C:\Projects\ClashCookies\powershell` file.
