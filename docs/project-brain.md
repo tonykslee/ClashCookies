@@ -122,6 +122,7 @@ Important owners:
 | Proposed Home transfer and leader-decision history | ClanHomeTransferCandidate (production reconciler/decision APIs write; mirror only copies) |
 | Mutable guild-scoped filler designations | FillerAccount |
 | Scheduled-sync clan-goal and retrospective delivery claims | SyncEvent |
+| Immutable bot-observed sync reaction transitions | SyncReactionHistory |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
