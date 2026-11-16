@@ -360,12 +360,30 @@ function classifyMigrationResult(result) {
   return "prisma_migration_failed";
 }
 
-function executeMigration(config, repoRoot = REPO_ROOT, spawnSyncImpl = childProcess.spawnSync) {
-  const childEnvironment = {
-    ...process.env,
+function buildMigrationChildEnvironment(config, baseEnvironment = process.env) {
+  const pathValue = typeof baseEnvironment.PATH === "string" && baseEnvironment.PATH.length > 0
+    ? baseEnvironment.PATH
+    : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  return Object.freeze({
+    PATH: pathValue,
+    NODE_ENV: "production",
+    NPM_CONFIG_AUDIT: "false",
+    NPM_CONFIG_FUND: "false",
+    NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+    NPM_CONFIG_UPDATE_NOTIFIER: "false",
+    NPM_CONFIG_USERCONFIG: "/dev/null",
     DATABASE_URL: config.databaseUrl,
     MIGRATION_RUNNER_CHILD: "1",
-  };
+  });
+}
+
+function executeMigration(
+  config,
+  repoRoot = REPO_ROOT,
+  spawnSyncImpl = childProcess.spawnSync,
+  baseEnvironment = process.env,
+) {
+  const childEnvironment = buildMigrationChildEnvironment(config, baseEnvironment);
   const result = spawnSyncImpl(npmExecutable(), ["run", "migrate:deploy"], {
     cwd: repoRoot,
     env: childEnvironment,
@@ -496,6 +514,7 @@ module.exports = {
   computeMigrationManifest,
   executeMigration,
   assertMigrationCommandContract,
+  buildMigrationChildEnvironment,
   parseDatabaseUrl,
   parseRunnerConfig,
   runMigrationRunner,

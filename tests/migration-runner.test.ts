@@ -226,6 +226,30 @@ describe("isolated Prisma migration runner", () => {
     expect(source).not.toContain("ClashCookies.js");
   });
 
+  it("passes only the allowlisted migration environment to npm", () => {
+    const config = runner.parseRunnerConfig(makeEnvironment());
+    const childEnvironment = runner.buildMigrationChildEnvironment(config, {
+      PATH: "/safe/bin",
+      DISCORD_TOKEN: "discord-secret",
+      AWS_SECRET_ACCESS_KEY: "cloud-secret",
+      DATABASE_URL: "wrong-inherited-url",
+    });
+
+    expect(childEnvironment).toEqual({
+      PATH: "/safe/bin",
+      NODE_ENV: "production",
+      NPM_CONFIG_AUDIT: "false",
+      NPM_CONFIG_FUND: "false",
+      NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+      NPM_CONFIG_UPDATE_NOTIFIER: "false",
+      NPM_CONFIG_USERCONFIG: "/dev/null",
+      DATABASE_URL: "postgresql://migration_user:super-secret@127.0.0.1:55434/clashcookies_disposable",
+      MIGRATION_RUNNER_CHILD: "1",
+    });
+    expect(childEnvironment).not.toHaveProperty("DISCORD_TOKEN");
+    expect(childEnvironment).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
+  });
+
   it("never emits the connection string or password in bounded logs", async () => {
     const logs: string[] = [];
     const result = await runner.runMigrationRunner({
