@@ -30,7 +30,7 @@ Project handoff and priorities for this repo (`ClashCookies`):
 3) Dependencies and runtime safety
 - Introduce new dependencies only when justified.
 - Prefer existing helpers/services before adding new abstractions.
-- Keep startup and deploy behavior stable (`prisma migrate deploy`, health endpoints, command registration, scheduler boot).
+- Keep startup and deploy behavior stable while keeping Prisma migrations explicit (`npm run migrate:deploy`), health endpoints, command registration, and scheduler boot.
 - Preserve current droplet deployment assumptions unless intentionally migrating again:
   - yarn-based container start
   - dependency-cache guard

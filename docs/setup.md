@@ -8,12 +8,14 @@
 
 ```bash
 npm install
-npx prisma migrate deploy
+npm run migrate:deploy
 npm run seed:fwa-layouts
 npm run seed:heatmap-ref
 npm run build
 npm start
 ```
+
+`npm start` builds and starts the application but does not apply Prisma migrations. Run `npm run migrate:deploy` explicitly when the reviewed environment is ready for the migration operation; it is a one-shot Prisma CLI command and does not start the Discord bot or background workers.
 
 ## Optional Owner Bypass
 - `OWNER_DISCORD_USER_ID` - single Discord user ID with full command access override in all guilds.
