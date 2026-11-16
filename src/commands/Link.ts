@@ -873,7 +873,7 @@ async function buildLinkListView(input: {
         },
       })
     : null;
-  const weightByTag = needsCompo
+  const weightByTag = needsCompo && compoComposition
     ? new Map(
         (compoComposition?.members ?? []).map((member) => [
           member.playerTag,
