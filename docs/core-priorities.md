@@ -36,6 +36,7 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - dependency-cache guard
   - localhost-only ops surfaces by default
 - Highlight operational risks when schema, deployment, or runtime assumptions change.
+- For migration-aware releases, distinguish merged runner/orchestrator code from an installed, verified VM adapter. Discover host/Compose/runtime/credential/release-record ownership read-only before implementing an adapter; CI or simulated fixture success is not deployment authorization. Never automatically restart an old active bot after committed migrations without proven singleton-safe recovery and explicit approval.
 
 4) Database design
 - Use normalized tables over fragile JSON blobs for core logic.
