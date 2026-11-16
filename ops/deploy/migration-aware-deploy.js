@@ -123,10 +123,6 @@ function parseConfig(env = process.env, repoRoot = REPO_ROOT) {
   if (candidateWorktreePath === path.resolve(repoRoot) || isPathInside(repoRoot, candidateWorktreePath)) {
     throw new OrchestratorError("candidate_worktree_must_be_outside_checkout");
   }
-  if (env.DEPLOY_ROLLBACK_AUTHORIZED !== "1") {
-    throw new OrchestratorError("rollback_authorization_required", EXIT_CODES.BLOCKED, "rollback_not_authorized");
-  }
-
   return Object.freeze({
     targetEnvironment,
     releaseId,
@@ -287,14 +283,30 @@ function assertRuntimeSingleton(runtime, config) {
 }
 
 function assertMigrationRunnerResult(result) {
-  if (!result || typeof result !== "object") {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new OrchestratorError("migration_runner_result_missing", EXIT_CODES.AMBIGUOUS, "ambiguous_migration", "migration", true);
   }
-  if (result.exitCode === 0 || result.status === 0) return;
-  if (result.ambiguous === true || result.exitCode === 70 || result.status === null || result.signal) {
+
+  const hasExitCode = Object.prototype.hasOwnProperty.call(result, "exitCode");
+  const hasStatus = Object.prototype.hasOwnProperty.call(result, "status");
+  const hasSignal = Object.prototype.hasOwnProperty.call(result, "signal")
+    && result.signal !== null
+    && result.signal !== undefined
+    && result.signal !== "";
+  const hasError = Object.prototype.hasOwnProperty.call(result, "error")
+    && result.error !== null
+    && result.error !== undefined
+    && result.error !== "";
+
+  if (!hasExitCode || !Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255
+    || (hasStatus && (!Number.isInteger(result.status) || result.status < 0 || result.status > 255))
+    || (hasStatus && result.status !== result.exitCode)
+    || result.ambiguous === true
+    || hasSignal
+    || hasError) {
     throw new OrchestratorError("migration_result_ambiguous", EXIT_CODES.AMBIGUOUS, "ambiguous_migration", "migration", true);
   }
-  if (result.exitCode === EXIT_CODES.BLOCKED || result.status === EXIT_CODES.BLOCKED) {
+  if (result.exitCode === EXIT_CODES.BLOCKED) {
     throw new OrchestratorError(
       "migration_runner_blocked",
       EXIT_CODES.BLOCKED,
@@ -303,11 +315,11 @@ function assertMigrationRunnerResult(result) {
       true,
     );
   }
-  const failureCode = typeof result.exitCode === "number" ? result.exitCode : result.status;
-  const propagatedCode = Number.isInteger(failureCode) && failureCode > 0 && failureCode <= 255
-    ? failureCode
-    : EXIT_CODES.FAILED;
-  throw new OrchestratorError("migration_runner_failed", propagatedCode, "migration_failed", "migration", true);
+  if (result.exitCode === EXIT_CODES.AMBIGUOUS) {
+    throw new OrchestratorError("migration_result_ambiguous", EXIT_CODES.AMBIGUOUS, "ambiguous_migration", "migration", true);
+  }
+  if (result.exitCode === 0) return;
+  throw new OrchestratorError("migration_runner_failed", result.exitCode, "migration_failed", "migration", true);
 }
 
 function assertPostMigrationStatus(status) {
@@ -371,8 +383,6 @@ function createDefaultOperations() {
     checkoutRelease: () => defaultUnsupportedOperation("release_checkout"),
     startRuntime: () => defaultUnsupportedOperation("runtime_start"),
     healthCheck: () => defaultUnsupportedOperation("health_check"),
-    verifyOldRuntimeCompatibility: () => defaultUnsupportedOperation("old_runtime_compatibility"),
-    startOldRuntime: () => defaultUnsupportedOperation("old_runtime_start"),
     cleanupCandidate: () => defaultUnsupportedOperation("candidate_cleanup"),
     writeReleaseRecord: (recordPath, line) => {
       fs.mkdirSync(path.dirname(recordPath), { recursive: true });
@@ -542,23 +552,8 @@ async function runMigrationAwareDeployment({
       }
     }
 
-    if (migrationStarted && phase === "health" && typeof ops.verifyOldRuntimeCompatibility === "function") {
-      let compatible = false;
-      try {
-        compatible = (await ops.verifyOldRuntimeCompatibility({ oldSha: config.oldSha, newSha: config.newSha })) === true;
-      } catch {
-        compatible = false;
-      }
-      if (compatible && env.DEPLOY_ROLLBACK_AUTHORIZED === "1") {
-        try {
-          await ops.startOldRuntime({ sha: config.oldSha, name: config.runtimeName, environment: config.runtimeEnvironment });
-          appendRecord("old_runtime_restarted_after_verified_compatibility");
-        } catch {
-          appendRecord("old_runtime_restart_failed", { classification: "recovery_required" });
-        }
-      } else {
-        appendRecord("old_runtime_rollback_blocked", { classification: "incompatible_or_unauthorized" });
-      }
+    if (migrationStarted && phase === "health") {
+      appendRecord("old_runtime_rollback_blocked", { classification: "manual_recovery_required" });
     }
   } finally {
     const lockReleased = releaseLock ? releaseLock() : true;

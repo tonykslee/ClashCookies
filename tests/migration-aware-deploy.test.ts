@@ -33,7 +33,6 @@ function makeEnvironment(root = ownedRoot()): Record<string, string> {
     DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST: MANIFEST_DIGEST,
     DEPLOY_AUTHORIZATION_DIGEST: AUTHORIZATION_DIGEST,
     DEPLOY_APPROVED_BY: "release-approver",
-    DEPLOY_ROLLBACK_AUTHORIZED: "1",
     DEPLOY_LOCK_PATH: join(root, "deploy.lock"),
     DEPLOY_RELEASE_RECORD_PATH: join(root, "release-record.jsonl"),
     DEPLOY_PREFLIGHT_EVIDENCE_PATH: join(root, "preflight.json"),
@@ -142,8 +141,6 @@ function makeOperations(overrides: Record<string, unknown> = {}) {
       expect(url).toBe(orchestrator.HEALTH_URL);
       return { status: 200 };
     },
-    verifyOldRuntimeCompatibility: () => false,
-    startOldRuntime: () => calls.push("start-old-runtime"),
     cleanupCandidate: () => {
       calls.push("cleanup-candidate");
       state.candidateCreated = false;
@@ -299,15 +296,37 @@ describe("migration-aware deployment orchestrator", () => {
     expect(result.exitCode).toBe(17);
     expect(runnerCalls).toBe(1);
     expect(result.calls).not.toContain("stop-runtime");
+    expect(result.calls).not.toContain("start-runtime");
+    expect(result.calls).not.toContain("health-check");
+    expect(result.calls).not.toContain("cleanup-candidate");
   });
 
-  it("stops on ambiguous migration completion and preserves recovery state", async () => {
+  it("rejects malformed or conflicting runner results as ambiguous", () => {
+    const ambiguousResults = [
+      undefined,
+      {},
+      { exitCode: 0, status: 17 },
+      { exitCode: "0" },
+      { exitCode: 0.5 },
+      { exitCode: 0, signal: "SIGTERM" },
+      { exitCode: 0, error: new Error("runner failed") },
+    ];
+
+    for (const result of ambiguousResults) {
+      expect(() => orchestrator.assertMigrationRunnerResult(result)).toThrow(/migration_(runner_result_missing|result_ambiguous)/i);
+    }
+  });
+
+  it("does not promote after an ambiguous migration result", async () => {
     const result = await runWith({
-      runMigrationRunner: () => ({ exitCode: orchestrator.EXIT_CODES.AMBIGUOUS, ambiguous: true }),
+      runMigrationRunner: () => ({ exitCode: 0, status: 17 }),
     });
 
     expect(result.exitCode).toBe(orchestrator.EXIT_CODES.AMBIGUOUS);
     expect(result.calls).not.toContain("stop-runtime");
+    expect(result.calls).not.toContain("checkout-release");
+    expect(result.calls).not.toContain("start-runtime");
+    expect(result.calls).not.toContain("health-check");
     expect(result.calls).not.toContain("cleanup-candidate");
     expect(result.records.join("\n")).toContain("ambiguous_migration");
   });
@@ -323,30 +342,22 @@ describe("migration-aware deployment orchestrator", () => {
     expect(result.calls).toContain("stop-runtime");
     expect(result.calls).toContain("checkout-release");
     expect(result.calls).not.toContain("health-check");
-    expect(result.calls).not.toContain("start-old-runtime");
     expect(result.calls).not.toContain("cleanup-candidate");
   });
 
-  it("does not roll back incompatible old runtime after a health failure", async () => {
+  it("preserves recovery-required state and never restarts old runtime after health failure", async () => {
+    let oldRuntimeStarts = 0;
     const result = await runWith({
       healthCheck: () => ({ status: 503 }),
-      verifyOldRuntimeCompatibility: () => false,
+      startOldRuntime: () => {
+        oldRuntimeStarts += 1;
+      },
     });
 
     expect(result.exitCode).toBe(orchestrator.EXIT_CODES.FAILED);
+    expect(oldRuntimeStarts).toBe(0);
     expect(result.calls).not.toContain("start-old-runtime");
-    expect(result.records.join("\n")).toContain("old_runtime_rollback_blocked");
-  });
-
-  it("allows old-runtime restart only with proven compatibility and explicit rollback authorization", async () => {
-    const result = await runWith({
-      healthCheck: () => ({ status: 503 }),
-      verifyOldRuntimeCompatibility: () => true,
-    });
-
-    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.FAILED);
-    expect(result.calls).toContain("start-old-runtime");
-    expect(result.records.join("\n")).toContain("old_runtime_restarted_after_verified_compatibility");
+    expect(result.records.join("\n")).toContain("manual_recovery_required");
   });
 
   it("preserves interrupted deployment state and never performs destructive recovery", async () => {
