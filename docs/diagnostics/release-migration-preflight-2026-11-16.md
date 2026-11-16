@@ -90,6 +90,8 @@ prisma migrate status --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\pris
 prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
 prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
 prisma migrate resolve --rolled-back 20261116120000_m1c_partial_failure_probe --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
+apply_patch (delete prisma/migrations/20261116120000_m1c_partial_failure_probe/migration.sql)
+[System.IO.Directory]::Delete('C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\migrations\20261116120000_m1c_partial_failure_probe', $false)  # after verifying the directory was empty
 prisma migrate status --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
 prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
 prisma migrate deploy --schema=C:\Projects\ClashCookies-M1c-Partial-Failure\prisma\schema.prisma
