@@ -258,14 +258,20 @@ describe("migration-aware deployment orchestrator", () => {
   });
 
   it("rejects concurrent deployment attempts before inspecting release state", async () => {
+    let runnerCalls = 0;
     const result = await runWith({
       acquireExclusiveLock: () => {
         throw new orchestrator.OrchestratorError("deployment_lock_already_held", orchestrator.EXIT_CODES.LOCKED, "already_locked");
+      },
+      runMigrationRunner: () => {
+        runnerCalls += 1;
+        return { exitCode: 0 };
       },
     });
 
     expect(result.exitCode).toBe(orchestrator.EXIT_CODES.LOCKED);
     expect(result.calls).toEqual([]);
+    expect(runnerCalls).toBe(0);
   });
 
   it("stops on candidate build failure without invoking migration or runtime changes", async () => {
@@ -282,12 +288,16 @@ describe("migration-aware deployment orchestrator", () => {
   });
 
   it("propagates migration failure and never retries or stops the old runtime", async () => {
+    let runnerCalls = 0;
     const result = await runWith({
-      runMigrationRunner: () => ({ exitCode: 17, classification: "migration_failed" }),
+      runMigrationRunner: () => {
+        runnerCalls += 1;
+        return { exitCode: 17, classification: "migration_failed" };
+      },
     });
 
     expect(result.exitCode).toBe(17);
-    expect(result.calls.filter((call) => call === "migration-runner")).toHaveLength(0);
+    expect(runnerCalls).toBe(1);
     expect(result.calls).not.toContain("stop-runtime");
   });
 
