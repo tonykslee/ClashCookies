@@ -1,14 +1,33 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 // The runner is intentionally JavaScript so it can be invoked before any
 // application build and so its process boundary is easy to inspect.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const runner = require("../ops/deploy/migration-runner.js") as typeof import("../ops/deploy/migration-runner.js");
 
-function makeEnvironment(lockPath: string): Record<string, string> {
+const testLockRoots = new Set<string>();
+
+function createTestLockRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "clashcookies-migration-lock-"));
+  testLockRoots.add(root);
+  return root;
+}
+
+function createTestLockPath(): string {
+  return join(createTestLockRoot(), "runner.lock");
+}
+
+afterEach(() => {
+  for (const root of testLockRoots) {
+    rmSync(root, { recursive: true, force: true });
+  }
+  testLockRoots.clear();
+});
+
+function makeEnvironment(lockPath = createTestLockPath()): Record<string, string> {
   return {
     DATABASE_URL: "postgresql://migration_user:super-secret@127.0.0.1:55434/clashcookies_disposable",
     MIGRATION_EXECUTION_AUTHORIZED: "1",
@@ -28,19 +47,22 @@ function makeEnvironment(lockPath: string): Record<string, string> {
   };
 }
 
-function successfulDependencies(calls: { migrate: number }) {
+function successfulDependencies(calls: { migrate: number; identity?: number }) {
   return {
     currentGitSha: () => "a".repeat(40),
     computeMigrationManifest: () => ({ digest: "b".repeat(64), fileCount: 3, files: [] }),
-    verifyDatabaseIdentity: async () => ({
-      database: "clashcookies_disposable",
-      role: "migration_user",
-      schema: "public",
-      serverAddress: "127.0.0.1",
-      serverPort: 55434,
-      postgresMajor: 17,
-      digest: "c".repeat(64),
-    }),
+    verifyDatabaseIdentity: async () => {
+      calls.identity = (calls.identity || 0) + 1;
+      return {
+        database: "clashcookies_disposable",
+        role: "migration_user",
+        schema: "public",
+        serverAddress: "127.0.0.1",
+        serverPort: 55434,
+        postgresMajor: 17,
+        digest: "c".repeat(64),
+      };
+    },
     executeMigration: () => {
       calls.migrate += 1;
       return { status: 0, signal: null, error: null, classification: "success" };
@@ -54,15 +76,15 @@ describe("isolated Prisma migration runner", () => {
   });
 
   it("requires explicit authorization and rejects malformed credentials/configuration", () => {
-    const env = makeEnvironment("C:\\migration-runner-test-lock");
+    const env = makeEnvironment();
     delete env.DATABASE_URL;
     expect(() => runner.parseRunnerConfig(env)).toThrow(/database_url/i);
 
-    const unauthorized = makeEnvironment("C:\\migration-runner-test-lock");
+    const unauthorized = makeEnvironment();
     unauthorized.MIGRATION_EXECUTION_AUTHORIZED = "0";
     expect(() => runner.parseRunnerConfig(unauthorized)).toThrow(/not_authorized/i);
 
-    const malformed = makeEnvironment("C:\\migration-runner-test-lock");
+    const malformed = makeEnvironment();
     malformed.DATABASE_URL = "mysql://user:password@host/db";
     expect(() => runner.parseRunnerConfig(malformed)).toThrow(/database_url/i);
   });
@@ -71,7 +93,7 @@ describe("isolated Prisma migration runner", () => {
     const calls = { migrate: 0 };
     const logs: string[] = [];
     const result = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       log: (line: string) => logs.push(line),
       dependencies: successfulDependencies(calls),
     });
@@ -93,7 +115,7 @@ describe("isolated Prisma migration runner", () => {
     };
 
     const result = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       dependencies,
     });
 
@@ -111,7 +133,7 @@ describe("isolated Prisma migration runner", () => {
     };
 
     const result = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       dependencies,
     });
 
@@ -127,7 +149,7 @@ describe("isolated Prisma migration runner", () => {
       return { digest: "c".repeat(64) };
     };
     const manifestResult = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       dependencies: manifestMismatch,
     });
 
@@ -150,7 +172,7 @@ describe("isolated Prisma migration runner", () => {
     };
 
     const result = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       dependencies,
     });
 
@@ -159,22 +181,37 @@ describe("isolated Prisma migration runner", () => {
   });
 
   it("rejects concurrent invocation with an atomic exclusive lock", () => {
-    const lockRoot = mkdtempSync(join(tmpdir(), "clashcookies-migration-lock-"));
+    const lockRoot = createTestLockRoot();
     const lockPath = join(lockRoot, "exclusive");
+    const release = runner.acquireExclusiveLock(lockPath);
+    expect(() => runner.acquireExclusiveLock(lockPath)).toThrow(/already_held/i);
+    release();
+    const releaseAfter = runner.acquireExclusiveLock(lockPath);
+    releaseAfter();
+  });
+
+  it("fails closed when lock acquisition fails before database access or migration execution", async () => {
+    const lockRoot = createTestLockRoot();
+    const lockPath = join(lockRoot, "held");
+    const release = runner.acquireExclusiveLock(lockPath);
+    const calls = { migrate: 0, identity: 0 };
     try {
-      const release = runner.acquireExclusiveLock(lockPath);
-      expect(() => runner.acquireExclusiveLock(lockPath)).toThrow(/already_held/i);
-      release();
-      const releaseAfter = runner.acquireExclusiveLock(lockPath);
-      releaseAfter();
+      const result = await runner.runMigrationRunner({
+        env: makeEnvironment(lockPath),
+        dependencies: successfulDependencies(calls),
+      });
+
+      expect(result).toBe(runner.EXIT_CODES.LOCKED);
+      expect(calls.identity).toBe(0);
+      expect(calls.migrate).toBe(0);
     } finally {
-      rmSync(lockRoot, { recursive: true, force: true });
+      release();
     }
   });
 
   it("runs only npm run migrate:deploy and never the application startup command", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
-    const config = runner.parseRunnerConfig(makeEnvironment("C:\\migration-runner-test-lock"));
+    const config = runner.parseRunnerConfig(makeEnvironment());
     const result = runner.executeMigration(config, process.cwd(), (command: string, args: string[]) => {
       calls.push({ command, args });
       return { status: 0, signal: null, error: null };
@@ -192,7 +229,7 @@ describe("isolated Prisma migration runner", () => {
   it("never emits the connection string or password in bounded logs", async () => {
     const logs: string[] = [];
     const result = await runner.runMigrationRunner({
-      env: makeEnvironment("C:\\migration-runner-test-lock"),
+      env: makeEnvironment(),
       log: (line: string) => logs.push(line),
       dependencies: {
         ...successfulDependencies({ migrate: 0 }),
@@ -212,7 +249,7 @@ describe("isolated Prisma migration runner", () => {
   });
 
   it("verifies the database identity through a read-only Prisma query", async () => {
-    const config = runner.parseRunnerConfig(makeEnvironment("C:\\migration-runner-test-lock"));
+    const config = runner.parseRunnerConfig(makeEnvironment());
     const queries: string[] = [];
     const identity = await runner.verifyDatabaseIdentity(config, () => ({
       $queryRawUnsafe: async (query: string) => {
