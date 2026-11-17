@@ -4,7 +4,7 @@
 **Base branch:** `dev`  
 **Established:** 2026-11-17
 
-This is the running intake list for user-requested ClashCookies features. It is **not** a record of shipped functionality or an authorization to deploy, alter production, or implement code. Keep items marked `Proposed` until separately designed, approved for implementation as applicable, and verified. Reconcile implementation status against merged PRs and evidence.
+This is the running intake list for user-requested ClashCookies features. Related completed patches, dates, and production evidence belong in [feature-history.md](feature-history.md). It is **not** an authorization to deploy, alter production, or implement code. Keep items marked `Proposed` until separately designed, approved for implementation as applicable, and verified. Reconcile implementation status against merged PRs and evidence.
 
 ## Maintenance policy
 
@@ -12,7 +12,20 @@ This is the running intake list for user-requested ClashCookies features. It is 
 - Do not commit directly to `dev` or `main`. Do not mix backlog edits with code, schema, runtime, deployment, or migration changes.
 - Preserve stable IDs, original intent, and substantive requirements. When an item is withdrawn, move it to the archived section (rather than silently deleting its history), unless the owner requests complete removal.
 - Distinguish **Proposed**, **Agreed specification**, **In progress**, **Implemented**, and **Archived**. An item being on this list does not imply acceptance criteria or implementation details have been finalized.
+- Track dev-completed but not production-verified features in the release reconciliation section below; preserve independent merge and deployment dates. Update [feature-history.md](feature-history.md) for each verified feature patch and production milestone. Do not infer production from `dev` or `main` merges.
 - Priorities are suggestions, not approved delivery commitments. Follow `docs/ai-development-workflow.md`, architecture contracts, and feature-specific roadmaps before code work.
+
+## Implemented on dev / pending production verification
+
+These are **not proposed implementation tasks**. Production deployment, migration, and activation must be verified separately before changing their status.
+
+| Feature | Dev implementation | Production status | Historical record |
+| --- | --- | --- | --- |
+| `/link list` optional Compo surplus/deficit (`↑N`, `↓N`, `=`, `—`) | [#1987](https://github.com/tonykslee/ClashCookies/pull/1987) merged 2026-11-14 UTC; fallback fix [#2011](https://github.com/tonykslee/ClashCookies/pull/2011) merged 2026-11-16 UTC | **Pending production confirmation**. Selective release [#2007](https://github.com/tonykslee/ClashCookies/pull/2007) closed unmerged; full release [#1983](https://github.com/tonykslee/ClashCookies/pull/1983) open/unmerged. | [Feature history](feature-history.md) |
+| FB-005 — automatic `all spun` | [#2008](https://github.com/tonykslee/ClashCookies/pull/2008) merged 2026-11-16 UTC | Production delivery/activation not verified | [Feature history](feature-history.md) |
+| Immutable sync reaction history foundation (supporting FB-006/007) | [#2010](https://github.com/tonykslee/ClashCookies/pull/2010) merged 2026-11-16 UTC | Production deployment/migration not verified; leaderboard/analytics remain proposed | [Feature history](feature-history.md) |
+
+For other dev-completed features and patches, see [Feature Patch History and Release Tracking](feature-history.md); it is a curated historical seed, not a full deploy manifest.
 
 ## Open requests
 
@@ -51,6 +64,7 @@ This is the running intake list for user-requested ClashCookies features. It is 
 - **Status:** Proposed
 - **Suggested priority:** High
 - **Request:** Dusk posts a retrospective in each clan's corresponding alert channel, summarizing important signals from the last sync.
+- **Existing related implementation:** The read-only retrospective, alliance command, per-clan drilldown, and automatic **alliance-wide** post are already merged through PRs [#1753](https://github.com/tonykslee/ClashCookies/pull/1753)–[#1756](https://github.com/tonykslee/ClashCookies/pull/1756). This backlog item is specifically for **per-clan alert-channel delivery and requested accountability sections**, not recreating the existing alliance post.
 - **Requested sections:**
   - FWA violations, including repeat offenders.
   - Failed base swaps, including repeat offenders.
