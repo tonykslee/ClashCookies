@@ -112,6 +112,14 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Important limitations:** Nonacknowledgment is not proof that a base was left wrong; an acknowledgment is not proof that a base was corrected. Separate these metrics, and prefer verified war/roster identity. Reuse FB-004 retrospective presentation where suitable rather than duplicating collection.
 - **Done when:** Repeat/unresolved swap-accountability reporting is DB-first, clan-scoped, idempotent where messaged, privacy-safe, and accurately separates observed responses from independently verified actions.
 
+### FB-009 — Monthly Dusk Update: approved one-click Discord publishing
+
+- **Status:** Proposed (draft/reminder is scheduled outside the bot; Discord publishing automation is **not** implemented).
+- **Request:** Generate one human-readable monthly update from `docs/feature-history.md`, verified production deployments and user/leader-facing changes, then present a private **Approve / Revise / Skip** action. The first public edition follows independently verified Duskits economy production launch.
+- **Existing foundations:** [Monthly editorial template and policy](monthly-dusk-updates.md); `.github/workflows/discord-releases.yml` already posts GitHub Releases to configured DEV/PROD Discord webhooks on `release:published`, which may be broader than the intended audience.
+- **Required safeguards:** Explicit authenticated per-edition approval; separate draft from publication; verify destinations, audience, and optional role pings; no unpublished/development-only claims; stable edition ID and idempotent delivery; store posting timestamp, channel/message link, operator identity and publish outcome; handle retries without duplicate posts; SKIP or missing approval means no publication. Do not reuse an approved edition to authorize a later one. Preserve GitHub release/deployment independence.
+- **Done when:** A qualified monthly draft can be approved once and delivered exactly once to the intended channel, or revised/skipped without posting; the publishing action and verification evidence are recorded in feature history. No automatic code release, deployment, wallet issuance, or unapproved announcement.
+
 ## Archived / withdrawn requests
 
 _None yet._
