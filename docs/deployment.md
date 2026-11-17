@@ -49,6 +49,8 @@ The [production migration and recovery runbook](../ops/deploy/production-migrati
 
 **Phase 2A lock coordination:** The repository-side lock contract and isolated evidence are recorded in [the Phase 2A diagnostic](diagnostics/production-deployment-lock-coordination-phase2a-2026-11-16.md). This does not establish cooperation by the live VM wrapper or authorize installation, deployment, or migration execution.
 
+**Phase 2B read-only runtime evidence:** The direct-Docker adapter now includes an injectable, bounded collector for running-container, selected-label, published-port, network, host-PID, and sanitized host-process cgroup evidence. It feeds the existing fail-closed runtime validator and rejects stale/malformed command output, duplicate or ambiguous candidates, unexpected ports/networks, and uncorrelated host Node/npm/yarn processes. The collector is development/test infrastructure only: it is not wired into the CLI, installed on the VM, or production-authorized. Future VM verification must still prove the live wrapper's permissions and lock participation, protected credential/release-record ownership, database identity, fresh health/monitoring/backup gates, and staging isolation or waiver.
+
 ## Environment Matrix
 
 | Environment | Runtime mode | Canonical health |
