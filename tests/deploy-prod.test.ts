@@ -12,6 +12,7 @@ type Scenario =
   | "concurrent-active"
   | "migration"
   | "lock-busy"
+  | "cross-process"
   | "changed-checkout"
   | "legacy-target"
   | "legacy-health-failure"

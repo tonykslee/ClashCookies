@@ -17,10 +17,13 @@ migration-aware orchestrator   ┘          │
                                          │    verify / run migrate:deploy once
                                          ├─ release MIGRATION_LOCK_PATH
                                          ├─ promote / health-check
+                                         ├─ append terminal release record while still held
                                          └─ release DEPLOY_LOCK_PATH
 ```
 
 The repository helper uses an atomic `mkdir` of the lock directory. The directory contains one `owner.json` record written with exclusive-create semantics. An existing path is `already_locked`; no stale-lock deletion, retry, or owner guessing is permitted. Release verifies the original directory and owner-file identities and exact owner record before removing anything. Corrupt, replaced, symlinked, extra-content, or cleanup-failed state remains in place and returns failure.
+
+The orchestrator appends the terminal `end` record before attempting to release the outer lock. A release-record write failure changes the outcome to `AMBIGUOUS` and emits a bounded sanitized diagnostic. A lock-release failure also changes the outcome to `AMBIGUOUS` and emits only a bounded external diagnostic; it never appends to the release record after ownership may have been lost. Recovery-required migration outcomes remain preserved in the records already written while the final process result remains non-success.
 
 The shell helper and Node helpers use the same directory-path contract. `DEPLOY_LOCK_FILE` remains an input alias for the non-migration helper only; a future VM wrapper must pass the canonical shared path explicitly. The runner requires only `MIGRATION_LOCK_PATH` and does not accept or infer an outer release lock.
 

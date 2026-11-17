@@ -277,6 +277,65 @@ describe("migration-aware deployment orchestrator", () => {
     expect(runnerCalls).toBe(0);
   });
 
+  it("keeps the outer lock through terminal record handling", async () => {
+    let held = false;
+    let releaseCalls = 0;
+    const acquire = () => {
+      if (held) {
+        throw new orchestrator.OrchestratorError(
+          "deployment_lock_already_held",
+          orchestrator.EXIT_CODES.LOCKED,
+          "already_locked",
+        );
+      }
+      held = true;
+      return () => {
+        releaseCalls += 1;
+        held = false;
+        return true;
+      };
+    };
+    const result = await runWith({
+      acquireExclusiveLock: acquire,
+      writeReleaseRecord: (_path: string, line: string) => {
+        const event = JSON.parse(line).event;
+        if (event === "end") {
+          expect(() => acquire()).toThrow(/already_held/i);
+        }
+      },
+    });
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.SUCCESS);
+    expect(releaseCalls).toBe(1);
+    expect(held).toBe(false);
+    const afterRelease = acquire();
+    expect(afterRelease()).toBe(true);
+  });
+
+  it("fails closed when terminal release-record writing fails", async () => {
+    const result = await runWith({
+      writeReleaseRecord: (_path: string, line: string) => {
+        if (JSON.parse(line).event === "end") throw new Error("record sink unavailable");
+      },
+    });
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.AMBIGUOUS);
+    expect(result.logs.join("\n")).toContain("release_record_write_failed");
+    expect(result.logs.join("\n")).not.toContain("failure=success");
+  });
+
+  it("records the terminal outcome before a release failure and never appends afterward", async () => {
+    const result = await runWith({
+      acquireExclusiveLock: () => () => false,
+    });
+    const events = result.records.map((line) => JSON.parse(line).event);
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.AMBIGUOUS);
+    expect(events.at(-1)).toBe("end");
+    expect(events).not.toContain("lock_release_failed");
+    expect(result.logs.join("\n")).toContain("lock_release_failed");
+  });
+
   it("stops on candidate build failure without invoking migration or runtime changes", async () => {
     const result = await runWith({
       buildCandidate: () => {

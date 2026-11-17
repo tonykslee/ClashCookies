@@ -27,6 +27,8 @@ The outer and inner paths are required to differ and remain outside the checkout
 
 The orchestrator passes only `MIGRATION_LOCK_PATH` to the nested runner, so the runner does not recursively acquire the outer release lock. The Phase 1 adapter uses the same primitive but its unconditional mutation and migration gates remain disabled.
 
+Terminal release-record finalization occurs before outer-lock release. Record-sink failures become ambiguous outcomes with bounded sanitized diagnostics. Release failures become ambiguous outcomes with bounded external diagnostics and do not trigger any record write after ownership may have been lost. Cross-process fixtures verify both Bash-held/Node-blocked and Node-held/Bash-blocked contention on the identical filesystem path; the losing process performs no checkout/runtime inspection.
+
 ## Remaining VM evidence
 
 Before any production use, an authorized operator must read-only verify the actual wrapper control flow, exact deploy account and permissions, canonical shared lock path and parent ownership, release-record ownership, protected database credential source, runtime singleton/PID correlation, database identity, health/monitoring, backup/recovery, staging waiver, and release authorization. Installing or replacing the VM wrapper is a separate reviewed change and remains blocked.

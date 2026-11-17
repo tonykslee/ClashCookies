@@ -29,9 +29,11 @@ Execution is serialized and fail-closed:
 5. invoke the reviewed checkout's separate `migration-runner.js` exactly once using `DEPLOY_MIGRATION_LOCK_PATH` as its inner runner lock; the runner never reacquires the outer release lock;
 6. require read-only post-migration verification with no unresolved Prisma state;
 7. stop the old runtime, check out `NEW_SHA` without deleting unknown files, start exactly one active production runtime, and require HTTP 200 from `http://127.0.0.1:8085/healthz`; and
-8. clean only the orchestrator-owned candidate after successful health verification.
+8. clean only the orchestrator-owned candidate after successful health verification; append the terminal `end` record while the outer lock is still held, then release that lock.
 
 Migration runner results use one canonical `exitCode` field. A missing, malformed, conflicting, signal-bearing, error-bearing, or otherwise ambiguous result is treated as `AMBIGUOUS`; only an exact, internally consistent success is promotable. Migration failure, ambiguous completion, interrupted state, unresolved post-migration status, startup failure, and health failure stop the state machine. No automatic retry, `migrate resolve`, reset, destructive cleanup, database rollback, blind SQL replay, or old-runtime restart is performed. After a committed migration, health failure leaves the release record recovery-required for a separately reviewed VM recovery procedure.
+
+Release-record write failures fail closed as `AMBIGUOUS` with bounded sanitized diagnostics. If outer-lock release fails, the process also returns `AMBIGUOUS` and emits only a bounded external diagnostic; it never writes to the release record after ownership may have been lost.
 
 This implementation slice never invokes `startOldRuntime`. A future VM integration must first stop the new runtime, verify singleton absence, restore the exact old artifact, prove database/schema compatibility, and health-check the recovered runtime before any manually authorized old-runtime start is considered.
 

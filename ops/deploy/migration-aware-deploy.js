@@ -399,19 +399,66 @@ async function runMigrationAwareDeployment({
   let candidateCreated = false;
   let migrationStarted = false;
   let releaseRecordStarted = false;
+  let lockOwned = false;
 
   const appendRecord = (event, fields = {}) => {
     if (!config || typeof ops.writeReleaseRecord !== "function") return;
-    ops.writeReleaseRecord(config.releaseRecordPath, recordLine(event, {
-      releaseId: config.releaseId,
-      oldSha: config.oldSha,
-      newSha: config.newSha,
-      migrationDiffDigest: config.migrationDiffDigest,
-      migrationManifestDigest: config.migrationManifestDigest,
-      phase,
-      at: ops.now(),
-      ...fields,
-    }));
+    if (!lockOwned) {
+      throw new OrchestratorError(
+        "release_record_write_after_lock_loss",
+        EXIT_CODES.AMBIGUOUS,
+        "release_record_unavailable",
+        phase,
+        true,
+      );
+    }
+    try {
+      ops.writeReleaseRecord(config.releaseRecordPath, recordLine(event, {
+        releaseId: config.releaseId,
+        oldSha: config.oldSha,
+        newSha: config.newSha,
+        migrationDiffDigest: config.migrationDiffDigest,
+        migrationManifestDigest: config.migrationManifestDigest,
+        phase,
+        at: ops.now(),
+        ...fields,
+      }));
+    } catch {
+      throw new OrchestratorError(
+        "release_record_write_failed",
+        EXIT_CODES.AMBIGUOUS,
+        "release_record_failed",
+        phase,
+        true,
+      );
+    }
+  };
+
+  const appendRecordBestEffort = (event, fields = {}) => {
+    if (!releaseRecordStarted || !lockOwned) return false;
+    try {
+      appendRecord(event, fields);
+      return true;
+    } catch {
+      writeBoundedLog(log, "release_record_write_failed", {
+        release_id: safeValue(config?.releaseId),
+        phase,
+        record_event: event,
+      });
+      return false;
+    }
+  };
+
+  const releaseHeldLock = () => {
+    if (!releaseLock) return true;
+    // Mark the record channel unavailable before invoking release. A failed
+    // release leaves ownership ambiguous, so no later path may append.
+    lockOwned = false;
+    try {
+      return releaseLock() === true;
+    } catch {
+      return false;
+    }
   };
 
   try {
@@ -420,6 +467,7 @@ async function runMigrationAwareDeployment({
       releaseId: config.releaseId,
       startedAt,
     });
+    lockOwned = true;
     writeBoundedLog(log, "start", {
       release_id: safeValue(config.releaseId),
       old_sha: safeValue(config.oldSha),
@@ -528,29 +576,48 @@ async function runMigrationAwareDeployment({
     exitCode = normalized.exitCode;
     classification = normalized.classification;
     phase = normalized.phase || phase;
-    if (releaseRecordStarted) appendRecord("failure", { classification, exit_code: exitCode });
+    if (releaseRecordStarted) appendRecordBestEffort("failure", { classification, exit_code: exitCode });
 
     if (candidateCreated && !migrationStarted && typeof ops.cleanupCandidate === "function") {
       try {
         await ops.cleanupCandidate({ path: config.candidateWorktreePath, sha: config.newSha });
-        appendRecord("candidate_cleaned");
+        appendRecordBestEffort("candidate_cleaned");
         candidateCreated = false;
       } catch {
-        appendRecord("candidate_cleanup_preserved", { classification: "cleanup_failed" });
+        appendRecordBestEffort("candidate_cleanup_preserved", { classification: "cleanup_failed" });
       }
     }
 
     if (migrationStarted && phase === "health") {
-      appendRecord("old_runtime_rollback_blocked", { classification: "manual_recovery_required" });
+      appendRecordBestEffort("old_runtime_rollback_blocked", { classification: "manual_recovery_required" });
     }
   } finally {
-    const lockReleased = releaseLock ? releaseLock() : true;
-    if (!lockReleased && exitCode === EXIT_CODES.SUCCESS) {
-      exitCode = EXIT_CODES.AMBIGUOUS;
-      classification = "lock_release_failed";
+    if (releaseRecordStarted && lockOwned) {
+      try {
+        appendRecord("end", { exit_code: exitCode, classification });
+      } catch {
+        exitCode = EXIT_CODES.AMBIGUOUS;
+        classification = "release_record_write_failed";
+        writeBoundedLog(log, "release_record_write_failed", {
+          release_id: safeValue(config?.releaseId),
+          phase,
+          record_event: "end",
+        });
+      }
     }
-    if (releaseRecordStarted && !lockReleased) appendRecord("lock_release_failed", { classification });
-    if (releaseRecordStarted) appendRecord("end", { exit_code: exitCode, classification });
+    const lockReleased = releaseHeldLock();
+    if (!lockReleased) {
+      const priorClassification = classification;
+      exitCode = EXIT_CODES.AMBIGUOUS;
+      classification = priorClassification === "success"
+        ? "lock_release_failed"
+        : `${priorClassification}_lock_release_failed`.slice(0, 96);
+      writeBoundedLog(log, "lock_release_failed", {
+        release_id: safeValue(config?.releaseId),
+        phase,
+        prior_class: priorClassification,
+      });
+    }
     writeBoundedLog(log, "end", {
       release_id: safeValue(config?.releaseId),
       old_sha: safeValue(config?.oldSha),
