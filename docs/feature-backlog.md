@@ -120,6 +120,23 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Required safeguards:** Explicit authenticated per-edition approval; separate draft from publication; verify destinations, audience, and optional role pings; no unpublished/development-only claims; stable edition ID and idempotent delivery; store posting timestamp, channel/message link, operator identity and publish outcome; handle retries without duplicate posts; SKIP or missing approval means no publication. Do not reuse an approved edition to authorize a later one. Preserve GitHub release/deployment independence.
 - **Done when:** A qualified monthly draft can be approved once and delivered exactly once to the intended channel, or revised/skipped without posting; the publishing action and verification evidence are recorded in feature history. No automatic code release, deployment, wallet issuance, or unapproved announcement.
 
+### FB-010 — Deterministic showcase fixture and screenshot generator
+
+- **Status:** Proposed code/tooling implementation; documentation policy is agreed in [feature showcase](feature-showcase/README.md).
+- **Suggested priority:** Medium-high (developer productivity and command discovery).
+- **Request:** For stateful Dusk interfaces, give Codex an easy developer-only method to produce realistic, capture-ready outputs for chosen scenarios without arranging real war, roster, guild, or wallet state. One validated Windows CMD command per capture, supplied at code PR review, should produce a deterministic preview using the real renderer and **synthetic** data.
+- **Required behavior:** No publicly exposed slash command by default; no production/staging DB or CoC API, Discord outbound effects, posts, reward issuance, historical mutations, or real identities. Use synthetic named fixtures, real rendering path where feasible, clear `DEMO / SYNTHETIC` labeling, minimal dependency footprint, and coverage for normal, partial/UNKNOWN, and critical alternate states. If an actual Discord screenshot is required, keep it inside a deliberately isolated opt-in developer sandbox with an explicit safety gate; never reuse prod routing.
+- **Integration:** Store sanitized images, captions, command/permissions, PR and capture provenance under `docs/feature-showcase/<feature-slug>/`. Reuse the canonical [spotlight template](templates/command-spotlight.md). Require a small screenshot plan for user-visible feature PRs, with justified exceptions for urgent or nonvisual work.
+- **Done when:** An isolated deterministic fixture generates representative user-facing output for a chosen command, an operator can capture it without reconstructing live state, tests prove no external side effects, and an example feature showcase is committed and reviewed. No code work or merge is authorized by this backlog entry.
+
+### FB-011 — Command discovery and spotlight content library
+
+- **Status:** Agreed editorial/process goal; posting automation is not implemented.
+- **Request:** Curate concise command spotlights and sanitized visuals so Rising Dawn members and leaders discover useful Dusk capabilities instead of relying on finding commands through `/help`.
+- **Existing foundation:** [showcase policy](feature-showcase/README.md), [command spotlight template](templates/command-spotlight.md), [monthly Dusk Updates](monthly-dusk-updates.md). Build from verified commands, permissions and current production capabilities.
+- **Approach:** Capture most relevant 1–3 images per command during feature delivery or a scoped post-merge doc follow-up, maintain a reusable command page with scenarios/captions, and select valuable spotlights for approved monthly announcements. Prioritize popular, underused leader commands first; do not require mass backfilling or automatic Discord posts.
+- **Done when:** Each spotlight is copy-ready with audience, value, exact invocation, expected output, limitations, sanctioned screenshots and GitHub source evidence. Only actual approved and verified posts are recorded as published.
+
 ## Archived / withdrawn requests
 
 _None yet._

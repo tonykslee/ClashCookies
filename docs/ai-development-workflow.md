@@ -33,6 +33,14 @@
 - For production VM discovery, **workstation-only archive preparation and offline verification are distinct from** (1) VM delivery, (2) private stdout evidence-capture setup, and (3) bounded discovery execution. Each production gate requires its own explicit authorization, irrespective of whether Codex or a human operator would perform it. No implicit deploy, backup, migration, timer, staging, or release permissions.
 - Preserve local untracked files and current worktrees. Require concise Codex outcomes with paths, hashes, checks, blockers and observed versus inferred facts; do not turn ordinary verification into unnecessary code changes or duplicate PRs.
 
+## 2B. User-facing feature discovery and screenshots
+
+- For new or materially changed **user-visible commands, embeds, image views, menus and interactions**, before requesting code-PR merge approval, give the owner a **short, explicit screenshot checklist**: primary view, important alternate state and optional expanded view (normally 1–3 captures), with expected values, audience/permissions, and safe acquisition steps.
+- Use the canonical [feature-showcase screenshot and spotlight policy](feature-showcase/README.md) and [command spotlight template](templates/command-spotlight.md). When feasible, commit reviewed/sanitized screenshots and feature README **on the feature PR**; otherwise record a named, scoped follow-up. Do not block urgent incidents, security changes, migrations or invisible backend work on screenshots.
+- For complicated stateful UIs, **prefer a deterministic developer-only fixture/preview using real rendering code and synthetic data**, with one validated CMD invocation; the fixture generator is not yet implemented. Never claim proposed demo commands work. Avoid production data, real posts, fake war/DB mutations, wallet issuance or public debug commands.
+- Check actual image content for personal/Discord secrets, metadata leakage and inaccurate claims. Label synthetic examples. A `dev` screenshot does not prove production deployment.
+- After verified production activation, link high-value feature showcases to the approval-gated [monthly Dusk updates](monthly-dusk-updates.md) and optional command spotlights; never auto-post without explicit approval.
+
 ## 3. Validation: fast and proportional
 
 - Isolated TypeScript change: focused Vitest file(s), `npx tsc --noEmit`, ESLint on changed TS files, `git diff --check`. Provide **one CMD-copyable physical line** joining checks with `&&`.
