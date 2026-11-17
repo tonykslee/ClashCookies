@@ -252,6 +252,9 @@ describe("direct Docker production adapter contract", () => {
         containerId: id,
       }],
     });
+    expect(adapter.inspectRuntimeSnapshot(snapshot, adapter.validateAdapterConfig(makeConfig()))).toMatchObject({
+      candidates: [{ name: "clashcookies-app", recognized: true, revision }],
+    });
     expect(calls).toHaveLength(3);
     expect(calls.map((call) => `${call.command}:${(call.args as string[]).slice(0, 2).join("/")}`))
       .toEqual(["docker:container/ls", "docker:container/inspect", "ps:--no-headers/-eo"]);
