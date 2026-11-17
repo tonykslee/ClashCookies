@@ -4,6 +4,14 @@
 
 This preflight is the operator procedure for the already merged, read-only discovery tooling from [PR #2027](https://github.com/tonykslee/ClashCookies/pull/2027). It is deliberately separate from release authorization. The operator must stop if any prerequisite requires installing a tool, changing permissions or ownership, creating an unapproved VM directory, reading a secret, running a wrapper, or changing a production resource.
 
+## November 17 local preparation checkpoint (operator/Codex-reported)
+
+- **PASS — local archive preparation and offline verification:** The operator created `%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar` from pinned commit `1cb81528ea34dd25f51613557d6f6030fddd0b3a`. Codex subsequently reported exactly three regular files with the pinned SHA-256 hashes in section 1, plus only the normal TAR directory entries `ops/`, `ops/deploy/` and `ops/deploy/discovery/`. No symlinks, unexpected files, or other entry types were reported.
+- **Archive provenance:** Codex reported archive SHA-256 `8138275d0f18451ea02955357c3f2e7c22c729175c575033aae64bff7dc81015` unchanged across verification. This is **operator/Codex-reported local evidence**, not independently inspected by ChatGPT or verified on the VM. Existing untracked `powershell` was preserved; no SSH, VM, Docker, production, transfer, or script execution occurred in this milestone.
+- **Approved next narrow phase:** The user approved **read-only VM delivery preparation checks** to identify a suitable isolated private destination, verify operator identity and existing access/permissions, and return findings. This does **not** authorize transferring the archive, creating any VM directory, changing ownership/mode, installing tools, configuring capture, running the collector, or accessing secret contents. The permission is restricted to non-mutating prerequisites needed to select the destination. If Codex cannot establish access without new credentials or privilege escalation, stop and report `UNKNOWN/BLOCKED`; do not fall back to repeated ad hoc operator commands unless genuinely necessary.
+- **Separate authorization gates unchanged:** Actual delivery (including any specifically named directory creation), protected workstation-side stdout-only evidence capture, and one bounded discovery invocation each still require distinct explicit approval. A verified local archive is not live runtime, wrapper, lock, database, backup, or release evidence. The script caveats in section 9 and release PR #1983's block remain unchanged.
+- **Workflow:** [PR #2034](https://github.com/tonykslee/ClashCookies/pull/2034) merged the Codex-first autonomous execution preference into `docs/ai-development-workflow.md`; use one focused Codex task for eligible checks without treating autonomy as production authorization.
+
 ## 1. Pinned delivery source
 
 Use the exact PR #2027 merge commit, not an arbitrary working tree or a later mutable branch checkout:
