@@ -2,6 +2,8 @@
 
 This guide accompanies `production-vm-discovery.sh`. It is a single, bounded, read-only evidence collection entry point for the next production-release gate. It does not deploy, migrate, start or stop containers, run backups, activate timers, modify Git, inspect credential contents, or claim that a VM was inspected by Codex.
 
+The complete delivery, prerequisite, protected-path, evidence-handling, stop-condition, and authorization procedure is [the 2026-11-17 operator preflight](../../../docs/diagnostics/production-vm-discovery-operator-preflight-2026-11-17.md). This file remains the script-specific contract; the preflight is the canonical operator runbook.
+
 ## Review and boundary
 
 Review the script and this guide in the draft PR before any operator executes it. The operator, not Codex, must run the command on the production VM. The script uses only fixed direct-argv commands and does not use `sudo`, SSH, `docker exec`, `docker compose config`, environment dumps, process arguments, full Docker inspect JSON, or unredacted wrapper/configuration output.
@@ -12,7 +14,7 @@ The output is JSON Lines. Each record has `schema`, `evidence`, `status` (`PASS`
 
 ## Operator invocation
 
-Run from the VM's existing operator shell with the reviewed script copied or checked out in a separately approved read-only manner. Do not execute the legacy wrapper. Do not use `sudo` for this discovery bundle.
+Run from the VM's existing operator shell with the reviewed script delivered to a separately approved isolated location outside the production checkout. Do not execute the legacy wrapper. Do not use `sudo` for this discovery bundle. The path examples below are operator-reported candidates only; protected paths must be independently identified.
 
 ```bash
 DISCOVERY_APP_DIR=/home/tilo/apps/clashcookies-prod \
@@ -25,7 +27,7 @@ DISCOVERY_RELEASE_RECORD_PATH=/var/lib/clashcookies/release-record.ndjson \
 bash ops/deploy/discovery/production-vm-discovery.sh
 ```
 
-Replace only the resource paths that the operator has independently identified. Do not put a password, database URL, token, private key, monitoring URL, or file contents in an environment variable for this command. If an executor, credential, lock, or release-record path is not known, omit it and accept `UNKNOWN`; the script intentionally does not guess.
+Replace only the resource paths that the operator has independently identified. Do not put a password, database URL, token, private key, monitoring URL, or file contents in an environment variable for this command. The merged script currently has a non-empty default for `DISCOVERY_LOCK_PATH`; never omit that variable when the shared lock is unknown, because the default is not confirmed VM configuration. Stop with `UNKNOWN/BLOCKED` until the path is independently identified.
 
 The single command is the complete execution entry point. The operator may save stdout as evidence outside the VM, but must not append to a release record, create a lock, run a service, enable a timer, alter ownership/mode, or clean residual staging resources.
 
