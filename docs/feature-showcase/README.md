@@ -20,16 +20,16 @@ Include: audience/permission, exact invocation, selected guild/clan context **wi
 
 **Pre-merge gate:** provide the screenshot checklist and the reproducible scenario instructions or a justified exception **before code PR merge approval**. Capture and curate the final images on the feature branch when feasible; otherwise link a bounded post-merge documentation follow-up. Do not misrepresent an unmerged branch capture as production proof.
 
-## Stateful demo and capture tooling (future feature, not a functioning command)
+## Discord `/example ref:` showcase (approved UX; not yet implemented)
 
-For complex combinations of persisted states, prefer a developer-only **offline fixture-driven preview** that executes the *real production formatter/rendering code* with synthetic inputs and produces a capture-ready output (PNG/HTML, or a safe isolated Discord test artifact if truly needed).
+For complicated persisted states, the **agreed operator-facing UX** is an admin/developer-only Discord slash command `/example ref:<stable-id>`, with autocomplete and a private, capture-ready synthetic view using the *real production rendering helpers*. It should not require CMD commands or state manipulation from the owner. The command and its references are **not implemented yet**.
 
-**Desired operator experience:** Codex prepares fixtures and a **single CMD-compatible command** to render each prescribed named scenario. No manual war manipulation, data backfills, or elaborate account-clan setup. Standard scenario IDs might be `compo-surplus`, `compo-partial-data`, `link-compo-deficit`, or `base-swap-pending`—**examples only, not currently supported commands**. Never invent a working invocation; Codex must supply an actually implemented, validated command when the fixture feature exists.
+**Desired operator experience:** Codex supplies a short list such as `/example ref:linklist-01`, `/example ref:linklist-02`; the user runs those directly in Discord and screenshots the responses. Codex prepares and tests the corresponding committed synthetic fixtures. No manual war manipulation, data backfills, or elaborate account-clan setup. Standard scenario IDs might be `compo-surplus`, `compo-partial-data`, `link-compo-deficit`, or `base-swap-pending`—**examples only, not currently supported commands**. Never invent a working invocation; Codex must supply an actually implemented, validated command when the fixture feature exists.
 
-The fixture runner must:
+The command/fixture implementation must:
 - Use deterministic, committed **synthetic** data and the actual shared production render path; label generated output **DEMO / SYNTHETIC** outside or on the artifact when practical, without obscuring the UI being demonstrated.
-- Run locally or in an explicitly isolated test environment; **never** connect to production DB/API, alter real clan/sync/war state, issue Duskits, send DMs, post in production, or trigger global `Post to Channel`.
-- Avoid adding a publicly available slash command just for screenshots. Any privileged diagnostic command must be strictly developer-only, fail closed, and be reviewed as **code** before merge.
+- Return **ephemeral/private** output to an authorized admin/developer only. Never consult production DB/API for screenshot state, alter real clan/sync/war state, issue Duskits, send DMs, post into channels, or allow the generic `Post to Channel` path. Integrate with the command permission and interaction response layers rather than assuming ephemeral alone provides security.
+- Register `/example` only to authorized administrators/developers with server-side authorization checks; deny others fail-closed. Unknown reference codes must never fall through to live command execution. This is code and requires normal PR/CI/merge approval.
 - Make output names deterministic and test multiple states, including UNKNOWN/missing evidence, permissions and mobile legibility. Clearly distinguish authentic Discord capture from a simulated render; never claim a fake state is real.
 - Treat user and clan identifiers, Discord mentions, webhook URLs, access tokens, wallet/history, private alerts and moderation details as sensitive. Use placeholders/synthetic names, remove metadata as needed, and inspect the *actual images* for leakage before committing.
 
