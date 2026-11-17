@@ -12,7 +12,7 @@ TEMP_WORKTREE="${TEMP_WORKTREE:-${APP_DIR}-replacement}"
 BUILD_CONTAINER="${BUILD_CONTAINER:-clashcookies-prod-candidate-build}"
 BUILD_VOLUME="${BUILD_VOLUME:-clashcookies-prod-candidate_node_modules}"
 BUILD_DIST_VOLUME="${BUILD_DIST_VOLUME:-clashcookies-prod-candidate_dist}"
-LOCK_FILE="${DEPLOY_LOCK_FILE:-/run/lock/clashcookies-prod-deploy.lock}"
+LOCK_PATH="${DEPLOY_LOCK_PATH:-${DEPLOY_LOCK_FILE:-/run/lock/clashcookies-prod-deploy.lock}}"
 TARGET_REF="${TARGET_REF:-origin/main}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-600}"
 HEALTH_POLL_INTERVAL_SECONDS="${HEALTH_POLL_INTERVAL_SECONDS:-2}"
@@ -21,6 +21,11 @@ CANDIDATE_CLEANUP_ATTEMPTED="0"
 OLD_SHA=""
 NEW_SHA=""
 PROD_DATABASE_URL=""
+LOCK_OWNER_PATH=""
+LOCK_OWNER_RECORD=""
+LOCK_DIRECTORY_ID=""
+LOCK_OWNER_ID=""
+LOCK_HELD="0"
 
 log() {
   printf '%s\n' "[deploy-prod] $*"
@@ -358,7 +363,60 @@ cleanup_candidate_on_exit() {
     [ "$exit_status" -ne 0 ] || exit_status=1
   fi
 
+  if ! release_deploy_lock; then
+    log "lock_release=failed" >&2
+    [ "$exit_status" -ne 0 ] || exit_status=1
+  fi
+
   exit "$exit_status"
+}
+
+release_deploy_lock() {
+  [ "$LOCK_HELD" = "1" ] || return 0
+  LOCK_HELD="0"
+
+  [ -d "$LOCK_PATH" ] || return 1
+  [ ! -L "$LOCK_PATH" ] || return 1
+  [ "$(stat -c '%d:%i' -- "$LOCK_PATH" 2>/dev/null)" = "$LOCK_DIRECTORY_ID" ] || return 1
+  [ -f "$LOCK_OWNER_PATH" ] || return 1
+  [ ! -L "$LOCK_OWNER_PATH" ] || return 1
+  [ "$(stat -c '%d:%i' -- "$LOCK_OWNER_PATH" 2>/dev/null)" = "$LOCK_OWNER_ID" ] || return 1
+
+  local current_owner
+  current_owner="$(<"$LOCK_OWNER_PATH")" || return 1
+  [ "$current_owner" = "$LOCK_OWNER_RECORD" ] || return 1
+
+  rm -- "$LOCK_OWNER_PATH" || return 1
+  [ ! -e "$LOCK_OWNER_PATH" ] && [ ! -L "$LOCK_OWNER_PATH" ] || return 1
+  [ "$(stat -c '%d:%i' -- "$LOCK_PATH" 2>/dev/null)" = "$LOCK_DIRECTORY_ID" ] || return 1
+  rmdir -- "$LOCK_PATH" || return 1
+  [ ! -e "$LOCK_PATH" ] && [ ! -L "$LOCK_PATH" ] || return 1
+  return 0
+}
+
+acquire_deploy_lock() {
+  local lock_parent
+  lock_parent="$(dirname "$LOCK_PATH")"
+  [ -d "$lock_parent" ] || fatal "missing_lock_directory=${lock_parent}"
+  [ ! -L "$lock_parent" ] || fatal "ambiguous_lock_directory=${lock_parent}"
+
+  if ! mkdir -- "$LOCK_PATH" 2>/dev/null; then
+    fatal "another_deployment_is_running"
+  fi
+
+  LOCK_HELD="1"
+  LOCK_OWNER_PATH="$LOCK_PATH/owner.json"
+  LOCK_DIRECTORY_ID="$(stat -c '%d:%i' -- "$LOCK_PATH" 2>/dev/null)"
+  [ -n "$LOCK_DIRECTORY_ID" ] || fatal "deployment_lock_initialization_failed"
+  LOCK_OWNER_RECORD="{\"pid\":$$,\"token\":\"${BASHPID:-$$}-${RANDOM}\",\"entrypoint\":\"deploy-prod.sh\"}"
+  trap cleanup_candidate_on_exit EXIT
+  if ! (set -o noclobber; printf '%s' "$LOCK_OWNER_RECORD" > "$LOCK_OWNER_PATH"); then
+    fatal "deployment_lock_initialization_failed"
+  fi
+  [ -f "$LOCK_OWNER_PATH" ] && [ ! -L "$LOCK_OWNER_PATH" ] || fatal "deployment_lock_initialization_failed"
+  LOCK_OWNER_ID="$(stat -c '%d:%i' -- "$LOCK_OWNER_PATH" 2>/dev/null)"
+  [ -n "$LOCK_OWNER_ID" ] || fatal "deployment_lock_initialization_failed"
+  log "lock=acquired"
 }
 
 rollback_to_old_revision() {
@@ -388,15 +446,14 @@ rollback_to_old_revision() {
 require_command git
 require_command docker
 require_command curl
-require_command flock
+require_command mkdir
+require_command rmdir
+require_command stat
 require_command node
+
+acquire_deploy_lock
 require_file "$APP_DIR/.env"
 require_file "$APP_DIR/docker-compose.yml"
-
-lock_parent="$(dirname "$LOCK_FILE")"
-[ -d "$lock_parent" ] || fatal "missing_lock_directory=${lock_parent}"
-exec {lock_fd}>"$LOCK_FILE"
-flock -n "$lock_fd" || fatal "another_deployment_is_running"
 
 assert_safe_temp_worktree_path
 assert_checkout_safe

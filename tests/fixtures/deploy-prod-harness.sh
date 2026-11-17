@@ -201,10 +201,14 @@ if [ "$scenario" = stale-candidate ]; then
   printf '%s\n' 'preserve me' > "$replacement_dir/operator-marker"
 fi
 
+if [ "$scenario" = lock-busy ]; then
+  mkdir -p "${root}/deploy.lock"
+fi
+
 set +e
 PATH="$bin_dir:$PATH" \
 APP_DIR="$app_dir" \
-DEPLOY_LOCK_FILE="${root}/deploy.lock" \
+DEPLOY_LOCK_PATH="${root}/deploy.lock" \
 DEPLOY_TEST_LOG="$log_file" \
 DEPLOY_TEST_STATE="$state_file" \
 DEPLOY_TEST_WORKTREE_STATE="$worktree_state_file" \

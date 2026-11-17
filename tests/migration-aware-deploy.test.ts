@@ -34,6 +34,7 @@ function makeEnvironment(root = ownedRoot()): Record<string, string> {
     DEPLOY_AUTHORIZATION_DIGEST: AUTHORIZATION_DIGEST,
     DEPLOY_APPROVED_BY: "release-approver",
     DEPLOY_LOCK_PATH: join(root, "deploy.lock"),
+    DEPLOY_MIGRATION_LOCK_PATH: join(root, "migration.lock"),
     DEPLOY_RELEASE_RECORD_PATH: join(root, "release-record.jsonl"),
     DEPLOY_PREFLIGHT_EVIDENCE_PATH: join(root, "preflight.json"),
     DEPLOY_CANDIDATE_WORKTREE_PATH: join(root, "candidate"),
@@ -120,6 +121,7 @@ function makeOperations(overrides: Record<string, unknown> = {}) {
       expect(request.targetSha).toBe(NEW_SHA);
       expect(request.migrationDiffDigest).toBe(DIFF_DIGEST);
       expect(request.migrationManifestDigest).toBe(MANIFEST_DIGEST);
+      expect(request.migrationLockPath).toMatch(/migration\.lock$/);
       expect(request).not.toHaveProperty("DATABASE_URL");
       return { exitCode: 0 };
     },
@@ -182,6 +184,10 @@ describe("migration-aware deployment orchestrator", () => {
     const relativeEvidence = makeEnvironment();
     relativeEvidence.DEPLOY_PREFLIGHT_EVIDENCE_PATH = "preflight.json";
     expect(() => orchestrator.parseConfig(relativeEvidence)).toThrow(/preflight_evidence_path/i);
+
+    const sameLock = makeEnvironment();
+    sameLock.DEPLOY_MIGRATION_LOCK_PATH = sameLock.DEPLOY_LOCK_PATH;
+    expect(() => orchestrator.parseConfig(sameLock)).toThrow(/locks_must_differ/i);
   });
 
   it("computes exact old/new commit identity and migration diff digest", () => {
