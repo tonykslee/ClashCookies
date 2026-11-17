@@ -80,7 +80,13 @@ capture_command() {
   timeout_path=$(resolve_command timeout) || { CAPTURE_STATUS=126; return 1; }
   local output="" chunk read_status=0 command_status=0 byte_count=0 capture_fd capture_pid
   set +e
-  coproc DISCOVERY_CAPTURE_CHILD { "$timeout_path" --signal=TERM --kill-after=1s "${MAX_COMMAND_SECONDS}s" "$command_path" "$@" 2>/dev/null; }
+  if [[ "$command_name" == "git" ]]; then
+    # Git status may otherwise refresh the index. Disable optional lock-taking
+    # for every Git probe so discovery cannot create or update index metadata.
+    coproc DISCOVERY_CAPTURE_CHILD { GIT_OPTIONAL_LOCKS=0 "$timeout_path" --signal=TERM --kill-after=1s "${MAX_COMMAND_SECONDS}s" "$command_path" "$@" 2>/dev/null; }
+  else
+    coproc DISCOVERY_CAPTURE_CHILD { "$timeout_path" --signal=TERM --kill-after=1s "${MAX_COMMAND_SECONDS}s" "$command_path" "$@" 2>/dev/null; }
+  fi
   capture_fd=${DISCOVERY_CAPTURE_CHILD[0]}
   capture_pid=$DISCOVERY_CAPTURE_CHILD_PID
   while :; do

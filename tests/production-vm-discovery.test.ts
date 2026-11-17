@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -182,6 +182,39 @@ describe("production VM discovery shell bundle", () => {
     expect(record(output, "runtime_identity").status).toBe(process.platform === "win32" ? "UNKNOWN" : "PASS");
     expect(record(output, "staging_residuals").status).toBe("UNKNOWN");
     expect(record(output, "staging_residuals").detail).toContain("one_or_more_staging_probes_failed_or_bounded");
+  });
+
+  it("fails closed when Docker list and inspect evidence are stale", () => {
+    const fixture = phase2bFixture();
+    fixture.docker = fixture.docker.replace("a".repeat(64), "c".repeat(64));
+    const output = runDiscovery({}, fixture);
+    expect(record(output, "runtime_docker").status).toBe("UNKNOWN");
+    expect(record(output, "runtime_identity").status).toBe("UNKNOWN");
+  });
+
+  it("fails closed on an extra host process candidate through the discovery entry point", () => {
+    const fixture = phase2bFixture();
+    fixture.ps = `printf '%s\\n' '4321 1000 node S 0::/docker/${"a".repeat(64)}' '4322 1000 node S 0::/docker/${"c".repeat(64)}'; exit 0`;
+    const output = runDiscovery({}, fixture);
+    const runtimeStatus = process.platform === "win32" ? "UNKNOWN" : "FAIL";
+    expect(record(output, "runtime_identity").status).toBe(runtimeStatus);
+  });
+
+  it("propagates GIT_OPTIONAL_LOCKS=0 to checkout probes", () => {
+    const output = runDiscovery({}, {
+      git: `
+if [[ "$GIT_OPTIONAL_LOCKS" != "0" ]]; then exit 91; fi
+case "$*" in
+  *"rev-parse"*) printf '%s' '${"d".repeat(40)}';;
+  *"symbolic-ref"*) printf '%s' 'dev';;
+  *"status"*) printf '%s' '## dev';;
+esac`,
+    });
+    expect(readFileSync(script, "utf8")).toContain("GIT_OPTIONAL_LOCKS=0");
+    if (process.platform !== "win32") {
+      expect(record(output, "checkout_identity").status).toBe("PASS");
+      expect(record(output, "checkout_unknown_files").status).toBe("PASS");
+    }
   });
 
   it("accepts and rejects realistic Phase 2B runtime identity fixtures", () => {
