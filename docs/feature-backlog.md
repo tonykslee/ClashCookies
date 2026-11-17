@@ -67,6 +67,37 @@ This is the running intake list for user-requested ClashCookies features. It is 
   - Scope each report to its correct clan and authorized private alert channel, with idempotent posting and safe handling of unavailable channels or incomplete evidence.
 - **Done when:** One accurate, concise, clan-scoped retrospective is posted per eligible completed sync, with correct attribution, repeat-offender logic, no duplicate posts, and explicit unknowns.
 
+### FB-005 — All Spun Announcement (already implemented on `dev`)
+
+- **Status:** Implemented in repository; production deployment/activation not established by this backlog review.
+- **Original request:** Announce exactly `all spun` when every participating clan has a valid spin-status claim.
+- **Verified existing implementation:** `src/services/SyncAllSpunAnnouncementService.ts` and `docs/sync-all-spun-announcement.md` describe post-sync-time completion, the configured typed `sync` destination, persisted `SyncEvent` delivery state, one-minute recovery, and suppression outside active production. This is **not** a new proposed implementation task.
+- **Follow-up only if requested:** Verify deployment/operational behavior separately; do not duplicate the existing feature.
+
+### FB-006 — Sync Spin Race Leaderboard
+
+- **Status:** Proposed (analytics/UI); historical reaction capture foundation exists.
+- **Request:** Show a friendly leaderboard ranking clans/leaders by elapsed time from the exact sync time to when the bot observes their valid spin-status claim, plus historical performance.
+- **Existing foundation:** `SyncReactionHistory` records immutable accepted ADD/REMOVE transitions and bot-observed timestamps; `TrackedMessageClaim` owns current claimed status. See `docs/sync-reaction-history.md`.
+- **Important limitations:** Reactions are **not verified evidence of who queued the search or when the search happened**; pre-sync claims, reversals, duplicates, tied/out-of-order events, missing timestamps, and multiple claimants need explicit policy and UNKNOWN handling. Don't label a leaderboard as confirmed spin speed.
+- **Done when:** A read-only, clearly labeled reaction-speed leaderboard derives from canonical sync identity/history, with fair ranking and anti-gaming caveats; no duplicate state owner or historical backfill is assumed.
+
+### FB-007 — Spin Timing and Match Outcome Analytics
+
+- **Status:** Proposed.
+- **Request:** Study whether reaction timing relative to sync and official war start is associated with composition deviation or mismatch probability; compare early/on-time/late cohorts over repeated syncs.
+- **Available evidence:** Bot-observed `SyncReactionHistory.observedAt` and canonical sync times, plus persisted war timing/outcome and composition evidence where verified.
+- **Important limitations:** Reaction time is a proxy, **not actual Clash matchmaking search entry time**. War start is not search start. Report data coverage, measurement uncertainty, possible confounders, and sample size; distinguish association from causation and classify gaps UNKNOWN.
+- **Done when:** A reproducible read-only analysis clearly distinguishes observation time, confirmed war start, unobserved search time, composition deviation, and mismatch outcomes without unsupported causal claims.
+
+### FB-008 — Base-Swap Accountability and Repeat Follow-up
+
+- **Status:** Proposed (additional reporting/analytics; existing base-swap posts, acknowledgments, reminders and audit routing already exist).
+- **Request:** Track who acknowledged or did not acknowledge required base swaps, unresolved follow-up, and repeat missed acknowledgments across wars/syncs. Surface actionable clan-leader summaries without shaming unsupported cases.
+- **Existing foundation:** `/fwa base-swap` uses tracked posts and acknowledgments, optional reminders and audit routes; `TrackedMessage` and existing swap logic own source state. Duskits roadmap also distinguishes an acknowledgment from **proof of an actual base change**.
+- **Important limitations:** Nonacknowledgment is not proof that a base was left wrong; an acknowledgment is not proof that a base was corrected. Separate these metrics, and prefer verified war/roster identity. Reuse FB-004 retrospective presentation where suitable rather than duplicating collection.
+- **Done when:** Repeat/unresolved swap-accountability reporting is DB-first, clan-scoped, idempotent where messaged, privacy-safe, and accurately separates observed responses from independently verified actions.
+
 ## Archived / withdrawn requests
 
 _None yet._
