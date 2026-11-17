@@ -46,6 +46,13 @@ Template values must be replaced before publication. Target one headline + 2–4
 6. **Verify after publish:** Record the actual timestamp, channel/message link, edition identifier, and GitHub release/PR link when applicable in [feature-history.md](feature-history.md). If webhook post fails or evidence is missing, mark **UNKNOWN** rather than silently retrying and duplicating.
 7. **Skip safely:** If user denies/skips or no eligible features are verified, record that decision privately; do not publish an empty or speculative update.
 
+## Feature discovery and screenshots
+
+- Curate candidate announcements from the [feature-showcase library](feature-showcase/README.md) in addition to [feature history](feature-history.md). Prefer a short command spotlight with **1–3 privacy-reviewed screenshots** for impactful features; do not add screenshots solely for decoration.
+- Reuse the [existing command spotlight standard template](templates/command-spotlight.md) for standalone education posts. Include direct slash-command examples, intended audience, permission/access restrictions, one important example state, and a pointer to `/help` when relevant.
+- An approved image captured from synthetic fixtures or `dev` may illustrate the UI but must be accurately labeled. Never claim deployment or earning/issuance from a screenshot; verify availability separately.
+- The monthly newsletter and individual spotlights are distinct communications. Neither is auto-published. The owner reviews a complete preview and chooses **Approve / Revise / Skip** for each public post.
+
 ## Implementation boundary
 
 - The monthly **reminder/draft** can be scheduled independently; it is not equivalent to a Discord publisher.
