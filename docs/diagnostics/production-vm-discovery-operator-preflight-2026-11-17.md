@@ -212,7 +212,7 @@ Three decisions are required and must be recorded separately:
 2. **Evidence capture authorization:** permission to configure the existing approved SSH client's stdout-only remote-command capture to the approved local destination. This does not authorize the remote command or any production access beyond the separately approved execution.
 3. **Discovery execution authorization:** explicit approval for one bounded invocation using the verified paths, operator account, existing read-only Docker visibility, optional existing read-only PostgreSQL selection, and approved private evidence destination. It does not authorize deployment, migration, backup/timer activation, wrapper execution, permission changes, staging cleanup, or release promotion.
 
-If either authorization is absent, if a prerequisite is unresolved, or if any stop condition occurs, stop with `UNKNOWN`/`BLOCKED` and return the review record. Do not merge a future code change, enable `PHASE1_EXECUTION_ENABLED`, merge release PR #1983, or promote `dev` to `main` as part of this preflight.
+If any of the three authorizations is absent, if a prerequisite is unresolved, or if any stop condition occurs, stop with `UNKNOWN`/`BLOCKED` and return the review record. Do not merge a future code change, enable `PHASE1_EXECUTION_ENABLED`, merge release PR #1983, or promote `dev` to `main` as part of this preflight.
 
 ## 9. Script review findings — documented separately from this docs change
 
