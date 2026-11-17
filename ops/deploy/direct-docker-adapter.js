@@ -700,27 +700,45 @@ function parsePublishedPortBindings(ports) {
   if (ports === "") return [];
   return ports.split(",").map((entry) => {
     const value = entry.trim();
-    const match = value.match(/^([^:]+):(\d+)->(\d+)\/(tcp|udp|sctp)$/);
-    if (!match) {
+    const exposedMatch = value.match(/^(\d+)\/(tcp|udp|sctp)$/);
+    if (exposedMatch) {
+      const containerPort = Number(exposedMatch[1]);
+      if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) {
+        throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
+      }
+      return Object.freeze({
+        kind: "exposed",
+        containerPort,
+        protocol: exposedMatch[2],
+      });
+    }
+    const publishedMatch = value.match(/^(.+):(\d+)->(\d+)\/(tcp|udp|sctp)$/);
+    if (!publishedMatch || /[\s|,]/.test(publishedMatch[1]) || publishedMatch[1].length > 128) {
+      throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
+    }
+    const hostPort = Number(publishedMatch[2]);
+    const containerPort = Number(publishedMatch[3]);
+    if (![hostPort, containerPort].every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) {
       throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
     }
     return Object.freeze({
-      hostAddress: match[1],
-      hostPort: Number(match[2]),
-      containerPort: Number(match[3]),
-      protocol: match[4],
+      kind: "published",
+      hostAddress: publishedMatch[1],
+      hostPort,
+      containerPort,
+      protocol: publishedMatch[4],
     });
   });
 }
 
 /** Return whether exactly the loopback production binding is exposed. */
 function hasPublishedCanonicalPort(ports, runtime) {
-  const bindings = parsePublishedPortBindings(ports);
-  return bindings.length === 1
-    && bindings[0].hostAddress === CANONICAL_HOST_ADDRESS
-    && bindings[0].hostPort === runtime.hostPort
-    && bindings[0].containerPort === runtime.containerPort
-    && bindings[0].protocol === "tcp";
+  const published = parsePublishedPortBindings(ports).filter((binding) => binding.kind === "published");
+  return published.length === 1
+    && published[0].hostAddress === CANONICAL_HOST_ADDRESS
+    && published[0].hostPort === runtime.hostPort
+    && published[0].containerPort === runtime.containerPort
+    && published[0].protocol === "tcp";
 }
 
 /** Return whether a container is a potential bot runtime candidate. */

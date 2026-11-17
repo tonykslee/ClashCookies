@@ -261,6 +261,69 @@ describe("direct Docker production adapter contract", () => {
     expect(calls.every((call) => !(call.args as string[]).includes("exec"))).toBe(true);
   });
 
+  it("accepts an exposed-only Compose PostgreSQL port beside the canonical app", async () => {
+    const appId = "a".repeat(64);
+    const databaseId = "c".repeat(64);
+    const revision = "b".repeat(40);
+    const collector = adapter.createDockerRuntimeEvidenceCollector({
+      executor: async (request: Record<string, unknown>) => {
+        const args = request.args as string[];
+        if (args[1] === "ls") {
+          return {
+            exitCode: 0,
+            stdout: [
+              `${appId}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default`,
+              `${databaseId}|clashcookies-db|postgres:17|running|5432/tcp|clashcookies-prod_default`,
+            ].join("\n") + "\n",
+          };
+        }
+        if (args[1] === "inspect") {
+          return {
+            exitCode: 0,
+            stdout: [
+              `${appId}|/clashcookies-app|node:20-bookworm|running|1234|||||${revision}`,
+              `${databaseId}|/clashcookies-db|postgres:17|running|2345|clashcookies-prod|db|||`,
+            ].join("\n") + "\n",
+          };
+        }
+        if (request.command === "ps") {
+          return { exitCode: 0, stdout: `1234 1000 node S 0::/docker/${appId}\n` };
+        }
+        throw new Error("unexpected command");
+      },
+    });
+
+    const snapshot = await collector.collect();
+    expect(snapshot.containers).toHaveLength(2);
+    expect(snapshot.containers[1]).toMatchObject({
+      id: databaseId,
+      image: "postgres:17",
+      ports: "5432/tcp",
+      composeProject: "clashcookies-prod",
+      composeService: "db",
+    });
+    expect(adapter.inspectRuntimeSnapshot(snapshot, adapter.validateAdapterConfig(makeConfig()))).toMatchObject({
+      candidates: [{ name: "clashcookies-app", recognized: true, revision }],
+    });
+  });
+
+  it("distinguishes exposed-only and published Docker ports while rejecting malformed entries", () => {
+    expect(adapter.parsePublishedPortBindings("5432/tcp,8080/udp")).toEqual([
+      { kind: "exposed", containerPort: 5432, protocol: "tcp" },
+      { kind: "exposed", containerPort: 8080, protocol: "udp" },
+    ]);
+    expect(adapter.parsePublishedPortBindings("127.0.0.1:8085->8080/tcp")).toEqual([{
+      kind: "published",
+      hostAddress: "127.0.0.1",
+      hostPort: 8085,
+      containerPort: 8080,
+      protocol: "tcp",
+    }]);
+    expect(() => adapter.parsePublishedPortBindings("5432")).toThrow(/ports_malformed/i);
+    expect(() => adapter.parsePublishedPortBindings("127.0.0.1:8085->8080/tcp,garbage"))
+      .toThrow(/ports_malformed/i);
+  });
+
   it.each([
     ["command failure", { exitCode: 17, stdout: "" }],
     ["timeout", { exitCode: 0, stdout: "", timedOut: true }],
@@ -324,6 +387,7 @@ describe("direct Docker production adapter contract", () => {
     ["unexpected network", { containers: [{ ...canonicalSnapshot().containers[0], networks: ["wrong_network"] }] }],
     ["unexpected published port", { containers: [{ ...canonicalSnapshot().containers[0], ports: "127.0.0.1:8085->8080/tcp,127.0.0.1:9090->9090/tcp" }] }],
     ["public published port", { containers: [{ ...canonicalSnapshot().containers[0], ports: "0.0.0.0:8085->8080/tcp" }] }],
+    ["malformed relevant port evidence", { containers: [{ ...canonicalSnapshot().containers[0], ports: "8080" }] }],
     ["Compose-owned app", { containers: [{ ...canonicalSnapshot().containers[0], composeProject: "clashcookies-prod", composeService: "app" }] }],
     ["wrong revision", { containers: [{ ...canonicalSnapshot().containers[0], revision: "unknown" }] }],
   ])("fails closed for %s", (_label, snapshot) => {
