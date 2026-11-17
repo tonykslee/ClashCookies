@@ -12,6 +12,7 @@ type Scenario =
   | "concurrent-active"
   | "migration"
   | "lock-busy"
+  | "cross-process"
   | "changed-checkout"
   | "legacy-target"
   | "legacy-health-failure"
@@ -122,7 +123,8 @@ describe("version-controlled production deployment procedure", () => {
     const log = section(output, "LOG");
     expect(output).not.toContain("STATUS=0");
     expect(output).toContain("another_deployment_is_running");
-    expect(log).toContain("FLOCK");
+    expect(log).not.toContain("FLOCK");
+    expect(log).not.toContain("lock=acquired");
     expect(log).not.toContain("GIT diff");
     expect(log).not.toContain("DOCKER ps");
   });
@@ -132,8 +134,8 @@ describe("version-controlled production deployment procedure", () => {
     const log = section(output, "LOG");
     expect(output).not.toContain("STATUS=0");
     expect(output).toContain("tracked_worktree_changes_present");
-    expect(log.indexOf("FLOCK")).toBeGreaterThanOrEqual(0);
-    expect(log.indexOf("FLOCK")).toBeLessThan(log.indexOf("GIT diff"));
+    expect(output).toContain("lock=acquired");
+    expect(output.indexOf("lock=acquired")).toBeLessThan(output.indexOf("GIT diff"));
     expect(log).not.toContain("DOCKER rm");
   });
 

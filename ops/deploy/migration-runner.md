@@ -15,12 +15,14 @@ The runner requires all of the following through the protected runtime environme
 - `MIGRATION_RELEASE_ID`
 - `MIGRATION_TARGET_SHA` (exact 40-character checkout SHA)
 - `MIGRATION_EXPECTED_MIGRATION_DIGEST` (SHA-256 manifest digest for `prisma/schema.prisma` and every file under `prisma/migrations`)
-- `MIGRATION_LOCK_PATH` (absolute, access-controlled lock-directory path)
+- `MIGRATION_LOCK_PATH` (absolute, access-controlled lock-directory path, distinct from the outer `DEPLOY_LOCK_PATH`)
 - `DATABASE_URL` (protected PostgreSQL URL with explicit host, port, database and user)
 - `MIGRATION_ALLOWED_DB_HOST`, `MIGRATION_ALLOWED_DB_PORT`, `MIGRATION_ALLOWED_DB_NAME`, `MIGRATION_ALLOWED_DB_USER`, `MIGRATION_ALLOWED_DB_SCHEMA`
 - `MIGRATION_ALLOWED_DB_SERVER_ADDRESS`, `MIGRATION_ALLOWED_DB_SERVER_PORT`, `MIGRATION_ALLOWED_DB_MAJOR`
 
-Execution order is fail-closed: acquire the atomic lock, verify the checkout SHA and exact `migrate:deploy` package-script contract, verify the migration manifest, query PostgreSQL identity through Prisma, then invoke `npm run migrate:deploy` exactly once. The child output is captured but never replayed. A nonzero child exit code is returned unchanged; a missing or signal-only result returns the explicit ambiguous-result code. No retry or Prisma resolve/reset operation is performed.
+Execution order is fail-closed: acquire only the separate migration-runner lock, verify the checkout SHA and exact `migrate:deploy` package-script contract, verify the migration manifest, query PostgreSQL identity through Prisma, then invoke `npm run migrate:deploy` exactly once. The runner never acquires the outer release lock, so an orchestrator-held outer lock cannot deadlock the nested call. The child output is captured but never replayed. A nonzero child exit code is returned unchanged; a missing or signal-only result returns the explicit ambiguous-result code. No retry or Prisma resolve/reset operation is performed.
+
+The lock is an atomic directory with an exclusive-created `owner.json`. Existing, stale-looking, corrupt, replaced, symlinked, or otherwise ambiguous state is `already_locked` or unavailable; it is never removed or retried automatically. Release verifies the recorded directory/file identities and exact owner record. A mismatch or cleanup failure leaves state in place and fails closed.
 
 The runner logs only bounded release SHA, migration identity, identity digest, timestamps, exit code, and sanitized classification fields. It does not log connection URLs, passwords, environment contents, SQL output, or application logs.
 

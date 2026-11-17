@@ -209,6 +209,22 @@ describe("isolated Prisma migration runner", () => {
     }
   });
 
+  it("acquires only the inner lock while an outer release lock is already held", async () => {
+    const outerRelease = runner.acquireExclusiveLock(createTestLockPath(), { startedAt: "outer" });
+    const calls = { migrate: 0 };
+    try {
+      const result = await runner.runMigrationRunner({
+        env: makeEnvironment(),
+        dependencies: successfulDependencies(calls),
+      });
+
+      expect(result).toBe(runner.EXIT_CODES.SUCCESS);
+      expect(calls.migrate).toBe(1);
+    } finally {
+      expect(outerRelease()).toBe(true);
+    }
+  });
+
   it("runs only npm run migrate:deploy and never the application startup command", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const config = runner.parseRunnerConfig(makeEnvironment());

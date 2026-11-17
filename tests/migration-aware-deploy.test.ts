@@ -34,6 +34,7 @@ function makeEnvironment(root = ownedRoot()): Record<string, string> {
     DEPLOY_AUTHORIZATION_DIGEST: AUTHORIZATION_DIGEST,
     DEPLOY_APPROVED_BY: "release-approver",
     DEPLOY_LOCK_PATH: join(root, "deploy.lock"),
+    DEPLOY_MIGRATION_LOCK_PATH: join(root, "migration.lock"),
     DEPLOY_RELEASE_RECORD_PATH: join(root, "release-record.jsonl"),
     DEPLOY_PREFLIGHT_EVIDENCE_PATH: join(root, "preflight.json"),
     DEPLOY_CANDIDATE_WORKTREE_PATH: join(root, "candidate"),
@@ -120,6 +121,7 @@ function makeOperations(overrides: Record<string, unknown> = {}) {
       expect(request.targetSha).toBe(NEW_SHA);
       expect(request.migrationDiffDigest).toBe(DIFF_DIGEST);
       expect(request.migrationManifestDigest).toBe(MANIFEST_DIGEST);
+      expect(request.migrationLockPath).toMatch(/migration\.lock$/);
       expect(request).not.toHaveProperty("DATABASE_URL");
       return { exitCode: 0 };
     },
@@ -182,6 +184,10 @@ describe("migration-aware deployment orchestrator", () => {
     const relativeEvidence = makeEnvironment();
     relativeEvidence.DEPLOY_PREFLIGHT_EVIDENCE_PATH = "preflight.json";
     expect(() => orchestrator.parseConfig(relativeEvidence)).toThrow(/preflight_evidence_path/i);
+
+    const sameLock = makeEnvironment();
+    sameLock.DEPLOY_MIGRATION_LOCK_PATH = sameLock.DEPLOY_LOCK_PATH;
+    expect(() => orchestrator.parseConfig(sameLock)).toThrow(/locks_must_differ/i);
   });
 
   it("computes exact old/new commit identity and migration diff digest", () => {
@@ -269,6 +275,65 @@ describe("migration-aware deployment orchestrator", () => {
     expect(result.exitCode).toBe(orchestrator.EXIT_CODES.LOCKED);
     expect(result.calls).toEqual([]);
     expect(runnerCalls).toBe(0);
+  });
+
+  it("keeps the outer lock through terminal record handling", async () => {
+    let held = false;
+    let releaseCalls = 0;
+    const acquire = () => {
+      if (held) {
+        throw new orchestrator.OrchestratorError(
+          "deployment_lock_already_held",
+          orchestrator.EXIT_CODES.LOCKED,
+          "already_locked",
+        );
+      }
+      held = true;
+      return () => {
+        releaseCalls += 1;
+        held = false;
+        return true;
+      };
+    };
+    const result = await runWith({
+      acquireExclusiveLock: acquire,
+      writeReleaseRecord: (_path: string, line: string) => {
+        const event = JSON.parse(line).event;
+        if (event === "end") {
+          expect(() => acquire()).toThrow(/already_held/i);
+        }
+      },
+    });
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.SUCCESS);
+    expect(releaseCalls).toBe(1);
+    expect(held).toBe(false);
+    const afterRelease = acquire();
+    expect(afterRelease()).toBe(true);
+  });
+
+  it("fails closed when terminal release-record writing fails", async () => {
+    const result = await runWith({
+      writeReleaseRecord: (_path: string, line: string) => {
+        if (JSON.parse(line).event === "end") throw new Error("record sink unavailable");
+      },
+    });
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.AMBIGUOUS);
+    expect(result.logs.join("\n")).toContain("release_record_write_failed");
+    expect(result.logs.join("\n")).not.toContain("failure=success");
+  });
+
+  it("records the terminal outcome before a release failure and never appends afterward", async () => {
+    const result = await runWith({
+      acquireExclusiveLock: () => () => false,
+    });
+    const events = result.records.map((line) => JSON.parse(line).event);
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.AMBIGUOUS);
+    expect(events.at(-1)).toBe("end");
+    expect(events).not.toContain("lock_release_failed");
+    expect(result.logs.join("\n")).toContain("lock_release_failed");
   });
 
   it("stops on candidate build failure without invoking migration or runtime changes", async () => {

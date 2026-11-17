@@ -4,6 +4,7 @@ const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { acquireExclusiveHostLock, LockCoordinationError } = require("./deployment-lock");
 
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const MAX_CHILD_OUTPUT_BYTES = 128 * 1024;
@@ -232,44 +233,18 @@ function parseRunnerConfig(env = process.env) {
   });
 }
 
-function acquireExclusiveLock(lockPath, now = new Date().toISOString()) {
+function acquireExclusiveLock(lockPath, owner = { startedAt: new Date().toISOString() }) {
   try {
-    fs.mkdirSync(lockPath);
+    return acquireExclusiveHostLock(lockPath, owner, fs);
   } catch (error) {
-    if (error && error.code === "EEXIST") {
+    if (error instanceof LockCoordinationError && error.reason === "already_held") {
       throw new RunnerError("migration_runner_lock_already_held", EXIT_CODES.LOCKED, "already_locked");
     }
-    throw new RunnerError("migration_runner_lock_unavailable", EXIT_CODES.INVALID_CONFIGURATION, "lock_unavailable");
-  }
-
-  try {
-    fs.writeFileSync(
-      path.join(lockPath, "owner.json"),
-      JSON.stringify({ pid: process.pid, startedAt: now }),
-      { encoding: "utf8", flag: "wx", mode: 0o600 },
-    );
-  } catch {
-    try {
-      fs.rmdirSync(lockPath);
-    } catch {
-      // The lock was created by this process; if cleanup is not possible, fail closed.
+    if (error instanceof LockCoordinationError) {
+      throw new RunnerError(`migration_runner_lock_${error.reason}`, EXIT_CODES.INVALID_CONFIGURATION, "lock_unavailable");
     }
-    throw new RunnerError("migration_runner_lock_initialization_failed", EXIT_CODES.INVALID_CONFIGURATION, "lock_unavailable");
+    throw error;
   }
-
-  let released = false;
-  return () => {
-    if (released) return true;
-    released = true;
-    try {
-      fs.unlinkSync(path.join(lockPath, "owner.json"));
-      fs.rmdirSync(lockPath);
-      return true;
-    } catch {
-      // Never remove a lock recursively or remove a lock that is not ours.
-      return false;
-    }
-  };
 }
 
 function currentGitSha(repoRoot, spawnSyncImpl = childProcess.spawnSync) {
@@ -441,7 +416,7 @@ async function runMigrationRunner({
     migrationIdentity = config.expectedMigrationDigest;
     releaseId = config.releaseId;
 
-    releaseLock = (dependencies.acquireExclusiveLock || acquireExclusiveLock)(config.lockPath, startedAt);
+    releaseLock = (dependencies.acquireExclusiveLock || acquireExclusiveLock)(config.lockPath, { startedAt });
     const actualSha = (dependencies.currentGitSha || currentGitSha)(repoRoot, dependencies.spawnSync || childProcess.spawnSync);
     if (actualSha !== config.targetSha) {
       throw new RunnerError("checkout_sha_does_not_match_target", EXIT_CODES.INVALID_CONFIGURATION, "release_identity_mismatch");

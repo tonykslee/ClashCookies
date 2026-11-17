@@ -50,7 +50,7 @@ The adapter never places the database URL in command arguments, Docker metadata,
 
 ## Lock and release-record boundary
 
-The outer release lock and inner migration-runner lock must be distinct and outside the mutable checkout. The release record must already exist outside the checkout, match recorded ownership and mode, be verified append-only, and reject multiline, oversized, URL-shaped, password, token, secret, or private-key content. Protected paths reject parent symlinks; release-record appends use `O_NOFOLLOW` and compare descriptor identity after open. The adapter's release-lock and release-record operations remain non-executable in Phase 1.
+The outer release lock and inner migration-runner lock must be distinct and outside the mutable checkout. The shared implementation is documented in [deployment-lock.md](deployment-lock.md): an atomic lock directory with an exclusive-created owner record, no stale cleanup/retry, and owner/path verification on release. The release record must already exist outside the checkout, match recorded ownership and mode, be verified append-only, and reject multiline, oversized, URL-shaped, password, token, secret, or private-key content. Protected paths reject parent symlinks; release-record appends use `O_NOFOLLOW` and compare descriptor identity after open. The adapter's release-lock and release-record operations remain non-executable in Phase 1.
 
 No recursive lock or release-record cleanup is performed.
 

@@ -3,10 +3,12 @@ set -u
 
 scenario="${1:?scenario required}"
 deploy_script="${2:?deployment script required}"
-root="$(mktemp -d)"
+root="${DEPLOY_TEST_ROOT:-$(mktemp -d)}"
+mkdir -p "$root"
 app_dir="${root}/app"
 replacement_dir="${app_dir}-replacement"
 bin_dir="${root}/bin"
+lock_path="${DEPLOY_TEST_LOCK_PATH:-${root}/deploy.lock}"
 log_file="${root}/commands.log"
 state_file="${root}/state"
 worktree_state_file="${root}/worktree-state"
@@ -44,6 +46,12 @@ case "$command" in
     if [ "${1:-}" = "HEAD" ]; then printf '%s\n' old-reviewed-sha; else printf '%s\n' new-reviewed-sha; fi
     ;;
   diff)
+    if [ -n "${DEPLOY_TEST_READY_FILE:-}" ] && [ ! -e "$DEPLOY_TEST_READY_FILE" ]; then
+      : > "$DEPLOY_TEST_READY_FILE"
+      while [ ! -e "${DEPLOY_TEST_RELEASE_FILE:?}" ]; do
+        "${DEPLOY_TEST_REAL_SLEEP:-/usr/bin/sleep}" 0.05
+      done
+    fi
     log diff "$*"
     if [[ " $* " == *" --name-only "* ]] && [ "${DEPLOY_TEST_SCENARIO:-}" = migration ]; then
       printf '%s\n' prisma/schema.prisma
@@ -201,10 +209,14 @@ if [ "$scenario" = stale-candidate ]; then
   printf '%s\n' 'preserve me' > "$replacement_dir/operator-marker"
 fi
 
+if [ "$scenario" = lock-busy ]; then
+  mkdir -p "$lock_path"
+fi
+
 set +e
 PATH="$bin_dir:$PATH" \
 APP_DIR="$app_dir" \
-DEPLOY_LOCK_FILE="${root}/deploy.lock" \
+DEPLOY_LOCK_PATH="$lock_path" \
 DEPLOY_TEST_LOG="$log_file" \
 DEPLOY_TEST_STATE="$state_file" \
 DEPLOY_TEST_WORKTREE_STATE="$worktree_state_file" \

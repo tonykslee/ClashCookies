@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { acquireExclusiveHostLock, LockCoordinationError } = require("./deployment-lock");
 
 const DEFAULT_RUNTIME = Object.freeze({
   name: "clashcookies-app",
@@ -615,44 +616,17 @@ function appendReleaseRecord(spec, appDir, line, fsImpl = fs) {
 
 /** Acquire a non-recursive host lock and return an ownership-checked release function. */
 function acquireHostLock(lockPath, owner, fsImpl = fs) {
-  assertNoSymlinkComponents(path.dirname(lockPath), fsImpl, "release_lock_parent");
   try {
-    fsImpl.mkdirSync(lockPath);
+    return acquireExclusiveHostLock(lockPath, owner, fsImpl);
   } catch (error) {
-    if (error && error.code === "EEXIST") {
+    if (error instanceof LockCoordinationError && error.reason === "already_held") {
       throw new AdapterError("release_lock_already_held", "already_locked");
     }
-    throw new AdapterError("release_lock_unavailable", "lock_unavailable");
-  }
-
-  const ownerPath = path.join(lockPath, "owner.json");
-  try {
-    fsImpl.writeFileSync(
-      ownerPath,
-      JSON.stringify({ pid: process.pid, ...owner }),
-      { encoding: "utf8", flag: "wx", mode: 0o600 },
-    );
-  } catch {
-    try {
-      fsImpl.rmdirSync(lockPath);
-    } catch {
-      // Never remove a lock recursively after an uncertain initialization.
+    if (error instanceof LockCoordinationError) {
+      throw new AdapterError(`release_lock_${error.reason}`, "lock_unavailable");
     }
-    throw new AdapterError("release_lock_initialization_failed", "lock_unavailable");
+    throw error;
   }
-
-  let released = false;
-  return () => {
-    if (released) return true;
-    released = true;
-    try {
-      fsImpl.unlinkSync(ownerPath);
-      fsImpl.rmdirSync(lockPath);
-      return true;
-    } catch {
-      return false;
-    }
-  };
 }
 
 /** Validate a normalized runtime snapshot before exposing it to the orchestrator. */

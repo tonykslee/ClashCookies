@@ -4,6 +4,7 @@ const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { acquireExclusiveHostLock, LockCoordinationError } = require("./deployment-lock");
 
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const HEALTH_URL = "http://127.0.0.1:8085/healthz";
@@ -113,11 +114,16 @@ function parseConfig(env = process.env, repoRoot = REPO_ROOT) {
   const authorizationDigest = requireSha(env, "DEPLOY_AUTHORIZATION_DIGEST", 64);
   const approvedBy = requireSafeToken(env, "DEPLOY_APPROVED_BY");
   const lockPath = requireAbsolutePath(env, "DEPLOY_LOCK_PATH");
+  const migrationLockPath = requireAbsolutePath(env, "DEPLOY_MIGRATION_LOCK_PATH");
   const releaseRecordPath = requireAbsolutePath(env, "DEPLOY_RELEASE_RECORD_PATH");
   const preflightEvidencePath = requireAbsolutePath(env, "DEPLOY_PREFLIGHT_EVIDENCE_PATH");
   const candidateWorktreePath = requireAbsolutePath(env, "DEPLOY_CANDIDATE_WORKTREE_PATH");
 
-  if (isPathInside(repoRoot, releaseRecordPath) || isPathInside(repoRoot, preflightEvidencePath)) {
+  if (path.resolve(lockPath) === path.resolve(migrationLockPath)) {
+    throw new OrchestratorError("release_and_runner_locks_must_differ");
+  }
+  if (isPathInside(repoRoot, lockPath) || isPathInside(repoRoot, migrationLockPath)
+    || isPathInside(repoRoot, releaseRecordPath) || isPathInside(repoRoot, preflightEvidencePath)) {
     throw new OrchestratorError("release_evidence_must_be_outside_checkout");
   }
   if (candidateWorktreePath === path.resolve(repoRoot) || isPathInside(repoRoot, candidateWorktreePath)) {
@@ -133,6 +139,7 @@ function parseConfig(env = process.env, repoRoot = REPO_ROOT) {
     authorizationDigest,
     approvedBy,
     lockPath,
+    migrationLockPath,
     releaseRecordPath,
     preflightEvidencePath,
     candidateWorktreePath,
@@ -145,37 +152,16 @@ function parseConfig(env = process.env, repoRoot = REPO_ROOT) {
 
 function acquireExclusiveLock(lockPath, owner = {}) {
   try {
-    fs.mkdirSync(lockPath);
+    return acquireExclusiveHostLock(lockPath, owner, fs);
   } catch (error) {
-    if (error && error.code === "EEXIST") {
+    if (error instanceof LockCoordinationError && error.reason === "already_held") {
       throw new OrchestratorError("deployment_lock_already_held", EXIT_CODES.LOCKED, "already_locked");
     }
-    throw new OrchestratorError("deployment_lock_unavailable", EXIT_CODES.BLOCKED, "lock_unavailable");
-  }
-
-  try {
-    fs.writeFileSync(
-      path.join(lockPath, "owner.json"),
-      JSON.stringify({ pid: process.pid, ...owner }),
-      { encoding: "utf8", flag: "wx", mode: 0o600 },
-    );
-  } catch {
-    try { fs.rmdirSync(lockPath); } catch { /* fail closed; never remove recursively */ }
-    throw new OrchestratorError("deployment_lock_initialization_failed", EXIT_CODES.BLOCKED, "lock_unavailable");
-  }
-
-  let released = false;
-  return () => {
-    if (released) return true;
-    released = true;
-    try {
-      fs.unlinkSync(path.join(lockPath, "owner.json"));
-      fs.rmdirSync(lockPath);
-      return true;
-    } catch {
-      return false;
+    if (error instanceof LockCoordinationError) {
+      throw new OrchestratorError(`deployment_lock_${error.reason}`, EXIT_CODES.BLOCKED, "lock_unavailable");
     }
-  };
+    throw error;
+  }
 }
 
 function readPreflightEvidence(evidencePath) {
@@ -338,7 +324,7 @@ function defaultUnsupportedOperation(name) {
   throw new OrchestratorError(`${name}_requires_reviewed_vm_adapter`, EXIT_CODES.BLOCKED, "vm_adapter_unconfigured");
 }
 
-async function runReviewedMigrationRunner({ repoRoot, targetSha, migrationManifestDigest, releaseId }) {
+async function runReviewedMigrationRunner({ repoRoot, targetSha, migrationManifestDigest, releaseId, migrationLockPath }) {
   const runnerPath = path.join(repoRoot, "ops", "deploy", "migration-runner.js");
   if (!fs.existsSync(runnerPath)) {
     throw new OrchestratorError("migration_runner_missing_from_reviewed_checkout", EXIT_CODES.BLOCKED, "runner_contract_failed", "migration");
@@ -360,6 +346,7 @@ async function runReviewedMigrationRunner({ repoRoot, targetSha, migrationManife
       MIGRATION_RELEASE_ID: releaseId,
       MIGRATION_TARGET_SHA: targetSha,
       MIGRATION_EXPECTED_MIGRATION_DIGEST: migrationManifestDigest,
+      MIGRATION_LOCK_PATH: migrationLockPath,
     },
     // The migration runner owns its own bounded logging. Do not replay child
     // output or database errors through the deployment log.
@@ -412,19 +399,66 @@ async function runMigrationAwareDeployment({
   let candidateCreated = false;
   let migrationStarted = false;
   let releaseRecordStarted = false;
+  let lockOwned = false;
 
   const appendRecord = (event, fields = {}) => {
     if (!config || typeof ops.writeReleaseRecord !== "function") return;
-    ops.writeReleaseRecord(config.releaseRecordPath, recordLine(event, {
-      releaseId: config.releaseId,
-      oldSha: config.oldSha,
-      newSha: config.newSha,
-      migrationDiffDigest: config.migrationDiffDigest,
-      migrationManifestDigest: config.migrationManifestDigest,
-      phase,
-      at: ops.now(),
-      ...fields,
-    }));
+    if (!lockOwned) {
+      throw new OrchestratorError(
+        "release_record_write_after_lock_loss",
+        EXIT_CODES.AMBIGUOUS,
+        "release_record_unavailable",
+        phase,
+        true,
+      );
+    }
+    try {
+      ops.writeReleaseRecord(config.releaseRecordPath, recordLine(event, {
+        releaseId: config.releaseId,
+        oldSha: config.oldSha,
+        newSha: config.newSha,
+        migrationDiffDigest: config.migrationDiffDigest,
+        migrationManifestDigest: config.migrationManifestDigest,
+        phase,
+        at: ops.now(),
+        ...fields,
+      }));
+    } catch {
+      throw new OrchestratorError(
+        "release_record_write_failed",
+        EXIT_CODES.AMBIGUOUS,
+        "release_record_failed",
+        phase,
+        true,
+      );
+    }
+  };
+
+  const appendRecordBestEffort = (event, fields = {}) => {
+    if (!releaseRecordStarted || !lockOwned) return false;
+    try {
+      appendRecord(event, fields);
+      return true;
+    } catch {
+      writeBoundedLog(log, "release_record_write_failed", {
+        release_id: safeValue(config?.releaseId),
+        phase,
+        record_event: event,
+      });
+      return false;
+    }
+  };
+
+  const releaseHeldLock = () => {
+    if (!releaseLock) return true;
+    // Mark the record channel unavailable before invoking release. A failed
+    // release leaves ownership ambiguous, so no later path may append.
+    lockOwned = false;
+    try {
+      return releaseLock() === true;
+    } catch {
+      return false;
+    }
   };
 
   try {
@@ -433,6 +467,7 @@ async function runMigrationAwareDeployment({
       releaseId: config.releaseId,
       startedAt,
     });
+    lockOwned = true;
     writeBoundedLog(log, "start", {
       release_id: safeValue(config.releaseId),
       old_sha: safeValue(config.oldSha),
@@ -489,6 +524,7 @@ async function runMigrationAwareDeployment({
       migrationDiffDigest: config.migrationDiffDigest,
       migrationManifestDigest: config.migrationManifestDigest,
       releaseId: config.releaseId,
+      migrationLockPath: config.migrationLockPath,
     });
     assertMigrationRunnerResult(runnerResult);
     appendRecord("migration_passed", { runner_exit_code: 0 });
@@ -540,29 +576,48 @@ async function runMigrationAwareDeployment({
     exitCode = normalized.exitCode;
     classification = normalized.classification;
     phase = normalized.phase || phase;
-    if (releaseRecordStarted) appendRecord("failure", { classification, exit_code: exitCode });
+    if (releaseRecordStarted) appendRecordBestEffort("failure", { classification, exit_code: exitCode });
 
     if (candidateCreated && !migrationStarted && typeof ops.cleanupCandidate === "function") {
       try {
         await ops.cleanupCandidate({ path: config.candidateWorktreePath, sha: config.newSha });
-        appendRecord("candidate_cleaned");
+        appendRecordBestEffort("candidate_cleaned");
         candidateCreated = false;
       } catch {
-        appendRecord("candidate_cleanup_preserved", { classification: "cleanup_failed" });
+        appendRecordBestEffort("candidate_cleanup_preserved", { classification: "cleanup_failed" });
       }
     }
 
     if (migrationStarted && phase === "health") {
-      appendRecord("old_runtime_rollback_blocked", { classification: "manual_recovery_required" });
+      appendRecordBestEffort("old_runtime_rollback_blocked", { classification: "manual_recovery_required" });
     }
   } finally {
-    const lockReleased = releaseLock ? releaseLock() : true;
-    if (!lockReleased && exitCode === EXIT_CODES.SUCCESS) {
-      exitCode = EXIT_CODES.AMBIGUOUS;
-      classification = "lock_release_failed";
+    if (releaseRecordStarted && lockOwned) {
+      try {
+        appendRecord("end", { exit_code: exitCode, classification });
+      } catch {
+        exitCode = EXIT_CODES.AMBIGUOUS;
+        classification = "release_record_write_failed";
+        writeBoundedLog(log, "release_record_write_failed", {
+          release_id: safeValue(config?.releaseId),
+          phase,
+          record_event: "end",
+        });
+      }
     }
-    if (releaseRecordStarted && !lockReleased) appendRecord("lock_release_failed", { classification });
-    if (releaseRecordStarted) appendRecord("end", { exit_code: exitCode, classification });
+    const lockReleased = releaseHeldLock();
+    if (!lockReleased) {
+      const priorClassification = classification;
+      exitCode = EXIT_CODES.AMBIGUOUS;
+      classification = priorClassification === "success"
+        ? "lock_release_failed"
+        : `${priorClassification}_lock_release_failed`.slice(0, 96);
+      writeBoundedLog(log, "lock_release_failed", {
+        release_id: safeValue(config?.releaseId),
+        phase,
+        prior_class: priorClassification,
+      });
+    }
     writeBoundedLog(log, "end", {
       release_id: safeValue(config?.releaseId),
       old_sha: safeValue(config?.oldSha),
