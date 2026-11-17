@@ -25,6 +25,14 @@
 7. **Do not automatically merge `dev` into `main`.** Release promotion is a separate reviewed decision: check divergent histories, diff, migrations, deployment risk, CI and health-gated rollout first.
 8. **Standing documentation-only merge approval:** For docs-only roadmap/vision/priorities, policy decisions, or shipped-progress reconciliation, a reviewed PR targeting `dev` may be merged without separate user approval. Check actual diff, consistency, CI/mergeability and review state. This does **not** authorize schema/migration/code/runtime/deploy/issuance changes. Do not commit directly to `dev`.
 
+## 2A. Codex-first execution autonomy
+
+- **Default to Codex performing eligible work end-to-end**, rather than asking the operator to repeatedly paste local CMD commands. Delegate safe, scoped repository and workstation tasks—Git inspection, pinned archive creation, SHA-256 verification, focused tests, diagnostics, branch/PR preparation, and evidence summaries—when Codex has actual access and the task is authorized.
+- Give **one consolidated, focused Codex task** with expected outputs and stop conditions. Let Codex run its own non-destructive checks and resolve ordinary local tooling problems within scope; ask the user to run a CMD command only when required by missing access, an interactive step, unavailable tooling, or a specific safety/authorization boundary. Explain why manual intervention is necessary.
+- **Autonomy never expands authorization.** Codex must not assume access to the operator's Windows files, VM, SSH identity, Docker daemon, production database, or private evidence store. Report unavailable capabilities rather than claiming verification; never instruct Codex to acquire credentials, elevate privileges, or bypass an approval gate.
+- For production VM discovery, **workstation-only archive preparation and offline verification are distinct from** (1) VM delivery, (2) private stdout evidence-capture setup, and (3) bounded discovery execution. Each production gate requires its own explicit authorization, irrespective of whether Codex or a human operator would perform it. No implicit deploy, backup, migration, timer, staging, or release permissions.
+- Preserve local untracked files and current worktrees. Require concise Codex outcomes with paths, hashes, checks, blockers and observed versus inferred facts; do not turn ordinary verification into unnecessary code changes or duplicate PRs.
+
 ## 3. Validation: fast and proportional
 
 - Isolated TypeScript change: focused Vitest file(s), `npx tsc --noEmit`, ESLint on changed TS files, `git diff --check`. Provide **one CMD-copyable physical line** joining checks with `&&`.
