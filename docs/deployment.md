@@ -45,6 +45,8 @@ The [production migration and recovery runbook](../ops/deploy/production-migrati
 
 **Next phase — read-only production VM discovery before adapter code:** With operator authorization for inspection only, verify the actual legacy wrapper/deploy account, immutable executor location, production checkout and unexpected files, active runtime singleton and Compose/service identity, protected database credential source and read-only identity-verification method, host release lock and append-only record ownership, canonical health/monitoring, and backup/recovery gate evidence. Record observations with sensitive values redacted, distinguish observed from proposed, and stop on any access or identity ambiguity. Only then design a separately reviewed VM adapter and isolated fixtures. Do not install a wrapper, stop/restart containers, invoke migrations, enable backup timers, recreate staging, or promote `dev` to `main` as part of discovery. PR #1983 stays draft and blocked.
 
+**Phase 1 adapter infrastructure:** `ops/deploy/direct-docker-adapter.js` and its isolated tests now define a fail-closed direct-Docker adapter contract, strict migration-child environment boundary, executor/credential/lock/release-record validators, and separate observed/proposed documentation. This infrastructure is not wired into the CLI, installed on the VM, or production-authorized. See [the adapter contract](../ops/deploy/direct-docker-adapter.md) and [the Phase 1 discovery record](diagnostics/production-vm-adapter-phase1-2026-11-16.md).
+
 ## Environment Matrix
 
 | Environment | Runtime mode | Canonical health |

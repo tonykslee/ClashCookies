@@ -37,4 +37,6 @@ This implementation slice never invokes `startOldRuntime`. A future VM integrati
 
 The default CLI adapter intentionally fails closed for VM-specific checkout, runtime, candidate, and post-migration operations. A future VM wrapper must supply a separately reviewed adapter that verifies its own pinned path/hash, canonical production identity, protected credential delivery, database identity, runtime labels, and release-record ownership. It must not reconstruct production Compose from repository assumptions or alter the legacy wrapper in this change.
 
+Phase 1 adapter infrastructure is documented in `ops/deploy/direct-docker-adapter.md` and implemented in `ops/deploy/direct-docker-adapter.js`. It remains disabled without explicit verified configuration; its isolated tests do not install, activate, or execute a production VM adapter.
+
 The existing non-migration helper remains separate and continues to reject Prisma changes before stopping production. This orchestrator is not an implicit fallback for that helper.

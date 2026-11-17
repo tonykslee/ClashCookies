@@ -24,4 +24,6 @@ Execution order is fail-closed: acquire the atomic lock, verify the checkout SHA
 
 The runner logs only bounded release SHA, migration identity, identity digest, timestamps, exit code, and sanitized classification fields. It does not log connection URLs, passwords, environment contents, SQL output, or application logs.
 
+The `npm run migrate:deploy` child receives a strict allowlist rather than a copy of the runner's parent environment: `DATABASE_URL`, `PATH`, fixed npm safety settings, `NODE_ENV`, and the runner-child marker. Discord, cloud, monitoring, application, and unrelated deployment credentials are not inherited.
+
 Before any production integration, a separate reviewed VM wrapper must supply protected credentials, acquire the host-level release lock, perform the backup/release/migration gates in the recovery runbook, invoke this runner from the exact reviewed checkout, and keep normal runtime promotion separate from migration execution.
