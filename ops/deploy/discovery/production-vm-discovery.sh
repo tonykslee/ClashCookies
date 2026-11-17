@@ -7,6 +7,8 @@ set -Eeuo pipefail
 IFS=$' \t\n'
 export LC_ALL=C
 
+readonly SCRIPT_DIR="$(case "${BASH_SOURCE[0]}" in */*) printf '%s' "${BASH_SOURCE[0]%/*}" ;; *) printf '%s' . ;; esac)"
+
 readonly SCHEMA="clashcookies.production-vm-discovery.v1"
 readonly PROVENANCE="live-vm-read-only"
 readonly MAX_OUTPUT_BYTES="${DISCOVERY_MAX_OUTPUT_BYTES:-131072}"
@@ -58,7 +60,7 @@ emit_evidence() {
 resolve_command() {
   local command_name=$1
   case "$command_name" in
-    awk|curl|date|df|docker|git|id|ps|psql|sha256sum|stat|systemctl|timeout)
+    awk|curl|date|df|docker|git|id|node|ps|psql|sha256sum|stat|systemctl|timeout)
       ;;
     *) return 126 ;;
   esac
@@ -79,6 +81,53 @@ capture_command() {
   local output="" chunk read_status=0 command_status=0 byte_count=0 capture_fd capture_pid
   set +e
   coproc DISCOVERY_CAPTURE_CHILD { "$timeout_path" --signal=TERM --kill-after=1s "${MAX_COMMAND_SECONDS}s" "$command_path" "$@" 2>/dev/null; }
+  capture_fd=${DISCOVERY_CAPTURE_CHILD[0]}
+  capture_pid=$DISCOVERY_CAPTURE_CHILD_PID
+  while :; do
+    chunk=""
+    read_status=0
+    IFS= read -r -N 4096 chunk <&"$capture_fd" || read_status=$?
+    if [[ -n "$chunk" ]]; then
+      output+="$chunk"
+      byte_count=${#output}
+      if (( byte_count > MAX_OUTPUT_BYTES )); then
+        kill "$capture_pid" 2>/dev/null || true
+        exec {capture_fd}<&-
+        wait "$capture_pid" 2>/dev/null || true
+        set -e
+        CAPTURE_STATUS=125
+        return 1
+      fi
+    fi
+    (( read_status != 0 )) && break
+  done
+  exec {capture_fd}<&-
+  wait "$capture_pid" 2>/dev/null
+  command_status=$?
+  set -e
+  CAPTURE_STATUS=$command_status
+  if (( command_status != 0 )); then
+    return 1
+  fi
+  CAPTURE_OUTPUT=$output
+  return 0
+}
+
+capture_command_with_input() {
+  local input=$1
+  shift
+  local command_name=$1
+  shift
+  CAPTURE_OUTPUT=""
+  CAPTURE_STATUS=0
+  local command_path timeout_path
+  command_path=$(resolve_command "$command_name") || { CAPTURE_STATUS=126; return 1; }
+  timeout_path=$(resolve_command timeout) || { CAPTURE_STATUS=126; return 1; }
+  local output="" chunk read_status=0 command_status=0 byte_count=0 capture_fd capture_pid
+  set +e
+  coproc DISCOVERY_CAPTURE_CHILD {
+    printf '%s' "$input" | "$timeout_path" --signal=TERM --kill-after=1s "${MAX_COMMAND_SECONDS}s" "$command_path" "$@" 2>/dev/null
+  }
   capture_fd=${DISCOVERY_CAPTURE_CHILD[0]}
   capture_pid=$DISCOVERY_CAPTURE_CHILD_PID
   while :; do
@@ -183,7 +232,7 @@ inspect_resource() {
     emit_evidence "$evidence" FAIL "expected_kind=$expected_kind observed_kind=unexpected path_ref=$(safe_path_digest "$path_value")"
     return
   fi
-  local detail="path_ref=$(safe_path_digest "$path_value") owner_uid=$owner_uid owner_gid=$owner_gid mode=$mode bytes=$size"
+  local detail="path_ref=$(safe_path_digest "$path_value") owner_uid=$owner_uid owner_gid=$owner_gid mode=$mode bytes=$size metadata_observed_only=true immutability_append_protection_and_readiness=not_proven"
   if [[ -n "$expected_mode" && "$mode" != "$expected_mode" ]]; then
     emit_evidence "$evidence" FAIL "$detail expected_mode=$expected_mode"
   else
@@ -386,8 +435,10 @@ inspect_runtime() {
     return
   }
   if [[ -n "$ids" ]]; then
+    local -a id_args=()
+    mapfile -t id_args <<< "$ids"
     # IDs come only from the validated listing and are passed as direct argv.
-    if ! capture_command docker container inspect --format '{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{.State.Pid}}|{{with index .Config.Labels "com.docker.compose.project"}}{{.}}{{end}}|{{with index .Config.Labels "com.docker.compose.service"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.runtime"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.environment"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.revision"}}{{.}}{{end}}' $ids; then
+    if ! capture_command docker container inspect --format '{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{.State.Pid}}|{{with index .Config.Labels "com.docker.compose.project"}}{{.}}{{end}}|{{with index .Config.Labels "com.docker.compose.service"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.runtime"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.environment"}}{{.}}{{end}}|{{with index .Config.Labels "com.clashcookies.revision"}}{{.}}{{end}}' "${id_args[@]}"; then
       emit_evidence runtime_docker UNKNOWN "docker selected-metadata inspection failed_or_bounded status=$CAPTURE_STATUS"
       emit_evidence runtime_identity UNKNOWN 'runtime identity unavailable'
       return
@@ -402,38 +453,32 @@ inspect_runtime() {
     return
   fi
   process_output=$CAPTURE_OUTPUT
-  local candidate_count=0 app_count=0 canonical_count=0 host_potential=0 correlated=0 malformed=0
-  local id name image state ports networks pid compose_project compose_service runtime_label environment_label revision
-  while IFS='|' read -r id name image state ports networks; do
-    [[ -z "$id" ]] && continue
-    if ! [[ "$id" =~ ^[0-9a-fA-F]{12,64}$ && "$name" =~ ^[A-Za-z0-9_.-]{1,128}$ && "$state" =~ ^[A-Za-z0-9_.-]{1,64}$ && "$ports" != *$'\n'* && "$networks" != *$'\n'* ]]; then malformed=$((malformed + 1)); continue; fi
-    candidate_count=$((candidate_count + 1))
-    [[ "$name" == "clashcookies-app" ]] && app_count=$((app_count + 1))
-  done <<< "$list_output"
-  while IFS='|' read -r id name image state pid compose_project compose_service runtime_label environment_label revision; do
-    [[ -z "$id" ]] && continue
-    if [[ "$id" =~ ^[0-9a-fA-F]{12,64}$ && "$name" == "/clashcookies-app" && "$state" == "running" && "$pid" =~ ^[1-9][0-9]*$ && "$compose_project" == "" && "$compose_service" == "" && "$runtime_label" == "" && "$environment_label" == "" && "$revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
-      canonical_count=$((canonical_count + 1))
+  local validator_input validator_output
+  validator_input=$'LIST_BEGIN\n'
+  validator_input+="$list_output"
+  validator_input+=$'\nLIST_END\nINSPECT_BEGIN\n'
+  validator_input+="$inspect_output"
+  validator_input+=$'\nINSPECT_END\nPROCESS_BEGIN\n'
+  validator_input+="$process_output"
+  validator_input+=$'\nPROCESS_END\n'
+  if capture_command_with_input "$validator_input" node "$SCRIPT_DIR/runtime-contract-validator.js"; then
+    validator_output=$CAPTURE_OUTPUT
+    if [[ "$validator_output" == PASS\|phase2b_runtime_contract* ]]; then
+      emit_evidence runtime_docker PASS "running_container_count=$list_count selected_metadata=bounded_labels_only process_args=not_collected"
+      emit_evidence runtime_identity PASS 'Phase 2B direct-Docker runtime contract accepted canonical identity, exact network/port/image and host PID/cgroup correlation; raw metadata not emitted'
+    else
+      emit_evidence runtime_docker UNKNOWN 'Phase 2B runtime validator returned an unexpected result; raw metadata not emitted'
+      emit_evidence runtime_identity UNKNOWN 'runtime validator result was unexpected'
     fi
-  done <<< "$inspect_output"
-  while read -r pid _uid comm _state cgroup; do
-    [[ -z "$pid" ]] && continue
-    if [[ "$comm" =~ ^(node|nodejs|npm|yarn)$ ]]; then
-      host_potential=$((host_potential + 1))
-      if [[ "$cgroup" =~ ([0-9a-fA-F]{12,64}) && "$cgroup" == *"/docker/"* ]]; then correlated=$((correlated + 1)); fi
-    fi
-  done <<< "$process_output"
-  if (( malformed > 0 )); then
-    emit_evidence runtime_docker UNKNOWN "container_metadata_malformed_count=$malformed candidate_count=$candidate_count; raw metadata not emitted"
+  elif [[ "$CAPTURE_STATUS" == 125 ]]; then
+    emit_evidence runtime_docker UNKNOWN 'Phase 2B runtime validator exceeded the configured bound'
+    emit_evidence runtime_identity UNKNOWN 'runtime validator exceeded the configured bound'
+  elif [[ "$CAPTURE_STATUS" == 3 ]]; then
+    emit_evidence runtime_docker PASS "running_container_count=$list_count selected_metadata=bounded_labels_only process_args=not_collected"
+    emit_evidence runtime_identity FAIL 'Phase 2B direct-Docker runtime contract rejected canonical identity or host PID/cgroup correlation; raw metadata not emitted'
   else
-    emit_evidence runtime_docker PASS "running_container_count=$candidate_count selected_metadata=bounded_labels_only process_args=not_collected"
-  fi
-  if (( canonical_count == 1 && app_count == 1 && host_potential == correlated )); then
-    emit_evidence runtime_identity PASS "canonical_app_candidates=$canonical_count host_process_potentials=$host_potential correlated_container_processes=$correlated; IDs and cgroups sanitized"
-  elif (( canonical_count == 0 || app_count > 1 || host_potential != correlated )); then
-    emit_evidence runtime_identity FAIL "canonical_app_candidates=$canonical_count app_name_candidates=$app_count host_process_potentials=$host_potential correlated_container_processes=$correlated"
-  else
-    emit_evidence runtime_identity UNKNOWN "canonical_app_candidates=$canonical_count app_name_candidates=$app_count host_process_potentials=$host_potential correlated_container_processes=$correlated"
+    emit_evidence runtime_docker UNKNOWN "Phase 2B runtime validator failed_or_bounded status=$CAPTURE_STATUS; raw metadata not emitted"
+    emit_evidence runtime_identity UNKNOWN 'runtime identity could not be validated by the Phase 2B contract'
   fi
 }
 
@@ -460,9 +505,15 @@ inspect_database() {
     emit_evidence prisma_migration_baseline UNKNOWN 'migration baseline not queried because database identity was unavailable'
     return
   fi
-  local identity=$CAPTURE_OUTPUT db role schema address port version read_only
-  IFS='|' read -r db role schema address port version read_only <<< "$identity"
-  if [[ "$db" =~ ^[A-Za-z0-9_$-]{1,63}$ && "$role" =~ ^[A-Za-z0-9_$-]{1,63}$ && "$schema" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ && "$port" =~ ^[0-9]{1,5}$ && "$version" =~ ^[0-9]+$ && "$read_only" == "on" ]]; then
+  local identity_line="" identity_rows=0 identity_unexpected=0 line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    case "$line" in BEGIN|ROLLBACK|COMMIT) continue ;; esac
+    if [[ "$line" == *'|'* ]]; then identity_line=$line; identity_rows=$((identity_rows + 1)); else identity_unexpected=$((identity_unexpected + 1)); fi
+  done <<< "$CAPTURE_OUTPUT"
+  local db role schema address port version read_only extra
+  IFS='|' read -r db role schema address port version read_only extra <<< "$identity_line"
+  if (( identity_rows == 1 && identity_unexpected == 0 )) && [[ "$db" =~ ^[A-Za-z0-9_$-]{1,63}$ && "$role" =~ ^[A-Za-z0-9_$-]{1,63}$ && "$schema" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ && "$port" =~ ^[0-9]{1,5}$ && "$version" =~ ^[0-9]+$ && "$read_only" == "on" && -z "$extra" ]]; then
     emit_evidence database_identity PASS "database=$db role=$role schema=$schema server_address_class=$( [[ -z "$address" ]] && printf local || printf loopback_or_local ) server_port=$port postgres_major=$((version / 10000)) transaction_read_only=on"
   else
     emit_evidence database_identity UNKNOWN 'database identity output was missing, unexpected, or not read-only'
@@ -476,8 +527,13 @@ inspect_database() {
     emit_evidence prisma_migration_baseline UNKNOWN "_prisma_migrations read-only query failed_or_bounded status=$CAPTURE_STATUS"
     return
   fi
-  local migration_count=$CAPTURE_OUTPUT
-  if [[ "$migration_count" =~ ^[0-9]+$ ]]; then
+  local migration_count="" migration_rows=0 migration_unexpected=0 migration_line
+  while IFS= read -r migration_line; do
+    [[ -z "$migration_line" ]] && continue
+    case "$migration_line" in BEGIN|ROLLBACK|COMMIT) continue ;; esac
+    if [[ "$migration_line" =~ ^[0-9]+$ ]]; then migration_count=$migration_line; migration_rows=$((migration_rows + 1)); else migration_unexpected=$((migration_unexpected + 1)); fi
+  done <<< "$CAPTURE_OUTPUT"
+  if (( migration_rows == 1 && migration_unexpected == 0 )) && [[ "$migration_count" =~ ^[0-9]+$ ]]; then
     emit_evidence prisma_migration_baseline PASS "migration_row_count=$migration_count contents_and_connection_details=not_emitted"
   else
     emit_evidence prisma_migration_baseline UNKNOWN 'migration baseline output was unexpected'
@@ -551,19 +607,21 @@ inspect_backup_and_staging() {
     local code=$CAPTURE_STATUS
     if [[ "$code" == 1 ]]; then emit_evidence backup_timer PASS 'backup timer is not enabled or is inactive; timer was not activated by this script'; else emit_evidence backup_timer UNKNOWN "systemd timer status failed_or_bounded status=$code"; fi
   fi
-  local staging_lines staging_digest
+  local staging_lines staging_digest staging_probe_failed=0 staging_failure_status=0
   staging_lines=
   for probe in "docker container ls -a --filter name=staging --format {{.Names}}|{{.State}}" "docker network ls --filter name=staging --format {{.Name}}" "docker volume ls --filter name=staging --format {{.Name}}"; do
     # The command families are fixed below; this loop never evaluates the text.
     case "$probe" in
-      "docker container ls -a --filter name=staging --format {{.Names}}|{{.State}}") capture_command docker container ls -a --filter name=staging --format '{{.Names}}|{{.State}}' || true ;;
-      "docker network ls --filter name=staging --format {{.Name}}") capture_command docker network ls --filter name=staging --format '{{.Name}}' || true ;;
-      *) capture_command docker volume ls --filter name=staging --format '{{.Name}}' || true ;;
+      "docker container ls -a --filter name=staging --format {{.Names}}|{{.State}}") capture_command docker container ls -a --filter name=staging --format '{{.Names}}|{{.State}}' || { staging_probe_failed=1; staging_failure_status=$CAPTURE_STATUS; } ;;
+      "docker network ls --filter name=staging --format {{.Name}}") capture_command docker network ls --filter name=staging --format '{{.Name}}' || { staging_probe_failed=1; staging_failure_status=$CAPTURE_STATUS; } ;;
+      *) capture_command docker volume ls --filter name=staging --format '{{.Name}}' || { staging_probe_failed=1; staging_failure_status=$CAPTURE_STATUS; } ;;
     esac
     if [[ -n "$CAPTURE_OUTPUT" ]]; then staging_lines+="$CAPTURE_OUTPUT"$'\n'; fi
   done
   staging_digest=$(printf '%s' "$staging_lines" | sha256sum 2>/dev/null | awk '{print $1}')
-  if [[ "$staging_digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  if (( staging_probe_failed != 0 )); then
+    emit_evidence staging_residuals UNKNOWN "one_or_more_staging_probes_failed_or_bounded status=$staging_failure_status; no absence/presence conclusion was emitted"
+  elif [[ "$staging_digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
     local staging_count
     staging_count=$(printf '%s' "$staging_lines" | awk 'NF {n++} END {print n+0}')
     emit_evidence staging_residuals PASS "matching_container_network_volume_count=$staging_count inventory_sha256=$staging_digest no_resource_was_modified=true"
@@ -577,11 +635,11 @@ main() {
   emit_evidence script PASS 'read-only evidence collection started; no deployment, migration, backup run, timer activation, cleanup, checkout, fetch, chmod, chown, or SSH execution is performed'
   inspect_wrapper
   inspect_permissions
-  inspect_resource lock_resource "$LOCK_PATH" "directory"
-  inspect_resource migration_lock_resource "$MIGRATION_LOCK_PATH" "directory"
-  inspect_resource executor_resource "$EXECUTOR_PATH" "regular file"
-  inspect_resource credential_resource "$CREDENTIAL_PATH" "regular file" 600
-  inspect_resource release_record_resource "$RELEASE_RECORD_PATH" "regular file"
+  inspect_resource lock_metadata "$LOCK_PATH" "directory"
+  inspect_resource migration_lock_metadata "$MIGRATION_LOCK_PATH" "directory"
+  inspect_resource executor_metadata "$EXECUTOR_PATH" "regular file"
+  inspect_resource credential_metadata "$CREDENTIAL_PATH" "regular file" 600
+  inspect_resource release_record_metadata "$RELEASE_RECORD_PATH" "regular file"
   inspect_checkout
   inspect_runtime
   inspect_database

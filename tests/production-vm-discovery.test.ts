@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ const bash = process.platform === "win32"
   ? "C:\\Program Files\\Git\\bin\\bash.exe"
   : "bash";
 const script = join(process.cwd(), "ops", "deploy", "discovery", "production-vm-discovery.sh");
+const runtimeValidator = join(process.cwd(), "ops", "deploy", "discovery", "runtime-contract-validator.js");
 
 function shellPath(filePath: string): string {
   if (process.platform !== "win32") return filePath;
@@ -60,6 +61,45 @@ function record(output: string, evidence: string) {
   return output.split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.evidence === evidence);
 }
 
+function phase2bFixture(psLine = `4321 1000 node S 0::/docker/${"a".repeat(64)}`) {
+  const containerId = "a".repeat(64);
+  const revision = "b".repeat(40);
+  return {
+    docker: `
+case "$*" in
+  *"container inspect"*) printf '%s\\n' '${containerId}|/clashcookies-app|node:20-bookworm|running|4321|||active|prod|${revision}';;
+  *"container ls --filter status=running"*) printf '%s\\n' '${containerId}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default';;
+  *"container ls -a --filter name=staging"*) : ;;
+  *"network ls --filter name=staging"*) : ;;
+  *"volume ls --filter name=staging"*) : ;;
+  *) : ;;
+esac`,
+    ps: `printf '%s\\n' '${psLine}'; exit 0`,
+    curl: "printf '200'",
+    df: `
+if [[ "$*" == *"-Pi"* ]]; then
+  printf 'Filesystem Inodes IUsed IFree IUse%% Mounted on\\n/dev/root 100 10 90 10%% /\\n'
+else
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/root 100000 1000 99000 1%% /\\n'
+fi`,
+    systemctl: `
+if [[ "$*" == *"is-enabled"* ]]; then printf 'disabled'; else printf 'inactive\\ndead\\nsuccess'; fi`,
+    psql: `
+if [[ "$*" == *"_prisma_migrations"* ]]; then
+  printf 'BEGIN\\n7\\nROLLBACK\\n'
+else
+  printf 'BEGIN\\nprod_db|clashcookies|public|127.0.0.1|5432|160000|on\\nROLLBACK\\n'
+fi`,
+  };
+}
+
+function runRuntimeContractValidator(psLine = `4321 1000 node S 0::/docker/${"a".repeat(64)}`) {
+  const containerId = "a".repeat(64);
+  const revision = "b".repeat(40);
+  const input = `LIST_BEGIN\n${containerId}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default\nLIST_END\nINSPECT_BEGIN\n${containerId}|/clashcookies-app|node:20-bookworm|running|4321|||active|prod|${revision}\nINSPECT_END\nPROCESS_BEGIN\n${psLine}\nPROCESS_END\n`;
+  return spawnSync(process.execPath, [runtimeValidator], { input, encoding: "utf8" });
+}
+
 describe("production VM discovery shell bundle", () => {
   it("redacts wrapper contents and never emits secret-bearing lines", () => {
     const root = mkdtempSync(join(tmpdir(), "clashcookies-wrapper-test-"));
@@ -79,8 +119,8 @@ describe("production VM discovery shell bundle", () => {
       DISCOVERY_EXECUTOR_PATH: "/path/that/is/not/configured",
       DISCOVERY_CREDENTIAL_PATH: "/path/that/is/not/configured",
     });
-    expect(record(output, "executor_resource").status).toBe("UNKNOWN");
-    expect(record(output, "credential_resource").status).toBe("UNKNOWN");
+    expect(record(output, "executor_metadata").status).toBe("UNKNOWN");
+    expect(record(output, "credential_metadata").status).toBe("UNKNOWN");
     expect(output).not.toContain("DATABASE_URL");
   });
 
@@ -113,5 +153,44 @@ describe("production VM discovery shell bundle", () => {
     expect(output).toContain('"runtime_docker"');
     expect(output).not.toContain("00000000000000000000");
     expect(record(output, "runtime_docker").status).toBe("UNKNOWN");
+  });
+
+  it("accepts the Phase 2B runtime contract and tagged read-only PostgreSQL output", () => {
+    const output = runDiscovery({ DISCOVERY_PG_SERVICE: "production-ro" }, phase2bFixture());
+    const runtimeStatus = process.platform === "win32" ? "UNKNOWN" : "PASS";
+    expect(record(output, "runtime_docker").status).toBe(runtimeStatus);
+    expect(record(output, "runtime_identity").status).toBe(runtimeStatus);
+    expect(record(output, "database_identity").status).toBe("PASS");
+    expect(record(output, "prisma_migration_baseline").status).toBe("PASS");
+    expect(record(output, "staging_residuals").status).toBe("PASS");
+    expect(output).not.toContain("prod_db|clashcookies");
+  });
+
+  it("fails closed when the host process PID or cgroup does not match the inspected container", () => {
+    const output = runDiscovery({}, phase2bFixture(`4322 1000 node S 0::/docker/${"a".repeat(64)}`));
+    const runtimeStatus = process.platform === "win32" ? "UNKNOWN" : "FAIL";
+    expect(record(output, "runtime_identity").status).toBe(runtimeStatus);
+    if (process.platform !== "win32") {
+      expect(record(output, "runtime_identity").detail).toContain("Phase 2B direct-Docker runtime contract rejected");
+    }
+  });
+
+  it("does not pass staging discovery when any bounded probe fails", () => {
+    const fixture = phase2bFixture();
+    fixture.docker = `${fixture.docker}\nif [[ "$*" == *"volume ls --filter name=staging"* ]]; then exit 17; fi`;
+    const output = runDiscovery({}, fixture);
+    expect(record(output, "runtime_identity").status).toBe(process.platform === "win32" ? "UNKNOWN" : "PASS");
+    expect(record(output, "staging_residuals").status).toBe("UNKNOWN");
+    expect(record(output, "staging_residuals").detail).toContain("one_or_more_staging_probes_failed_or_bounded");
+  });
+
+  it("accepts and rejects realistic Phase 2B runtime identity fixtures", () => {
+    const success = runRuntimeContractValidator();
+    expect(success.status).toBe(0);
+    expect(success.stdout).toContain("PASS|phase2b_runtime_contract");
+
+    const wrongPid = runRuntimeContractValidator(`4322 1000 node S 0::/docker/${"a".repeat(64)}`);
+    expect(wrongPid.status).toBe(3);
+    expect(wrongPid.stdout).toContain("REJECT|phase2b_runtime_contract");
   });
 });
