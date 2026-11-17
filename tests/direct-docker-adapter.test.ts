@@ -125,6 +125,7 @@ function canonicalSnapshot(overrides: Record<string, unknown> = {}) {
       id: "a".repeat(64),
       name: "clashcookies-app",
       image: "node:20-bookworm",
+      state: "running",
       ports: "127.0.0.1:8085->8080/tcp",
       composeProject: "",
       composeService: "",
@@ -198,6 +199,170 @@ describe("direct Docker production adapter contract", () => {
       .toThrow(/network_metadata_ambiguous/i);
   });
 
+  it("collects a bounded canonical runtime snapshot through only read-only allowlisted commands", async () => {
+    const id = "a".repeat(64);
+    const revision = "b".repeat(40);
+    const calls: Array<Record<string, unknown>> = [];
+    const collector = adapter.createDockerRuntimeEvidenceCollector({
+      executor: async (request: Record<string, unknown>) => {
+        calls.push(request);
+        expect(request.shell).toBe(false);
+        const args = request.args as string[];
+        if (request.command === "docker" && args[1] === "ls") {
+          return {
+            exitCode: 0,
+            stdout: `${id}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default\n`,
+          };
+        }
+        if (request.command === "docker" && args[1] === "inspect") {
+          return {
+            exitCode: 0,
+            stdout: `${id}|/clashcookies-app|node:20-bookworm|running|1234|||||${revision}\n`,
+          };
+        }
+        if (request.command === "ps") {
+          return { exitCode: 0, stdout: `1234 1000 node S 0::/docker/${id}\n` };
+        }
+        throw new Error("unexpected command");
+      },
+    });
+
+    const snapshot = await collector.collect();
+    expect(snapshot).toEqual({
+      containers: [{
+        id,
+        name: "clashcookies-app",
+        image: "node:20-bookworm",
+        state: "running",
+        ports: "127.0.0.1:8085->8080/tcp",
+        networks: ["clashcookies-prod_default"],
+        composeProject: "",
+        composeService: "",
+        runtime: "",
+        environment: "",
+        revision,
+        pid: "1234",
+      }],
+      hostProcesses: [{
+        pid: "1234",
+        uid: "1000",
+        comm: "node",
+        state: "S",
+        cwdScope: "container",
+        containerId: id,
+      }],
+    });
+    expect(adapter.inspectRuntimeSnapshot(snapshot, adapter.validateAdapterConfig(makeConfig()))).toMatchObject({
+      candidates: [{ name: "clashcookies-app", recognized: true, revision }],
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => `${call.command}:${(call.args as string[]).slice(0, 2).join("/")}`))
+      .toEqual(["docker:container/ls", "docker:container/inspect", "ps:--no-headers/-eo"]);
+    expect(calls.every((call) => !(call.args as string[]).includes("exec"))).toBe(true);
+  });
+
+  it("accepts an exposed-only Compose PostgreSQL port beside the canonical app", async () => {
+    const appId = "a".repeat(64);
+    const databaseId = "c".repeat(64);
+    const revision = "b".repeat(40);
+    const collector = adapter.createDockerRuntimeEvidenceCollector({
+      executor: async (request: Record<string, unknown>) => {
+        const args = request.args as string[];
+        if (args[1] === "ls") {
+          return {
+            exitCode: 0,
+            stdout: [
+              `${appId}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default`,
+              `${databaseId}|clashcookies-db|postgres:17|running|5432/tcp|clashcookies-prod_default`,
+            ].join("\n") + "\n",
+          };
+        }
+        if (args[1] === "inspect") {
+          return {
+            exitCode: 0,
+            stdout: [
+              `${appId}|/clashcookies-app|node:20-bookworm|running|1234|||||${revision}`,
+              `${databaseId}|/clashcookies-db|postgres:17|running|2345|clashcookies-prod|db|||`,
+            ].join("\n") + "\n",
+          };
+        }
+        if (request.command === "ps") {
+          return { exitCode: 0, stdout: `1234 1000 node S 0::/docker/${appId}\n` };
+        }
+        throw new Error("unexpected command");
+      },
+    });
+
+    const snapshot = await collector.collect();
+    expect(snapshot.containers).toHaveLength(2);
+    expect(snapshot.containers[1]).toMatchObject({
+      id: databaseId,
+      image: "postgres:17",
+      ports: "5432/tcp",
+      composeProject: "clashcookies-prod",
+      composeService: "db",
+    });
+    expect(adapter.inspectRuntimeSnapshot(snapshot, adapter.validateAdapterConfig(makeConfig()))).toMatchObject({
+      candidates: [{ name: "clashcookies-app", recognized: true, revision }],
+    });
+  });
+
+  it("distinguishes exposed-only and published Docker ports while rejecting malformed entries", () => {
+    expect(adapter.parsePublishedPortBindings("5432/tcp,8080/udp")).toEqual([
+      { kind: "exposed", containerPort: 5432, protocol: "tcp" },
+      { kind: "exposed", containerPort: 8080, protocol: "udp" },
+    ]);
+    expect(adapter.parsePublishedPortBindings("127.0.0.1:8085->8080/tcp")).toEqual([{
+      kind: "published",
+      hostAddress: "127.0.0.1",
+      hostPort: 8085,
+      containerPort: 8080,
+      protocol: "tcp",
+    }]);
+    expect(() => adapter.parsePublishedPortBindings("5432")).toThrow(/ports_malformed/i);
+    expect(() => adapter.parsePublishedPortBindings("127.0.0.1:8085->8080/tcp,garbage"))
+      .toThrow(/ports_malformed/i);
+  });
+
+  it.each([
+    ["command failure", { exitCode: 17, stdout: "" }],
+    ["timeout", { exitCode: 0, stdout: "", timedOut: true }],
+    ["unexpected status", { exitCode: 0, status: 17, stdout: "" }],
+    ["oversized output", { exitCode: 0, stdout: "x".repeat(65_537) }],
+  ])("fails closed for %s collector evidence", async (_label, result) => {
+    const collector = adapter.createDockerRuntimeEvidenceCollector({
+      maxOutputBytes: 65_536,
+      executor: async () => result,
+    });
+    await expect(collector.collect()).rejects.toThrow();
+  });
+
+  it("rejects stale or contradictory Docker views before runtime validation", async () => {
+    const id = "a".repeat(64);
+    const collector = adapter.createDockerRuntimeEvidenceCollector({
+      executor: async (request: Record<string, unknown>) => {
+        const args = request.args as string[];
+        if (args[1] === "ls") {
+          return { exitCode: 0, stdout: `${id}|clashcookies-app|node:20-bookworm|running|127.0.0.1:8085->8080/tcp|clashcookies-prod_default\n` };
+        }
+        if (args[1] === "inspect") {
+          return { exitCode: 0, stdout: `${id}|/clashcookies-app|postgres:17|running|1234|||||${"b".repeat(40)}\n` };
+        }
+        return { exitCode: 0, stdout: "" };
+      },
+    });
+    await expect(collector.collect()).rejects.toThrow(/contradictory/i);
+  });
+
+  it("normalizes host process cgroups without collecting command arguments", () => {
+    expect(adapter.parseHostProcessListing(
+      `123 1000 node S 0::/docker/${"a".repeat(64)}\n456 1000 yarn S 0::/\n`,
+    )).toEqual([
+      { pid: "123", uid: "1000", comm: "node", state: "S", cwdScope: "container", containerId: "a".repeat(64) },
+      { pid: "456", uid: "1000", comm: "yarn", state: "S", cwdScope: "host", containerId: "" },
+    ]);
+  });
+
   it("normalizes one direct-Docker canonical runtime without Compose ownership", () => {
     const config = adapter.validateAdapterConfig(makeConfig());
     const result = adapter.inspectRuntimeSnapshot(canonicalSnapshot(), config);
@@ -220,6 +385,9 @@ describe("direct Docker production adapter contract", () => {
       { ...canonicalSnapshot().containers[0], name: "clashcookies-app-replacement" },
     ] }],
     ["unexpected network", { containers: [{ ...canonicalSnapshot().containers[0], networks: ["wrong_network"] }] }],
+    ["unexpected published port", { containers: [{ ...canonicalSnapshot().containers[0], ports: "127.0.0.1:8085->8080/tcp,127.0.0.1:9090->9090/tcp" }] }],
+    ["public published port", { containers: [{ ...canonicalSnapshot().containers[0], ports: "0.0.0.0:8085->8080/tcp" }] }],
+    ["malformed relevant port evidence", { containers: [{ ...canonicalSnapshot().containers[0], ports: "8080" }] }],
     ["Compose-owned app", { containers: [{ ...canonicalSnapshot().containers[0], composeProject: "clashcookies-prod", composeService: "app" }] }],
     ["wrong revision", { containers: [{ ...canonicalSnapshot().containers[0], revision: "unknown" }] }],
   ])("fails closed for %s", (_label, snapshot) => {
@@ -435,6 +603,30 @@ describe("direct Docker production adapter contract", () => {
 
     await expect(instance.operations.inspectRuntime()).rejects.toThrow(/reviewed_vm_snapshot/i);
     expect(injectedInspectCalled).toBe(false);
+  });
+
+  it("feeds an injected read-only collector through the existing runtime validator", async () => {
+    const root = makeRoot();
+    const configInput = makeConfig(root);
+    const executorContent = Buffer.from("reviewed executor\n");
+    (configInput.executor as Record<string, unknown>).sha256 = createHash("sha256")
+      .update(executorContent).digest("hex");
+    const collector = { collect: async () => canonicalSnapshot() };
+    const instance = adapter.createDirectDockerAdapter(configInput, {
+      fs: makeProtectedFs(root, executorContent, "credential"),
+      runtimeEvidenceCollector: collector,
+    });
+
+    await expect(instance.operations.inspectRuntime()).resolves.toEqual({
+      candidates: [{
+        name: "clashcookies-app",
+        label: "active",
+        environment: "prod",
+        port: 8085,
+        recognized: true,
+        revision: "b".repeat(40),
+      }],
+    });
   });
 
   it("requires separate outer and runner locks", () => {

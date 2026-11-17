@@ -42,6 +42,18 @@ Docker metadata parsing uses a non-whitespace `|` delimiter and requires an exac
 
 Host `node`, `nodejs`, `npm`, and `yarn` processes are potential candidates only. Process-name inspection is never treated as proof of singleton safety. Any potential host bot process blocks the normalized runtime check until an operator establishes its identity.
 
+## Phase 2B read-only runtime evidence
+
+`createDockerRuntimeEvidenceCollector()` is an injectable, bounded collector for the existing `inspectRuntimeSnapshot()` contract. It invokes only these fixed, direct-argv commands:
+
+- `docker container ls --filter status=running --no-trunc --format ...` for running container IDs, names, images, state, published ports, and network names;
+- `docker container inspect --format ... <validated-container-ids>` for the host PID, selected Compose ownership labels, optional runtime/environment labels, and the revision label; and
+- `ps --no-headers -eo pid=,uid=,comm=,state=,cgroup=` for potential host Node/npm/yarn processes and sanitized container-ID correlation.
+
+The command executor is injectable for isolated tests and the default executor uses `shell=false`, a five-second timeout, and a 128 KiB output bound. IDs are validated before being passed as direct arguments. Stale views, malformed rows, unexpected result shapes, command failures, timeouts, nonzero exits, or output over the bound fail closed. No container environment, full label map, command arguments, credentials, or database data is collected.
+
+The collector only normalizes evidence. Exposed-only Docker entries such as `5432/tcp` are retained as non-published metadata so an unrelated Compose PostgreSQL container does not block the direct-Docker application; published bindings remain strict. The existing validator still establishes exactly one canonical direct-Docker runtime, requires the expected running state, loopback production port, single expected network, direct-Docker ownership, revision identity, and correlated host PID/container ID. Additional Node/npm/yarn processes, duplicate unlabeled Node runtimes, unexpected ports/networks, missing identity labels, and contradictory evidence remain blocked. This does not prove live VM permissions, wrapper adoption, lock ownership, database identity, health, backup readiness, staging isolation, or production authorization; those require a future operator-verified VM integration.
+
 ## Credential boundary
 
 The credential source must be an existing regular file outside the checkout, owned by the recorded UID/GID, and mode `0600`. Every path component is checked for symlinks and realpath-resolved outside the checkout; protected reads use `O_NOFOLLOW`, descriptor metadata, and a replacement check. Its contents are not read by any executable Phase 1 operation. If a future reviewed primitive enables migration execution, the child must receive a strict allowlist containing the database URL, migration authorization metadata, `PATH`, fixed npm safety settings, and no inherited Discord, cloud, monitoring, or application environment.

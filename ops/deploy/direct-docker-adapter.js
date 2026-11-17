@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { acquireExclusiveHostLock, LockCoordinationError } = require("./deployment-lock");
@@ -13,6 +14,54 @@ const DEFAULT_RUNTIME = Object.freeze({
   containerPort: 8080,
   image: "node:20-bookworm",
   network: "clashcookies-prod_default",
+});
+
+const CANONICAL_HOST_ADDRESS = "127.0.0.1";
+const DEFAULT_RUNTIME_COLLECTOR_LIMITS = Object.freeze({
+  timeoutMs: 5000,
+  maxOutputBytes: 128 * 1024,
+  maxContainers: 256,
+});
+const DOCKER_RUNTIME_LABELS = Object.freeze({
+  composeProject: "com.docker.compose.project",
+  composeService: "com.docker.compose.service",
+  runtime: "com.clashcookies.runtime",
+  environment: "com.clashcookies.environment",
+  revision: "com.clashcookies.revision",
+});
+const DOCKER_INSPECT_TEMPLATE = [
+  "{{.Id}}",
+  "{{.Name}}",
+  "{{.Config.Image}}",
+  "{{.State.Status}}",
+  "{{.State.Pid}}",
+  `{{with index .Config.Labels "${DOCKER_RUNTIME_LABELS.composeProject}"}}{{.}}{{end}}`,
+  `{{with index .Config.Labels "${DOCKER_RUNTIME_LABELS.composeService}"}}{{.}}{{end}}`,
+  `{{with index .Config.Labels "${DOCKER_RUNTIME_LABELS.runtime}"}}{{.}}{{end}}`,
+  `{{with index .Config.Labels "${DOCKER_RUNTIME_LABELS.environment}"}}{{.}}{{end}}`,
+  `{{with index .Config.Labels "${DOCKER_RUNTIME_LABELS.revision}"}}{{.}}{{end}}`,
+].join("|");
+const READ_ONLY_RUNTIME_COMMANDS = Object.freeze({
+  listRunningContainers: Object.freeze({
+    command: "docker",
+    args: Object.freeze([
+      "container",
+      "ls",
+      "--filter",
+      "status=running",
+      "--no-trunc",
+      "--format",
+      "{{.ID}}|{{.Names}}|{{.Image}}|{{.State}}|{{.Ports}}|{{.Networks}}",
+    ]),
+  }),
+  inspectContainers: Object.freeze({
+    command: "docker",
+    argsPrefix: Object.freeze(["container", "inspect", "--format", DOCKER_INSPECT_TEMPLATE]),
+  }),
+  hostProcesses: Object.freeze({
+    command: "ps",
+    args: Object.freeze(["--no-headers", "-eo", "pid=,uid=,comm=,state=,cgroup="]),
+  }),
 });
 
 const ORCHESTRATOR_OPERATION_NAMES = Object.freeze([
@@ -306,6 +355,62 @@ function splitDockerRecord(line, expectedFields, recordType) {
   return fields;
 }
 
+/** Parse a bounded newline-delimited command result with no blank records. */
+function splitCommandListing(stdout, recordType) {
+  if (typeof stdout !== "string" || stdout.includes("\0")) {
+    throw new AdapterError(`${recordType}_listing_missing`, "runtime_evidence_invalid");
+  }
+  const lines = stdout.split(/\r?\n/);
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.some((line) => line.length === 0)) {
+    throw new AdapterError(`${recordType}_listing_incomplete`, "runtime_evidence_invalid");
+  }
+  return lines;
+}
+
+/** Validate one selected metadata field without retaining arbitrary Docker data. */
+function validateSelectedMetadataField(value, recordType, maxLength = 256) {
+  if (typeof value !== "string" || value.length > maxLength || /[\r\n\0|]/.test(value)) {
+    throw new AdapterError(`${recordType}_metadata_invalid`, "runtime_evidence_invalid");
+  }
+  return value;
+}
+
+/** Parse the fixed Docker listing used to discover running runtime candidates. */
+function parseRunningContainerListing(stdout) {
+  return splitCommandListing(stdout, "running_container").map((line) => {
+    const [id, name, image, state, ports, networks] = splitDockerRecord(line, 6, "running_container");
+    return Object.freeze({
+      id: validateSelectedMetadataField(id, "running_container"),
+      name: validateSelectedMetadataField(name, "running_container"),
+      image: validateSelectedMetadataField(image, "running_container"),
+      state: validateSelectedMetadataField(state, "running_container"),
+      ports: validateSelectedMetadataField(ports, "running_container", 4096),
+      networks: validateSelectedMetadataField(networks, "running_container", 4096),
+    });
+  });
+}
+
+/** Parse selected Docker inspect fields without reading environments or full labels. */
+function parseDockerInspectListing(stdout) {
+  return splitCommandListing(stdout, "docker_inspect").map((line) => {
+    const [id, name, image, state, pid, composeProject, composeService, runtime, environment, revision] =
+      splitDockerRecord(line, 10, "docker_inspect");
+    return Object.freeze({
+      id: validateSelectedMetadataField(id, "docker_inspect"),
+      name: validateSelectedMetadataField(name, "docker_inspect"),
+      image: validateSelectedMetadataField(image, "docker_inspect"),
+      state: validateSelectedMetadataField(state, "docker_inspect"),
+      pid: validateSelectedMetadataField(pid, "docker_inspect"),
+      composeProject: validateSelectedMetadataField(composeProject, "docker_inspect"),
+      composeService: validateSelectedMetadataField(composeService, "docker_inspect"),
+      runtime: validateSelectedMetadataField(runtime, "docker_inspect"),
+      environment: validateSelectedMetadataField(environment, "docker_inspect"),
+      revision: validateSelectedMetadataField(revision, "docker_inspect"),
+    });
+  });
+}
+
 /** Parse selected container fields without reading environments or full labels. */
 function parseDockerContainerListing(stdout) {
   if (typeof stdout !== "string") {
@@ -357,10 +462,283 @@ function parseDockerNetworkListing(stdout) {
     });
 }
 
+/** Extract a Docker container ID from a host cgroup path without retaining the path. */
+function extractContainerId(cgroup) {
+  const matches = [...String(cgroup).matchAll(/(?:^|[\/:_-])([0-9a-f]{12,64})(?:\.scope)?(?=$|[\/:_-])/gi)]
+    .map((match) => match[1].toLowerCase());
+  const unique = [...new Set(matches)];
+  if (unique.length > 1) {
+    throw new AdapterError("host_process_cgroup_ambiguous", "process_metadata_invalid");
+  }
+  return unique[0] || "";
+}
+
+/** Parse host process metadata from either the adapter fixture or fixed ps output. */
+function parseHostProcessListing(stdout) {
+  const rows = splitCommandListing(stdout, "host_process").map((line) => {
+    let fields;
+    if (line.includes("|")) {
+      fields = splitDockerRecord(line, 6, "host_process");
+    } else {
+      const rawFields = line.trim().split(/\s+/);
+      if (rawFields.length !== 5) {
+        throw new AdapterError("host_process_metadata_ambiguous", "process_metadata_invalid");
+      }
+      const [pid, uid, comm, state, cgroup] = rawFields;
+      const containerId = extractContainerId(cgroup);
+      fields = [pid, uid, comm, state, containerId ? "container" : "host", containerId];
+    }
+    const [pid, uid, comm, state, cwdScope, containerId] = fields;
+    for (const value of [pid, uid, comm, state, cwdScope, containerId]) {
+      validateSelectedMetadataField(value, "host_process", 256);
+    }
+    return Object.freeze({ pid, uid, comm, state, cwdScope, containerId });
+  });
+  return rows
+    .filter((processInfo) => /^(?:node|nodejs|npm|yarn)$/.test(processInfo.comm))
+    .sort((left, right) => Number(left.pid) - Number(right.pid));
+}
+
+/** Split Docker's comma-separated network display into unique names. */
+function parseNetworkNames(value) {
+  if (value === "") return [];
+  const names = value.split(",").map((name) => name.trim());
+  if (names.some((name) => name.length === 0) || new Set(names).size !== names.length) {
+    throw new AdapterError("container_network_membership_ambiguous", "runtime_evidence_invalid");
+  }
+  return names;
+}
+
+/** Combine the two fixed Docker views and the host process view into the adapter snapshot. */
+function normalizeRuntimeEvidence(containerListing, inspectListing, hostProcesses) {
+  const listingById = new Map();
+  const inspectById = new Map();
+  for (const container of containerListing) {
+    if (!/^[0-9a-f]{12,64}$/i.test(container.id) || listingById.has(container.id.toLowerCase())) {
+      throw new AdapterError("container_identity_ambiguous", "runtime_evidence_invalid");
+    }
+    listingById.set(container.id.toLowerCase(), container);
+  }
+  for (const container of inspectListing) {
+    if (!/^[0-9a-f]{12,64}$/i.test(container.id) || inspectById.has(container.id.toLowerCase())) {
+      throw new AdapterError("inspect_container_identity_ambiguous", "runtime_evidence_invalid");
+    }
+    inspectById.set(container.id.toLowerCase(), container);
+  }
+  if (listingById.size !== inspectById.size || [...listingById.keys()].some((id) => !inspectById.has(id))) {
+    throw new AdapterError("runtime_container_views_stale", "runtime_evidence_invalid");
+  }
+
+  const containers = [...listingById.keys()].sort().map((id) => {
+    const listed = listingById.get(id);
+    const inspected = inspectById.get(id);
+    const inspectedName = inspected.name.replace(/^\//, "");
+    if (listed.name !== inspectedName || listed.image !== inspected.image || listed.state !== inspected.state) {
+      throw new AdapterError("runtime_container_identity_contradictory", "runtime_evidence_invalid");
+    }
+    return Object.freeze({
+      id: inspected.id,
+      name: inspectedName,
+      image: inspected.image,
+      state: inspected.state,
+      ports: listed.ports,
+      networks: Object.freeze(parseNetworkNames(listed.networks)),
+      composeProject: inspected.composeProject,
+      composeService: inspected.composeService,
+      runtime: inspected.runtime,
+      environment: inspected.environment,
+      revision: inspected.revision,
+      pid: inspected.pid,
+    });
+  });
+  return Object.freeze({
+    containers: Object.freeze(containers),
+    hostProcesses: Object.freeze(hostProcesses),
+  });
+}
+
+/** Execute one read-only command with a direct argv boundary and bounded output. */
+function createReadOnlyCommandExecutor({ spawnImpl = childProcess.spawn } = {}) {
+  return function executeReadOnlyCommand({ command, args, timeoutMs, maxOutputBytes }) {
+    if (typeof command !== "string" || !Array.isArray(args)
+      || !Number.isInteger(timeoutMs) || timeoutMs <= 0
+      || !Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0) {
+      return Promise.reject(new AdapterError("runtime_command_request_invalid", "runtime_command_invalid"));
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let outputBytes = 0;
+      const chunks = [];
+      let child;
+      let timer;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const fail = (message, code = "runtime_command_failed") => {
+        finish(reject, new AdapterError(message, code));
+      };
+      try {
+        child = spawnImpl(command, args, {
+          shell: false,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+      } catch {
+        fail("runtime_command_spawn_failed");
+        return;
+      }
+      timer = setTimeout(() => {
+        try { child.kill(); } catch { /* the command is already gone */ }
+        fail("runtime_command_timeout", "runtime_command_timeout");
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        outputBytes += buffer.length;
+        if (outputBytes > maxOutputBytes) {
+          try { child.kill(); } catch { /* the command is already gone */ }
+          fail("runtime_command_output_exceeded", "runtime_command_output_exceeded");
+          return;
+        }
+        chunks.push(buffer);
+      });
+      child.on("error", () => fail("runtime_command_failed"));
+      child.on("close", (exitCode, signal) => {
+        if (settled) return;
+        if (exitCode !== 0 || signal) {
+          fail("runtime_command_unexpected_exit", "runtime_command_unexpected_exit");
+          return;
+        }
+        finish(resolve, { exitCode: 0, stdout: Buffer.concat(chunks).toString("utf8") });
+      });
+    });
+  };
+}
+
+/** Run and validate one allowlisted collector command without exposing stderr. */
+async function runRuntimeCommand(executor, request, commandName, limits) {
+  let result;
+  try {
+    result = await executor({
+      ...request,
+      timeoutMs: limits.timeoutMs,
+      maxOutputBytes: limits.maxOutputBytes,
+      shell: false,
+    });
+  } catch (error) {
+    if (error instanceof AdapterError) throw error;
+    throw new AdapterError(`${commandName}_failed`, "runtime_command_failed");
+  }
+  const resultKeys = result && typeof result === "object" ? Object.keys(result) : [];
+  const unexpectedResultKey = resultKeys.some((key) => !["exitCode", "stdout", "signal", "timedOut"].includes(key));
+  if (!result || unexpectedResultKey || result.exitCode !== 0 || result.signal || result.timedOut === true
+    || typeof result.stdout !== "string" || result.stdout.length > limits.maxOutputBytes) {
+    throw new AdapterError(`${commandName}_failed`, result?.timedOut ? "runtime_command_timeout" : "runtime_command_failed");
+  }
+  return result.stdout;
+}
+
+/** Create a bounded, read-only direct-Docker evidence collector. */
+function createDockerRuntimeEvidenceCollector({
+  executor = createReadOnlyCommandExecutor(),
+  timeoutMs = DEFAULT_RUNTIME_COLLECTOR_LIMITS.timeoutMs,
+  maxOutputBytes = DEFAULT_RUNTIME_COLLECTOR_LIMITS.maxOutputBytes,
+  maxContainers = DEFAULT_RUNTIME_COLLECTOR_LIMITS.maxContainers,
+} = {}) {
+  if (typeof executor !== "function" || !Number.isInteger(timeoutMs) || timeoutMs <= 0
+    || !Number.isInteger(maxOutputBytes) || maxOutputBytes <= 0
+    || !Number.isInteger(maxContainers) || maxContainers <= 0) {
+    throw new AdapterError("runtime_collector_configuration_invalid", "runtime_command_invalid");
+  }
+  const limits = Object.freeze({ timeoutMs, maxOutputBytes, maxContainers });
+  return Object.freeze({
+    collect: async () => {
+      const listed = parseRunningContainerListing(await runRuntimeCommand(
+        executor,
+        READ_ONLY_RUNTIME_COMMANDS.listRunningContainers,
+        "list_running_containers",
+        limits,
+      ));
+      if (listed.length > limits.maxContainers) {
+        throw new AdapterError("running_container_count_exceeded", "runtime_evidence_invalid");
+      }
+      const ids = listed.map((container) => {
+        if (!/^[0-9a-f]{12,64}$/i.test(container.id)) {
+          throw new AdapterError("container_identity_invalid", "runtime_evidence_invalid");
+        }
+        return container.id;
+      });
+      const inspected = ids.length === 0
+        ? []
+        : parseDockerInspectListing(await runRuntimeCommand(
+          executor,
+          {
+            command: READ_ONLY_RUNTIME_COMMANDS.inspectContainers.command,
+            args: [...READ_ONLY_RUNTIME_COMMANDS.inspectContainers.argsPrefix, ...ids],
+          },
+          "inspect_running_containers",
+          limits,
+        ));
+      const hostProcesses = parseHostProcessListing(await runRuntimeCommand(
+        executor,
+        READ_ONLY_RUNTIME_COMMANDS.hostProcesses,
+        "list_host_processes",
+        limits,
+      ));
+      return normalizeRuntimeEvidence(listed, inspected, hostProcesses);
+    },
+  });
+}
+
 /** Return whether a selected Docker port field exposes the canonical app port. */
+function parsePublishedPortBindings(ports) {
+  if (typeof ports !== "string") {
+    throw new AdapterError("container_ports_missing", "runtime_identity_invalid");
+  }
+  if (ports === "") return [];
+  return ports.split(",").map((entry) => {
+    const value = entry.trim();
+    const exposedMatch = value.match(/^(\d+)\/(tcp|udp|sctp)$/);
+    if (exposedMatch) {
+      const containerPort = Number(exposedMatch[1]);
+      if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) {
+        throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
+      }
+      return Object.freeze({
+        kind: "exposed",
+        containerPort,
+        protocol: exposedMatch[2],
+      });
+    }
+    const publishedMatch = value.match(/^(.+):(\d+)->(\d+)\/(tcp|udp|sctp)$/);
+    if (!publishedMatch || /[\s|,]/.test(publishedMatch[1]) || publishedMatch[1].length > 128) {
+      throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
+    }
+    const hostPort = Number(publishedMatch[2]);
+    const containerPort = Number(publishedMatch[3]);
+    if (![hostPort, containerPort].every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) {
+      throw new AdapterError("container_ports_malformed", "runtime_identity_invalid");
+    }
+    return Object.freeze({
+      kind: "published",
+      hostAddress: publishedMatch[1],
+      hostPort,
+      containerPort,
+      protocol: publishedMatch[4],
+    });
+  });
+}
+
+/** Return whether exactly the loopback production binding is exposed. */
 function hasPublishedCanonicalPort(ports, runtime) {
-  return typeof ports === "string"
-    && ports.includes(`${runtime.hostPort}->${runtime.containerPort}`);
+  const published = parsePublishedPortBindings(ports).filter((binding) => binding.kind === "published");
+  return published.length === 1
+    && published[0].hostAddress === CANONICAL_HOST_ADDRESS
+    && published[0].hostPort === runtime.hostPort
+    && published[0].containerPort === runtime.containerPort
+    && published[0].protocol === "tcp";
 }
 
 /** Return whether a container is a potential bot runtime candidate. */
@@ -381,8 +759,10 @@ function isCanonicalRuntimeCandidate(container, networks, runtime) {
     && (container.environment === "" || container.environment === runtime.environment);
   return container.name === runtime.name
     && container.image === runtime.image
+    && container.state === "running"
     && hasPublishedCanonicalPort(container.ports, runtime)
-    && networks.includes(runtime.network)
+    && networks.length === 1
+    && networks[0] === runtime.network
     && directOwned
     && optionalLabelsMatch
     && validContainerId
@@ -396,20 +776,6 @@ function isCorrelatedContainerProcess(processInfo, container) {
     && processInfo.pid === String(container.pid)
     && /^[0-9a-f]{12,64}$/i.test(processInfo.containerId)
     && processInfo.containerId.toLowerCase() === container.id.toLowerCase();
-}
-
-/** Parse host process metadata into potential, never conclusive, bot candidates. */
-function parseHostProcessListing(stdout) {
-  if (typeof stdout !== "string") {
-    throw new AdapterError("host_process_listing_missing", "process_metadata_invalid");
-  }
-  return stdout.split(/\r?\n/)
-    .filter((line) => line.length > 0)
-    .map((line) => {
-      const [pid, uid, comm, state, cwdScope, containerId] = splitDockerRecord(line, 6, "host_process");
-      return Object.freeze({ pid, uid, comm, state, cwdScope, containerId });
-    })
-    .filter((processInfo) => /^(?:node|nodejs|npm|yarn)$/.test(processInfo.comm));
 }
 
 /** Validate the pinned immutable executor file and its recorded digest. */
@@ -631,10 +997,16 @@ function acquireHostLock(lockPath, owner, fsImpl = fs) {
 
 /** Validate a normalized runtime snapshot before exposing it to the orchestrator. */
 function inspectRuntimeSnapshot(snapshot, config) {
-  const containers = Array.isArray(snapshot?.containers) ? snapshot.containers : [];
-  const hostProcesses = Array.isArray(snapshot?.hostProcesses)
-    ? snapshot.hostProcesses.filter((entry) => /^(?:node|nodejs|npm|yarn)$/.test(entry.comm))
-    : [];
+  if (!snapshot || !Array.isArray(snapshot.containers) || !Array.isArray(snapshot.hostProcesses)) {
+    throw new AdapterError("runtime_snapshot_incomplete", "runtime_evidence_invalid");
+  }
+  if (snapshot.containers.some((entry) => !entry || typeof entry !== "object")
+    || snapshot.hostProcesses.some((entry) => !entry || typeof entry !== "object")) {
+    throw new AdapterError("runtime_snapshot_malformed", "runtime_evidence_invalid");
+  }
+  const containers = snapshot.containers;
+  const hostProcesses = snapshot.hostProcesses
+    .filter((entry) => /^(?:node|nodejs|npm|yarn)$/.test(entry.comm));
   const potential = containers.filter((container) => isPotentialRuntimeCandidate(container, config.runtime));
 
   if (potential.length !== 1) {
@@ -744,6 +1116,10 @@ function createDirectDockerAdapter(input = {}, dependencies = {}) {
     },
     inspectRuntime: async () => {
       requireEnabled("inspect_runtime");
+      const collector = dependencies.runtimeEvidenceCollector;
+      if (collector && typeof collector.collect === "function") {
+        return inspectRuntimeSnapshot(await collector.collect(), config);
+      }
       if (typeof dependencies.readRuntimeSnapshot !== "function") {
         throw new AdapterError("inspect_runtime_requires_reviewed_vm_snapshot", "adapter_primitive_missing");
       }
@@ -824,15 +1200,25 @@ module.exports = {
   MUTATING_OPERATION_NAMES: Object.freeze([...MUTATING_OPERATION_NAMES]),
   ORCHESTRATOR_OPERATION_NAMES,
   SAFE_NPM_ENVIRONMENT,
+  CANONICAL_HOST_ADDRESS,
+  DEFAULT_RUNTIME_COLLECTOR_LIMITS,
+  DOCKER_RUNTIME_LABELS,
+  READ_ONLY_RUNTIME_COMMANDS,
   acquireHostLock,
   appendReleaseRecord,
   buildMigrationChildEnvironment,
   createDirectDockerAdapter,
+  createDockerRuntimeEvidenceCollector,
+  createReadOnlyCommandExecutor,
   inspectRuntimeSnapshot,
   isCorrelatedContainerProcess,
   isCanonicalRuntimeCandidate,
   isPotentialRuntimeCandidate,
+  normalizeRuntimeEvidence,
+  parseDockerInspectListing,
   parseDockerContainerListing,
+  parsePublishedPortBindings,
+  parseRunningContainerListing,
   parseDockerNetworkListing,
   parseDockerVolumeListing,
   parseHostProcessListing,
