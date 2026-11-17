@@ -33,6 +33,14 @@ The command/fixture implementation must:
 - Make output names deterministic and test multiple states, including UNKNOWN/missing evidence, permissions and mobile legibility. Clearly distinguish authentic Discord capture from a simulated render; never claim a fake state is real.
 - Treat user and clan identifiers, Discord mentions, webhook URLs, access tokens, wallet/history, private alerts and moderation details as sensitive. Use placeholders/synthetic names, remove metadata as needed, and inspect the *actual images* for leakage before committing.
 
+## Screenshot backlog and lifecycle
+
+The canonical capture queue is [screenshot-backlog.md](screenshot-backlog.md). After `/example` is actually deployed, inventory the available reference IDs and backfill the under-documented command library in small prioritized batches. Each entry records the exact verified `/example ref:<id>` invocation, expected screenshot, file/fixture availability, and upload/review status. Proposed IDs are not working commands.
+
+**Whenever a feature or shared renderer changes**, review affected screenshot IDs on the implementation PR. If appearance, semantics, permissions, defaults or controls changed (or impact is uncertain), mark existing screenshots **Outdated** and exclude them from spotlights/monthly announcements until re-captured and reviewed. Removed or superseded features are **Deprecated** and retained as historical artifacts. Record affected PR, capture/check commit, screenshot path and replacement status; do not silently preserve stale `Current` labels.
+
+This is a PR-review requirement, not an automated screenshot-diff detector. Track and merge docs-only staleness reconciliation promptly after code changes when screenshots cannot be replaced on the code PR.
+
 ## GitHub evidence library
 
 Use this conventional layout for each feature:
