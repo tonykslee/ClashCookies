@@ -1,0 +1,214 @@
+# Production VM discovery operator preflight — 2026-11-17
+
+**Status:** documentation and review only. No production VM, SSH session, checkout, Docker daemon, database, credential, backup unit, staging resource, or discovery invocation was accessed by this change.
+
+This preflight is the operator procedure for the already merged, read-only discovery tooling from [PR #2027](https://github.com/tonykslee/ClashCookies/pull/2027). It is deliberately separate from release authorization. The operator must stop if any prerequisite requires installing a tool, changing permissions or ownership, creating an unapproved VM directory, reading a secret, running a wrapper, or changing a production resource.
+
+## 1. Pinned delivery source
+
+Use the exact PR #2027 merge commit, not an arbitrary working tree or a later mutable branch checkout:
+
+```text
+source commit: 1cb81528ea34dd25f51613557d6f6030fddd0b3a
+target branch at review: dev
+latest reviewed dev documentation base: e4247885a0061bb78a63add59e8deafc0db7f430
+delivery shape: ops/deploy/discovery/
+```
+
+The following are the only files to deliver. Their SHA-256 values are over the exact Git blob bytes at that commit; preserve the relative paths and LF content.
+
+| Relative path | SHA-256 |
+| --- | --- |
+| `ops/deploy/discovery/production-vm-discovery.sh` | `bb56d8e4ff9cd8d7d2652ef6fb3fbc6dd07e98ca3b0d65252c8a7a2ec9626da9` |
+| `ops/deploy/discovery/runtime-contract-validator.js` | `e2fbc31275003aa631aa16b984e6d2a8eaabef57646b377b82e02d27a20e27d6` |
+| `ops/deploy/direct-docker-adapter.js` | `379490aa007ecf6d036d5ef95e6b5ed07c5d4fdf726904bbd152ee1486032666` |
+
+The Node helper imports the adapter through `../direct-docker-adapter.js`; delivering only the two discovery-directory files is incomplete. Do not deliver tests, the operator guide, a whole repository checkout, credentials, `.env` files, or a deployment wrapper.
+
+## 2. Smallest safe delivery method
+
+### Local Windows CMD — prepare and verify the three-file archive
+
+Use a private local staging location outside the repository. The following commands are preparation only; they do not contact the VM or execute discovery. Choose a new archive name and stop if it already exists rather than overwriting it.
+
+```cmd
+set "REPO=C:\Projects\ClashCookies"&&set "SOURCE_COMMIT=1cb81528ea34dd25f51613557d6f6030fddd0b3a"&&set "ARCHIVE=%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar"&&if exist "%ARCHIVE%" (echo STOP: archive already exists&&exit /b 1) else (git -C "%REPO%" cat-file -e "%SOURCE_COMMIT%^{commit}"&&git -C "%REPO%" archive --format=tar --output="%ARCHIVE%" "%SOURCE_COMMIT%" ops/deploy/discovery/production-vm-discovery.sh ops/deploy/discovery/runtime-contract-validator.js ops/deploy/direct-docker-adapter.js&&tar -tf "%ARCHIVE%")
+```
+
+The archive listing must contain exactly the three pinned paths and no symlinks. Verify the extracted files or an equivalent approved transfer copy with `certutil -hashfile <file> SHA256` against the table above. Preserve the archive and its source-commit/hash record as delivery provenance; do not edit files to change line endings.
+
+Transfer the archive only through the operator's approved private channel. Do not put it in the production checkout, a public share, chat, an unencrypted temporary upload, or a directory readable by the bot runtime.
+
+### Remote Linux — select an isolated operator location
+
+The VM destination is intentionally not prescribed. The operator must identify an existing private parent outside `/home/tilo/apps/clashcookies-prod`, or obtain separate authorization for the one-time creation of a fresh child directory beneath that parent. Temporary VM directory creation is not implied by this document.
+
+Before any delivery write, replace the placeholder with the operator-approved location and verify it is not the production checkout, is not a symlink, and is readable/searchable by the operator:
+
+```bash
+DISCOVERY_ROOT=/operator-approved/private/path/production-vm-discovery-1cb81528; test -d "$DISCOVERY_ROOT" && test ! -L "$DISCOVERY_ROOT" && test -r "$DISCOVERY_ROOT" && test -x "$DISCOVERY_ROOT" && test "$DISCOVERY_ROOT" != /home/tilo/apps/clashcookies-prod && printf '%s\n' 'isolated discovery root is usable'
+```
+
+If a fresh child directory must be created, the delivery authorization must name the exact path and permit only that directory creation. Use a new empty directory, extract the archive there, and do not overwrite existing files. The operator must not use `sudo`, `chmod`, `chown`, `rm`, `mv`, or cleanup as part of delivery. A failed or ambiguous delivery is `BLOCKED`; preserve the archive and do not improvise another location.
+
+After the approved transfer, extract only the archive into that new empty directory. This is the only remote delivery write; it is not the discovery invocation:
+
+```bash
+ARCHIVE=/operator-approved/private/incoming/clashcookies-production-vm-discovery-1cb81528.tar; DISCOVERY_ROOT=/operator-approved/private/path/production-vm-discovery-1cb81528; test -f "$ARCHIVE" && test -d "$DISCOVERY_ROOT" && tar --extract --file="$ARCHIVE" --directory="$DISCOVERY_ROOT" --no-same-owner --no-same-permissions --keep-old-files
+```
+
+If `tar` reports an existing file, a path traversal/symlink, or any other extraction error, stop. Do not remove or replace the conflicting object.
+
+After the approved transfer and extraction, run this remote read-only verification from the isolated directory. It must report the three files and the exact hashes; any mismatch, extra file, symlink, or missing parent directory is a stop condition.
+
+```bash
+DISCOVERY_ROOT=/operator-approved/private/path/production-vm-discovery-1cb81528; test "$(find "$DISCOVERY_ROOT" -type f -print | wc -l)" = 3 && test "$(find "$DISCOVERY_ROOT" -type l -print | wc -l)" = 0 && test ! -L "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh" && test ! -L "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js" && test ! -L "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js" && sha256sum "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh" "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js" "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js"
+```
+
+The `find` count is valid only when `DISCOVERY_ROOT` is a newly created empty staging directory. If the approved location contains anything else, do not delete or clean it; classify delivery `BLOCKED` and obtain a new approved location. The hash verification proves file content, not that the directory is trusted or that the files are executable. The collector is invoked explicitly with `bash` and the Node helper with `node`, so no `chmod` is required.
+
+## 3. Operator prerequisites
+
+Run these as read-only checks after delivery authorization and before any collector authorization. Do not install missing tools, add the operator to a group, start Docker, source a new environment file, or change permissions. A missing command, denied Docker socket, unreadable checkout, or inaccessible evidence destination is `UNKNOWN`/`BLOCKED`, not a reason to use `sudo`.
+
+### Identity, shell, and Node
+
+The collector uses Bash features including `coproc`, `mapfile`, `read -N`, `[[ ]]`, arrays, and lowercase expansion. Require Bash 4 or newer; the reviewed/tested Linux target should use the existing system Bash 5.x. The helper uses CommonJS, `node:` built-ins, optional chaining, `String.matchAll`, and `Array.prototype.at`; use the existing tested Node 20 LTS or a compatible Node at least 16.6. Do not install or switch runtimes for this check.
+
+```bash
+id -u; id -g; id -un; id -G; bash --version; node --version; bash -n "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh"; node --check "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js"; node --check "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js"
+```
+
+Record the UID, GID, username, group IDs, Bash version, and Node version in the private operator record. Do not paste a full login environment or shell configuration into the evidence bundle.
+
+### Required command availability
+
+The collector's external command allowlist is: `awk`, `curl`, `date`, `df`, `docker`, `git`, `id`, `node`, `ps`, `psql`, `sha256sum`, `stat`, `systemctl`, and GNU `timeout`. `bash` is the interpreter. `printf`, `command`, `kill`, `mapfile`, `coproc`, `read`, `wait`, and `test` are shell built-ins. `psql` is needed only when an already configured operator selection is intentionally available; the other commands are required by the normal path.
+
+```bash
+for command_name in awk curl date df docker git id node ps psql sha256sum stat systemctl timeout; do command -v "$command_name" >/dev/null 2>&1 || printf 'MISSING %s\n' "$command_name"; done
+```
+
+The script requires GNU-style `stat -c`, GNU `timeout` with `--kill-after`, Docker CLI access to the existing daemon, systemd `systemctl`, and a Linux `/proc`/cgroup view compatible with the fixed `ps` command. Do not substitute a different command or wrapper.
+
+### Read-only visibility and permissions
+
+Verify Docker visibility without `sudo` and without `docker exec`, Compose configuration rendering, logs, environment inspection, or full inspect output:
+
+```bash
+docker version --format '{{.Server.Version}}'; docker container ls --filter status=running --format '{{.ID}}|{{.Names}}'
+```
+
+Verify that the operator can traverse/read the isolated delivery root and the existing checkout. The supplied checkout path `/home/tilo/apps/clashcookies-prod` and legacy wrapper path `/home/tilo/deploy-prod.sh` are operator-reported context and still require live identity verification; they do not confirm any protected lock, credential, executor, or release-record path.
+
+```bash
+test -r "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh" && test -r "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js" && test -r "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js" && test -d "$DISCOVERY_APP_DIR" && test -r "$DISCOVERY_APP_DIR" && test -x "$DISCOVERY_APP_DIR"
+```
+
+Verify checkout identity without fetching, checking out, refreshing, or modifying it:
+
+```bash
+DISCOVERY_APP_DIR=/home/tilo/apps/clashcookies-prod; git -C "$DISCOVERY_APP_DIR" rev-parse --show-toplevel; git -C "$DISCOVERY_APP_DIR" rev-parse --verify HEAD; GIT_OPTIONAL_LOCKS=0 git -C "$DISCOVERY_APP_DIR" status --porcelain=v1 -uall --branch
+```
+
+The output must be reviewed against the separately supplied production identity. Existing tracked changes, unexpected branch/HEAD, or inability to establish the checkout identity is a stop condition. Preserve all untracked files; do not clean them.
+
+### Evidence destination
+
+Choose a private, encrypted destination outside the VM, outside the repository, and outside ordinary chat or shared-drive history. The destination must be writable by the operator and restricted to the operator/review group under the applicable retention policy. Verify the local Windows ACL before collection; do not put the JSON Lines file on the VM.
+
+```cmd
+set "EVIDENCE_DIR=%USERPROFILE%\clashcookies-production-evidence-20261117"&&if not exist "%EVIDENCE_DIR%" mkdir "%EVIDENCE_DIR%"&&icacls "%EVIDENCE_DIR%"
+```
+
+If the ACL is broader than the approved evidence policy, stop. Do not loosen or repair it as part of discovery; use an already approved destination. The exact capture method may be the operator's existing secure terminal/SSH workflow, but the final original stdout must land in this private destination without being edited.
+
+## 4. Independently identify protected resource paths
+
+The following locations are **UNKNOWN until independently established**. The paths shown in older examples, including `/run/lock/clashcookies-prod-deploy.lock`, `/run/lock/clashcookies-prod-migration.lock`, `/home/tilo/deploy-assets/REVIEWED-HELPER.sh`, `/etc/clashcookies/production-db.env`, and `/var/lib/clashcookies/release-record.ndjson`, are not confirmed VM configuration and must not be copied into the invocation merely because they appear plausible.
+
+Identify each path from an approved deployment inventory, the exact live wrapper's reviewed control flow, or the corresponding reviewed service/runner configuration. Do not execute the wrapper, read credential contents, dump environments, print process arguments, search the whole filesystem, or make a new path to satisfy the collector.
+
+1. **Legacy deployment wrapper:** independently confirm the exact existing wrapper that the deployment operator uses, then set `DISCOVERY_WRAPPER_PATH` to that regular file. The collector's marker scan is only a redacted heuristic; a `wrapper_control_flow` `PASS` is not proof that the wrapper participates in the repository lock contract.
+2. **Shared release lock and parent:** from a controlled review of the wrapper and [the lock contract](../../ops/deploy/deployment-lock.md), identify the one host-level lock directory and its parent. Verify metadata for both without creating, acquiring, deleting, or repairing the lock. The lock path must remain `UNKNOWN` if the wrapper does not reveal a canonical path.
+3. **Migration runner lock:** identify the distinct inner lock from the reviewed migration-runner configuration. It must not equal the release lock and must not be inferred from a filename. Do not acquire it.
+4. **Protected deployment executor:** identify the exact immutable helper invoked by the reviewed deployment path. Verify only regular-file metadata and, if the operator's approved record has one, the expected SHA-256. Never execute it or print its contents.
+5. **Protected database credential source:** identify the existing source used by the reviewed migration runner without reading it. Verify only path, regular-file type, owner, group, and mode. Do not `cat`, `source`, `grep`, or export its value. A production `.env` with permissive mode is not an acceptable credential boundary.
+6. **Append-only release record:** identify the exact existing record target and parent from the reviewed deployment path. Verify metadata only; do not create, append, truncate, rotate, or test-write it. Existence and mode do not prove append-only protection or release readiness.
+
+For every unconfirmed location, omit the corresponding variable only after noting that the current merged script has a non-empty default for `DISCOVERY_LOCK_PATH`. Because that default is an unverified guess, the operator must not rely on omission for the shared lock: either provide an independently confirmed path or stop and classify the protected-lock gate `UNKNOWN/BLOCKED`. Unknown locations must remain unknown in the review record.
+
+## 5. Exact bounded invocation — proposed, not executed
+
+This is the only proposed collector invocation. It is intentionally one bounded call and must not be run by Codex or as part of this documentation task. The operator may execute it only after the separate authorization gate in section 8 is approved.
+
+Before approval, replace only values independently verified by the operator. Do not use shell expansion to discover paths, do not source credentials, and do not set `DISCOVERY_PG_SERVICE` or any `PG*` value unless an existing least-privilege selection has already been approved. Keep the fixed limits exactly as shown.
+
+```bash
+DISCOVERY_MAX_OUTPUT_BYTES=131072 DISCOVERY_MAX_COMMAND_SECONDS=5 DISCOVERY_MAX_CONTAINERS=64 DISCOVERY_APP_DIR=/home/tilo/apps/clashcookies-prod DISCOVERY_WRAPPER_PATH=/home/tilo/deploy-prod.sh DISCOVERY_LOCK_PATH=/operator-verified/shared-release-lock DISCOVERY_MIGRATION_LOCK_PATH=/operator-verified/migration-runner-lock DISCOVERY_EXECUTOR_PATH=/operator-verified/immutable-executor DISCOVERY_CREDENTIAL_PATH=/operator-verified/protected-db-credential DISCOVERY_RELEASE_RECORD_PATH=/operator-verified/append-only-release-record bash /operator-approved/private/path/production-vm-discovery-1cb81528/ops/deploy/discovery/production-vm-discovery.sh
+```
+
+The `/home/tilo/...` values are the supplied operator context, not a substitute for the checkout/wrapper identity checks. Every `/operator-verified/...` and `/operator-approved/...` value is a placeholder and must be replaced or the invocation must not proceed. If any path, command, permission, Docker identity, or evidence destination is unresolved, stop before this command.
+
+The invocation must not be wrapped with `sudo`, `tee` to a VM file, `bash -c` string concatenation, `env` dumps, `docker exec`, `docker compose`, the legacy wrapper, a backup service, a timer, a migration runner, or any cleanup command. A normal collector completion with `UNKNOWN` records is not a successful release preflight.
+
+## 6. Evidence validation and secure handling
+
+The collector emits one JSON object per line. The original stdout is the evidence artifact; do not edit it in place. Preserve its source commit, the three file hashes, transfer time, operator identity record, collector start time, capture method, and SHA-256 of the original file in a separate provenance record. The script's `observed_at` is the collection start timestamp, not an independently measured timestamp for every probe.
+
+Validate offline on the private Windows workstation. The validator must reject blank lines, malformed JSON, duplicate or missing required fields, an unexpected schema, statuses outside `PASS`/`FAIL`/`UNKNOWN`, unbounded detail, or any record other than the collector's documented shape. It should print only counts and validation status, never the records themselves.
+
+```cmd
+set "EVIDENCE_FILE=%EVIDENCE_DIR%\production-vm-discovery.ndjson"&&node -e "const fs=require('fs'),p=process.argv[1],a=fs.readFileSync(p,'utf8').split(/\r?\n/);if(a[a.length-1]==='')a.pop();if(!a.length)throw Error('empty evidence');let n=0;for(const line of a){if(!line.trim())throw Error('blank line');const r=JSON.parse(line),k=Object.keys(r).sort().join(',');if(k!=='detail,evidence,observed_at,provenance,schema,status'||r.schema!=='clashcookies.production-vm-discovery.v1'||!r.evidence||!['PASS','FAIL','UNKNOWN'].includes(r.status)||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(r.observed_at)||r.provenance!=='live-vm-read-only'||typeof r.detail!=='string'||r.detail.length>4096)throw Error('schema/status/detail violation');n++}console.log('VALID JSONL records='+n)" "%EVIDENCE_FILE%"
+```
+
+Perform a human redaction review before sharing any derivative. Confirm that the original and derivative contain no passwords, database URLs, tokens, private keys, environment values, process arguments, full Docker labels/inspect data, private monitoring URLs, credential paths that policy treats as sensitive, or wrapper/configuration source. The collector is designed not to emit these, but validation is still required.
+
+If stdout is truncated, interrupted, contains malformed records, or fails schema validation, keep the original in a restricted quarantine location, mark the bundle `INCOMPLETE` or `MALFORMED`, and do not repair, concatenate, or hand-edit it. Do not rerun ad hoc; a rerun requires a new authorization and a new provenance record. A sanitized derivative must reference the original artifact hash and must never replace it.
+
+Transfer only the redacted derivative and its provenance through an approved encrypted channel. Retain the original and derivative for the approved retention period with access logging; expire them only under that policy. Never upload raw evidence to a public issue, chat, paste service, or repository.
+
+## 7. Post-collection review and classifications
+
+Review each record against the current `dev` versions of the workflow, architecture and priority documents, observability/deployment contracts, backup roadmap, Phase 1 diagnostic, Phase 2A diagnostic, and [the discovery guide](../../ops/deploy/discovery/production-vm-discovery.md). Record the following separately:
+
+- `PASS`: only the bounded probe described by that record succeeded. It is not a release PASS, a singleton proof, a lock-cooperation proof, an immutable-file proof, an append-only proof, a backup-recovery proof, or authorization.
+- `UNKNOWN`: the command was unavailable/denied/timed out, a path was absent or unconfigured, output was malformed, a prerequisite was not independently established, or the result cannot distinguish safe from unsafe state.
+- `FAIL`: the probe observed a contradictory or unsafe condition, such as a non-200 health response, a tracked checkout change, a non-canonical runtime candidate, a symlinked protected path, an enabled backup timer, or an uncorrelated potential runtime process.
+- `BLOCKED`: an authorization, identity, ownership, recovery, staging, or release gate is not closed. `BLOCKED` is an operator/reviewer decision and must not be converted to `PASS` because the collector completed.
+
+The review checklist must explicitly cover:
+
+1. Source commit and all three file hashes match; relative structure is intact; no production checkout was modified.
+2. Operator UID/GID/groups, Bash/Node compatibility, command availability, Docker visibility, and file traverse/read permissions are recorded.
+3. Checkout HEAD, branch/detached state, tracked cleanliness, and untracked-file inventory are reviewed without cleaning anything.
+4. Wrapper identity and redacted control-flow findings are reviewed against the lock contract; marker counts are not treated as live cooperation.
+5. Shared lock, parent, migration lock, executor, credential source, and release-record paths are independently identified or remain `UNKNOWN`.
+6. Runtime identity has exactly one canonical candidate and complete PID/cgroup correlation; any ambiguity remains `UNKNOWN`/`BLOCKED`.
+7. Database identity, if queried, is the intended production identity and read-only; migration count is descriptive only. No database contents, grants, migrations, or writes were accessed.
+8. Fresh `/livez` and `/healthz`, disk/inode headroom, monitoring, backup service/timer state, staging residuals, and any failures are reviewed.
+9. Backup freshness, off-host retrieval/restore, recovery-key custody, monitoring, staging waiver, migration recovery, final release diff, and release approval remain separate gates.
+10. The evidence bundle is sanitized, provenance-preserving, retained securely, and not treated as permission to deploy.
+
+## 8. Separate authorization gate
+
+Two decisions are required and must be recorded separately:
+
+1. **Delivery authorization:** permission to transfer exactly the three pinned files and, if necessary, create one named isolated operator staging directory outside the production checkout. This does not authorize discovery execution.
+2. **Discovery execution authorization:** explicit approval for one bounded invocation using the verified paths, operator account, existing read-only Docker visibility, optional existing read-only PostgreSQL selection, and approved private evidence destination. It does not authorize deployment, migration, backup/timer activation, wrapper execution, permission changes, staging cleanup, or release promotion.
+
+If either authorization is absent, if a prerequisite is unresolved, or if any stop condition occurs, stop with `UNKNOWN`/`BLOCKED` and return the review record. Do not merge a future code change, enable `PHASE1_EXECUTION_ENABLED`, merge release PR #1983, or promote `dev` to `main` as part of this preflight.
+
+## 9. Script review findings — documented separately from this docs change
+
+The merged scripts were reviewed as-is. No code changes are included in this documentation task.
+
+- **Heuristic wrapper PASS:** `wrapper_control_flow` can report `PASS` from marker counts and line ordering, including markers in comments or non-executed branches. The guide warns that this is not proof, but the status is still easy to misread. Treat it as metadata/`UNKNOWN` for release decisions and require controlled review of the exact wrapper.
+- **Unverified lock default:** `DISCOVERY_LOCK_PATH` has a non-empty default even though the live shared lock location is not confirmed. Never omit this variable and assume the default is authoritative; an independently identified path is required. A future code fix should make an unknown lock explicitly empty/`UNKNOWN` rather than probing a guessed path.
+- **Backup service classification:** a service state that is not `active` is currently emitted as `PASS`, including a possible `failed` state. Record the raw bounded state for review and never treat this as backup readiness. A future code fix should distinguish `inactive/success`, `failed`, `not-found`, and command failure.
+- **Backup timer classification:** `systemctl is-enabled` output/exit handling can treat a missing or otherwise ambiguous unit as a safe `PASS`, and it does not by itself prove that the timer is inactive. Require separate active-state review; a future code fix should distinguish `disabled`, `not-found`, `static`, and active state.
+- **PostgreSQL address label:** the emitted `server_address_class=loopback_or_local` label is too broad for every non-empty address because the address is intentionally not emitted. Treat the database record as identity evidence requiring review, not as proof of local/loopback placement.
+- **Path inspection race:** shell path checks and wrapper read/hash operations are not one atomic descriptor-based inspection. Treat a concurrent path replacement or a changing wrapper as `UNKNOWN`; do not use the collector as proof of immutable path ownership.
+- **Runtime scope:** the adapter fail-closes on multiple plausible candidates and uncorrelated `node`/`nodejs`/`npm`/`yarn` processes, but process-name matching cannot prove that no differently named independent runtime exists. Preserve the separate singleton gate.
+
+These findings are genuine follow-up review items, not silent code changes. They do not authorize bypassing the collector or weakening its disabled mutation boundary.
