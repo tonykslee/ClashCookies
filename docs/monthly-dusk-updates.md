@@ -48,7 +48,7 @@ Template values must be replaced before publication. Target one headline + 2–4
 
 ## Feature discovery and screenshots
 
-- Curate candidate announcements from the [feature-showcase library](feature-showcase/README.md) in addition to [feature history](feature-history.md). Prefer a short command spotlight with **1–3 privacy-reviewed screenshots** for impactful features; do not add screenshots solely for decoration.
+- Curate candidate announcements from the [feature-showcase library](feature-showcase/README.md) and its [screenshot backlog](feature-showcase/screenshot-backlog.md) in addition to [feature history](feature-history.md). Only use screenshots explicitly marked **Current** after accuracy/privacy review; exclude **Outdated**, **Deprecated**, and uncaptured examples until refreshed. Prefer a short command spotlight with **1–3 privacy-reviewed screenshots** for impactful features; do not add screenshots solely for decoration.
 - Reuse the [existing command spotlight standard template](templates/command-spotlight.md) for standalone education posts. Include direct slash-command examples, intended audience, permission/access restrictions, one important example state, and a pointer to `/help` when relevant.
 - An approved image captured from synthetic fixtures or `dev` may illustrate the UI but must be accurately labeled. Never claim deployment or earning/issuance from a screenshot; verify availability separately.
 - The monthly newsletter and individual spotlights are distinct communications. Neither is auto-published. The owner reviews a complete preview and chooses **Approve / Revise / Skip** for each public post.

@@ -130,7 +130,7 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Initial implementation slice:** Support `linklist-01` normal Compo indicators, `linklist-02` mixed surplus/deficit, and `linklist-03` missing/partial ACTUAL data. Route synthetic view models into existing `LinkListRender` helpers, preserve actual embed formatting, and avoid live interactions/buttons unless proved inert/sandboxed. Unknown refs reply privately with valid suggestions.
 - **Done when:** The user invokes `/example ref:linklist-01` in an authorized Discord context and sees a capture-ready, correctly labeled example using the real renderer; all three refs are stable, tests verify non-admin denial and absence of external side effects, and an example feature showcase is committed and reviewed. No code merge or production deployment is authorized by this backlog entry.
 
-### FB-011 — Command discovery and spotlight content library
+### FB-011 — Command discovery, spotlight content library and screenshot backfill
 
 - **Status:** Agreed editorial/process goal; posting automation is not implemented.
 - **Request:** Curate concise command spotlights and sanitized visuals so Rising Dawn members and leaders discover useful Dusk capabilities instead of relying on finding commands through `/help`.
