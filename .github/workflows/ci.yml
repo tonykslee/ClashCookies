@@ -19,22 +19,67 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Keep the same "checks" job/check-run for branch protection. Only the
+      # expensive steps are skipped for narrowly recognized Markdown changes.
+      - name: Classify changed files
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          run_full=true
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+
+          # Initial pushes and uncertain change ranges run full CI.
+          if [[ -n "$base" && "$base" != "0000000000000000000000000000000000000000" ]]; then
+            changed_files="$(git diff --name-only "$base" "$GITHUB_SHA")"
+            if [[ -n "$changed_files" ]]; then
+              run_full=false
+              while IFS= read -r file; do
+                case "$file" in
+                  docs/*.md|docs/*.mdx|README.md|CHANGELOG.md|CONTRIBUTING.md) ;;
+                  *) run_full=true; break ;;
+                esac
+              done <<< "$changed_files"
+            fi
+          fi
+
+          echo "run_full=$run_full" >> "$GITHUB_OUTPUT"
+          if [[ "$run_full" == "true" ]]; then
+            echo "Full CI required"
+          else
+            echo "Documentation-only change: skipping npm install, lint, test and build"
+          fi
 
       - name: Setup Node.js
+        if: steps.changes.outputs.run_full == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
+        if: steps.changes.outputs.run_full == 'true'
         run: npm ci
 
       - name: Lint
+        if: steps.changes.outputs.run_full == 'true'
         run: npm run lint
 
       - name: Test
+        if: steps.changes.outputs.run_full == 'true'
         run: npm run test
 
       - name: Build
+        if: steps.changes.outputs.run_full == 'true'
         run: npm run build
-
