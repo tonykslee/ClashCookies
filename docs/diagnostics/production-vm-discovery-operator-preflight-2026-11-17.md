@@ -29,10 +29,10 @@ The Node helper imports the adapter through `../direct-docker-adapter.js`; deliv
 
 ### Local Windows CMD — prepare and verify the three-file archive
 
-Use a private local staging location outside the repository. The following commands are preparation only; they do not contact the VM or execute discovery. Choose a new archive name and stop if it already exists rather than overwriting it.
+Use a private local staging location outside the repository. The following command is preparation only; it does not contact the VM or execute discovery. It intentionally uses literal paths and the pre-existing `%USERPROFILE%` value, so it has no same-line dependency on variables set earlier. Stop if the archive already exists rather than overwriting it.
 
 ```cmd
-set "REPO=C:\Projects\ClashCookies"&&set "SOURCE_COMMIT=1cb81528ea34dd25f51613557d6f6030fddd0b3a"&&set "ARCHIVE=%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar"&&if exist "%ARCHIVE%" (echo STOP: archive already exists&&exit /b 1) else (git -C "%REPO%" cat-file -e "%SOURCE_COMMIT%^{commit}"&&git -C "%REPO%" archive --format=tar --output="%ARCHIVE%" "%SOURCE_COMMIT%" ops/deploy/discovery/production-vm-discovery.sh ops/deploy/discovery/runtime-contract-validator.js ops/deploy/direct-docker-adapter.js&&tar -tf "%ARCHIVE%")
+if exist "%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar" (echo STOP: archive already exists&&exit /b 1) else (git -C "C:\Projects\ClashCookies" cat-file -e "1cb81528ea34dd25f51613557d6f6030fddd0b3a^{commit}"&&git -C "C:\Projects\ClashCookies" archive --format=tar --output="%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar" "1cb81528ea34dd25f51613557d6f6030fddd0b3a" ops/deploy/discovery/production-vm-discovery.sh ops/deploy/discovery/runtime-contract-validator.js ops/deploy/direct-docker-adapter.js&&tar -tf "%USERPROFILE%\clashcookies-production-vm-discovery-1cb81528.tar")
 ```
 
 The archive listing must contain exactly the three pinned paths and no symlinks. Verify the extracted files or an equivalent approved transfer copy with `certutil -hashfile <file> SHA256` against the table above. Preserve the archive and its source-commit/hash record as delivery provenance; do not edit files to change line endings.
@@ -76,7 +76,7 @@ Run these as read-only checks after delivery authorization and before any collec
 The collector uses Bash features including `coproc`, `mapfile`, `read -N`, `[[ ]]`, arrays, and lowercase expansion. Require Bash 4 or newer; the reviewed/tested Linux target should use the existing system Bash 5.x. The helper uses CommonJS, `node:` built-ins, optional chaining, `String.matchAll`, and `Array.prototype.at`; use the existing tested Node 20 LTS or a compatible Node at least 16.6. Do not install or switch runtimes for this check.
 
 ```bash
-id -u; id -g; id -un; id -G; bash --version; node --version; bash -n "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh"; node --check "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js"; node --check "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js"
+DISCOVERY_ROOT=/operator-approved/private/path/production-vm-discovery-1cb81528; id -u; id -g; id -un; id -G; bash --version; node --version; bash -n "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh"; node --check "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js"; node --check "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js"
 ```
 
 Record the UID, GID, username, group IDs, Bash version, and Node version in the private operator record. Do not paste a full login environment or shell configuration into the evidence bundle.
@@ -102,7 +102,7 @@ docker version --format '{{.Server.Version}}'; docker container ls --filter stat
 Verify that the operator can traverse/read the isolated delivery root and the existing checkout. The supplied checkout path `/home/tilo/apps/clashcookies-prod` and legacy wrapper path `/home/tilo/deploy-prod.sh` are operator-reported context and still require live identity verification; they do not confirm any protected lock, credential, executor, or release-record path.
 
 ```bash
-test -r "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh" && test -r "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js" && test -r "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js" && test -d "$DISCOVERY_APP_DIR" && test -r "$DISCOVERY_APP_DIR" && test -x "$DISCOVERY_APP_DIR"
+DISCOVERY_ROOT=/operator-approved/private/path/production-vm-discovery-1cb81528; DISCOVERY_APP_DIR=/home/tilo/apps/clashcookies-prod; test -r "$DISCOVERY_ROOT/ops/deploy/discovery/production-vm-discovery.sh" && test -r "$DISCOVERY_ROOT/ops/deploy/discovery/runtime-contract-validator.js" && test -r "$DISCOVERY_ROOT/ops/deploy/direct-docker-adapter.js" && test -d "$DISCOVERY_APP_DIR" && test -r "$DISCOVERY_APP_DIR" && test -x "$DISCOVERY_APP_DIR"
 ```
 
 Verify checkout identity without fetching, checking out, refreshing, or modifying it:
@@ -118,10 +118,10 @@ The output must be reviewed against the separately supplied production identity.
 Choose a private, encrypted destination outside the VM, outside the repository, and outside ordinary chat or shared-drive history. The destination must be writable by the operator and restricted to the operator/review group under the applicable retention policy. Verify the local Windows ACL before collection; do not put the JSON Lines file on the VM.
 
 ```cmd
-set "EVIDENCE_DIR=%USERPROFILE%\clashcookies-production-evidence-20261117"&&if not exist "%EVIDENCE_DIR%" mkdir "%EVIDENCE_DIR%"&&icacls "%EVIDENCE_DIR%"
+if not exist "%USERPROFILE%\clashcookies-production-evidence-20261117" mkdir "%USERPROFILE%\clashcookies-production-evidence-20261117"&&icacls "%USERPROFILE%\clashcookies-production-evidence-20261117"
 ```
 
-If the ACL is broader than the approved evidence policy, stop. Do not loosen or repair it as part of discovery; use an already approved destination. The exact capture method may be the operator's existing secure terminal/SSH workflow, but the final original stdout must land in this private destination without being edited.
+If the ACL is broader than the approved evidence policy, stop. Do not loosen or repair it as part of discovery; use an already approved destination. Use the concrete stdout-only capture method in section 5; the final original stdout must land in this private destination without being edited.
 
 ## 4. Independently identify protected resource paths
 
@@ -142,6 +142,20 @@ For every unconfirmed location, omit the corresponding variable only after notin
 
 This is the only proposed collector invocation. It is intentionally one bounded call and must not be run by Codex or as part of this documentation task. The operator may execute it only after the separate authorization gate in section 8 is approved.
 
+### Capture method — existing approved SSH client
+
+Use the operator's existing approved noninteractive SSH client/session in **remote-command mode**, with its stdout-capture feature configured before execution to write the remote command's stdout byte-for-byte to the already approved local evidence file outside the VM. The operator must supply the existing host, identity, and local destination; this document intentionally invents none of them. Do not open an interactive shell, use a terminal transcript, copy/paste output, or redirect stdout to a VM path.
+
+Configure the client in this order:
+
+1. Select the operator's existing approved production host and identity from its already authorized configuration; do not type or disclose credentials here.
+2. Select `remote command`/noninteractive execution and configure **stdout only** capture to the restricted local evidence file. Keep SSH diagnostics/stderr separate and do not merge them into the evidence file.
+3. Confirm the local file is outside the VM, private under the approved ACL, and either absent or protected by the client's no-overwrite policy. Capture authorization is separate from discovery execution authorization.
+4. Paste the single remote command below as the remote command. Do not add `tee`, `sudo`, an interactive shell, a wrapper, or any other command.
+5. After the client reports remote command completion, close the capture without editing the file and preserve the original artifact and provenance record.
+
+If the client cannot guarantee stdout-only capture, cannot write the local file, adds banners/prompts to the captured stream, or disconnects before a complete JSON Lines stream is received, stop and classify capture `INCOMPLETE`/`BLOCKED`. That is a capture failure, not a valid collector `UNKNOWN` result. A valid `UNKNOWN` is a complete schema-valid record emitted by the collector for one bounded probe.
+
 Before approval, replace only values independently verified by the operator. Do not use shell expansion to discover paths, do not source credentials, and do not set `DISCOVERY_PG_SERVICE` or any `PG*` value unless an existing least-privilege selection has already been approved. Keep the fixed limits exactly as shown.
 
 ```bash
@@ -159,7 +173,7 @@ The collector emits one JSON object per line. The original stdout is the evidenc
 Validate offline on the private Windows workstation. The validator must reject blank lines, malformed JSON, duplicate or missing required fields, an unexpected schema, statuses outside `PASS`/`FAIL`/`UNKNOWN`, unbounded detail, or any record other than the collector's documented shape. It should print only counts and validation status, never the records themselves.
 
 ```cmd
-set "EVIDENCE_FILE=%EVIDENCE_DIR%\production-vm-discovery.ndjson"&&node -e "const fs=require('fs'),p=process.argv[1],a=fs.readFileSync(p,'utf8').split(/\r?\n/);if(a[a.length-1]==='')a.pop();if(!a.length)throw Error('empty evidence');let n=0;for(const line of a){if(!line.trim())throw Error('blank line');const r=JSON.parse(line),k=Object.keys(r).sort().join(',');if(k!=='detail,evidence,observed_at,provenance,schema,status'||r.schema!=='clashcookies.production-vm-discovery.v1'||!r.evidence||!['PASS','FAIL','UNKNOWN'].includes(r.status)||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(r.observed_at)||r.provenance!=='live-vm-read-only'||typeof r.detail!=='string'||r.detail.length>4096)throw Error('schema/status/detail violation');n++}console.log('VALID JSONL records='+n)" "%EVIDENCE_FILE%"
+node -e "const fs=require('fs'),p=process.argv[1],a=fs.readFileSync(p,'utf8').split(/\r?\n/);if(a[a.length-1]==='')a.pop();if(!a.length)throw Error('empty evidence');let n=0;for(const line of a){if(!line.trim())throw Error('blank line');const r=JSON.parse(line),k=Object.keys(r).sort().join(',');if(k!=='detail,evidence,observed_at,provenance,schema,status'||r.schema!=='clashcookies.production-vm-discovery.v1'||!r.evidence||!['PASS','FAIL','UNKNOWN'].includes(r.status)||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(r.observed_at)||r.provenance!=='live-vm-read-only'||typeof r.detail!=='string'||r.detail.length>4096)throw Error('schema/status/detail violation');n++}console.log('VALID JSONL records='+n)" "%USERPROFILE%\clashcookies-production-evidence-20261117\production-vm-discovery.ndjson"
 ```
 
 Perform a human redaction review before sharing any derivative. Confirm that the original and derivative contain no passwords, database URLs, tokens, private keys, environment values, process arguments, full Docker labels/inspect data, private monitoring URLs, credential paths that policy treats as sensitive, or wrapper/configuration source. The collector is designed not to emit these, but validation is still required.
@@ -192,10 +206,11 @@ The review checklist must explicitly cover:
 
 ## 8. Separate authorization gate
 
-Two decisions are required and must be recorded separately:
+Three decisions are required and must be recorded separately:
 
 1. **Delivery authorization:** permission to transfer exactly the three pinned files and, if necessary, create one named isolated operator staging directory outside the production checkout. This does not authorize discovery execution.
-2. **Discovery execution authorization:** explicit approval for one bounded invocation using the verified paths, operator account, existing read-only Docker visibility, optional existing read-only PostgreSQL selection, and approved private evidence destination. It does not authorize deployment, migration, backup/timer activation, wrapper execution, permission changes, staging cleanup, or release promotion.
+2. **Evidence capture authorization:** permission to configure the existing approved SSH client's stdout-only remote-command capture to the approved local destination. This does not authorize the remote command or any production access beyond the separately approved execution.
+3. **Discovery execution authorization:** explicit approval for one bounded invocation using the verified paths, operator account, existing read-only Docker visibility, optional existing read-only PostgreSQL selection, and approved private evidence destination. It does not authorize deployment, migration, backup/timer activation, wrapper execution, permission changes, staging cleanup, or release promotion.
 
 If either authorization is absent, if a prerequisite is unresolved, or if any stop condition occurs, stop with `UNKNOWN`/`BLOCKED` and return the review record. Do not merge a future code change, enable `PHASE1_EXECUTION_ENABLED`, merge release PR #1983, or promote `dev` to `main` as part of this preflight.
 
