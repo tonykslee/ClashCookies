@@ -2,7 +2,7 @@
 
 **Repository:** `tonykslee/ClashCookies`
 
-**Base reviewed:** `dev` at `83c1fd6641f1d4803a8a66f95901dc9fde244982`
+**Base reviewed:** `dev` at `650c6c37c3e8c7f5a1d94490bdb169906e6f0494`
 
 **Assessment date:** 2026-11-17 (repository and documentation review)
 **Status:** installation readiness **BLOCKED**; documentation and repository evidence only
@@ -203,6 +203,82 @@ No gate grants permission for a later gate. Each gate needs a named approver, ex
 | Gate 4 — Non-migration rehearsal | Separately approved no-Prisma target; outer-lock coordination; candidate build; direct-Docker singleton and health-gated handoff; bounded rollback evidence | Fixture/rehearsal planning can be offline; the real VM rehearsal cannot | Yes. Runtime stop/start and health validation require explicit scope. |
 | Gate 5 — Migration-capable release readiness | Exact migration diff and existing-schema evidence; database identity/baseline; migration/recovery authority; fresh backup/retrieval/restore and key custody; staging pass or waiver; monitoring; immutable helper/lock/release-record proof; final release review | Migration diff review, tests and evidence review can be offline; production DB/runtime readiness cannot | Yes, including a separate database-write and runtime-promotion authorization. |
 | Gate 6 — `dev` to `main` promotion | Fresh full release diff, CI, migration review, production readiness evidence and explicit owner approval; target SHA must be fixed | Diff/CI/review can be offline; release promotion and production rollout cannot | Yes. This is separate from every installation gate and does not authorize changing `main` as part of this document PR. |
+
+## Gate 1 read-only production verification packet
+
+**Packet status:** prepared offline; **NOT AUTHORIZED and NOT EXECUTED**. This packet is scoped to one fresh, bounded read-only verification of the existing production environment. It does not authorize VM access by itself. The packet is based on `origin/dev` `650c6c37c3e8c7f5a1d94490bdb169906e6f0494`, the merged discovery collector from PR #2027 at `1cb81528ea34dd25f51613557d6f6030fddd0b3a`, and the dated operator evidence reconciled above.
+
+### 1. Remote identity and access method
+
+- Target: the existing operator-managed SSH alias `clash-vm`, remote account `tilo`. The alias, account, UID/GID, groups and current authentication state are dated operator evidence and **must be freshly revalidated**; they are not assumed to be current.
+- Access: one noninteractive SSH remote-command invocation with `BatchMode=yes`, `RequestTTY=no`, no interactive shell, no `sudo`, no agent forwarding and no shell-profile-dependent behavior. The operator owns the SSH client and confirms the target host before execution.
+- The command must run as the named account. A failed identity check, unexpected host/account, privilege expansion, or need for `sudo` is an immediate stop.
+
+### 2. Pinned collector invocation
+
+The local pinned archive is present and hashes to `8138275d0f18451ea02955357c3f2e7c22c729175c575033aae64bff7dc81015`; it contains exactly the three files approved by PR #2027. The previously reported remote extraction path is an operator-reported staging candidate, not independently reverified in this task. **No new delivery or extraction is part of this packet.** If the remote files or hashes do not match, stop and request a separate delivery decision.
+
+After the remote staging path and every protected candidate path have been independently confirmed, the single proposed remote command is:
+
+```text
+ssh -T -o BatchMode=yes -o RequestTTY=no clash-vm "env DISCOVERY_APP_DIR=/home/tilo/apps/clashcookies-prod DISCOVERY_WRAPPER_PATH=/home/tilo/deploy-prod.sh DISCOVERY_LOCK_PATH=<independently-confirmed-shared-lock-path> DISCOVERY_MIGRATION_LOCK_PATH=<independently-confirmed-migration-lock-path> DISCOVERY_EXECUTOR_PATH=<independently-confirmed-immutable-executor-path> DISCOVERY_CREDENTIAL_PATH=<independently-confirmed-credential-metadata-path> DISCOVERY_RELEASE_RECORD_PATH=<independently-confirmed-release-record-path> bash /home/tilo/.clashcookies-discovery/production-vm-discovery-1cb81528/ops/deploy/discovery/production-vm-discovery.sh"
+```
+
+The angle-bracket values are mandatory operator substitutions, not defaults. If any path is unresolved, the collector must not run. In particular, the collector's non-empty shared-lock default must never be accepted as production configuration. `DISCOVERY_PG_SERVICE`/`PG*` selection is omitted by default; a separate least-privilege, read-only database authorization is required before adding it. The collector is invoked at most once, with its reviewed bounded-output and timeout behavior, and its JSONL stdout is the only requested remote result.
+
+### 3. Minimum read-only probes and allowed resources
+
+The collector or separately reviewed fixed probes may read only:
+
+| Probe | Allowed observation | Required classification |
+| --- | --- | --- |
+| Legacy wrapper | `/home/tilo/deploy-prod.sh` type, canonical path, owner/group, mode, size, digest, syntax and bounded static control-flow markers; no execution | `VERIFIED`, `OBSERVED`, `UNKNOWN` or `BLOCKED`; absence of canonical shared-lock participation is a failure against the contract |
+| Operator | Effective UID/GID, supplementary groups and bounded effective permissions needed for the named read-only paths | Fresh evidence bound to the executing process; missing or contradictory identity fails closed |
+| Checkout | `/home/tilo/apps/clashcookies-prod` path metadata, exact `HEAD`, branch/detached state, tracked cleanliness and bounded unknown-file inventory using `GIT_OPTIONAL_LOCKS=0` | `VERIFIED` only for the exact observed checkout; unknown files are preserved |
+| Runtime | Direct-Docker application identity, selected container metadata, singleton count, host PID/cgroup correlation and required published-port identity | `VERIFIED` only when list/inspect/process evidence is fresh and mutually consistent |
+| Database topology | Compose-managed PostgreSQL service/container identity and network/port relationship, without data or full inspect output | `OBSERVED`/`UNKNOWN` unless the topology is independently bound to the application |
+| Startup migration | Deployed startup artifact and bounded static/runtime evidence showing whether startup invokes migrations; never start the wrapper or app | `UNKNOWN` unless the artifact and behavior are directly evidenced |
+| Lock/release participation | Metadata and bounded static evidence for the shared deployment lock, separate migration lock and release-record path; no acquisition or write | `VERIFIED` only for independently identified paths and ownership/protection; otherwise `UNKNOWN/BLOCKED` |
+| Protected credentials | Candidate credential-source path type, canonicality, owner/group, mode, size and symlink status only | Contents, values and environment expansion are prohibited; unsafe metadata is a stop |
+| Executor/lock/release candidates | Candidate path metadata, parent-chain canonicality, owner/group, mode, size and symlink status | Candidate names are not configuration; unresolved or writable protected parents are `UNKNOWN/BLOCKED` |
+| Database identity/baseline | Server/database/role identity and migration baseline only, in a read-only transaction, and only after separate DB authorization with an operator-provided existing selection | No grants, schema/data reads, migration writes, locks, resets or credentials |
+| Health/operations | Fresh localhost `/livez` and `/healthz`, bounded monitoring/backup unit state, disk/inode metadata and staging presence/name evidence | No ping, timer activation, backup, cleanup or staging modification |
+
+### 4. Explicit exclusions
+
+No credential or `.env` contents; no environment dumps; no command-line arguments; no full Docker inspect or Compose configuration dump; no `docker exec`; no wrapper, app, Docker or PostgreSQL start/stop/restart; no deployment, migration, backup, timer activation, lock acquisition, release-record write, permission change, checkout/fetch, unknown-file deletion, staging change, evidence upload, or release promotion. A collector being installed, transferred or hash-verified does not authorize its execution.
+
+### 5. Evidence destination and redaction
+
+Evidence capture is a separate decision and is **not authorized or configured by this task**. If separately approved, capture must be stdout-only to the existing approved local ciphertext-only destination `%USERPROFILE%\clashcookies-production-evidence-20261117\<UTC-timestamp>-gate1-1cb81528.ndjson.age`, with separately retained provenance and stderr sidecars. The destination must be rechecked as canonical/non-reparse and private immediately before use. No plaintext evidence, private key, passphrase, credential, environment value, process argument or secret-bearing output may be retained or displayed. Existing operator/Codex reports about that directory are preparation evidence only.
+
+### 6. Maximum scope and stop conditions
+
+One SSH connection, one bounded collector call, one remote account, read-only commands only, no retry, no privilege escalation and no writes. Stop before or during execution if the host/account/SSH identity is unexpected; a protected path is unresolved; a default or guessed path would be used; the remote artifact hash differs; output is truncated, malformed, contradictory or secret-bearing; Docker/DB access would require broader privilege; a command would mutate state; a lock or release record would be created/touched; or any health, staging, backup or migration result cannot be classified without inference. Preserve partial evidence as incomplete and report the stop; do not rerun automatically.
+
+### 7. Rollback requirements
+
+No rollback is expected because Gate 1 performs no remote writes. If an unexpected mutation or partial capture is observed, stop immediately, preserve the bounded ciphertext/provenance as `INCOMPLETE` or `MALFORMED`, do not delete or repair remote artifacts, and escalate for owner-directed recovery. No database or runtime rollback is authorized by this packet.
+
+### 8. Facts that remain UNKNOWN until fresh approval and evidence
+
+Current SSH host identity and account permissions; exact live wrapper control flow and shared-lock participation; checkout SHA/cleanliness/unknown files; direct-Docker singleton and PID/cgroup identity; Compose database mapping; deployed startup migration behavior; exact outer/inner lock paths; immutable executor path/digest and parent protection; credential-source path and protection; release-record path and append-only protection; read-only DB identity and migration baseline; health/monitoring/backup/staging state; and any installation or release readiness conclusion. Dated operator evidence remains `OBSERVED`, not fresh `VERIFIED`, unless the new bounded evidence independently supports it.
+
+### 9. Separate authorization decisions and owner text
+
+- **Artifact delivery:** no new transfer or extraction is requested. If the pinned remote staging candidate is absent or mismatched, authorize a separate delivery-only action naming the exact archive SHA, destination, extraction root and verification steps. Delivery does not authorize capture or execution.
+- **Evidence capture:** not granted by this packet. Authorize separately only if the owner approves the exact local ciphertext destination, redaction rules, retention and stdout-only capture method. Capture does not authorize collector execution.
+- **Collector execution:** not granted by this packet. Authorize separately only after the remote identity, artifact, protected candidate paths, output limits and stop conditions above are reviewed. Collector execution does not authorize deployment, migration, backup, timer, lock, release-record or staging changes.
+
+The owner approval text, when and only when each decision is intended, is:
+
+```text
+I authorize exactly the named Gate 1 decision below for ClashCookies production, and no other action:
+[ ] Delivery only: transfer/extract the pinned PR #2027 artifact at SHA-256 8138275d0f18451ea02955357c3f2e7c22c729175c575033aae64bff7dc81015 to the separately named destination and verify the three expected files.
+[ ] Evidence capture only: capture one approved stdout-only, ciphertext-only result to the separately named local destination under the stated redaction and retention rules.
+[ ] Collector execution only: using the existing approved SSH access as the freshly verified named account, run exactly one bounded read-only collector invocation with independently confirmed paths; no sudo, TTY, wrapper/app execution, Docker/DB writes, secrets, locks, release records, migrations, backups, timers, staging changes or retries.
+UTC timestamp: ____________________   Approver: ____________________   Scope/evidence reference: ____________________
+```
 
 ## Outstanding `UNKNOWN` / `BLOCKED` items
 
