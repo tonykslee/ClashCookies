@@ -380,6 +380,22 @@ I authorize exactly one read-only Gate 1 protected-path prerequisite inspection 
 UTC timestamp: ____________________   Approver: ____________________   Evidence reference: ____________________
 ```
 
+## Offline local capture/provenance boundary — implemented, not production-authorized
+
+The repository now contains one narrowly scoped metadata owner, `ops/deploy/discovery/gate1-local-capture-boundary.js`. It accepts only an in-memory synthetic fixture, computes the complete-stream byte count and SHA-256, requires packet version `2026-11-17`, separates `source_identity` from `asserted_identity`, rejects nonzero exit/interruption/timeout/truncation/empty output, and delegates the final structural decision to the existing `gate1-prerequisite-validator.js`. It does not duplicate the validator, read or write files, invoke a process, initiate SSH, retry, access Docker/PostgreSQL, or enable a live capture path.
+
+The metadata contract is deliberately fail-closed:
+
+- `source_identity=SYNTHETIC_LOCAL_FIXTURE` is the only development source accepted; an asserted host/account string is retained separately and is never trusted.
+- `ssh_exit_status=0`, `stream_status=COMPLETE`, `eof_observed=true`, exact `stdout_bytes`, exact complete-stream `stdout_sha256`, nonempty output and `stdout_bytes <= 8,192` are required before structural validation.
+- `boundary`, `provenance` and `custody` remain `UNVERIFIED`. Caller fields such as `VERIFIED` or `AUTHORIZED` are rejected, not promoted.
+- `CaptureLedger` rejects duplicate attempt IDs and destination collisions in the offline model. It is metadata-only and is not a deployment lock, release record or append-only custody store.
+- `validateCiphertextDestination` checks the separately supplied approved/private/exclusive/regular/non-reparse/accessibility contract but does not authorize storage. `encryptSyntheticInMemory` accepts only an injected test encryptor and a syntactically valid age recipient; it does not call `age`, generate keys, persist plaintext, upload, overwrite or select a production identity.
+
+The existing backup `createAgeEncryptor` remains scoped to encrypted backup dump files and is not reused for evidence: it is path-based and coupled to the backup runner's temporary dump lifecycle. The local capture boundary therefore stops at an offline design/implementation boundary until a separately reviewed streaming age adapter and owner-approved ciphertext custody destination exist. No evidence file, temporary plaintext, credential, private key or production recipient was added.
+
+The trust boundary remains explicit: remote command output, transport completion/exit status, local capture metadata, host-key evidence, owner authorization, encryption/custody, structural validation and final human approval are separate facts. The implementation proves only synthetic local behavior. It does not prove a production host, SSH known-host binding, operator authorization, complete live capture, encryption custody, retention or human approval. Gate 1 remains **BLOCKED / NOT READY FOR EXECUTION**.
+
 ## Outstanding `UNKNOWN` / `BLOCKED` items
 
 1. The exact immutable entry-point path, executor file and approved SHA-256 are **UNKNOWN/BLOCKED**.
