@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const boundary = require("../ops/deploy/discovery/gate1-local-capture-boundary.js") as typeof import("../ops/deploy/discovery/gate1-local-capture-boundary.js");
 const custody = require("../ops/deploy/discovery/gate1-offline-age-custody.js") as typeof import("../ops/deploy/discovery/gate1-offline-age-custody.js");
@@ -73,11 +73,14 @@ function decryptFixture(fixture: ReturnType<typeof createAgeFixture>, ciphertext
   });
 }
 
-function fakeChild(setup: (child: EventEmitter & { stdin: { end: (value: Buffer) => void }; stdout: EventEmitter; stderr: EventEmitter; kill: () => void }) => void) {
-  const child = new EventEmitter() as EventEmitter & { stdin: { end: (value: Buffer) => void }; stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
-  child.stdin = { end: () => undefined };
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
+type FakeStream = EventEmitter & { end: (value: Buffer) => void };
+type FakeChild = EventEmitter & { stdin: FakeStream; stdout: FakeStream; stderr: FakeStream; kill: () => void };
+
+function fakeChild(setup: (child: FakeChild) => void) {
+  const child = new EventEmitter() as FakeChild;
+  child.stdin = Object.assign(new EventEmitter(), { end: () => undefined });
+  child.stdout = Object.assign(new EventEmitter(), { end: () => undefined });
+  child.stderr = Object.assign(new EventEmitter(), { end: () => undefined });
   child.kill = () => undefined;
   setImmediate(() => setup(child));
   return child;
@@ -181,6 +184,98 @@ describe.skipIf(!agePath || !ageKeygenPath)("Gate 1 offline age ciphertext custo
     } finally { rmSync(fixture.root, { recursive: true, force: true }); }
   });
 
+  it("does not unlink a destination whose identity changed before cleanup", async () => {
+    const fixture = createAgeFixture();
+    const destination = join(fixture.evidenceRoot, "replaced.age");
+    const replacement = join(fixture.root, "replacement-sentinel");
+    const realFs = require("node:fs");
+    writeFileSync(replacement, "replacement", { flag: "wx" });
+    const replacementStats = realFs.lstatSync(replacement);
+    let destinationLstatCount = 0;
+    let unlinkCount = 0;
+    const fakeFs = {
+      ...realFs,
+      lstatSync: (candidate: string) => {
+        if (candidate === destination && ++destinationLstatCount >= 2) return replacementStats;
+        return realFs.lstatSync(candidate);
+      },
+      unlinkSync: (candidate: string) => { unlinkCount += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), destination }, {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => child.emit("close", 1, null)),
+      })).rejects.toThrow("CIPHERTEXT_CLEANUP_FAILED");
+      expect(unlinkCount).toBe(0);
+      expect(readFileSync(replacement, "utf8")).toBe("replacement");
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("does not unlink a destination replaced by a symlink identity", async () => {
+    const fixture = createAgeFixture();
+    const destination = join(fixture.evidenceRoot, "symlink-replaced.age");
+    const realFs = require("node:fs");
+    const regularStats = realFs.lstatSync(fixture.evidenceRoot);
+    const symlinkStats = { ...regularStats, isSymbolicLink: () => true, isFile: () => false };
+    let destinationLstatCount = 0;
+    let unlinkCount = 0;
+    const fakeFs = {
+      ...realFs,
+      lstatSync: (candidate: string) => {
+        if (candidate === destination && ++destinationLstatCount >= 2) return symlinkStats;
+        return realFs.lstatSync(candidate);
+      },
+      unlinkSync: (candidate: string) => { unlinkCount += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), destination }, {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => child.emit("close", 1, null)),
+      })).rejects.toThrow("CIPHERTEXT_CLEANUP_FAILED");
+      expect(unlinkCount).toBe(0);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("reports a removed destination as an incomplete cleanup without unlinking", async () => {
+    const fixture = createAgeFixture();
+    const destination = join(fixture.evidenceRoot, "removed.age");
+    const realFs = require("node:fs");
+    let destinationLstatCount = 0;
+    let unlinkCount = 0;
+    const missing = Object.assign(new Error("missing"), { code: "ENOENT" });
+    const fakeFs = {
+      ...realFs,
+      lstatSync: (candidate: string) => {
+        if (candidate === destination && ++destinationLstatCount >= 2) throw missing;
+        return realFs.lstatSync(candidate);
+      },
+      unlinkSync: (candidate: string) => { unlinkCount += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), destination }, {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => child.emit("close", 1, null)),
+      })).rejects.toThrow("CIPHERTEXT_CLEANUP_FAILED");
+      expect(unlinkCount).toBe(0);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("fails closed when creation identity is ambiguous", async () => {
+    const fixture = createAgeFixture();
+    const destination = join(fixture.evidenceRoot, "ambiguous.age");
+    const realFs = require("node:fs");
+    let unlinkCount = 0;
+    const fakeFs = {
+      ...realFs,
+      fstatSync: () => ({ dev: 0, ino: 0, size: 0 }),
+      unlinkSync: (candidate: string) => { unlinkCount += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      expect(() => custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), destination }, { fsImpl: fakeFs })).toThrow("CIPHERTEXT_CLEANUP_FAILED");
+      expect(unlinkCount).toBe(0);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
   it("rejects empty ciphertext output and cleans the new file", async () => {
     const fixture = createAgeFixture();
     try {
@@ -201,6 +296,72 @@ describe.skipIf(!agePath || !ageKeygenPath)("Gate 1 offline age ciphertext custo
       await expect(promise).rejects.toThrow("AGE_PROCESS_INTERRUPTED");
       expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
     } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("handles stdin EPIPE as a sanitized stream failure", async () => {
+    const fixture = createAgeFixture();
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        spawnProcess: () => fakeChild((child) => child.stdin.emit("error", new Error("EPIPE raw plaintext"))),
+      })).rejects.toThrow("AGE_STREAM_ERROR");
+      expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("handles stdout and stderr stream errors without an uncaught exception", async () => {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const fixture = createAgeFixture();
+      try {
+        await expect(custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+          spawnProcess: () => fakeChild((child) => child[stream].emit("error", new Error("raw age diagnostic"))),
+        })).rejects.toThrow("AGE_STREAM_ERROR");
+        expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
+      } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+    }
+  });
+
+  it("handles child exit before stdin completion and duplicate terminal events", async () => {
+    const fixture = createAgeFixture();
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        spawnProcess: () => fakeChild((child) => {
+          child.emit("close", 1, null);
+          child.stdin.emit("error", new Error("late EPIPE"));
+          child.emit("error", new Error("late process error"));
+          child.emit("close", 1, null);
+        }),
+      })).rejects.toThrow("AGE_PROCESS_FAILED");
+      expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("ignores data arriving after a stream failure", async () => {
+    const fixture = createAgeFixture();
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        spawnProcess: () => fakeChild((child) => {
+          child.stdout.emit("error", new Error("stream failed"));
+          child.stdout.emit("data", Buffer.from("late ciphertext"));
+          child.stderr.emit("data", Buffer.from("late diagnostic"));
+        }),
+      })).rejects.toThrow("AGE_STREAM_ERROR");
+      expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("clears the timeout after a prior stream failure", async () => {
+    const fixture = createAgeFixture();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await expect(custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), timeoutMs: 50 }, {
+        spawnProcess: () => fakeChild((child) => child.stdout.emit("error", new Error("stream failed"))),
+      })).rejects.toThrow("AGE_STREAM_ERROR");
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 75));
+    } finally {
+      clearTimeoutSpy.mockRestore();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
   });
 
   it("times out without retrying and cleans the new file", async () => {

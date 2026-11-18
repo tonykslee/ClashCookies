@@ -3,7 +3,9 @@
 // Offline-only age custody adapter. It accepts synthetic capture metadata and
 // bounded plaintext, then streams that plaintext to an explicitly selected
 // local age executable. It has no SSH, Docker, PostgreSQL, deployment, upload,
-// retry, key-generation or production-key capability.
+// retry, key-generation or production-key capability. Cleanup is identity-bound
+// where the host exposes stable dev/inode evidence, but Node cannot provide an
+// atomic unlink-by-identity primitive on every supported Windows filesystem.
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -126,12 +128,22 @@ function validateAgeExecutable(fsImpl, agePath) {
   if (stats.isSymbolicLink() || !stats.isFile()) reject("INVALID", "AGE_EXECUTABLE_UNSAFE");
 }
 
+function fileIdentity(stats) {
+  if (!stats || typeof stats.dev !== "number" || typeof stats.ino !== "number" || stats.dev === 0 || stats.ino === 0) return null;
+  return { dev: stats.dev, ino: stats.ino };
+}
+
 function sameIdentity(left, right) {
-  if (!left || !right) return false;
-  if (typeof left.dev === "number" && typeof right.dev === "number" && typeof left.ino === "number" && typeof right.ino === "number") {
-    if (left.dev !== 0 && right.dev !== 0 && left.ino !== 0 && right.ino !== 0) return left.dev === right.dev && left.ino === right.ino;
+  if (!left || !right) return null;
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function captureFileIdentity(fsImpl, fd) {
+  try {
+    return fileIdentity(fsImpl.fstatSync(fd));
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function writeAll(fsImpl, fd, chunk) {
@@ -160,13 +172,25 @@ function verifyWrittenCiphertext(fsImpl, fd, expectedBytes, expectedSha256) {
   if (readTotal !== expectedBytes || hash.digest("hex") !== expectedSha256) reject("INCOMPLETE", "CIPHERTEXT_HASH_MISMATCH");
 }
 
-function cleanupNewFile(fsImpl, target, fd) {
+function cleanupNewFile(fsImpl, target, fd, createdIdentity) {
   let cleanupFailed = false;
+  try {
+    const descriptorIdentity = fd === undefined ? null : fileIdentity(fsImpl.fstatSync(fd));
+    const pathStats = fsImpl.lstatSync(target);
+    const pathIdentity = fileIdentity(pathStats);
+    const identityMatches = sameIdentity(createdIdentity, descriptorIdentity) === true
+      && sameIdentity(createdIdentity, pathIdentity) === true;
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() || !identityMatches) {
+      cleanupFailed = true;
+    } else {
+      fsImpl.unlinkSync(target);
+    }
+  } catch {
+    cleanupFailed = true;
+  }
   if (fd !== undefined) {
     try { fsImpl.closeSync(fd); } catch { cleanupFailed = true; }
   }
-  try { fsImpl.unlinkSync(target); } catch { cleanupFailed = true; }
-  try { if (fsImpl.existsSync(target)) cleanupFailed = true; } catch { cleanupFailed = true; }
   if (cleanupFailed) reject("INCOMPLETE", "CIPHERTEXT_CLEANUP_FAILED");
 }
 
@@ -195,12 +219,15 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
   const openFlags = fsImpl.constants.O_RDWR | fsImpl.constants.O_CREAT | fsImpl.constants.O_EXCL;
   let fd;
   let created = false;
+  let createdIdentity;
   try {
     fd = fsImpl.openSync(destination.target, openFlags, 0o600);
     created = true;
+    createdIdentity = captureFileIdentity(fsImpl, fd);
+    if (!createdIdentity) reject("INCOMPLETE", "CIPHERTEXT_IDENTITY_UNAVAILABLE");
     if (typeof fsImpl.fchmodSync === "function") fsImpl.fchmodSync(fd, 0o600);
   } catch (error) {
-    if (created) cleanupNewFile(fsImpl, destination.target, fd);
+    if (created) cleanupNewFile(fsImpl, destination.target, fd, createdIdentity);
     if (error instanceof AgeCustodyFailure) throw error;
     if (error && error.code === "EEXIST") reject("INVALID", "CIPHERTEXT_DESTINATION_EXISTS");
     reject("INCOMPLETE", "CIPHERTEXT_CREATE_FAILED");
@@ -211,12 +238,20 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
     let settled = false;
     let ciphertextBytes = 0;
     let stderrBytes = 0;
+    let timer;
     const ciphertextHash = crypto.createHash("sha256");
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
     const settleFailure = (status, reason) => {
       if (settled) return;
       settled = true;
+      clearTimer();
       try { if (child && typeof child.kill === "function") child.kill(); } catch { /* sanitized failure path */ }
-      try { cleanupNewFile(fsImpl, destination.target, fd); } catch (error) { rejectPromise(error); return; }
+      try { cleanupNewFile(fsImpl, destination.target, fd, createdIdentity); } catch (error) { rejectPromise(error); return; }
       rejectPromise(new AgeCustodyFailure(status, reason));
     };
     try {
@@ -230,9 +265,9 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
       return;
     }
     const timeoutMs = Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 10000;
-    const timer = setTimeout(() => settleFailure("INCOMPLETE", "AGE_PROCESS_TIMEOUT"), timeoutMs);
+    timer = setTimeout(() => settleFailure("INCOMPLETE", "AGE_PROCESS_TIMEOUT"), timeoutMs);
     const finish = (status, reason) => {
-      clearTimeout(timer);
+      clearTimer();
       if (settled) return;
       if (status !== "success") {
         settleFailure("INCOMPLETE", reason);
@@ -243,7 +278,9 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
         const pathStats = fsImpl.lstatSync(destination.target);
         const descriptorStats = fsImpl.fstatSync(fd);
         const identity = sameIdentity(pathStats, descriptorStats);
-        if (identity === false) reject("INCOMPLETE", "CIPHERTEXT_IDENTITY_CHANGED");
+        if (pathStats.isSymbolicLink() || !pathStats.isFile() || identity !== true || identity !== sameIdentity(createdIdentity, fileIdentity(descriptorStats))) {
+          reject("INCOMPLETE", "CIPHERTEXT_IDENTITY_CHANGED");
+        }
         const expectedHash = ciphertextHash.digest("hex");
         verifyWrittenCiphertext(fsImpl, fd, ciphertextBytes, expectedHash);
         fsImpl.closeSync(fd);
@@ -263,6 +300,15 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
         settleFailure("INCOMPLETE", error instanceof AgeCustodyFailure ? error.reason : "CIPHERTEXT_VERIFICATION_FAILED");
       }
     };
+    const handleStreamError = () => settleFailure("INCOMPLETE", "AGE_STREAM_ERROR");
+    try {
+      child.stdin.once("error", handleStreamError);
+      child.stdout.once("error", handleStreamError);
+      child.stderr.once("error", handleStreamError);
+    } catch {
+      settleFailure("INCOMPLETE", "AGE_STREAM_SETUP_FAILED");
+      return;
+    }
     child.stdout.on("data", (chunk) => {
       if (settled) return;
       if (!Buffer.isBuffer(chunk)) { settleFailure("INCOMPLETE", "AGE_STDOUT_TYPE_INVALID"); return; }
@@ -270,11 +316,12 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
       try { writeAll(fsImpl, fd, chunk); ciphertextHash.update(chunk); ciphertextBytes += chunk.length; } catch (error) { settleFailure("INCOMPLETE", error.reason ?? "CIPHERTEXT_WRITE_FAILED"); }
     });
     child.stderr.on("data", (chunk) => {
+      if (settled) return;
       if (Buffer.isBuffer(chunk)) stderrBytes += chunk.length;
       if (stderrBytes > MAX_DIAGNOSTIC_BYTES) settleFailure("INCOMPLETE", "AGE_DIAGNOSTIC_TOO_LARGE");
     });
-    child.on("error", () => settleFailure("INCOMPLETE", "AGE_PROCESS_FAILED"));
-    child.on("close", (code, signal) => finish(code === 0 && !signal ? "success" : "failed", signal ? "AGE_PROCESS_INTERRUPTED" : "AGE_PROCESS_FAILED"));
+    child.once("error", () => settleFailure("INCOMPLETE", "AGE_PROCESS_FAILED"));
+    child.once("close", (code, signal) => finish(code === 0 && !signal ? "success" : "failed", signal ? "AGE_PROCESS_INTERRUPTED" : "AGE_PROCESS_FAILED"));
     try { child.stdin.end(plaintext); } catch { settleFailure("INCOMPLETE", "AGE_STDIN_FAILED"); }
   });
 }
