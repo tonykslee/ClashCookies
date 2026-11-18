@@ -458,13 +458,13 @@ async function runMigrationAwareDeployment({
     }
   };
 
-  const releaseHeldLock = () => {
+  const releaseHeldLock = async () => {
     if (!releaseLock) return true;
     // Mark the record channel unavailable before invoking release. A failed
     // release leaves ownership ambiguous, so no later path may append.
     lockOwned = false;
     try {
-      return releaseLock() === true;
+      return (await releaseLock()) === true;
     } catch {
       return false;
     }
@@ -502,7 +502,7 @@ async function runMigrationAwareDeployment({
       }
     }
     startedAt = ops.now();
-    releaseLock = (ops.acquireExclusiveLock || acquireExclusiveLock)(config.lockPath, {
+    releaseLock = await (ops.acquireExclusiveLock || acquireExclusiveLock)(config.lockPath, {
       releaseId: config.releaseId,
       startedAt,
     });
@@ -648,7 +648,7 @@ async function runMigrationAwareDeployment({
         });
       }
     }
-    const lockReleased = releaseHeldLock();
+    const lockReleased = await releaseHeldLock();
     if (!lockReleased) {
       const priorClassification = classification;
       exitCode = EXIT_CODES.AMBIGUOUS;

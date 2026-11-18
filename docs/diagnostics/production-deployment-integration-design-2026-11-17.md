@@ -59,6 +59,18 @@ The smallest safe architecture is a separately installed, immutable deployment e
 5. Use the migration-aware orchestrator only for a release with an exact reviewed Prisma diff and complete preflight evidence. Non-migration deployment remains a separate path that fails closed when Prisma changes are present.
 6. Preserve the actual production topology: the application is a direct-Docker `clashcookies-app` runtime on the expected network and loopback port; the database may remain the Compose-managed `clashcookies-db`. The integration must inspect the approved Compose configuration only for the database topology/credential selection and must not reconstruct or replace the application runtime as Compose-owned.
 
+### Rootful broker compatibility amendment
+
+The verified VM has no restricted deployment identity and the existing `tilo` identity has both `sudo` and `docker` group authority. Rootless Docker is not an installed runtime. Therefore the smallest compatible design preserves the rootful daemon and moves only privileged deployment operations behind a separately installed broker:
+
+1. Provision a proposed `clashcookies-deploy` SSH identity with a non-root UID/GID, no `sudo`/`docker` membership, no supplementary privileged groups, no rootful Docker socket access, and no protected credential read access. The SSH key must be restricted to the reviewed entrypoint/socket client boundary.
+2. Install a root-owned `clashcookies-deployment-broker.service` that owns `/run/clashcookies/deployment-broker.sock`, relies on the socket DAC boundary (and an optional native peer-credential resolver where available) without trusting client identity claims, and is the only process allowed to access `/var/run/docker.sock`, the protected migration credential, and the protected runtime environment.
+3. Accept only the fixed protocol in `ops/deploy/rootful-deployment-broker.js`: protocol/request/session IDs, one exact release identity, one Ed25519 approval envelope, and a fixed operation name/payload schema. Clients cannot send Docker commands, shell text, executable paths, filesystem paths, environment maps, credential values or alternate sockets. The broker resolves every operational path and command from the reviewed manifest and existing adapter/orchestrator contract.
+4. Bind the approval to the release ID, old/new SHA, migration diff and manifest digests, authorization digest, approver, reviewed commit, key ID, scope and single-use nonce. Reject forged, replayed, mismatched or missing approvals before any privileged handler executes. Keep one broker-wide lock owner in addition to the existing outer/inner deployment locks.
+5. Run the existing migration-aware orchestrator through broker operations. Artifact identity, runtime singleton verification, explicit migration approval, protected credentials, release records, recovery-required states and active/staging isolation remain the existing gates; the broker is a transport/privilege boundary, not a second deployment state machine.
+
+The broker and restricted identity are proposed installation resources only. Until they are separately installed and their exact owner/mode/socket/peer-credential evidence is reviewed, the entrypoint fails closed and the legacy rootful production bot remains unchanged.
+
 ### Alternatives
 
 | Approach | Benefit | Risk / decision |

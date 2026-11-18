@@ -72,12 +72,41 @@ jobs:
     if: needs.classify.outputs.has_migrations == 'false'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout reviewed release signer
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify.outputs.new_sha }}
+          fetch-depth: 1
+
+      - name: Create release-bound broker approval
+        id: broker-approval
+        shell: bash
+        env:
+          BROKER_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_PRIVATE_KEY }}
+          BROKER_KEY_ID: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_KEY_ID }}
+          BROKER_APPROVED_BY: github-main-merge
+          BROKER_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}-non-migration
+          BROKER_REVIEWED_COMMIT: ${{ needs.classify.outputs.new_sha }}
+          BROKER_SESSION_ID: ${{ needs.classify.outputs.release_id }}
+          BROKER_RELEASE_ID: ${{ needs.classify.outputs.release_id }}
+          BROKER_OLD_SHA: ${{ needs.classify.outputs.old_sha }}
+          BROKER_NEW_SHA: ${{ needs.classify.outputs.new_sha }}
+          BROKER_MIGRATION_DIFF_DIGEST: ${{ needs.classify.outputs.migration_diff_digest }}
+          BROKER_MIGRATION_MANIFEST_DIGEST: ${{ needs.classify.outputs.migration_manifest_digest }}
+          BROKER_AUTHORIZATION_DIGEST: ${{ needs.classify.outputs.authorization_digest }}
+        run: |
+          set -euo pipefail
+          test -n "$BROKER_PRIVATE_KEY"
+          test -n "$BROKER_KEY_ID"
+          approval="$(node ops/deploy/create-rootful-broker-approval.js)"
+          printf 'approval=%s\n' "$approval" >> "$GITHUB_OUTPUT"
+
       - name: Deploy through the reviewed immutable entrypoint
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          username: ${{ secrets.PRODUCTION_DEPLOYMENT_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_DEPLOYMENT_SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 45m
           script_stop: true
@@ -94,6 +123,8 @@ jobs:
             export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
             export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
             export DEPLOY_APPROVED_BY="github-main-merge"
+            export DEPLOY_BROKER_SESSION_ID="${{ needs.classify.outputs.release_id }}"
+            export DEPLOY_BROKER_APPROVAL='${{ steps.broker-approval.outputs.approval }}'
             exec /home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js
 
   deploy-migration:
@@ -103,12 +134,41 @@ jobs:
     environment:
       name: production-migration
     steps:
+      - name: Checkout reviewed release signer
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.classify.outputs.new_sha }}
+          fetch-depth: 1
+
+      - name: Create release-bound broker approval after migration gate
+        id: broker-approval
+        shell: bash
+        env:
+          BROKER_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_PRIVATE_KEY }}
+          BROKER_KEY_ID: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_KEY_ID }}
+          BROKER_APPROVED_BY: github-environment-production-migration
+          BROKER_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}-migration
+          BROKER_REVIEWED_COMMIT: ${{ needs.classify.outputs.new_sha }}
+          BROKER_SESSION_ID: ${{ needs.classify.outputs.release_id }}
+          BROKER_RELEASE_ID: ${{ needs.classify.outputs.release_id }}
+          BROKER_OLD_SHA: ${{ needs.classify.outputs.old_sha }}
+          BROKER_NEW_SHA: ${{ needs.classify.outputs.new_sha }}
+          BROKER_MIGRATION_DIFF_DIGEST: ${{ needs.classify.outputs.migration_diff_digest }}
+          BROKER_MIGRATION_MANIFEST_DIGEST: ${{ needs.classify.outputs.migration_manifest_digest }}
+          BROKER_AUTHORIZATION_DIGEST: ${{ needs.classify.outputs.authorization_digest }}
+        run: |
+          set -euo pipefail
+          test -n "$BROKER_PRIVATE_KEY"
+          test -n "$BROKER_KEY_ID"
+          approval="$(node ops/deploy/create-rootful-broker-approval.js)"
+          printf 'approval=%s\n' "$approval" >> "$GITHUB_OUTPUT"
+
       - name: Deploy approved migration release through the reviewed immutable entrypoint
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          username: ${{ secrets.PRODUCTION_DEPLOYMENT_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_DEPLOYMENT_SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 45m
           script_stop: true
@@ -125,4 +185,6 @@ jobs:
             export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
             export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
             export DEPLOY_APPROVED_BY="github-environment-production-migration"
+            export DEPLOY_BROKER_SESSION_ID="${{ needs.classify.outputs.release_id }}"
+            export DEPLOY_BROKER_APPROVAL='${{ steps.broker-approval.outputs.approval }}'
             exec /home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js

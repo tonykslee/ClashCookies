@@ -15,7 +15,7 @@ function makeManifest() {
   const external = resolve("C:/synthetic/clashcookies-protected");
   const executorDigest = "a".repeat(64);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     verificationStatus: "PASS",
     targetEnvironment: "production",
     appDir: root,
@@ -50,14 +50,14 @@ function makeManifest() {
     },
     credential: {
       path: join(external, "production-db.env"),
-      ownerUid: 1001,
+      ownerUid: 0,
       ownerGid: 0,
       mode: 0o600,
       verified: true,
     },
     runtimeCredential: {
       path: join(external, "production-runtime.env"),
-      ownerUid: 1001,
+      ownerUid: 0,
       ownerGid: 0,
       mode: 0o600,
       format: "docker-env",
@@ -65,7 +65,7 @@ function makeManifest() {
       verified: true,
     },
     credentialAccess: {
-      strategy: "operator-owned-immutable-read-only",
+      strategy: "broker-owned-protected-read-only",
       operatorUid: 1001,
       operatorGids: [1001],
       parentOwnerUid: 0,
@@ -73,8 +73,33 @@ function makeManifest() {
       parentMode: 0o755,
       immutableFlagVerified: true,
       rootEquivalentAccess: "none",
-      dockerAccess: "rootless",
+      brokerServiceUid: 0,
+      brokerServiceGid: 0,
+      operatorCanReadCredentials: false,
+      dockerAccess: "rootful-broker",
       verified: true,
+    },
+    broker: {
+      strategy: "rootful-docker-broker",
+      verified: true,
+      socketPath: join(external, "broker.sock"),
+      operator: {
+        uid: 1001,
+        gid: 1001,
+        supplementaryGids: [],
+        groupNames: ["clashcookies-deploy"],
+      },
+      service: {
+        uid: 0,
+        gid: 0,
+        dockerAccess: "rootful-socket-only",
+        dockerSocket: "/var/run/docker.sock",
+      },
+      approval: {
+        scope: "rootful-docker-broker-deployment",
+        publicKeyPath: join(external, "broker.pub"),
+        keyId: "production-broker",
+      },
     },
     locks: {
       releasePath: join(external, "clashcookies-prod-deploy.lock"),
@@ -115,6 +140,7 @@ function makeManifest() {
         "direct-docker-adapter.js",
         "migration-runner.js",
         "deployment-lock.js",
+        "rootful-deployment-broker.js",
       ].map((relativePath) => ({
         relativePath,
         sha256: "e".repeat(64),
@@ -157,24 +183,32 @@ describe("production deployment entrypoint contract", () => {
     expect(() => entrypoint.validateProductionManifest(manifest)).toThrow(/runtime_credential_identity_invalid/i);
   });
 
-  it("requires an immutable read-only credential boundary for the non-root operator", () => {
+  it("requires a broker-owned credential boundary for the non-root operator", () => {
     const manifest = makeManifest();
     expect(entrypoint.validateCredentialAccessContract(manifest, {
       runtimeCredential: { path: manifest.runtimeCredential.path },
     })).toMatchObject({
-      strategy: "operator-owned-immutable-read-only",
+      strategy: "broker-owned-protected-read-only",
       operatorUid: 1001,
-      dockerAccess: "rootless",
+      brokerServiceUid: 0,
+      brokerServiceGid: 0,
+      operatorCanReadCredentials: false,
+      dockerAccess: "rootful-broker",
     });
 
     const rootOwnedCredential = makeManifest();
-    rootOwnedCredential.credential.ownerUid = 0;
+    rootOwnedCredential.credential.ownerUid = 1001;
     expect(() => entrypoint.validateProductionManifest(rootOwnedCredential))
       .toThrow(/credential_access_contract_invalid/i);
 
     const mutableCredential = makeManifest();
     mutableCredential.credentialAccess.immutableFlagVerified = false;
     expect(() => entrypoint.validateProductionManifest(mutableCredential))
+      .toThrow(/credential_access_contract_invalid/i);
+
+    const operatorReadable = makeManifest();
+    operatorReadable.credentialAccess.operatorCanReadCredentials = true;
+    expect(() => entrypoint.validateProductionManifest(operatorReadable))
       .toThrow(/credential_access_contract_invalid/i);
 
     const rootfulDocker = makeManifest();
@@ -200,10 +234,7 @@ describe("production deployment entrypoint contract", () => {
 
   it("exposes the orchestrator migration-runner contract and does not invoke the legacy wrapper", () => {
     const manifest = entrypoint.validateProductionManifest(makeManifest());
-    const operations = entrypoint.createProductionOperations(manifest, {
-      runMigrationRunner: async () => ({ exitCode: 0 }),
-    });
-    expect(operations.runMigrationRunner).toBeTypeOf("function");
+    expect(() => entrypoint.createProductionOperations(manifest)).toThrow(/broker_release_authorization_required/i);
     const workflow = readFileSync(resolve(".github/workflows/deploy-prod.yml"), "utf8");
     expect(workflow).toContain("/home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js");
     expect(workflow).not.toContain("~/deploy-prod.sh");
@@ -224,6 +255,7 @@ describe("production deployment entrypoint contract", () => {
         "direct-docker-adapter.js",
         "migration-runner.js",
         "deployment-lock.js",
+        "rootful-deployment-broker.js",
       ]) {
         copyFileSync(join(sourceRoot, file), join(installedRoot, file));
       }
@@ -246,6 +278,7 @@ describe("production deployment entrypoint contract", () => {
         "direct-docker-adapter.js",
         "migration-runner.js",
         "deployment-lock.js",
+        "rootful-deployment-broker.js",
       ]) copyFileSync(join(sourceRoot, file), join(installedRoot, file));
       const installedPath = join(installedRoot, "production-deployment-entrypoint.js");
       expect(readFileSync(installedPath, "utf8").startsWith("#!/usr/bin/env node")).toBe(true);
@@ -272,6 +305,7 @@ describe("production deployment entrypoint contract", () => {
         "direct-docker-adapter.js",
         "migration-runner.js",
         "deployment-lock.js",
+        "rootful-deployment-broker.js",
       ].map((relativePath) => {
         const installedPath = join(installedRoot, relativePath);
         copyFileSync(join(sourceRoot, relativePath), installedPath);
@@ -324,82 +358,15 @@ describe("production deployment entrypoint contract", () => {
     }
   });
 
-  it("promotes the built artifact and passes only the protected runtime env path", () => {
-    const root = mkdtempSync(join(tmpdir(), "clashcookies-promotion-artifact-"));
-    try {
-      const manifest = makeManifest();
-      manifest.appDir = join(root, "app");
-      manifest.candidateWorktreePath = join(root, "candidate");
-      manifest.preflightEvidencePath = join(root, "preflight.json");
-      manifest.promotionArtifactRoot = join(root, "artifacts");
-      manifest.executor.path = join(root, "protected", "clashcookies-production-entrypoint");
-      manifest.moduleBundle.root = join(root, "protected");
-      manifest.credential.path = join(root, "protected", "production-db.env");
-      manifest.runtimeCredential.path = join(root, "protected", "production-runtime.env");
-      manifest.locks.releasePath = join(root, "protected", "deploy.lock");
-      manifest.locks.runnerPath = join(root, "protected", "migration.lock");
-      manifest.releaseRecord.path = join(root, "protected", "release-record.ndjson");
-      manifest.nonMigrationHelper.path = join(root, "protected", "deploy-prod.sh");
-      manifest.moduleBundle.files = manifest.moduleBundle.files.map((file) => ({ ...file }));
-      mkdirSync(manifest.promotionArtifactRoot, { recursive: true });
-
-      const validated = entrypoint.validateProductionManifest(manifest);
-      const calls: Array<{ command: string; args: string[] }> = [];
-      const operations = entrypoint.createProductionOperations(validated, {
-        spawnSync: (command: string, args: string[]) => {
-          calls.push({ command, args });
-          return { status: 0, stdout: "" };
-        },
-        verifyArtifactPrismaClient: () => undefined,
-        createArtifactManifest: () => ({
-          sha256: "a".repeat(64),
-          uid: 0,
-          gid: 0,
-          mode: 0o640,
-          dev: 1,
-          ino: 1,
-        }),
-        validateArtifactManifest: () => undefined,
-      });
-      const sha = "f".repeat(40);
-      operations.buildCandidate({ candidatePath: validated.candidateWorktreePath, sha });
-      expect(() => operations.startRuntime({ sha: "e".repeat(40) })).toThrow(/promoted_artifact_revision_mismatch/i);
-      operations.startRuntime({ sha });
-
-      const runtimeStart = calls.find(({ args }) => args[0] === "run" && args.includes("-d"));
-      expect(runtimeStart).toBeDefined();
-      expect(runtimeStart?.args).toContain("--env-file");
-      expect(runtimeStart?.args).toContain(validated.adapter.runtimeCredential.path);
-      expect(runtimeStart?.args.join(" ")).not.toContain("DATABASE_URL=");
-      expect(runtimeStart?.args.join(" ")).toContain("npm run start:runtime");
-      expect(runtimeStart?.args.join(" ")).not.toContain(`${validated.appDir}:/app`);
-      expect(calls.some(({ args }) => args[0] === "cp" && args.some((arg) => arg.includes("/app/.")))).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("passes the migration credential only through the protected container mount", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const credentialPath = "C:/synthetic/protected/production-db.env";
-    const credentialValue = "postgresql://migration_user:synthetic-secret@db/clashcookies";
-    const result = entrypoint.executeMigrationInArtifact(
-      { databaseUrl: credentialValue },
-      "C:/synthetic/artifacts/f",
-      { image: "clashcookies:reviewed", network: "clashcookies_default" },
-      credentialPath,
-      (command: string, args: string[]) => {
-        calls.push({ command, args });
-        return { status: 0 };
+  it("does not expose direct Docker operations from the entrypoint", () => {
+    const manifest = entrypoint.validateProductionManifest(makeManifest());
+    expect(() => entrypoint.createProductionOperations(manifest, {
+      spawnSync: () => {
+        throw new Error("direct Docker execution must not be reachable");
       },
-    );
-
-    expect(result.status).toBe(0);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].command).toBe("docker");
-    expect(calls[0].args.some((arg) => arg.includes(credentialPath))).toBe(true);
-    expect(calls[0].args.join(" ")).toContain("/run/secrets/migration-url");
-    expect(calls[0].args.join(" ")).not.toContain(credentialValue);
-    expect(calls[0].args.join(" ")).not.toContain("--env-file");
+    })).toThrow(/broker_release_authorization_required/i);
   });
+
+
+
 });
