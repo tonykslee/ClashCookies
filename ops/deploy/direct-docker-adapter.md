@@ -34,6 +34,18 @@ The module does not reconstruct production Compose, modify the legacy wrapper, s
 
 Even after that configuration is supplied, every production-dependent mutating operation and migration execution remains blocked by a Phase 1 execution gate. The `allowMutations` and `allowMigrationExecution` inputs cannot enable execution. Phase 1 provides no production configuration or VM installation step.
 
+## Immutable entry-point validation boundary
+
+`validateImmutableExecutor()` is the reusable offline boundary for the proposed immutable deployment entry point. It reuses the adapter's external-path, no-symlink, protected-stat, descriptor-identity and SHA-256 helpers, and additionally requires an explicit authorization record with:
+
+- `authorizationStatus=PASS` and the immutable-entry-point scope;
+- the exact canonical path, SHA-256, owner UID/GID and mode already supplied for the executor; and
+- a non-privileged deployment-operator UID and complete group list.
+
+The validator walks every canonical parent directory through the filesystem root and fails closed when any parent is missing, non-directory, symlinked, metadata-incomplete, or writable by the deployment operator. It rejects operator-writable executor files, mutable-checkout aliases, missing/malformed/contradictory authorization evidence, and executor replacement or metadata changes observed during the protected read. The returned result is verification evidence only; it does not enable a deployment, migration, lock, release record, Docker operation, or other production mutation.
+
+The focused `tests/direct-docker-adapter.test.ts` fixtures cover a valid entry point, missing file, digest mismatch, executable and parent symlinks, writable file and parent, owner mismatches, checkout aliases, missing/contradictory authorization, and replacement during validation. These are synthetic filesystem results only and do not establish permissions or ownership on a VM.
+
 ## Direct-Docker runtime contract
 
 The canonical app is validated by name, image, published host/container port, expected network, exact revision SHA, and optional runtime/environment labels. Compose ownership labels must be absent for the app. Database and observability containers may remain Compose-owned.
