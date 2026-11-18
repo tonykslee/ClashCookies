@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const childProcess = require("node:child_process");
+const { createRequire } = require("node:module");
 const path = require("node:path");
 const orchestrator = require("./migration-aware-deploy");
 const adapter = require("./direct-docker-adapter");
@@ -14,6 +15,12 @@ const CONFIG_VERSION = 1;
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]{1,96}$/;
 const SHA256 = /^[0-9a-f]{64}$/i;
 const SHA1 = /^[0-9a-f]{40}$/i;
+const REQUIRED_MODULES = Object.freeze([
+  "migration-aware-deploy.js",
+  "direct-docker-adapter.js",
+  "migration-runner.js",
+  "deployment-lock.js",
+]);
 
 const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -92,6 +99,10 @@ function validateProductionManifest(input = {}) {
   if (isInside(appDir, preflightEvidencePath)) {
     throw new ProductionEntrypointError("preflight_evidence_must_be_outside_checkout");
   }
+  const promotionArtifactRoot = requireAbsolute(input.promotionArtifactRoot, "promotion_artifact_root");
+  if (isInside(appDir, promotionArtifactRoot)) {
+    throw new ProductionEntrypointError("promotion_artifact_must_be_outside_checkout");
+  }
 
   const adapterConfig = adapter.validateAdapterConfig({
     ...input,
@@ -101,6 +112,38 @@ function validateProductionManifest(input = {}) {
     allowMigrationExecution: false,
   });
   const activation = validateActivation(input);
+  const runtimeCredential = input.runtimeCredential || {};
+  if (runtimeCredential.format !== "docker-env"
+    || runtimeCredential.verified !== true
+    || typeof runtimeCredential.databaseUser !== "string"
+    || !/^[A-Za-z0-9_-]{1,128}$/.test(runtimeCredential.databaseUser)
+    || runtimeCredential.databaseUser === String(input.databaseIdentity?.user || "")) {
+    throw new ProductionEntrypointError("least_privilege_runtime_credential_required");
+  }
+  const moduleBundleInput = input.moduleBundle || {};
+  const moduleBundleRoot = requireAbsolute(moduleBundleInput.root, "module_bundle_root");
+  if (moduleBundleInput.verified !== true
+    || moduleBundleRoot !== path.dirname(adapterConfig.executor.path)
+    || !Array.isArray(moduleBundleInput.files)
+    || moduleBundleInput.files.length !== REQUIRED_MODULES.length) {
+    throw new ProductionEntrypointError("module_bundle_contract_invalid");
+  }
+  const moduleBundleFiles = moduleBundleInput.files.map((file) => {
+    if (!file || typeof file.relativePath !== "string" || !REQUIRED_MODULES.includes(file.relativePath)
+      || typeof file.sha256 !== "string" || !SHA256.test(file.sha256)
+      || !Number.isInteger(file.ownerUid) || !Number.isInteger(file.ownerGid)
+      || !Number.isInteger(file.mode) || file.verified !== true) {
+      throw new ProductionEntrypointError("module_bundle_file_contract_invalid");
+    }
+    return Object.freeze({
+      relativePath: file.relativePath,
+      sha256: file.sha256.toLowerCase(),
+      ownerUid: file.ownerUid,
+      ownerGid: file.ownerGid,
+      mode: file.mode,
+      verified: true,
+    });
+  });
   const nonMigrationHelper = input.nonMigrationHelper || {};
   const helperPath = requireAbsolute(nonMigrationHelper.path, "non_migration_helper_path");
   const helper = Object.freeze({
@@ -122,7 +165,13 @@ function validateProductionManifest(input = {}) {
     appDir,
     candidateWorktreePath,
     preflightEvidencePath,
+    promotionArtifactRoot,
     activation,
+    moduleBundle: Object.freeze({
+      root: moduleBundleRoot,
+      files: Object.freeze(moduleBundleFiles),
+      verified: true,
+    }),
     adapter: adapterConfig,
     nonMigrationHelper: helper,
   });
@@ -177,6 +226,68 @@ function validateProtectedArtifact(spec, appDir, fsImpl = fs) {
   return artifactPath;
 }
 
+function validateProtectedDirectoryTarget(directoryPath, appDir, fsImpl = fs) {
+  const target = requireAbsolute(directoryPath, "protected_directory_path");
+  if (isInside(appDir, target)
+    || typeof fsImpl.lstatSync !== "function"
+    || typeof fsImpl.realpathSync !== "function") {
+    throw new ProductionEntrypointError("protected_directory_target_invalid");
+  }
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || fsImpl.realpathSync(target) !== target) {
+      throw new Error("noncanonical_directory");
+    }
+  } catch {
+    throw new ProductionEntrypointError("protected_directory_target_unavailable");
+  }
+  return target;
+}
+
+function validateModuleBundle(bundle, appDir, executorPath, fsImpl = fs) {
+  if (!bundle || bundle.verified !== true || typeof bundle.root !== "string") {
+    throw new ProductionEntrypointError("module_bundle_verification_required");
+  }
+  const root = validateProtectedDirectoryTarget(bundle.root, appDir, fsImpl);
+  if (path.resolve(root) !== path.dirname(path.resolve(executorPath))) {
+    throw new ProductionEntrypointError("module_bundle_executor_directory_mismatch");
+  }
+  if (!Array.isArray(bundle.files)
+    || bundle.files.length !== REQUIRED_MODULES.length
+    || new Set(bundle.files.map((file) => file && file.relativePath)).size !== REQUIRED_MODULES.length
+    || REQUIRED_MODULES.some((name) => !bundle.files.some((file) => file.relativePath === name))) {
+    throw new ProductionEntrypointError("module_bundle_membership_invalid");
+  }
+  for (const file of bundle.files) {
+    if (typeof file.relativePath !== "string"
+      || path.isAbsolute(file.relativePath)
+      || file.relativePath === ".."
+      || file.relativePath.includes("/")
+      || file.relativePath.includes("\\")
+      || file.verified !== true) {
+      throw new ProductionEntrypointError("module_bundle_path_invalid");
+    }
+    validateProtectedArtifact({
+      path: path.join(root, file.relativePath),
+      sha256: file.sha256,
+      ownerUid: file.ownerUid,
+      ownerGid: file.ownerGid,
+      mode: file.mode,
+      verified: true,
+    }, appDir, fsImpl);
+  }
+  return root;
+}
+
+function createCandidatePrismaFactory(repoRoot, databaseUrl) {
+  const requireFromCandidate = createRequire(path.join(repoRoot, "package.json"));
+  return () => {
+    const { PrismaClient } = requireFromCandidate("@prisma/client");
+    return new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  };
+}
+
 function commandResult(command, args, options = {}, spawnSyncImpl = childProcess.spawnSync) {
   const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
@@ -228,6 +339,26 @@ function createProductionOperations(manifest, dependencies = {}) {
   });
 
   const readCredential = () => adapter.readProtectedCredential(manifest.adapter.credential, manifest.appDir, fsImpl);
+  let promotedArtifactPath = null;
+
+  const artifactPathFor = (sha) => {
+    if (!SHA1.test(String(sha || ""))) throw new ProductionEntrypointError("promotion_artifact_sha_invalid");
+    const candidate = path.join(manifest.promotionArtifactRoot, String(sha).toLowerCase());
+    if (!isInside(manifest.promotionArtifactRoot, candidate)) {
+      throw new ProductionEntrypointError("promotion_artifact_path_invalid");
+    }
+    return candidate;
+  };
+
+  const assertAbsent = (targetPath, label) => {
+    try {
+      fsImpl.lstatSync(targetPath);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw new ProductionEntrypointError(`${label}_identity_unavailable`);
+    }
+    throw new ProductionEntrypointError(`${label}_already_exists`);
+  };
   const runMigration = dependencies.runMigrationRunner || (async ({ repoRoot, releaseId, targetSha, migrationManifestDigest }) => {
     const credential = readCredential();
     const migrationConfig = {
@@ -245,15 +376,21 @@ function createProductionOperations(manifest, dependencies = {}) {
       baseEnv: dependencies.baseEnv || process.env,
     });
     return {
-      exitCode: await migrationRunner.runMigrationRunner({ env, repoRoot, log: () => undefined }),
+      exitCode: await migrationRunner.runMigrationRunner({
+        env,
+        repoRoot,
+        log: () => undefined,
+        dependencies: { prismaFactory: createCandidatePrismaFactory(repoRoot, credential) },
+      }),
     };
   });
-  const verifyMigration = dependencies.verifyAppliedMigrations || (async ({ migrationNames }) => {
+  const verifyMigration = dependencies.verifyAppliedMigrations || (async ({ repoRoot, migrationNames }) => {
     const credential = readCredential();
     return migrationRunner.verifyAppliedMigrations({
       databaseUrl: credential,
       identity: manifest.adapter.databaseIdentity,
       migrationNames,
+      prismaFactory: createCandidatePrismaFactory(repoRoot, credential),
     });
   });
 
@@ -270,25 +407,34 @@ function createProductionOperations(manifest, dependencies = {}) {
     inspectRuntime: async () => adapter.inspectRuntimeSnapshot(await runtimeCollector.collect(), manifest.adapter),
     createCandidate: (candidatePath, sha) => {
       if (path.resolve(candidatePath) !== manifest.candidateWorktreePath) throw new ProductionEntrypointError("candidate_path_mismatch");
-      let alreadyExists = false;
-      try {
-        fsImpl.lstatSync(candidatePath);
-        alreadyExists = true;
-      } catch (error) {
-        if (error?.code !== "ENOENT") {
-          throw new ProductionEntrypointError("candidate_path_identity_unavailable");
-        }
-      }
-      if (alreadyExists) throw new ProductionEntrypointError("candidate_path_already_exists");
+      assertAbsent(candidatePath, "candidate_path");
       checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "worktree", "add", "--quiet", "--detach", candidatePath, sha], { label: "candidate_create" }, spawnSyncImpl);
     },
-    buildCandidate: ({ candidatePath }) => {
-      checkedCommand("docker", [
-        "run", "--rm", "--name", "clashcookies-prod-candidate-build",
-        "--label", "com.clashcookies.deploy=candidate-build-only",
-        "--network", "bridge", "-w", "/app", "-v", `${candidatePath}:/app`,
-        manifest.adapter.runtime.image, "bash", "-lc", "./ops/deploy/ensure-yarn-deps.sh && npm run build",
-      ], { label: "candidate_build" }, spawnSyncImpl);
+    buildCandidate: ({ candidatePath, sha }) => {
+      const artifactPath = artifactPathFor(sha);
+      assertAbsent(artifactPath, "promotion_artifact");
+      fsImpl.mkdirSync(artifactPath);
+      const buildContainer = "clashcookies-prod-candidate-build";
+      let buildError = null;
+      try {
+        checkedCommand("docker", [
+          "run", "--name", buildContainer,
+          "--label", "com.clashcookies.deploy=candidate-build-only",
+          "--network", "bridge", "-w", "/app", "-v", `${candidatePath}:/app`,
+          "-v", "clashcookies-prod-candidate_node_modules:/app/node_modules",
+          "-v", "clashcookies-prod-candidate_dist:/app/dist",
+          manifest.adapter.runtime.image, "bash", "-lc", "./ops/deploy/ensure-yarn-deps.sh && npm run build",
+        ], { label: "candidate_build" }, spawnSyncImpl);
+        checkedCommand("docker", ["cp", `${buildContainer}:/app/.`, artifactPath], { label: "candidate_artifact_copy" }, spawnSyncImpl);
+        promotedArtifactPath = artifactPath;
+      } catch (error) {
+        buildError = error;
+      }
+      const cleanup = commandResult("docker", ["rm", "-f", buildContainer], { label: "candidate_build_cleanup" }, spawnSyncImpl);
+      if (buildError) throw buildError;
+      if (cleanup.status !== 0) {
+        throw new ProductionEntrypointError("candidate_build_cleanup_ambiguous", EXIT_CODES.AMBIGUOUS, "ambiguous_execution");
+      }
     },
     runMigrationRunner: runMigration,
     verifyMigration,
@@ -299,7 +445,10 @@ function createProductionOperations(manifest, dependencies = {}) {
       checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "checkout", "--quiet", "--detach", sha], { label: "release_checkout" }, spawnSyncImpl);
     },
     startRuntime: ({ sha }) => {
-      const credential = readCredential();
+      if (promotedArtifactPath !== artifactPathFor(sha)) {
+        throw new ProductionEntrypointError("promoted_artifact_revision_mismatch", EXIT_CODES.BLOCKED, "artifact_identity_failed");
+      }
+      const runtimeEnvironmentPath = manifest.adapter.runtimeCredential.path;
       const args = [
         "run", "-d", "--restart", "unless-stopped", "--name", manifest.adapter.runtime.name,
         "--label", `com.clashcookies.runtime=${manifest.adapter.runtime.label}`,
@@ -307,9 +456,9 @@ function createProductionOperations(manifest, dependencies = {}) {
         "--label", `com.clashcookies.revision=${sha}`,
         "--network", manifest.adapter.runtime.network,
         "-p", `${adapter.CANONICAL_HOST_ADDRESS}:${manifest.adapter.runtime.hostPort}:${manifest.adapter.runtime.containerPort}`,
-        "--env-file", path.join(manifest.appDir, ".env"), "-e", `DATABASE_URL=${credential}`,
+        "--env-file", runtimeEnvironmentPath,
         "-e", "POLLING_MODE=active", "-e", "POLLING_ENV=prod", "-w", "/app",
-        "-v", `${manifest.appDir}:/app`, manifest.adapter.runtime.image, "bash", "./ops/deploy/container-start.sh",
+        "-v", `${promotedArtifactPath}:/app:ro`, manifest.adapter.runtime.image, "bash", "-lc", "npm run start:runtime",
       ];
       checkedCommand("docker", args, { label: "runtime_start" }, spawnSyncImpl);
     },
@@ -367,8 +516,16 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
     dependencies.fs || fs,
     dependencies.operatorIdentitySource || process,
   );
+  validateModuleBundle(
+    validated.moduleBundle,
+    validated.appDir,
+    validated.adapter.executor.path,
+    dependencies.fs || fs,
+  );
   adapter.validateProtectedCredentialSource(validated.adapter.credential, validated.appDir, dependencies.fs || fs);
+  adapter.validateProtectedCredentialSource(validated.adapter.runtimeCredential, validated.appDir, dependencies.fs || fs);
   adapter.validateReleaseRecordTarget(validated.adapter.releaseRecord, validated.appDir, dependencies.fs || fs);
+  validateProtectedDirectoryTarget(validated.promotionArtifactRoot, validated.appDir, dependencies.fs || fs);
   const releaseEnv = releaseEnvironment(validated, env);
   const operations = createProductionOperations(validated, dependencies);
   const diffPaths = operations.computeReleaseDiff
@@ -410,6 +567,7 @@ module.exports = {
   ensureExplicitActivation,
   readJsonConfig,
   runProductionDeployment,
+  validateModuleBundle,
   validateProductionManifest,
 };
 

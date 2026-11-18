@@ -9,6 +9,7 @@ PROD_NETWORK="${PROD_NETWORK:-clashcookies-prod_default}"
 NORMAL_CONTAINER="${NORMAL_CONTAINER:-clashcookies-app}"
 NORMAL_PORT="${NORMAL_PORT:-8085}"
 TEMP_WORKTREE="${TEMP_WORKTREE:-${APP_DIR}-replacement}"
+RUNTIME_ENV_FILE="${DEPLOY_RUNTIME_ENV_FILE:-/etc/clashcookies/production-runtime.env}"
 BUILD_CONTAINER="${BUILD_CONTAINER:-clashcookies-prod-candidate-build}"
 BUILD_VOLUME="${BUILD_VOLUME:-clashcookies-prod-candidate_node_modules}"
 BUILD_DIST_VOLUME="${BUILD_DIST_VOLUME:-clashcookies-prod-candidate_dist}"
@@ -20,7 +21,6 @@ TEMP_WORKTREE_CREATED="0"
 CANDIDATE_CLEANUP_ATTEMPTED="0"
 OLD_SHA=""
 NEW_SHA=""
-PROD_DATABASE_URL=""
 LOCK_OWNER_PATH=""
 LOCK_OWNER_RECORD=""
 LOCK_DIRECTORY_ID=""
@@ -101,14 +101,12 @@ assert_safe_temp_worktree_path() {
   fi
 }
 
-extract_database_url() {
+assert_compose_database_topology() {
   local compose_file="$1"
   local compose_json
-  local resolved_url
 
   compose_json="$(docker compose -f "$compose_file" config --format json 2>/dev/null)" || return 1
-  resolved_url="$(
-    printf '%s' "$compose_json" | \
+  printf '%s' "$compose_json" | \
       DEPLOY_COMPOSE_SERVICE="${DEPLOY_COMPOSE_SERVICE:-app}" \
       node -e '
         const fs = require("node:fs");
@@ -158,12 +156,17 @@ extract_database_url() {
           || value.includes("${")
           || value.includes("\r")
           || value.includes("\n")) process.exit(14);
-        process.stdout.write(value);
+        process.exit(0);
       '
-  )" || return 1
+  return $?
+}
 
-  [ -n "$resolved_url" ] || return 1
-  printf '%s' "$resolved_url"
+assert_runtime_environment_source() {
+  [ "$RUNTIME_ENV_FILE" != "$APP_DIR/.env" ] || fatal "runtime_environment_must_not_be_application_env"
+  [ -f "$RUNTIME_ENV_FILE" ] || fatal "runtime_environment_missing"
+  [ ! -L "$RUNTIME_ENV_FILE" ] || fatal "runtime_environment_symlinked"
+  runtime_mode="$(stat -c '%a' "$RUNTIME_ENV_FILE" 2>/dev/null || true)"
+  [ "$runtime_mode" = "600" ] || fatal "runtime_environment_mode_invalid"
 }
 
 list_active_runtime_names() {
@@ -245,8 +248,7 @@ start_active_runtime() {
   local container_id
   local -a docker_args
 
-  require_file "$APP_DIR/.env"
-  [ -n "$PROD_DATABASE_URL" ] || return 1
+  assert_runtime_environment_source
 
   docker_args=(
     run -d
@@ -257,8 +259,7 @@ start_active_runtime() {
     --label "com.clashcookies.revision=${revision}"
     --network "$PROD_NETWORK"
     -p "127.0.0.1:${NORMAL_PORT}:8080"
-    --env-file "$APP_DIR/.env"
-    -e "DATABASE_URL=${PROD_DATABASE_URL}"
+    --env-file "$RUNTIME_ENV_FILE"
     -e POLLING_MODE=active
     -e POLLING_ENV=prod
     -w /app
@@ -452,8 +453,8 @@ require_command stat
 require_command node
 
 acquire_deploy_lock
-require_file "$APP_DIR/.env"
 require_file "$APP_DIR/docker-compose.yml"
+assert_runtime_environment_source
 
 assert_safe_temp_worktree_path
 assert_checkout_safe
@@ -472,10 +473,7 @@ if [ -n "$changed_prisma_files" ]; then
 fi
 
 assert_target_does_not_overwrite_unknown_files "$NEW_SHA"
-if ! PROD_DATABASE_URL="$(extract_database_url "$APP_DIR/docker-compose.yml")"; then
-  fatal "production_database_url_not_found"
-fi
-[ -n "$PROD_DATABASE_URL" ] || fatal "production_database_url_not_found"
+assert_compose_database_topology "$APP_DIR/docker-compose.yml" || fatal "production_database_url_not_found"
 
 git_safe worktree add --quiet --detach "$TEMP_WORKTREE" "$NEW_SHA"
 TEMP_WORKTREE_CREATED="1"

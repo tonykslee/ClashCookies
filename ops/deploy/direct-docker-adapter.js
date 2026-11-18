@@ -217,11 +217,15 @@ function validateAdapterConfig(input = {}) {
   const appDir = path.resolve(input.appDir);
   const executorInput = input.executor || {};
   const credentialInput = input.credential || {};
+  const runtimeCredentialInput = input.runtimeCredential || null;
   const locksInput = input.locks || {};
   const recordInput = input.releaseRecord || {};
 
   const executorPath = requireExternalPath(executorInput.path, "executor_path", appDir);
   const credentialPath = requireExternalPath(credentialInput.path, "credential_path", appDir);
+  const runtimeCredentialPath = runtimeCredentialInput
+    ? requireExternalPath(runtimeCredentialInput.path, "runtime_credential_path", appDir)
+    : null;
   const releaseLockPath = requireExternalPath(locksInput.releasePath, "release_lock_path", appDir);
   const runnerLockPath = requireExternalPath(locksInput.runnerPath, "runner_lock_path", appDir);
   const releaseRecordPath = requireExternalPath(recordInput.path, "release_record_path", appDir);
@@ -233,6 +237,18 @@ function validateAdapterConfig(input = {}) {
   validateOwner(credentialInput.ownerUid, "credential_owner_uid");
   validateOwner(credentialInput.ownerGid, "credential_owner_gid");
   validateMode(credentialInput.mode, "credential_mode");
+  if (runtimeCredentialInput) {
+    validateOwner(runtimeCredentialInput.ownerUid, "runtime_credential_owner_uid");
+    validateOwner(runtimeCredentialInput.ownerGid, "runtime_credential_owner_gid");
+    validateMode(runtimeCredentialInput.mode, "runtime_credential_mode");
+    if (runtimeCredentialInput.verified !== true
+      || runtimeCredentialInput.format !== "docker-env"
+      || typeof runtimeCredentialInput.databaseUser !== "string"
+      || !/^[A-Za-z0-9_-]{1,128}$/.test(runtimeCredentialInput.databaseUser)
+      || runtimeCredentialInput.databaseUser === String(input.databaseIdentity?.user || "")) {
+      throw new AdapterError("runtime_credential_identity_invalid", "credential_source_invalid");
+    }
+  }
   validateOwner(recordInput.ownerUid, "release_record_owner_uid");
   validateOwner(recordInput.ownerGid, "release_record_owner_gid");
   validateMode(recordInput.mode, "release_record_mode");
@@ -267,6 +283,14 @@ function validateAdapterConfig(input = {}) {
       ownerGid: credentialInput.ownerGid,
       mode: credentialInput.mode,
     }),
+    runtimeCredential: runtimeCredentialInput ? Object.freeze({
+      path: runtimeCredentialPath,
+      ownerUid: runtimeCredentialInput.ownerUid,
+      ownerGid: runtimeCredentialInput.ownerGid,
+      mode: runtimeCredentialInput.mode,
+      format: "docker-env",
+      databaseUser: runtimeCredentialInput.databaseUser,
+    }) : null,
     locks: Object.freeze({
       releasePath: releaseLockPath,
       runnerPath: runnerLockPath,

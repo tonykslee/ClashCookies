@@ -15,6 +15,8 @@ worktree_state_file="${root}/worktree-state"
 output_file="${root}/output.log"
 mkdir -p "$app_dir" "$bin_dir"
 printf 'DISCORD_TOKEN=fixture-only\n' > "$app_dir/.env"
+printf 'DATABASE_URL=postgresql://runtime:fixture-only@db/clashcookies\nDISCORD_TOKEN=fixture-only\n' > "$app_dir/runtime.env"
+chmod 600 "$app_dir/runtime.env"
 cat > "$app_dir/docker-compose.yml" <<'EOF'
 services:
   app:
@@ -202,6 +204,14 @@ cat > "$bin_dir/sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat > "$bin_dir/stat" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = -c ] && [ "${2:-}" = %a ] && [ "${3:-}" = "${DEPLOY_RUNTIME_ENV_FILE:-}" ]; then
+  printf '%s\n' 600
+else
+  /usr/bin/stat "$@"
+fi
+EOF
 chmod +x "$bin_dir"/*
 
 if [ "$scenario" = stale-candidate ]; then
@@ -217,6 +227,7 @@ set +e
 PATH="$bin_dir:$PATH" \
 APP_DIR="$app_dir" \
 DEPLOY_LOCK_PATH="$lock_path" \
+DEPLOY_RUNTIME_ENV_FILE="$app_dir/runtime.env" \
 DEPLOY_TEST_LOG="$log_file" \
 DEPLOY_TEST_STATE="$state_file" \
 DEPLOY_TEST_WORKTREE_STATE="$worktree_state_file" \
