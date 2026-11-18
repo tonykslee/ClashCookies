@@ -179,6 +179,14 @@ Rules:
 
 ---
 
+## Production release Gate 1 checkpoint (2026-11-18)
+
+- The repository-only read-only Gate 1 prerequisite inspection packet and 12-resource protected-path matrix are documented in `docs/diagnostics/production-deployment-installation-readiness-2026-11-17.md`; PR #2058 merged to `dev` at `694bb78e19af39ef1256bb696c7c8bf86a2ad551`.
+- PR #2059 merged the **offline-only** strict local prerequisite evidence validator (`ops/deploy/discovery/gate1-prerequisite-validator.js`) at `d3bac03c5a825e902369a85ec6fb22ee8a75e228`. The validator enforces a 32,768-byte local JSON envelope cap and an 8,192-byte stdout cap, checks fixed records and pinned digests, and emits sanitized structural `VALID`/`INVALID`/`INCOMPLETE` results. `VALID` is **not** proof of host identity, authorization, or readiness.
+- Local input `boundary=UNVERIFIED` (Windows reparse/TOCTOU limitations) and capture `provenance=UNVERIFIED` remain intentional. **Next focused blocker:** separately reviewed, offline-first local capture/provenance boundary, with safe encrypted evidence handling and no assumed VM access.
+- Gate 1 remains **BLOCKED / NOT READY FOR EXECUTION**. The legacy deployment wrapper has no verified canonical shared-lock participation; protected lock, migration-lock, executor, credential and release-record paths remain unresolved. Delivery and prior remote hashes are operator-reported, not freshly reproduced. No SSH, capture, collector invocation, provisioning, deployment, migration, backup activation, or `dev`→`main` promotion is authorized by repository merges. Release PR #1983 remains blocked.
+- Full ownership, approvals, and release progress live in `docs/roadmaps/production-backup-readiness.md` and the installation-readiness diagnostic, **not** this project-brain summary.
+
 # Deployment Model
 
 Current production and staging deployments are droplet-based.
