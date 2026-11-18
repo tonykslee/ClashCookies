@@ -2,10 +2,10 @@
 
 **Repository:** `tonykslee/ClashCookies`
 
-**Base reviewed:** `dev` at `650c6c37c3e8c7f5a1d94490bdb169906e6f0494`
+**Base reviewed:** `dev` at `9fc04b3e7fe6d00c12729f07ebb428ace86f4087`
 
-**Assessment date:** 2026-11-17 (repository and documentation review)
-**Status:** installation readiness **BLOCKED**; documentation and repository evidence only
+**Assessment date:** 2026-11-18 (repository and documentation review)
+**Status:** installation readiness **BLOCKED**; owner/operator custody packet prepared offline; no production execution
 
 This document closes the documentation and planning portion of the production deployment installation-readiness blocker. It defines the proposed boundary for a separately managed immutable deployment entry point, the protected resources that must be verified before installation, and the authorization gates for a safe handoff from the legacy wrapper.
 
@@ -379,6 +379,202 @@ The canonical path and safe-file checks establish file properties only. They do 
 I authorize exactly one read-only Gate 1 protected-path prerequisite inspection of the named existing ClashCookies paths using the existing SSH alias clash-vm as the freshly verified account tilo. Before interpreting output, the operator must verify the existing approved alias and known-host binding; the command must use BatchMode=yes, RequestTTY=no, ForwardAgent=no, StrictHostKeyChecking=yes, ConnectTimeout=5 and ConnectionAttempts=1. It may run only the single fixed command in the approved packet, with no sudo, TTY, retries, file transfer, extraction, collector execution, evidence capture, Docker, PostgreSQL, wrapper execution, credential/environment reads, lock acquisition, release-record operation, permission change, directory creation, deployment, migration, backup, timer activation, staging change or release promotion. Any identity mismatch, unresolved path, hash mismatch, secret-bearing output, mutation attempt or incomplete output is a stop. This authorization does not authorize Gate 1 collector execution or any later provisioning, and it is not executable until the separately reviewed local capture/provenance boundary is approved and the validator reports structural `VALID`.
 UTC timestamp: ____________________   Approver: ____________________   Evidence reference: ____________________
 ```
+
+## Gate 1 owner/operator authorization and encrypted-evidence custody decision packet
+
+**Packet status:** `PROPOSED` and reviewable offline; all live-access, evidence-capture, custody, interpretation, collector, and provisioning gates remain `UNKNOWN`/`BLOCKED`. This section is the canonical owner/operator decision packet for the already merged offline components. It adds no executor, SSH wrapper, capture path, recipient, retention service, deployment infrastructure, or runtime behavior.
+
+### Decision posture and classifications
+
+Use the following meanings in every approval record:
+
+| Classification | Meaning in this packet |
+| --- | --- |
+| `VERIFIED` | Directly established by the named bounded check or offline artifact inspection. It does not authorize another gate. |
+| `OBSERVED` | Reported by an operator/Codex or found in a dated document; useful context, not independently fresh trust. |
+| `PROPOSED` | A candidate contract or control awaiting owner approval. It is not a path, recipient, or permission. |
+| `UNKNOWN` | Not independently established, unavailable, ambiguous, or intentionally withheld. Do not fill it by inference. |
+| `BLOCKED` | A required authorization, custody, identity, recovery, or safety condition is not closed. |
+
+Current decision: offline repository behavior is `VERIFIED` as repository evidence; local age ciphertext behavior is `OBSERVED`/repository-tested with `custody=RESTRICTED_UNVERIFIED`; production recipient ownership, private-root approval, retention, recovery, trusted SSH identity, and human evidence acceptance are `UNKNOWN`/`BLOCKED`.
+
+### 1. Purpose, permitted scope, and named target
+
+The exact purpose is one bounded decision-support packet for a possible future Gate 1 read-only production verification. The only proposed inspection purpose is to identify and classify, without changing them: the existing deployment wrapper and checkout; the approved operator identity; direct-Docker application/runtime singleton and host PID/cgroup correlation; Compose PostgreSQL topology and, only if separately selected, read-only database identity; deployed startup migration behavior; protected-resource metadata; health/monitoring/disk/inode/backup/timer/staging state; and the identity of the pinned inspection artifacts.
+
+The permitted inspection scope is one existing SSH connection, one remote command, one existing remote account, fixed read-only probes, bounded sanitized summaries, and offline review. It excludes collector execution until Gate E, evidence capture until the separately named capture approval and Gate A custody approval, wrapper/app/Docker/PostgreSQL execution or restart, credential/environment/argument reads, locks and release records, file transfer/extraction unless separately approved, permission changes, directory creation, deployment, migration, backup, timer activation, staging changes, and release promotion. No production access is authorized by this document update.
+
+### 2. Existing SSH alias, operator identity, and host-key requirements
+
+| Item | Required value or check | Status |
+| --- | --- | --- |
+| SSH alias | Existing operator-managed alias `clash-vm` | `OBSERVED`; must be freshly verified in the operator's protected SSH configuration |
+| Remote account | `tilo` | `OBSERVED`; must be freshly verified as the account used by the one invocation |
+| UID/GID/groups | OS-backed effective UID, GID, and complete supplementary groups from the actual session | `UNKNOWN` until fresh evidence; caller-supplied claims are rejected |
+| Host key | `StrictHostKeyChecking=yes`; existing approved alias-to-known-host binding and expected host key must be checked before interpreting output | `UNKNOWN` until the operator verifies the binding |
+| SSH controls | `BatchMode=yes`, `RequestTTY=no`, `ForwardAgent=no`, `ConnectTimeout=5`, `ConnectionAttempts=1`, remote-command mode only | `PROPOSED` fixed contract; one invocation only |
+
+The operator must not accept a new key, change `known_hosts`, disable host-key checking, use an alternate alias/identity, open an interactive shell, use `sudo`, or retry. A host, key, account, UID/GID, group, or privilege mismatch is an immediate stop. A successful SSH connection is transport evidence only; it does not prove authorization, wrapper safety, or evidence custody.
+
+### 3. Pinned inspection packet and artifact identity
+
+The inspection packet is `schema_version=clashcookies-gate1-prerequisite-v1`, `packet_version=2026-11-17`, `target=clash-vm`, `account=tilo`. The pinned source is the merged PR #2027 collector commit `1cb81528ea34dd25f51613557d6f6030fddd0b3a`. The four code-bound artifact hashes are:
+
+| Artifact | SHA-256 | Status |
+| --- | --- | --- |
+| PR #2027 archive | `8138275d0f18451ea02955357c3f2e7c22c729175c575033aae64bff7dc81015` | `VERIFIED` as the validator allowlist; remote delivery remains `OBSERVED` |
+| `ops/deploy/direct-docker-adapter.js` | `379490aa007ecf6d036d5ef95e6b5ed07c5d4fdf726904bbd152ee1486032666` | `VERIFIED` as the validator allowlist |
+| `ops/deploy/discovery/production-vm-discovery.sh` | `bb56d8e4ff9cd8d7d2652ef6fb3fbc6dd07e98ca3b0d65252c8a7a2ec9626da9` | `VERIFIED` as the validator allowlist |
+| `ops/deploy/discovery/runtime-contract-validator.js` | `e2fbc31275003aa631aa16b984e6d2a8eaabef57646b377b82e02d27a20e27d6` | `VERIFIED` as the validator allowlist |
+
+The local validator compares these values but cannot prove where stdout came from. A mismatched hash, unverified remote delivery, extra archive member, changed relative structure, or missing artifact is `UNKNOWN`/`BLOCKED`; do not transfer, extract, or execute a substitute.
+
+### 4. Local age executable identity and encryption contract
+
+The merged age adapter requires an explicit absolute executable path, launches only that path with `shell=false`, accepts only syntactically valid age recipients, and reports `custody=RESTRICTED_UNVERIFIED`. It does not pin a production executable path or hash. The installed `age v1.3.2` report is `OBSERVED` operator/Codex preparation evidence, not an approval.
+
+Before any future local custody approval, record all of the following in restricted provenance: absolute `age` path; regular-file and canonical non-reparse status; owner, mode, ACL and stable identity; `age --version` result; SHA-256 of the exact executable; and the named owner who approved that exact binary. Until every field is present, the local executable identity is `UNKNOWN`/`BLOCKED`. Do not use a backup executable identity or a production backup recipient for discovery evidence.
+
+The proposed encryption operation is ciphertext-only: bounded stdout is streamed to the approved age process, plaintext is never written to disk, the final ciphertext path is exclusive-created and never overwritten, and the ciphertext is fsynced and read back for bounded size/hash verification. The offline adapter proves only synthetic local process completion and ciphertext integrity; it does not prove recipient ownership, confidentiality in the proposed root, retention, recovery, Windows atomicity, or production authorization.
+
+### 5. Recipient ownership and private ciphertext-root approval
+
+| Decision | Candidate/reference | Required owner decision | Status |
+| --- | --- | --- | --- |
+| Dedicated evidence recipient | Operator-reported public recipient `age15gwzpsek379vh09r9qylc2td3rzglls9hctum063p8qkqmxhagqqmtee3g` | Name the recipient owner/custodian and approve this exact public recipient for Gate 1 evidence; confirm it is not a backup recipient | `OBSERVED`; ownership and approval `UNKNOWN/BLOCKED` |
+| Private ciphertext root | `%USERPROFILE%\clashcookies-production-evidence-20261117` | Approve this exact canonical root, its owner, ACL, non-reparse status, no-broad-principal rule, and use for ciphertext plus restricted sidecars | Local shape was `VERIFIED` only in the prior offline check; custody approval `UNKNOWN/BLOCKED` |
+| Destination naming | UTC timestamp plus pinned commit, with exclusive creation | Approve the exact filename grammar and a separate owner-approved quarantine location | `PROPOSED` |
+| Private material | No private age identity, passphrase, plaintext, credential, environment value, or key material in VM, repo, chat, or public storage | Owner/custodian must attest this boundary | `PROPOSED`; not yet attested for a live capture |
+
+The root must be rechecked immediately before each use for canonical path, non-reparse components, owner, ACLs, absence of broad principals, free space, and no unexpected files. A path existing, being empty, or having a metadata claim does not establish custody approval. If the exact root or quarantine path is not approved in writing, do not create or write it.
+
+Windows limitation: the current Node runtime has no portable `O_NOFOLLOW` guarantee for every reparse-point type, and ACL checks are not a substitute for an atomic no-follow/open operation. The loader and age adapter combine `lstat`, native canonical-path comparison, descriptor `fstat`, bounded reads, fsync and post-read/post-write identity checks, but these are not a complete atomic filesystem or TOCTOU guarantee. A race after the final check may remain, and Node has no portable atomic unlink-by-identity operation across Windows filesystems. Any detected reparse, replacement, mutation, short read, ambiguous identity, or unavailable ACL/reparse result fails closed; undetectable races keep custody `RESTRICTED_UNVERIFIED`.
+
+### 6. Retention and recovery custody decision
+
+Discovery evidence has no inherited backup retention. The retention duration, deletion authority, and responsible owner must be explicit and must not be inferred from production backup daily/weekly retention.
+
+| Required decision field | Current state |
+| --- | --- |
+| Original ciphertext retention duration | `UNKNOWN` — owner must name an exact duration and UTC deletion rule |
+| Separate stderr/provenance/validator-result retention | `UNKNOWN` — owner must state whether these expire with the ciphertext and how they remain linked by hash |
+| Responsible evidence custodian | `UNKNOWN` — name one accountable owner and one backup/recovery custodian |
+| Deletion/quarantine authority | `UNKNOWN` — only the named owner may authorize expiry; no automatic deletion is implemented |
+| Recovery identity owner | `UNKNOWN` — must be separate from the operator where practical and named in the approval |
+| Independent retrieval plan | `PROPOSED`: retrieve from the off-workstation recovery copy, compare its trusted SHA-256, recover a fixed synthetic sentinel through a masked local prompt, verify wrong-passphrase rejection, and retain no plaintext file |
+
+The latest recovery object report is operator-supplied: `ClashCookies-Discovery-Evidence-20261117.identity.age`, SHA-256 `5a050ccea53f37a7ba8c579ba4c58816b8966e01dde4ad4a9f3f354224bee5ca785d42c`, with the older AES-CBC object retained pending retirement approval. This is `OBSERVED`, not proof of owner approval or disaster recovery. The recovery plan is not `PASS` until an independently authorized custodian retrieves it without consulting the primary workstation copy, verifies the trusted hash and recipient, completes the synthetic round-trip and wrong-passphrase test, records the result, and confirms access protection. Private identity contents and passphrases must never be recorded.
+
+### 7. Exact evidence fields and content sensitivity
+
+The structural envelope must contain exactly `schema_version`, `packet_version`, `target`, `account`, `expected_artifact_sha256`, `capture`, `provenance`, and `stdout`. `capture` must contain exactly `ssh_exit_status`, `stream_status`, `eof_observed`, `stdout_sha256`, and `stdout_bytes`. `provenance` must contain exactly `captured_at`, `host_key_binding`, `authorization_scope`, and `source`. The current offline validator deliberately requires `host_key_binding=EXTERNAL_REVIEW_REQUIRED`, `authorization_scope=EXTERNAL_REVIEW_REQUIRED`, and `source=EXTERNAL_LOCAL_CAPTURE_WRAPPER`; these values keep provenance `UNVERIFIED`.
+
+The restricted provenance record for any future live bundle must additionally bind: packet/schema version; collector commit and all four artifact hashes; SSH alias/account and fresh OS identity; known-host binding reference; capture method and UTC start/end; SSH exit/stream/EOF result; stdout and stderr byte counts and SHA-256 values; ciphertext path, byte count and SHA-256; exact age executable path/version/hash; recipient and owner-approval reference; ciphertext-root and quarantine-root metadata; retention duration and custodian; recovery identity object hash/custodian/retrieval result; validator result; reviewer decisions; and every stop/interruption/quarantine reason. These are metadata references, not permission to expose source or secrets.
+
+The stdout evidence is bounded sanitized operational metadata and remains sensitive. The ciphertext is confidential evidence. Stderr, if retained under a separate approval, is bounded diagnostic material and must be redacted. No evidence bundle may contain plaintext JSONL, private keys, passphrases, database URLs, tokens, environment values, command arguments, full Docker labels/inspect data, raw wrapper source, untracked filenames, or private monitoring URLs. A secret-bearing, overlong, malformed, mixed, or unexpected record is never accepted as evidence.
+
+### 8. Size, timeout, and one-attempt contract
+
+The constraints are deliberately separated by boundary:
+
+| Boundary | Fixed constraint |
+| --- | --- |
+| Prerequisite SSH | `BatchMode=yes`, `RequestTTY=no`, `ForwardAgent=no`, `StrictHostKeyChecking=yes`, `ConnectTimeout=5`, `ConnectionAttempts=1`; one SSH invocation |
+| Prerequisite remote utilities | Five-second `timeout` with TERM/KILL-after-1s; fixed command and fail-closed stop path |
+| Prerequisite stdout | Maximum 1 KiB per line and 8 KiB total; final newline required; no aggregate SSH deadline is claimed |
+| Offline JSON envelope | Maximum 32,768 UTF-8 bytes; explicit absolute input and approved-root paths |
+| Pinned later collector | `DISCOVERY_MAX_OUTPUT_BYTES=131072`, `DISCOVERY_MAX_COMMAND_SECONDS=5`, `DISCOVERY_MAX_CONTAINERS=64`; one bounded invocation only, not authorized by this packet |
+| Offline age adapter | Synthetic plaintext/stdout/stderr diagnostic maximum 8,192 bytes; ciphertext maximum 16,384 bytes; explicit timeout, default 10,000 ms in the adapter; no retry |
+
+The fixed prerequisite command is not the collector. A structural `VALID` result means only that the envelope and bounded records are well-formed; it does not establish host identity, capture provenance, authorization, recipient ownership, or custody. A timeout, nonzero exit, EOF failure, truncation, duplicate attempt, destination collision, stream error, or late event is a stop and must not trigger an automatic retry.
+
+### 9. Failure, interruption, and quarantine procedure
+
+Before any remote mutation—which Gate 1 forbids—stop on identity mismatch, host-key uncertainty, unresolved path, artifact mismatch, missing utility, permission expansion, secret-bearing output, malformed/truncated output, nonzero status, timeout, mutation attempt, lock/release-record touch, or incomplete capture. Preserve the original bounded artifact and provenance as `INCOMPLETE` or `MALFORMED`; never hand-edit, concatenate, repair, or replace it.
+
+For age or filesystem failure, keep any partial ciphertext only in the separately approved quarantine location. Cleanup may unlink only a newly created file whose descriptor/path identity is revalidated; if identity is missing, ambiguous, replaced, symlinked, unavailable, or changed, do not unlink and classify the artifact `QUARANTINED_INCOMPLETE`. Do not retry, overwrite, delete remote files, or interpret a partial ciphertext as evidence. Record the sanitized failure code, artifact hash/size if available, and the owner-directed recovery decision without recording raw stderr or plaintext.
+
+No rollback is authorized because the proposed inspection is read-only. If an unexpected mutation is observed, stop immediately, preserve the evidence, do not repair or roll back the VM/database/runtime, and escalate to the owner. A quarantine artifact is not evidence acceptance and does not authorize a second attempt.
+
+### 10. Reviewer responsibilities and evidence acceptance
+
+The operator is responsible for verifying the existing alias, known-host binding, account, OS identity, fixed command, source artifact hashes, capture completeness, and stop conditions. The evidence custodian is responsible for the exact root/quarantine ACL and reparse checks, recipient ownership record, retention, recovery identity custody, and independent retrieval plan. The offline validator/reviewer is responsible for structural validation, byte/hash reconciliation, schema/version checks, sensitivity review, classification of every record, and preservation of the original artifact. The release owner is responsible for keeping Gate 1 and all later gates separate; no reviewer may convert a local/offline PASS into production authorization.
+
+Evidence may be accepted for human interpretation only when the original ciphertext, bounded provenance and validator result are present; all hashes and byte counts reconcile; the packet/artifact versions match; SSH host-key and operator identity are independently verified; content sensitivity review is clean; recipient/root/retention/recovery approvals are recorded; the result is complete and non-secret-bearing; and every `UNKNOWN`/`BLOCKED` item is explicitly retained. Acceptance of evidence is not acceptance of deployment readiness.
+
+### 11. Independent authorization text for gates A–F
+
+Each block below is a separate decision. Checking one box does not check, imply, or pre-authorize any other box.
+
+```text
+GATE A — LOCAL RECIPIENT AND PRIVATE CIPHERTEXT CUSTODY ONLY
+I authorize only the named dedicated age recipient, exact local ciphertext root,
+quarantine location, ACL/reparse checks, retention duration, evidence custodian,
+recovery identity custodian, and independent retrieval plan recorded in this packet.
+This authorizes no SSH connection, host-key decision, remote command, evidence
+capture, collector execution, production access, deployment, migration, backup,
+timer activation, staging change, or protected-resource provisioning.
+Recipient/root reference: ____________________  Retention: ____________________
+Custodian: ____________________  Recovery reference: ____________________
+UTC timestamp: ____________________  Approver: ____________________
+
+GATE B — TRUSTED SSH HOST AND OPERATOR VERIFICATION ONLY
+I authorize only one local verification of the existing approved `clash-vm` alias,
+known-host binding, remote account `tilo`, OS-backed UID/GID/groups, and required
+read/traverse permissions using the fixed SSH controls in this packet. No remote
+inspection command, collector, wrapper, sudo, TTY, retry, credential read, lock,
+release record, Docker/DB operation, capture, deployment, migration, backup,
+timer, staging, or release action is authorized.
+UTC timestamp: ____________________  Approver: ____________________
+
+GATE C — ONE EXACT READ-ONLY PREREQUISITE INSPECTION ONLY
+I authorize exactly one fixed, bounded, read-only prerequisite inspection using
+the already verified alias/account and the pinned packet/artifact hashes. It may
+inspect only the named wrapper, checkout, approved identity, candidate metadata,
+and other allowlisted facts in this packet. It may not execute the collector,
+wrapper, app, Docker, PostgreSQL, or migration; read credentials/environment/
+arguments; acquire/touch locks or release records; capture evidence; transfer or
+extract files; change permissions; create directories; retry; or alter production.
+UTC timestamp: ____________________  Approver: ____________________
+
+GATE D — EVIDENCE INTERPRETATION AND HUMAN REVIEW ONLY
+I authorize only offline decryption/validation, sensitivity review, hash/byte
+reconciliation, classification, and human acceptance or rejection of the named
+bounded evidence bundle. This does not authorize SSH, a new capture, a rerun,
+collector execution, production access, deployment, migration, backup, timer,
+staging change, provisioning, or release promotion.
+Evidence reference: ____________________  UTC timestamp: ____________________
+Approver: ____________________
+
+GATE E — LATER COLLECTOR EXECUTION ONLY
+I authorize one later bounded invocation of the exact pinned read-only collector,
+after Gates A–D prerequisites and paths are independently closed, using the exact
+approved SSH/capture method and verified resource paths. It permits no wrapper/app
+execution, sudo, TTY, retry, credential/environment/argument read, lock or release
+record operation, Docker/DB write, migration, backup, timer, staging change,
+deployment, protected-resource provisioning, or release promotion.
+Collector/path reference: ____________________  UTC timestamp: ____________________
+Approver: ____________________
+
+GATE F — LATER PROTECTED-RESOURCE PROVISIONING ONLY
+I authorize only the separately named filesystem/ownership/ACL/reparse-safe
+provisioning changes for the approved executor, outer/inner locks, protected
+credential source, append-only release record, evidence/quarantine roots, and
+candidate paths. This does not authorize wrapper execution, collector execution,
+Docker/DB access, migration, backup, timer activation, deployment, runtime restart,
+staging changes, or `dev` to `main` promotion. Exact paths, owners, modes, ACLs,
+retention, and rollback authority must be attached before any write.
+Provisioning reference: ____________________  UTC timestamp: ____________________
+Approver: ____________________
+```
+
+These blocks are prepared signatures, not signatures in the repository. No checked box is recorded by this documentation change.
+
+### 12. Explicit stop conditions
+
+Stop and classify `UNKNOWN`/`BLOCKED`—without retry or inference—if any of the following occurs: the alias, known-host binding, host key, account, UID/GID/groups, artifact commit/hash, executable identity, recipient owner, ciphertext root, ACL, reparse state, retention owner, recovery custodian, or protected path is missing or mismatched; the remote command needs `sudo`, a TTY, a second connection, a retry, an alternate identity, or a guessed/default lock path; output is nonzero, interrupted, truncated, overlong, malformed, contradictory, mixed with SSH diagnostics, or secret-bearing; a lock/release record/credential/environment/argument is touched; a path is replaced, symlinked, non-regular, writable by an unapproved principal, or has incomplete identity; the age process errors, times out, emits oversized diagnostics, encounters EPIPE, or leaves ambiguous cleanup; the destination exists or is not exclusive; the recovery hash/recipient/sentinel/wrong-passphrase result does not reconcile; a reviewer cannot classify a result without inference; or any action would access production beyond the exact approved gate.
+
+Gate 1 remains **BLOCKED / NOT READY FOR EXECUTION** until the named owner decisions and separate authorizations are actually supplied, the live identity and host-key checks are freshly performed, and the resulting evidence is independently reviewed. This packet does not authorize SSH, capture, collector execution, protected-resource provisioning, deployment, migration, backup, timer activation, staging changes, or release promotion.
 
 ## Offline local capture/provenance boundary — implemented, not production-authorized
 
