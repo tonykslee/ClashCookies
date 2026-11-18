@@ -159,42 +159,130 @@ function makeEvidence() {
   };
 }
 
-async function runGuard(configInput: Record<string, unknown>, evidence = makeEvidence()) {
-  const root = configInput.appDir as string;
-  const env = makeEnvironment(join(root, ".."));
-  const deploymentConfig = orchestrator.parseConfig(env, process.cwd());
-  const content = Buffer.from("reviewed executor\n");
-  const boundary = integration.createOfflineDeploymentIntegration({
-    adapterConfig: configInput,
-    dependencies: {
-      fs: makeFs(join(root, ".."), content),
-      operatorIdentitySource: makeIdentity(),
-      testOnlyOperatorIdentityEvidence: true,
-    },
-  });
-  return boundary.guard({
-    config: deploymentConfig,
-    readPreflightEvidence: () => evidence,
-  });
-}
-
 afterEach(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
   roots.clear();
 });
 
 describe("offline deployment integration boundary", () => {
-  it("binds the verified adapter to orchestrator evidence without exposing execution", async () => {
+  it("returns PASS evidence but cannot authorize any orchestrator operation", async () => {
     const root = makeRoot();
     const content = Buffer.from("reviewed executor\n");
     const digest = createHash("sha256").update(content).digest("hex");
-    const result = await runGuard(makeConfig(root, digest));
+    const config = makeConfig(root, digest);
+    const env = makeEnvironment(root);
+    const deploymentConfig = orchestrator.parseConfig(env, process.cwd());
+    const boundary = integration.createOfflineDeploymentIntegration({
+      adapterConfig: config,
+      dependencies: {
+        fs: makeFs(root, content),
+        operatorIdentitySource: makeIdentity(),
+        testOnlyOperatorIdentityEvidence: true,
+      },
+    });
+    const result = await boundary.guard({
+      config: deploymentConfig,
+      readPreflightEvidence: makeEvidence,
+    });
 
     expect(result.status).toBe("PASS");
     expect(result.productionExecutionEnabled).toBe(false);
     expect(result.adapter.executor.independentOperatorIdentity).toBe("os-backed-process-identity");
     expect(result.adapter.executor).not.toHaveProperty("operatorGids");
     expect(result.deployment.lockPath).toBe(join(root, "deploy.lock"));
+
+    const calls: string[] = [];
+    const operation = (name: string) => (..._args: unknown[]) => {
+      calls.push(name);
+      return undefined;
+    };
+    const exitCode = await orchestrator.runMigrationAwareDeployment({
+      env,
+      repoRoot: process.cwd(),
+      operations: {
+        integrationGuard: boundary.guard,
+        readPreflightEvidence: makeEvidence,
+        now: operation("clock"),
+        acquireExclusiveLock: operation("outer-lock"),
+        writeReleaseRecord: operation("release-record"),
+        inspectCheckout: operation("checkout-inspection"),
+        inspectRuntime: operation("runtime-inspection"),
+        computeReleaseDiff: operation("release-diff"),
+        createCandidate: operation("candidate-creation"),
+        buildCandidate: operation("candidate-build"),
+        runMigrationRunner: operation("migration-runner"),
+        verifyMigration: operation("migration-verification"),
+        stopRuntime: operation("runtime-stop"),
+        startRuntime: operation("runtime-start"),
+        checkoutRelease: operation("release-checkout"),
+        healthCheck: operation("health-check"),
+        cleanupCandidate: operation("candidate-cleanup"),
+      },
+    });
+
+    expect(exitCode).toBe(orchestrator.EXIT_CODES.BLOCKED);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["malformed", {}],
+    ["production-enabled", { status: "PASS", productionExecutionEnabled: true }],
+  ])("fails closed for a %s integration result before sampling the clock", async (_label, integrationResult) => {
+    const root = makeRoot();
+    const calls: string[] = [];
+    const env = makeEnvironment(root);
+    const exitCode = await orchestrator.runMigrationAwareDeployment({
+      env,
+      repoRoot: process.cwd(),
+      operations: {
+        integrationGuard: async () => integrationResult,
+        now: () => {
+          calls.push("clock");
+          return "2026-11-17T00:00:00.000Z";
+        },
+        acquireExclusiveLock: () => {
+          calls.push("outer-lock");
+          return () => true;
+        },
+      },
+    });
+
+    expect(exitCode).toBe(orchestrator.EXIT_CODES.BLOCKED);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not treat a missing optional integration hook as offline authorization", async () => {
+    const root = makeRoot();
+    const calls: string[] = [];
+    const env = makeEnvironment(root);
+    const exitCode = await orchestrator.runMigrationAwareDeployment({
+      env,
+      repoRoot: process.cwd(),
+      operations: {
+        readPreflightEvidence: makeEvidence,
+        now: () => {
+          calls.push("clock");
+          return "2026-11-17T00:00:00.000Z";
+        },
+        acquireExclusiveLock: () => {
+          calls.push("outer-lock");
+          return () => true;
+        },
+        writeReleaseRecord: (_path: string, _line: string) => {
+          calls.push("release-record");
+        },
+        inspectCheckout: () => {
+          calls.push("checkout-inspection");
+          return { currentSha: "a".repeat(40), trackedChanges: false, stagedChanges: false, unknownPaths: [] };
+        },
+      },
+    });
+
+    expect(exitCode).toBe(orchestrator.EXIT_CODES.BLOCKED);
+    expect(calls).toContain("clock");
+    expect(calls).toContain("outer-lock");
+    expect(calls).toContain("checkout-inspection");
   });
 
   it.each([

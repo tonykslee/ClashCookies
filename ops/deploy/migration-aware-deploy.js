@@ -472,6 +472,17 @@ async function runMigrationAwareDeployment({
         config,
         readPreflightEvidence: ops.readPreflightEvidence,
       });
+      if (integration && integration.status === "PASS"
+        && integration.productionExecutionEnabled === false) {
+        // Offline verification is evidence only. It must never authorize or
+        // initiate the executable orchestrator, even when every trust check
+        // passes and operations were independently injected.
+        throw new OrchestratorError(
+          "offline_integration_cannot_authorize_execution",
+          EXIT_CODES.BLOCKED,
+          "offline_verification_only",
+        );
+      }
       if (!integration || integration.status !== "PASS"
         || integration.productionExecutionEnabled !== false) {
         throw new OrchestratorError(

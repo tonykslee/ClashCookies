@@ -85,8 +85,9 @@ function summarizeVerifiedBoundary(adapterConfig, deploymentConfig, evidence) {
 /**
  * Create the offline-only integration guard shared by the direct adapter and
  * migration-aware orchestrator. The guard is intentionally not an operation
- * surface: it validates independent identity and release evidence before the
- * orchestrator is allowed to acquire its outer lock or invoke any operation.
+ * surface: it returns verification evidence only. When supplied through the
+ * orchestrator's optional hook, the orchestrator rejects that offline-only
+ * result before sampling its clock or invoking any deployment operation.
  */
 function createOfflineDeploymentIntegration({ adapterConfig, dependencies = {} } = {}) {
   const guard = async ({ config, readPreflightEvidence } = {}) => {
