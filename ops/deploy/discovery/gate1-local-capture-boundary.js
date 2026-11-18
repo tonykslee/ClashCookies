@@ -13,7 +13,7 @@ const COMPLETE = "COMPLETE";
 const FAILURE_STATUSES = new Set(["INTERRUPTED", "TIMEOUT", "TRUNCATED", "FAILED"]);
 const UNVERIFIED = "UNVERIFIED";
 const SYNTHETIC_SOURCE = "SYNTHETIC_LOCAL_FIXTURE";
-const SAFE_AGE_RECIPIENT = /^age1[0-9a-z]{50,}$/;
+const AGE_RECIPIENT_SYNTAX = /^age1[0-9a-z]{50,}$/;
 
 class CaptureBoundaryFailure extends Error {
   constructor(status, reason) {
@@ -27,10 +27,16 @@ function reject(status, reason) {
   throw new CaptureBoundaryFailure(status, reason);
 }
 
-function asBuffer(value) {
-  if (Buffer.isBuffer(value)) return Buffer.from(value);
-  if (typeof value === "string") return Buffer.from(value, "utf8");
-  reject("INVALID", "CAPTURE_OUTPUT_NOT_BYTES");
+function asBoundedBuffer(value, limit, tooLargeReason) {
+  if (Buffer.isBuffer(value)) {
+    if (value.length > limit) reject("INVALID", tooLargeReason);
+    return value;
+  }
+  if (typeof value === "string") {
+    if (Buffer.byteLength(value, "utf8") > limit) reject("INVALID", tooLargeReason);
+    return Buffer.from(value, "utf8");
+  }
+  reject("INVALID", "CAPTURE_INPUT_TYPE_UNSUPPORTED");
 }
 
 function hexDigest(bytes) {
@@ -47,8 +53,8 @@ function assertNoForgedTrust(value, reason) {
 }
 
 function createCaptureMetadata(options) {
-  const bytes = asBuffer(options.stdout);
-  const stderr = asBuffer(options.stderr ?? Buffer.alloc(0));
+  const bytes = asBoundedBuffer(options.stdout, MAX_CAPTURE_BYTES, "CAPTURE_OUTPUT_TOO_LARGE");
+  const stderr = asBoundedBuffer(options.stderr ?? Buffer.alloc(0), MAX_CAPTURE_BYTES, "CAPTURE_STDERR_TOO_LARGE");
   const status = options.streamStatus;
   requireText(options.captureAttemptId, "CAPTURE_ATTEMPT_ID_INVALID");
   requireText(options.sourceIdentity, "SOURCE_IDENTITY_MISSING");
@@ -59,9 +65,6 @@ function createCaptureMetadata(options) {
   assertNoForgedTrust(options.hostKeyBinding, "FORGED_HOST_KEY_BINDING");
   assertNoForgedTrust(options.authorizationScope, "FORGED_AUTHORIZATION");
   if (!FAILURE_STATUSES.has(status) && status !== COMPLETE) reject("INVALID", "STREAM_STATUS_INVALID");
-  if (bytes.length > MAX_CAPTURE_BYTES) reject("INVALID", "CAPTURE_OUTPUT_TOO_LARGE");
-  if (stderr.length > MAX_CAPTURE_BYTES) reject("INVALID", "CAPTURE_STDERR_TOO_LARGE");
-
   const actualSha256 = hexDigest(bytes);
   const actualBytes = bytes.length;
   const actualStderrBytes = stderr.length;
@@ -101,7 +104,7 @@ function createCaptureMetadata(options) {
 }
 
 function validateCaptureEnvelope(options) {
-  const bytes = asBuffer(options.stdout);
+  const bytes = asBoundedBuffer(options.stdout, MAX_CAPTURE_BYTES, "CAPTURE_OUTPUT_TOO_LARGE");
   const metadata = createCaptureMetadata({ ...options, stdout: bytes });
   const envelope = options.envelope;
   if (!envelope || typeof envelope !== "object") reject("INVALID", "ENVELOPE_MISSING");
@@ -137,24 +140,36 @@ function validateCiphertextDestination(destination) {
   if (destination.reparse === true || destination.regular !== true || destination.accessible !== true) {
     reject("INVALID", "CIPHERTEXT_DESTINATION_UNSAFE");
   }
-  return Object.freeze({ status: "READY_FOR_SEPARATE_CUSTODY_AUTHORIZATION", custody: "UNVERIFIED" });
+  return Object.freeze({ status: "DESTINATION_METADATA_ONLY", storage_approved: false, custody: "UNVERIFIED" });
 }
 
 function encryptSyntheticInMemory({ plaintext, recipient, encryptor }) {
-  const bytes = asBuffer(plaintext);
-  if (typeof recipient !== "string" || !SAFE_AGE_RECIPIENT.test(recipient)) reject("INVALID", "ENCRYPTION_RECIPIENT_INVALID");
+  const bytes = asBoundedBuffer(plaintext, MAX_CAPTURE_BYTES, "ENCRYPTION_PLAINTEXT_TOO_LARGE");
+  if (typeof recipient !== "string" || !AGE_RECIPIENT_SYNTAX.test(recipient)) reject("INVALID", "ENCRYPTION_RECIPIENT_SYNTAX_INVALID");
   if (typeof encryptor !== "function") reject("INVALID", "ENCRYPTION_IMPLEMENTATION_MISSING");
-  let ciphertext;
+  let mockOutput;
   try {
-    ciphertext = encryptor(Buffer.from(bytes), recipient);
+    mockOutput = encryptor(bytes, recipient);
   } catch {
     reject("INCOMPLETE", "ENCRYPTION_FAILED");
   }
-  if (!Buffer.isBuffer(ciphertext) || ciphertext.length === 0) reject("INCOMPLETE", "ENCRYPTION_FAILED");
+  if (!Buffer.isBuffer(mockOutput)) reject("INCOMPLETE", "ENCRYPTION_OUTPUT_TYPE_INVALID");
+  if (mockOutput.length > MAX_CAPTURE_BYTES) reject("INVALID", "ENCRYPTION_OUTPUT_TOO_LARGE");
+  if (mockOutput.length === 0) reject("INCOMPLETE", "ENCRYPTION_OUTPUT_EMPTY");
+  if (mockOutput === bytes || (mockOutput.length === bytes.length && crypto.timingSafeEqual(mockOutput, bytes))) {
+    reject("INVALID", "ENCRYPTION_OUTPUT_PASSTHROUGH");
+  }
+  const boundedOutput = Buffer.from(mockOutput);
   return Object.freeze({
-    ciphertext: Buffer.from(ciphertext),
-    ciphertext_bytes: ciphertext.length,
-    ciphertext_sha256: hexDigest(ciphertext),
+    status: "SYNTHETIC_UNTRUSTED",
+    output_kind: "MOCK_ENCRYPTOR_OUTPUT",
+    mock_output: boundedOutput,
+    mock_output_bytes: boundedOutput.length,
+    mock_output_sha256: hexDigest(boundedOutput),
+    recipient_syntax: "VALIDATED",
+    recipient_trust: UNVERIFIED,
+    encryption_verified: false,
+    confidentiality_verified: false,
     plaintext_persisted: false,
     custody: "UNVERIFIED",
   });

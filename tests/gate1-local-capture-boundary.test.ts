@@ -99,8 +99,21 @@ describe("Gate 1 local capture/provenance boundary", () => {
     expect(result.stdout_bytes).toBe(boundary.MAX_CAPTURE_BYTES);
   });
 
+  it("accepts the maximum permitted stdout string", () => {
+    const value = "x".repeat(boundary.MAX_CAPTURE_BYTES);
+    expect(boundary.createCaptureMetadata(options(value)).stdout_bytes).toBe(boundary.MAX_CAPTURE_BYTES);
+  });
+
   it("rejects one byte over the capture limit", () => {
     expect(() => boundary.createCaptureMetadata(options(Buffer.alloc(boundary.MAX_CAPTURE_BYTES + 1)))).toThrow("CAPTURE_OUTPUT_TOO_LARGE");
+  });
+
+  it("rejects one byte over the stderr limit", () => {
+    expect(() => boundary.createCaptureMetadata(options(stdout(), { stderr: "e".repeat(boundary.MAX_CAPTURE_BYTES + 1) }))).toThrow("CAPTURE_STDERR_TOO_LARGE");
+  });
+
+  it("rejects unsupported input types without conversion", () => {
+    expect(() => boundary.createCaptureMetadata(options(stdout(), { stdout: 42 }))).toThrow("CAPTURE_INPUT_TYPE_UNSUPPORTED");
   });
 
   it("records the actual SHA-256 and byte count", () => {
@@ -118,6 +131,16 @@ describe("Gate 1 local capture/provenance boundary", () => {
 
   it("rejects a byte-count mismatch", () => {
     expect(() => boundary.createCaptureMetadata(options(stdout(), { declaredStdoutBytes: 1 }))).toThrow("CAPTURE_BYTE_COUNT_MISMATCH");
+  });
+
+  it("rejects an oversized Buffer before copying it", () => {
+    const value = Buffer.alloc(boundary.MAX_CAPTURE_BYTES + 1);
+    expect(() => boundary.createCaptureMetadata(options(value))).toThrow("CAPTURE_OUTPUT_TOO_LARGE");
+  });
+
+  it("rejects an oversized string before converting it", () => {
+    const value = "x".repeat(boundary.MAX_CAPTURE_BYTES + 1);
+    expect(() => boundary.createCaptureMetadata(options(value))).toThrow("CAPTURE_OUTPUT_TOO_LARGE");
   });
 
   it("rejects a stderr byte-count mismatch without exposing stderr", () => {
@@ -179,17 +202,46 @@ describe("Gate 1 local capture/provenance boundary", () => {
   });
 
   it("rejects invalid encryption recipients", () => {
-    expect(() => boundary.encryptSyntheticInMemory({ plaintext: "fixture", recipient: "not-a-recipient", encryptor: () => Buffer.from("ciphertext") })).toThrow("ENCRYPTION_RECIPIENT_INVALID");
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: "fixture", recipient: "not-a-recipient", encryptor: () => Buffer.from("mock-output") })).toThrow("ENCRYPTION_RECIPIENT_SYNTAX_INVALID");
+  });
+
+  it("accepts maximum synthetic plaintext but never treats it as encrypted evidence", () => {
+    const result = boundary.encryptSyntheticInMemory({ plaintext: Buffer.alloc(boundary.MAX_CAPTURE_BYTES, 1), recipient: validRecipient, encryptor: () => Buffer.from("mock-output") });
+    expect(result.status).toBe("SYNTHETIC_UNTRUSTED");
+    expect(result.encryption_verified).toBe(false);
+  });
+
+  it("rejects oversized synthetic plaintext before invoking the encryptor", () => {
+    let invoked = false;
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: Buffer.alloc(boundary.MAX_CAPTURE_BYTES + 1), recipient: validRecipient, encryptor: () => { invoked = true; return Buffer.from("mock-output"); } })).toThrow("ENCRYPTION_PLAINTEXT_TOO_LARGE");
+    expect(invoked).toBe(false);
+  });
+
+  it("rejects oversized injected encryptor output before copying it", () => {
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: "fixture", recipient: validRecipient, encryptor: () => Buffer.alloc(boundary.MAX_CAPTURE_BYTES + 1) })).toThrow("ENCRYPTION_OUTPUT_TOO_LARGE");
+  });
+
+  it("rejects invalid or empty encryptor output", () => {
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: "fixture", recipient: validRecipient, encryptor: () => "not-a-buffer" })).toThrow("ENCRYPTION_OUTPUT_TYPE_INVALID");
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: "fixture", recipient: validRecipient, encryptor: () => Buffer.alloc(0) })).toThrow("ENCRYPTION_OUTPUT_EMPTY");
   });
 
   it("classifies encryption failure without exposing plaintext", () => {
     expect(() => boundary.encryptSyntheticInMemory({ plaintext: "synthetic-secret", recipient: validRecipient, encryptor: () => { throw new Error("private failure"); } })).toThrow("ENCRYPTION_FAILED");
   });
 
-  it("does not persist plaintext and returns only injected ciphertext", () => {
+  it("quarantines visible plaintext in synthetic mock output", () => {
     const result = boundary.encryptSyntheticInMemory({ plaintext: Buffer.from("synthetic evidence"), recipient: validRecipient, encryptor: (input: Buffer) => Buffer.concat([Buffer.from("age:"), input]) });
+    expect(result.status).toBe("SYNTHETIC_UNTRUSTED");
+    expect(result.output_kind).toBe("MOCK_ENCRYPTOR_OUTPUT");
+    expect(result.encryption_verified).toBe(false);
+    expect(result.confidentiality_verified).toBe(false);
     expect(result.plaintext_persisted).toBe(false);
-    expect(result.ciphertext.toString()).toBe("age:synthetic evidence");
+    expect(result.mock_output.toString()).toBe("age:synthetic evidence");
+  });
+
+  it("rejects an identity/pass-through mock", () => {
+    expect(() => boundary.encryptSyntheticInMemory({ plaintext: Buffer.from("synthetic evidence"), recipient: validRecipient, encryptor: (input: Buffer) => input })).toThrow("ENCRYPTION_OUTPUT_PASSTHROUGH");
   });
 
   it("rejects a structurally sensitive output", () => {
@@ -210,7 +262,8 @@ describe("Gate 1 local capture/provenance boundary", () => {
 
   it("requires an explicit separate custody authorization", () => {
     const result = boundary.validateCiphertextDestination({ approved: true, exclusive: true, plaintext: false, regular: true, accessible: true, reparse: false });
-    expect(result.status).toBe("READY_FOR_SEPARATE_CUSTODY_AUTHORIZATION");
+    expect(result.status).toBe("DESTINATION_METADATA_ONLY");
+    expect(result.storage_approved).toBe(false);
     expect(result.custody).toBe("UNVERIFIED");
   });
 });
