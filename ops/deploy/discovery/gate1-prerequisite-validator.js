@@ -4,6 +4,8 @@
 // module never starts a process, connects remotely, or writes evidence.
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
+const { TextDecoder } = require("node:util");
 
 const SCHEMA_VERSION = "clashcookies-gate1-prerequisite-v1";
 const PACKET_VERSION = "2026-11-17";
@@ -11,6 +13,11 @@ const TARGET_ALIAS = "clash-vm";
 const REMOTE_ACCOUNT = "tilo";
 const MAX_LINE_BYTES = 1024;
 const MAX_TOTAL_BYTES = 8192;
+// This bounds the complete JSON envelope, including fields outside stdout.
+// It is intentionally separate from MAX_TOTAL_BYTES, which bounds stdout.
+const MAX_ENVELOPE_BYTES = 32768;
+const MAX_INPUT_PATH_CHARS = 4096;
+const INPUT_BOUNDARY = "UNVERIFIED";
 
 // These are the reviewed PR #2027 source-artifact values named by the
 // inspection packet. They bind the envelope to a known preparation contract;
@@ -65,12 +72,24 @@ class ValidationFailure extends Error {
   }
 }
 
+class InputBoundaryFailure extends Error {
+  constructor(status, reason) {
+    super(reason);
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
 function invalid(reason) {
   throw new ValidationFailure("INVALID", reason);
 }
 
 function incomplete(reason) {
   throw new ValidationFailure("INCOMPLETE", reason);
+}
+
+function rejectInput(status, reason) {
+  throw new InputBoundaryFailure(status, reason);
 }
 
 function isPlainObject(value) {
@@ -323,31 +342,199 @@ function formatResult(result) {
     `records=${result.recordCount}`,
     `reason=${result.reason}`,
     `review=${result.reviewRequired ? "REQUIRED" : "NOT_REQUIRED"}`,
+    `boundary=${result.boundary || INPUT_BOUNDARY}`,
     `provenance=${result.provenance}`,
   ].join("|") + "\n";
 }
 
-function readExplicitInput(argv) {
-  if (!Array.isArray(argv) || argv.length !== 2 || argv[0] !== "--input" || !argv[1] || argv[1] === "-") {
-    throw new Error("INPUT_ARGUMENT_INVALID");
+function inputFailure(status, reason) {
+  return {
+    status,
+    reason,
+    recordCount: 0,
+    schemaVersion: SCHEMA_VERSION,
+    reviewRequired: true,
+    boundary: INPUT_BOUNDARY,
+    provenance: "UNVERIFIED",
+  };
+}
+
+function hasUnsafePathText(value) {
+  return typeof value !== "string" || value.length === 0 || value.length > MAX_INPUT_PATH_CHARS ||
+    value.includes("\u0000") || hasForbiddenControlCharacter(value);
+}
+
+function normalizedPath(value) {
+  const normalized = path.normalize(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function samePath(left, right) {
+  return normalizedPath(left) === normalizedPath(right);
+}
+
+function statFingerprint(stats) {
+  return [
+    stats.isFile(),
+    stats.isDirectory(),
+    stats.isSymbolicLink(),
+    stats.dev,
+    stats.ino,
+    stats.mode,
+    stats.nlink,
+    stats.size,
+    stats.mtimeNs,
+    stats.ctimeNs,
+    stats.birthtimeNs,
+  ].map((value) => String(value)).join("|");
+}
+
+function isSameIdentity(left, right) {
+  return statFingerprint(left) === statFingerprint(right);
+}
+
+function existingPathComponents(absolutePath, role) {
+  const parsed = path.parse(absolutePath);
+  const remainder = absolutePath.slice(parsed.root.length).split(/[\\/]+/).filter(Boolean);
+  let current = parsed.root;
+  for (const component of remainder) {
+    current = path.join(current, component);
+    let stats;
+    try {
+      stats = fs.lstatSync(current, { bigint: true });
+    } catch (error) {
+      rejectInput("INCOMPLETE", role === "root" ? "INPUT_BOUNDARY_UNREADABLE" : "INPUT_FILE_UNREADABLE");
+    }
+    if (stats.isSymbolicLink()) rejectInput("INVALID", "INPUT_SYMLINK_OR_REPARSE");
+    if (current !== absolutePath && !stats.isDirectory()) rejectInput("INVALID", "INPUT_PARENT_NOT_DIRECTORY");
   }
-  return fs.readFileSync(argv[1], "utf8");
+}
+
+function canonicalRegularPath(value, role) {
+  if (hasUnsafePathText(value) || !path.isAbsolute(value)) rejectInput("INVALID", "INPUT_PATH_INVALID");
+  const absolute = path.resolve(value);
+  existingPathComponents(absolute, role);
+  let stats;
+  try {
+    stats = fs.lstatSync(absolute, { bigint: true });
+  } catch (error) {
+    rejectInput("INCOMPLETE", role === "root" ? "INPUT_BOUNDARY_UNREADABLE" : "INPUT_FILE_UNREADABLE");
+  }
+  if (role === "root" && !stats.isDirectory()) rejectInput("INVALID", "INPUT_BOUNDARY_NOT_DIRECTORY");
+  if (role === "input" && !stats.isFile()) rejectInput("INVALID", "INPUT_NOT_REGULAR_FILE");
+  if (stats.isSymbolicLink()) rejectInput("INVALID", "INPUT_SYMLINK_OR_REPARSE");
+
+  let canonical;
+  try {
+    canonical = fs.realpathSync.native(absolute);
+  } catch (error) {
+    rejectInput("INCOMPLETE", role === "root" ? "INPUT_BOUNDARY_UNREADABLE" : "INPUT_FILE_UNREADABLE");
+  }
+  // A changed canonical path is treated as a reparse/junction boundary. The
+  // comparison is case-insensitive on Windows because case is not identity.
+  if (!samePath(canonical, absolute)) rejectInput("INVALID", "INPUT_SYMLINK_OR_REPARSE");
+  return { absolute, canonical, stats };
+}
+
+function parseCliArguments(argv) {
+  if (!Array.isArray(argv) || argv.length !== 4 || argv[0] !== "--input" || argv[2] !== "--approved-root" ||
+      argv[1] === "-" || argv[3] === "-") {
+    rejectInput("INCOMPLETE", "INPUT_ARGUMENT_INVALID");
+  }
+  if (hasUnsafePathText(argv[1]) || hasUnsafePathText(argv[3])) rejectInput("INVALID", "INPUT_PATH_INVALID");
+  return { inputPath: argv[1], approvedRoot: argv[3] };
+}
+
+function isDescendant(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function readBoundedInput(inputPath, approvedRoot, hooks = {}) {
+  const root = canonicalRegularPath(approvedRoot, "root");
+  const input = canonicalRegularPath(inputPath, "input");
+  if (!isDescendant(root.canonical, input.canonical)) rejectInput("INVALID", "INPUT_OUTSIDE_BOUNDARY");
+  if (input.stats.size > BigInt(MAX_ENVELOPE_BYTES)) rejectInput("INVALID", "INPUT_ENVELOPE_TOO_LARGE");
+
+  const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fdFlags = fs.constants.O_RDONLY | noFollow;
+  let fd;
+  let expectedStats;
+  try {
+    fd = fs.openSync(input.canonical, fdFlags);
+    expectedStats = fs.fstatSync(fd, { bigint: true });
+    if (!expectedStats.isFile() || expectedStats.isSymbolicLink()) rejectInput("INVALID", "INPUT_NOT_REGULAR_FILE");
+    if (expectedStats.size > BigInt(MAX_ENVELOPE_BYTES)) rejectInput("INVALID", "INPUT_ENVELOPE_TOO_LARGE");
+    if (!isSameIdentity(input.stats, expectedStats)) rejectInput("INCOMPLETE", "INPUT_REPLACED");
+    if (typeof hooks.beforeRead === "function") hooks.beforeRead();
+
+    const expectedBytes = Number(expectedStats.size);
+    const buffer = Buffer.allocUnsafe(expectedBytes);
+    let offset = 0;
+    while (offset < expectedBytes) {
+      const bytesRead = fs.readSync(fd, buffer, offset, expectedBytes - offset, offset);
+      if (!Number.isInteger(bytesRead) || bytesRead <= 0) rejectInput("INCOMPLETE", "INPUT_SHORT_READ");
+      offset += bytesRead;
+      if (typeof hooks.afterChunk === "function") hooks.afterChunk(offset);
+    }
+
+    const afterFdStats = fs.fstatSync(fd, { bigint: true });
+    let afterPathStats;
+    try {
+      afterPathStats = fs.lstatSync(input.canonical, { bigint: true });
+    } catch (error) {
+      rejectInput("INCOMPLETE", "INPUT_REPLACED");
+    }
+    if (!isSameIdentity(expectedStats, afterFdStats) || !isSameIdentity(expectedStats, afterPathStats)) {
+      rejectInput("INCOMPLETE", "INPUT_CHANGED_DURING_READ");
+    }
+    return buffer;
+  } catch (error) {
+    if (error instanceof InputBoundaryFailure) throw error;
+    rejectInput("INCOMPLETE", "INPUT_UNREADABLE");
+  } finally {
+    if (typeof fd === "number") {
+      try { fs.closeSync(fd); } catch (error) { /* sanitized failure is returned by the caller */ }
+    }
+  }
+}
+
+function decodeInput(buffer) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch (error) {
+    rejectInput("INVALID", "INPUT_NOT_UTF8");
+  }
+}
+
+function readExplicitInput(argv) {
+  const { inputPath, approvedRoot } = parseCliArguments(argv);
+  const buffer = readBoundedInput(inputPath, approvedRoot);
+  return decodeInput(buffer);
+}
+
+function cliResultFromError(error) {
+  if (error instanceof InputBoundaryFailure) return inputFailure(error.status, error.reason);
+  return inputFailure("INCOMPLETE", "INPUT_UNREADABLE");
+}
+
+function validateCliJson(raw) {
+  let envelope;
+  try {
+    envelope = JSON.parse(raw);
+  } catch (error) {
+    return inputFailure("INVALID", "INPUT_NOT_VALID_JSON");
+  }
+  const result = validateEnvelope(envelope);
+  return { ...result, boundary: INPUT_BOUNDARY };
 }
 
 if (require.main === module) {
   let result;
   try {
-    const raw = readExplicitInput(process.argv.slice(2));
-    result = validateEnvelope(JSON.parse(raw));
+    result = validateCliJson(readExplicitInput(process.argv.slice(2)));
   } catch (error) {
-    result = {
-      status: "INCOMPLETE",
-      reason: error && error.message === "INPUT_ARGUMENT_INVALID" ? "INPUT_ARGUMENT_INVALID" : "INPUT_UNREADABLE",
-      recordCount: 0,
-      schemaVersion: SCHEMA_VERSION,
-      reviewRequired: true,
-      provenance: "UNVERIFIED",
-    };
+    result = cliResultFromError(error);
   }
   process.stdout.write(formatResult(result));
   process.exitCode = result.status === "VALID" ? 0 : result.status === "INCOMPLETE" ? 3 : 2;
@@ -358,8 +545,14 @@ module.exports = {
   CANDIDATES,
   MAX_LINE_BYTES,
   MAX_TOTAL_BYTES,
+  MAX_ENVELOPE_BYTES,
+  MAX_INPUT_PATH_CHARS,
   PACKET_VERSION,
   SCHEMA_VERSION,
+  decodeInput,
+  parseCliArguments,
+  readBoundedInput,
+  readExplicitInput,
   validateEnvelope,
   formatResult,
 };

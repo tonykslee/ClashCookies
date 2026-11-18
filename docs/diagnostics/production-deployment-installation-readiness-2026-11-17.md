@@ -346,11 +346,15 @@ This update adds the offline-only validator `ops/deploy/discovery/gate1-prerequi
 
 ### Strict local validator contract
 
-The validator is local-only and accepts exactly one explicitly supplied UTF-8 JSON envelope. It does not read stdin, initiate SSH, invoke a child process, invoke Docker/PostgreSQL, capture evidence, write files or rerun a probe. Windows CMD invocation is:
+The validator is local-only and accepts exactly one explicitly supplied UTF-8 JSON envelope. It does not read stdin, initiate SSH, invoke a child process, invoke Docker/PostgreSQL, capture evidence, write files or rerun a probe. The input path and approved local boundary must both be explicit absolute paths; naming a directory does not itself establish trust. Windows CMD invocation is:
 
 ```cmd
-node ops\deploy\discovery\gate1-prerequisite-validator.js --input C:\path\to\gate1-prerequisite-envelope.json
+node ops\deploy\discovery\gate1-prerequisite-validator.js --input C:\Users\tonyk\clashcookies-production-evidence-20261117\gate1-prerequisite-envelope.json --approved-root C:\Users\tonyk\clashcookies-production-evidence-20261117
 ```
+
+The complete input envelope is limited to **32 KiB (32,768 UTF-8 bytes)**. The loader checks the explicit boundary and canonical path before opening, rejects symlinks, Windows reparse/junction components when detectable, directories, devices, FIFOs and other non-regular files, checks the size before reading, reads through a bounded descriptor, and compares file identity before and after the read. The 32 KiB envelope limit is distinct from the 8 KiB `stdout` limit below. The loader never follows an unsafe path as a fallback and never creates or changes evidence files.
+
+On Windows, the current Node runtime does not provide a portable `O_NOFOLLOW` guarantee for every reparse-point type. The loader combines `lstat`, native canonical-path comparison, descriptor `fstat`, bounded reads and post-read identity checks, but this is not an atomic filesystem or complete TOCTOU guarantee. A detected reparse/symlink, replacement, mutation, short read, inaccessible path or unsupported boundary is rejected; undetectable Windows races remain a trusted-provenance limitation and keep Gate 1 **BLOCKED**.
 
 The envelope must contain exactly these top-level fields: `schema_version`, `packet_version`, `target`, `account`, `expected_artifact_sha256`, `capture`, `provenance` and `stdout`. The fixed values are `schema_version=clashcookies-gate1-prerequisite-v1`, `packet_version=2026-11-17`, `target=clash-vm` and `account=tilo`. `expected_artifact_sha256` must contain exactly the reviewed values below; caller-supplied values are compared to this code-bound allowlist and cannot establish remote identity:
 
@@ -365,7 +369,9 @@ The `stdout` record order is exact: `identity`; `archive`, `adapter`, `collector
 
 The `capture` object must contain exactly `ssh_exit_status`, `stream_status`, `eof_observed`, `stdout_sha256` and `stdout_bytes`. It requires SSH exit status `0`, `stream_status=COMPLETE`, EOF observed, and a SHA-256/byte count matching the supplied `stdout`. This is an external capture attestation because the current SSH command has no terminal marker; the validator does not create or verify that attestation. The `provenance` object must contain exactly `captured_at`, `host_key_binding`, `authorization_scope` and `source`, with `host_key_binding=EXTERNAL_REVIEW_REQUIRED`, `authorization_scope=EXTERNAL_REVIEW_REQUIRED` and `source=EXTERNAL_LOCAL_CAPTURE_WRAPPER`. These values deliberately produce `provenance=UNVERIFIED`; they are not authorization or host identity proof.
 
-The validator enforces a maximum of 1 KiB per record line and 8 KiB total `stdout` bytes, requires a final newline, rejects blank/partial/duplicate/extra/malformed records, SSH diagnostics, control characters, sensitive-looking malformed content and `STOP` records, and never prints rejected records. Results are bounded to `VALID`, `INVALID` or `INCOMPLETE` with schema, count, safe reason, `review=REQUIRED` and `provenance=UNVERIFIED`. `VALID` means structural validation only, never production readiness; an `UNKNOWN_OR_UNRESOLVED` result remains review-required. Exit codes are 0 for structural `VALID`, 2 for `INVALID` and 3 for `INCOMPLETE`.
+The validator enforces a maximum of 1 KiB per record line and 8 KiB total `stdout` bytes, requires a final newline, rejects blank/partial/duplicate/extra/malformed records, SSH diagnostics, control characters, sensitive-looking malformed content and `STOP` records, and never prints rejected records. Results are bounded to `VALID`, `INVALID` or `INCOMPLETE` with schema, count, safe reason, `review=REQUIRED`, `boundary=UNVERIFIED` and `provenance=UNVERIFIED`. `VALID` means structural validation only, never production readiness; an `UNKNOWN_OR_UNRESOLVED` result remains review-required. Input-boundary failures return fixed sanitized reasons with `records=0`; malformed UTF-8/JSON and unsafe file types are `INVALID`, while missing, inaccessible, replaced, mutated, short or interrupted reads are `INCOMPLETE`. Exit codes are 0 for structural `VALID`, 2 for `INVALID` and 3 for `INCOMPLETE`.
+
+The canonical path and safe-file checks establish file properties only. They do not establish that the directory is owner-approved, that the envelope originated from production, that a host key was trusted, that capture was authorized, or that the collector may execute. Those capture/provenance and production-access decisions remain separate.
 
 **Required owner authorization:**
 

@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const validator = require("../ops/deploy/discovery/gate1-prerequisite-validator.js") as typeof import("../ops/deploy/discovery/gate1-prerequisite-validator.js");
@@ -6,6 +10,7 @@ const validator = require("../ops/deploy/discovery/gate1-prerequisite-validator.
 const emptyInventorySha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const wrapperSha = "f".repeat(64);
 const headSha = "b".repeat(40);
+const validatorPath = resolve("ops/deploy/discovery/gate1-prerequisite-validator.js");
 
 type RecordOptions = {
   branch?: "ATTACHED" | "DETACHED" | "UNKNOWN";
@@ -94,7 +99,7 @@ describe("Gate 1 prerequisite evidence validator", () => {
     expect(result.reason).toBe("STRUCTURALLY_VALID");
     expect(result.recordCount).toBe(20);
     expect(result.reviewRequired).toBe(true);
-    expect(validator.formatResult(result)).toBe("VALID|schema=clashcookies-gate1-prerequisite-v1|records=20|reason=STRUCTURALLY_VALID|review=REQUIRED|provenance=UNVERIFIED\n");
+    expect(validator.formatResult(result)).toBe("VALID|schema=clashcookies-gate1-prerequisite-v1|records=20|reason=STRUCTURALLY_VALID|review=REQUIRED|boundary=UNVERIFIED|provenance=UNVERIFIED\n");
   });
 
   it("accepts expected unresolved candidate states without treating them as readiness PASS", () => {
@@ -175,5 +180,217 @@ describe("Gate 1 prerequisite evidence validator", () => {
     expect(Buffer.byteLength(output, "utf8")).toBeLessThan(1024);
     expect(output).not.toContain("DATABASE_URL");
     expect(output).not.toContain("secret");
+  });
+});
+
+function withFixture(callback: (root: string) => void) {
+  const root = mkdtempSync(join(tmpdir(), "clashcookies-gate1-validator-"));
+  try {
+    callback(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function writeEnvelope(root: string, name: string, content: string | Buffer) {
+  const input = join(root, name);
+  writeFileSync(input, content);
+  return input;
+}
+
+function runCli(args: string[]) {
+  const result = spawnSync(process.execPath, [validatorPath, ...args], {
+    encoding: "utf8",
+    timeout: 2000,
+    windowsHide: true,
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    timedOut: result.error?.code === "ETIMEDOUT",
+  };
+}
+
+function expectSanitizedCli(result: ReturnType<typeof runCli>, expectedStatus: number, expectedReason: string) {
+  expect(result.timedOut).toBe(false);
+  expect(result.status).toBe(expectedStatus);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toMatch(new RegExp(`^(?:VALID|INVALID|INCOMPLETE)\\|schema=clashcookies-gate1-prerequisite-v1\\|records=0\\|reason=${expectedReason}\\|review=REQUIRED\\|boundary=UNVERIFIED\\|provenance=UNVERIFIED\\n$`));
+  expect(result.stdout).not.toMatch(/DATABASE_URL|postgresql|secret|PASSWORD|filename|PRIVATE KEY/i);
+}
+
+describe("Gate 1 bounded local input boundary", () => {
+  it("accepts a small regular file only with an explicit boundary", () => {
+    withFixture((root) => {
+      const input = writeEnvelope(root, "evidence.json", JSON.stringify(validEnvelope()));
+      const result = runCli(["--input", input, "--approved-root", root]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("VALID|schema=clashcookies-gate1-prerequisite-v1|records=20");
+      expect(result.stdout).toContain("boundary=UNVERIFIED|provenance=UNVERIFIED");
+    });
+  });
+
+  it("accepts an envelope exactly at the fixed 32 KiB boundary", () => {
+    withFixture((root) => {
+      const base = JSON.stringify(validEnvelope());
+      const padding = " ".repeat(validator.MAX_ENVELOPE_BYTES - Buffer.byteLength(base, "utf8"));
+      const input = writeEnvelope(root, "boundary.json", `${base}${padding}`);
+      const result = runCli(["--input", input, "--approved-root", root]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("VALID|schema=clashcookies-gate1-prerequisite-v1|records=20");
+    });
+  });
+
+  it("rejects one byte above the envelope boundary before parsing", () => {
+    withFixture((root) => {
+      const base = JSON.stringify(validEnvelope());
+      const padding = " ".repeat(validator.MAX_ENVELOPE_BYTES - Buffer.byteLength(base, "utf8"));
+      const input = writeEnvelope(root, "oversized.json", `${base}${padding} `);
+      const before = readFileSync(input);
+      const result = runCli(["--input", input, "--approved-root", root]);
+      expectSanitizedCli(result, 2, "INPUT_ENVELOPE_TOO_LARGE");
+      expect(readFileSync(input)).toEqual(before);
+    });
+  });
+
+  it("rejects an oversized envelope even when stdout itself is short", () => {
+    withFixture((root) => {
+      const envelope = { ...validEnvelope(), padding: "x".repeat(validator.MAX_ENVELOPE_BYTES) };
+      const input = writeEnvelope(root, "short-stdout-oversized-envelope.json", JSON.stringify(envelope));
+      expectSanitizedCli(runCli(["--input", input, "--approved-root", root]), 2, "INPUT_ENVELOPE_TOO_LARGE");
+    });
+  });
+
+  it("rejects malformed JSON and malformed UTF-8 without echoing input", () => {
+    withFixture((root) => {
+      const malformedJson = writeEnvelope(root, "malformed.json", "{\"schema_version\":");
+      expectSanitizedCli(runCli(["--input", malformedJson, "--approved-root", root]), 2, "INPUT_NOT_VALID_JSON");
+      const malformedUtf8 = writeEnvelope(root, "malformed-utf8.json", Buffer.from([0xc3, 0x28]));
+      expectSanitizedCli(runCli(["--input", malformedUtf8, "--approved-root", root]), 2, "INPUT_NOT_UTF8");
+    });
+  });
+
+  it("rejects symlink input and symlink/reparse parent components when creation is available", ({ skip }) => {
+    withFixture((root) => {
+      const target = writeEnvelope(root, "target.json", JSON.stringify(validEnvelope()));
+      const link = join(root, "input-link.json");
+      const linkedParent = join(root, "linked-parent");
+      try {
+        symlinkSync(target, link, "file");
+        symlinkSync(root, linkedParent, "junction");
+      } catch (error) {
+        skip("Windows test environment did not permit synthetic symlink/reparse creation");
+        return;
+      }
+      expectSanitizedCli(runCli(["--input", link, "--approved-root", root]), 2, "INPUT_SYMLINK_OR_REPARSE");
+      expectSanitizedCli(runCli(["--input", join(linkedParent, "target.json"), "--approved-root", root]), 2, "INPUT_SYMLINK_OR_REPARSE");
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(target);
+    });
+  });
+
+  it("rejects directories, missing files, outside-boundary paths and long paths", () => {
+    withFixture((root) => {
+      const directory = join(root, "directory");
+      mkdirSync(directory);
+      expectSanitizedCli(runCli(["--input", directory, "--approved-root", root]), 2, "INPUT_NOT_REGULAR_FILE");
+      expectSanitizedCli(runCli(["--input", join(root, "missing.json"), "--approved-root", root]), 3, "INPUT_FILE_UNREADABLE");
+      const outsideRoot = mkdtempSync(join(tmpdir(), "clashcookies-gate1-outside-"));
+      try {
+        const outside = writeEnvelope(outsideRoot, "outside.json", JSON.stringify(validEnvelope()));
+        expectSanitizedCli(runCli(["--input", outside, "--approved-root", root]), 2, "INPUT_OUTSIDE_BOUNDARY");
+      } finally {
+        rmSync(outsideRoot, { recursive: true, force: true });
+      }
+      const longPath = join(root, "x".repeat(validator.MAX_INPUT_PATH_CHARS));
+      expect(() => validator.parseCliArguments(["--input", longPath, "--approved-root", root])).toThrow("INPUT_PATH_INVALID");
+    });
+  });
+
+  it("rejects a device/special file where the platform exposes one", ({ skip }) => {
+    if (process.platform === "win32") {
+      skip("Windows does not expose a portable synthetic device file inside a disposable boundary");
+      return;
+    }
+    const device = "/dev/null";
+    if (!existsSync(device)) {
+      skip("platform has no /dev/null device fixture");
+      return;
+    }
+    const result = runCli(["--input", device, "--approved-root", "/dev"]);
+    expectSanitizedCli(result, 2, "INPUT_NOT_REGULAR_FILE");
+  });
+
+  it("rejects permission-denied input when the platform can create it reliably", ({ skip }) => {
+    if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) {
+      skip("Windows ACLs or root execution do not provide a reliable disposable permission-denied fixture");
+      return;
+    }
+    withFixture((root) => {
+      const input = writeEnvelope(root, "denied.json", JSON.stringify(validEnvelope()));
+      chmodSync(input, 0o000);
+      try {
+        expectSanitizedCli(runCli(["--input", input, "--approved-root", root]), 3, "INPUT_FILE_UNREADABLE");
+      } finally {
+        chmodSync(input, 0o600);
+      }
+    });
+  });
+
+  it("rejects replacement and mutation detected by descriptor/path identity checks", () => {
+    withFixture((root) => {
+      const input = writeEnvelope(root, "race.json", JSON.stringify(validEnvelope()));
+      expect(() => validator.readBoundedInput(input, root, {
+        beforeRead: () => {
+          const replacement = `${input}.replacement`;
+          writeFileSync(replacement, readFileSync(input));
+          rmSync(input, { force: true });
+          renameSync(replacement, input);
+        },
+      })).toThrow(/INPUT_(REPLACED|CHANGED_DURING_READ)/);
+
+      writeFileSync(input, JSON.stringify(validEnvelope()));
+      expect(() => validator.readBoundedInput(input, root, {
+        afterChunk: () => appendFileSync(input, "x"),
+      })).toThrow("INPUT_CHANGED_DURING_READ");
+    });
+  });
+
+  it("rejects short/interrupted reads through the bounded loader and never hangs", () => {
+    withFixture((root) => {
+      const input = writeEnvelope(root, "short.json", JSON.stringify(validEnvelope()));
+      expect(() => validator.readBoundedInput(input, root, {
+        beforeRead: () => {
+          truncateSync(input, 0);
+        },
+      })).toThrow(/INPUT_(SHORT_READ|CHANGED_DURING_READ)/);
+    });
+  });
+
+  it("rejects unexpected arguments and secret-bearing payloads with fixed output", () => {
+    withFixture((root) => {
+      const input = writeEnvelope(root, "secret.json", JSON.stringify({ ...validEnvelope(), target: "DATABASE_URL=secret" }));
+      expectSanitizedCli(runCli(["--input", input, "--approved-root", root, "--unexpected"]), 3, "INPUT_ARGUMENT_INVALID");
+      expectSanitizedCli(runCli(["--input", input, "--approved-root", root]), 2, "HOST_IDENTITY_MISMATCH");
+    });
+  });
+
+  it("does not modify fixture files while rejecting input", () => {
+    withFixture((root) => {
+      const input = writeEnvelope(root, "immutable.json", JSON.stringify(validEnvelope(), null, 2));
+      const before = readFileSync(input);
+      const beforeStats = lstatSync(input);
+      const result = runCli(["--input", input, "--approved-root", root]);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("VALID|schema=clashcookies-gate1-prerequisite-v1|records=20");
+      expect(result.stdout).toContain("boundary=UNVERIFIED|provenance=UNVERIFIED");
+      expect(readFileSync(input)).toEqual(before);
+      const afterStats = lstatSync(input);
+      expect(afterStats.size).toBe(beforeStats.size);
+      expect(afterStats.mtimeMs).toBe(beforeStats.mtimeMs);
+    });
   });
 });
