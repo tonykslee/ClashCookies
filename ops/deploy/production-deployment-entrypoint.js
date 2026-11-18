@@ -30,6 +30,7 @@ const REQUIRED_ARTIFACT_FILES = Object.freeze([
   "node_modules/.prisma/client/default.js",
   "prisma/schema.prisma",
 ]);
+const CREDENTIAL_ACCESS_STRATEGY = "operator-owned-immutable-read-only";
 
 const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -106,6 +107,63 @@ function validateActivation(input) {
 }
 
 /**
+ * The current SSH entrypoint and Docker env-file paths must read both
+ * credentials in the non-root operator process. Keep that read capability
+ * narrow: the files remain 0600, are immutable after installation, their
+ * parent is not operator-writable, and the operator has no root-equivalent
+ * Docker/sudo authority that could clear the immutable bit or replace them.
+ */
+function validateCredentialAccessContract(input, adapterConfig) {
+  const access = input.credentialAccess || {};
+  const authorization = input.executor?.authorization || {};
+  const operatorGids = Array.isArray(access.operatorGids)
+    ? [...new Set(access.operatorGids)].sort((left, right) => left - right)
+    : [];
+  const authorizedGids = Array.isArray(authorization.operatorGids)
+    ? [...new Set(authorization.operatorGids)].sort((left, right) => left - right)
+    : [];
+  const parentMode = access.parentMode;
+  const operatorGroupOverlap = operatorGids.some((gid) => gid === access.parentOwnerGid);
+  const credentialPaths = [input.credential, input.runtimeCredential];
+  if (access.strategy !== CREDENTIAL_ACCESS_STRATEGY
+    || access.verified !== true
+    || access.immutableFlagVerified !== true
+    || access.rootEquivalentAccess !== "none"
+    || access.dockerAccess !== "rootless"
+    || !Number.isInteger(access.operatorUid) || access.operatorUid < 1
+    || access.operatorUid !== authorization.operatorUid
+    || operatorGids.length === 0
+    || JSON.stringify(operatorGids) !== JSON.stringify(authorizedGids)
+    || !Number.isInteger(access.parentOwnerUid) || access.parentOwnerUid < 0
+    || !Number.isInteger(access.parentOwnerGid) || access.parentOwnerGid < 0
+    || access.parentOwnerUid === access.operatorUid
+    || operatorGroupOverlap
+    || !Number.isInteger(parentMode) || parentMode < 0 || parentMode > 0o7777
+    || (parentMode & 0o022) !== 0
+    || (parentMode & 0o005) !== 0o005
+    || credentialPaths.some((credential) => !credential
+      || credential.ownerUid !== access.operatorUid
+      || credential.mode !== 0o600)) {
+    throw new ProductionEntrypointError("credential_access_contract_invalid");
+  }
+  if (!adapterConfig || typeof adapterConfig.runtimeCredential?.path !== "string") {
+    throw new ProductionEntrypointError("credential_access_runtime_boundary_invalid");
+  }
+  return Object.freeze({
+    strategy: CREDENTIAL_ACCESS_STRATEGY,
+    operatorUid: access.operatorUid,
+    operatorGids: Object.freeze(operatorGids),
+    parentOwnerUid: access.parentOwnerUid,
+    parentOwnerGid: access.parentOwnerGid,
+    parentMode,
+    immutableFlagVerified: true,
+    rootEquivalentAccess: "none",
+    dockerAccess: "rootless",
+    verified: true,
+  });
+}
+
+/**
  * Validate the proposed installation contract without touching a VM.
  * Paths are intentionally configuration-bound; this function does not claim
  * that any proposed resource is installed.
@@ -144,6 +202,7 @@ function validateProductionManifest(input = {}) {
     || runtimeCredential.databaseUser === String(input.databaseIdentity?.user || "")) {
     throw new ProductionEntrypointError("least_privilege_runtime_credential_required");
   }
+  const credentialAccess = validateCredentialAccessContract(input, adapterConfig);
   const moduleBundleInput = input.moduleBundle || {};
   const moduleBundleRoot = requireAbsolute(moduleBundleInput.root, "module_bundle_root");
   if (moduleBundleInput.verified !== true
@@ -191,6 +250,7 @@ function validateProductionManifest(input = {}) {
     preflightEvidencePath,
     promotionArtifactRoot,
     activation,
+    credentialAccess,
     moduleBundle: Object.freeze({
       root: moduleBundleRoot,
       files: Object.freeze(moduleBundleFiles),
@@ -833,6 +893,7 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
 
 module.exports = {
   CONFIG_VERSION,
+  CREDENTIAL_ACCESS_STRATEGY,
   EXIT_CODES,
   ProductionEntrypointError,
   createProductionOperations,
@@ -842,6 +903,7 @@ module.exports = {
   readJsonConfig,
   runProductionDeployment,
   validateArtifactManifest,
+  validateCredentialAccessContract,
   validateModuleBundle,
   validateProductionManifest,
   verifyArtifactPrismaClient,

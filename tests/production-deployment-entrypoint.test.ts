@@ -50,18 +50,30 @@ function makeManifest() {
     },
     credential: {
       path: join(external, "production-db.env"),
-      ownerUid: 0,
+      ownerUid: 1001,
       ownerGid: 0,
       mode: 0o600,
       verified: true,
     },
     runtimeCredential: {
       path: join(external, "production-runtime.env"),
-      ownerUid: 0,
+      ownerUid: 1001,
       ownerGid: 0,
       mode: 0o600,
       format: "docker-env",
       databaseUser: "app_runtime",
+      verified: true,
+    },
+    credentialAccess: {
+      strategy: "operator-owned-immutable-read-only",
+      operatorUid: 1001,
+      operatorGids: [1001],
+      parentOwnerUid: 0,
+      parentOwnerGid: 0,
+      parentMode: 0o755,
+      immutableFlagVerified: true,
+      rootEquivalentAccess: "none",
+      dockerAccess: "rootless",
       verified: true,
     },
     locks: {
@@ -143,6 +155,32 @@ describe("production deployment entrypoint contract", () => {
     const manifest = makeManifest();
     manifest.runtimeCredential.databaseUser = manifest.databaseIdentity.user;
     expect(() => entrypoint.validateProductionManifest(manifest)).toThrow(/runtime_credential_identity_invalid/i);
+  });
+
+  it("requires an immutable read-only credential boundary for the non-root operator", () => {
+    const manifest = makeManifest();
+    expect(entrypoint.validateCredentialAccessContract(manifest, {
+      runtimeCredential: { path: manifest.runtimeCredential.path },
+    })).toMatchObject({
+      strategy: "operator-owned-immutable-read-only",
+      operatorUid: 1001,
+      dockerAccess: "rootless",
+    });
+
+    const rootOwnedCredential = makeManifest();
+    rootOwnedCredential.credential.ownerUid = 0;
+    expect(() => entrypoint.validateProductionManifest(rootOwnedCredential))
+      .toThrow(/credential_access_contract_invalid/i);
+
+    const mutableCredential = makeManifest();
+    mutableCredential.credentialAccess.immutableFlagVerified = false;
+    expect(() => entrypoint.validateProductionManifest(mutableCredential))
+      .toThrow(/credential_access_contract_invalid/i);
+
+    const rootfulDocker = makeManifest();
+    rootfulDocker.credentialAccess.dockerAccess = "rootful-group";
+    expect(() => entrypoint.validateProductionManifest(rootfulDocker))
+      .toThrow(/credential_access_contract_invalid/i);
   });
 
   it("stops before any command when activation is absent", async () => {
