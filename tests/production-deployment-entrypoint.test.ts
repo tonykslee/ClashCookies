@@ -272,7 +272,7 @@ describe("production deployment entrypoint contract", () => {
       mkdirSync(join(artifactPath, "node_modules", ".prisma"), { recursive: true });
       copyFileSync("package.json", join(artifactPath, "package.json"));
       copyFileSync("package-lock.json", join(artifactPath, "package-lock.json"));
-      copyFileSync("dist/ClashCookies.js", join(artifactPath, "dist", "ClashCookies.js"));
+      writeFileSync(join(artifactPath, "dist", "ClashCookies.js"), "synthetic-candidate-build\n");
       copyFileSync("prisma/schema.prisma", join(artifactPath, "prisma", "schema.prisma"));
       cpSync("prisma/migrations", join(artifactPath, "prisma", "migrations"), { recursive: true });
       cpSync("node_modules/@prisma/client", join(artifactPath, "node_modules", "@prisma", "client"), { recursive: true });
