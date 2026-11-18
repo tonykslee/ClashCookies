@@ -73,15 +73,17 @@ function decryptFixture(fixture: ReturnType<typeof createAgeFixture>, ciphertext
   });
 }
 
-type FakeStream = EventEmitter & { end: (value: Buffer) => void };
-type FakeChild = EventEmitter & { stdin: FakeStream; stdout: FakeStream; stderr: FakeStream; kill: () => void };
+type FakeStream = EventEmitter & { end: (value: Buffer) => void; destroyed: boolean; closed: boolean };
+type FakeChild = EventEmitter & { stdin: FakeStream; stdout: FakeStream; stderr: FakeStream; kill: () => void; exitCode: number | null; signalCode: NodeJS.Signals | null };
 
 function fakeChild(setup: (child: FakeChild) => void) {
   const child = new EventEmitter() as FakeChild;
-  child.stdin = Object.assign(new EventEmitter(), { end: () => undefined });
-  child.stdout = Object.assign(new EventEmitter(), { end: () => undefined });
-  child.stderr = Object.assign(new EventEmitter(), { end: () => undefined });
+  child.stdin = Object.assign(new EventEmitter(), { end: () => undefined, destroyed: false, closed: false });
+  child.stdout = Object.assign(new EventEmitter(), { end: () => undefined, destroyed: false, closed: false });
+  child.stderr = Object.assign(new EventEmitter(), { end: () => undefined, destroyed: false, closed: false });
   child.kill = () => undefined;
+  child.exitCode = null;
+  child.signalCode = null;
   setImmediate(() => setup(child));
   return child;
 }
@@ -318,6 +320,133 @@ describe.skipIf(!agePath || !ageKeygenPath)("Gate 1 offline age ciphertext custo
         expect(existsSync(join(fixture.evidenceRoot, "capture.age"))).toBe(false);
       } finally { rmSync(fixture.root, { recursive: true, force: true }); }
     }
+  });
+
+  it("keeps stream error listeners installed across repeated errors", async () => {
+    for (const stream of ["stdin", "stdout", "stderr"] as const) {
+      const fixture = createAgeFixture();
+      const realFs = require("node:fs");
+      let cleanupAttempts = 0;
+      const fakeFs = {
+        ...realFs,
+        unlinkSync: (candidate: string) => { cleanupAttempts += 1; return realFs.unlinkSync(candidate); },
+      };
+      try {
+        const promise = custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+          fsImpl: fakeFs,
+          spawnProcess: () => fakeChild((child) => {
+            child[stream].emit("error", new Error("first raw stream failure"));
+            child[stream].emit("error", new Error("second raw stream failure"));
+          }),
+        });
+        await expect(promise).rejects.toThrow("AGE_STREAM_ERROR");
+        expect(cleanupAttempts).toBe(1);
+      } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+    }
+  });
+
+  it("keeps the child error listener installed across repeated errors", async () => {
+    const fixture = createAgeFixture();
+    const realFs = require("node:fs");
+    let cleanupAttempts = 0;
+    const fakeFs = {
+      ...realFs,
+      unlinkSync: (candidate: string) => { cleanupAttempts += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      const promise = custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => {
+          child.emit("error", new Error("first raw child failure"));
+          child.emit("error", new Error("second raw child failure"));
+        }),
+      });
+      await expect(promise).rejects.toThrow("AGE_PROCESS_FAILED");
+      expect(cleanupAttempts).toBe(1);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("handles errors after timeout and leaves one cleanup attempt", async () => {
+    const fixture = createAgeFixture();
+    const realFs = require("node:fs");
+    let cleanupAttempts = 0;
+    const fakeFs = {
+      ...realFs,
+      unlinkSync: (candidate: string) => { cleanupAttempts += 1; return realFs.unlinkSync(candidate); },
+    };
+    try {
+      const promise = custody.encryptSyntheticCaptureToFile({ ...encryptOptions(fixture), timeoutMs: 10 }, {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => setTimeout(() => child.emit("error", new Error("late raw timeout failure")), 30)),
+      });
+      await expect(promise).rejects.toThrow("AGE_PROCESS_TIMEOUT");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(cleanupAttempts).toBe(1);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("handles errors after cleanup failure without a second cleanup", async () => {
+    const fixture = createAgeFixture();
+    const realFs = require("node:fs");
+    let cleanupAttempts = 0;
+    const fakeFs = {
+      ...realFs,
+      unlinkSync: () => { cleanupAttempts += 1; throw new Error("cleanup denied"); },
+    };
+    try {
+      const promise = custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        fsImpl: fakeFs,
+        spawnProcess: () => fakeChild((child) => {
+          child.stdout.emit("error", new Error("first raw stream failure"));
+          child.stdout.emit("error", new Error("second raw stream failure after cleanup"));
+        }),
+      });
+      await expect(promise).rejects.toThrow("CIPHERTEXT_CLEANUP_FAILED");
+      expect(cleanupAttempts).toBe(1);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("handles an error after successful completion and retires only closed listeners", async () => {
+    const fixture = createAgeFixture();
+    let childRef: FakeChild | undefined;
+    try {
+      const result = await custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        spawnProcess: () => fakeChild((child) => {
+          childRef = child;
+          child.stdout.emit("data", Buffer.from("synthetic ciphertext"));
+          child.emit("close", 0, null);
+          child.emit("error", new Error("late raw post-success error"));
+        }),
+      });
+      expect(result.status).toBe("ENCRYPTED_SYNTHETIC_CIPHERTEXT");
+      expect(childRef?.listenerCount("error")).toBe(1);
+      expect(childRef?.stdin.listenerCount("error")).toBe(1);
+      expect(childRef?.stdout.listenerCount("error")).toBe(1);
+      expect(childRef?.stderr.listenerCount("error")).toBe(1);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("retires error listeners after lifecycle closure is observable", async () => {
+    const fixture = createAgeFixture();
+    let childRef: FakeChild | undefined;
+    try {
+      const result = await custody.encryptSyntheticCaptureToFile(encryptOptions(fixture), {
+        spawnProcess: () => fakeChild((child) => {
+          childRef = child;
+          child.stdin.destroyed = true;
+          child.stdout.destroyed = true;
+          child.stderr.destroyed = true;
+          child.exitCode = 0;
+          child.stdout.emit("data", Buffer.from("synthetic ciphertext"));
+          child.emit("close", 0, null);
+        }),
+      });
+      expect(result.status).toBe("ENCRYPTED_SYNTHETIC_CIPHERTEXT");
+      expect(childRef?.listenerCount("error")).toBe(0);
+      expect(childRef?.stdin.listenerCount("error")).toBe(0);
+      expect(childRef?.stdout.listenerCount("error")).toBe(0);
+      expect(childRef?.stderr.listenerCount("error")).toBe(0);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
   });
 
   it("handles child exit before stdin completion and duplicate terminal events", async () => {

@@ -240,10 +240,19 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
     let stderrBytes = 0;
     let timer;
     const ciphertextHash = crypto.createHash("sha256");
+    const errorListeners = [];
     const clearTimer = () => {
       if (timer !== undefined) {
         clearTimeout(timer);
         timer = undefined;
+      }
+    };
+    const retireClosedErrorListeners = () => {
+      for (const { emitter, listener, childProcess } of errorListeners) {
+        const closed = childProcess
+          ? emitter.exitCode !== null || emitter.signalCode !== null
+          : emitter.destroyed === true || emitter.closed === true;
+        if (closed) emitter.removeListener("error", listener);
       }
     };
     const settleFailure = (status, reason) => {
@@ -268,6 +277,7 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
     timer = setTimeout(() => settleFailure("INCOMPLETE", "AGE_PROCESS_TIMEOUT"), timeoutMs);
     const finish = (status, reason) => {
       clearTimer();
+      retireClosedErrorListeners();
       if (settled) return;
       if (status !== "success") {
         settleFailure("INCOMPLETE", reason);
@@ -302,9 +312,10 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
     };
     const handleStreamError = () => settleFailure("INCOMPLETE", "AGE_STREAM_ERROR");
     try {
-      child.stdin.once("error", handleStreamError);
-      child.stdout.once("error", handleStreamError);
-      child.stderr.once("error", handleStreamError);
+      for (const emitter of [child.stdin, child.stdout, child.stderr]) {
+        emitter.on("error", handleStreamError);
+        errorListeners.push({ emitter, listener: handleStreamError, childProcess: false });
+      }
     } catch {
       settleFailure("INCOMPLETE", "AGE_STREAM_SETUP_FAILED");
       return;
@@ -320,7 +331,9 @@ function encryptSyntheticCaptureToFile(options, dependencies = {}) {
       if (Buffer.isBuffer(chunk)) stderrBytes += chunk.length;
       if (stderrBytes > MAX_DIAGNOSTIC_BYTES) settleFailure("INCOMPLETE", "AGE_DIAGNOSTIC_TOO_LARGE");
     });
-    child.once("error", () => settleFailure("INCOMPLETE", "AGE_PROCESS_FAILED"));
+    const handleChildError = () => settleFailure("INCOMPLETE", "AGE_PROCESS_FAILED");
+    child.on("error", handleChildError);
+    errorListeners.push({ emitter: child, listener: handleChildError, childProcess: true });
     child.once("close", (code, signal) => finish(code === 0 && !signal ? "success" : "failed", signal ? "AGE_PROCESS_INTERRUPTED" : "AGE_PROCESS_FAILED"));
     try { child.stdin.end(plaintext); } catch { settleFailure("INCOMPLETE", "AGE_STDIN_FAILED"); }
   });
