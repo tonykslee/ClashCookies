@@ -576,6 +576,82 @@ Stop and classify `UNKNOWN`/`BLOCKED`—without retry or inference—if any of t
 
 Gate 1 remains **BLOCKED / NOT READY FOR EXECUTION** until the named owner decisions and separate authorizations are actually supplied, the live identity and host-key checks are freshly performed, and the resulting evidence is independently reviewed. This packet does not authorize SSH, capture, collector execution, protected-resource provisioning, deployment, migration, backup, timer activation, staging changes, or release promotion.
 
+### 13. Gate A offline local custody preflight — 2026-11-18
+
+This is a workstation-only, read-only verification record. It does not approve Gate A, does not authorize evidence capture, and does not proceed to Gates B–F. The untracked repository file `powershell` was preserved. No SSH session, production/VM access, cloud access, private identity, passphrase, ACL mutation, evidence write, key generation, rotation, deletion, or relocation was performed.
+
+#### Verified technical checks
+
+| Gate A requirement | Exact local result | Classification | Evidence source and method | Remaining decision / stop condition |
+| --- | --- | --- | --- | --- |
+| Age executable path, type, version, hash | `C:\Users\tonyk\AppData\Local\Microsoft\WinGet\Packages\FiloSottile.age_Microsoft.Winget.Source_8wekyb3d8bbwe\age\age.exe`; regular file; `7,172,096` bytes; `v1.3.2`; SHA-256 `2821a4ed191da07372acd302e5f6feae7a7985e285e1417765ebe74025af45f0` | `VERIFIED` technical identity; `UNKNOWN` approval | Resolved `age.exe` from the existing PATH command, ran `--version` on that resolved path, read file metadata, hashed twice, and compared size/timestamp/attributes | Owner must approve this exact executable identity. Any path/hash/version/stat mismatch is `BLOCKED`; do not download, install, replace, or upgrade. |
+| Age executable canonical/reparse and parent chain | Resolved path equals the absolute path; file and every observed parent component had no reparse flag; file identity/stat and hash rechecks were stable | `VERIFIED` local shape | `Resolve-Path`, `Get-Item`, parent-chain inspection, ACL read, and repeated metadata/hash checks | Windows/Node filesystem limitations remain; an unavailable or changed identity is a stop and keeps custody `RESTRICTED_UNVERIFIED`. |
+| Age executable owner and ACL | Owner `ANT-DESKTOP-202\\tonyk`; `tonyk`, `BUILTIN\\Administrators`, and `NT AUTHORITY\\SYSTEM` have FullControl; no tested broad-principal allow-write rule was found | `VERIFIED` observed ACL shape; `UNKNOWN` policy acceptance | `Get-Acl` on the exact file; broad-principal scan covered Everyone, Users, Authenticated Users, Anonymous Logon, and application-wide principals | Owner must accept privileged/admin access and exact ACL. Any unapproved write-capable principal is `BLOCKED`. |
+| Candidate public recipient | `age15gwzpsek379vh09r9qylc2td3rzglls9hctum063p8qkqmxhagqqmtee3g`; 62 characters; matches the adapter's syntax contract and is consistent across the canonical roadmap, preflight, and packet | `VERIFIED` syntax/document consistency; `OBSERVED` identity evidence; `UNKNOWN/BLOCKED` approval | Compared the candidate with `^age1[0-9a-z]{50,}$` and searched the three canonical documentation sources | A syntactically valid string does not prove ownership. Owner must name the recipient custodian and approve non-reuse of production backup recipients. |
+| Private ciphertext root | `C:\Users\tonyk\clashcookies-production-evidence-20261117`; exists as a directory; canonical path equals absolute path; non-reparse; owner `ANT-DESKTOP-202\\tonyk`; immediate inventory empty; parent chain to `C:\` had no reparse components; `25,707,442,176` bytes free on `C:` | `VERIFIED` technical local shape; `UNKNOWN/BLOCKED` custody approval | Read-only `Get-Item`, `Resolve-Path`, parent-chain inspection, `Get-Acl`, safe metadata-only inventory, and drive free-space query | Owner must approve this exact root, ACL, no-broad-write rule, and use for ciphertext/provenance sidecars. Do not create or write evidence until approved. |
+| Root ACL | Root ACL grants `CodexSandboxUsers` read/execute only; owner, `BUILTIN\\Administrators`, and `SYSTEM` have FullControl; no tested broad-principal allow-write rule was found | `VERIFIED` observed ACL shape; `UNKNOWN` policy acceptance | Read-only `Get-Acl`; no ACL changes | An ACL result is not owner approval or a complete Windows custody guarantee. Any broadened write access is a stop. |
+
+The executable and root checks establish local technical facts only. They do not establish owner approval, confidentiality, recipient ownership, retention, recovery, or Gate A authorization. The adapter must continue to report `custody=RESTRICTED_UNVERIFIED` and `provenance=UNVERIFIED`.
+
+#### Quarantine, retention, and recovery decisions
+
+| Decision field | Current finding | Classification | Owner action required |
+| --- | --- | --- | --- |
+| Quarantine root | No separately approved quarantine path is documented; the verified evidence root is empty and contains no quarantine directory. Required status: `QUARANTINE_LOCATION_UNKNOWN`. Recommended candidate only: `C:\Users\tonyk\clashcookies-production-evidence-20261117\quarantine` | `UNKNOWN` / `PROPOSED` candidate / `BLOCKED` for use | Approve the exact separate location and verify its parent chain, ACL, non-reparse state, and separation from accepted evidence. Do not create it in this preflight. |
+| Original ciphertext retention | No explicit owner-approved duration or UTC expiry rule exists | `UNKNOWN` / `BLOCKED` | Recommended policy for owner acceptance or modification: retain for 30 calendar days after final human review or incident closure, whichever is later; no automatic deletion. |
+| Stderr/provenance/validator sidecars | No explicit sidecar retention rule exists | `UNKNOWN` / `BLOCKED` | Recommended policy: retain with the linked ciphertext for the same 30-day period, keyed by original hashes; preserve the original artifact and never hand-edit it. |
+| Evidence custodian | No named custodian is recorded in the approval packet | `UNKNOWN` / `BLOCKED` | Name one accountable primary custodian and record the exact approval reference. |
+| Secondary/recovery custodian | No named secondary custodian is recorded | `UNKNOWN` / `BLOCKED` | Name a separate recovery custodian where practical and record the independent retrieval responsibility. |
+| Quarantine authority | No named authority is recorded | `UNKNOWN` / `BLOCKED` | Name who may classify, preserve, or release an incomplete artifact; no cleanup or retry is authorized by this preflight. |
+| Deletion authority | No named authority is recorded; no retention automation exists | `UNKNOWN` / `BLOCKED` | Name the owner who may authorize expiry, with secondary-custodian acknowledgement if required. |
+| Recovery object | Operator-reported `ClashCookies-Discovery-Evidence-20261117.identity.age`, SHA-256 `5a050ccea53f37a7ba8c579ba4c58816b8966e01dde4ad4a9f6e07c7550daa6a`; older AES-CBC object SHA-256 `58a16cce1e788350035a19e0456b2f2af7820505d9f3f354224bee5ca785d42c` remains pending retirement approval | `OBSERVED`; current local metadata `UNKNOWN` | Evidence is documented in `docs/roadmaps/production-backup-readiness.md` and the November 17 preflight. This task did not locate, download, open, or decrypt either object. |
+| Independent retrieval | Documentation records operator/Codex-reported cloud-copy recovery and synthetic tests, but no independent retrieval was performed in this preflight | `OBSERVED` report; `UNKNOWN/BLOCKED` for current custody acceptance | An independently authorized custodian must retrieve from the off-workstation copy, compare the trusted hash, verify recipient and synthetic recovery/wrong-passphrase rejection, and retain no plaintext. |
+
+The proposed 30-day policy is not an approval and must not be treated as inherited from backup retention. Recovery objects remain retained until the owner approves retirement after replacement custody and independent retrieval are closed. No cloud credentials or recovery material were accessed.
+
+#### Windows/Node residual risk
+
+The exact local checks passed, but Windows ACLs and reparse checks do not create a portable atomic no-follow/open guarantee. The current Node runtime combines `lstat`, canonical-path comparison, descriptor `fstat`, bounded reads, fsync, and post-operation identity checks; it cannot guarantee all reparse-point types or atomic unlink-by-identity. A race after the last check remains possible. Any detected replacement, reparse point, ambiguous identity, unavailable ACL/reparse result, collision, interruption, timeout, stream error, or cleanup uncertainty is `QUARANTINED_INCOMPLETE`/`BLOCKED`; do not retry or delete by guesswork.
+
+#### Ready-to-review Gate A decision record
+
+The references below are resolved technical candidates, not approvals. Blank or `UNKNOWN` fields must be completed by the owner; no signature or timestamp is inserted here.
+
+```text
+GATE A — OWNER DECISION RECORD (PREPARED, NOT APPROVED)
+
+age_executable_path=
+C:\Users\tonyk\AppData\Local\Microsoft\WinGet\Packages\FiloSottile.age_Microsoft.Winget.Source_8wekyb3d8bbwe\age\age.exe
+age_executable_version=v1.3.2
+age_executable_sha256=2821a4ed191da07372acd302e5f6feae7a7985e285e1417765ebe74025af45f0
+recipient_candidate=age15gwzpsek379vh09r9qylc2td3rzglls9hctum063p8qkqmxhagqqmtee3g
+ciphertext_root=C:\Users\tonyk\clashcookies-production-evidence-20261117
+quarantine_root=C:\Users\tonyk\clashcookies-production-evidence-20261117\quarantine (PROPOSED; NOT CREATED)
+retention_policy=PROPOSED: 30 calendar days after final human review or incident closure, whichever is later
+sidecar_retention=PROPOSED: same period as linked ciphertext, keyed by original hashes
+recovery_object=ClashCookies-Discovery-Evidence-20261117.identity.age
+recovery_object_sha256=5a050ccea53f37a7ba8c579ba4c58816b8966e01dde4ad4a9f6e07c7550daa6a
+
+recipient_custodian=UNKNOWN
+evidence_custodian=UNKNOWN
+secondary_recovery_custodian=UNKNOWN
+quarantine_authority=UNKNOWN
+deletion_authority=UNKNOWN
+independent_retrieval_status=UNKNOWN/BLOCKED
+owner_acl_reparse_acceptance=UNKNOWN
+owner_approval=NOT RECORDED
+approval_timestamp=NOT RECORDED
+
+[ ] Owner accepts the exact executable, recipient, root, quarantine candidate,
+    ACL/reparse safeguards, retention, custodians, and recovery plan above.
+[ ] Owner records named custodians/authorities and independently verified retrieval.
+[ ] Owner authorizes Gate A only; no Gates B–F are authorized by this record.
+Owner: ____________________  Approval reference: ____________________
+UTC timestamp: ____________________
+```
+
+Gate A is not complete. The exact executable and evidence-root technical checks are `VERIFIED`; recipient ownership, owner approval, quarantine, retention, custodians, recovery custody, and Windows residual-risk acceptance remain `UNKNOWN`/`BLOCKED`. Stop here; do not proceed to Gate B.
+
 ## Offline local capture/provenance boundary — implemented, not production-authorized
 
 The repository now contains one narrowly scoped metadata owner, `ops/deploy/discovery/gate1-local-capture-boundary.js`. It accepts only an in-memory synthetic fixture, computes the complete-stream byte count and SHA-256, requires packet version `2026-11-17`, separates `source_identity` from `asserted_identity`, rejects nonzero exit/interruption/timeout/truncation/empty output, and delegates the final structural decision to the existing `gate1-prerequisite-validator.js`. It does not duplicate the validator, read or write files, invoke a process, initiate SSH, retry, access Docker/PostgreSQL, or enable a live capture path.
