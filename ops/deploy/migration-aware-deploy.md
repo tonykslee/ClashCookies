@@ -20,6 +20,8 @@ The command requires explicit protected-runtime configuration:
 
 The preflight evidence file is outside the mutable checkout and must bind the exact release ID, old/new SHAs, both migration digests, approver, authorization digest, `authorizationStatus=PASS`, and `PASS` for every required runbook gate. Missing or mismatched evidence blocks before candidate creation or runtime inspection.
 
+When used with `createOfflineDeploymentIntegration()` from `offline-deployment-integration.js`, the orchestrator invokes an offline-only integration guard immediately after parsing configuration and before acquiring `DEPLOY_LOCK_PATH`. The guard independently validates the immutable direct-Docker adapter, binds its lock and release-record paths to this configuration, and verifies the preflight evidence. Invalid operator identity, incomplete protected identity, missing evidence, or a failed trust gate therefore cannot reach the deployment lock or any injected deployment operation. The post-lock evidence check remains in place to detect evidence replacement. This guard returns verification evidence only and does not authorize execution.
+
 Execution is serialized and fail-closed:
 
 1. acquire the shared host-level atomic release lock at `DEPLOY_LOCK_PATH` before inspecting checkout or runtime state;

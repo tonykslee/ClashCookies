@@ -34,6 +34,12 @@ The module does not reconstruct production Compose, modify the legacy wrapper, s
 
 Even after that configuration is supplied, every production-dependent mutating operation and migration execution remains blocked by a Phase 1 execution gate. The `allowMutations` and `allowMigrationExecution` inputs cannot enable execution. Phase 1 provides no production configuration or VM installation step.
 
+## Offline integration boundary
+
+`ops/deploy/offline-deployment-integration.js` composes the verified immutable executor validator, this Phase 1 adapter contract, and the migration-aware orchestrator without creating a production operation surface. Its guard runs before the orchestrator acquires the outer deployment lock. It independently validates the adapter's OS-backed operator identity and protected paths, verifies the orchestrator's exact release/preflight evidence, and cross-binds the release lock, migration lock, release-record path, and production target. Missing, malformed, mismatched, or failed trust evidence therefore blocks before any injected deployment operation is called.
+
+The returned value is bounded verification evidence only. It does not contain credential contents, caller-supplied group claims, or an execution handle, and it reports `productionExecutionEnabled=false`. The orchestrator repeats its preflight evidence check after acquiring the lock so a replaced evidence file is also rejected. This is repository implementation and offline-test coverage only: no production installation, trusted VM identity evidence, wrapper handoff, execution authorization, Docker/database operation, migration, backup, collector execution, or release promotion is established, and `PHASE1_EXECUTION_ENABLED=false` remains in force.
+
 ## Immutable entry-point validation boundary
 
 `validateImmutableExecutor()` is the reusable offline boundary for the proposed immutable deployment entry point. It reuses the adapter's external-path, no-symlink, protected-stat, descriptor-identity and SHA-256 helpers, and additionally requires an explicit authorization record with:

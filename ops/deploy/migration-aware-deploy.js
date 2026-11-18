@@ -390,7 +390,7 @@ async function runMigrationAwareDeployment({
   operations = {},
 } = {}) {
   const ops = { ...createDefaultOperations(), ...operations };
-  const startedAt = ops.now();
+  let startedAt;
   let config;
   let releaseLock = null;
   let phase = "preflight";
@@ -463,6 +463,25 @@ async function runMigrationAwareDeployment({
 
   try {
     config = (operations.parseConfig || parseConfig)(env, repoRoot);
+    if (typeof operations.integrationGuard === "function") {
+      // The integration guard is the first external boundary. It validates
+      // independently observed adapter identity and preflight evidence before
+      // acquiring the outer lock or exposing any deployment phase to an
+      // operation surface.
+      const integration = await operations.integrationGuard({
+        config,
+        readPreflightEvidence: ops.readPreflightEvidence,
+      });
+      if (!integration || integration.status !== "PASS"
+        || integration.productionExecutionEnabled !== false) {
+        throw new OrchestratorError(
+          "offline_integration_not_verified",
+          EXIT_CODES.BLOCKED,
+          "integration_trust_failed",
+        );
+      }
+    }
+    startedAt = ops.now();
     releaseLock = (ops.acquireExclusiveLock || acquireExclusiveLock)(config.lockPath, {
       releaseId: config.releaseId,
       startedAt,
@@ -624,7 +643,10 @@ async function runMigrationAwareDeployment({
       new_sha: safeValue(config?.newSha),
       migration_diff_digest: safeValue(config?.migrationDiffDigest),
       migration_manifest_digest: safeValue(config?.migrationManifestDigest),
-      ended_at: ops.now(),
+      // Do not invoke an injected operation if the pre-lock integration guard
+      // rejected trust evidence. A local timestamp is sufficient for that
+      // bounded failure diagnostic.
+      ended_at: startedAt === undefined ? new Date().toISOString() : ops.now(),
       exit_code: exitCode,
       failure_class: classification,
     });
