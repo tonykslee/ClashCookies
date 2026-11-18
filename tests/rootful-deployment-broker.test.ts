@@ -10,10 +10,10 @@ const DIGEST = "c".repeat(64);
 
 function makeConfig() {
   return {
-    appDir: "C:/synthetic/clashcookies",
+    appDir: "/synthetic/clashcookies",
     strategy: "rootful-docker-broker",
     verified: true,
-    socketPath: "C:/synthetic/protected/clashcookies-broker.sock",
+    socketPath: "/synthetic/protected/clashcookies-broker.sock",
     operator: {
       uid: 1001,
       gid: 1001,
@@ -28,7 +28,7 @@ function makeConfig() {
     },
     approval: {
       scope: "rootful-docker-broker-deployment",
-      publicKeyPath: "C:/synthetic/protected/clashcookies-broker.pub",
+      publicKeyPath: "/synthetic/protected/clashcookies-broker.pub",
       keyId: "production-broker",
     },
   };
