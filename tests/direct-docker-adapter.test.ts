@@ -31,6 +31,15 @@ function makeExecutorAuthorization(root: string, digest: string) {
   };
 }
 
+function makeSyntheticOperatorIdentity(uid = 1000, gids = [1000]) {
+  const [primaryGid, ...supplementaryGids] = gids;
+  return {
+    getuid: () => uid,
+    getgid: () => primaryGid,
+    getgroups: () => supplementaryGids,
+  };
+}
+
 function makeConfig(root = makeRoot()): Record<string, unknown> {
   return {
     adapterEnabled: true,
@@ -116,6 +125,7 @@ function makeProtectedFs(root: string, executorContent: Buffer, credentialConten
     };
   };
   return {
+    operatorIdentitySource: makeSyntheticOperatorIdentity(),
     constants: { O_RDONLY: 1, O_WRONLY: 2, O_APPEND: 4, O_NOFOLLOW: 8 },
     lstatSync: (filePath: string) => statFor(filePath),
     realpathSync: (filePath: string) => filePath,
@@ -143,6 +153,8 @@ function makeEntryPointFs(
     fstatSequence?: Array<Record<string, unknown>>;
     symlinkPath?: string;
     missingExecutor?: boolean;
+    replaceParentAfterRead?: boolean;
+    operatorIdentitySource?: ReturnType<typeof makeSyntheticOperatorIdentity>;
   } = {},
 ) {
   const openFiles = new Map<number, string>();
@@ -167,6 +179,7 @@ function makeEntryPointFs(
     isDirectory: () => true,
   };
   const fstatSequence = [...(options.fstatSequence || [])];
+  let readCompleted = false;
   const statFor = (filePath: string) => {
     const normalized = filePath.replaceAll("\\", "/");
     if (normalized.endsWith("/executor.sh")) {
@@ -182,8 +195,15 @@ function makeEntryPointFs(
     return options.parentStat || defaultParentStat;
   };
   return {
+    operatorIdentitySource: options.operatorIdentitySource || makeSyntheticOperatorIdentity(),
     constants: { O_RDONLY: 1, O_NOFOLLOW: 2 },
-    lstatSync: (filePath: string) => statFor(filePath),
+    lstatSync: (filePath: string) => {
+      const stat = statFor(filePath);
+      const normalized = filePath.replaceAll("\\", "/");
+      return options.replaceParentAfterRead && readCompleted && !normalized.endsWith("/executor.sh")
+        ? { ...stat, ino: 99 }
+        : stat;
+    },
     realpathSync: (filePath: string) => filePath,
     openSync: (filePath: string) => {
       const fd = openFiles.size + 10;
@@ -192,7 +212,10 @@ function makeEntryPointFs(
     },
     fstatSync: (fd: number) => fstatSequence.shift() || statFor(openFiles.get(fd) || root),
     closeSync: (fd: number) => openFiles.delete(fd),
-    readFileSync: () => executorContent,
+    readFileSync: () => {
+      readCompleted = true;
+      return executorContent;
+    },
   };
 }
 
@@ -528,6 +551,8 @@ describe("direct Docker production adapter contract", () => {
     const forgedConfig = makeConfig(root);
     expect(() => adapter.createDirectDockerAdapter(forgedConfig, {
       fs: makeProtectedFs(root, Buffer.from("changed executor\n"), "credential"),
+      operatorIdentitySource: makeSyntheticOperatorIdentity(),
+      testOnlyOperatorIdentityEvidence: true,
     })).toThrow(/checksum_mismatch/i);
   });
 
@@ -574,6 +599,32 @@ describe("direct Docker production adapter contract", () => {
     expect(() => adapter.validateImmutableExecutor(
       malformedAuthorization, join(root, "app"), makeEntryPointFs(root, content),
     )).toThrow(/authorization_status_invalid/i);
+
+    const mismatchedUid = spec();
+    mismatchedUid.authorization = {
+      ...makeExecutorAuthorization(root, digest),
+      operatorUid: 1001,
+    };
+    expect(() => adapter.validateImmutableExecutor(
+      mismatchedUid, join(root, "app"), makeEntryPointFs(root, content),
+    )).toThrow(/operator_uid_mismatch/i);
+
+    const mismatchedGroups = spec();
+    mismatchedGroups.authorization = {
+      ...makeExecutorAuthorization(root, digest),
+      operatorGids: [1000, 2000],
+    };
+    expect(() => adapter.validateImmutableExecutor(
+      mismatchedGroups, join(root, "app"), makeEntryPointFs(root, content, {
+        operatorIdentitySource: makeSyntheticOperatorIdentity(1000, [1000, 3000]),
+      }),
+    )).toThrow(/operator_groups_mismatch/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        operatorIdentitySource: { getuid: () => 1000 } as ReturnType<typeof makeSyntheticOperatorIdentity>,
+      }),
+    )).toThrow(/operator_identity_unavailable/i);
 
     expect(() => adapter.validateImmutableExecutor(
       spec(), join(root, "app"), makeEntryPointFs(root, content, { missingExecutor: true }),
@@ -639,6 +690,44 @@ describe("direct Docker production adapter contract", () => {
         fstatSequence: [baseExecutorStat, replacedStat],
       }),
     )).toThrow(/replaced_during_open/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        executorStat: { ...baseExecutorStat, dev: undefined },
+      }),
+    )).toThrow(/identity_incomplete/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        executorStat: { ...baseExecutorStat, ino: undefined },
+      }),
+    )).toThrow(/identity_incomplete/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        fstatSequence: [baseExecutorStat, { ...baseExecutorStat, dev: undefined }],
+      }),
+    )).toThrow(/identity_incomplete/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        fstatSequence: [baseExecutorStat, { ...baseExecutorStat, ino: undefined }],
+      }),
+    )).toThrow(/identity_incomplete/i);
+
+    expect(() => adapter.validateImmutableExecutor(
+      spec(), join(root, "app"), makeEntryPointFs(root, content, {
+        replaceParentAfterRead: true,
+      }),
+    )).toThrow(/replaced_during_open|changed_during_validation/i);
+  });
+
+  it("requires an explicit test-only marker for synthetic operator identity injection", () => {
+    const root = makeRoot();
+    expect(() => adapter.createDirectDockerAdapter(makeConfig(root), {
+      fs: makeProtectedFs(root, Buffer.from("reviewed executor\n"), "credential"),
+      operatorIdentitySource: makeSyntheticOperatorIdentity(),
+    })).toThrow(/synthetic_operator_identity_not_allowed/i);
   });
 
   it("rejects parent symlinks and replacement races for protected files", () => {
@@ -754,6 +843,8 @@ describe("direct Docker production adapter contract", () => {
     let injectedInspectCalled = false;
     const instance = adapter.createDirectDockerAdapter(configInput, {
       fs: fakeFs,
+      operatorIdentitySource: makeSyntheticOperatorIdentity(),
+      testOnlyOperatorIdentityEvidence: true,
       operations: {
         inspectRuntime: () => {
           injectedInspectCalled = true;
@@ -789,6 +880,8 @@ describe("direct Docker production adapter contract", () => {
     const collector = { collect: async () => canonicalSnapshot() };
     const instance = adapter.createDirectDockerAdapter(configInput, {
       fs: makeProtectedFs(root, executorContent, "credential"),
+      operatorIdentitySource: makeSyntheticOperatorIdentity(),
+      testOnlyOperatorIdentityEvidence: true,
       runtimeEvidenceCollector: collector,
     });
 
