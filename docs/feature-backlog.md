@@ -138,6 +138,17 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Approach:** Capture most relevant 1–3 images per command during feature delivery or a scoped post-merge doc follow-up, maintain a reusable command page with scenarios/captions, and select valuable spotlights for approved monthly announcements. Prioritize popular, underused leader commands first; do not require mass backfilling or automatic Discord posts.
 - **Done when:** Each spotlight is copy-ready with audience, value, exact invocation, expected output, limitations, sanctioned screenshots and GitHub source evidence. Only actual approved and verified posts are recorded as published.
 
+### FB-012 — Urgent TH19 autorole and league-role regression
+
+- **Status:** Reported production issue; **not yet diagnosed or fixed**.
+- **Priority:** **Urgent / P0** — role assignment is user-visible and reported to interfere with existing league autoroles.
+- **Observed by owner (2026-11-17):** No members are receiving the new **TH19** Discord role. The owner also reports league autoroles are being disrupted. Exact failure mechanism, affected cohort, role mappings and how the two symptoms relate are **unverified**.
+- **Request:** Update Dusk's Town Hall autorole support for **TH19** and investigate/fix the associated **league autorole** regression without breaking prior TH tiers or league assignment/removal rules.
+- **Diagnosis required before coding:** Inspect `/autorole` configuration, TH and league role mapping/resolution, account and Discord identity grouping, CoC source-level parsing, permission/role hierarchy and update/reconciliation paths. Verify why no TH19 roles were assigned and whether TH19 changes are suppressing, clearing, or misclassifying league roles; distinguish code behavior from missing role IDs/configuration or Discord permissions.
+- **Safety:** Use read-only diagnostics and synthetic/disposable tests; do not mass-edit Discord member roles, run production reconciliation, backfill assignments or deploy without separately reviewed authorization. Preserve intended roles on ambiguous/missing data; fail safely and avoid unnecessary role churn.
+- **Done when:** Verified TH19 accounts are deterministically eligible for the configured TH19 role, prior TH roles and league autoroles continue to behave correctly, permission/missing-role cases fail safely, and focused tests cover TH18→TH19, multiple linked accounts, missing/unknown league information and role add/remove behavior. Any required production role reconciliation must have its own controlled plan and approval.
+- **Related but separate:** FB-002 (TH19 composition weight buckets) is **not** the autorole fix.
+
 ## Archived / withdrawn requests
 
 _None yet._
