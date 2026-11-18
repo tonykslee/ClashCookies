@@ -27,6 +27,8 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - mirror instances only run guarded snapshot sync
 - Prefer deterministic, idempotent flows for war events, mail, notify posts, reminders, and tracked messages.
 
+**Current production release Gate 1 guardrail (2026-11-18):** PR #2058's protected-path inspection packet and PR #2059's offline-only validator are merged to `dev`. The local validator structurally checks a max 32,768-byte input envelope and 8,192-byte stdout, but still reports `boundary=UNVERIFIED` and `provenance=UNVERIFIED`; a structural `VALID` is never host/capture authorization or deployment readiness. Next priority: one focused, separately reviewed local capture/provenance boundary with synthetic tests; do not execute SSH, capture production output, run the collector, provision VM resources, or promote `dev` to `main` without each separate owner authorization. Gate 1 and release PR #1983 remain BLOCKED. The full contract and progress are in `docs/diagnostics/production-deployment-installation-readiness-2026-11-17.md` and `docs/roadmaps/production-backup-readiness.md`.
+
 3) Dependencies and runtime safety
 - Introduce new dependencies only when justified.
 - Prefer existing helpers/services before adding new abstractions.
