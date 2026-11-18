@@ -223,6 +223,27 @@ describe("migration-aware deployment orchestrator", () => {
     expect(result.records.join("\n")).not.toContain("DATABASE_URL");
   });
 
+  it("verifies the promoted artifact before stopping the old runtime", async () => {
+    let stopCalled = false;
+    const result = await runWith({
+      verifyPromotedArtifact: () => {
+        throw new orchestrator.OrchestratorError(
+          "promoted_artifact_content_changed",
+          orchestrator.EXIT_CODES.BLOCKED,
+          "artifact_identity_failed",
+          "promotion",
+          true,
+        );
+      },
+      stopRuntime: () => {
+        stopCalled = true;
+      },
+    });
+
+    expect(result.exitCode).toBe(orchestrator.EXIT_CODES.BLOCKED);
+    expect(stopCalled).toBe(false);
+  });
+
   it("blocks missing authorization or backup evidence before any runtime or database operation", async () => {
     const unauthorized = await runWith({}, { DEPLOY_EXECUTION_AUTHORIZED: "0" });
     expect(unauthorized.exitCode).toBe(orchestrator.EXIT_CODES.BLOCKED);

@@ -584,6 +584,9 @@ async function runMigrationAwareDeployment({
     if (runtimeDuringPromotion.revision !== runtimeBefore.revision) {
       throw new OrchestratorError("runtime_changed_before_promotion", EXIT_CODES.BLOCKED, "runtime_identity_failed", phase, true);
     }
+    if (typeof ops.verifyPromotedArtifact === "function") {
+      await ops.verifyPromotedArtifact({ sha: config.newSha });
+    }
     await ops.stopRuntime({ expected: runtimeBefore });
     await ops.checkoutRelease({ repoRoot, sha: config.newSha, preserveUnknownFiles: true });
     await ops.startRuntime({

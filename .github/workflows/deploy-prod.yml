@@ -91,7 +91,7 @@ jobs:
             export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
             export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
             export DEPLOY_APPROVED_BY="github-main-merge"
-            exec /home/tilo/deploy-assets/clashcookies-production-entrypoint
+            exec /home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js
 
   deploy-migration:
     needs: classify
@@ -122,4 +122,4 @@ jobs:
             export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
             export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
             export DEPLOY_APPROVED_BY="github-environment-production-migration"
-            exec /home/tilo/deploy-assets/clashcookies-production-entrypoint
+            exec /home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js

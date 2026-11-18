@@ -1,4 +1,5 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -166,7 +167,7 @@ describe("production deployment entrypoint contract", () => {
     });
     expect(operations.runMigrationRunner).toBeTypeOf("function");
     const workflow = readFileSync(resolve(".github/workflows/deploy-prod.yml"), "utf8");
-    expect(workflow).toContain("/home/tilo/deploy-assets/clashcookies-production-entrypoint");
+    expect(workflow).toContain("/home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js");
     expect(workflow).not.toContain("~/deploy-prod.sh");
     expect(workflow).not.toContain("exec /home/tilo/deploy-prod.sh");
     const packageJson = readFileSync(resolve("package.json"), "utf8");
@@ -192,6 +193,33 @@ describe("production deployment entrypoint contract", () => {
       const installed = require(join(installedRoot, "production-deployment-entrypoint.js"));
       expect(installed.validateProductionManifest).toBeTypeOf("function");
       expect(installed.createProductionOperations).toBeTypeOf("function");
+    } finally {
+      rmSync(installedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("invokes the installed entrypoint path without requiring production resources", () => {
+    const sourceRoot = resolve("ops", "deploy");
+    const installedRoot = mkdtempSync(join(tmpdir(), "clashcookies-entrypoint-invoke-"));
+    try {
+      for (const file of [
+        "production-deployment-entrypoint.js",
+        "migration-aware-deploy.js",
+        "direct-docker-adapter.js",
+        "migration-runner.js",
+        "deployment-lock.js",
+      ]) copyFileSync(join(sourceRoot, file), join(installedRoot, file));
+      const installedPath = join(installedRoot, "production-deployment-entrypoint.js");
+      expect(readFileSync(installedPath, "utf8").startsWith("#!/usr/bin/env node")).toBe(true);
+      try {
+        execFileSync(process.execPath, [installedPath], {
+          env: { ...process.env, DEPLOYMENT_CONFIG_PATH: "" },
+          stdio: "pipe",
+        });
+        throw new Error("installed entrypoint unexpectedly succeeded");
+      } catch (error) {
+        expect((error as { status?: number }).status).toBe(78);
+      }
     } finally {
       rmSync(installedRoot, { recursive: true, force: true });
     }
@@ -225,6 +253,39 @@ describe("production deployment entrypoint contract", () => {
     }
   });
 
+  it.each([
+    ["altered", (artifactPath: string) => {
+      const target = join(artifactPath, "dist", "ClashCookies.js");
+      const contents = readFileSync(target);
+      writeFileSync(target, Buffer.concat([contents, Buffer.from("altered")]), { flag: "w" });
+    }],
+    ["missing", (artifactPath: string) => rmSync(join(artifactPath, "package-lock.json"))],
+    ["partial", (artifactPath: string) => rmSync(join(artifactPath, "node_modules", ".prisma", "client"), { recursive: true })],
+  ] as const)("rejects a %s promoted artifact before runtime stop", (_label, mutate) => {
+    const root = mkdtempSync(join(tmpdir(), "clashcookies-artifact-integrity-"));
+    try {
+      const artifactPath = join(root, "artifact");
+      const appDir = join(root, "app");
+      mkdirSync(join(artifactPath, "dist"), { recursive: true });
+      mkdirSync(join(artifactPath, "prisma"), { recursive: true });
+      mkdirSync(join(artifactPath, "node_modules", "@prisma"), { recursive: true });
+      mkdirSync(join(artifactPath, "node_modules", ".prisma"), { recursive: true });
+      copyFileSync("package.json", join(artifactPath, "package.json"));
+      copyFileSync("package-lock.json", join(artifactPath, "package-lock.json"));
+      copyFileSync("dist/ClashCookies.js", join(artifactPath, "dist", "ClashCookies.js"));
+      copyFileSync("prisma/schema.prisma", join(artifactPath, "prisma", "schema.prisma"));
+      cpSync("prisma/migrations", join(artifactPath, "prisma", "migrations"), { recursive: true });
+      cpSync("node_modules/@prisma/client", join(artifactPath, "node_modules", "@prisma", "client"), { recursive: true });
+      cpSync("node_modules/.prisma/client", join(artifactPath, "node_modules", ".prisma", "client"), { recursive: true });
+      const sha = "f".repeat(40);
+      const identity = entrypoint.createArtifactManifest(artifactPath, sha, [], appDir);
+      mutate(artifactPath);
+      expect(() => entrypoint.validateArtifactManifest(artifactPath, sha, identity, appDir)).toThrow(/promoted_artifact_(content_changed|incomplete)/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("promotes the built artifact and passes only the protected runtime env path", () => {
     const root = mkdtempSync(join(tmpdir(), "clashcookies-promotion-artifact-"));
     try {
@@ -251,6 +312,16 @@ describe("production deployment entrypoint contract", () => {
           calls.push({ command, args });
           return { status: 0, stdout: "" };
         },
+        verifyArtifactPrismaClient: () => undefined,
+        createArtifactManifest: () => ({
+          sha256: "a".repeat(64),
+          uid: 0,
+          gid: 0,
+          mode: 0o640,
+          dev: 1,
+          ino: 1,
+        }),
+        validateArtifactManifest: () => undefined,
       });
       const sha = "f".repeat(40);
       operations.buildCandidate({ candidatePath: validated.candidateWorktreePath, sha });
@@ -268,5 +339,29 @@ describe("production deployment entrypoint contract", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("passes the migration credential only through the protected container mount", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const credentialPath = "C:/synthetic/protected/production-db.env";
+    const credentialValue = "postgresql://migration_user:synthetic-secret@db/clashcookies";
+    const result = entrypoint.executeMigrationInArtifact(
+      { databaseUrl: credentialValue },
+      "C:/synthetic/artifacts/f",
+      { image: "clashcookies:reviewed", network: "clashcookies_default" },
+      credentialPath,
+      (command: string, args: string[]) => {
+        calls.push({ command, args });
+        return { status: 0 };
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe("docker");
+    expect(calls[0].args.some((arg) => arg.includes(credentialPath))).toBe(true);
+    expect(calls[0].args.join(" ")).toContain("/run/secrets/migration-url");
+    expect(calls[0].args.join(" ")).not.toContain(credentialValue);
+    expect(calls[0].args.join(" ")).not.toContain("--env-file");
   });
 });

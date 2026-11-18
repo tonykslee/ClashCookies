@@ -382,7 +382,12 @@ async function verifyAppliedMigrations({
 }
 
 function npmExecutable() {
-  return process.platform === "win32" ? "npm.exe" : "npm";
+  if (process.platform !== "win32") return "npm";
+  const candidates = [
+    path.join(path.dirname(process.execPath), "npm.exe"),
+    path.resolve(path.dirname(process.execPath), "..", "..", ".nodejs", "npm.exe"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "npm.exe";
 }
 
 function classifyMigrationResult(result) {
@@ -393,17 +398,20 @@ function classifyMigrationResult(result) {
 }
 
 function buildMigrationChildEnvironment(config, baseEnvironment = process.env) {
-  const pathValue = typeof baseEnvironment.PATH === "string" && baseEnvironment.PATH.length > 0
-    ? baseEnvironment.PATH
+  const inheritedPath = baseEnvironment.PATH || baseEnvironment.Path;
+  const pathValue = typeof inheritedPath === "string" && inheritedPath.length > 0
+    ? inheritedPath
     : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  const userConfigDevice = process.platform === "win32" ? "NUL:" : nullDevice;
   return Object.freeze({
     PATH: pathValue,
     NODE_ENV: "production",
     NPM_CONFIG_AUDIT: "false",
     NPM_CONFIG_FUND: "false",
-    NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+    NPM_CONFIG_GLOBALCONFIG: nullDevice,
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
-    NPM_CONFIG_USERCONFIG: "/dev/null",
+    NPM_CONFIG_USERCONFIG: userConfigDevice,
     DATABASE_URL: config.databaseUrl,
     MIGRATION_RUNNER_CHILD: "1",
   });

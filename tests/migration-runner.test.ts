@@ -256,9 +256,9 @@ describe("isolated Prisma migration runner", () => {
       NODE_ENV: "production",
       NPM_CONFIG_AUDIT: "false",
       NPM_CONFIG_FUND: "false",
-      NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+      NPM_CONFIG_GLOBALCONFIG: process.platform === "win32" ? "NUL" : "/dev/null",
       NPM_CONFIG_UPDATE_NOTIFIER: "false",
-      NPM_CONFIG_USERCONFIG: "/dev/null",
+      NPM_CONFIG_USERCONFIG: process.platform === "win32" ? "NUL:" : "/dev/null",
       DATABASE_URL: "postgresql://migration_user:super-secret@127.0.0.1:55434/clashcookies_disposable",
       MIGRATION_RUNNER_CHILD: "1",
     });

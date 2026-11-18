@@ -74,6 +74,7 @@ const ORCHESTRATOR_OPERATION_NAMES = Object.freeze([
   "buildCandidate",
   "runMigrationRunner",
   "verifyMigration",
+  "verifyPromotedArtifact",
   "stopRuntime",
   "checkoutRelease",
   "startRuntime",
@@ -1394,6 +1395,10 @@ function createDirectDockerAdapter(input = {}, dependencies = {}) {
     verifyMigration: (...args) => {
       requireEnabled("verify_migration");
       return invokeInjected("verifyMigration", args);
+    },
+    verifyPromotedArtifact: (...args) => {
+      requireEnabled("verify_promoted_artifact");
+      return invokeInjected("verifyPromotedArtifact", args);
     },
     stopRuntime: (...args) => {
       requireMutationEnabled("stop_runtime");

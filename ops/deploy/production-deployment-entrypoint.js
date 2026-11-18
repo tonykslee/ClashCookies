@@ -21,6 +21,15 @@ const REQUIRED_MODULES = Object.freeze([
   "migration-runner.js",
   "deployment-lock.js",
 ]);
+const ARTIFACT_MANIFEST_FILE = ".clashcookies-artifact-manifest.json";
+const REQUIRED_ARTIFACT_FILES = Object.freeze([
+  "package.json",
+  "package-lock.json",
+  "dist/ClashCookies.js",
+  "node_modules/@prisma/client/index.js",
+  "node_modules/.prisma/client/default.js",
+  "prisma/schema.prisma",
+]);
 
 const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -64,6 +73,21 @@ function isInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === ""
     || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function normalizeRelativePath(value) {
+  return value.split(path.sep).join("/");
+}
+
+function artifactFilePath(root, relativePath) {
+  if (typeof relativePath !== "string" || relativePath.length === 0
+    || path.isAbsolute(relativePath) || relativePath.includes("\\")
+    || relativePath.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    throw new ProductionEntrypointError("artifact_relative_path_invalid");
+  }
+  const result = path.resolve(root, ...relativePath.split("/"));
+  if (!isInside(root, result)) throw new ProductionEntrypointError("artifact_path_invalid");
+  return result;
 }
 
 function validateActivation(input) {
@@ -245,6 +269,182 @@ function validateProtectedDirectoryTarget(directoryPath, appDir, fsImpl = fs) {
   return target;
 }
 
+function readArtifactEntry(root, relativePath, fsImpl = fs) {
+  const absolutePath = artifactFilePath(root, relativePath);
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(absolutePath);
+    if (!stat.isSymbolicLink() && (!stat.isFile() && !stat.isDirectory())) {
+      throw new Error("artifact_identity_invalid");
+    }
+    if (stat.isSymbolicLink()) {
+      const resolvedTarget = fsImpl.realpathSync(absolutePath);
+      if (!isInside(root, resolvedTarget)) throw new Error("artifact_symlink_escape");
+    } else if (fsImpl.realpathSync(absolutePath) !== absolutePath) {
+      throw new Error("artifact_noncanonical");
+    }
+  } catch {
+    throw new ProductionEntrypointError("promoted_artifact_identity_unavailable");
+  }
+  const entry = {
+    path: normalizeRelativePath(relativePath),
+    type: stat.isSymbolicLink() ? "symlink" : (stat.isDirectory() ? "directory" : "file"),
+    uid: stat.uid,
+    gid: stat.gid,
+    mode: stat.mode & 0o7777,
+    dev: stat.dev,
+    ino: stat.ino,
+  };
+  if (![entry.uid, entry.gid, entry.mode, entry.dev, entry.ino].every(Number.isInteger)) {
+    throw new ProductionEntrypointError("promoted_artifact_metadata_unavailable");
+  }
+  if (entry.type === "symlink") {
+    let resolvedTarget;
+    try {
+      resolvedTarget = path.relative(root, fsImpl.realpathSync(absolutePath));
+    } catch {
+      throw new ProductionEntrypointError("promoted_artifact_identity_unavailable");
+    }
+    entry.target = normalizeRelativePath(resolvedTarget);
+  } else if (entry.type === "file") {
+    entry.sha256 = crypto.createHash("sha256").update(fsImpl.readFileSync(absolutePath)).digest("hex");
+  }
+  return Object.freeze(entry);
+}
+
+function collectArtifactEntries(root, fsImpl = fs, relativeDirectory = "") {
+  const directoryPath = relativeDirectory ? artifactFilePath(root, relativeDirectory) : root;
+  let directoryEntries;
+  try {
+    directoryEntries = fsImpl.readdirSync(directoryPath, { withFileTypes: true });
+  } catch {
+    throw new ProductionEntrypointError("promoted_artifact_listing_unavailable");
+  }
+  const entries = [];
+  for (const directoryEntry of directoryEntries) {
+    const relativePath = relativeDirectory
+      ? `${relativeDirectory}/${directoryEntry.name}`
+      : directoryEntry.name;
+    if (!relativeDirectory && relativePath === ARTIFACT_MANIFEST_FILE) continue;
+    const entry = readArtifactEntry(root, relativePath, fsImpl);
+    entries.push(entry);
+    if (entry.type === "directory") {
+      entries.push(...collectArtifactEntries(root, fsImpl, relativePath));
+    }
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function sourceFilesForCandidate(candidatePath, spawnSyncImpl, fsImpl = fs) {
+  const trackedOutput = safeGit(candidatePath, ["ls-files", "-z"], spawnSyncImpl);
+  return trackedOutput.split("\0").filter(Boolean).map((relativePath) => {
+    const normalizedPath = normalizeRelativePath(relativePath);
+    const absolutePath = path.resolve(candidatePath, ...normalizedPath.split("/"));
+    let stat;
+    try {
+      stat = fsImpl.lstatSync(absolutePath);
+      if (stat.isSymbolicLink() || !stat.isFile() || fsImpl.realpathSync(absolutePath) !== absolutePath) {
+        throw new Error("candidate_source_invalid");
+      }
+    } catch {
+      throw new ProductionEntrypointError("candidate_source_identity_unavailable");
+    }
+    return Object.freeze({
+      path: normalizedPath,
+      sha256: crypto.createHash("sha256").update(fsImpl.readFileSync(absolutePath)).digest("hex"),
+    });
+  }).sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function createArtifactManifest(artifactPath, releaseSha, sourceFiles, appDir, fsImpl = fs) {
+  const root = validateProtectedDirectoryTarget(artifactPath, appDir, fsImpl);
+  const entries = collectArtifactEntries(root, fsImpl);
+  const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  for (const requiredPath of [...REQUIRED_ARTIFACT_FILES, "prisma/migrations"]) {
+    if (!byPath.has(requiredPath)) throw new ProductionEntrypointError("promoted_artifact_incomplete");
+    if (requiredPath !== "prisma/migrations" && byPath.get(requiredPath).type !== "file") {
+      throw new ProductionEntrypointError("promoted_artifact_required_file_missing");
+    }
+  }
+  for (const sourceFile of sourceFiles) {
+    const entry = byPath.get(sourceFile.path);
+    if (!entry || entry.type !== "file" || entry.sha256 !== sourceFile.sha256) {
+      throw new ProductionEntrypointError("promoted_artifact_candidate_mismatch");
+    }
+  }
+  const manifest = Object.freeze({
+    schemaVersion: 1,
+    releaseSha,
+    requiredFiles: Object.freeze([...REQUIRED_ARTIFACT_FILES]),
+    sourceFiles: Object.freeze(sourceFiles),
+    entries: Object.freeze(entries),
+  });
+  const manifestPath = artifactFilePath(root, ARTIFACT_MANIFEST_FILE);
+  const serialized = `${JSON.stringify(manifest)}\n`;
+  try {
+    fsImpl.writeFileSync(manifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o640 });
+  } catch {
+    throw new ProductionEntrypointError("promoted_artifact_manifest_write_failed");
+  }
+  const manifestStat = readArtifactEntry(root, ARTIFACT_MANIFEST_FILE, fsImpl);
+  return Object.freeze({
+    path: manifestPath,
+    sha256: manifestStat.sha256,
+    uid: manifestStat.uid,
+    gid: manifestStat.gid,
+    mode: manifestStat.mode,
+    dev: manifestStat.dev,
+    ino: manifestStat.ino,
+  });
+}
+
+function validateArtifactManifest(artifactPath, releaseSha, identity, appDir, fsImpl = fs) {
+  const root = validateProtectedDirectoryTarget(artifactPath, appDir, fsImpl);
+  const manifestPath = artifactFilePath(root, ARTIFACT_MANIFEST_FILE);
+  const manifestStat = readArtifactEntry(root, ARTIFACT_MANIFEST_FILE, fsImpl);
+  if (manifestStat.sha256 !== identity.sha256
+    || manifestStat.uid !== identity.uid
+    || manifestStat.gid !== identity.gid
+    || manifestStat.mode !== identity.mode
+    || manifestStat.dev !== identity.dev
+    || manifestStat.ino !== identity.ino) {
+    throw new ProductionEntrypointError("promoted_artifact_manifest_changed");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fsImpl.readFileSync(manifestPath, "utf8"));
+  } catch {
+    throw new ProductionEntrypointError("promoted_artifact_manifest_invalid");
+  }
+  if (!manifest || manifest.schemaVersion !== 1 || manifest.releaseSha !== releaseSha
+    || !Array.isArray(manifest.requiredFiles)
+    || JSON.stringify(manifest.requiredFiles) !== JSON.stringify([...REQUIRED_ARTIFACT_FILES])
+    || !Array.isArray(manifest.sourceFiles)
+    || !Array.isArray(manifest.entries)) {
+    throw new ProductionEntrypointError("promoted_artifact_manifest_invalid");
+  }
+  const actualEntries = collectArtifactEntries(root, fsImpl);
+  const expectedEntries = manifest.entries;
+  if (actualEntries.length !== expectedEntries.length
+    || actualEntries.some((entry, index) => JSON.stringify(entry) !== JSON.stringify(expectedEntries[index]))) {
+    throw new ProductionEntrypointError("promoted_artifact_content_changed");
+  }
+  const byPath = new Map(actualEntries.map((entry) => [entry.path, entry]));
+  for (const requiredPath of [...REQUIRED_ARTIFACT_FILES, "prisma/migrations"]) {
+    if (!byPath.has(requiredPath)
+      || (requiredPath !== "prisma/migrations" && byPath.get(requiredPath).type !== "file")) {
+      throw new ProductionEntrypointError("promoted_artifact_incomplete");
+    }
+  }
+  for (const sourceFile of manifest.sourceFiles) {
+    if (!sourceFile || typeof sourceFile.path !== "string" || !SHA256.test(sourceFile.sha256)
+      || byPath.get(sourceFile.path)?.sha256 !== sourceFile.sha256.toLowerCase()) {
+      throw new ProductionEntrypointError("promoted_artifact_candidate_mismatch");
+    }
+  }
+  return root;
+}
+
 function validateModuleBundle(bundle, appDir, executorPath, fsImpl = fs) {
   if (!bundle || bundle.verified !== true || typeof bundle.root !== "string") {
     throw new ProductionEntrypointError("module_bundle_verification_required");
@@ -286,6 +486,42 @@ function createCandidatePrismaFactory(repoRoot, databaseUrl) {
     const { PrismaClient } = requireFromCandidate("@prisma/client");
     return new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   };
+}
+
+function verifyArtifactPrismaClient(artifactPath) {
+  const requireFromArtifact = createRequire(path.join(artifactPath, "package.json"));
+  let PrismaClient;
+  try {
+    ({ PrismaClient } = requireFromArtifact("@prisma/client"));
+  } catch {
+    throw new ProductionEntrypointError("promoted_artifact_prisma_client_unavailable");
+  }
+  if (typeof PrismaClient !== "function") {
+    throw new ProductionEntrypointError("promoted_artifact_prisma_client_invalid");
+  }
+}
+
+function executeMigrationInArtifact(config, artifactPath, runtime, credentialPath, spawnSyncImpl) {
+  const result = spawnSyncImpl("docker", [
+    "run", "--rm", "--name", "clashcookies-prod-migration-runner",
+    "--label", "com.clashcookies.deploy=migration-runner",
+    "--network", runtime.network,
+    "--mount", `type=bind,source=${credentialPath},target=/run/secrets/migration-url,readonly`,
+    "-v", `${artifactPath}:/app:ro`, "-w", "/app", runtime.image,
+    "bash", "-lc", "DATABASE_URL=\"$(cat /run/secrets/migration-url)\" exec npm run migrate:deploy",
+  ], {
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    maxBuffer: 128 * 1024,
+  });
+  return Object.freeze({
+    status: typeof result?.status === "number" ? result.status : null,
+    signal: result?.signal || null,
+    error: result?.error || null,
+    classification: result?.status === 0 ? "success" : "prisma_migration_failed",
+  });
 }
 
 function commandResult(command, args, options = {}, spawnSyncImpl = childProcess.spawnSync) {
@@ -339,7 +575,12 @@ function createProductionOperations(manifest, dependencies = {}) {
   });
 
   const readCredential = () => adapter.readProtectedCredential(manifest.adapter.credential, manifest.appDir, fsImpl);
+  const verifyArtifactPrismaClientImpl = dependencies.verifyArtifactPrismaClient || verifyArtifactPrismaClient;
+  const createArtifactManifestImpl = dependencies.createArtifactManifest || createArtifactManifest;
+  const validateArtifactManifestImpl = dependencies.validateArtifactManifest || validateArtifactManifest;
   let promotedArtifactPath = null;
+  let promotedArtifactIdentity = null;
+  let candidateSourceFiles = [];
 
   const artifactPathFor = (sha) => {
     if (!SHA1.test(String(sha || ""))) throw new ProductionEntrypointError("promotion_artifact_sha_invalid");
@@ -359,8 +600,16 @@ function createProductionOperations(manifest, dependencies = {}) {
     }
     throw new ProductionEntrypointError(`${label}_already_exists`);
   };
+  const requirePromotedArtifact = (sha) => {
+    const expectedPath = artifactPathFor(sha);
+    if (promotedArtifactPath !== expectedPath || !promotedArtifactIdentity) {
+      throw new ProductionEntrypointError("promoted_artifact_revision_mismatch", EXIT_CODES.BLOCKED, "artifact_identity_failed");
+    }
+    return expectedPath;
+  };
   const runMigration = dependencies.runMigrationRunner || (async ({ repoRoot, releaseId, targetSha, migrationManifestDigest }) => {
     const credential = readCredential();
+    const artifactPath = requirePromotedArtifact(targetSha);
     const migrationConfig = {
       enabled: true,
       targetEnvironment: "production",
@@ -380,17 +629,27 @@ function createProductionOperations(manifest, dependencies = {}) {
         env,
         repoRoot,
         log: () => undefined,
-        dependencies: { prismaFactory: createCandidatePrismaFactory(repoRoot, credential) },
+        dependencies: {
+          prismaFactory: createCandidatePrismaFactory(artifactPath, credential),
+          executeMigration: (config) => executeMigrationInArtifact(
+            config,
+            artifactPath,
+            manifest.adapter.runtime,
+            manifest.adapter.credential.path,
+            spawnSyncImpl,
+          ),
+        },
       }),
     };
   });
-  const verifyMigration = dependencies.verifyAppliedMigrations || (async ({ repoRoot, migrationNames }) => {
+  const verifyMigration = dependencies.verifyAppliedMigrations || (async ({ targetSha, migrationNames }) => {
     const credential = readCredential();
+    const artifactPath = requirePromotedArtifact(targetSha);
     return migrationRunner.verifyAppliedMigrations({
       databaseUrl: credential,
       identity: manifest.adapter.databaseIdentity,
       migrationNames,
-      prismaFactory: createCandidatePrismaFactory(repoRoot, credential),
+      prismaFactory: createCandidatePrismaFactory(artifactPath, credential),
     });
   });
 
@@ -409,6 +668,7 @@ function createProductionOperations(manifest, dependencies = {}) {
       if (path.resolve(candidatePath) !== manifest.candidateWorktreePath) throw new ProductionEntrypointError("candidate_path_mismatch");
       assertAbsent(candidatePath, "candidate_path");
       checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "worktree", "add", "--quiet", "--detach", candidatePath, sha], { label: "candidate_create" }, spawnSyncImpl);
+      candidateSourceFiles = sourceFilesForCandidate(candidatePath, spawnSyncImpl, fsImpl);
     },
     buildCandidate: ({ candidatePath, sha }) => {
       const artifactPath = artifactPathFor(sha);
@@ -426,6 +686,14 @@ function createProductionOperations(manifest, dependencies = {}) {
           manifest.adapter.runtime.image, "bash", "-lc", "./ops/deploy/ensure-yarn-deps.sh && npm run build",
         ], { label: "candidate_build" }, spawnSyncImpl);
         checkedCommand("docker", ["cp", `${buildContainer}:/app/.`, artifactPath], { label: "candidate_artifact_copy" }, spawnSyncImpl);
+        verifyArtifactPrismaClientImpl(artifactPath);
+        promotedArtifactIdentity = createArtifactManifestImpl(
+          artifactPath,
+          sha,
+          candidateSourceFiles,
+          manifest.appDir,
+          fsImpl,
+        );
         promotedArtifactPath = artifactPath;
       } catch (error) {
         buildError = error;
@@ -438,6 +706,11 @@ function createProductionOperations(manifest, dependencies = {}) {
     },
     runMigrationRunner: runMigration,
     verifyMigration,
+    verifyPromotedArtifact: ({ sha }) => {
+      const artifactPath = requirePromotedArtifact(sha);
+      validateArtifactManifestImpl(artifactPath, sha, promotedArtifactIdentity, manifest.appDir, fsImpl);
+      verifyArtifactPrismaClientImpl(artifactPath);
+    },
     stopRuntime: () => {
       checkedCommand("docker", ["rm", "-f", manifest.adapter.runtime.name], { label: "runtime_stop" }, spawnSyncImpl);
     },
@@ -445,9 +718,8 @@ function createProductionOperations(manifest, dependencies = {}) {
       checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "checkout", "--quiet", "--detach", sha], { label: "release_checkout" }, spawnSyncImpl);
     },
     startRuntime: ({ sha }) => {
-      if (promotedArtifactPath !== artifactPathFor(sha)) {
-        throw new ProductionEntrypointError("promoted_artifact_revision_mismatch", EXIT_CODES.BLOCKED, "artifact_identity_failed");
-      }
+      const artifactPath = requirePromotedArtifact(sha);
+      validateArtifactManifestImpl(artifactPath, sha, promotedArtifactIdentity, manifest.appDir, fsImpl);
       const runtimeEnvironmentPath = manifest.adapter.runtimeCredential.path;
       const args = [
         "run", "-d", "--restart", "unless-stopped", "--name", manifest.adapter.runtime.name,
@@ -458,7 +730,7 @@ function createProductionOperations(manifest, dependencies = {}) {
         "-p", `${adapter.CANONICAL_HOST_ADDRESS}:${manifest.adapter.runtime.hostPort}:${manifest.adapter.runtime.containerPort}`,
         "--env-file", runtimeEnvironmentPath,
         "-e", "POLLING_MODE=active", "-e", "POLLING_ENV=prod", "-w", "/app",
-        "-v", `${promotedArtifactPath}:/app:ro`, manifest.adapter.runtime.image, "bash", "-lc", "npm run start:runtime",
+        "-v", `${artifactPath}:/app:ro`, manifest.adapter.runtime.image, "bash", "-lc", "npm run start:runtime",
       ];
       checkedCommand("docker", args, { label: "runtime_start" }, spawnSyncImpl);
     },
@@ -564,11 +836,15 @@ module.exports = {
   EXIT_CODES,
   ProductionEntrypointError,
   createProductionOperations,
+  createArtifactManifest,
   ensureExplicitActivation,
+  executeMigrationInArtifact,
   readJsonConfig,
   runProductionDeployment,
+  validateArtifactManifest,
   validateModuleBundle,
   validateProductionManifest,
+  verifyArtifactPrismaClient,
 };
 
 if (require.main === module) {
