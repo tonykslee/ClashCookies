@@ -10,13 +10,66 @@ permissions:
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      old_sha: ${{ steps.release.outputs.old_sha }}
+      new_sha: ${{ steps.release.outputs.new_sha }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      migration_diff_digest: ${{ steps.release.outputs.migration_diff_digest }}
+      migration_manifest_digest: ${{ steps.release.outputs.migration_manifest_digest }}
+      authorization_digest: ${{ steps.release.outputs.authorization_digest }}
+      has_migrations: ${{ steps.release.outputs.has_migrations }}
+    steps:
+      - name: Checkout exact main revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bind release identity and classify Prisma changes
+        id: release
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          NEW_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            echo "Initial main push has no safe previous revision" >&2
+            exit 78
+          fi
+          git rev-parse --verify "$BEFORE_SHA^{commit}" >/dev/null
+          git rev-parse --verify "$NEW_SHA^{commit}" >/dev/null
+          release_id="main-${RUN_ID}-${RUN_ATTEMPT}"
+          migration_diff_digest="$(git diff --binary --no-ext-diff "$BEFORE_SHA" "$NEW_SHA" -- prisma/schema.prisma prisma/migrations | sha256sum | awk '{print tolower($1)}')"
+          migration_manifest_digest="$(node -e 'const r=require("./ops/deploy/migration-runner.js"); process.stdout.write(r.computeMigrationManifest(process.cwd()).digest)' | tr '[:upper:]' '[:lower:]')"
+          if git diff --quiet --no-ext-diff "$BEFORE_SHA" "$NEW_SHA" -- prisma/schema.prisma prisma/migrations; then
+            has_migrations=false
+          else
+            has_migrations=true
+          fi
+          authorization_digest="$(printf '%s|%s|%s|%s|%s|github-environment-production-migration' "$release_id" "$BEFORE_SHA" "$NEW_SHA" "$migration_diff_digest" "$migration_manifest_digest" | sha256sum | awk '{print tolower($1)}')"
+          {
+            echo "old_sha=$BEFORE_SHA"
+            echo "new_sha=$NEW_SHA"
+            echo "release_id=$release_id"
+            echo "migration_diff_digest=$migration_diff_digest"
+            echo "migration_manifest_digest=$migration_manifest_digest"
+            echo "authorization_digest=$authorization_digest"
+            echo "has_migrations=$has_migrations"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy-non-migration:
+    needs: classify
+    if: needs.classify.outputs.has_migrations == 'false'
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to droplet over SSH
+      - name: Deploy through the reviewed immutable entrypoint
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -26,5 +79,47 @@ jobs:
           command_timeout: 45m
           script_stop: true
           script: |
-            echo "Deploying main to production"
-            ~/deploy-prod.sh
+            set -euo pipefail
+            export DEPLOYMENT_CONFIG_PATH="/etc/clashcookies/production-deployment.json"
+            export DEPLOYMENT_ACTIVATION_AUTHORIZED=1
+            export DEPLOYMENT_ACTIVATION_DIGEST="${{ secrets.PRODUCTION_DEPLOYMENT_ACTIVATION_DIGEST }}"
+            export DEPLOY_EXECUTION_AUTHORIZED=1
+            export DEPLOY_RELEASE_ID="${{ needs.classify.outputs.release_id }}"
+            export DEPLOY_OLD_SHA="${{ needs.classify.outputs.old_sha }}"
+            export DEPLOY_NEW_SHA="${{ needs.classify.outputs.new_sha }}"
+            export DEPLOY_EXPECTED_MIGRATION_DIFF_DIGEST="${{ needs.classify.outputs.migration_diff_digest }}"
+            export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
+            export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
+            export DEPLOY_APPROVED_BY="github-main-merge"
+            exec /home/tilo/deploy-assets/clashcookies-production-entrypoint
+
+  deploy-migration:
+    needs: classify
+    if: needs.classify.outputs.has_migrations == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production-migration
+    steps:
+      - name: Deploy approved migration release through the reviewed immutable entrypoint
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 45m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            export DEPLOYMENT_CONFIG_PATH="/etc/clashcookies/production-deployment.json"
+            export DEPLOYMENT_ACTIVATION_AUTHORIZED=1
+            export DEPLOYMENT_ACTIVATION_DIGEST="${{ secrets.PRODUCTION_DEPLOYMENT_ACTIVATION_DIGEST }}"
+            export DEPLOY_EXECUTION_AUTHORIZED=1
+            export DEPLOY_RELEASE_ID="${{ needs.classify.outputs.release_id }}"
+            export DEPLOY_OLD_SHA="${{ needs.classify.outputs.old_sha }}"
+            export DEPLOY_NEW_SHA="${{ needs.classify.outputs.new_sha }}"
+            export DEPLOY_EXPECTED_MIGRATION_DIFF_DIGEST="${{ needs.classify.outputs.migration_diff_digest }}"
+            export DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST="${{ needs.classify.outputs.migration_manifest_digest }}"
+            export DEPLOY_AUTHORIZATION_DIGEST="${{ needs.classify.outputs.authorization_digest }}"
+            export DEPLOY_APPROVED_BY="github-environment-production-migration"
+            exec /home/tilo/deploy-assets/clashcookies-production-entrypoint

@@ -234,7 +234,16 @@ function computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl = childProce
     ["diff", "--binary", "--no-ext-diff", oldSha, newSha, "--", "prisma/schema.prisma", "prisma/migrations"],
     spawnSyncImpl,
   );
-  return Object.freeze({ oldSha, newSha, paths: Object.freeze(names), digest: sha256(rawDiff) });
+  const migrationNames = [...new Set(names
+    .filter((entry) => /^prisma\/migrations\/.+\/migration\.sql$/.test(entry))
+    .map((entry) => entry.split("/")[2]))];
+  return Object.freeze({
+    oldSha,
+    newSha,
+    paths: Object.freeze(names),
+    migrationNames: Object.freeze(migrationNames),
+    digest: sha256(rawDiff),
+  });
 }
 
 function assertCheckoutSafety(checkout, targetPaths, expectedSha) {
@@ -565,6 +574,7 @@ async function runMigrationAwareDeployment({
       targetSha: config.newSha,
       migrationDiffDigest: config.migrationDiffDigest,
       migrationManifestDigest: config.migrationManifestDigest,
+      migrationNames: diff.migrationNames || [],
     });
     assertPostMigrationStatus(migrationStatus);
     appendRecord("migration_verified");
