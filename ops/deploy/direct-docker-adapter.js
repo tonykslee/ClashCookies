@@ -259,6 +259,7 @@ function validateAdapterConfig(input = {}) {
       ownerUid: executorInput.ownerUid,
       ownerGid: executorInput.ownerGid,
       mode: executorInput.mode,
+      authorization: Object.freeze({ ...(executorInput.authorization || {}) }),
     }),
     credential: Object.freeze({
       path: credentialPath,
@@ -779,12 +780,39 @@ function isCorrelatedContainerProcess(processInfo, container) {
 }
 
 /** Validate the pinned immutable executor file and its recorded digest. */
-function validateImmutableExecutor(spec, appDir, fsImpl = fs) {
+function validateImmutableExecutor(
+  spec,
+  appDir,
+  fsImpl = fs,
+  operatorIdentitySource = fsImpl.operatorIdentitySource || process,
+) {
   const executorPath = resolveVerifiedExternalPath(spec.path, "executor_path", appDir, fsImpl);
   validateSha256(spec.sha256, "executor_sha256");
+  validateOwner(spec.ownerUid, "executor_owner_uid");
+  validateOwner(spec.ownerGid, "executor_owner_gid");
+  validateMode(spec.mode, "executor_mode");
+  const authorization = validateImmutableExecutorAuthorization(
+    spec,
+    executorPath,
+    operatorIdentitySource,
+  );
   const stat = readProtectedStat(executorPath, fsImpl, "executor");
+  validateStableIdentity(stat, "executor");
   validateExpectedStat(stat, spec, "executor");
-  const contents = readVerifiedFile(executorPath, stat, fsImpl, "executor");
+  validateOperatorCannotWrite(stat, authorization, "executor");
+  const parentDirectories = readProtectedDirectoryChain(path.dirname(executorPath), fsImpl);
+  for (const parent of parentDirectories) {
+    validateOperatorCannotWrite(parent.stat, authorization, "executor_parent");
+  }
+  const contents = readVerifiedFile(
+    executorPath,
+    stat,
+    fsImpl,
+    "executor",
+    undefined,
+    { requireCompleteIdentity: true },
+  );
+  verifyProtectedDirectoryChain(parentDirectories, fsImpl, "executor_parent");
   const digest = crypto.createHash("sha256").update(contents).digest("hex");
   if (digest !== spec.sha256.toLowerCase()) {
     throw new AdapterError("executor_checksum_mismatch", "executor_identity_invalid");
@@ -795,7 +823,156 @@ function validateImmutableExecutor(spec, appDir, fsImpl = fs) {
     ownerUid: stat.uid,
     ownerGid: stat.gid,
     mode: stat.mode & 0o7777,
+    authorizationStatus: authorization.authorizationStatus,
+    parentDirectories: Object.freeze(parentDirectories.map(({ path: parentPath, stat: parentStat }) => Object.freeze({
+      path: parentPath,
+      ownerUid: parentStat.uid,
+      ownerGid: parentStat.gid,
+      mode: parentStat.mode & 0o7777,
+    }))),
   });
+}
+
+/** Require an explicit authorization record bound to independently observed OS identity. */
+function validateImmutableExecutorAuthorization(spec, executorPath, operatorIdentitySource = process) {
+  const authorization = spec && spec.authorization;
+  if (!authorization || typeof authorization !== "object") {
+    throw new AdapterError("executor_authorization_required", "authorization_invalid");
+  }
+  if (authorization.authorizationStatus !== "PASS"
+    || authorization.scope !== "immutable-deployment-entrypoint") {
+    throw new AdapterError("executor_authorization_status_invalid", "authorization_invalid");
+  }
+  if (typeof authorization.canonicalPath !== "string"
+    || path.resolve(authorization.canonicalPath) !== executorPath) {
+    throw new AdapterError("executor_authorization_path_contradictory", "authorization_invalid");
+  }
+  if (typeof authorization.approvedSha256 !== "string"
+    || !/^[0-9a-f]{64}$/i.test(authorization.approvedSha256)
+    || authorization.approvedSha256.toLowerCase() !== spec.sha256.toLowerCase()) {
+    throw new AdapterError("executor_authorization_sha256_contradictory", "authorization_invalid");
+  }
+  for (const [authorizationKey, specKey] of [
+    ["approvedOwnerUid", "ownerUid"],
+    ["approvedOwnerGid", "ownerGid"],
+    ["approvedMode", "mode"],
+  ]) {
+    if (!Number.isInteger(authorization[authorizationKey])
+      || authorization[authorizationKey] < 0
+      || authorization[authorizationKey] !== spec[specKey]) {
+      throw new AdapterError("executor_authorization_metadata_contradictory", "authorization_invalid");
+    }
+  }
+  if (!Number.isInteger(authorization.operatorUid) || authorization.operatorUid < 1
+    || !Array.isArray(authorization.operatorGids)
+    || authorization.operatorGids.length === 0
+    || authorization.operatorGids.some((gid) => !Number.isInteger(gid) || gid < 0)) {
+    throw new AdapterError("executor_authorization_operator_invalid", "authorization_invalid");
+  }
+  const actualIdentity = readTrustedOperatorIdentity(operatorIdentitySource);
+  if (authorization.operatorUid !== actualIdentity.uid) {
+    throw new AdapterError("executor_operator_uid_mismatch", "authorization_invalid");
+  }
+  const claimedGids = [...new Set(authorization.operatorGids)].sort((left, right) => left - right);
+  if (claimedGids.length !== actualIdentity.gids.length
+    || claimedGids.some((gid, index) => gid !== actualIdentity.gids[index])) {
+    throw new AdapterError("executor_operator_groups_mismatch", "authorization_invalid");
+  }
+  return Object.freeze({
+    authorizationStatus: authorization.authorizationStatus,
+    operatorUid: authorization.operatorUid,
+    operatorGids: Object.freeze(claimedGids),
+  });
+}
+
+/** Read UID and primary/supplementary groups from the OS-backed process identity APIs. */
+function readTrustedOperatorIdentity(identitySource = process) {
+  if (!identitySource || typeof identitySource.getuid !== "function"
+    || typeof identitySource.getgid !== "function"
+    || typeof identitySource.getgroups !== "function") {
+    throw new AdapterError("executor_operator_identity_unavailable", "authorization_invalid");
+  }
+  let uid;
+  let primaryGid;
+  let supplementaryGids;
+  try {
+    uid = identitySource.getuid();
+    primaryGid = identitySource.getgid();
+    supplementaryGids = identitySource.getgroups();
+  } catch {
+    throw new AdapterError("executor_operator_identity_unavailable", "authorization_invalid");
+  }
+  if (!Number.isInteger(uid) || uid < 1
+    || !Number.isInteger(primaryGid) || primaryGid < 0
+    || !Array.isArray(supplementaryGids)
+    || supplementaryGids.some((gid) => !Number.isInteger(gid) || gid < 0)) {
+    throw new AdapterError("executor_operator_identity_invalid", "authorization_invalid");
+  }
+  return Object.freeze({
+    uid,
+    gids: Object.freeze([...new Set([primaryGid, ...supplementaryGids])].sort((left, right) => left - right)),
+  });
+}
+
+/** Read every canonical parent directory, including the filesystem root. */
+function readProtectedDirectoryChain(startPath, fsImpl = fs) {
+  const directories = [];
+  let current = path.resolve(startPath);
+  while (true) {
+    let stat;
+    try {
+      stat = fsImpl.lstatSync(current);
+    } catch {
+      throw new AdapterError("executor_parent_missing", "executor_parent_invalid");
+    }
+    if (typeof stat.isSymbolicLink !== "function" || stat.isSymbolicLink()
+      || typeof stat.isDirectory !== "function" || !stat.isDirectory()) {
+      throw new AdapterError("executor_parent_must_be_canonical_directory", "executor_parent_invalid");
+    }
+    if (!Number.isInteger(stat.uid) || !Number.isInteger(stat.gid)
+      || !Number.isInteger(stat.mode)) {
+      throw new AdapterError("executor_parent_metadata_unavailable", "executor_parent_invalid");
+    }
+    validateStableIdentity(stat, "executor_parent");
+    directories.push(Object.freeze({ path: current, stat }));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return Object.freeze(directories);
+}
+
+/** Reject any file or parent directory writable by the deployment operator. */
+function validateOperatorCannotWrite(stat, authorization, label) {
+  const mode = stat.mode & 0o7777;
+  const ownerWritable = stat.uid === authorization.operatorUid && (mode & 0o200) !== 0;
+  const groupWritable = authorization.operatorGids.includes(stat.gid) && (mode & 0o020) !== 0;
+  const worldWritable = (mode & 0o002) !== 0;
+  if (ownerWritable || groupWritable || worldWritable) {
+    throw new AdapterError(`${label}_writable_by_operator`, "executor_parent_invalid");
+  }
+}
+
+/** Confirm protected parent identity and metadata did not change during validation. */
+function verifyProtectedDirectoryChain(expectedDirectories, fsImpl = fs, label = "parent") {
+  for (const { path: directoryPath, stat: expectedStat } of expectedDirectories) {
+    let actualStat;
+    try {
+      actualStat = fsImpl.lstatSync(directoryPath);
+    } catch {
+      throw new AdapterError(`${label}_changed_during_validation`, "unsafe_path");
+    }
+    if (typeof actualStat.isSymbolicLink !== "function" || actualStat.isSymbolicLink()
+      || typeof actualStat.isDirectory !== "function" || !actualStat.isDirectory()) {
+      throw new AdapterError(`${label}_changed_during_validation`, "unsafe_path");
+    }
+    validateSameMetadata(
+      expectedStat,
+      actualStat,
+      `${label}_changed_during_validation`,
+      { requireCompleteIdentity: true },
+    );
+  }
 }
 
 /** Validate the protected credential file without returning its contents. */
@@ -916,7 +1093,14 @@ function readProtectedStat(filePath, fsImpl, label) {
 }
 
 /** Open, re-stat, and read a protected file without trusting path identity. */
-function readVerifiedFile(filePath, expectedStat, fsImpl = fs, label = "file", encoding) {
+function readVerifiedFile(
+  filePath,
+  expectedStat,
+  fsImpl = fs,
+  label = "file",
+  encoding,
+  options = {},
+) {
   const noFollow = fsImpl.constants && fsImpl.constants.O_NOFOLLOW;
   if (typeof noFollow !== "number" || typeof fsImpl.openSync !== "function"
     || typeof fsImpl.fstatSync !== "function" || typeof fsImpl.closeSync !== "function"
@@ -926,15 +1110,29 @@ function readVerifiedFile(filePath, expectedStat, fsImpl = fs, label = "file", e
   const fd = fsImpl.openSync(filePath, fsImpl.constants.O_RDONLY | noFollow);
   try {
     const openedStat = fsImpl.fstatSync(fd);
-    validateSameFile(expectedStat, openedStat, label);
-    return fsImpl.readFileSync(fd, encoding);
+    validateSameFile(expectedStat, openedStat, label, options);
+    const value = fsImpl.readFileSync(fd, encoding);
+    validateSameFile(expectedStat, fsImpl.fstatSync(fd), label, options);
+    return value;
   } finally {
     fsImpl.closeSync(fd);
   }
 }
 
 /** Verify that the file descriptor still refers to the pre-opened file. */
-function validateSameFile(expectedStat, actualStat, label) {
+function validateSameFile(expectedStat, actualStat, label, options = {}) {
+  validateSameMetadata(expectedStat, actualStat, label, options);
+  if (!actualStat.isFile()) {
+    throw new AdapterError(`${label}_changed_during_open`, "unsafe_path");
+  }
+}
+
+/** Compare stable identity, ownership, and permission metadata. */
+function validateSameMetadata(expectedStat, actualStat, label, options = {}) {
+  if (options.requireCompleteIdentity === true) {
+    validateStableIdentity(expectedStat, label);
+    validateStableIdentity(actualStat, label);
+  }
   const fields = ["dev", "ino", "uid", "gid"];
   for (const field of fields) {
     if (expectedStat[field] !== undefined && actualStat[field] !== undefined
@@ -942,8 +1140,16 @@ function validateSameFile(expectedStat, actualStat, label) {
       throw new AdapterError(`${label}_replaced_during_open`, "unsafe_path");
     }
   }
-  if (!actualStat.isFile() || (actualStat.mode & 0o7777) !== (expectedStat.mode & 0o7777)) {
+  if ((actualStat.mode & 0o7777) !== (expectedStat.mode & 0o7777)) {
     throw new AdapterError(`${label}_changed_during_open`, "unsafe_path");
+  }
+}
+
+/** Require numeric device/inode identity before relying on replacement protection. */
+function validateStableIdentity(stat, label) {
+  if (!stat || !Number.isSafeInteger(stat.dev) || stat.dev < 0
+    || !Number.isSafeInteger(stat.ino) || stat.ino < 0) {
+    throw new AdapterError(`${label}_identity_incomplete`, "unsafe_path");
   }
 }
 
@@ -1043,13 +1249,23 @@ function inspectRuntimeSnapshot(snapshot, config) {
 function createDirectDockerAdapter(input = {}, dependencies = {}) {
   const injectedOperations = dependencies.operations || {};
   const fsImpl = dependencies.fs || fs;
+  const operatorIdentitySource = dependencies.operatorIdentitySource || process;
+  if (operatorIdentitySource !== process
+    && dependencies.testOnlyOperatorIdentityEvidence !== true) {
+    throw new AdapterError("synthetic_operator_identity_not_allowed", "authorization_invalid");
+  }
   const initialConfig = validateAdapterConfig(input);
   const config = initialConfig.enabled
     ? Object.freeze({
       ...initialConfig,
       executor: Object.freeze({
         ...initialConfig.executor,
-        ...validateImmutableExecutor(initialConfig.executor, initialConfig.appDir, fsImpl),
+        ...validateImmutableExecutor(
+          initialConfig.executor,
+          initialConfig.appDir,
+          fsImpl,
+          operatorIdentitySource,
+        ),
       }),
       credential: Object.freeze({
         ...initialConfig.credential,
