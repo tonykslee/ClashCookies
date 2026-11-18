@@ -234,7 +234,16 @@ function computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl = childProce
     ["diff", "--binary", "--no-ext-diff", oldSha, newSha, "--", "prisma/schema.prisma", "prisma/migrations"],
     spawnSyncImpl,
   );
-  return Object.freeze({ oldSha, newSha, paths: Object.freeze(names), digest: sha256(rawDiff) });
+  const migrationNames = [...new Set(names
+    .filter((entry) => /^prisma\/migrations\/.+\/migration\.sql$/.test(entry))
+    .map((entry) => entry.split("/")[2]))];
+  return Object.freeze({
+    oldSha,
+    newSha,
+    paths: Object.freeze(names),
+    migrationNames: Object.freeze(migrationNames),
+    digest: sha256(rawDiff),
+  });
 }
 
 function assertCheckoutSafety(checkout, targetPaths, expectedSha) {
@@ -565,6 +574,7 @@ async function runMigrationAwareDeployment({
       targetSha: config.newSha,
       migrationDiffDigest: config.migrationDiffDigest,
       migrationManifestDigest: config.migrationManifestDigest,
+      migrationNames: diff.migrationNames || [],
     });
     assertPostMigrationStatus(migrationStatus);
     appendRecord("migration_verified");
@@ -573,6 +583,9 @@ async function runMigrationAwareDeployment({
     const runtimeDuringPromotion = assertRuntimeSingleton(await ops.inspectRuntime(), config);
     if (runtimeDuringPromotion.revision !== runtimeBefore.revision) {
       throw new OrchestratorError("runtime_changed_before_promotion", EXIT_CODES.BLOCKED, "runtime_identity_failed", phase, true);
+    }
+    if (typeof ops.verifyPromotedArtifact === "function") {
+      await ops.verifyPromotedArtifact({ sha: config.newSha });
     }
     await ops.stopRuntime({ expected: runtimeBefore });
     await ops.checkoutRelease({ repoRoot, sha: config.newSha, preserveUnknownFiles: true });

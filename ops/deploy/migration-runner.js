@@ -324,8 +324,70 @@ async function verifyDatabaseIdentity(config, prismaFactory = null) {
   }
 }
 
+/**
+ * Verify the migration rows for one release without invoking Prisma migrate.
+ * This is intentionally read-only and is kept beside the runner so the
+ * production boundary cannot accidentally verify through application startup.
+ */
+async function verifyAppliedMigrations({
+  databaseUrl,
+  identity,
+  migrationNames,
+  prismaFactory = null,
+}) {
+  if (typeof databaseUrl !== "string" || databaseUrl.length === 0
+    || !identity || typeof identity !== "object"
+    || !Array.isArray(migrationNames) || migrationNames.length === 0
+    || migrationNames.some((name) => !/^[A-Za-z0-9_-]{1,200}$/.test(name))) {
+    throw new RunnerError("migration_status_request_invalid", EXIT_CODES.INVALID_CONFIGURATION, "migration_status_invalid");
+  }
+
+  const factory = prismaFactory || (() => {
+    const { PrismaClient } = require("@prisma/client");
+    return new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  });
+  const client = factory();
+  try {
+    const rows = await client.$queryRawUnsafe(
+      'SELECT migration_name, finished_at, rolled_back_at FROM "_prisma_migrations" WHERE migration_name = ANY($1::text[])',
+      migrationNames,
+    );
+    const applied = new Set(
+      (Array.isArray(rows) ? rows : [])
+        .filter((row) => row
+          && typeof row.migration_name === "string"
+          && migrationNames.includes(row.migration_name)
+          && row.finished_at !== null
+          && row.finished_at !== undefined
+          && (row.rolled_back_at === null || row.rolled_back_at === undefined))
+        .map((row) => row.migration_name),
+    );
+    const unresolved = migrationNames.filter((name) => !applied.has(name));
+    return Object.freeze({
+      unresolved: unresolved.length,
+      targetApplied: unresolved.length === 0,
+      migrationNames: Object.freeze([...migrationNames]),
+    });
+  } catch (error) {
+    if (error instanceof RunnerError) throw error;
+    throw new RunnerError("migration_status_verification_failed", EXIT_CODES.INVALID_CONFIGURATION, "migration_status_failed");
+  } finally {
+    try {
+      await client.$disconnect();
+    } catch {
+      // A successful read remains valid; disconnect failures do not expose
+      // credentials or change the verified status.
+    }
+  }
+}
+
 function npmExecutable() {
-  return process.platform === "win32" ? "npm.exe" : "npm";
+  if (process.platform !== "win32") return "npm";
+  const candidates = [
+    path.join(path.dirname(process.execPath), "npm.exe"),
+    path.resolve(path.dirname(process.execPath), "..", "..", ".nodejs", "npm.exe"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "npm.exe";
 }
 
 function classifyMigrationResult(result) {
@@ -336,17 +398,20 @@ function classifyMigrationResult(result) {
 }
 
 function buildMigrationChildEnvironment(config, baseEnvironment = process.env) {
-  const pathValue = typeof baseEnvironment.PATH === "string" && baseEnvironment.PATH.length > 0
-    ? baseEnvironment.PATH
+  const inheritedPath = baseEnvironment.PATH || baseEnvironment.Path;
+  const pathValue = typeof inheritedPath === "string" && inheritedPath.length > 0
+    ? inheritedPath
     : "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  const userConfigDevice = process.platform === "win32" ? "NUL:" : nullDevice;
   return Object.freeze({
     PATH: pathValue,
     NODE_ENV: "production",
     NPM_CONFIG_AUDIT: "false",
     NPM_CONFIG_FUND: "false",
-    NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+    NPM_CONFIG_GLOBALCONFIG: nullDevice,
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
-    NPM_CONFIG_USERCONFIG: "/dev/null",
+    NPM_CONFIG_USERCONFIG: userConfigDevice,
     DATABASE_URL: config.databaseUrl,
     MIGRATION_RUNNER_CHILD: "1",
   });
@@ -488,6 +553,7 @@ module.exports = {
   acquireExclusiveLock,
   computeMigrationManifest,
   executeMigration,
+  verifyAppliedMigrations,
   assertMigrationCommandContract,
   buildMigrationChildEnvironment,
   parseDatabaseUrl,

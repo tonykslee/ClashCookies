@@ -57,6 +57,8 @@ describe("version-controlled production deployment procedure", () => {
     expect(buildLine).not.toContain("DATABASE_URL");
     expect(buildLine).not.toContain("POLLING_MODE=active");
     expect(buildLine).not.toContain("container-start.sh");
+    expect(log).toContain("runtime.env");
+    expect(log).not.toContain("DATABASE_URL=");
     expect(output).not.toContain("postgresql://");
     expect(log).toContain("ACTIVE_RUN new-reviewed-sha");
     expect(log).toContain("CURL new-reviewed-sha");

@@ -256,9 +256,9 @@ describe("isolated Prisma migration runner", () => {
       NODE_ENV: "production",
       NPM_CONFIG_AUDIT: "false",
       NPM_CONFIG_FUND: "false",
-      NPM_CONFIG_GLOBALCONFIG: "/dev/null",
+      NPM_CONFIG_GLOBALCONFIG: process.platform === "win32" ? "NUL" : "/dev/null",
       NPM_CONFIG_UPDATE_NOTIFIER: "false",
-      NPM_CONFIG_USERCONFIG: "/dev/null",
+      NPM_CONFIG_USERCONFIG: process.platform === "win32" ? "NUL:" : "/dev/null",
       DATABASE_URL: "postgresql://migration_user:super-secret@127.0.0.1:55434/clashcookies_disposable",
       MIGRATION_RUNNER_CHILD: "1",
     });
@@ -312,5 +312,51 @@ describe("isolated Prisma migration runner", () => {
     expect(queries[0]).toContain("current_database()");
     expect(queries[0]).toContain("current_user");
     expect(queries[0]).toContain("inet_server_addr()");
+  });
+
+  it("verifies every target migration row without invoking application startup", async () => {
+    const queries: string[] = [];
+    const result = await runner.verifyAppliedMigrations({
+      databaseUrl: "postgresql://migration_user:super-secret@127.0.0.1:55434/clashcookies_disposable",
+      identity: {
+        database: "clashcookies_disposable",
+        role: "migration_user",
+        schema: "public",
+        serverAddress: "127.0.0.1",
+        serverPort: 55434,
+        postgresMajor: 17,
+      },
+      migrationNames: ["20261112120000_add_dusk_wallet_ledger_foundation", "20261115120000_add_sync_reaction_history"],
+      prismaFactory: () => ({
+        $queryRawUnsafe: async (query: string) => {
+          queries.push(query);
+          return [
+            {
+              migration_name: "20261112120000_add_dusk_wallet_ledger_foundation",
+              finished_at: new Date(),
+              rolled_back_at: null,
+            },
+            {
+              migration_name: "20261115120000_add_sync_reaction_history",
+              finished_at: null,
+              rolled_back_at: new Date(),
+            },
+          ];
+        },
+        $disconnect: async () => undefined,
+      }),
+    });
+
+    expect(result).toEqual({
+      unresolved: 1,
+      targetApplied: false,
+      migrationNames: [
+        "20261112120000_add_dusk_wallet_ledger_foundation",
+        "20261115120000_add_sync_reaction_history",
+      ],
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('FROM "_prisma_migrations"');
+    expect(queries[0]).not.toContain("start:runtime");
   });
 });
