@@ -332,7 +332,7 @@ describe("Gate 1 bounded local input boundary", () => {
       const input = writeEnvelope(root, "denied.json", JSON.stringify(validEnvelope()));
       chmodSync(input, 0o000);
       try {
-        expectSanitizedCli(runCli(["--input", input, "--approved-root", root]), 3, "INPUT_FILE_UNREADABLE");
+        expectSanitizedCli(runCli(["--input", input, "--approved-root", root]), 3, "INPUT_UNREADABLE");
       } finally {
         chmodSync(input, 0o600);
       }
