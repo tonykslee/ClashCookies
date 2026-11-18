@@ -652,6 +652,64 @@ UTC timestamp: ____________________
 
 Gate A is not complete. The exact executable and evidence-root technical checks are `VERIFIED`; recipient ownership, owner approval, quarantine, retention, custodians, recovery custody, and Windows residual-risk acceptance remain `UNKNOWN`/`BLOCKED`. Stop here; do not proceed to Gate B.
 
+### 14. Final Gate A owner-decision preparation — 2026-11-18
+
+PR #2067 reconciled the recovery-object references above: the newer age object is `5a050ccea53f37a7ba8c579ba4c58816b8966e01dde4ad4a9f6e07c7550daa6a`; the older AES-CBC object is separately `58a16cce1e788350035a19e0456b2f2af7820505d9f3f354224bee5ca785d42c`. The following is a compact final decision summary; it does not repeat or upgrade the completed technical checks.
+
+| Gate A item | Reused evidence | Classification | Final owner decision required |
+| --- | --- | --- | --- |
+| A. Exact age executable approval | Local `age.exe` identity, `v1.3.2`, SHA-256, ACL, canonical path and parent-chain checks from the 2026-11-18 preflight | Technical `VERIFIED`; approval `UNKNOWN` | Approve the exact path, version, hash and ACL as the only local age executable for this custody boundary |
+| B. Recipient ownership and custody | Candidate syntax/document consistency is verified; operator/Codex reports recovery to the same recipient | `OBSERVED` identity evidence; ownership/approval `UNKNOWN/BLOCKED` | Name the recipient custodian and approve this exact public recipient; confirm no production backup recipient is reused |
+| C. Private ciphertext root | Existing root is empty, canonical, non-reparse, ACL-checked and has sufficient free space | Technical `VERIFIED`; custody approval `UNKNOWN/BLOCKED` | Approve the exact root and its ACL/reparse safeguards for ciphertext and linked sidecars |
+| D. Quarantine location | No approved location exists; proposed `C:\Users\tonyk\clashcookies-production-evidence-20261117\quarantine` has not been created or inspected | `UNKNOWN` / `PROPOSED` / `BLOCKED` for use | Approve this candidate or name another exact location; require separate metadata/ACL/reparse verification before use |
+| E. Windows residual-risk acceptance | Current Node/Windows checks are best-effort, not atomic no-follow or atomic unlink-by-identity | `VERIFIED` limitation; acceptance `UNKNOWN/BLOCKED` | Explicitly accept the residual reparse/TOCTOU/ACL limitation while retaining fail-closed cleanup |
+| F. Ciphertext retention | No approved duration exists; a 30-day policy is proposed | `PROPOSED` / `BLOCKED` pending acceptance | Accept or modify the precise UTC policy below |
+| G. Sidecar retention | No separate rule exists | `PROPOSED` / `BLOCKED` | Accept the same retention and hash linkage for provenance, validator output and permitted diagnostics |
+| H. Primary evidence custodian | No named person is recorded | `UNKNOWN/BLOCKED` | Name the accountable primary custodian; recommended role is the owner |
+| I. Secondary recovery custodian | No named person is recorded | `UNKNOWN/BLOCKED` | Name a separate trusted individual where practical; do not infer from operator access |
+| J. Quarantine authority | No named authority is recorded | `UNKNOWN/BLOCKED` | Name who may classify, preserve or release incomplete artifacts; recommended role is the owner |
+| K. Deletion authority | No named authority or automation exists | `UNKNOWN/BLOCKED` | Name who may authorize expiry; recommended model is owner approval with secondary acknowledgement |
+| L. Independent recovery evidence | Cloud retrieval and synthetic recovery are operator/Codex-reported, not freshly accepted in this preflight | `OBSERVED`; acceptance `UNKNOWN/BLOCKED` | Owner authorizes a separately named secondary custodian to perform one independent retrieval and retain only bounded provenance/results |
+
+#### Ready for owner decision
+
+- Technical identity and local shape of the exact age executable and private ciphertext root are verified; no additional safe offline check materially closes the approval gaps.
+- Proposed choices are available: the quarantine candidate, 30-day retention, matching sidecar retention, no automatic deletion, owner-primary custody, separate secondary recovery custody, and recovery-object retention until explicit retirement approval.
+- Residual risk is explicit: recipient syntax is not ownership, ACL/reparse checks are not atomic Windows custody, and operator-reported recovery is not fresh independent acceptance.
+
+#### Requires owner input
+
+The owner must name/accept the recipient custodian, primary evidence custodian, secondary recovery custodian, quarantine authority, deletion authority, exact quarantine path, retention wording, and Windows residual-risk acceptance. The owner must also decide whether to authorize the independent recovery verification described below. No person is assigned by this document.
+
+#### Proposed precise retention wording
+
+`PROPOSED — not approved:` retain the original accepted ciphertext, linked provenance, validator result, and permitted diagnostic sidecars until 30 calendar days after the later of (1) final human review completion recorded in UTC or (2) incident closure recorded in UTC. A legal, security, or owner-directed hold suspends expiry until explicitly released. Quarantined or incomplete artifacts remain preserved until classification and the same owner-directed disposition; expiry is owner-authorized deletion only, with no unattended deletion. Recovery objects remain until replacement custody and independent retrieval are accepted and retirement is separately approved.
+
+#### Recovery acceptance plan if the owner keeps it as a Gate A condition
+
+The owner authorizes the named secondary recovery custodian—not an inferred operator—to retrieve the newer age object from the approved off-workstation copy. That custodian must compare the trusted SHA-256, confirm the unchanged recipient, perform the fixed synthetic NUL/CRLF round-trip and wrong-passphrase rejection, retain only timestamped bounded provenance and result hashes, and retain no plaintext or private identity material. Cloud credentials, passphrases, key rotation, object deletion, recovery-file relocation, and repository/chat storage remain prohibited. Until this is completed and accepted, recovery remains `UNKNOWN/BLOCKED`.
+
+#### Proposed Gate A authorization wording
+
+```text
+I authorize Gate A only for the exact local custody decision recorded here:
+age executable C:\Users\tonyk\AppData\Local\Microsoft\WinGet\Packages\FiloSottile.age_Microsoft.Winget.Source_8wekyb3d8bbwe\age\age.exe
+version v1.3.2, SHA-256 2821a4ed191da07372acd302e5f6feae7a7985e285e1417765ebe74025af45f0;
+recipient age15gwzpsek379vh09r9qylc2td3rzglls9hctum063p8qkqmxhagqqmtee3g;
+ciphertext root C:\Users\tonyk\clashcookies-production-evidence-20261117;
+quarantine root [OWNER-APPROVED EXACT PATH]; retention [OWNER-ACCEPTED UTC POLICY];
+primary custodian [NAMED OWNER]; secondary recovery custodian [NAMED TRUSTED INDIVIDUAL].
+I accept the stated Windows/Node residual risks and authorize no Gates B–F, SSH,
+production access, evidence capture, collector execution, provisioning, deployment,
+migration, backup, timer activation, staging change, or release promotion.
+Owner decision: [ ] ACCEPT  [ ] MODIFY  [ ] DECLINE
+Approval reference: ____________________  UTC timestamp: ____________________
+```
+
+#### Blocking evidence
+
+No additional local technical evidence is required for the already checked executable or root. Gate A remains blocked by missing owner decisions and, if retained as a condition, fresh independently accepted recovery evidence. `custody=RESTRICTED_UNVERIFIED`, `provenance=UNVERIFIED`, and Gate 1 **BLOCKED / NOT READY FOR EXECUTION** remain unchanged.
+
 ## Offline local capture/provenance boundary — implemented, not production-authorized
 
 The repository now contains one narrowly scoped metadata owner, `ops/deploy/discovery/gate1-local-capture-boundary.js`. It accepts only an in-memory synthetic fixture, computes the complete-stream byte count and SHA-256, requires packet version `2026-11-17`, separates `source_identity` from `asserted_identity`, rejects nonzero exit/interruption/timeout/truncation/empty output, and delegates the final structural decision to the existing `gate1-prerequisite-validator.js`. It does not duplicate the validator, read or write files, invoke a process, initiate SSH, retry, access Docker/PostgreSQL, or enable a live capture path.
