@@ -34,6 +34,12 @@ The module does not reconstruct production Compose, modify the legacy wrapper, s
 
 Even after that configuration is supplied, every production-dependent mutating operation and migration execution remains blocked by a Phase 1 execution gate. The `allowMutations` and `allowMigrationExecution` inputs cannot enable execution. Phase 1 provides no production configuration or VM installation step.
 
+## Offline integration boundary
+
+`ops/deploy/offline-deployment-integration.js` composes the verified immutable executor validator, this Phase 1 adapter contract, and the migration-aware orchestrator without creating a production operation surface. Its guard independently validates the adapter's OS-backed operator identity and protected paths, verifies the orchestrator's exact release/preflight evidence, and cross-binds the release lock, migration lock, release-record path, and production target.
+
+The guard's successful result is bounded verification evidence only: `status=PASS` with `productionExecutionEnabled=false`. It does not contain credential contents, caller-supplied group claims, or an execution handle. If that result is supplied through the orchestrator's optional `integrationGuard` hook, the orchestrator fails closed before sampling its clock, acquiring a lock, writing a release record, or invoking any deployment operation. The hook is not universal protection for arbitrary orchestrator calls; invocations without it retain the orchestrator's separately tested state-machine contract and must not treat offline evidence as execution authorization. This is repository implementation and offline-test coverage only: no production installation, trusted VM identity evidence, wrapper handoff, execution authorization, Docker/database operation, migration, backup, collector execution, or release promotion is established, and `PHASE1_EXECUTION_ENABLED=false` remains in force.
+
 ## Immutable entry-point validation boundary
 
 `validateImmutableExecutor()` is the reusable offline boundary for the proposed immutable deployment entry point. It reuses the adapter's external-path, no-symlink, protected-stat, descriptor-identity and SHA-256 helpers, and additionally requires an explicit authorization record with:
