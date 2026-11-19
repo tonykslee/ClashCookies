@@ -736,6 +736,36 @@ Approval reference: ____________________  UTC timestamp: ____________________
 
 No additional local technical evidence is required for the already checked executable or root. Gate A remains blocked by missing owner decisions and, if retained as a condition, fresh independently accepted recovery evidence. `custody=RESTRICTED_UNVERIFIED`, `provenance=UNVERIFIED`, and Gate 1 **BLOCKED / NOT READY FOR EXECUTION** remain unchanged.
 
+### 15. Owner-managed recovery alternative — 2026-11-19 (PROPOSED — NOT APPROVED)
+
+The owner may choose to manage recovery without appointing a second person, but that is not equivalent to independent human custody. The smallest safe owner-managed arrangement reuses the existing dedicated recipient and authenticated age recovery object; it does not create another identity or recovery object. It would require two owner-controlled failure domains: the existing primary workstation copy plus the documented off-workstation recovery copy, and a separately accessible owner-controlled device/storage and credential path that does not depend on the primary workstation alone. The exact second location and access path are not established by this document.
+
+| Scenario | Owner-managed coverage | Residual decision |
+| --- | --- | --- |
+| Primary workstation loss | Covered only if the off-workstation object and its access path remain available; verify from a separate device without consulting the primary copy | Separate owner-managed verification required |
+| Off-workstation object corruption or loss | Covered only by a second owner-controlled copy in a distinct storage failure domain, with matching trusted hash | Exact second location and copy policy are unresolved |
+| Loss of the owner’s cloud account | Not covered by the current documented OneDrive arrangement | Owner must provide a distinct storage path or accept the risk |
+| Loss of the owner’s password-manager access | Not covered merely by storing the passphrase in that password manager | Owner must provide a distinct credential-recovery path or accept the risk |
+| Recovery-credential compromise | Not solved by redundancy; requires incident response, recipient replacement and separately approved re-encryption | Cannot be waived by this proposal |
+| Owner unavailability or incapacity | Not covered by a single-person arrangement | Explicit residual-risk acceptance is required; another person or managed escrow is necessary if this threat must be covered |
+| Existing evidence | Operator/Codex-reported cloud retrieval, hash match, recipient match, synthetic recovery and wrong-passphrase rejection are reusable observations | They do not prove the second failure domain or owner-approved policy |
+
+#### Recommendation
+
+Do not treat owner-managed recovery as an independent-recovery PASS under the current Gate A contract. Keep `secondary_recovery_custodian=UNASSIGNED — DEFERRED` and Gate A `UNKNOWN/BLOCKED` unless the owner explicitly approves a policy exception that accepts owner unavailability/incapacity as a residual risk. External escrow is unnecessary unless the owner requires recovery while unavailable; introducing it would add a new service, credential and approval boundary.
+
+If the owner elects the exception, the minimum acceptance evidence is: a separately authorized owner-run recovery from the existing off-workstation object on a distinct device; trusted hash and unchanged recipient match; fixed synthetic NUL/CRLF round-trip; nonempty wrong-passphrase rejection; no plaintext or private identity retained; and a recorded statement that this proves workstation/storage separation only, not independent human availability. No new recovery object, key rotation, upload, deletion or relocation is authorized by this proposal.
+
+#### Required owner decisions
+
+The owner must choose one of the following without inference:
+
+1. retain the current requirement and later name a separate recovery custodian;
+2. approve the owner-managed policy exception, name the distinct device/storage and credential failure domains, accept owner unavailability/incapacity as residual risk, and authorize the bounded verification above; or
+3. defer Gate A without changing the contract.
+
+Until that choice and its exact boundaries are recorded, the existing recovery evidence remains `OBSERVED`, recovery acceptance remains `UNKNOWN/BLOCKED`, and no Gate A or Gate 1 status changes.
+
 ## Offline local capture/provenance boundary — implemented, not production-authorized
 
 The repository now contains one narrowly scoped metadata owner, `ops/deploy/discovery/gate1-local-capture-boundary.js`. It accepts only an in-memory synthetic fixture, computes the complete-stream byte count and SHA-256, requires packet version `2026-11-17`, separates `source_identity` from `asserted_identity`, rejects nonzero exit/interruption/timeout/truncation/empty output, and delegates the final structural decision to the existing `gate1-prerequisite-validator.js`. It does not duplicate the validator, read or write files, invoke a process, initiate SSH, retry, access Docker/PostgreSQL, or enable a live capture path.
