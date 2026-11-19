@@ -304,11 +304,24 @@ export class AutoRoleEvaluationService {
       };
     }
 
+    // A Discord identity may own multiple THs; only the highest configured matching TH role wins.
+    const highestMatchingTownHall = input.rules.reduce((highest, rule) => {
+      if (!rule.enabled || rule.type !== AutoRoleRuleType.TOWN_HALL || !input.managedRoleIds.has(rule.discordRoleId)) {
+        return highest;
+      }
+      const level = Number(rule.targetValue);
+      return Number.isSafeInteger(level) &&
+        linkedAccounts.some((account) => account.playerCurrent?.townHall === level)
+        ? Math.max(highest, level)
+        : highest;
+    }, 0);
+
     const desiredManagedRoleIds = new Set<string>();
     const matchedRuleIds = new Set<string>();
     for (const rule of input.rules) {
       if (!rule.enabled) continue;
       if (!input.managedRoleIds.has(rule.discordRoleId)) continue;
+      if (rule.type === AutoRoleRuleType.TOWN_HALL && Number(rule.targetValue) !== highestMatchingTownHall) continue;
 
       if (
         this.isRuleMatched(
