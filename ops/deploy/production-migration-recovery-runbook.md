@@ -15,7 +15,7 @@ This runbook is the design target for a separately reviewed production migration
 | --- | --- |
 | Current non-migration helper | Implemented and reviewed: ops/deploy/deploy-prod.sh. It acquires a lock, preserves unknown files, builds without production credentials, requires one active runtime, refuses Prisma changes, promotes one container, and health-checks /healthz. Its fixture coverage is in tests/deploy-prod.test.ts. |
 | VM entry point | Not adopted: the GitHub production workflow still invokes the VM-owned ~/deploy-prod.sh. The reviewed helper is not a substitute for that wrapper until a separately reviewed, hash-pinned VM change installs it outside the mutable checkout. |
-| Startup migration behavior | Observed: ops/deploy/container-start.sh runs npm run start; package.json maps start to build plus start:runtime, and start:runtime currently runs prisma migrate deploy before node dist/ClashCookies.js. Application startup can therefore apply migrations implicitly. |
+| Startup migration behavior | Implemented in current `dev`: `ops/deploy/container-start.sh` invokes `npm run start`; `package.json` maps `start` to build plus `start:runtime`, `start:runtime` to `node dist/ClashCookies.js`, and `migrate:deploy` separately to `prisma migrate deploy`. Current `dev` startup does not implicitly run migrations. The earlier deployed `main` startup was observed to contain an implicit migration marker; verify the exact installed old and proposed new runtime artifacts before a production release. |
 | Runtime health | Implemented: /livez returns process liveness; /healthz returns HTTP 200 only when Discord is ready and SELECT 1 succeeds. The production mapping documented by the operator is 127.0.0.1:8085 -> container:8080. |
 | Production topology | Operator-observed, dated: Ubuntu droplet, one active clashcookies-app runtime, PostgreSQL 17.9 in clashcookies-db, production polling active. These facts require a fresh operator check before every release. |
 | Compose source | Dependency, not in this repository: the application Compose file is expected under the live app directory and is required by deploy-prod.sh. The only version-controlled Compose file here is ops/observability/docker-compose.yml; it is not the production app/database Compose and must not be used to recreate production or staging. |
@@ -103,7 +103,7 @@ The production Compose configuration currently is not versioned here, so the imp
 
 ### 3.5 Prevent implicit startup migrations
 
-The current start:runtime command performs prisma migrate deploy; this must be separated before migration releases are possible. The smallest proposed application change is:
+The current `dev` start contract already separates startup from migrations. The implemented scripts are:
 
 ~~~json
 {
@@ -115,7 +115,7 @@ The current start:runtime command performs prisma migrate deploy; this must be s
 }
 ~~~
 
-This is a proposed change, not current behavior. container-start.sh may continue to ensure dependencies and call npm start, but startup must no longer apply migrations. The migration runner explicitly calls npm run migrate:deploy; the active runtime only starts the already-reviewed application. A separate local/development command may be documented if developers need automatic migrations, but production must not depend on an implicit side effect.
+This is **implemented in `dev`**, not a proposed startup change. `container-start.sh` calls `npm start`, while the migration runner explicitly invokes `npm run migrate:deploy` under its separate release authorization. Do not infer the old, deployed `main` artifact has this behavior: the prior live observation found an implicit migration marker. Verify both exact artifacts and resolve compatibility or obtain an explicitly approved outage/forward-recovery decision before migration-capable rollout.
 
 ### 3.6 Promotion and health gate
 
@@ -356,14 +356,9 @@ No automatic database rollback exists. No production operator should use migrate
 
 ## 10. Smallest implementation slice and dependencies
 
-The smallest safe code/testing slice is to remove implicit production migration execution from startup and add a dedicated explicit migration command:
+The original startup-separation slice is **implemented and tested on `dev`**: `migrate:deploy` is explicit; `start:runtime` starts only the compiled application; and repository migration-runner and startup regressions exist. The migration-aware orchestrator, direct-Docker operations and protected production entrypoint are also implemented in the repository, but **repository integration is not installation or execution authorization**.
 
-1. change package.json so migrate:deploy is explicit and start:runtime only starts the compiled app;
-2. adjust ops/deploy/container-start.sh only as needed to preserve build/start behavior without migrations;
-3. add a migration-runner fixture to tests/deploy-prod.test.ts proving that the runner receives only database configuration, never starts Discord/pollers, runs exactly once, and stops on nonzero/ambiguous results; and
-4. add a startup regression test proving start:runtime cannot invoke Prisma migrations.
-
-This slice is a code/runtime change and requires its own reviewed PR and explicit approval. It must be followed by a separate migration-aware helper/VM-wrapper slice that adds the lock-held preflight, database identity check, release record, promotion state machine, and interruption/recovery handling. The production Compose migration service and wrapper adoption cannot be inferred from this documentation PR.
+The remaining release-specific blocker is an approved, verified production execution boundary. The reviewed entrypoint currently requires a restricted rootless operator, whereas the observed VM has rootful Docker and an operator with root-equivalent Docker authority. PR #2071 contains a draft, unmerged rootful broker design; it is **not installed or approved for activation**. Do not weaken the rootless validator or infer that a one-time rootful release is safe without a separate reviewed privileged boundary. The production legacy wrapper and deployed startup artifact must be assessed independently. No production command is authorized by this documentation.
 
 Required implementation dependencies before production use are:
 
