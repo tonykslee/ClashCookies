@@ -81,12 +81,13 @@ function makePlayerCurrent(input: {
   playerTag: string;
   leagueName?: string | null;
   currentClanTag?: string | null;
+  townHall?: number;
   role?: "member" | "elder" | "coLeader" | "leader" | null;
 }): PlayerCurrentLike {
   return {
     playerTag: input.playerTag,
     playerName: "Alpha",
-    townHall: 16,
+    townHall: input.townHall ?? 16,
     currentClanTag: input.currentClanTag ?? "#2QG2C08UP",
     currentClanName: "Clan Name",
     trophies: null,
@@ -135,6 +136,44 @@ describe("AutoRoleEvaluationService league rules", () => {
     fwaMemberTags: new Set(["#2QG2C08UP"]),
     cwlMemberTags: new Set(["#PYLQ0289"]),
   };
+
+  it("assigns only the highest configured Town Hall across multiple eligible linked accounts", () => {
+    const lowerRole = { ...makeRule("18", AutoRoleRuleType.TOWN_HALL), id: "rule-18", discordRoleId: "333333333333333333" };
+    const higherRole = { ...makeRule("19", AutoRoleRuleType.TOWN_HALL), id: "rule-19", discordRoleId: "444444444444444444" };
+    const links = [
+      makeLinkedAccount({ playerTag: "#2QG2C08UP" }),
+      makeLinkedAccount({ playerTag: "#PYLQ0289" }),
+    ];
+    const currents = new Map([
+      ["#2QG2C08UP", makePlayerCurrent({ playerTag: "#2QG2C08UP", townHall: 18 })],
+      ["#PYLQ0289", makePlayerCurrent({ playerTag: "#PYLQ0289", townHall: 19 })],
+    ]);
+    const result = service.evaluateMember({
+      config: makeConfig(),
+      rules: [lowerRole, higherRole],
+      managedRoleIds: new Set([lowerRole.discordRoleId, higherRole.discordRoleId]),
+      member: makeMember(),
+      linkedAccounts: links,
+      playerCurrentByTag: currents,
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+    expect(result.desiredManagedRoleIds).toContain(higherRole.discordRoleId);
+    expect(result.desiredManagedRoleIds).not.toContain(lowerRole.discordRoleId);
+
+    // A future/new TH with no configured role must not prevent a lower configured role.
+    const withoutNewRole = service.evaluateMember({
+      config: makeConfig(),
+      rules: [lowerRole],
+      managedRoleIds: new Set([lowerRole.discordRoleId]),
+      member: makeMember(),
+      linkedAccounts: links,
+      playerCurrentByTag: currents,
+      clanMembershipByTag,
+      trackedClanScope,
+    });
+    expect(withoutNewRole.desiredManagedRoleIds).toContain(lowerRole.discordRoleId);
+  });
 
   it("matches a linked account with leagueName set to Legend III", () => {
     const member = makeMember();
