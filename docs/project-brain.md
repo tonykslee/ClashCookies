@@ -1,6 +1,6 @@
 IMPORTANT:
 
-> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project has been withdrawn. The established SSH `~/deploy-prod.sh` production workflow has been restored on `dev` by merged [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). Any prior Gate 1, rootful broker, installation, restricted operator, or protected-path proposals in dated sections below are historical evidence **not current implementation or release prerequisites**. Production deployment remains disabled pending separate release approval; verify migrations, backups/recovery, current runtime and regression tests before activation.
+> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project was withdrawn; the existing SSH `~/deploy-prod.sh` workflow was restored by [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). A reviewed and explicitly owner-approved `dev` → `main` merge automatically deploys through this established workflow. Feature code and migrations should be production-ready before merging into `dev`; current backup/recovery/runtime checks remain release-time operator verification, not a second infrastructure project. Historical Gate 1/broker proposals below are superseded.
 Before implementing any code changes, read:
 
 - architecture-contract.md
