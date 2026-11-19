@@ -14,6 +14,9 @@ concurrency:
 
 jobs:
   classify:
+    # Fail closed until the separately installed entrypoint and production gates are verified.
+    # The repository variable is intentionally absent/false during the release hold.
+    if: vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'
     runs-on: ubuntu-latest
     outputs:
       old_sha: ${{ steps.release.outputs.old_sha }}
