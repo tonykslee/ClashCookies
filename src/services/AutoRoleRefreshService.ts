@@ -23,7 +23,7 @@ import {
   type AutoRoleTrackedClanLeadRole,
 } from "./AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
-import { resolveHomeVillageLeagueObservation } from "./HomeVillageLeagueTaxonomy";
+import { isKnownHomeVillageLeagueName, resolveHomeVillageLeagueObservation } from "./HomeVillageLeagueTaxonomy";
 import { normalizeNicknameTemplate } from "./AutoRoleService";
 import {
   autoRoleService,
@@ -37,6 +37,7 @@ import {
   normalizePersistedPlayerName,
   normalizePlayerTag,
   getPlayerLinksForDiscordUserWithTrust,
+  isPlayerLinkVerifiedForAutorole,
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
 import { getCoCQueueContext, runWithCoCQueueContext } from "./CoCQueueContext";
@@ -2508,6 +2509,38 @@ function collectPartialUserRefreshRemovalSuppression(input: {
   return roleIds;
 }
 
+/** Purpose: preserve league roles when any eligible linked account lacks a known league observation. */
+function collectUncertainLeagueRemovalSuppression(input: {
+  snapshot: AutoRoleGuildStateSnapshot;
+  linkedAccounts: PlayerLinkWithTrust[];
+  playerCurrentByTag: Map<string, PlayerCurrentLike>;
+}): Set<string> {
+  const config = input.snapshot.config;
+  const eligibleAccounts = input.linkedAccounts.filter((link) =>
+    link.verificationStatus !== "REVOKED" &&
+    (!(config.verifiedOnlyMode || config.trustedLinksAllowed === false) ||
+      isPlayerLinkVerifiedForAutorole(link)),
+  );
+  // No eligible links is authoritative absence, not missing league evidence.
+  if (
+    eligibleAccounts.length === 0 ||
+    eligibleAccounts.every((link) =>
+      isKnownHomeVillageLeagueName(input.playerCurrentByTag.get(link.playerTag)?.leagueName),
+    )
+  ) {
+    return new Set();
+  }
+
+  // An unknown observation is not evidence that a managed league role became stale.
+  // Keep other managed role families' normal removal semantics unchanged.
+  return new Set(
+    input.snapshot.rules
+      .filter((rule) => rule.enabled && rule.type === AutoRoleRuleType.LEAGUE)
+      .map((rule) => String(rule.discordRoleId ?? "").trim())
+      .filter(Boolean),
+  );
+}
+
 /** Purpose: build a failed user-refresh member result without running stale autorole evaluation. */
 function buildLinkedPlayerRefreshFailureResult(input: {
   guildId: string;
@@ -2832,6 +2865,14 @@ async function runRefreshPass(input: {
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
       );
 
+      const memberSuppressedRoleIds = new Set([
+        ...suppressRemovalRoleIds,
+        ...collectUncertainLeagueRemovalSuppression({
+          snapshot: input.snapshot,
+          linkedAccounts,
+          playerCurrentByTag: input.playerCurrentByTag,
+        }),
+      ]);
       const result = await autoRoleApplyService.applyMember({
         guildId: input.guildId,
         config: input.snapshot.config,
@@ -2844,7 +2885,7 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
         clanRoleIds,
-        suppressRemovalRoleIds,
+        suppressRemovalRoleIds: memberSuppressedRoleIds,
         suppressNicknameUpdate: input.suppressNicknameUpdate,
         nicknameSuppressionReason: input.nicknameSuppressionReason,
         trackedFwaMemberTags: input.trackedFwaMemberTags,
