@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+const repositoryRoot = resolve(__dirname, "..");
 const socketUnit = readFileSync(
-  resolve("ops/deploy/systemd/clashcookies-deployment-broker.socket"),
+  resolve(repositoryRoot, "ops/deploy/systemd/clashcookies-deployment-broker.socket"),
   "utf8",
 );
 const serviceUnit = readFileSync(
-  resolve("ops/deploy/systemd/clashcookies-deployment-broker.service"),
+  resolve(repositoryRoot, "ops/deploy/systemd/clashcookies-deployment-broker.service"),
   "utf8",
 );
 
