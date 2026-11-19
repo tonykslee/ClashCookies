@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 // validate its contract before loading the application runtime.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entrypoint = require("../ops/deploy/production-deployment-entrypoint.js") as typeof import("../ops/deploy/production-deployment-entrypoint.js");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const service = require("../ops/deploy/rootful-deployment-broker-service.js") as typeof import("../ops/deploy/rootful-deployment-broker-service.js");
 
 function makeManifest() {
   const root = resolve("C:/synthetic/clashcookies-production");
@@ -251,6 +253,109 @@ describe("production deployment entrypoint contract", () => {
     const startup = readFileSync(resolve("ops/deploy/container-start.sh"), "utf8");
     expect(packageJson).not.toContain('"start:runtime": "npm run migrate:deploy');
     expect(startup).not.toContain("migrate:deploy");
+  });
+
+  it("passes the broker subsection of a complete validated manifest on the client path", async () => {
+    const manifest = entrypoint.validateProductionManifest(makeManifest());
+    const release = {
+      sessionId: "client-integration",
+      releaseId: "release-client-integration",
+      oldSha: "a".repeat(40),
+      newSha: "b".repeat(40),
+      migrationDiffDigest: "c".repeat(64),
+      migrationManifestDigest: "d".repeat(64),
+      authorizationDigest: "e".repeat(64),
+      approvedBy: "github-main-merge",
+    };
+    let request: Record<string, unknown> | undefined;
+    const operations = entrypoint.createProductionOperations(manifest, {
+      release,
+      brokerApproval: { keyId: "production-broker", nonce: "client-nonce", signature: "synthetic" },
+      brokerTransport: async (nextRequest: Record<string, unknown>) => {
+        request = nextRequest;
+        return { oldSha: release.oldSha, newSha: release.newSha, digest: release.migrationDiffDigest, paths: [] };
+      },
+    });
+
+    await expect(operations.classifyReleaseDiff(manifest.appDir, release.oldSha, release.newSha))
+      .resolves.toMatchObject({ paths: [] });
+    expect(request).toMatchObject({ operation: "classifyReleaseDiff", release });
+  });
+
+  it("passes the broker subsection of a complete validated manifest on the service path", () => {
+    const manifest = entrypoint.validateProductionManifest(makeManifest());
+    const root = mkdtempSync(join(tmpdir(), "clashcookies-service-config-"));
+    const statePath = join(root, "broker-state.json");
+    writeFileSync(statePath, JSON.stringify({
+      version: 1,
+      consumedNonces: [],
+      requestIds: [],
+      sessions: {},
+      lockOwnerSession: null,
+      recoveryRequired: false,
+    }));
+    const serviceManifest = {
+      ...manifest,
+      broker: { ...manifest.broker, statePath, socketPath: join(root, "broker.sock") },
+    };
+    let capturedConfig: Record<string, unknown> | undefined;
+    let capturedListener: Record<string, unknown> | undefined;
+    const realFs = require("node:fs") as typeof import("node:fs");
+    const fsImpl = {
+      ...realFs,
+      lstatSync(target: string) {
+        const stat = realFs.lstatSync(target);
+        if (resolve(target) === resolve(statePath)) {
+          return {
+            ...stat,
+            uid: 0,
+            gid: 0,
+            mode: 0o100600,
+            isSymbolicLink: () => false,
+            isFile: () => true,
+          };
+        }
+        return stat;
+      },
+    };
+    const socketBoundary = {
+      verified: true,
+      fd: 3,
+      socketPath: serviceManifest.broker.socketPath,
+      ownerUid: serviceManifest.broker.operator.uid,
+      ownerGid: serviceManifest.broker.operator.gid,
+      mode: 0o600,
+      activationVerified: true,
+      exclusiveIdentity: true,
+      peerIdentity: serviceManifest.broker.operator,
+    };
+
+    try {
+      service.createRootfulBrokerService({
+        installation: { manifest: serviceManifest, publicKey: {} },
+        socketBoundary,
+        fsImpl,
+        dependencies: {
+          createPrivilegedOperations: () => ({}),
+          createRootfulBrokerServer: (options: { config: Record<string, unknown> }) => {
+            capturedConfig = options.config;
+            return { handle: async () => ({ ok: true }) };
+          },
+          createUnixBrokerListener: (options: Record<string, unknown>) => {
+            capturedListener = options;
+            return { close: () => undefined };
+          },
+        },
+      });
+      expect(capturedConfig).toMatchObject({
+        strategy: manifest.broker.strategy,
+        socketPath: serviceManifest.broker.socketPath,
+        appDir: manifest.appDir,
+      });
+      expect(capturedListener).toMatchObject({ socketPath: serviceManifest.broker.socketPath });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("loads the complete executor module bundle from an installed sibling layout", () => {

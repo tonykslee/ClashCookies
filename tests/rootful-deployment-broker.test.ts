@@ -198,6 +198,46 @@ describe("rootful deployment broker boundary", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("fails closed when Linux state-file or parent-directory synchronization fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "clashcookies-broker-fsync-"));
+    const statePath = join(root, "broker-state.json");
+    const state = {
+      version: 1,
+      consumedNonces: ["production-broker:nonce"],
+      requestIds: ["request-1"],
+      sessions: {},
+      lockOwnerSession: null,
+      recoveryRequired: false,
+    };
+    const realFs = require("node:fs") as typeof import("node:fs");
+    try {
+      let syncCount = 0;
+      const failingFileFs = {
+        ...realFs,
+        fsyncSync: () => {
+          syncCount += 1;
+          throw new Error("file_fsync_failed");
+        },
+      };
+      const fileStore = broker.createDurableBrokerStateStore({ statePath, fsImpl: failingFileFs, platform: "linux" });
+      expect(() => fileStore.save(state)).toThrow(/state_write_failed/i);
+
+      syncCount = 0;
+      const failingDirectoryFs = {
+        ...realFs,
+        fsyncSync: () => {
+          syncCount += 1;
+          if (syncCount === 2) throw new Error("directory_fsync_failed");
+        },
+      };
+      const directoryStore = broker.createDurableBrokerStateStore({ statePath, fsImpl: failingDirectoryFs, platform: "linux" });
+      expect(() => directoryStore.save(state)).toThrow(/state_write_failed/i);
+      expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({ consumedNonces: state.consumedNonces });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires a verified pre-owned socket activation boundary", () => {
     const config = makeConfig(); expect(() => broker.createUnixBrokerListener({ server: { handle: async () => ({ ok: true }) }, socketPath: config.socketPath, peerIdentityResolver: () => config.operator })).toThrow(/listener_configuration_invalid/i);
     const fakeFs = { fstatSync: () => ({ uid: 1000, gid: 1001, mode: 0o140660, isSocket: () => true }), lstatSync: () => ({ uid: 0, gid: 1001, mode: 0o140660, isSocket: () => true }) };

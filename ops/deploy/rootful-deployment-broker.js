@@ -253,8 +253,46 @@ function validateBrokerState(state) {
   return state;
 }
 
+function syncFile(fsImpl, filePath) {
+  if (typeof fsImpl.openSync !== "function"
+    || typeof fsImpl.fsyncSync !== "function"
+    || typeof fsImpl.closeSync !== "function") {
+    throw new BrokerError("broker_state_fsync_unavailable", "broker_state_unavailable");
+  }
+  let fd;
+  try {
+    fd = fsImpl.openSync(filePath, fsImpl.constants.O_RDONLY);
+    fsImpl.fsyncSync(fd);
+  } catch {
+    throw new BrokerError("broker_state_fsync_failed", "broker_state_unavailable");
+  } finally {
+    if (fd !== undefined) {
+      try { fsImpl.closeSync(fd); } catch { /* preserve the original failure */ }
+    }
+  }
+}
+
+function syncDirectory(fsImpl, directoryPath) {
+  if (typeof fsImpl.openSync !== "function"
+    || typeof fsImpl.fsyncSync !== "function"
+    || typeof fsImpl.closeSync !== "function") {
+    throw new BrokerError("broker_state_directory_fsync_unavailable", "broker_state_unavailable");
+  }
+  let fd;
+  try {
+    fd = fsImpl.openSync(directoryPath, fsImpl.constants.O_RDONLY);
+    fsImpl.fsyncSync(fd);
+  } catch {
+    throw new BrokerError("broker_state_directory_fsync_failed", "broker_state_unavailable");
+  } finally {
+    if (fd !== undefined) {
+      try { fsImpl.closeSync(fd); } catch { /* preserve the original failure */ }
+    }
+  }
+}
+
 /** Persist broker replay and recovery state with an atomic same-directory rename. */
-function createDurableBrokerStateStore({ statePath, fsImpl = fs } = {}) {
+function createDurableBrokerStateStore({ statePath, fsImpl = fs, platform = process.platform } = {}) {
   if (typeof statePath !== "string" || !path.isAbsolute(statePath)) {
     throw new BrokerError("broker_state_path_invalid", "broker_configuration_invalid");
   }
@@ -273,7 +311,9 @@ function createDurableBrokerStateStore({ statePath, fsImpl = fs } = {}) {
     try {
       fsImpl.writeFileSync(tempPath, `${JSON.stringify(validated)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
       if (typeof fsImpl.chmodSync === "function") fsImpl.chmodSync(tempPath, 0o600);
+      if (platform === "linux") syncFile(fsImpl, tempPath);
       fsImpl.renameSync(tempPath, statePath);
+      if (platform === "linux") syncDirectory(fsImpl, path.dirname(statePath));
     } catch {
       try { fsImpl.unlinkSync(tempPath); } catch { /* best effort cleanup */ }
       throw new BrokerError("broker_state_write_failed", "broker_state_unavailable");
@@ -899,20 +939,37 @@ function createRootfulBrokerServer({
 }
 
 /** Bind the broker protocol to a pre-created, service-owned Unix socket. */
-function createUnixBrokerListener({ server, socketPath, peerIdentityResolver, socketBoundary, maxRequestBytes = 128 * 1024 } = {}) {
+function createUnixBrokerListener({
+  server,
+  socketPath,
+  peerIdentityResolver,
+  socketBoundary,
+  maxRequestBytes = 128 * 1024,
+  requestTimeoutMs = 5000,
+} = {}) {
   if (!server || typeof server.handle !== "function"
     || typeof socketPath !== "string" || !path.isAbsolute(socketPath)
     || typeof peerIdentityResolver !== "function"
     || !socketBoundary || socketBoundary.verified !== true
     || socketBoundary.socketPath !== path.resolve(socketPath)
     || !Number.isInteger(socketBoundary.fd)
-    || !Number.isInteger(maxRequestBytes) || maxRequestBytes <= 0) {
+    || !Number.isInteger(maxRequestBytes) || maxRequestBytes <= 0
+    || !Number.isInteger(requestTimeoutMs) || requestTimeoutMs <= 0) {
     throw new BrokerError("broker_listener_configuration_invalid", "broker_configuration_invalid");
   }
-  const listener = net.createServer((socket) => {
+  const listener = net.createServer({ allowHalfOpen: true }, (socket) => {
     let bytes = 0;
     let settled = false;
     const chunks = [];
+    socket.setTimeout(requestTimeoutMs, () => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+      }
+    });
+    socket.on("error", () => {
+      settled = true;
+    });
     socket.on("data", async (chunk) => {
       if (settled) return;
       bytes += chunk.length;
@@ -983,7 +1040,10 @@ function createUnixSocketTransport({ socketPath, timeoutMs = 5000, maxResponseBy
         finish(resolve, response.result);
       } catch { fail("broker_response_invalid"); }
     });
-    socket.end(`${JSON.stringify(request)}\n`);
+    socket.write(`${JSON.stringify(request)}\n`, (error) => {
+      if (error) fail("broker_transport_failed");
+    });
+    socket.end();
   });
 }
 

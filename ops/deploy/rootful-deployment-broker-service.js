@@ -58,7 +58,13 @@ function loadBrokerInstallation(manifestPath = INSTALLATION_MANIFEST, fsImpl = f
  * supplied by the separately reviewed adapter bundle; this module never
  * accepts a handler path or client-provided executable.
  */
-function createRootfulBrokerService({ installation, socketBoundary, peerIdentityResolver, fsImpl = fs } = {}) {
+function createRootfulBrokerService({
+  installation,
+  socketBoundary,
+  peerIdentityResolver,
+  fsImpl = fs,
+  dependencies = {},
+} = {}) {
   if (!installation?.manifest || !installation.publicKey) {
     throw new broker.BrokerError("broker_service_handlers_required", "broker_configuration_invalid");
   }
@@ -74,7 +80,7 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
   }
   validateBrokerServiceBundle(__dirname, fsImpl);
   const manifest = installation.manifest;
-  const privileged = createPrivilegedOperations(manifest);
+  const privileged = (dependencies.createPrivilegedOperations || createPrivilegedOperations)(manifest, dependencies);
   const lockReleasers = new Map();
   const fixedHandlers = {
     readPreflightEvidence: () => privileged.readPreflightEvidence(manifest.preflightEvidencePath),
@@ -223,8 +229,10 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
     throw new broker.BrokerError("broker_state_target_unavailable", "broker_configuration_invalid");
   }
   const stateStore = broker.createDurableBrokerStateStore({ statePath: manifest.broker.statePath, fsImpl });
-  const server = broker.createRootfulBrokerServer({
-    config: { ...manifest, appDir: manifest.appDir },
+  const createServer = dependencies.createRootfulBrokerServer || broker.createRootfulBrokerServer;
+  const createListener = dependencies.createUnixBrokerListener || broker.createUnixBrokerListener;
+  const server = createServer({
+    config: { ...manifest.broker, appDir: manifest.appDir },
     peerIdentitySource: () => socketBoundary.peerIdentity,
     approvalVerifierFactory: (consumedNonces) => broker.createEd25519ApprovalVerifier({
       publicKey: installation.publicKey,
@@ -234,7 +242,7 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
     phaseValidators,
     stateStore,
   });
-  const listener = broker.createUnixBrokerListener({
+  const listener = createListener({
     server,
     socketPath: manifest.broker.socketPath,
     peerIdentityResolver: peerResolver,

@@ -629,7 +629,7 @@ function createProductionOperations(manifest, dependencies = {}) {
     throw new ProductionEntrypointError("broker_release_authorization_required", EXIT_CODES.BLOCKED, "broker_required");
   }
   return broker.createRootfulBrokerOperations({
-    config: { ...manifest, appDir: manifest.appDir },
+    config: { ...manifest.broker, appDir: manifest.appDir },
     release,
     approval,
     transport,
