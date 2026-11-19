@@ -1,0 +1,31 @@
+[Unit]
+Description=ClashCookies rootful production deployment broker
+Requires=clashcookies-deployment-broker.socket
+After=clashcookies-deployment-broker.socket docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/node /usr/local/libexec/clashcookies/rootful-deployment-broker-service.js
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/home/tilo/apps/clashcookies-prod /home/tilo/apps/clashcookies-prod-replacement /home/tilo/apps/clashcookies-prod-artifacts /run/lock /run/clashcookies /var/lib/clashcookies
+TimeoutStopSec=30s
+KillMode=control-group
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

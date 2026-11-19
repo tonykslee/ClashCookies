@@ -1,0 +1,14 @@
+[Unit]
+Description=ClashCookies production deployment broker socket
+PartOf=clashcookies-deployment-broker.service
+
+[Socket]
+ListenStream=/run/clashcookies/deployment-broker.sock
+SocketUser=clashcookies-deploy
+SocketGroup=clashcookies-deploy
+SocketMode=0600
+DirectoryMode=0755
+Service=clashcookies-deployment-broker.service
+
+[Install]
+WantedBy=sockets.target
