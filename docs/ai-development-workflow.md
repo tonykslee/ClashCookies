@@ -1,6 +1,6 @@
 # ClashCookies — Canonical AI Development Workflow
 
-> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project has been withdrawn. The established SSH `~/deploy-prod.sh` production workflow is the target under rollback PR [#2086](https://github.com/tonykslee/ClashCookies/pull/2086). Any prior Gate 1, rootful broker, installation, restricted operator, or protected-path proposals in dated sections below are historical evidence **not current implementation or release prerequisites**. Production deployment remains disabled pending separate release approval; verify migrations, backups/recovery, current runtime and regression tests before activation.
+> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project has been withdrawn. The established SSH `~/deploy-prod.sh` production workflow has been restored on `dev` by merged [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). Any prior Gate 1, rootful broker, installation, restricted operator, or protected-path proposals in dated sections below are historical evidence **not current implementation or release prerequisites**. Production deployment remains disabled pending separate release approval; verify migrations, backups/recovery, current runtime and regression tests before activation.
 
 **Owner:** Rising Dawn / Dusk development
 **Repository:** `tonykslee/ClashCookies` · **base branch:** `dev`
