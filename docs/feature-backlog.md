@@ -39,11 +39,12 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-002 — Add TH19 weight ranges to composition tools
 
-- **Status:** Proposed
+- **Status:** Agreed range; implementation proposed.
 - **Suggested priority:** High
 - **Request:** Update composition tools to support the new Town Hall 19 war-weight range.
+- **Owner-confirmed range (2026-11-19):** TH19 is **181,000–190,000 inclusive**, following the existing 10k TH bucket convention. Preserve TH18 as 171,000–180,000; malformed or out-of-band weights must not silently map to an adjacent TH.
 - **Scope to investigate:** Shared weight-to-TH bucket logic, `/compo place`, `/compo advice`, `/compo state`, linked spreadsheet assumptions, and tests.
-- **Important:** Verify the authoritative TH19 range against the current FWA composition specification before choosing numeric cutoffs. Do not guess the range or silently reclassify existing entries.
+- **Important:** The owner confirmed the classification cutoff, **not** a TH19 target composition or replacement HeatMapRef profile. Current reference tables and seed workbook top out at TH18. Extend actual classification and the user-facing commands without inventing TH19 reference counts or claiming unsupported composition advice; mark target comparisons UNKNOWN until valid reference data is available. Prefer one shared ordered TH weight-band definition and dynamic command upper limits rather than repeated hardcoded TH18/TH19 maximums.
 - **Done when:** TH19 weights are correctly recognized and represented across affected composition outputs with boundary tests and no regression to earlier TH buckets.
 
 ### FB-003 — Redesign `/compo state` for quick visual scanning
@@ -140,9 +141,10 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-012 — Urgent TH19 autorole and league-role regression
 
-- **Status:** Reported production issue; **not yet diagnosed or fixed**.
+- **Status:** In progress in [draft PR #2089](https://github.com/tonykslee/ClashCookies/pull/2089); not merged, deployed, or production-verified.
 - **Priority:** **Urgent / P0** — role assignment is user-visible and reported to interfere with existing league autoroles.
-- **Observed by owner (2026-11-17):** No members are receiving the new **TH19** Discord role. The owner also reports league autoroles are being disrupted. Exact failure mechanism, affected cohort, role mappings and how the two symptoms relate are **unverified**.
+- **Observed by owner (2026-11-17 and clarified 2026-11-19):** No members were receiving the new **TH19** Discord role. Existing league roles were being **removed**, apparently including almost everyone with `@legend`, costing access to the Legend channel. An upstream API league-definition change is a hypothesis, **not** verified production evidence. Exact affected cohort, mappings, and how the symptoms relate remain unverified.
+- **Repository diagnosis (2026-11-19):** The autorole rule validator rejected TH19 due to a hardcoded TH18 maximum. League matching already understands Legend I/II/III, but stale removal can act on missing/unknown league observations. Draft #2089 adds future-compatible TH validation, league-tier ID matching, and fail-closed league removal protection; it does not establish the cause of historical Discord role removals or restore them.
 - **Request:** Update Dusk's Town Hall autorole support for **TH19** and investigate/fix the associated **league autorole** regression without breaking prior TH tiers or league assignment/removal rules.
 - **Diagnosis required before coding:** Inspect `/autorole` configuration, TH and league role mapping/resolution, account and Discord identity grouping, CoC source-level parsing, permission/role hierarchy and update/reconciliation paths. Verify why no TH19 roles were assigned and whether TH19 changes are suppressing, clearing, or misclassifying league roles; distinguish code behavior from missing role IDs/configuration or Discord permissions.
 - **Safety:** Use read-only diagnostics and synthetic/disposable tests; do not mass-edit Discord member roles, run production reconciliation, backfill assignments or deploy without separately reviewed authorization. Preserve intended roles on ambiguous/missing data; fail safely and avoid unnecessary role churn.
