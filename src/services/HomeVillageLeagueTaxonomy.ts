@@ -98,6 +98,9 @@ export const HOME_VILLAGE_LEAGUE_LEGACY_RECORDS: readonly HomeVillageLeagueRecor
 const HOME_VILLAGE_LEAGUE_ALL_RECORDS = [...HOME_VILLAGE_LEAGUE_TIER_RECORDS, ...HOME_VILLAGE_LEAGUE_LEGACY_RECORDS];
 
 const HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD = new Map<string, HomeVillageLeagueRecord>();
+const HOME_VILLAGE_LEAGUE_CURRENT_ID_TO_RECORD = new Map(
+  HOME_VILLAGE_LEAGUE_TIER_RECORDS.map((record) => [record.id, record] as const),
+);
 const HOME_VILLAGE_LEAGUE_FAMILY_SELECTOR_TO_NAMES = new Map<HomeVillageLeagueFamily, readonly string[]>();
 const HOME_VILLAGE_LEAGUE_SELECTOR_TARGETS = new Map<string, HomeVillageLeagueFamily>();
 const HOME_VILLAGE_LEAGUE_COMPATIBILITY_ALIAS_TARGETS = new Map<string, HomeVillageLeagueFamily>();
@@ -148,7 +151,12 @@ export function resolveHomeVillageLeagueObservation(input: {
   leagueTier?: { id?: number | null; name?: string | null } | null;
   league?: { name?: string | null } | null;
 }): HomeVillageLeagueObservation {
-  const leagueTierName = normalizeHomeVillageLeagueText(input.leagueTier?.name ?? null);
+  const leagueTierId = input.leagueTier?.id ?? null;
+  // A known tier ID is authoritative even if the API omits or renames the display name.
+  const canonicalTierName = typeof leagueTierId === "number"
+    ? HOME_VILLAGE_LEAGUE_CURRENT_ID_TO_RECORD.get(leagueTierId)?.name
+    : undefined;
+  const leagueTierName = canonicalTierName ?? normalizeHomeVillageLeagueText(input.leagueTier?.name ?? null);
   const legacyLeagueName = normalizeHomeVillageLeagueText(input.league?.name ?? null);
   const resolvedLeagueName = leagueTierName || legacyLeagueName || null;
   const source: HomeVillageLeagueSource = leagueTierName
@@ -161,11 +169,16 @@ export function resolveHomeVillageLeagueObservation(input: {
 
   return {
     source,
-    leagueTierId: input.leagueTier?.id ?? null,
+    leagueTierId,
     leagueName: resolvedLeagueName,
     normalizedLeagueName,
     family,
   };
+}
+
+/** Purpose: report whether observed league data is a known current or legacy tier. */
+export function isKnownHomeVillageLeagueName(value: unknown): boolean {
+  return HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD.has(normalizeHomeVillageLeagueMatchText(value));
 }
 
 /** Purpose: determine whether one target value should match one observed league name. */
