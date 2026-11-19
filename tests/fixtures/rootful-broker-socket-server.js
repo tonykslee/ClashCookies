@@ -29,7 +29,11 @@ const server = {
   async handle(request) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     if (mode === "interrupt") process.exit(91);
-    return { requestId: request.requestId, delayed: true };
+    return {
+      ok: true,
+      requestId: request.requestId,
+      result: { requestId: request.requestId, delayed: true },
+    };
   },
 };
 
