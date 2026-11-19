@@ -43,7 +43,6 @@ const AUTO_ROLE_CLAN_ROLE_VALUES = new Set([
 
 const AUTO_ROLE_SNOWFLAKE_RE = /^\d{15,22}$/;
 const AUTO_ROLE_TOWN_HALL_MIN = 1;
-const AUTO_ROLE_TOWN_HALL_MAX = 18;
 const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MIN = 0;
 const AUTO_ROLE_CLAN_ROLE_REMOVAL_DELAY_MAX = 10080;
 
@@ -285,9 +284,10 @@ function normalizeRuleTarget(input: AutoRoleRuleCreateInput): string {
       return normalized;
     }
     case "TOWN_HALL": {
-      const value = Number.parseInt(String(input.targetValue ?? "").trim(), 10);
-      if (!Number.isFinite(value) || value < AUTO_ROLE_TOWN_HALL_MIN || value > AUTO_ROLE_TOWN_HALL_MAX) {
-        throw new Error("TOWN_HALL rules require a TH value between 1 and 18.");
+      const value = Number(String(input.targetValue ?? "").trim());
+      // Town Hall tiers grow over time; reject malformed levels without hard-coding a game maximum.
+      if (!Number.isSafeInteger(value) || value < AUTO_ROLE_TOWN_HALL_MIN || !String(input.targetValue ?? "").trim()) {
+        throw new Error("TOWN_HALL rules require a positive integer TH level.");
       }
       return String(value);
     }
