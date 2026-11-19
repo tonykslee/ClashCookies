@@ -22,7 +22,8 @@ type Scenario =
   | "compose-unresolved"
   | "compose-invalid"
   | "compose-ambiguous"
-  | "cleanup-failure";
+  | "cleanup-failure"
+  | "broker-owned-lock";
 
 function bashExecutable(): string {
   return process.platform === "win32"
@@ -129,6 +130,16 @@ describe("version-controlled production deployment procedure", () => {
     expect(log).not.toContain("lock=acquired");
     expect(log).not.toContain("GIT diff");
     expect(log).not.toContain("DOCKER ps");
+  });
+
+  it("reuses a broker-owned lock without nested acquisition or release", () => {
+    const output = runScenario("broker-owned-lock");
+    const log = section(output, "LOG");
+    expect(output).toContain("STATUS=0");
+    expect(output).toContain("STATE=active:new-reviewed-sha");
+    expect(output).toContain("LOCK_STATE=held");
+    expect(output).toContain("lock=borrowed owner_release_id=release-broker");
+    expect(log).not.toContain("lock=acquired");
   });
 
   it("rejects changed checkout state after the lock is held", () => {

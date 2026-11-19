@@ -172,6 +172,21 @@ afterEach(() => {
 });
 
 describe("migration-aware deployment orchestrator", () => {
+  it("classifies a non-migration release without weakening the migration-only guard", () => {
+    const calls: string[][] = [];
+    const spawn = (_command: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "rev-parse") return { status: 0, stdout: `${args[2].includes(OLD_SHA) ? OLD_SHA : NEW_SHA}\n` };
+      if (args[0] === "diff" && args.includes("--name-only")) return { status: 0, stdout: "\n" };
+      if (args[0] === "diff") return { status: 0, stdout: "" };
+      return { status: 0, stdout: "" };
+    };
+    const classified = orchestrator.classifyReleaseDiff("/synthetic/repo", OLD_SHA, NEW_SHA, spawn);
+    expect(classified.paths).toEqual([]);
+    expect(() => orchestrator.computeReleaseDiff("/synthetic/repo", OLD_SHA, NEW_SHA, spawn)).toThrow(/no_prisma_changes/i);
+    expect(calls.some((args) => args.includes("--name-only"))).toBe(true);
+  });
+
   it("preserves fail-closed absolute-path and authorization validation", () => {
     const env = makeEnvironment();
     delete env.DEPLOY_EXECUTION_AUTHORIZED;
@@ -298,6 +313,20 @@ describe("migration-aware deployment orchestrator", () => {
     expect(runnerCalls).toBe(0);
   });
 
+  it("awaits asynchronous broker reads and records before releasing the shared lock", async () => {
+    const order: string[] = [];
+    const harness = makeOperations({
+      readPreflightEvidence: async () => { order.push("preflight-start"); await Promise.resolve(); order.push("preflight-done"); return makeEvidence(); },
+      writeReleaseRecord: async (_path: string, line: string) => { order.push(`record-start:${JSON.parse(line).event}`); await Promise.resolve(); order.push(`record-done:${JSON.parse(line).event}`); },
+      acquireExclusiveLock: async () => { order.push("lock-start"); await Promise.resolve(); order.push("lock-done"); return async () => { order.push("unlock-start"); await Promise.resolve(); order.push("unlock-done"); return true; }; },
+    });
+    const env = makeEnvironment(); const exitCode = await orchestrator.runMigrationAwareDeployment({ env, repoRoot: process.cwd(), operations: harness.operations });
+    expect(exitCode).toBe(orchestrator.EXIT_CODES.SUCCESS);
+    expect(order.indexOf("preflight-done")).toBeLessThan(order.indexOf("record-start:preflight_authorized"));
+    expect(order.lastIndexOf("record-done:end")).toBeLessThan(order.indexOf("unlock-start"));
+    expect(order.indexOf("unlock-done")).toBeGreaterThan(order.indexOf("record-done:end"));
+  });
+
   it("keeps the outer lock through terminal record handling", async () => {
     let held = false;
     let releaseCalls = 0;
@@ -318,7 +347,7 @@ describe("migration-aware deployment orchestrator", () => {
     };
     const result = await runWith({
       acquireExclusiveLock: acquire,
-      writeReleaseRecord: (_path: string, line: string) => {
+      writeReleaseRecord: async (_path: string, line: string) => {
         const event = JSON.parse(line).event;
         if (event === "end") {
           expect(() => acquire()).toThrow(/already_held/i);
@@ -335,7 +364,7 @@ describe("migration-aware deployment orchestrator", () => {
 
   it("fails closed when terminal release-record writing fails", async () => {
     const result = await runWith({
-      writeReleaseRecord: (_path: string, line: string) => {
+      writeReleaseRecord: async (_path: string, line: string) => {
         if (JSON.parse(line).event === "end") throw new Error("record sink unavailable");
       },
     });

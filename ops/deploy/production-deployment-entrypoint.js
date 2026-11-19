@@ -3,15 +3,15 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const http = require("node:http");
 const childProcess = require("node:child_process");
 const { createRequire } = require("node:module");
 const path = require("node:path");
 const orchestrator = require("./migration-aware-deploy");
 const adapter = require("./direct-docker-adapter");
-const migrationRunner = require("./migration-runner");
+const broker = require("./rootful-deployment-broker");
 
-const CONFIG_VERSION = 1;
+const CONFIG_VERSION = 2;
+const OPERATOR_MANIFEST_PATH = "/etc/clashcookies/production-deployment-operator.json";
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]{1,96}$/;
 const SHA256 = /^[0-9a-f]{64}$/i;
 const SHA1 = /^[0-9a-f]{40}$/i;
@@ -20,6 +20,7 @@ const REQUIRED_MODULES = Object.freeze([
   "direct-docker-adapter.js",
   "migration-runner.js",
   "deployment-lock.js",
+  "rootful-deployment-broker.js",
 ]);
 const ARTIFACT_MANIFEST_FILE = ".clashcookies-artifact-manifest.json";
 const REQUIRED_ARTIFACT_FILES = Object.freeze([
@@ -30,7 +31,7 @@ const REQUIRED_ARTIFACT_FILES = Object.freeze([
   "node_modules/.prisma/client/default.js",
   "prisma/schema.prisma",
 ]);
-const CREDENTIAL_ACCESS_STRATEGY = "operator-owned-immutable-read-only";
+const CREDENTIAL_ACCESS_STRATEGY = "broker-owned-protected-read-only";
 
 const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -106,13 +107,7 @@ function validateActivation(input) {
   });
 }
 
-/**
- * The current SSH entrypoint and Docker env-file paths must read both
- * credentials in the non-root operator process. Keep that read capability
- * narrow: the files remain 0600, are immutable after installation, their
- * parent is not operator-writable, and the operator has no root-equivalent
- * Docker/sudo authority that could clear the immutable bit or replace them.
- */
+/** Validate that the SSH operator cannot read credentials or reach rootful Docker. */
 function validateCredentialAccessContract(input, adapterConfig) {
   const access = input.credentialAccess || {};
   const authorization = input.executor?.authorization || {};
@@ -123,13 +118,13 @@ function validateCredentialAccessContract(input, adapterConfig) {
     ? [...new Set(authorization.operatorGids)].sort((left, right) => left - right)
     : [];
   const parentMode = access.parentMode;
-  const operatorGroupOverlap = operatorGids.some((gid) => gid === access.parentOwnerGid);
   const credentialPaths = [input.credential, input.runtimeCredential];
   if (access.strategy !== CREDENTIAL_ACCESS_STRATEGY
     || access.verified !== true
     || access.immutableFlagVerified !== true
     || access.rootEquivalentAccess !== "none"
-    || access.dockerAccess !== "rootless"
+    || access.dockerAccess !== "rootful-broker"
+    || access.operatorCanReadCredentials !== false
     || !Number.isInteger(access.operatorUid) || access.operatorUid < 1
     || access.operatorUid !== authorization.operatorUid
     || operatorGids.length === 0
@@ -137,16 +132,18 @@ function validateCredentialAccessContract(input, adapterConfig) {
     || !Number.isInteger(access.parentOwnerUid) || access.parentOwnerUid < 0
     || !Number.isInteger(access.parentOwnerGid) || access.parentOwnerGid < 0
     || access.parentOwnerUid === access.operatorUid
-    || operatorGroupOverlap
     || !Number.isInteger(parentMode) || parentMode < 0 || parentMode > 0o7777
     || (parentMode & 0o022) !== 0
     || (parentMode & 0o005) !== 0o005
     || credentialPaths.some((credential) => !credential
-      || credential.ownerUid !== access.operatorUid
+      || credential.ownerUid !== access.brokerServiceUid
+      || credential.ownerGid !== access.brokerServiceGid
       || credential.mode !== 0o600)) {
     throw new ProductionEntrypointError("credential_access_contract_invalid");
   }
-  if (!adapterConfig || typeof adapterConfig.runtimeCredential?.path !== "string") {
+  if (!Number.isInteger(access.brokerServiceUid) || access.brokerServiceUid !== 0
+    || !Number.isInteger(access.brokerServiceGid) || access.brokerServiceGid !== 0
+    || !adapterConfig || typeof adapterConfig.runtimeCredential?.path !== "string") {
     throw new ProductionEntrypointError("credential_access_runtime_boundary_invalid");
   }
   return Object.freeze({
@@ -156,9 +153,12 @@ function validateCredentialAccessContract(input, adapterConfig) {
     parentOwnerUid: access.parentOwnerUid,
     parentOwnerGid: access.parentOwnerGid,
     parentMode,
+    brokerServiceUid: 0,
+    brokerServiceGid: 0,
+    operatorCanReadCredentials: false,
     immutableFlagVerified: true,
     rootEquivalentAccess: "none",
-    dockerAccess: "rootless",
+    dockerAccess: "rootful-broker",
     verified: true,
   });
 }
@@ -193,6 +193,7 @@ function validateProductionManifest(input = {}) {
     allowMutations: false,
     allowMigrationExecution: false,
   });
+  const brokerConfig = broker.validateBrokerConfig(input.broker, appDir);
   const activation = validateActivation(input);
   const runtimeCredential = input.runtimeCredential || {};
   if (runtimeCredential.format !== "docker-env"
@@ -257,6 +258,7 @@ function validateProductionManifest(input = {}) {
       verified: true,
     }),
     adapter: adapterConfig,
+    broker: brokerConfig,
     nonMigrationHelper: helper,
   });
 }
@@ -270,6 +272,23 @@ function readJsonConfig(configPath, fsImpl = fs) {
     throw new ProductionEntrypointError("deployment_manifest_unavailable");
   }
   return validateProductionManifest(parsed);
+}
+
+function validateOperatorManifestFile(filePath, operator, fsImpl = fs) {
+  if (filePath !== OPERATOR_MANIFEST_PATH || !operator || !Number.isInteger(operator.gid) || operator.gid < 1) {
+    throw new ProductionEntrypointError("operator_manifest_path_contract_invalid");
+  }
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(filePath);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("operator_manifest_not_regular");
+  } catch {
+    throw new ProductionEntrypointError("operator_manifest_identity_unavailable");
+  }
+  if (stat.uid !== 0 || stat.gid !== operator.gid || (stat.mode & 0o7777) !== 0o640) {
+    throw new ProductionEntrypointError("operator_manifest_metadata_mismatch");
+  }
+  return filePath;
 }
 
 function ensureExplicitActivation(manifest, env) {
@@ -561,29 +580,6 @@ function verifyArtifactPrismaClient(artifactPath) {
   }
 }
 
-function executeMigrationInArtifact(config, artifactPath, runtime, credentialPath, spawnSyncImpl) {
-  const result = spawnSyncImpl("docker", [
-    "run", "--rm", "--name", "clashcookies-prod-migration-runner",
-    "--label", "com.clashcookies.deploy=migration-runner",
-    "--network", runtime.network,
-    "--mount", `type=bind,source=${credentialPath},target=/run/secrets/migration-url,readonly`,
-    "-v", `${artifactPath}:/app:ro`, "-w", "/app", runtime.image,
-    "bash", "-lc", "DATABASE_URL=\"$(cat /run/secrets/migration-url)\" exec npm run migrate:deploy",
-  ], {
-    encoding: "utf8",
-    shell: false,
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-    maxBuffer: 128 * 1024,
-  });
-  return Object.freeze({
-    status: typeof result?.status === "number" ? result.status : null,
-    signal: result?.signal || null,
-    error: result?.error || null,
-    classification: result?.status === 0 ? "success" : "prisma_migration_failed",
-  });
-}
-
 function commandResult(command, args, options = {}, spawnSyncImpl = childProcess.spawnSync) {
   const result = spawnSyncImpl(command, args, {
     cwd: options.cwd,
@@ -625,209 +621,40 @@ function inspectCheckout(repoRoot, spawnSyncImpl = childProcess.spawnSync) {
 }
 
 function createProductionOperations(manifest, dependencies = {}) {
-  const fsImpl = dependencies.fs || fs;
-  const spawnSyncImpl = dependencies.spawnSync || childProcess.spawnSync;
-  const commandExecutor = dependencies.commandExecutor || adapter.createReadOnlyCommandExecutor({
-    spawnImpl: dependencies.spawnImpl || childProcess.spawn,
-  });
-  const runtimeCollector = dependencies.runtimeEvidenceCollector || adapter.createDockerRuntimeEvidenceCollector({
-    executor: commandExecutor,
-  });
-
-  const readCredential = () => adapter.readProtectedCredential(manifest.adapter.credential, manifest.appDir, fsImpl);
-  const verifyArtifactPrismaClientImpl = dependencies.verifyArtifactPrismaClient || verifyArtifactPrismaClient;
-  const createArtifactManifestImpl = dependencies.createArtifactManifest || createArtifactManifest;
-  const validateArtifactManifestImpl = dependencies.validateArtifactManifest || validateArtifactManifest;
-  let promotedArtifactPath = null;
-  let promotedArtifactIdentity = null;
-  let candidateSourceFiles = [];
-
-  const artifactPathFor = (sha) => {
-    if (!SHA1.test(String(sha || ""))) throw new ProductionEntrypointError("promotion_artifact_sha_invalid");
-    const candidate = path.join(manifest.promotionArtifactRoot, String(sha).toLowerCase());
-    if (!isInside(manifest.promotionArtifactRoot, candidate)) {
-      throw new ProductionEntrypointError("promotion_artifact_path_invalid");
-    }
-    return candidate;
-  };
-
-  const assertAbsent = (targetPath, label) => {
-    try {
-      fsImpl.lstatSync(targetPath);
-    } catch (error) {
-      if (error?.code === "ENOENT") return;
-      throw new ProductionEntrypointError(`${label}_identity_unavailable`);
-    }
-    throw new ProductionEntrypointError(`${label}_already_exists`);
-  };
-  const requirePromotedArtifact = (sha) => {
-    const expectedPath = artifactPathFor(sha);
-    if (promotedArtifactPath !== expectedPath || !promotedArtifactIdentity) {
-      throw new ProductionEntrypointError("promoted_artifact_revision_mismatch", EXIT_CODES.BLOCKED, "artifact_identity_failed");
-    }
-    return expectedPath;
-  };
-  const runMigration = dependencies.runMigrationRunner || (async ({ repoRoot, releaseId, targetSha, migrationManifestDigest }) => {
-    const credential = readCredential();
-    const artifactPath = requirePromotedArtifact(targetSha);
-    const migrationConfig = {
-      enabled: true,
-      targetEnvironment: "production",
-      databaseIdentity: manifest.adapter.databaseIdentity,
-      locks: manifest.adapter.locks,
-    };
-    const env = adapter.buildMigrationChildEnvironment({
-      config: migrationConfig,
-      releaseId,
-      targetSha,
-      migrationManifestDigest,
-      databaseUrl: credential,
-      baseEnv: dependencies.baseEnv || process.env,
-    });
-    return {
-      exitCode: await migrationRunner.runMigrationRunner({
-        env,
-        repoRoot,
-        log: () => undefined,
-        dependencies: {
-          prismaFactory: createCandidatePrismaFactory(artifactPath, credential),
-          executeMigration: (config) => executeMigrationInArtifact(
-            config,
-            artifactPath,
-            manifest.adapter.runtime,
-            manifest.adapter.credential.path,
-            spawnSyncImpl,
-          ),
-        },
-      }),
-    };
-  });
-  const verifyMigration = dependencies.verifyAppliedMigrations || (async ({ targetSha, migrationNames }) => {
-    const credential = readCredential();
-    const artifactPath = requirePromotedArtifact(targetSha);
-    return migrationRunner.verifyAppliedMigrations({
-      databaseUrl: credential,
-      identity: manifest.adapter.databaseIdentity,
-      migrationNames,
-      prismaFactory: createCandidatePrismaFactory(artifactPath, credential),
-    });
-  });
-
-  return Object.freeze({
-    readPreflightEvidence: orchestrator.readPreflightEvidence,
-    acquireExclusiveLock: (lockPath, owner) => {
-      if (path.resolve(lockPath) !== manifest.adapter.locks.releasePath) {
-        throw new ProductionEntrypointError("release_lock_path_mismatch");
-      }
-      return adapter.acquireHostLock(lockPath, owner, fsImpl);
-    },
-    computeReleaseDiff: (repoRoot, oldSha, newSha) => orchestrator.computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl),
-    inspectCheckout: (repoRoot) => inspectCheckout(repoRoot, spawnSyncImpl),
-    inspectRuntime: async () => adapter.inspectRuntimeSnapshot(await runtimeCollector.collect(), manifest.adapter),
-    createCandidate: (candidatePath, sha) => {
-      if (path.resolve(candidatePath) !== manifest.candidateWorktreePath) throw new ProductionEntrypointError("candidate_path_mismatch");
-      assertAbsent(candidatePath, "candidate_path");
-      checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "worktree", "add", "--quiet", "--detach", candidatePath, sha], { label: "candidate_create" }, spawnSyncImpl);
-      candidateSourceFiles = sourceFilesForCandidate(candidatePath, spawnSyncImpl, fsImpl);
-    },
-    buildCandidate: ({ candidatePath, sha }) => {
-      const artifactPath = artifactPathFor(sha);
-      assertAbsent(artifactPath, "promotion_artifact");
-      fsImpl.mkdirSync(artifactPath);
-      const buildContainer = "clashcookies-prod-candidate-build";
-      let buildError = null;
-      try {
-        checkedCommand("docker", [
-          "run", "--name", buildContainer,
-          "--label", "com.clashcookies.deploy=candidate-build-only",
-          "--network", "bridge", "-w", "/app", "-v", `${candidatePath}:/app`,
-          "-v", "clashcookies-prod-candidate_node_modules:/app/node_modules",
-          "-v", "clashcookies-prod-candidate_dist:/app/dist",
-          manifest.adapter.runtime.image, "bash", "-lc", "./ops/deploy/ensure-yarn-deps.sh && npm run build",
-        ], { label: "candidate_build" }, spawnSyncImpl);
-        checkedCommand("docker", ["cp", `${buildContainer}:/app/.`, artifactPath], { label: "candidate_artifact_copy" }, spawnSyncImpl);
-        verifyArtifactPrismaClientImpl(artifactPath);
-        promotedArtifactIdentity = createArtifactManifestImpl(
-          artifactPath,
-          sha,
-          candidateSourceFiles,
-          manifest.appDir,
-          fsImpl,
-        );
-        promotedArtifactPath = artifactPath;
-      } catch (error) {
-        buildError = error;
-      }
-      const cleanup = commandResult("docker", ["rm", "-f", buildContainer], { label: "candidate_build_cleanup" }, spawnSyncImpl);
-      if (buildError) throw buildError;
-      if (cleanup.status !== 0) {
-        throw new ProductionEntrypointError("candidate_build_cleanup_ambiguous", EXIT_CODES.AMBIGUOUS, "ambiguous_execution");
-      }
-    },
-    runMigrationRunner: runMigration,
-    verifyMigration,
-    verifyPromotedArtifact: ({ sha }) => {
-      const artifactPath = requirePromotedArtifact(sha);
-      validateArtifactManifestImpl(artifactPath, sha, promotedArtifactIdentity, manifest.appDir, fsImpl);
-      verifyArtifactPrismaClientImpl(artifactPath);
-    },
-    stopRuntime: () => {
-      checkedCommand("docker", ["rm", "-f", manifest.adapter.runtime.name], { label: "runtime_stop" }, spawnSyncImpl);
-    },
-    checkoutRelease: ({ sha }) => {
-      checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "checkout", "--quiet", "--detach", sha], { label: "release_checkout" }, spawnSyncImpl);
-    },
-    startRuntime: ({ sha }) => {
-      const artifactPath = requirePromotedArtifact(sha);
-      validateArtifactManifestImpl(artifactPath, sha, promotedArtifactIdentity, manifest.appDir, fsImpl);
-      const runtimeEnvironmentPath = manifest.adapter.runtimeCredential.path;
-      const args = [
-        "run", "-d", "--restart", "unless-stopped", "--name", manifest.adapter.runtime.name,
-        "--label", `com.clashcookies.runtime=${manifest.adapter.runtime.label}`,
-        "--label", `com.clashcookies.environment=${manifest.adapter.runtime.environment}`,
-        "--label", `com.clashcookies.revision=${sha}`,
-        "--network", manifest.adapter.runtime.network,
-        "-p", `${adapter.CANONICAL_HOST_ADDRESS}:${manifest.adapter.runtime.hostPort}:${manifest.adapter.runtime.containerPort}`,
-        "--env-file", runtimeEnvironmentPath,
-        "-e", "POLLING_MODE=active", "-e", "POLLING_ENV=prod", "-w", "/app",
-        "-v", `${artifactPath}:/app:ro`, manifest.adapter.runtime.image, "bash", "-lc", "npm run start:runtime",
-      ];
-      checkedCommand("docker", args, { label: "runtime_start" }, spawnSyncImpl);
-    },
-    healthCheck: (url) => new Promise((resolve) => {
-      const request = http.get(url, { timeout: 5000 }, (response) => {
-        response.resume();
-        resolve({ status: response.statusCode });
-      });
-      request.on("error", () => resolve({ status: 0 }));
-      request.on("timeout", () => {
-        request.destroy();
-        resolve({ status: 0 });
-      });
-    }),
-    cleanupCandidate: ({ path: candidatePath, sha }) => {
-      if (path.resolve(candidatePath) !== manifest.candidateWorktreePath) throw new ProductionEntrypointError("candidate_path_mismatch");
-      const worktrees = safeGit(manifest.appDir, ["worktree", "list", "--porcelain"], spawnSyncImpl);
-      if (!worktrees.includes(`worktree ${candidatePath}`) || !worktrees.includes(`HEAD ${sha}`)) {
-        throw new ProductionEntrypointError("candidate_ownership_unverified");
-      }
-      checkedCommand("git", ["-c", `safe.directory=${manifest.appDir}`, "-C", manifest.appDir, "worktree", "remove", candidatePath], { label: "candidate_cleanup" }, spawnSyncImpl);
-    },
-    writeReleaseRecord: (recordPath, line) => {
-      if (path.resolve(recordPath) !== manifest.adapter.releaseRecord.path) throw new ProductionEntrypointError("release_record_path_mismatch");
-      return adapter.appendReleaseRecord(manifest.adapter.releaseRecord, manifest.appDir, adapter.validateReleaseRecordLine(line), fsImpl);
-    },
-    now: () => new Date().toISOString(),
-  });
+  const release = dependencies.release;
+  const approval = dependencies.brokerApproval;
+  const transport = dependencies.brokerTransport
+    || broker.createUnixSocketTransport({ socketPath: manifest.broker.socketPath });
+  if (!release || typeof approval !== "object" || approval === null) {
+    throw new ProductionEntrypointError("broker_release_authorization_required", EXIT_CODES.BLOCKED, "broker_required");
+  }
+  return broker.createRootfulBrokerOperations({
+    config: { ...manifest.broker, appDir: manifest.appDir },
+    release,
+    approval,
+    transport,
+    requestIdFactory: dependencies.requestIdFactory,
+  }).operations;
 }
+
+
 
 function releaseEnvironment(manifest, env) {
   const required = [
     "DEPLOY_EXECUTION_AUTHORIZED", "DEPLOY_RELEASE_ID", "DEPLOY_OLD_SHA", "DEPLOY_NEW_SHA",
     "DEPLOY_EXPECTED_MIGRATION_DIFF_DIGEST", "DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST",
-    "DEPLOY_AUTHORIZATION_DIGEST", "DEPLOY_APPROVED_BY",
+    "DEPLOY_AUTHORIZATION_DIGEST", "DEPLOY_APPROVED_BY", "DEPLOY_BROKER_APPROVAL",
   ];
   for (const name of required) if (typeof env[name] !== "string" || env[name].length === 0) throw new ProductionEntrypointError(`missing_${name.toLowerCase()}`);
+  let brokerApproval;
+  try {
+    brokerApproval = JSON.parse(env.DEPLOY_BROKER_APPROVAL);
+  } catch {
+    throw new ProductionEntrypointError("broker_approval_envelope_invalid", EXIT_CODES.BLOCKED, "broker_required");
+  }
+  if (!brokerApproval || typeof brokerApproval !== "object" || Array.isArray(brokerApproval)) {
+    throw new ProductionEntrypointError("broker_approval_envelope_invalid", EXIT_CODES.BLOCKED, "broker_required");
+  }
   return Object.freeze({
     ...env,
     DEPLOY_TARGET_ENV: "production",
@@ -836,6 +663,8 @@ function releaseEnvironment(manifest, env) {
     DEPLOY_RELEASE_RECORD_PATH: manifest.adapter.releaseRecord.path,
     DEPLOY_PREFLIGHT_EVIDENCE_PATH: manifest.preflightEvidencePath,
     DEPLOY_CANDIDATE_WORKTREE_PATH: manifest.candidateWorktreePath,
+    DEPLOY_BROKER_APPROVAL: brokerApproval,
+    DEPLOY_BROKER_SESSION_ID: env.DEPLOY_BROKER_SESSION_ID || env.DEPLOY_RELEASE_ID,
   });
 }
 
@@ -854,32 +683,43 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
     validated.adapter.executor.path,
     dependencies.fs || fs,
   );
-  adapter.validateProtectedCredentialSource(validated.adapter.credential, validated.appDir, dependencies.fs || fs);
-  adapter.validateProtectedCredentialSource(validated.adapter.runtimeCredential, validated.appDir, dependencies.fs || fs);
   adapter.validateReleaseRecordTarget(validated.adapter.releaseRecord, validated.appDir, dependencies.fs || fs);
   validateProtectedDirectoryTarget(validated.promotionArtifactRoot, validated.appDir, dependencies.fs || fs);
   const releaseEnv = releaseEnvironment(validated, env);
-  const operations = createProductionOperations(validated, dependencies);
-  const diffPaths = operations.computeReleaseDiff
-    ? (() => {
-      const output = checkedCommand("git", ["-c", `safe.directory=${validated.appDir}`, "-C", validated.appDir, "diff", "--name-only", "--no-ext-diff", releaseEnv.DEPLOY_OLD_SHA, releaseEnv.DEPLOY_NEW_SHA, "--", "prisma/schema.prisma", "prisma/migrations"], { label: "release_classification" }, dependencies.spawnSync || childProcess.spawnSync);
-      return output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-    })()
-    : [];
+  const brokerRelease = {
+    sessionId: releaseEnv.DEPLOY_BROKER_SESSION_ID,
+    releaseId: releaseEnv.DEPLOY_RELEASE_ID,
+    oldSha: releaseEnv.DEPLOY_OLD_SHA,
+    newSha: releaseEnv.DEPLOY_NEW_SHA,
+    migrationDiffDigest: releaseEnv.DEPLOY_EXPECTED_MIGRATION_DIFF_DIGEST,
+    migrationManifestDigest: releaseEnv.DEPLOY_EXPECTED_MIGRATION_MANIFEST_DIGEST,
+    authorizationDigest: releaseEnv.DEPLOY_AUTHORIZATION_DIGEST,
+    approvedBy: releaseEnv.DEPLOY_APPROVED_BY,
+  };
+  const operations = createProductionOperations(validated, {
+    ...dependencies,
+    release: brokerRelease,
+    brokerApproval: releaseEnv.DEPLOY_BROKER_APPROVAL,
+  });
+  const diff = await operations.classifyReleaseDiff(validated.appDir, brokerRelease.oldSha, brokerRelease.newSha);
+  if (!diff || diff.oldSha !== brokerRelease.oldSha || diff.newSha !== brokerRelease.newSha) {
+    throw new ProductionEntrypointError("release_diff_identity_mismatch", EXIT_CODES.BLOCKED, "release_identity_failed");
+  }
 
-  if (diffPaths.length === 0) {
-    const helperPath = validateProtectedArtifact(validated.nonMigrationHelper, validated.appDir, dependencies.fs || fs);
-    const result = (dependencies.runNonMigration || ((request) => checkedCommand(helperPath, [], {
-      cwd: validated.appDir,
-      env: { ...process.env, ...releaseEnv, TARGET_REF: releaseEnv.DEPLOY_NEW_SHA, APP_DIR: validated.appDir },
-      label: "non_migration_deploy",
-    }, dependencies.spawnSync || childProcess.spawnSync)))({
-      oldSha: releaseEnv.DEPLOY_OLD_SHA,
-      newSha: releaseEnv.DEPLOY_NEW_SHA,
-      releaseEnv,
-      helperPath,
-    });
-    return typeof result === "number" ? result : EXIT_CODES.SUCCESS;
+  if (Array.isArray(diff.paths) && diff.paths.length === 0) {
+    const releaseLock = await operations.acquireExclusiveLock();
+    try {
+      await operations.readPreflightEvidence();
+      await operations.inspectCheckout();
+      await operations.inspectRuntime();
+      const result = await operations.runNonMigration({
+        oldSha: releaseEnv.DEPLOY_OLD_SHA,
+        newSha: releaseEnv.DEPLOY_NEW_SHA,
+      });
+      return typeof result === "number" ? result : EXIT_CODES.SUCCESS;
+    } finally {
+      await releaseLock();
+    }
   }
 
   const exitCode = await orchestrator.runMigrationAwareDeployment({
@@ -893,15 +733,22 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
 
 module.exports = {
   CONFIG_VERSION,
+  OPERATOR_MANIFEST_PATH,
   CREDENTIAL_ACCESS_STRATEGY,
   EXIT_CODES,
+  checkedCommand,
+  commandResult,
   ProductionEntrypointError,
   createProductionOperations,
   createArtifactManifest,
   ensureExplicitActivation,
-  executeMigrationInArtifact,
   readJsonConfig,
+  validateOperatorManifestFile,
   runProductionDeployment,
+  safeGit,
+  inspectCheckout,
+  sourceFilesForCandidate,
+  validateProtectedArtifact,
   validateArtifactManifest,
   validateCredentialAccessContract,
   validateModuleBundle,
@@ -910,10 +757,9 @@ module.exports = {
 };
 
 if (require.main === module) {
-  const configPath = process.env.DEPLOYMENT_CONFIG_PATH;
   try {
-    if (!configPath) throw new ProductionEntrypointError("deployment_config_path_required");
-    const manifest = readJsonConfig(configPath);
+    const manifest = readJsonConfig(OPERATOR_MANIFEST_PATH);
+    validateOperatorManifestFile(OPERATOR_MANIFEST_PATH, manifest.broker.operator);
     runProductionDeployment({ manifest }).then((exitCode) => { process.exitCode = exitCode; }).catch((error) => {
       process.exitCode = Number.isInteger(error?.exitCode)
         ? error.exitCode
