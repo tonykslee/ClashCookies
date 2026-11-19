@@ -34,6 +34,32 @@ const createCandidatePrismaFactory = (repoRoot, databaseUrl) => {
   };
 };
 
+function executeMigrationInArtifact(config, artifactPath, runtime, credentialPath, spawnSyncImpl) {
+  if (!config || config.targetEnvironment !== "production") {
+    throw new ProductionEntrypointError("migration_execution_contract_invalid", EXIT_CODES.BLOCKED, "migration_contract_failed");
+  }
+  const result = spawnSyncImpl("docker", [
+    "run", "--rm", "--name", "clashcookies-prod-migration-runner",
+    "--label", "com.clashcookies.deploy=migration-runner",
+    "--network", runtime.network,
+    "--mount", `type=bind,source=${credentialPath},target=/run/secrets/migration-url,readonly`,
+    "-v", `${artifactPath}:/app:ro`, "-w", "/app", runtime.image,
+    "bash", "-lc", "DATABASE_URL=\"$(cat /run/secrets/migration-url)\" exec npm run migrate:deploy",
+  ], {
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    maxBuffer: 128 * 1024,
+  });
+  return Object.freeze({
+    status: typeof result?.status === "number" ? result.status : null,
+    signal: result?.signal || null,
+    error: result?.error || null,
+    classification: result?.status === 0 ? "success" : "prisma_migration_failed",
+  });
+}
+
 function createPrivilegedOperations(manifest, dependencies = {}) {
   const fsImpl = dependencies.fs || fs;
   const spawnSyncImpl = dependencies.spawnSync || childProcess.spawnSync;
@@ -132,6 +158,7 @@ function createPrivilegedOperations(manifest, dependencies = {}) {
       return adapter.acquireHostLock(lockPath, owner, fsImpl);
     },
     computeReleaseDiff: (repoRoot, oldSha, newSha) => orchestrator.computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl),
+    classifyReleaseDiff: (repoRoot, oldSha, newSha) => orchestrator.classifyReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl),
     inspectCheckout: (repoRoot) => inspectCheckout(repoRoot, spawnSyncImpl),
     inspectRuntime: async () => adapter.inspectRuntimeSnapshot(await runtimeCollector.collect(), manifest.adapter),
     createCandidate: (candidatePath, sha) => {
@@ -231,4 +258,4 @@ function createPrivilegedOperations(manifest, dependencies = {}) {
   });
 }
 
-module.exports = { createPrivilegedOperations };
+module.exports = { createPrivilegedOperations, executeMigrationInArtifact };

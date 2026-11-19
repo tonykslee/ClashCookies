@@ -11,6 +11,7 @@ const adapter = require("./direct-docker-adapter");
 const broker = require("./rootful-deployment-broker");
 
 const CONFIG_VERSION = 2;
+const OPERATOR_MANIFEST_PATH = "/etc/clashcookies/production-deployment-operator.json";
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]{1,96}$/;
 const SHA256 = /^[0-9a-f]{64}$/i;
 const SHA1 = /^[0-9a-f]{40}$/i;
@@ -271,6 +272,23 @@ function readJsonConfig(configPath, fsImpl = fs) {
     throw new ProductionEntrypointError("deployment_manifest_unavailable");
   }
   return validateProductionManifest(parsed);
+}
+
+function validateOperatorManifestFile(filePath, operator, fsImpl = fs) {
+  if (filePath !== OPERATOR_MANIFEST_PATH || !operator || !Number.isInteger(operator.gid) || operator.gid < 1) {
+    throw new ProductionEntrypointError("operator_manifest_path_contract_invalid");
+  }
+  let stat;
+  try {
+    stat = fsImpl.lstatSync(filePath);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("operator_manifest_not_regular");
+  } catch {
+    throw new ProductionEntrypointError("operator_manifest_identity_unavailable");
+  }
+  if (stat.uid !== 0 || stat.gid !== operator.gid || (stat.mode & 0o7777) !== 0o640) {
+    throw new ProductionEntrypointError("operator_manifest_metadata_mismatch");
+  }
+  return filePath;
 }
 
 function ensureExplicitActivation(manifest, env) {
@@ -683,17 +701,25 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
     release: brokerRelease,
     brokerApproval: releaseEnv.DEPLOY_BROKER_APPROVAL,
   });
-  const diff = await operations.computeReleaseDiff(validated.appDir, brokerRelease.oldSha, brokerRelease.newSha);
+  const diff = await operations.classifyReleaseDiff(validated.appDir, brokerRelease.oldSha, brokerRelease.newSha);
   if (!diff || diff.oldSha !== brokerRelease.oldSha || diff.newSha !== brokerRelease.newSha) {
     throw new ProductionEntrypointError("release_diff_identity_mismatch", EXIT_CODES.BLOCKED, "release_identity_failed");
   }
 
   if (Array.isArray(diff.paths) && diff.paths.length === 0) {
-    const result = await operations.runNonMigration({
-      oldSha: releaseEnv.DEPLOY_OLD_SHA,
-      newSha: releaseEnv.DEPLOY_NEW_SHA,
-    });
-    return typeof result === "number" ? result : EXIT_CODES.SUCCESS;
+    const releaseLock = await operations.acquireExclusiveLock();
+    try {
+      await operations.readPreflightEvidence();
+      await operations.inspectCheckout();
+      await operations.inspectRuntime();
+      const result = await operations.runNonMigration({
+        oldSha: releaseEnv.DEPLOY_OLD_SHA,
+        newSha: releaseEnv.DEPLOY_NEW_SHA,
+      });
+      return typeof result === "number" ? result : EXIT_CODES.SUCCESS;
+    } finally {
+      await releaseLock();
+    }
   }
 
   const exitCode = await orchestrator.runMigrationAwareDeployment({
@@ -707,6 +733,7 @@ async function runProductionDeployment({ manifest, env = process.env, dependenci
 
 module.exports = {
   CONFIG_VERSION,
+  OPERATOR_MANIFEST_PATH,
   CREDENTIAL_ACCESS_STRATEGY,
   EXIT_CODES,
   checkedCommand,
@@ -716,6 +743,7 @@ module.exports = {
   createArtifactManifest,
   ensureExplicitActivation,
   readJsonConfig,
+  validateOperatorManifestFile,
   runProductionDeployment,
   safeGit,
   inspectCheckout,
@@ -729,10 +757,9 @@ module.exports = {
 };
 
 if (require.main === module) {
-  const configPath = process.env.DEPLOYMENT_CONFIG_PATH;
   try {
-    if (!configPath) throw new ProductionEntrypointError("deployment_config_path_required");
-    const manifest = readJsonConfig(configPath);
+    const manifest = readJsonConfig(OPERATOR_MANIFEST_PATH);
+    validateOperatorManifestFile(OPERATOR_MANIFEST_PATH, manifest.broker.operator);
     runProductionDeployment({ manifest }).then((exitCode) => { process.exitCode = exitCode; }).catch((error) => {
       process.exitCode = Number.isInteger(error?.exitCode)
         ? error.exitCode

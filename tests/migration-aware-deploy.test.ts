@@ -172,6 +172,21 @@ afterEach(() => {
 });
 
 describe("migration-aware deployment orchestrator", () => {
+  it("classifies a non-migration release without weakening the migration-only guard", () => {
+    const calls: string[][] = [];
+    const spawn = (_command: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "rev-parse") return { status: 0, stdout: `${args[2].includes(OLD_SHA) ? OLD_SHA : NEW_SHA}\n` };
+      if (args[0] === "diff" && args.includes("--name-only")) return { status: 0, stdout: "\n" };
+      if (args[0] === "diff") return { status: 0, stdout: "" };
+      return { status: 0, stdout: "" };
+    };
+    const classified = orchestrator.classifyReleaseDiff("/synthetic/repo", OLD_SHA, NEW_SHA, spawn);
+    expect(classified.paths).toEqual([]);
+    expect(() => orchestrator.computeReleaseDiff("/synthetic/repo", OLD_SHA, NEW_SHA, spawn)).toThrow(/no_prisma_changes/i);
+    expect(calls.some((args) => args.includes("--name-only"))).toBe(true);
+  });
+
   it("preserves fail-closed absolute-path and authorization validation", () => {
     const env = makeEnvironment();
     delete env.DEPLOY_EXECUTION_AUTHORIZED;

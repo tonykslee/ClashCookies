@@ -1,12 +1,19 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 
 const PROTOCOL_VERSION = 1;
 const BROKER_STRATEGY = "rootful-docker-broker";
 const BROKER_APPROVAL_SCOPE = "rootful-docker-broker-deployment";
+const BROKER_MIGRATION_APPROVAL_SCOPE = "rootful-docker-broker-migration";
+const BROKER_APPROVAL_SCOPES = Object.freeze([BROKER_APPROVAL_SCOPE, BROKER_MIGRATION_APPROVAL_SCOPE]);
+const BROKER_APPROVERS = Object.freeze({
+  [BROKER_APPROVAL_SCOPE]: "github-main-merge",
+  [BROKER_MIGRATION_APPROVAL_SCOPE]: "github-environment-production-migration",
+});
 const TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHA1 = /^[0-9a-f]{40}$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
@@ -17,6 +24,7 @@ const OPERATION_NAMES = Object.freeze([
   "acquireExclusiveLock",
   "releaseExclusiveLock",
   "computeReleaseDiff",
+  "classifyReleaseDiff",
   "inspectCheckout",
   "inspectRuntime",
   "createCandidate",
@@ -36,12 +44,27 @@ const OPERATION_NAMES = Object.freeze([
 const READ_ONLY_OPERATIONS = new Set([
   "readPreflightEvidence",
   "computeReleaseDiff",
+  "classifyReleaseDiff",
   "inspectCheckout",
   "inspectRuntime",
   "verifyMigration",
   "verifyPromotedArtifact",
   "healthCheck",
 ]);
+
+const MIGRATION_OPERATIONS = new Set([
+  "createCandidate",
+  "buildCandidate",
+  "runMigrationRunner",
+  "verifyMigration",
+  "verifyPromotedArtifact",
+  "stopRuntime",
+  "checkoutRelease",
+  "startRuntime",
+  "cleanupCandidate",
+]);
+
+const MUTATING_OPERATIONS = new Set(OPERATION_NAMES.filter((operation) => !READ_ONLY_OPERATIONS.has(operation)));
 
 class BrokerError extends Error {
   constructor(message, code = "broker_blocked") {
@@ -70,6 +93,11 @@ function validateBrokerConfig(input = {}, appDir) {
     || path.resolve(input.socketPath).startsWith(`${path.resolve(appDir)}${path.sep}`)) {
     throw new BrokerError("broker_socket_path_invalid", "broker_configuration_invalid");
   }
+  if (typeof input.statePath !== "string" || !path.isAbsolute(input.statePath)
+    || path.resolve(input.statePath) === path.resolve(appDir)
+    || path.resolve(input.statePath).startsWith(`${path.resolve(appDir)}${path.sep}`)) {
+    throw new BrokerError("broker_state_path_invalid", "broker_configuration_invalid");
+  }
   const operator = input.operator || {};
   if (!Number.isInteger(operator.uid) || operator.uid < 1
     || !Number.isInteger(operator.gid) || operator.gid < 1
@@ -86,7 +114,9 @@ function validateBrokerConfig(input = {}, appDir) {
     throw new BrokerError("broker_service_boundary_invalid", "broker_configuration_invalid");
   }
   const approval = input.approval || {};
-  if (approval.scope !== BROKER_APPROVAL_SCOPE
+  if (!Array.isArray(approval.scopes)
+    || approval.scopes.length !== BROKER_APPROVAL_SCOPES.length
+    || approval.scopes.some((scope) => !BROKER_APPROVAL_SCOPES.includes(scope))
     || typeof approval.publicKeyPath !== "string" || !path.isAbsolute(approval.publicKeyPath)
     || typeof approval.keyId !== "string" || !TOKEN.test(approval.keyId)) {
     throw new BrokerError("broker_approval_boundary_invalid", "broker_configuration_invalid");
@@ -95,6 +125,7 @@ function validateBrokerConfig(input = {}, appDir) {
     strategy: BROKER_STRATEGY,
     verified: true,
     socketPath: path.resolve(input.socketPath),
+    statePath: path.resolve(input.statePath),
     operator: Object.freeze({
       uid: operator.uid,
       gid: operator.gid,
@@ -103,7 +134,7 @@ function validateBrokerConfig(input = {}, appDir) {
     }),
     service: Object.freeze({ uid: 0, gid: 0, dockerAccess: "rootful-socket-only", dockerSocket: service.dockerSocket }),
     approval: Object.freeze({
-      scope: BROKER_APPROVAL_SCOPE,
+      scopes: Object.freeze([...approval.scopes]),
       publicKeyPath: path.resolve(approval.publicKeyPath),
       keyId: approval.keyId,
     }),
@@ -138,7 +169,7 @@ function validateReleaseIdentity(release) {
 /** Build the exact release-bound data that the approval signer must authorize. */
 function approvalPayload(approval, release, scope = BROKER_APPROVAL_SCOPE) {
   return canonicalize({
-    scope,
+    scope: approval.scope || scope,
     keyId: approval.keyId,
     nonce: approval.nonce,
     approvedBy: approval.approvedBy,
@@ -154,9 +185,10 @@ function validateApproval(approval, release, config) {
     || approval.keyId !== config.approval.keyId
     || !TOKEN.test(approval.nonce || "")
     || !BASE64.test(approval.signature || "")
-    || approval.scope !== BROKER_APPROVAL_SCOPE
+    || !config.approval.scopes.includes(approval.scope)
     || !TOKEN.test(approval.approvedBy || "")
     || approval.approvedBy !== release.approvedBy
+    || BROKER_APPROVERS[approval.scope] !== approval.approvedBy
     || !SHA1.test(approval.reviewedCommit || "")
     || approval.reviewedCommit.toLowerCase() !== release.newSha) {
     throw new BrokerError("broker_approval_invalid", "approval_invalid");
@@ -184,6 +216,96 @@ function validatePeerIdentity(peer, operator) {
   }
 }
 
+function emptyBrokerState() {
+  return {
+    version: 1,
+    consumedNonces: [],
+    requestIds: [],
+    sessions: {},
+    lockOwnerSession: null,
+    recoveryRequired: false,
+  };
+}
+
+function validateBrokerState(state) {
+  if (!state || state.version !== 1
+    || !Array.isArray(state.consumedNonces)
+    || !Array.isArray(state.requestIds)
+    || !state.sessions || typeof state.sessions !== "object"
+    || (state.lockOwnerSession !== null && typeof state.lockOwnerSession !== "string")
+    || typeof state.recoveryRequired !== "boolean") {
+    throw new BrokerError("broker_state_invalid", "broker_state_invalid");
+  }
+  return state;
+}
+
+/** Persist broker replay and recovery state with an atomic same-directory rename. */
+function createDurableBrokerStateStore({ statePath, fsImpl = fs } = {}) {
+  if (typeof statePath !== "string" || !path.isAbsolute(statePath)) {
+    throw new BrokerError("broker_state_path_invalid", "broker_configuration_invalid");
+  }
+  const read = () => {
+    try {
+      return validateBrokerState(JSON.parse(fsImpl.readFileSync(statePath, "utf8")));
+    } catch (error) {
+      if (error?.code === "ENOENT") return emptyBrokerState();
+      if (error instanceof BrokerError) throw error;
+      throw new BrokerError("broker_state_read_failed", "broker_state_invalid");
+    }
+  };
+  const save = (state) => {
+    const validated = validateBrokerState(state);
+    const tempPath = `${statePath}.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+    try {
+      fsImpl.writeFileSync(tempPath, `${JSON.stringify(validated)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      if (typeof fsImpl.chmodSync === "function") fsImpl.chmodSync(tempPath, 0o600);
+      fsImpl.renameSync(tempPath, statePath);
+    } catch {
+      try { fsImpl.unlinkSync(tempPath); } catch { /* best effort cleanup */ }
+      throw new BrokerError("broker_state_write_failed", "broker_state_unavailable");
+    }
+  };
+  return Object.freeze({ load: read, save });
+}
+
+/** Verify a systemd/socket-activation fd and its pre-owned Unix socket boundary. */
+function verifySocketActivationBoundary({ fd, socketPath, operator, fsImpl = fs } = {}) {
+  if (!Number.isInteger(fd) || fd < 0 || typeof socketPath !== "string" || !path.isAbsolute(socketPath)
+    || !operator || !Number.isInteger(operator.gid) || operator.gid < 1
+    || typeof fsImpl.fstatSync !== "function" || typeof fsImpl.lstatSync !== "function") {
+    throw new BrokerError("broker_socket_boundary_invalid", "broker_configuration_invalid");
+  }
+  let fdStat;
+  let pathStat;
+  try {
+    fdStat = fsImpl.fstatSync(fd);
+    pathStat = fsImpl.lstatSync(socketPath);
+  } catch {
+    throw new BrokerError("broker_socket_boundary_unavailable", "broker_configuration_invalid");
+  }
+  if (typeof fdStat.isSocket !== "function" || !fdStat.isSocket()
+    || typeof pathStat.isSocket !== "function" || !pathStat.isSocket()
+    || fdStat.uid !== 0 || fdStat.gid !== operator.gid
+    || pathStat.uid !== 0 || pathStat.gid !== operator.gid
+    || (fdStat.mode & 0o7777) !== 0o660 || (pathStat.mode & 0o7777) !== 0o660) {
+    throw new BrokerError("broker_socket_boundary_mismatch", "broker_configuration_invalid");
+  }
+  return Object.freeze({
+    verified: true,
+    fd,
+    socketPath: path.resolve(socketPath),
+    ownerUid: 0,
+    ownerGid: operator.gid,
+    mode: 0o660,
+    peerIdentity: Object.freeze({
+      uid: operator.uid,
+      gid: operator.gid,
+      supplementaryGids: [...operator.supplementaryGids],
+      groupNames: [...operator.groupNames],
+    }),
+  });
+}
+
 /** Validate the narrow operation payload; clients never provide commands, paths, or environments. */
 function validatePayload(operation, payload, release) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -194,6 +316,7 @@ function validatePayload(operation, payload, release) {
     acquireExclusiveLock: [],
     releaseExclusiveLock: [],
     computeReleaseDiff: ["oldSha", "newSha"],
+    classifyReleaseDiff: ["oldSha", "newSha"],
     inspectCheckout: [],
     inspectRuntime: [],
     createCandidate: ["sha"],
@@ -291,6 +414,25 @@ function validateBrokerRequest(request, { config, peerIdentity, sessions, reques
       approvalNonce: approval.nonce,
       acquired: false,
       terminal: false,
+      phase: "new",
+      diffKind: null,
+      diff: null,
+      preflightVerified: false,
+      checkoutInspected: false,
+      runtimeBeforeVerified: false,
+      promotionRuntimeVerified: false,
+      candidateCreated: false,
+      candidateBuilt: false,
+      migrationRan: false,
+      migrationVerified: false,
+      artifactVerified: false,
+      runtimeStopped: false,
+      releaseCheckedOut: false,
+      runtimeStarted: false,
+      runtimeAfterVerified: false,
+      healthy: false,
+      nonMigrationExecuted: false,
+      inFlight: null,
     });
   }
   const payload = validatePayload(request.operation, request.payload, release);
@@ -308,17 +450,246 @@ function validateBrokerRequest(request, { config, peerIdentity, sessions, reques
     payload,
     release,
     approval,
+    approvalScope: approval.scope,
+    session,
     peerIdentity: Object.freeze({ ...peerIdentity }),
     readOnly: READ_ONLY_OPERATIONS.has(request.operation),
   });
 }
 
+function requiredApprovalScope(operation) {
+  if (operation === "runNonMigration") return BROKER_APPROVAL_SCOPE;
+  if (MIGRATION_OPERATIONS.has(operation) || operation === "computeReleaseDiff") return BROKER_MIGRATION_APPROVAL_SCOPE;
+  return null;
+}
+
+function validateDiffResult(result, release) {
+  if (!result || result.oldSha !== release.oldSha || result.newSha !== release.newSha
+    || result.digest !== release.migrationDiffDigest || !Array.isArray(result.paths)
+    || !Array.isArray(result.migrationNames)) {
+    throw new BrokerError("broker_diff_evidence_invalid", "phase_evidence_invalid");
+  }
+  return result;
+}
+
+function serializeBrokerState({ sessions, requestIds, consumedNonces, lockOwnerSession, recoveryRequired }) {
+  return {
+    version: 1,
+    consumedNonces: [...consumedNonces].sort(),
+    requestIds: [...requestIds].sort(),
+    sessions: Object.fromEntries([...sessions.entries()].map(([key, value]) => [key, { ...value }])),
+    lockOwnerSession,
+    recoveryRequired,
+  };
+}
+
+function restoreSessions(rawSessions) {
+  const sessions = new Map();
+  for (const [key, value] of Object.entries(rawSessions || {})) sessions.set(key, { ...value });
+  return sessions;
+}
+
+function assertSessionOperation(context, session, lockOwnerSession, recoveryRequired) {
+  if (recoveryRequired) throw new BrokerError("broker_recovery_required", "broker_recovery_required");
+  if (session.terminal) throw new BrokerError("broker_session_terminal", "replay_rejected");
+  if (session.inFlight) throw new BrokerError("broker_session_busy", "concurrent_request");
+  if (session.recoveryRequired && context.operation !== "releaseExclusiveLock") {
+    throw new BrokerError("broker_session_recovery_required", "broker_recovery_required");
+  }
+  const requiredScope = requiredApprovalScope(context.operation);
+  if (requiredScope && context.approvalScope !== requiredScope) {
+    throw new BrokerError("broker_approval_authority_insufficient", "approval_scope_invalid");
+  }
+  if (context.operation === "acquireExclusiveLock") {
+    if (session.acquired) throw new BrokerError("broker_lock_already_acquired", "lock_conflict");
+    if (lockOwnerSession !== null && lockOwnerSession !== context.sessionId) {
+      throw new BrokerError("broker_lock_conflict", "lock_conflict");
+    }
+    return;
+  }
+  if (context.operation === "releaseExclusiveLock") {
+    if (!session.acquired) throw new BrokerError("broker_lock_not_owned", "lock_conflict");
+    if (lockOwnerSession !== context.sessionId) throw new BrokerError("broker_lock_owner_mismatch", "lock_conflict");
+    return;
+  }
+  if (context.operation === "classifyReleaseDiff") return;
+  if (!session.acquired || lockOwnerSession !== context.sessionId) {
+    throw new BrokerError("broker_lock_required", "lock_conflict");
+  }
+  if (MUTATING_OPERATIONS.has(context.operation) && lockOwnerSession !== context.sessionId) {
+    throw new BrokerError("broker_lock_required", "lock_conflict");
+  }
+  if (context.operation === "readPreflightEvidence" && session.preflightVerified) {
+    throw new BrokerError("broker_preflight_already_read", "phase_invalid");
+  }
+  if (context.operation === "inspectCheckout" && !session.preflightVerified) {
+    throw new BrokerError("broker_preflight_required", "phase_invalid");
+  }
+  if (context.operation === "computeReleaseDiff" && !session.checkoutInspected) {
+    throw new BrokerError("broker_checkout_required", "phase_invalid");
+  }
+  if (context.operation === "inspectRuntime"
+    && !session.diffKind
+    && !session.migrationVerified
+    && !session.runtimeStarted) {
+    throw new BrokerError("broker_diff_required", "phase_invalid");
+  }
+  if (context.operation === "createCandidate"
+    && (session.diffKind !== "migration" || !session.runtimeBeforeVerified)) {
+    throw new BrokerError("broker_runtime_preflight_required", "phase_invalid");
+  }
+  if (context.operation === "buildCandidate" && !session.candidateCreated) {
+    throw new BrokerError("broker_candidate_required", "phase_invalid");
+  }
+  if (context.operation === "runMigrationRunner" && (!session.candidateBuilt || session.diffKind !== "migration")) {
+    throw new BrokerError("broker_candidate_build_required", "phase_invalid");
+  }
+  if (context.operation === "verifyMigration" && !session.migrationRan) {
+    throw new BrokerError("broker_migration_required", "phase_invalid");
+  }
+  if (context.operation === "verifyPromotedArtifact"
+    && (!session.migrationVerified || !session.promotionRuntimeVerified)) {
+    throw new BrokerError("broker_promotion_preflight_required", "phase_invalid");
+  }
+  if (context.operation === "stopRuntime" && !session.artifactVerified) {
+    throw new BrokerError("broker_artifact_verification_required", "phase_invalid");
+  }
+  if (context.operation === "checkoutRelease" && !session.runtimeStopped) {
+    throw new BrokerError("broker_runtime_stop_required", "phase_invalid");
+  }
+  if (context.operation === "startRuntime" && !session.releaseCheckedOut) {
+    throw new BrokerError("broker_checkout_release_required", "phase_invalid");
+  }
+  if (context.operation === "healthCheck" && !session.runtimeAfterVerified) {
+    throw new BrokerError("broker_runtime_start_verification_required", "phase_invalid");
+  }
+  if (context.operation === "cleanupCandidate" && !session.healthy) {
+    throw new BrokerError("broker_health_check_required", "phase_invalid");
+  }
+  if (context.operation === "runNonMigration"
+    && (context.approvalScope !== BROKER_APPROVAL_SCOPE
+      || session.diffKind !== "non-migration"
+      || !session.preflightVerified
+      || !session.checkoutInspected
+      || !session.runtimeBeforeVerified)) {
+    throw new BrokerError("broker_non_migration_preflight_required", "phase_invalid");
+  }
+}
+
+function applySessionTransition(context, result, session, phaseValidators = {}) {
+  const validator = phaseValidators[context.operation];
+  if (validator !== undefined && typeof validator !== "function") {
+    throw new BrokerError("broker_phase_validator_invalid", "broker_configuration_invalid");
+  }
+  const verifiedResult = typeof validator === "function"
+    ? validator(result, context, session)
+    : result;
+  if (context.operation === "readPreflightEvidence") {
+    if (typeof validator !== "function") throw new BrokerError("broker_preflight_validator_required", "phase_evidence_invalid");
+    session.preflightVerified = true;
+    session.preflightEvidence = verifiedResult;
+    session.phase = "preflight";
+  } else if (context.operation === "inspectCheckout") {
+    session.checkoutInspected = true;
+    session.checkout = verifiedResult;
+    session.phase = "checkout";
+  } else if (context.operation === "computeReleaseDiff" || context.operation === "classifyReleaseDiff") {
+    const diff = validateDiffResult(verifiedResult, context.release);
+    session.diff = Object.freeze({ oldSha: diff.oldSha, newSha: diff.newSha, digest: diff.digest });
+    session.diffKind = diff.paths.length === 0 ? "non-migration" : "migration";
+    session.phase = "diff";
+  } else if (context.operation === "inspectRuntime") {
+    session.runtime = verifiedResult;
+    if (session.runtimeStarted) {
+      session.runtimeAfterVerified = true;
+      session.phase = "runtime_after";
+    } else if (session.migrationVerified) {
+      session.promotionRuntimeVerified = true;
+      session.phase = "promotion_runtime";
+    } else {
+      session.runtimeBeforeVerified = true;
+      session.phase = "runtime_before";
+    }
+  } else if (context.operation === "acquireExclusiveLock") {
+    session.acquired = true;
+    session.phase = session.diffKind ? "locked_after_diff" : "locked";
+  } else if (context.operation === "createCandidate") {
+    session.candidateCreated = true;
+    session.phase = "candidate_created";
+  } else if (context.operation === "buildCandidate") {
+    session.candidateBuilt = true;
+    session.phase = "candidate_built";
+  } else if (context.operation === "runMigrationRunner") {
+    session.migrationRan = true;
+    session.phase = "migration_ran";
+  } else if (context.operation === "verifyMigration") {
+    session.migrationVerified = true;
+    session.phase = "migration_verified";
+  } else if (context.operation === "verifyPromotedArtifact") {
+    session.artifactVerified = true;
+    session.phase = "artifact_verified";
+  } else if (context.operation === "stopRuntime") {
+    session.runtimeStopped = true;
+    session.phase = "runtime_stopped";
+  } else if (context.operation === "checkoutRelease") {
+    session.releaseCheckedOut = true;
+    session.phase = "release_checked_out";
+  } else if (context.operation === "startRuntime") {
+    session.runtimeStarted = true;
+    session.phase = "runtime_started";
+  } else if (context.operation === "healthCheck") {
+    session.healthy = true;
+    session.phase = "healthy";
+  } else if (context.operation === "cleanupCandidate") {
+    session.phase = "cleaned";
+  } else if (context.operation === "runNonMigration") {
+    session.nonMigrationExecuted = true;
+    session.phase = "non_migration_executed";
+  }
+  return verifiedResult;
+}
+
 /** Create the privileged-side request handler; Docker and credentials stay behind this boundary. */
-function createRootfulBrokerServer({ config, peerIdentitySource, approvalVerifier, handlers = {}, state = {} } = {}) {
+function createRootfulBrokerServer({
+  config,
+  peerIdentitySource,
+  approvalVerifier,
+  approvalVerifierFactory,
+  handlers = {},
+  phaseValidators = {},
+  state = {},
+  stateStore,
+} = {}) {
   const validatedConfig = validateBrokerConfig(config, config?.appDir || "/");
-  const sessions = state.sessions instanceof Map ? state.sessions : new Map();
-  const requestIds = state.requestIds instanceof Set ? state.requestIds : new Set();
-  let lockOwnerSession = state.lockOwnerSession || null;
+  for (const operation of ["readPreflightEvidence", "inspectCheckout", "computeReleaseDiff", "classifyReleaseDiff", "inspectRuntime", "verifyMigration", "healthCheck"]) {
+    if (typeof phaseValidators[operation] !== "function") {
+      throw new BrokerError("broker_phase_validator_required", "broker_configuration_invalid");
+    }
+  }
+  const persisted = stateStore ? stateStore.load() : emptyBrokerState();
+  const sessions = state.sessions instanceof Map
+    ? state.sessions
+    : restoreSessions(persisted.sessions);
+  const requestIds = state.requestIds instanceof Set
+    ? state.requestIds
+    : new Set(persisted.requestIds);
+  const consumedNonces = state.consumedNonces instanceof Set
+    ? state.consumedNonces
+    : new Set(persisted.consumedNonces);
+  const verifier = typeof approvalVerifierFactory === "function"
+    ? approvalVerifierFactory(consumedNonces)
+    : approvalVerifier;
+  let lockOwnerSession = state.lockOwnerSession || persisted.lockOwnerSession || null;
+  let recoveryRequired = state.recoveryRequired === true || persisted.recoveryRequired === true;
+  if (stateStore && (lockOwnerSession !== null || [...sessions.values()].some((session) => !session.terminal))) {
+    recoveryRequired = true;
+  }
+  const persist = () => {
+    if (!stateStore) return;
+    stateStore.save(serializeBrokerState({ sessions, requestIds, consumedNonces, lockOwnerSession, recoveryRequired }));
+  };
+  if (stateStore && recoveryRequired !== persisted.recoveryRequired) persist();
+
   return Object.freeze({
     async handle(request, peerIdentityOverride) {
       const peerIdentity = peerIdentityOverride
@@ -328,44 +699,57 @@ function createRootfulBrokerServer({ config, peerIdentitySource, approvalVerifie
         peerIdentity,
         sessions,
         requestIds,
-        approvalVerifier,
+        approvalVerifier: verifier,
       });
+      const session = context.session;
+      assertSessionOperation(context, session, lockOwnerSession, recoveryRequired);
       const handler = handlers[context.operation];
       if (typeof handler !== "function") throw new BrokerError("broker_operation_unavailable", "broker_unavailable");
-      if (context.operation === "acquireExclusiveLock"
-        && lockOwnerSession !== null && lockOwnerSession !== context.sessionId) {
-        throw new BrokerError("broker_lock_conflict", "lock_conflict");
-      }
-      if (context.operation === "releaseExclusiveLock"
-        && lockOwnerSession !== null && lockOwnerSession !== context.sessionId) {
-        throw new BrokerError("broker_lock_owner_mismatch", "lock_conflict");
-      }
+      const mutating = MUTATING_OPERATIONS.has(context.operation);
       if (context.operation === "acquireExclusiveLock") lockOwnerSession = context.sessionId;
-      let result;
+      session.inFlight = context.operation;
       try {
-        result = await handler(context.payload, context);
+        persist();
       } catch (error) {
+        session.inFlight = null;
         if (context.operation === "acquireExclusiveLock" && lockOwnerSession === context.sessionId) lockOwnerSession = null;
         throw error;
       }
-      if (context.operation === "acquireExclusiveLock") sessions.get(context.sessionId).acquired = true;
-      if (context.operation === "releaseExclusiveLock") {
-        sessions.get(context.sessionId).terminal = true;
-        lockOwnerSession = null;
+      let result;
+      try {
+        result = await handler(context.payload, context);
+        result = applySessionTransition(context, result, session, phaseValidators);
+        session.inFlight = null;
+        if (context.operation === "releaseExclusiveLock") {
+          session.terminal = true;
+          session.acquired = false;
+          lockOwnerSession = null;
+        }
+        persist();
+      } catch (error) {
+        session.inFlight = null;
+        if (context.operation === "acquireExclusiveLock" && lockOwnerSession === context.sessionId) lockOwnerSession = null;
+        if (mutating && context.operation !== "releaseExclusiveLock") session.recoveryRequired = true;
+        try { persist(); } catch { recoveryRequired = true; }
+        throw error;
       }
       return Object.freeze({ ok: true, requestId: context.requestId, result: result === undefined ? null : result });
     },
     sessions,
     requestIds,
     get lockOwnerSession() { return lockOwnerSession; },
+    get recoveryRequired() { return recoveryRequired; },
   });
 }
 
 /** Bind the broker protocol to a pre-created, service-owned Unix socket. */
-function createUnixBrokerListener({ server, socketPath, peerIdentityResolver, maxRequestBytes = 128 * 1024 } = {}) {
+function createUnixBrokerListener({ server, socketPath, peerIdentityResolver, socketBoundary, maxRequestBytes = 128 * 1024 } = {}) {
   if (!server || typeof server.handle !== "function"
     || typeof socketPath !== "string" || !path.isAbsolute(socketPath)
     || typeof peerIdentityResolver !== "function"
+    || !socketBoundary || socketBoundary.verified !== true
+    || socketBoundary.socketPath !== path.resolve(socketPath)
+    || !Number.isInteger(socketBoundary.fd)
     || !Number.isInteger(maxRequestBytes) || maxRequestBytes <= 0) {
     throw new BrokerError("broker_listener_configuration_invalid", "broker_configuration_invalid");
   }
@@ -373,11 +757,6 @@ function createUnixBrokerListener({ server, socketPath, peerIdentityResolver, ma
     let bytes = 0;
     let settled = false;
     const chunks = [];
-    const closeWith = (response) => {
-      if (settled) return;
-      settled = true;
-      socket.end(`${JSON.stringify(response)}\n`);
-    };
     socket.on("data", async (chunk) => {
       if (settled) return;
       bytes += chunk.length;
@@ -406,8 +785,7 @@ function createUnixBrokerListener({ server, socketPath, peerIdentityResolver, ma
       }
     });
   });
-  listener.on("error", () => undefined);
-  listener.listen(socketPath);
+  listener.listen({ fd: socketBoundary.fd });
   return listener;
 }
 
@@ -485,6 +863,7 @@ function createRootfulBrokerOperations({ config, release, approval, transport, r
       };
     },
     computeReleaseDiff: (_repoRoot, oldSha, newSha) => call("computeReleaseDiff", { oldSha, newSha }),
+    classifyReleaseDiff: (_repoRoot, oldSha, newSha) => call("classifyReleaseDiff", { oldSha, newSha }),
     inspectCheckout: () => call("inspectCheckout", {}),
     inspectRuntime: () => call("inspectRuntime", {}),
     createCandidate: (_candidatePath, sha) => call("createCandidate", { sha }),
@@ -516,16 +895,20 @@ module.exports = {
   PROTOCOL_VERSION,
   BROKER_STRATEGY,
   BROKER_APPROVAL_SCOPE,
+  BROKER_MIGRATION_APPROVAL_SCOPE,
+  BROKER_APPROVAL_SCOPES,
   OPERATION_NAMES,
   BrokerError,
   approvalPayload,
   canonicalize,
+  createDurableBrokerStateStore,
   createEd25519ApprovalVerifier,
   createInMemoryTransport,
   createRootfulBrokerOperations,
   createRootfulBrokerServer,
   createUnixBrokerListener,
   createUnixSocketTransport,
+  verifySocketActivationBoundary,
   validateApproval,
   validateBrokerConfig,
   validateBrokerRequest,

@@ -83,6 +83,7 @@ function makeManifest() {
       strategy: "rootful-docker-broker",
       verified: true,
       socketPath: join(external, "broker.sock"),
+      statePath: join(external, "broker-state.json"),
       operator: {
         uid: 1001,
         gid: 1001,
@@ -96,7 +97,7 @@ function makeManifest() {
         dockerSocket: "/var/run/docker.sock",
       },
       approval: {
-        scope: "rootful-docker-broker-deployment",
+        scopes: ["rootful-docker-broker-deployment", "rootful-docker-broker-migration"],
         publicKeyPath: join(external, "broker.pub"),
         keyId: "production-broker",
       },
@@ -175,6 +176,13 @@ describe("production deployment entrypoint contract", () => {
       DEPLOYMENT_ACTIVATION_AUTHORIZED: "1",
       DEPLOYMENT_ACTIVATION_DIGEST: "0".repeat(64),
     })).toThrow(/digest_mismatch/i);
+  });
+
+  it("requires the documented root-owned operator-readable manifest mode", () => {
+    const stat = { uid: 0, gid: 1001, mode: 0o100640, isSymbolicLink: () => false, isFile: () => true };
+    expect(entrypoint.validateOperatorManifestFile(entrypoint.OPERATOR_MANIFEST_PATH, { gid: 1001 }, { lstatSync: () => stat })).toBe(entrypoint.OPERATOR_MANIFEST_PATH);
+    expect(() => entrypoint.validateOperatorManifestFile(entrypoint.OPERATOR_MANIFEST_PATH, { gid: 1001 }, { lstatSync: () => ({ ...stat, mode: 0o100644 }) })).toThrow(/metadata_mismatch/i);
+    expect(() => entrypoint.validateOperatorManifestFile(entrypoint.OPERATOR_MANIFEST_PATH, { gid: 1001 }, { lstatSync: () => ({ ...stat, gid: 0 }) })).toThrow(/metadata_mismatch/i);
   });
 
   it("rejects a runtime credential that uses the migration identity", () => {

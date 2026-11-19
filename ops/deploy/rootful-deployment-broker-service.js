@@ -4,11 +4,38 @@
 
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const path = require("node:path");
 const broker = require("./rootful-deployment-broker");
 const entrypoint = require("./production-deployment-entrypoint");
+const orchestrator = require("./migration-aware-deploy");
 const { createPrivilegedOperations } = require("./rootful-deployment-broker-privileged-operations");
 
 const INSTALLATION_MANIFEST = "/etc/clashcookies/production-deployment.json";
+const BROKER_SERVICE_MODULES = Object.freeze([
+  "rootful-deployment-broker-service.js",
+  "rootful-deployment-broker-privileged-operations.js",
+  "production-deployment-entrypoint.js",
+  "migration-aware-deploy.js",
+  "direct-docker-adapter.js",
+  "migration-runner.js",
+  "deployment-lock.js",
+  "rootful-deployment-broker.js",
+]);
+
+function validateBrokerServiceBundle(bundleRoot = __dirname, fsImpl = fs) {
+  if (typeof bundleRoot !== "string" || !path.isAbsolute(bundleRoot)) {
+    throw new broker.BrokerError("broker_service_bundle_root_invalid", "broker_configuration_invalid");
+  }
+  for (const relativePath of BROKER_SERVICE_MODULES) {
+    const target = path.join(bundleRoot, relativePath);
+    let stat;
+    try { stat = fsImpl.lstatSync(target); } catch { throw new broker.BrokerError("broker_service_bundle_incomplete", "broker_configuration_invalid"); }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new broker.BrokerError("broker_service_bundle_identity_invalid", "broker_configuration_invalid");
+    }
+  }
+  return Object.freeze({ root: path.resolve(bundleRoot), files: BROKER_SERVICE_MODULES });
+}
 
 /**
  * Load only the non-secret installation contract. The broker service must be
@@ -31,10 +58,19 @@ function loadBrokerInstallation(manifestPath = INSTALLATION_MANIFEST, fsImpl = f
  * supplied by the separately reviewed adapter bundle; this module never
  * accepts a handler path or client-provided executable.
  */
-function createRootfulBrokerService({ installation, peerIdentityResolver } = {}) {
+function createRootfulBrokerService({ installation, socketBoundary, peerIdentityResolver, fsImpl = fs } = {}) {
   if (!installation?.manifest || !installation.publicKey) {
     throw new broker.BrokerError("broker_service_handlers_required", "broker_configuration_invalid");
   }
+  if (!socketBoundary || socketBoundary.verified !== true
+    || socketBoundary.socketPath !== installation.manifest.broker.socketPath
+    || socketBoundary.ownerUid !== 0
+    || socketBoundary.ownerGid !== installation.manifest.broker.operator.gid
+    || socketBoundary.mode !== 0o660
+    || !socketBoundary.peerIdentity) {
+    throw new broker.BrokerError("broker_socket_boundary_required", "broker_configuration_invalid");
+  }
+  validateBrokerServiceBundle(__dirname, fsImpl);
   const manifest = installation.manifest;
   const privileged = createPrivilegedOperations(manifest);
   const lockReleasers = new Map();
@@ -58,6 +94,11 @@ function createRootfulBrokerService({ installation, peerIdentityResolver } = {})
       return { released: true };
     },
     computeReleaseDiff: (_payload, context) => privileged.computeReleaseDiff(
+      manifest.appDir,
+      context.release.oldSha,
+      context.release.newSha,
+    ),
+    classifyReleaseDiff: (_payload, context) => privileged.classifyReleaseDiff(
       manifest.appDir,
       context.release.oldSha,
       context.release.newSha,
@@ -104,31 +145,109 @@ function createRootfulBrokerService({ installation, peerIdentityResolver } = {})
       return entrypoint.checkedCommand(helperPath, [], { cwd: manifest.appDir, env, label: "non_migration_deploy" });
     },
   };
-  const peerResolver = peerIdentityResolver || (() => manifest.broker.operator);
+  const peerResolver = peerIdentityResolver || (() => socketBoundary.peerIdentity);
+  if (typeof peerResolver !== "function") {
+    throw new broker.BrokerError("broker_peer_identity_resolver_required", "broker_configuration_invalid");
+  }
+  const releaseConfig = (release) => ({
+    releaseId: release.releaseId,
+    oldSha: release.oldSha,
+    newSha: release.newSha,
+    migrationDiffDigest: release.migrationDiffDigest,
+    migrationManifestDigest: release.migrationManifestDigest,
+    authorizationDigest: release.authorizationDigest,
+    approvedBy: release.approvedBy,
+  });
+  const phaseValidators = {
+    readPreflightEvidence: (evidence, context) => orchestrator.verifyPreflightEvidence(releaseConfig(context.release), evidence),
+    inspectCheckout: (checkout, context) => {
+      if (!checkout || checkout.currentSha !== context.release.oldSha || checkout.trackedChanges || checkout.stagedChanges
+        || !Array.isArray(checkout.unknownPaths)) {
+        throw new broker.BrokerError("broker_checkout_evidence_invalid", "phase_evidence_invalid");
+      }
+      return checkout;
+    },
+    computeReleaseDiff: (diff, context, session) => {
+      const verified = diff;
+      if (!session.checkout || !Array.isArray(verified?.paths)) throw new broker.BrokerError("broker_checkout_evidence_missing", "phase_evidence_invalid");
+      orchestrator.assertCheckoutSafety(session.checkout, verified.paths, context.release.oldSha);
+      return verified;
+    },
+    classifyReleaseDiff: (diff, context, session) => {
+      const verified = diff;
+      if (!Array.isArray(verified?.paths)) throw new broker.BrokerError("broker_diff_evidence_invalid", "phase_evidence_invalid");
+      if (session.checkout) orchestrator.assertCheckoutSafety(session.checkout, verified.paths, context.release.oldSha);
+      return verified;
+    },
+    inspectRuntime: (runtime, context) => {
+      const snapshot = orchestrator.assertRuntimeSingleton(runtime, {
+        runtimeName: manifest.adapter.runtime.name,
+        runtimeLabel: manifest.adapter.runtime.label,
+        runtimeEnvironment: manifest.adapter.runtime.environment,
+      });
+      const expectedRevision = context.session.runtimeStarted ? context.release.newSha : context.release.oldSha;
+      if (snapshot.revision !== expectedRevision) throw new broker.BrokerError("broker_runtime_revision_invalid", "phase_evidence_invalid");
+      return snapshot;
+    },
+    verifyMigration: (status) => {
+      orchestrator.assertPostMigrationStatus(status);
+      return status;
+    },
+    healthCheck: (health) => {
+      orchestrator.assertHealthResult(health);
+      return health;
+    },
+  };
+  let stateStat;
+  try {
+    stateStat = fsImpl.lstatSync(manifest.broker.statePath);
+    if (stateStat.isSymbolicLink() || !stateStat.isFile()
+      || stateStat.uid !== 0 || stateStat.gid !== 0 || (stateStat.mode & 0o7777) !== 0o600) {
+      throw new Error("broker_state_metadata_mismatch");
+    }
+  } catch {
+    throw new broker.BrokerError("broker_state_target_unavailable", "broker_configuration_invalid");
+  }
+  const stateStore = broker.createDurableBrokerStateStore({ statePath: manifest.broker.statePath, fsImpl });
   const server = broker.createRootfulBrokerServer({
     config: { ...manifest, appDir: manifest.appDir },
-    peerIdentitySource: () => manifest.broker.operator,
-    approvalVerifier: broker.createEd25519ApprovalVerifier({ publicKey: installation.publicKey }),
+    peerIdentitySource: () => socketBoundary.peerIdentity,
+    approvalVerifierFactory: (consumedNonces) => broker.createEd25519ApprovalVerifier({
+      publicKey: installation.publicKey,
+      consumedNonces,
+    }),
     handlers: fixedHandlers,
+    phaseValidators,
+    stateStore,
   });
   const listener = broker.createUnixBrokerListener({
     server,
     socketPath: manifest.broker.socketPath,
     peerIdentityResolver: peerResolver,
+    socketBoundary,
   });
   return Object.freeze({ server, listener });
 }
 
 module.exports = {
+  BROKER_SERVICE_MODULES,
   INSTALLATION_MANIFEST,
   createRootfulBrokerService,
   loadBrokerInstallation,
+  validateBrokerServiceBundle,
 };
 
 if (require.main === module) {
   try {
     const installation = loadBrokerInstallation();
-    createRootfulBrokerService({ installation });
+    const fd = Number(process.env.LISTEN_FDS) === 1 && Number(process.env.LISTEN_PID) === process.pid ? 3 : null;
+    if (fd === null) throw new broker.BrokerError("broker_socket_activation_required", "broker_configuration_invalid");
+    const socketBoundary = broker.verifySocketActivationBoundary({
+      fd,
+      socketPath: installation.manifest.broker.socketPath,
+      operator: installation.manifest.broker.operator,
+    });
+    createRootfulBrokerService({ installation, socketBoundary });
   } catch {
     process.exitCode = 78;
   }

@@ -85,6 +85,7 @@ jobs:
           BROKER_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_PRIVATE_KEY }}
           BROKER_KEY_ID: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_KEY_ID }}
           BROKER_APPROVED_BY: github-main-merge
+          BROKER_SCOPE: rootful-docker-broker-deployment
           BROKER_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}-non-migration
           BROKER_REVIEWED_COMMIT: ${{ needs.classify.outputs.new_sha }}
           BROKER_SESSION_ID: ${{ needs.classify.outputs.release_id }}
@@ -147,6 +148,7 @@ jobs:
           BROKER_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_PRIVATE_KEY }}
           BROKER_KEY_ID: ${{ secrets.PRODUCTION_DEPLOYMENT_BROKER_KEY_ID }}
           BROKER_APPROVED_BY: github-environment-production-migration
+          BROKER_SCOPE: rootful-docker-broker-migration
           BROKER_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}-migration
           BROKER_REVIEWED_COMMIT: ${{ needs.classify.outputs.new_sha }}
           BROKER_SESSION_ID: ${{ needs.classify.outputs.release_id }}

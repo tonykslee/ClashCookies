@@ -216,6 +216,14 @@ function runGit(repoRoot, args, spawnSyncImpl = childProcess.spawnSync) {
 }
 
 function computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl = childProcess.spawnSync) {
+  const diff = classifyReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl);
+  if (diff.paths.length === 0) {
+    throw new OrchestratorError("no_prisma_changes_for_migration_aware_deploy", EXIT_CODES.BLOCKED, "non_migration_release");
+  }
+  return diff;
+}
+
+function classifyReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl = childProcess.spawnSync) {
   const verifiedOldSha = runGit(repoRoot, ["rev-parse", "--verify", `${oldSha}^{commit}`], spawnSyncImpl).trim().toLowerCase();
   const verifiedNewSha = runGit(repoRoot, ["rev-parse", "--verify", `${newSha}^{commit}`], spawnSyncImpl).trim().toLowerCase();
   if (verifiedOldSha !== oldSha || verifiedNewSha !== newSha) {
@@ -226,9 +234,6 @@ function computeReleaseDiff(repoRoot, oldSha, newSha, spawnSyncImpl = childProce
     ["diff", "--name-only", "--no-ext-diff", oldSha, newSha, "--", "prisma/schema.prisma", "prisma/migrations"],
     spawnSyncImpl,
   ).split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-  if (names.length === 0) {
-    throw new OrchestratorError("no_prisma_changes_for_migration_aware_deploy", EXIT_CODES.BLOCKED, "non_migration_release");
-  }
   const rawDiff = runGit(
     repoRoot,
     ["diff", "--binary", "--no-ext-diff", oldSha, newSha, "--", "prisma/schema.prisma", "prisma/migrations"],
@@ -690,6 +695,8 @@ module.exports = {
   assertMigrationRunnerResult,
   assertPostMigrationStatus,
   assertRuntimeSingleton,
+  assertHealthResult,
+  classifyReleaseDiff,
   computeReleaseDiff,
   parseConfig,
   readPreflightEvidence,
