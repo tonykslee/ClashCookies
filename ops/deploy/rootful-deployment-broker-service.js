@@ -241,12 +241,14 @@ function createRootfulBrokerService({
     handlers: fixedHandlers,
     phaseValidators,
     stateStore,
+    deadlinePolicy: dependencies.deadlinePolicy,
   });
   const listener = createListener({
     server,
     socketPath: manifest.broker.socketPath,
     peerIdentityResolver: peerResolver,
     socketBoundary,
+    deadlinePolicy: dependencies.deadlinePolicy,
   });
   return Object.freeze({ server, listener });
 }

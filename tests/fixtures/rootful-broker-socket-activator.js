@@ -6,7 +6,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 const socketPath = process.env.BROKER_SOCKET_PATH;
-const workerPath = path.join(__dirname, "rootful-broker-socket-server.js");
+const workerPath = process.env.BROKER_WORKER_PATH || path.join(__dirname, "rootful-broker-socket-server.js");
 
 const seed = net.createServer();
 seed.once("error", () => process.exit(92));

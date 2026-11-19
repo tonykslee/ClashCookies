@@ -4,7 +4,7 @@ Status: proposed offline contract. None of the paths below are claimed to be ins
 
 | Resource | Proposed path | Owner / mode | Offline source SHA-256 | Offline contract | Facts to verify before installation |
 | --- | --- | --- | --- | --- | --- |
-| Immutable deployment entrypoint | `/home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js` | protected administrative owner; `0755` | `b0ce061c4edd0bfcbb689629b63ca75e7b5db8fb7950f06d4ab10f20d52380bc` | Regular, canonical file; SHA-256 pinned in the manifest and `executor.authorization`; operator cannot write the file or any parent; executable shebang and sibling bundle are installed together | Actual operator UID/GID/groups; installer owner; parent ownership/modes; final SHA-256; Node 20 runtime/shebang availability; installed invocation smoke test |
+| Immutable deployment entrypoint | `/home/tilo/deploy-assets/clashcookies-production/production-deployment-entrypoint.js` | protected administrative owner; `0755` | `aa3074bb45ae9e7342615708cb13ed6fbc59d2c544c2a3bd2bc77d539b803d4c` | Regular, canonical file; SHA-256 pinned in the manifest and `executor.authorization`; operator cannot write the file or any parent; executable shebang and sibling bundle are installed together | Actual operator UID/GID/groups; installer owner; parent ownership/modes; final SHA-256; Node 20 runtime/shebang availability; installed invocation smoke test |
 | Operator-visible deployment manifest | `/etc/clashcookies/production-deployment-operator.json` | `root:clashcookies-deploy`; `0640`; no secret values | N/A — sanitized contract | Fixed path read by the SSH operator; contains only non-secret topology, identity, hashes, metadata, and approval scope; operator cannot replace it or its parents | Actual owner/group/mode, readable-by-operator check, equality with the root-only manifest for every broker-relevant field, and no secret values |
 | Reviewed non-migration helper | `/home/tilo/deploy-assets/deploy-prod.sh` | protected administrative owner; `0755` | `1bf92b63a38d2f791a0dcff07e634c106424a1fc1e141520c280424c221c9492` | Regular, canonical file; SHA-256 pinned; argument-free invocation; when broker-owned, verifies the release-bound owner record and does not recursively acquire/release the shared lock; legacy wrapper remains untouched | Exact helper artifact/hash; runtime PATH; Docker topology; checkout path; protected runtime env source |
 | Immutable module bundle | `/home/tilo/deploy-assets/clashcookies-production/` | protected administrative owner; files `0644`, parent `0755` | See bundle hashes below | Must contain exactly the five hash-pinned sibling modules required by the executor; no external npm dependency is loaded by the executor boundary | Complete file set, hashes, owners/modes, canonical parent chain, Node 20 runtime, installed-layout module load and entrypoint invocation |
@@ -38,24 +38,26 @@ These are the offline source hashes for the five sibling modules required beside
 | `direct-docker-adapter.js` | `ff036f960985f2f0aa0fdde41dcbb9f9ffa428a17ddc63a6fe497eeaafe2fbf46` |
 | `migration-runner.js` | `fbad7b35af6780d4d567bba6fd7d441ba2737a17499300f072e405427d26653e` |
 | `deployment-lock.js` | `44022a36f324905223177881b1c4b4bb09591e7e94d58e42931f6e81f10241f3` |
-| `rootful-deployment-broker.js` | `30bed09695928ec0650c5ff65bfaaa2d6adfc5109c99168e4f90a60a28014460` |
+| `rootful-deployment-broker.js` | `38ef2d92f888186dfb4954d98beccec954ff2207608c46925ace7f2593ab23fc` |
 
-The broker service bundle also includes `rootful-deployment-broker-service.js` (`10383996299fd2be89814d057baae5f8ae1843d2edc2307b007cb1cfa9b4fb65`) and the privileged adapter hash above. The CI-only signer is `create-rootful-broker-approval.js` (`995f5a3ecac6d223e1efac90ed99188e96532eae3783616df8759f8245620803`); its private key is never installed on the VM.
+The broker service bundle also includes `rootful-deployment-broker-service.js` (`cd800c0bfe42cc47c8d1697ba5631e4e62d8ca988e63276c9950c23baaa0169d`) and the privileged adapter hash above. The CI-only signer is `create-rootful-broker-approval.js` (`995f5a3ecac6d223e1efac90ed99188e96532eae3783616df8759f8245620803`); its private key is never installed on the VM.
 
 The self-contained broker-side bundle at `/usr/local/libexec/clashcookies/` must include these same-directory modules: `rootful-deployment-broker-service.js`, `rootful-deployment-broker-privileged-operations.js`, `production-deployment-entrypoint.js`, `migration-aware-deploy.js`, `direct-docker-adapter.js`, `migration-runner.js`, `deployment-lock.js`, and `rootful-deployment-broker.js`. The service refuses an incomplete or symlinked sibling layout before serving requests.
+
+The broker RPC uses the fixed operation-aware deadline policy implemented by `rootful-deployment-broker.js`: protocol idle 30 seconds; evidence/lock/release-record operations 30 seconds; diff operations 60 seconds; candidate creation and promotion/health operations 120 seconds; runtime start 180 seconds; candidate build and non-migration execution 15 minutes; migration runner 30 minutes. The Unix client and listener add the same fixed 5-second response grace. These are bounded service policy values; clients cannot supply a deadline. A mutating timeout or peer disconnect records durable recovery-required state and blocks further release work until supervised recovery.
 
 ### Broker bundle hashes
 
 | Module | SHA-256 |
 | --- | --- |
-| `rootful-deployment-broker-service.js` | `10383996299fd2be89814d057baae5f8ae1843d2edc2307b007cb1cfa9b4fb65` |
+| `rootful-deployment-broker-service.js` | `cd800c0bfe42cc47c8d1697ba5631e4e62d8ca988e63276c9950c23baaa0169d` |
 | `rootful-deployment-broker-privileged-operations.js` | `2ee617d6634d4323d0a6f4b7a9db873bb29268b6a8853b85a2d0e96d25969029` |
-| `production-deployment-entrypoint.js` | `b0ce061c4edd0bfcbb689629b63ca75e7b5db8fb7950f06d4ab10f20d52380bc` |
+| `production-deployment-entrypoint.js` | `aa3074bb45ae9e7342615708cb13ed6fbc59d2c544c2a3bd2bc77d539b803d4c` |
 | `migration-aware-deploy.js` | `ae518e3660fdb46b1a29445d1ac4ac70be832b7ae02eecdc01c795866dd7f477` |
 | `direct-docker-adapter.js` | `ff036f960985f2f0aa0fdde41dcbb9f9ffa428a17ddc63a6fe497eeaafe2fbf46` |
 | `migration-runner.js` | `fbad7b35af6780d4d567bba6fd7d441ba2737a17499300f072e405427d26653e` |
 | `deployment-lock.js` | `44022a36f324905223177881b1c4b4bb09591e7e94d58e42931f6e81f10241f3` |
-| `rootful-deployment-broker.js` | `30bed09695928ec0650c5ff65bfaaa2d6adfc5109c99168e4f90a60a28014460` |
+| `rootful-deployment-broker.js` | `38ef2d92f888186dfb4954d98beccec954ff2207608c46925ace7f2593ab23fc` |
 
 ## Installation prerequisites
 

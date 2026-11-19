@@ -65,6 +65,29 @@ const MIGRATION_OPERATIONS = new Set([
 ]);
 
 const MUTATING_OPERATIONS = new Set(OPERATION_NAMES.filter((operation) => !READ_ONLY_OPERATIONS.has(operation)));
+const BROKER_PROTOCOL_TIMEOUT_MS = 30_000;
+const BROKER_RESPONSE_GRACE_MS = 5_000;
+const BROKER_OPERATION_DEADLINES_MS = Object.freeze({
+  readPreflightEvidence: 30_000,
+  acquireExclusiveLock: 30_000,
+  releaseExclusiveLock: 30_000,
+  computeReleaseDiff: 60_000,
+  classifyReleaseDiff: 60_000,
+  inspectCheckout: 30_000,
+  inspectRuntime: 30_000,
+  createCandidate: 120_000,
+  buildCandidate: 15 * 60_000,
+  runMigrationRunner: 30 * 60_000,
+  verifyMigration: 120_000,
+  verifyPromotedArtifact: 120_000,
+  stopRuntime: 120_000,
+  checkoutRelease: 120_000,
+  startRuntime: 180_000,
+  healthCheck: 120_000,
+  cleanupCandidate: 120_000,
+  writeReleaseRecord: 30_000,
+  runNonMigration: 15 * 60_000,
+});
 const RELEASE_RECORD_EVENTS = Object.freeze([
   "lock_acquired",
   "preflight_authorized",
@@ -86,6 +109,38 @@ class BrokerError extends Error {
     this.name = "BrokerError";
     this.code = code;
   }
+}
+
+function normalizeDeadlinePolicy(input) {
+  const policy = input || BROKER_OPERATION_DEADLINES_MS;
+  if (!policy || typeof policy !== "object") {
+    throw new BrokerError("broker_deadline_policy_invalid", "broker_configuration_invalid");
+  }
+  for (const operation of OPERATION_NAMES) {
+    if (!Number.isInteger(policy[operation]) || policy[operation] <= 0) {
+      throw new BrokerError("broker_deadline_policy_invalid", "broker_configuration_invalid");
+    }
+  }
+  return Object.freeze(Object.fromEntries(OPERATION_NAMES.map((operation) => [operation, policy[operation]])));
+}
+
+function operationDeadlineMs(operation, deadlinePolicy = BROKER_OPERATION_DEADLINES_MS) {
+  const policy = normalizeDeadlinePolicy(deadlinePolicy);
+  if (!OPERATION_NAMES.includes(operation)) {
+    throw new BrokerError("broker_operation_not_allowlisted", "operation_invalid");
+  }
+  return policy[operation];
+}
+
+function withOperationDeadline(promise, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new BrokerError("broker_operation_timeout", "broker_operation_timeout")), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)).catch((error) => {
+    if (error?.code === "broker_operation_timeout") promise.catch(() => undefined);
+    throw error;
+  });
 }
 
 /** Return a deterministic JSON representation for approval and request binding. */
@@ -847,8 +902,10 @@ function createRootfulBrokerServer({
   phaseValidators = {},
   state = {},
   stateStore,
+  deadlinePolicy,
 } = {}) {
   const validatedConfig = validateBrokerConfig(config, config?.appDir || "/");
+  const deadlines = normalizeDeadlinePolicy(deadlinePolicy);
   for (const operation of ["readPreflightEvidence", "inspectCheckout", "computeReleaseDiff", "classifyReleaseDiff", "inspectRuntime", "runMigrationRunner", "verifyMigration", "healthCheck"]) {
     if (typeof phaseValidators[operation] !== "function") {
       throw new BrokerError("broker_phase_validator_required", "broker_configuration_invalid");
@@ -875,6 +932,15 @@ function createRootfulBrokerServer({
   const persist = () => {
     if (!stateStore) return;
     stateStore.save(serializeBrokerState({ sessions, requestIds, consumedNonces, lockOwnerSession, recoveryRequired }));
+  };
+  const markTransportAmbiguous = (request) => {
+    const session = request && sessions.get(request.sessionId);
+    if (!session || !MUTATING_OPERATIONS.has(request.operation)) return;
+    session.inFlight = null;
+    session.recoveryRequired = true;
+    session.failureObserved = true;
+    recoveryRequired = true;
+    try { persist(); } catch { /* retain in-memory fail-closed state */ }
   };
   if (stateStore && recoveryRequired !== persisted.recoveryRequired) persist();
 
@@ -905,7 +971,11 @@ function createRootfulBrokerServer({
       }
       let result;
       try {
-        result = await handler(context.payload, context);
+        const handlerPromise = Promise.resolve().then(() => handler(context.payload, context));
+        result = await withOperationDeadline(handlerPromise, operationDeadlineMs(context.operation, deadlines));
+        if (session.inFlight !== context.operation) {
+          throw new BrokerError("broker_recovery_required", "broker_recovery_required");
+        }
         result = applySessionTransition(context, result, session, phaseValidators);
         session.inFlight = null;
         if (context.operation === "releaseExclusiveLock") {
@@ -933,6 +1003,7 @@ function createRootfulBrokerServer({
     },
     sessions,
     requestIds,
+    markTransportAmbiguous,
     get lockOwnerSession() { return lockOwnerSession; },
     get recoveryRequired() { return recoveryRequired; },
   });
@@ -945,8 +1016,10 @@ function createUnixBrokerListener({
   peerIdentityResolver,
   socketBoundary,
   maxRequestBytes = 128 * 1024,
-  requestTimeoutMs = 5000,
+  requestTimeoutMs = BROKER_PROTOCOL_TIMEOUT_MS,
+  deadlinePolicy,
 } = {}) {
+  const deadlines = normalizeDeadlinePolicy(deadlinePolicy);
   if (!server || typeof server.handle !== "function"
     || typeof socketPath !== "string" || !path.isAbsolute(socketPath)
     || typeof peerIdentityResolver !== "function"
@@ -960,16 +1033,27 @@ function createUnixBrokerListener({
   const listener = net.createServer({ allowHalfOpen: true }, (socket) => {
     let bytes = 0;
     let settled = false;
+    let request;
+    let handlerFinished = false;
+    let responseSent = false;
     const chunks = [];
+    const markAmbiguous = () => {
+      if (!handlerFinished && !responseSent && request && typeof server.markTransportAmbiguous === "function") {
+        server.markTransportAmbiguous(request);
+      }
+    };
     socket.setTimeout(requestTimeoutMs, () => {
       if (!settled) {
         settled = true;
+        markAmbiguous();
         socket.destroy();
       }
     });
     socket.on("error", () => {
       settled = true;
+      markAmbiguous();
     });
+    socket.on("close", markAmbiguous);
     socket.on("data", async (chunk) => {
       if (settled) return;
       bytes += chunk.length;
@@ -983,18 +1067,35 @@ function createUnixBrokerListener({
       const newline = raw.indexOf("\n");
       if (newline < 0) return;
       settled = true;
-      let request;
       try {
         request = JSON.parse(raw.slice(0, newline));
         const peerIdentity = peerIdentityResolver(socket);
+        const operationTimeout = OPERATION_NAMES.includes(request.operation)
+          ? operationDeadlineMs(request.operation, deadlines) + BROKER_RESPONSE_GRACE_MS
+          : requestTimeoutMs;
+        socket.setTimeout(operationTimeout, () => {
+          if (!handlerFinished) {
+            settled = true;
+            markAmbiguous();
+            socket.destroy();
+          }
+        });
         const result = await server.handle(request, peerIdentity);
-        socket.end(`${JSON.stringify(result)}\n`);
+        handlerFinished = true;
+        if (!socket.destroyed) {
+          responseSent = true;
+          socket.end(`${JSON.stringify(result)}\n`);
+        }
       } catch (error) {
-        socket.end(`${JSON.stringify({
-          ok: false,
-          requestId: request?.requestId || null,
-          error: { code: error?.code || "broker_failed", message: "broker request rejected" },
-        })}\n`);
+        handlerFinished = true;
+        if (!socket.destroyed) {
+          responseSent = true;
+          socket.end(`${JSON.stringify({
+            ok: false,
+            requestId: request?.requestId || null,
+            error: { code: error?.code || "broker_failed", message: "broker request rejected" },
+          })}\n`);
+        }
       }
     });
   });
@@ -1009,9 +1110,10 @@ function createInMemoryTransport(server) {
 }
 
 /** Create the production Unix-socket transport with bounded newline-delimited JSON. */
-function createUnixSocketTransport({ socketPath, timeoutMs = 5000, maxResponseBytes = 128 * 1024 } = {}) {
+function createUnixSocketTransport({ socketPath, timeoutMs, maxResponseBytes = 128 * 1024, deadlinePolicy } = {}) {
+  const deadlines = normalizeDeadlinePolicy(deadlinePolicy);
   if (typeof socketPath !== "string" || !path.isAbsolute(socketPath)
-    || !Number.isInteger(timeoutMs) || timeoutMs <= 0
+    || (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs <= 0))
     || !Number.isInteger(maxResponseBytes) || maxResponseBytes <= 0) {
     throw new BrokerError("broker_transport_configuration_invalid", "broker_transport_invalid");
   }
@@ -1020,10 +1122,15 @@ function createUnixSocketTransport({ socketPath, timeoutMs = 5000, maxResponseBy
     let timer;
     let bytes = 0;
     const chunks = [];
+    const requestTimeout = timeoutMs === undefined
+      ? (OPERATION_NAMES.includes(request?.operation)
+        ? operationDeadlineMs(request.operation, deadlines) + BROKER_RESPONSE_GRACE_MS
+        : BROKER_PROTOCOL_TIMEOUT_MS)
+      : timeoutMs;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const socket = net.createConnection(socketPath);
     const fail = (message) => finish(reject, new BrokerError(message, "broker_transport_failed"));
-    timer = setTimeout(() => { socket.destroy(); fail("broker_transport_timeout"); }, timeoutMs);
+    timer = setTimeout(() => { socket.destroy(); fail("broker_transport_timeout"); }, requestTimeout);
     socket.on("error", () => fail("broker_transport_failed"));
     socket.on("data", (chunk) => {
       bytes += chunk.length;
@@ -1112,6 +1219,9 @@ function createRootfulBrokerOperations({ config, release, approval, transport, r
 }
 
 module.exports = {
+  BROKER_OPERATION_DEADLINES_MS,
+  BROKER_PROTOCOL_TIMEOUT_MS,
+  BROKER_RESPONSE_GRACE_MS,
   PROTOCOL_VERSION,
   BROKER_STRATEGY,
   BROKER_APPROVAL_SCOPE,
@@ -1129,6 +1239,7 @@ module.exports = {
   createRootfulBrokerServer,
   createUnixBrokerListener,
   createUnixSocketTransport,
+  operationDeadlineMs,
   verifySocketActivationBoundary,
   validateApproval,
   validateBrokerConfig,

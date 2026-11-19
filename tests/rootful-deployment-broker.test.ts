@@ -88,6 +88,13 @@ function request(server: ReturnType<typeof makeServer>, release: ReturnType<type
 }
 
 describe("rootful deployment broker boundary", () => {
+  it("uses one bounded operation-aware deadline policy for client and server phases", () => {
+    expect(broker.operationDeadlineMs("buildCandidate")).toBeGreaterThan(5000);
+    expect(broker.operationDeadlineMs("runMigrationRunner")).toBeGreaterThan(broker.operationDeadlineMs("healthCheck"));
+    expect(broker.BROKER_RESPONSE_GRACE_MS).toBeGreaterThan(0);
+    expect(() => broker.operationDeadlineMs("arbitrary-command")).toThrow(/operation_not_allowlisted/i);
+  });
+
   it("rejects unauthorized operators and spoofed identity claims", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const config = makeConfig(); const release = makeRelease(); const approval = makeApproval(privateKey, release);
