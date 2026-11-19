@@ -205,6 +205,8 @@ This is the only proposed collector invocation. It is intentionally one bounded 
 
 ### Capture method — existing approved SSH client
 
+This section applies only to the later discovery collector and retained JSONL evidence. It does not govern the fixed Gate 1 prerequisite probe, whose bounded summaries may be reviewed transiently in a protected operator terminal after its separate SSH authorization. Do not route the prerequisite probe through this capture method, create a ciphertext destination for it, or treat terminal review as retained provenance.
+
 Use the operator's existing approved noninteractive SSH client/session in **remote-command mode**, with its stdout-capture feature configured before execution to write the remote command's stdout byte-for-byte to the already approved local evidence file outside the VM. The operator must supply the existing host, identity, and local destination; this document intentionally invents none of them. Do not open an interactive shell, use a terminal transcript, copy/paste output, or redirect stdout to a VM path.
 
 Configure the client in this order:
@@ -267,11 +269,13 @@ The review checklist must explicitly cover:
 
 ## 8. Separate authorization gate
 
-Three decisions are required and must be recorded separately:
+Three decisions are required and must be recorded separately for delivery and retained collector evidence:
 
 1. **Delivery authorization:** permission to transfer exactly the three pinned files and, if necessary, create one named isolated operator staging directory outside the production checkout. This does not authorize discovery execution.
 2. **Evidence capture authorization:** permission to configure the existing approved SSH client's stdout-only remote-command capture to the approved local destination. This does not authorize the remote command or any production access beyond the separately approved execution.
 3. **Discovery execution authorization:** explicit approval for one bounded invocation using the verified paths, operator account, existing read-only Docker visibility, optional existing read-only PostgreSQL selection, and approved private evidence destination. It does not authorize deployment, migration, backup/timer activation, wrapper execution, permission changes, staging cleanup, or release promotion.
+
+The fixed Gate 1 prerequisite probe is a separate terminal-only action. Its one-command SSH authorization does not authorize retained evidence capture, and the retained-evidence authorization does not authorize the collector unless separately granted.
 
 If any of the three authorizations is absent, if a prerequisite is unresolved, or if any stop condition occurs, stop with `UNKNOWN`/`BLOCKED` and return the review record. Do not merge a future code change, enable `PHASE1_EXECUTION_ENABLED`, merge release PR #1983, or promote `dev` to `main` as part of this preflight.
 
