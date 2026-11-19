@@ -1,5 +1,7 @@
 # Production VM adapter Phase 1 — discovery and implementation boundary
 
+> **ARCHIVED / SUPERSEDED (owner decision Nov 19, 2026):** This document records historical investigation of the now-withdrawn replacement deployment architecture. Do not run its collector, installation, Gate 1 commands, or proposed broker. The existing `~/deploy-prod.sh` workflow remains the deployment path; see rollback PR #2086 and `docs/deployment.md`.
+
 **Repository:** `tonykslee/ClashCookies`
 **Base:** `dev`
 **Reviewed source:** `6b85f95de815f0e97c3a0323ba20cc4cc347a32f`

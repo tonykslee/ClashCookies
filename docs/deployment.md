@@ -1,3 +1,5 @@
+> **Legacy deployment restored (repository rollback proposal, Nov 19, 2026):** The established GitHub Actions job invokes the existing droplet `~/deploy-prod.sh` wrapper; the added rootful broker, replacement executor, privileged operator and extra installation are not part of this release. Production activation remains guarded by `PRODUCTION_DEPLOYMENT_ENABLED`; no merge or deployment has occurred from this rollback branch. The legacy runtime still invokes Prisma migrations during startup, so a migration-bearing release requires a verified backup, review of both pending migrations, explicit approval, and a controlled recovery plan before enabling the gate.
+
 # Deployment and Install Links
 
 ## Deployment Model
@@ -18,60 +20,48 @@ Runtime expectations:
 
 ### Non-migration deploy
 
-Non-migration deploys use a build-only candidate followed by a controlled stop/start handoff. They have a brief restart window and are not zero downtime.
+Non-migration deploys are near-zero downtime, not true zero downtime.
 
 Flow:
 
 1. Capture `OLD_SHA` from the current checkout.
 2. Fetch the target branch tip into `NEW_SHA`.
 3. Diff `OLD_SHA..NEW_SHA` for `prisma/migrations/**` and `prisma/schema.prisma`.
-4. If Prisma files changed, fail closed before stopping production. Otherwise create a temporary worktree and run dependency installation plus `npm run build` only, without production credentials, network, pollers, schedulers, startup, or migrations.
-5. Refuse dirty tracked changes, unknown-file collisions, stale replacement paths, and anything other than exactly one canonical active runtime.
-6. Stop the old app, check out `NEW_SHA` without deleting unknown files, and start exactly one active canonical app on the normal port.
-7. Verify the canonical app returns HTTP 200 from `/healthz`.
-8. If start or health fails, restore `OLD_SHA`, restart the old app, verify `/healthz`, and return nonzero even when rollback succeeds.
+4. If no Prisma files changed, create a temporary worktree and start a replacement container in parallel.
+5. Wait for the replacement container to return HTTP 200 from `/healthz`.
+6. Stop the old app only after replacement health passes.
+7. Start the canonical app on the normal port.
+8. Verify the canonical app returns HTTP 200 from `/healthz`.
+9. If the canonical app fails health, roll back to `OLD_SHA` and restore the old app.
 
 ### Prisma migration deploy
 
-The version-controlled procedure refuses any deployment whose `OLD_SHA..NEW_SHA` diff includes `prisma/migrations/**` or `prisma/schema.prisma`.
+If the `OLD_SHA..NEW_SHA` diff includes `prisma/migrations/**` or `prisma/schema.prisma`, deploy uses the intentional downtime path.
 
 Flow:
 
 1. Capture `OLD_SHA` and `NEW_SHA`.
-2. Detect Prisma changes from the diff and stop with no production state change.
-3. Use a separately reviewed migration deployment and recovery procedure. It must explicitly address existing-schema compatibility, migration failure handling, and the fact that code rollback does not undo committed database changes.
-
-The [production migration and recovery runbook](../ops/deploy/production-migration-recovery-runbook.md) remains the operational design and authorization source. **Implemented on `dev`, not deployed:** PR #2017 separated `npm run migrate:deploy` from bot startup; PR #2018 added the isolated `npm run migrate:runner` with SHA/manifest/database-identity and runner-lock checks; PR #2019 added the fail-closed `npm run deploy:migration-aware` state machine. The orchestrator's default VM-dependent operations deliberately refuse execution. Its success-path and failure-path tests use mocks/simulation, **not** a real VM adapter or an end-to-end production-like deployment. It does not restart the old runtime automatically after migration or failed health; an ambiguous outcome is recovery-required, not permission to retry or roll back.
-
-**Phase 1 completed, Phase 2 not authorized:** Read-only production VM discovery was supplied by the operator on November 16, 2026 and separately recorded in [the Phase 1 evidence document](diagnostics/production-vm-adapter-phase1-2026-11-16.md). [PR #2021](https://github.com/tonykslee/ClashCookies/pull/2021) merged the fail-closed, development/test-only direct-Docker adapter at `c4d5bedd88b67c06a70a35696605bce3eb38de56`, with green CI. **Phase 2 requires separately reviewed VM integration primitives and isolated tests before any installation or execution:** distinguish direct-Docker app ownership from Compose-managed PostgreSQL; verify the legacy wrapper's actual lock/rollback flow and deploy account, shared outer/inner lock sequencing, immutable executor and credential permissions, append-only record storage, runtime singleton including host PID/container-ID correlation, read-only database identity, and fresh backup/monitoring/staging gates. The legacy wrapper's `DATABASE_URL` Docker argument and `.env` mode `664` are observed risks, not permission to alter credentials or production. Operator discovery confirmed healthy `/livez` and `/healthz`, disabled backup timer, and old staging network/replacement volumes to preserve. **No production deployment, wrapper replacement, migration, backup activation, cleanup, or `dev` to `main` promotion is authorized. PR #1983 remains draft and blocked.**
-
-**Phase 1 adapter infrastructure:** `ops/deploy/direct-docker-adapter.js` and its isolated tests now define a fail-closed direct-Docker adapter contract, strict migration-child environment boundary, executor/credential/lock/release-record validators, and separate observed/proposed documentation. This infrastructure is not wired into the CLI, installed on the VM, or production-authorized. See [the adapter contract](../ops/deploy/direct-docker-adapter.md) and [the Phase 1 discovery record](diagnostics/production-vm-adapter-phase1-2026-11-16.md).
-
-**Rootful broker compatibility amendment:** The merged deployment integration is adapted for the verified production topology by `ops/deploy/rootful-deployment-broker.js`. The SSH-facing identity is a proposed restricted `clashcookies-deploy` operator with no `sudo`, `docker` group, rootful Docker socket, credential read access, or client-supplied command/path/environment fields. It submits only release-bound, Ed25519-approved requests to a proposed root-owned broker service behind a pre-owned `SocketUser=clashcookies-deploy`, `SocketMode=0600` systemd socket. The broker is the sole boundary for the existing rootful Docker socket and protected migration/runtime credentials; it reuses the existing migration-aware orchestrator, outer/inner locks, artifact identity, singleton checks, release records, and recovery-required states. The broker-invoked non-migration helper verifies the broker-owned release lock rather than recursively acquiring it. Non-migration and migration approvals use distinct signed scopes, and durable broker state prevents approval replay across restarts. The operator reads only a sanitized `/etc/clashcookies/production-deployment-operator.json`; the root-only broker manifest remains unreadable to it. The broker, operator, socket, credentials, and manifests are **not installed** by this repository change. The active `clashcookies-app`/`clashcookies-db` topology and legacy wrapper remain untouched. See the [broker installation manifest](../ops/deploy/production-deployment-installation-manifest.md) and [integration design amendment](diagnostics/production-deployment-integration-design-2026-11-17.md).
-
-The broker RPC deadline contract is operation-aware and bounded: short evidence and lock phases use 30 seconds, release-diff phases use 60 seconds, candidate creation and promotion phases use 120 seconds, runtime start uses 180 seconds, candidate builds use 15 minutes, non-migration execution uses 15 minutes, and the reviewed migration runner uses 30 minutes. A separate 30-second idle/protocol limit protects incomplete requests, with a fixed 5-second response grace shared by the Unix client and listener. These values are broker policy, not client-supplied fields. A timeout or peer disconnect during a mutating handler records recovery-required state and never retries or reports success; installation remains fail-closed until supervised recovery.
-
-**Phase 2A lock coordination — merged in [PR #2024](https://github.com/tonykslee/ClashCookies/pull/2024) (`1976e28d`):** The repository-side lock contract and isolated evidence are recorded in [the Phase 2A diagnostic](diagnostics/production-deployment-lock-coordination-phase2a-2026-11-16.md). Terminal release records finalize before outer-lock release; cross-process Bash/Node contention was tested. This does not establish cooperation by the live VM wrapper or authorize installation, deployment, or migration execution.
-
-**Phase 2B read-only runtime evidence — merged in [PR #2025](https://github.com/tonykslee/ClashCookies/pull/2025) (`4e87e35a`):** The direct-Docker adapter now includes an injectable, bounded collector for running-container, selected-label, published-port, network, host-PID, and sanitized host-process cgroup evidence. It feeds the existing fail-closed runtime validator and rejects stale/malformed command output, duplicate or ambiguous candidates, unexpected ports/networks, and uncorrelated host Node/npm/yarn processes. Docker exposed-only metadata such as Compose PostgreSQL `5432/tcp` does not count as a published host binding, while the canonical app's expected loopback binding remains strict. The collector is development/test infrastructure only: it is not wired into the CLI, installed on the VM, or production-authorized. Future VM verification must still prove the live wrapper's permissions and lock participation, protected credential/release-record ownership, database identity, fresh health/monitoring/backup gates, and staging isolation or waiver.
-
-**Production VM discovery collector — merged in [PR #2027](https://github.com/tonykslee/ClashCookies/pull/2027) (`1cb81528`), repository-only:** `ops/deploy/discovery/production-vm-discovery.sh`, its [operator guide](../ops/deploy/discovery/production-vm-discovery.md), the Phase 2B contract helper, and 12 focused tests are now in `dev` following final-head green CI #4375. The single bounded, sanitized, read-only entry point uses the existing Phase 2B runtime identity/PID/cgroup validator; failed or contradictory Docker and staging evidence remains `UNKNOWN`/`FAIL`, Git checkout probes use `GIT_OPTIONAL_LOCKS=0`, PostgreSQL queries use read-only transactions only when existing least-privilege selection is available, and protected-resource results are explicitly **metadata-only**. Wrapper marker counts are not proof of live lock cooperation. No collector or helper was installed or run on the VM; no SSH, Docker, database, backup, migration, deployment, timer, staging, or production filesystem action occurred. **Next gate:** follow the [2026-11-17 operator preflight](diagnostics/production-vm-discovery-operator-preflight-2026-11-17.md) for exact three-file delivery, hash verification, prerequisites, private sanitized evidence, explicit stop conditions, and separate authorization. Candidate executor, credential, migration-lock and release-record paths remain **unverified**, not production configuration. The preflight records genuine follow-up concerns in the merged script's PASS/status interpretation; `PHASE1_EXECUTION_ENABLED=false` and all release authorization gates remain unchanged.
+2. Detect Prisma changes from the diff.
+3. Stop the old app first.
+4. Start the new app through the normal startup path so `prisma migrate deploy` runs.
+5. Verify the canonical app returns HTTP 200 from `/healthz`.
+6. If the startup or health check fails, the deploy exits nonzero after cleanup.
 
 ## Environment Matrix
 
-| Environment | Runtime mode | Canonical health |
-| --- | --- | --- |
-| Staging | `POLLING_MODE=mirror`, `POLLING_ENV=staging` | `127.0.0.1:8086/healthz` |
-| Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` |
+| Environment | Runtime mode | Canonical health | Temporary replacement health |
+| --- | --- | --- | --- |
+| Staging | `POLLING_MODE=mirror`, `POLLING_ENV=staging` | `127.0.0.1:8086/healthz` | `127.0.0.1:18086/healthz` |
+| Production | `POLLING_MODE=active`, `POLLING_ENV=prod` | `127.0.0.1:8085/healthz` | `127.0.0.1:18085/healthz` |
 
 Staging mirror mode must not run the upstream pollers directly. Production continues to own active polling and schedulers.
 Mirror sync also carries the finalized war-plan history tables (`WarPlanComplianceEvaluation` and `WarPlanViolation`) so staging reads stay consistent without performing local evaluation.
 
 ## Operational Notes
 
-- Build happens in an isolated candidate-build container; no replacement application runtime is started during candidate compilation.
-- A cold deploy can take a long time, so the deploy script allows a long health timeout after the controlled stop/start handoff.
-- Candidate-build success does not validate the exact artifact that production starts: the production container mounts the live checkout and `npm run start` rebuilds it.
+- Build happens inside the replacement container before `/healthz` is available.
+- A cold deploy can take a long time, so deploy scripts allow a long replacement health timeout.
+- The replacement container may be running while it is still building, but that does not count as ready.
 - Promotion is gated on app-level `/healthz`, not Docker status.
 - The final handoff still includes a brief restart window when the old app is stopped and the canonical app is started.
 - Historical SyncCycle replay is a one-time compiled repair utility. Dry-run is the default and only exact persisted `ScheduledSyncPost` boundaries can be written; prep-derived times are never promoted, and no membership snapshots or Home rows are synthesized. After the normal build, inspect with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range>` and apply explicitly with `docker exec clashcookies-app node dist/scripts/backfillMembershipHistorySyncCycles.js --guild <guild-id> --syncs <range> --apply`.
@@ -90,56 +80,9 @@ From the droplet host, use:
 
 `/livez` is process liveness only. `/healthz` should succeed only when the app is ready.
 
-## Version-controlled production deployment procedure
+## Deployment Notes
 
-The reviewed procedure is [ops/deploy/deploy-prod.sh](../ops/deploy/deploy-prod.sh). It keeps the existing argument-free VM contract and defaults (`/home/tilo/apps/clashcookies-prod`, `clashcookies-app`, port `8085`, `origin/main`), but it must be adopted by a separate reviewed VM-wrapper change before it controls production. This task does **not** modify `/home/tilo/deploy-prod.sh` or run a deployment.
-
-### Stable, version-pinned bootstrap
-
-The VM-owned wrapper must execute a separately installed, immutable copy of the reviewed helper outside the checkout it will switch. It must not execute `ops/deploy/deploy-prod.sh` through the mutable application path. The operator adoption change should pin both the reviewed commit and the installed file hash, for example:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-DEPLOY_HELPER_COMMIT="<approved-pr-2009-commit>"
-DEPLOY_HELPER="/home/tilo/deploy-assets/clashcookies-prod-deploy-${DEPLOY_HELPER_COMMIT}.sh"
-DEPLOY_HELPER_SHA256="<operator-recorded-sha256>"
-[ -f "$DEPLOY_HELPER" ]
-[ "$(sha256sum "$DEPLOY_HELPER" | awk '{print $1}')" = "$DEPLOY_HELPER_SHA256" ]
-exec bash "$DEPLOY_HELPER" "$@"
-```
-
-Install the pinned helper only after PR approval, record the commit/hash in the operator release record, and retain the prior pinned helper for rollback. The helper performs Git operations against `APP_DIR` but remains stable while that checkout changes; a target revision may lack `ops/deploy/deploy-prod.sh` without removing the running executor. This PR does not install the wrapper, change the VM, or select the final operator pin.
-
-### Safe non-migration rollout
-
-1. Confirm the release is approved for production, `origin/main` is the reviewed target, the current checkout is the expected reviewed `OLD_SHA`, and the production app has exactly one active runtime named `clashcookies-app`.
-2. Confirm the working tree has no tracked changes. The procedure inventories unknown files and refuses any target that would overwrite one; it never runs `git reset --hard`, `git clean`, or unconditional recursive cleanup.
-3. Run the versioned script through the compatible VM wrapper. It takes the shared atomic directory lock at `DEPLOY_LOCK_PATH` before checkout/runtime inspection, fetches `origin/main`, and fails closed if `prisma/schema.prisma` or `prisma/migrations/**` changed. The migration-aware path uses the same outer lock and a distinct `DEPLOY_MIGRATION_LOCK_PATH` only inside its migration stage; see [the coordination contract](../ops/deploy/deployment-lock.md).
-4. While holding the lock, it resolves `DATABASE_URL` through `docker compose config --format json` for the configured production service (`app` by default). Mapping and list environment forms, env-file values, and Compose substitutions are accepted only when normalized to exactly one PostgreSQL URL for that service; missing, unresolved, malformed, duplicate, or other-service-only values fail before production is stopped. It then creates a disposable Git worktree and runs only dependency installation plus `npm run build` in a build-only container. The candidate receives no `.env`, database URL, Discord credentials, production network, active polling mode, startup helper, or migration command. Docker `bridge` networking is used for dependency installation, so this is **not an offline build**; bridge egress may be available (including registry/package access as configured by the host), but the candidate is not attached to the production Docker network and receives no production secrets. Bridge network isolation is not a guarantee of blocked outbound connections, and the build container must never receive production database credentials or access to production-only Docker networks.
-5. After candidate build and safe worktree removal succeed, it stops the one existing active container, checks out `NEW_SHA` without touching unknown files, starts one labeled active production container, and verifies canonical `http://127.0.0.1:8085/healthz`. The candidate build is preflight evidence only: production startup mounts the live checkout and runs `npm run start`, which rebuilds from the checked-out source before `start:runtime` starts the bot. Migrations are not part of normal application startup.
-6. A failed start or health check stops the candidate, checks out `OLD_SHA`, restarts the prior application, and verifies the same health endpoint. A successful rollback still returns nonzero so the release is visibly failed and requires review.
-
-The script emits only bounded state, revision, container, and health-result lines. It does not print environment contents, credentials, database URLs, or build logs. Build failures are intentionally summarized rather than replaying container output.
-
-### Operator rollback
-
-For a non-migration release, let the script complete its automatic code rollback and confirm `rollback_result=success` plus HTTP 200 from `/healthz`. If it reports `rollback_result=failed`, do not retry blindly or perform a database rollback: keep the bot stopped or in the explicitly observed state, inspect Docker and health logs without exposing secrets, and use the separate reviewed recovery procedure. Code checkout rollback cannot undo a database migration.
-
-Prisma changes are outside this procedure. The script refuses them before stopping production; use a separately reviewed migration deployment and recovery plan that explicitly covers the existing-schema migration chain. Automatic database rollback is not implemented.
-
-### Residual risks and review gates
-
-- Production health is not proven by these fixture tests. `/healthz` requires both Discord readiness and a database probe, so the operator must verify the live endpoint and observability after an approved rollout.
-- Staging containers, volumes, and checkout are currently decommissioned. There is no independent staging health gate; an explicit release waiver or a separately restored isolation environment is required.
-- `npm run migrate:deploy` is the explicit Prisma migration operation; `npm start`/`start:runtime` do not apply migrations (PR #2017). The isolated runner (PR #2018) and fail-closed orchestrator (PR #2019) are implemented on `dev` but **not wired into the VM**; their default adapter cannot deploy. The candidate build never invokes migration, and Prisma diffs remain fail-closed in the separate non-migration helper.
-- The shared exclusive deploy lock is acquired before checkout, worktree, runtime, and configuration validation. The active-runtime guard recognizes the canonical label/port and recognizable ClashCookies startup identity, including unlabeled/no-port potential bot runtimes; it refuses zero, multiple, or unidentified candidates before promotion and after startup. It does not repair an independently launched process; investigate any singleton violation.
-- Unknown and untracked production files are preserved. If a target collides with one, or the replacement path already exists, deployment stops for operator review rather than deleting data.
-- Until a separately reviewed compatibility wrapper is installed and its lock behavior is read-only verified, `/home/tilo/deploy-prod.sh` remains the legacy live procedure with unknown coordination behavior. The repository cannot infer cooperation from its reported SHA-256. This PR intentionally changes no VM script, application, database, credentials, timer, or backup service.
-
-### Existing deployment notes
-
-- **Backup release gate:** A controlled encrypted production archive was uploaded and independently retrieved/restored into disposable PostgreSQL 17 on 2026-11-15, establishing the documented M5/M6 evidence. Independent administrative/key escrow, expected-object monitoring, unattended scheduling, and other release gates remain open; the backup timer remains disabled and production release stays blocked. See `docs/roadmaps/production-backup-readiness.md` and `ops/backup/README.md` for the current evidence.
+- **Backup release gate (observed Nov 15):** A real encrypted off-host backup and separate disposable PostgreSQL 17 restore were operator-verified. Freshness, recovery custody, staging waiver, and the migration-bearing release still require explicit review/approval. The backup timer remains disabled.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.

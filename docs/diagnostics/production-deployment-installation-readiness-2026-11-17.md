@@ -1,5 +1,7 @@
 # ClashCookies — Production Deployment Installation Readiness
 
+> **ARCHIVED / SUPERSEDED (owner decision Nov 19, 2026):** This document records historical investigation of the now-withdrawn replacement deployment architecture. Do not run its collector, installation, Gate 1 commands, or proposed broker. The existing `~/deploy-prod.sh` workflow remains the deployment path; see rollback PR #2086 and `docs/deployment.md`.
+
 **Repository:** `tonykslee/ClashCookies`
 
 **Base reviewed:** `dev` at `9fc04b3e7fe6d00c12729f07ebb428ace86f4087`

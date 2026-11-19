@@ -1,5 +1,7 @@
 # Production deployment lock coordination — Phase 2A
 
+> **ARCHIVED / SUPERSEDED (owner decision Nov 19, 2026):** This document records historical investigation of the now-withdrawn replacement deployment architecture. Do not run its collector, installation, Gate 1 commands, or proposed broker. The existing `~/deploy-prod.sh` workflow remains the deployment path; see rollback PR #2086 and `docs/deployment.md`.
+
 **Status:** repository implementation and isolated regression evidence only. No VM file, production app, database, backup timer, staging resource, migration, or deployment was touched.
 
 ## Verified diagnosis

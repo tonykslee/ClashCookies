@@ -1,6 +1,0 @@
-{
-  "private": true,
-  "scripts": {
-    "migrate:deploy": "prisma migrate deploy"
-  }
-}
