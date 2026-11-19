@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { Socket, createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,18 +8,19 @@ import { describe, expect, it } from "vitest";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const broker = require("../ops/deploy/rootful-deployment-broker.js") as typeof import("../ops/deploy/rootful-deployment-broker.js");
 
-const CHILD = resolve("tests", "fixtures", "rootful-broker-socket-server.js");
+const ACTIVATOR = resolve("tests", "fixtures", "rootful-broker-socket-activator.js");
 const MODULE = resolve("ops", "deploy", "rootful-deployment-broker.js");
 
-function waitForLine(child: ReturnType<typeof spawn>, expected: string): Promise<void> {
+function waitForActivation(child: ReturnType<typeof spawn>): Promise<number> {
   return new Promise((resolveReady, reject) => {
     let output = "";
     const timer = setTimeout(() => reject(new Error("socket_server_ready_timeout")), 3000);
     child.stdout?.on("data", (chunk: Buffer) => {
       output += chunk.toString("utf8");
-      if (output.includes(expected)) {
+      const match = output.match(/ready:(\d+)\n/);
+      if (match) {
         clearTimeout(timer);
-        resolveReady();
+        resolveReady(Number(match[1]));
       }
     });
     child.stderr?.on("data", () => undefined);
@@ -37,6 +38,7 @@ function waitForLine(child: ReturnType<typeof spawn>, expected: string): Promise
 }
 
 async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  if (!server.listening) return;
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
 
@@ -46,23 +48,26 @@ async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
   await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
 }
 
+async function stopPid(pid: number): Promise<void> {
+  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  await new Promise<void>((resolveExit) => {
+    const deadline = Date.now() + 3000;
+    const check = () => {
+      try {
+        process.kill(pid, 0);
+        if (Date.now() < deadline) return setTimeout(check, 25);
+      } catch { return resolveExit(); }
+      resolveExit();
+    };
+    check();
+  });
+}
+
 async function startActivatedBroker(mode = "success", delayMs = 25) {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-broker-socket-"));
   const socketPath = join(root, "broker.sock");
-  const seed = createServer();
-  await new Promise<void>((resolveListen, reject) => {
-    seed.once("error", reject);
-    seed.listen(socketPath, () => resolveListen());
-  });
-  chmodSync(socketPath, 0o600);
-  const fd = (seed as unknown as { _handle?: { fd?: number } })._handle?.fd;
-  if (!Number.isInteger(fd)) {
-    await closeServer(seed);
-    rmSync(root, { recursive: true, force: true });
-    throw new Error("socket_fd_unavailable");
-  }
 
-  const child = spawn(process.execPath, [CHILD], {
+  const activator = spawn(process.execPath, [ACTIVATOR], {
     env: {
       ...process.env,
       BROKER_MODULE_PATH: MODULE,
@@ -70,12 +75,14 @@ async function startActivatedBroker(mode = "success", delayMs = 25) {
       BROKER_SOCKET_MODE: mode,
       BROKER_DELAY_MS: String(delayMs),
     },
-    stdio: ["ignore", "pipe", "pipe", fd],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  await waitForLine(child, "ready\n");
-  await closeServer(seed);
-  return { child, root, socketPath };
+  // The activator exits only after the worker has inherited the listening fd;
+  // it intentionally leaves the seed server unclosed during handoff so the
+  // socket pathname remains valid for the worker's clients.
+  const workerPid = await waitForActivation(activator);
+  return { activator, workerPid, root, socketPath };
 }
 
 async function rawRequest(socketPath: string, body: string): Promise<string> {
@@ -100,7 +107,8 @@ describe("rootful broker real Linux Unix-socket transport", () => {
         delayed: true,
       });
     } finally {
-      await stopChild(fixture.child);
+      await stopPid(fixture.workerPid);
+      await stopChild(fixture.activator);
       rmSync(fixture.root, { recursive: true, force: true });
     }
   });
@@ -111,7 +119,8 @@ describe("rootful broker real Linux Unix-socket transport", () => {
       const transport = broker.createUnixSocketTransport({ socketPath: interrupted.socketPath, timeoutMs: 500 });
       await expect(transport({ requestId: "interrupted-request" })).rejects.toMatchObject({ code: "broker_transport_failed" });
     } finally {
-      await stopChild(interrupted.child);
+      await stopPid(interrupted.workerPid);
+      await stopChild(interrupted.activator);
       rmSync(interrupted.root, { recursive: true, force: true });
     }
 
@@ -120,7 +129,8 @@ describe("rootful broker real Linux Unix-socket transport", () => {
       const transport = broker.createUnixSocketTransport({ socketPath: timedOut.socketPath, timeoutMs: 35 });
       await expect(transport({ requestId: "timeout-request" })).rejects.toMatchObject({ code: "broker_transport_failed" });
     } finally {
-      await stopChild(timedOut.child);
+      await stopPid(timedOut.workerPid);
+      await stopChild(timedOut.activator);
       rmSync(timedOut.root, { recursive: true, force: true });
     }
   });
@@ -131,7 +141,8 @@ describe("rootful broker real Linux Unix-socket transport", () => {
       const response = await rawRequest(fixture.socketPath, "not-json\n");
       expect(JSON.parse(response)).toMatchObject({ ok: false, error: { message: "broker request rejected" } });
     } finally {
-      await stopChild(fixture.child);
+      await stopPid(fixture.workerPid);
+      await stopChild(fixture.activator);
       rmSync(fixture.root, { recursive: true, force: true });
     }
   });
@@ -139,7 +150,12 @@ describe("rootful broker real Linux Unix-socket transport", () => {
   it.runIf(process.platform === "linux")("rejects incomplete responses and oversized response frames", async () => {
     const root = mkdtempSync(join(tmpdir(), "clashcookies-broker-response-"));
     const incompletePath = join(root, "incomplete.sock");
-    const server = createServer((socket) => socket.end("{\"ok\":true"));
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.end("{\"ok\":true");
+    });
     await new Promise<void>((resolveListen, reject) => {
       server.once("error", reject);
       server.listen(incompletePath, resolveListen);
@@ -148,6 +164,7 @@ describe("rootful broker real Linux Unix-socket transport", () => {
       const transport = broker.createUnixSocketTransport({ socketPath: incompletePath, timeoutMs: 500 });
       await expect(transport({ requestId: "incomplete-response" })).rejects.toMatchObject({ code: "broker_transport_failed" });
     } finally {
+      for (const socket of sockets) socket.destroy();
       await closeServer(server);
       rmSync(root, { recursive: true, force: true });
     }
@@ -156,7 +173,12 @@ describe("rootful broker real Linux Unix-socket transport", () => {
   it.runIf(process.platform === "linux")("rejects an oversized response without unbounded buffering", async () => {
     const root = mkdtempSync(join(tmpdir(), "clashcookies-broker-oversized-response-"));
     const socketPath = join(root, "oversized.sock");
-    const server = createServer((socket) => socket.end(Buffer.alloc(256, 65)));
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.end(Buffer.alloc(256, 65));
+    });
     await new Promise<void>((resolveListen, reject) => {
       server.once("error", reject);
       server.listen(socketPath, resolveListen);
@@ -165,6 +187,7 @@ describe("rootful broker real Linux Unix-socket transport", () => {
       const transport = broker.createUnixSocketTransport({ socketPath, timeoutMs: 500, maxResponseBytes: 64 });
       await expect(transport({ requestId: "oversized-response" })).rejects.toMatchObject({ code: "broker_transport_failed" });
     } finally {
+      for (const socket of sockets) socket.destroy();
       await closeServer(server);
       rmSync(root, { recursive: true, force: true });
     }
