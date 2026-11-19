@@ -178,7 +178,14 @@ export function resolveHomeVillageLeagueObservation(input: {
 
 /** Purpose: report whether observed league data is a known current or legacy tier. */
 export function isKnownHomeVillageLeagueName(value: unknown): boolean {
-  return HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD.has(normalizeHomeVillageLeagueMatchText(value));
+  const key = normalizeHomeVillageLeagueMatchText(value);
+  if (!key) return false;
+  if (HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD.has(key)) return true;
+  // The legacy API sometimes returned a plain league family without a numbered tier.
+  return HOME_VILLAGE_LEAGUE_LEGACY_RECORDS.some(
+    (record) =>
+      normalizeHomeVillageLeagueMatchText(record.name.replace(/\s+(?:I|II|III)$/, "")) === key,
+  );
 }
 
 /** Purpose: determine whether one target value should match one observed league name. */
