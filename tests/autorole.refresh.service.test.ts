@@ -269,7 +269,7 @@ function makePlayerCurrent(input: {
     warStars: 300,
     expLevel: 250,
     role: input.role ?? "member",
-    leagueName: input.leagueName ?? "Legend League",
+    leagueName: input.leagueName === undefined ? "Legend League" : input.leagueName,
     currentWeight: 150000,
     currentWeightSource: "player_current",
     currentWeightMeasuredAt: new Date("2026-04-01T00:00:00.000Z"),
@@ -3654,6 +3654,63 @@ describe("AutoRoleRefreshService", () => {
       addedCount: 3,
       removedCount: 0,
     });
+  });
+
+  it("preserves an existing Legend role on missing league data and removes it on a known demotion", async () => {
+    const leagueRoleId = "222222222222222222";
+    const holderId = "111111111111111111";
+    const holder = makeMember(holderId, [leagueRoleId]);
+    const guild = makeGuild(new Map([[holderId, holder]]), [leagueRoleId]);
+    let leagueName: string | null = null;
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) =>
+      filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: holderId,
+          playerName: "Legend Holder",
+        }),
+      ], where),
+    );
+    prismaMock.playerCurrent.findMany.mockImplementation(async ({ where }: any) =>
+      filterPlayerCurrentRows([
+        makePlayerCurrent({
+          playerTag: "#PYLQ0289",
+          playerName: "Legend Holder",
+          leagueName,
+        }),
+      ], where),
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({ applyNicknames: false, removeStaleManagedRoles: true }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.LEAGUE,
+          targetValue: "Legend League",
+          discordRoleId: leagueRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    const unknownResult = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: leagueRoleId,
+    });
+    expect(holder.roles.remove).not.toHaveBeenCalledWith(leagueRoleId);
+    expect(unknownResult.removedCount).toBe(0);
+
+    leagueName = "Golem League 19";
+    const knownResult = await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: leagueRoleId,
+    });
+    expect(holder.roles.remove).toHaveBeenCalledWith(leagueRoleId);
+    expect(knownResult.removedCount).toBe(1);
   });
 
   it("refreshes a generic LEAGUE role from linked members without a full guild fetch", async () => {
