@@ -107,7 +107,10 @@ async function startFixture({ delayMs, deadlinePolicy, release }: { delayMs: num
   writeFileSync(validated.broker.approval.publicKeyPath, publicKey.export({ type: "spki", format: "pem" }));
   writeFileSync(validated.broker.statePath, `${JSON.stringify({ version: 1, consumedNonces: [], requestIds: [], sessions: {}, lockOwnerSession: null, recoveryRequired: false })}\n`, { mode: 0o600 });
   chmodSync(validated.broker.statePath, 0o600);
-  writeFileSync(join(root, "manifest.json"), `${JSON.stringify(validated)}\n`);
+  // The service must validate the reviewed input manifest at its own boundary.
+  // The normalized return value intentionally omits the input-only verification
+  // marker, so serializing it would make the child reject its own configuration.
+  writeFileSync(join(root, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   const socketPath = validated.broker.socketPath;
   const activator = spawn(process.execPath, [ACTIVATOR], {
     env: {
