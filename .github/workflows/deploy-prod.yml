@@ -14,8 +14,7 @@ concurrency:
 
 jobs:
   deploy:
-    # Preserve the proven legacy SSH wrapper, but require separate activation.
-    if: vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'
+    # A reviewed push/merge to main deploys through the existing SSH wrapper.
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to droplet over SSH
