@@ -1,5 +1,7 @@
 Project handoff and priorities for this repo (`ClashCookies`):
 
+> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project has been withdrawn. The established SSH `~/deploy-prod.sh` production workflow is the target under rollback PR [#2086](https://github.com/tonykslee/ClashCookies/pull/2086). Any prior Gate 1, rootful broker, installation, restricted operator, or protected-path proposals in dated sections below are historical evidence **not current implementation or release prerequisites**. Production deployment remains disabled pending separate release approval; verify migrations, backups/recovery, current runtime and regression tests before activation.
+
 1) Git workflow and commit standards
 - Always create a feature branch before edits using:
   - `./scripts/start-feature.sh <2-4 word description>`
@@ -27,18 +29,17 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - mirror instances only run guarded snapshot sync
 - Prefer deterministic, idempotent flows for war events, mail, notify posts, reminders, and tracked messages.
 
-**Current production release Gate 1 guardrail (2026-11-18):** PR #2058's protected-path inspection packet and PR #2059's offline-only validator are merged to `dev`. The local validator structurally checks a max 32,768-byte input envelope and 8,192-byte stdout, but still reports `boundary=UNVERIFIED` and `provenance=UNVERIFIED`; a structural `VALID` is never host/capture authorization or deployment readiness. PR #2061 has now merged the offline-only synthetic capture/provenance metadata boundary (`2f845cea0a6b13d31490a6f9da0f63bb64ca5e09`). It enforces pre-copy 8,192-byte limits, uses an in-memory duplicate-attempt ledger and explicitly marks injected encryption output `SYNTHETIC_UNTRUSTED` (no confidentiality or custody verified). PR #2063 has merged the synthetic-only real age encryption and exclusive ciphertext custody adapter (`100927bd017dfd9b970b61e7819437b7e18a54ab`), with identity-checked cleanup and persistent child-stream error handling; custody remains `RESTRICTED_UNVERIFIED`. The canonical owner/operator authorization and encrypted-evidence custody packet is now in [`docs/diagnostics/production-deployment-installation-readiness-2026-11-17.md`](diagnostics/production-deployment-installation-readiness-2026-11-17.md); it records the remaining owner decisions and six independent authorization gates without authorizing execution. Do not execute SSH, capture production output, run the collector, provision VM resources, or promote `dev` to `main` without each separate owner authorization. Gate 1 and release PR #1983 remain BLOCKED. The full contract and progress are in the diagnostic and `docs/roadmaps/production-backup-readiness.md`.
 
 3) Dependencies and runtime safety
 - Introduce new dependencies only when justified.
 - Prefer existing helpers/services before adding new abstractions.
-- Keep startup and deploy behavior stable while keeping Prisma migrations explicit (`npm run migrate:deploy`), health endpoints, command registration, and scheduler boot.
+- Keep the established production startup and deployment workflow stable; the legacy `start:runtime` applies `prisma migrate deploy` before the bot starts. Preserve health endpoints, command registration, and scheduler boot.
 - Preserve current droplet deployment assumptions unless intentionally migrating again:
   - yarn-based container start
   - dependency-cache guard
   - localhost-only ops surfaces by default
 - Highlight operational risks when schema, deployment, or runtime assumptions change.
-- For migration-aware releases, distinguish merged runner/orchestrator code from an installed, verified VM adapter. Discover host/Compose/runtime/credential/release-record ownership read-only before implementing an adapter; CI or simulated fixture success is not deployment authorization. Never automatically restart an old active bot after committed migrations without proven singleton-safe recovery and explicit approval.
+- For migration-bearing releases through the original wrapper, verify representative existing-schema compatibility, backup recovery, production singleton and health behavior, and explicitly authorize the migration/restart. A code rollback does not undo committed migrations. The withdrawn broker/VM adapter is not a prerequisite for use of the existing deployment workflow.
 
 4) Database design
 - Use normalized tables over fragile JSON blobs for core logic.

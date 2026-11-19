@@ -1,5 +1,7 @@
 # Production deployment integration design — 2026-11-17
 
+> **ARCHIVED / SUPERSEDED (owner decision Nov 19, 2026):** This document records historical investigation of the now-withdrawn replacement deployment architecture. Do not run its collector, installation, Gate 1 commands, or proposed broker. The existing `~/deploy-prod.sh` workflow remains the deployment path; see rollback PR #2086 and `docs/deployment.md`.
+
 **Repository:** `tonykslee/ClashCookies` · **base:** `dev`
 **Status:** proposed documentation-only design. This document does not install, replace, activate or execute any VM deployment component.
 

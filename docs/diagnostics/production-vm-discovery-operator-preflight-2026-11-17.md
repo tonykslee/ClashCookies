@@ -1,5 +1,7 @@
 # Production VM discovery operator preflight — 2026-11-17
 
+> **ARCHIVED / SUPERSEDED (owner decision Nov 19, 2026):** This document records historical investigation of the now-withdrawn replacement deployment architecture. Do not run its collector, installation, Gate 1 commands, or proposed broker. The existing `~/deploy-prod.sh` workflow remains the deployment path; see rollback PR #2086 and `docs/deployment.md`.
+
 **Status:** documentation and review only. No production VM, SSH session, checkout, Docker daemon, database, credential, backup unit, staging resource, or discovery invocation was accessed by this change.
 
 This preflight is the operator procedure for the already merged, read-only discovery tooling from [PR #2027](https://github.com/tonykslee/ClashCookies/pull/2027). It is deliberately separate from release authorization. The operator must stop if any prerequisite requires installing a tool, changing permissions or ownership, creating an unapproved VM directory, reading a secret, running a wrapper, or changing a production resource.
