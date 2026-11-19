@@ -3,6 +3,7 @@ import {
   HOME_VILLAGE_LEAGUE_FAMILY_LABELS,
   HOME_VILLAGE_LEAGUE_LEGACY_RECORDS,
   HOME_VILLAGE_LEAGUE_TIER_RECORDS,
+  isKnownHomeVillageLeagueName,
   matchesHomeVillageLeagueTarget,
   resolveHomeVillageLeagueObservation,
 } from "../src/services/HomeVillageLeagueTaxonomy";
@@ -34,6 +35,28 @@ describe("HomeVillageLeagueTaxonomy", () => {
     });
 
     expect(resolveHomeVillageLeagueObservation({})).toMatchObject({
+      source: "missing",
+      leagueName: null,
+    });
+  });
+
+  it("resolves stable known tier IDs without a display name and treats unknown leagues as uncertain", () => {
+    const byId = resolveHomeVillageLeagueObservation({
+      leagueTier: { id: 105000034 },
+    });
+    expect(byId).toMatchObject({
+      source: "leagueTier",
+      leagueTierId: 105000034,
+      leagueName: "Legend III",
+      family: "Legend",
+    });
+    expect(matchesHomeVillageLeagueTarget("Legend League", byId.leagueName)).toBe(true);
+    expect(isKnownHomeVillageLeagueName("Legend III")).toBe(true);
+    expect(isKnownHomeVillageLeagueName("Gold League")).toBe(true);
+    expect(isKnownHomeVillageLeagueName("Unranked")).toBe(true);
+    expect(isKnownHomeVillageLeagueName("Unknown future league")).toBe(false);
+    expect(isKnownHomeVillageLeagueName(null)).toBe(false);
+    expect(resolveHomeVillageLeagueObservation({ leagueTier: { id: 999999999 } })).toMatchObject({
       source: "missing",
       leagueName: null,
     });
