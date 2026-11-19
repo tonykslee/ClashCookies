@@ -10,9 +10,13 @@ import {
 } from "../src/services/WarEventLogService";
 import { knownBlacklistEvidenceService } from "../src/services/KnownBlacklistEvidenceService";
 
-vi.spyOn(MaintenanceWindowService.prototype, "observeWarFetch").mockResolvedValue({
-  maintenanceTransition: null,
-});
+function mockMaintenanceWindowObserveWarFetch() {
+  return vi
+    .spyOn(MaintenanceWindowService.prototype, "observeWarFetch")
+    .mockResolvedValue({ maintenanceTransition: null });
+}
+
+mockMaintenanceWindowObserveWarFetch();
 
 function buildBasePayload(overrides?: Partial<Record<string, unknown>>) {
   return {
@@ -709,6 +713,7 @@ describe("War-end expected points persistence via processSubscription", () => {
     expectedWarEndFwaPoints: number | null;
   }): Promise<Record<string, unknown> | undefined> {
     vi.restoreAllMocks();
+    mockMaintenanceWindowObserveWarFetch();
     const service = new WarEventLogService({ channels: { fetch: vi.fn() } } as unknown as Client, {} as any);
     const sub = makeSubscription(input.subOverrides);
     const currentWarStore = createCurrentWarStore(
@@ -1880,6 +1885,7 @@ describe("War outage recovery reconciliation", () => {
     ensureSpy: ReturnType<typeof vi.spyOn>;
     allocateSpy: ReturnType<typeof vi.spyOn>;
   } {
+    mockMaintenanceWindowObserveWarFetch();
     const service = new WarEventLogService(
       { channels: { fetch: vi.fn() } } as unknown as Client,
       {} as any,

@@ -18,6 +18,7 @@
 
 ## Default Administrator-Only Targets
 - `/clan configure`, `/clan cwl-tags`, `/clan remove`
+- `/dusk-admin audit`, `/dusk-admin adjust`, `/dusk-admin reverse`, `/dusk-admin resolve` (the Dusk command also performs its own native Administrator and current-member checks; `/permission` role grants cannot authorize wallet mutations)
 - `/reminders`, `/reminders create`, `/reminders list`, `/reminders edit`
 - `/permission add`, `/permission remove`
 - `/sheet link`, `/sheet unlink`, `/sheet show`, `/sheet refresh`

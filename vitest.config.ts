@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     environment: "node",
     threads: true,
-    singleThread: true,
+    minThreads: 1,
+    maxThreads: 2,
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
     coverage: {
       enabled: false,

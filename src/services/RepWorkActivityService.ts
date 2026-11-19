@@ -5,6 +5,38 @@ import { normalizeDiscordUserId } from "./PlayerLinkService";
 
 type RepWorkActivityMetadata = Record<string, unknown>;
 
+const REP_WORK_AUDIT_EVENT_SELECT = {
+  id: true,
+  guildId: true,
+  activityType: true,
+  discordUserId: true,
+  clanTag: true,
+  syncMessageId: true,
+  sourceMessageId: true,
+  sourceTrackedMessageId: true,
+  warId: true,
+  warStartTime: true,
+  opponentTag: true,
+  eventAt: true,
+  metadata: true,
+  dedupeKey: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.RepWorkActivityEventSelect;
+
+export type RepWorkActivityAuditEvent = Prisma.RepWorkActivityEventGetPayload<{
+  select: typeof REP_WORK_AUDIT_EVENT_SELECT;
+}>;
+
+export type RepWorkActivityEvaluationRead = {
+  guildId: string;
+  from: Date;
+  to: Date;
+  limit: number;
+};
+
+const MAX_EVALUATION_READ_EVENTS = 10_000;
+
 function normalizeTextId(input: string | null | undefined): string | null {
   const trimmed = String(input ?? "").trim();
   return trimmed || null;
@@ -114,6 +146,38 @@ export type RepWorkRecordInput = {
 };
 
 export class RepWorkActivityService {
+  /** Purpose: expose one persisted rep-work event to bounded audit consumers without transferring ownership. */
+  async findEventForAudit(eventId: string): Promise<RepWorkActivityAuditEvent | null> {
+    const normalizedEventId = normalizeTextId(eventId);
+    if (!normalizedEventId) return null;
+    return prisma.repWorkActivityEvent.findUnique({
+      where: { id: normalizedEventId },
+      select: REP_WORK_AUDIT_EVENT_SELECT,
+    });
+  }
+
+  /** Purpose: read one bounded, chronologically stable rep-work evidence window without writes or side effects. */
+  async listEventsForEvaluation(input: RepWorkActivityEvaluationRead): Promise<RepWorkActivityAuditEvent[]> {
+    const guildId = String(input.guildId ?? "").trim();
+    const limit = Number(input.limit);
+    if (!guildId || !(input.from instanceof Date) || !Number.isFinite(input.from.getTime()) || !(input.to instanceof Date) || !Number.isFinite(input.to.getTime()) || input.to <= input.from) {
+      throw new Error("A valid guild and half-open evaluation window are required.");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EVALUATION_READ_EVENTS) {
+      throw new Error(`Evaluation event limit must be an integer between 1 and ${MAX_EVALUATION_READ_EVENTS}.`);
+    }
+    const rows = await prisma.repWorkActivityEvent.findMany({
+      where: { guildId, eventAt: { gte: input.from, lt: input.to } },
+      orderBy: [{ eventAt: "asc" }, { id: "asc" }],
+      take: limit + 1,
+      select: REP_WORK_AUDIT_EVENT_SELECT,
+    });
+    if (rows.length > limit) {
+      throw new Error("Rep-work evaluation scope exceeds its bounded event limit.");
+    }
+    return rows;
+  }
+
   async recordBasesChecked(params: RepWorkRecordInput): Promise<boolean> {
     return this.recordActivity(RepWorkActivityType.BASES_CHECKED, "base_swap", params);
   }

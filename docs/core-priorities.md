@@ -1,5 +1,7 @@
 Project handoff and priorities for this repo (`ClashCookies`):
 
+> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project was withdrawn; the existing SSH `~/deploy-prod.sh` workflow was restored by [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). A reviewed and explicitly owner-approved `dev` → `main` merge automatically deploys through this established workflow. Feature code and migrations should be production-ready before merging into `dev`; current backup/recovery/runtime checks remain release-time operator verification, not a second infrastructure project. Historical Gate 1/broker proposals below are superseded.
+
 1) Git workflow and commit standards
 - Always create a feature branch before edits using:
   - `./scripts/start-feature.sh <2-4 word description>`
@@ -11,6 +13,8 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - save to `.git/AI_COMMIT_MSG`
   - run `./scripts/commit-feature.sh`
 - Avoid destructive git operations unless explicitly requested.
+- **Standing documentation-only merge approval (2026-11-12):** For changes strictly limited to documentation, roadmap/vision/priorities, policy decisions, or roadmap-progress reconciliation, reuse an appropriate feature branch/PR or create one targeting `dev`, review the actual GitHub diff and mergeability/CI/review state, and **merge without requesting separate user approval**. Keep the PR audit trail; never commit directly to `dev` or `main`. Validate doc formatting and agreement vs proposal vs shipped status; do not run unrelated code tests.
+- **Code-changing boundary:** That standing approval does not extend to application code, database schema/migrations, runtime configuration, deployment/infrastructure, or any production/currency issuance/fulfillment operation. These still require explicit user approval to merge or execute. Never promote `dev` to `main` implicitly.
 
 2) Bot architecture expectations
 - Preserve clear service boundaries:
@@ -25,15 +29,17 @@ Project handoff and priorities for this repo (`ClashCookies`):
   - mirror instances only run guarded snapshot sync
 - Prefer deterministic, idempotent flows for war events, mail, notify posts, reminders, and tracked messages.
 
+
 3) Dependencies and runtime safety
 - Introduce new dependencies only when justified.
 - Prefer existing helpers/services before adding new abstractions.
-- Keep startup and deploy behavior stable (`prisma migrate deploy`, health endpoints, command registration, scheduler boot).
+- Keep the established production startup and deployment workflow stable; the legacy `start:runtime` applies `prisma migrate deploy` before the bot starts. Preserve health endpoints, command registration, and scheduler boot.
 - Preserve current droplet deployment assumptions unless intentionally migrating again:
   - yarn-based container start
   - dependency-cache guard
   - localhost-only ops surfaces by default
 - Highlight operational risks when schema, deployment, or runtime assumptions change.
+- For migration-bearing releases through the original wrapper, verify representative existing-schema compatibility, backup recovery, production singleton and health behavior, and explicitly authorize the migration/restart. A code rollback does not undo committed migrations. The withdrawn broker/VM adapter is not a prerequisite for use of the existing deployment workflow.
 
 4) Database design
 - Use normalized tables over fragile JSON blobs for core logic.

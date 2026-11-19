@@ -1,5 +1,13 @@
 # Observability
 
+## Production backup monitoring — 2026-11-14 operator checkpoint
+
+The independent [production backup readiness roadmap](roadmaps/production-backup-readiness.md) and [backup runbook](../ops/backup/README.md) govern backup activation. The operator configured an external Healthchecks.io `ClashCookies Production Backup` check for UTC cron `15 2 * * *`, with paired HTTPS POST success and `/fail` URLs stored only in root-owned `/etc/clashcookies/backup.env` (0600). A harmless `/log` POST and a simulated failure POST from the restricted backup account both returned HTTP 200; the operator confirmed corresponding events and receipt of the failure email. The check was reported **paused** afterward.
+
+**Updated 2026-11-15 operator evidence (supersedes the historical 2026-11-14 limitations above):** A separately authorized corrected manual runner completed encrypted daily and Sunday weekly B2 objects, delivered a real Healthchecks.io success ping, and the operator received a real missed-schedule email while the timer remained disabled. An earlier encrypted daily archive was independently retrieved and restored into disposable PostgreSQL 17. Independent B2 expected-object/freshness monitoring, unattended scheduled success, recovery-key disaster retrieval, and release readiness remain unverified. The timer remains disabled; the service is inactive after the completed run. Do not infer that the new daily/weekly objects were independently restored. Never issue a success ping merely to clear a test failure or claim a backup occurred.
+
+**Actual droplet deployment caveat:** Uptime Kuma and Dozzle were preserved, but staging and Netdata were removed by separate explicit authorization to reclaim storage. The configuration and historical instructions below may still describe staged/mirror services or Netdata as installable; they are **not** evidence those services currently run. Do not run a blanket observability Compose `up` command that could recreate retired components without a separately reviewed plan.
+
 ## Historical participation backfill
 
 The one-time operator utility emits bounded, structured lines with the prefix `[membership-participation-backfill]`. Per-war lines include guild, sync, clan, canonical war ID, action, archive/reconstruction/existing/planned counts, the compatibility `expected_team_size` field (derived from distinct canonical participant tags when the roster is complete), projected coverage, and reason codes. The summary includes selected syncs, canonical FWA candidates, validated/dirty point evidence, exact-tuple canonicalization and stale-ID repair counts, unmatched/ambiguous tuple counts, planned rows, unreconstructable rows, COMPLETE/PARTIAL/UNKNOWN projected rosters, skips, and conflicts. `canonical_roster_complete`, `canonical_roster_unreconstructable`, `missing_canonical_participants`, and `malformed_participant` explain roster completeness decisions. The backfill is all-or-nothing per canonical war: incomplete or malformed archives plan no participation inserts. Dry runs perform no writes; apply mode prints a post-write verification summary against the derived canonical roster count.
@@ -129,6 +137,8 @@ Queue observability now includes:
 - war-event producer logs such as `war_event_player_refresh_plan`, `war_event_player_refresh_chunk`, `war_event_player_refresh_stagger`, `war_event_player_refresh_deferred`, and `war_event_player_refresh_complete`
 - maintenance-window notices from active war polling, routed to the typed `/bot-logs type:maintenance` channel when configured and otherwise to the generic bot-log channel; dedupe state is persisted per guild by `MaintenanceWindowService`
 - automatic sync retrospective reconciliation emits compact `[retrospective-auto-post]` events: `event=delivered` is INFO with guild, sync, participant, channel, and message identifiers; completed-before-enable suppression is DEBUG; incomplete/terminal/disabled skips are DEBUG; unavailable destinations are WARN; and claim, render, send, or delivery-state failures are ERROR. It runs inside the existing scheduled sync reconciliation loop and does not emit one INFO line per polling cycle.
+- automatic sync all-spun delivery emits bounded `[sync-all-spun]` events. `event=evaluation_incomplete` is DEBUG with the claimed and participating clan counts; `event=delivery_suppressed` is DEBUG for a concurrent or already-terminal `SyncEvent`; `event=delivered` is INFO with guild, root message, exact sync time, participating-clan count, destination channel, and announcement message identifiers; routing, root ownership, metadata, expiry, and non-production skips are WARN/DEBUG as appropriate; and evaluation, claim, Discord-send, or delivery-state failures are ERROR. The one-minute tracked-message recovery pass emits `event=recovery_summary` only when it delivered, suppressed, or failed work. The delivery payload is the plain text `all spun`; logs do not include claim users, message bodies beyond that fixed value, or reaction timestamps. Mirror and non-production runtimes do not send.
+- sync reaction history emits bounded `[sync-reaction-history] event=transition_recorded` DEBUG lines only after a current-state ADD/REMOVE transition and transaction commit, with guild, canonical root message, actual message, exact metadata sync time, observation phase, action, and clan tag. Failures emit a bounded `transition_failed` ERROR without Discord user identifiers or reaction payloads. `observedAt` is bot observation time; `eventOrder` is sequence allocation order only and must not be treated as commit order, verified Clash search timing, or a Discord event ID.
 - CWL event-resolution and persistence logs such as `event=event_resolution_unresolved`, `event=event_resolution_collision`, `event=event_war_tags_attached`, `event=clan_current_event_changed`, `event=tracked_cwl_persist`, and `event=tracked_cwl_season_roster_reconcile`
 - finalized war-plan history logs such as `event=evaluation_completed`, `event=evaluation_failed`, `event=evaluation_terminalized_non_fwa`, `event=evaluation_claim_unavailable`, `event=evaluation_canonical_reset`, `event=evaluation_reactivated`, `event=evaluation_claim_lost`, and `event=reconcile_complete`, which should include `guild`, `war_id`, `clan_tag`, `status`, `violation_count`, `attempt`, `duration_ms`, and `failure_code` when applicable
 - final war-end persistence should keep the canonical history/enrollment transaction boundary silent on success and only emit follow-up logs after `WarLookup`, participation, and finalization steps complete
@@ -147,17 +157,19 @@ CWL camping logs should stay to one bounded invocation summary: `[cwl-camping] e
 
 ## External Droplet Observability
 
-The current droplet stack uses:
+**Observed deployment snapshot (2026-11-14):** Uptime Kuma and Dozzle are **running/preserved**; Netdata's container, image and named volumes were **removed** with operator authorization to reclaim disk. The staging app/database were also decommissioned. The configuration and instructions below describe the **repository's available/legacy stack**, not a guarantee that every service is currently deployed. In particular, `ops/observability/docker-compose.yml` may recreate Netdata if run without review. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md). Host/container metrics coverage must be reviewed before production release.
 
-- Uptime Kuma for status pages, checks, and Discord alerts
-- Dozzle for live Docker logs
-- Netdata for host and container metrics
+The repository's observability design includes:
+
+- Uptime Kuma for status pages, checks, and Discord alerts (currently preserved)
+- Dozzle for live Docker logs (currently preserved)
+- Netdata for host/container metrics (currently **not installed/running**)
 
 The stack is intentionally private by default:
 
 - Uptime Kuma binds to `127.0.0.1:3001`
 - Dozzle binds to `127.0.0.1:8080`
-- Netdata binds to `127.0.0.1:19999`
+- Netdata *when deployed* binds to `127.0.0.1:19999`; currently removed
 
 Use SSH port forwarding to access the UIs from your machine instead of exposing them publicly:
 
@@ -165,7 +177,6 @@ Use SSH port forwarding to access the UIs from your machine instead of exposing 
 ssh -i C:\Projects\clashcookies_codex ^
   -L 3001:127.0.0.1:3001 ^
   -L 8080:127.0.0.1:8080 ^
-  -L 19999:127.0.0.1:19999 ^
   codex@64.23.164.95
 ```
 
@@ -173,7 +184,7 @@ After the tunnel is open:
 
 - Uptime Kuma: `http://127.0.0.1:3001`
 - Dozzle: `http://127.0.0.1:8080`
-- Netdata: `http://127.0.0.1:19999`
+- Netdata (only if intentionally redeployed): `http://127.0.0.1:19999`
 
 ## Files
 
@@ -192,7 +203,7 @@ cd ops/observability
 ./scripts/generate-dozzle-users.sh ops-admin '<strong-password>' ops@example.com 'ClashCookies Ops'
 ```
 
-3. Start the stack:
+3. **Only when explicitly provisioning/redeploying the stack:** review the compose file first. The observed 2026-11-14 host intentionally removed Netdata, so the following legacy command is **not approved** for routine operations; it may recreate retired services.
 
 ```bash
 docker compose -f ops/observability/docker-compose.yml up -d
@@ -202,6 +213,8 @@ docker compose -f ops/observability/docker-compose.yml up -d
 5. In Uptime Kuma, add a Discord notification endpoint using your Discord webhook URL.
 
 ## Recommended Monitors
+
+**Current deployment note:** Production monitors are applicable. Staging references below are **design examples for an environment that was removed in November 2026**, not monitors/URLs expected to be live; do not create or re-enable staging automatically.
 
 ### Safe default on the droplet
 

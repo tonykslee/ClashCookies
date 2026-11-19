@@ -187,6 +187,7 @@ Each domain concept must have exactly one authoritative owner.
 | War event idempotency | WarEvent |
 | Scheduled-sync clan readiness snapshot and exact filler-at-sync facts | SyncClanReadinessSnapshot |
 | Scheduled-sync clan-goal and sync-retrospective delivery idempotency | SyncEvent |
+| Immutable bot-observed sync reaction transitions | SyncReactionHistory |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
@@ -203,6 +204,7 @@ Each domain concept must have exactly one authoritative owner.
 | Personal reminder config and dedupe | UserActivityReminderRule, UserActivityReminderDelivery |
 | Tracked reusable posts and claims | TrackedMessage, TrackedMessageClaim |
 | Rep-work attribution snapshots | RepWorkActivityEvent |
+| Read-only Dusk rep-work reward evaluation | DuskRepWorkRewardEvaluator (consumer only; no ledger or wallet writes) |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
@@ -330,12 +332,14 @@ Rules:
 - The one-time membership-participation repair may append missing `ClanWarParticipation` rows from safely matched archived `WarLookup` canonical evidence. It never creates C/S/A counters, `SyncClanMemberSnapshot`, Home rows, or `SyncCycle` rows; unrecoverable or incomplete evidence remains UNKNOWN.
 - `FillerAccount` remains the mutable guild-scoped filler-designation registry. `SyncClanReadinessSnapshot` remains the owner of exact filler-at-sync facts; neither membership-history table stores or infers filler status.
 - `SyncEvent` is the sync-scoped claim/delivery owner for scheduled-sync clan goals and automatic sync retrospectives. It is distinct from `WarEvent` and never fabricates a war identity. For alliance-scoped event types, including `sync_retrospective:auto_post`, `clanTag=""` is reserved; the unique identity is `guildId + syncTime + clanTag + eventType`. These events own delivery claims, leases, terminal status, and retry state only. They do not own sync identity, participation, war history, readiness, filler facts, or retrospective metrics.
+- `SyncReactionHistory` is the append-only evidence owner for bot-observed sync reaction ADD/REMOVE transitions. `TrackedMessageClaim` remains the sole current-state owner. Each accepted transition stores the canonical root, actual source/status message, Discord user, normalized clan tag, validated metadata sync time, explicit bot-observed timestamp, an explicit PRE_SYNC/POST_SYNC observation phase, and a database-generated sequence allocation order. The sequence is not commit or observation order under concurrency. It has no `TrackedMessage` foreign key, so current tracked-message cleanup cannot cascade-delete history. It is not verified Clash search timing, and malformed, stale, expired, replaced, mirror, or unresolved identities remain unrecorded.
 - `ClanPointsSync` is the participating-clan cohort for automatic sync-retrospective completion. `ClanWarHistory` is the canonical ended-war proof, `SyncCycle` owns sync-number/sync-time identity, and `BotSetting` through `BotLogChannelService` owns routing plus the durable no-backfill enable boundary.
 - `ClanPostedMessage` tracks posted notify/mail messages.
 - `WarMailLifecycle` owns active-war mail send lifecycle state, keyed by the full active-war identity instead of `warId` alone.
 - `TrackedMessage` owns long-lived tracked posts such as sync-time and base-swap flows.
 - FWA Mail/Bases checklist automatic refresh remains inside `FwaMatchChecklistAutoPostSchedulerService`: it resolves only active current-sync `TrackedMessage` checklist rows, persists cadence/terminal markers in checklist-owned metadata, and delegates in-place reconciliation to `TrackedMessageService`. Scheduler cycles use an explicit background CoC queue context. A Mail baseline may be reused only for unavailable live lookup evidence after exact CurrentWar context-key and same-sync identity validation; successful live responses, including verified not-in-war transitions, remain authoritative. It does not create a second scheduler, repost messages, or change publication claims.
 - `RepWorkActivityEvent` owns durable rep-work attribution snapshots only. It does not own mail lifecycle, sync claims, base-swap active state, or command telemetry.
+- `DuskRepWorkRewardEvaluator` is a bounded, read-only consumer of `RepWorkActivityEvent`. It may classify and aggregate evidence with simulation-only rates/caps, but it does not issue currency, create claims, mutate wallets, or establish correction/reversal state.
 - Do not collapse these responsibilities into one generic table or back into config blobs.
 
 ## 8) Notification routing

@@ -10,10 +10,11 @@ permissions:
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    # A reviewed push/merge to main deploys through the existing SSH wrapper.
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to droplet over SSH

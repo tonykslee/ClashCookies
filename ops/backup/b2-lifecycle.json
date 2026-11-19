@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "fileNamePrefix": "clashcookies-prod/daily/",
+      "daysFromUploadingToHiding": 15,
+      "daysFromHidingToDeleting": 1,
+      "daysFromStartingToCancelingUnfinishedLargeFiles": 1
+    },
+    {
+      "fileNamePrefix": "clashcookies-prod/weekly/",
+      "daysFromUploadingToHiding": 57,
+      "daysFromHidingToDeleting": 1,
+      "daysFromStartingToCancelingUnfinishedLargeFiles": 1
+    },
+    {
+      "fileNamePrefix": "clashcookies-prod/monthly/",
+      "daysFromUploadingToHiding": 187,
+      "daysFromHidingToDeleting": 1,
+      "daysFromStartingToCancelingUnfinishedLargeFiles": 1
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import { formatError } from "../helper/formatError";
 import { runFetchTelemetryBatch } from "../helper/fetchTelemetry";
 import { prisma } from "../prisma";
 import { trackedMessageService } from "../services/TrackedMessageService";
+import { syncAllSpunAnnouncementService } from "../services/SyncAllSpunAnnouncementService";
 import { processRecruitmentCooldownReminders } from "../services/RecruitmentService";
 import { processDueRecruitmentReminders } from "../services/RecruitmentReminderService";
 import { processWeightInputDefermentStages } from "../services/WeightInputDefermentService";
@@ -1253,6 +1254,12 @@ export default (client: Client, cocService: CoCService): void => {
       } catch (err) {
         sweepError = err;
         console.error(`[tracked-messages] sweep failed: ${formatError(err)}`);
+      }
+      try {
+        await syncAllSpunAnnouncementService.reconcileDue(client, now);
+      } catch (err) {
+        sweepError ??= err;
+        console.error(`[sync-all-spun] recovery failed: ${formatError(err)}`);
       }
       try {
         await markPollJobStarted({

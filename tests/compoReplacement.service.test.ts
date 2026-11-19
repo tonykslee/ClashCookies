@@ -229,9 +229,8 @@ describe("CompoReplacementService", () => {
       { playerTag: "#P000088", discordUserId: "888888888888888888" },
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([
-      { tag: "#P000008", lastSeenAt: new Date("2026-04-01T00:00:00.000Z") },
-      { tag: "#P000020", lastSeenAt: new Date("2026-05-10T00:00:00.000Z") },
-      { tag: "#P000028", lastSeenAt: new Date("2026-05-14T00:00:00.000Z") },
+      { tag: "#P000008", lastSeenAt: new Date("2026-05-13T11:59:59.000Z") },
+      { tag: "#P000028", lastSeenAt: new Date("2026-05-13T11:59:58.000Z") },
       { tag: "#P000088", lastSeenAt: new Date("2026-05-14T00:00:00.000Z") },
     ]);
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
@@ -332,6 +331,7 @@ describe("CompoReplacementService", () => {
       resolvedBucket: "TH15",
       discordUserId: "333333333333333333",
       discordMention: "<@333333333333333333>",
+      inactiveLabel: "7d",
       reasons: {
         filler: false,
         inactive: true,
@@ -344,6 +344,7 @@ describe("CompoReplacementService", () => {
       resolvedBucket: "TH15",
       discordUserId: null,
       discordMention: null,
+      inactiveLabel: "2WAR",
       reasons: {
         filler: false,
         inactive: true,
@@ -356,6 +357,7 @@ describe("CompoReplacementService", () => {
       resolvedBucket: "TH15",
       discordUserId: "555555555555555555",
       discordMention: "<@555555555555555555>",
+      inactiveLabel: "7d",
       reasons: {
         filler: true,
         inactive: true,

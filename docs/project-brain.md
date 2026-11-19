@@ -1,4 +1,6 @@
 IMPORTANT:
+
+> **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project was withdrawn; the existing SSH `~/deploy-prod.sh` workflow was restored by [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). A reviewed and explicitly owner-approved `dev` → `main` merge automatically deploys through this established workflow. Feature code and migrations should be production-ready before merging into `dev`; current backup/recovery/runtime checks remain release-time operator verification, not a second infrastructure project. Historical Gate 1/broker proposals below are superseded.
 Before implementing any code changes, read:
 
 - architecture-contract.md
@@ -122,6 +124,7 @@ Important owners:
 | Proposed Home transfer and leader-decision history | ClanHomeTransferCandidate (production reconciler/decision APIs write; mirror only copies) |
 | Mutable guild-scoped filler designations | FillerAccount |
 | Scheduled-sync clan-goal and retrospective delivery claims | SyncEvent |
+| Immutable bot-observed sync reaction transitions | SyncReactionHistory |
 | Posted notify/mail messages | ClanPostedMessage |
 | Active-war mail lifecycle | WarMailLifecycle |
 | Active-runtime war-plan finalization/retry | WarPlanViolationService |
@@ -177,6 +180,25 @@ Rules:
 - Keep schedulers and poll loops bounded by tracked scope.
 
 ---
+
+## Production release Gate 1 checkpoint (2026-11-18)
+
+- The repository-only read-only Gate 1 prerequisite inspection packet and 12-resource protected-path matrix are documented in `docs/diagnostics/production-deployment-installation-readiness-2026-11-17.md`; PR #2058 merged to `dev` at `694bb78e19af39ef1256bb696c7c8bf86a2ad551`.
+- PR #2059 merged the **offline-only** strict local prerequisite evidence validator (`ops/deploy/discovery/gate1-prerequisite-validator.js`) at `d3bac03c5a825e902369a85ec6fb22ee8a75e228`. The validator enforces a 32,768-byte local JSON envelope cap and an 8,192-byte stdout cap, checks fixed records and pinned digests, and emits sanitized structural `VALID`/`INVALID`/`INCOMPLETE` results. `VALID` is **not** proof of host identity, authorization, or readiness.
+- PR #2061 merged the **offline-only synthetic capture/provenance metadata boundary** (`ops/deploy/discovery/gate1-local-capture-boundary.js`) at `2f845cea0a6b13d31490a6f9da0f63bb64ca5e09`, following security review and passing final-head CI. It computes bounded (8,192-byte each) synthetic stdout/stderr byte counts and hashes, delegates structural checks to the PR #2059 validator, rejects forged trust and duplicate attempts in an in-memory ledger, and enforces pre-copy bounds on synthetic inputs and mock encryptor output. Its mock encryption is expressly `SYNTHETIC_UNTRUSTED`, not encrypted custody.
+- PR #2063 merged the **offline-only real age encryption/ciphertext file adapter** (`ops/deploy/discovery/gate1-offline-age-custody.js`) at `100927bd017dfd9b970b61e7819437b7e18a54ab` after independent security reviews and passing final-head CI. It encrypts bounded synthetic data with locally supplied age tooling and disposable test identities, writes only ciphertext through exclusive creation, verifies size/hash/fsync, performs identity-checked failure cleanup, and handles repeated subprocess stream errors safely. Its Windows unlink/ACL/reparse/TOCTOU limitations remain explicit; no live capture path was enabled.
+- Local file `boundary=UNVERIFIED` and capture `provenance=UNVERIFIED` remain intentional; offline ciphertext `custody=RESTRICTED_UNVERIFIED`, **not approved production custody**. The canonical owner/operator authorization and encrypted-evidence custody packet is now documented in `docs/diagnostics/production-deployment-installation-readiness-2026-11-17.md`; its recipient, private-root, retention/recovery, trusted-host, evidence-review, collector, and provisioning decisions remain separate and unapproved. Do not imply execution authorization or reimplement the already-merged offline adapters.
+- Gate 1 remains **BLOCKED / NOT READY FOR EXECUTION**. The legacy deployment wrapper has no verified canonical shared-lock participation; protected lock, migration-lock, executor, credential and release-record paths remain unresolved. Delivery and prior remote hashes are operator-reported, not freshly reproduced. No SSH, capture, collector invocation, provisioning, deployment, migration, backup activation, or `dev`→`main` promotion is authorized by repository merges. Release PR #1983 remains blocked.
+- Full ownership, approvals, and release progress live in `docs/roadmaps/production-backup-readiness.md` and the installation-readiness diagnostic, **not** this project-brain summary.
+
+## Production Gate 1 follow-up (2026-11-19)
+
+- **Observed, not accepted as Gate 1 evidence:** the owner ran the first, separately approved fixed SSH prerequisite probe once; malformed Windows CMD/Bash quoting created duplicate identity and split metadata records, and a wrong remote archive filename gave an untrustworthy `ABSENT` result. That approval is consumed. No read-only collector or runtime/database inspection was performed under that approval.
+- **Implemented and merged:** [PR #2082](https://github.com/tonykslee/ClashCookies/pull/2082), reviewed head `cc7f861231d0f3633786ecf0a790d2784612b85f`, merged at `650ba69f0fc007d976c1c4eef88ff11d0f10ba84`, repaired the **replacement** one-line CMD/remote Bash command, exact archive path and synthetic regressions. GitHub Ubuntu CI passed; the two native Windows `cmd.exe`/fake-SSH tests were **reported passed locally**, not run on Ubuntu CI. The replacement is **not executed against the VM**; synthetic `VALID` is not verified production provenance.
+- **Authorization split:** [PR #2080](https://github.com/tonykslee/ClashCookies/pull/2080) clarified terminal-only, no-retention prerequisite inspection versus separately gated ciphertext capture and later collector. The next one-shot terminal-only inspection requires **fresh Gate B and new owner SSH authorization**; the earlier approval is not reusable. Codex's normal logged runner is not the required protected terminal. Preserve `UNKNOWN` for canonical outer/migration locks, executor, protected credential source, release record and complete group memberships. The existing two local evidence-root files are untouched.
+- **Release status unchanged:** protected deployment installation, collector/capture, staging waiver, backup/timer activation and `dev` to `main` are not authorized. Draft release PR #1983 remains NO-GO. The exact command and dated evidence belong in the installation-readiness diagnostic, operator preflight and production-backup roadmap; do not expand this project-brain summary into another operational runbook.
+
+**Gate 1 live operator report (2026-11-19, after repaired packet merge):** The owner ran one protected-terminal Gate B remote check and the first one-shot repaired Gate C prerequisite inspection. The visible fixed summaries were manually schema-consistent; four pinned artifact hashes matched; existing wrapper syntax and tracked-clean checkout were reconfirmed; groups/read permissions passed. This is operator-shared transient-terminal observation only, **not** validated retained evidence or verified SSH-exit provenance. Historical lock/executor/credential/release-record candidates were absent, but their actual canonical paths remain **UNKNOWN/BLOCKED**; the observed `.env` candidate was mode `0664`, unsafe if selected as a protected migration credential source. Gate C's authorization is consumed; do not retry or execute the collector. Installation and draft PR #1983 remain **BLOCKED / NO-GO**. The canonical detailed record is in the installation-readiness diagnostic and backup-readiness roadmap.
 
 # Deployment Model
 

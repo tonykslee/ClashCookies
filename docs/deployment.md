@@ -1,8 +1,12 @@
+> **Established automatic deployment restored:** The GitHub Actions `main` push workflow invokes the existing droplet `~/deploy-prod.sh` via SSH. The withdrawn broker, replacement executor, new privileged operator and separate systemd installation are not used. Only explicitly owner-approved merges of reviewed production-ready `dev` code into `main` should trigger this deployment. The legacy runtime runs `prisma migrate deploy` at startup; schema-bearing changes require representative testing before merging to `dev` and current backup/recovery and production health checks at release time. No production deployment occurs merely by merging this workflow PR into `dev`.
+
 # Deployment and Install Links
 
 ## Deployment Model
 
-Production and staging deploy to droplet-hosted containers with health-gated promotion.
+> **Deployment-state caveat (operator-observed 2026-11-14):** The design below documents how production and optional staging/mirror deployments are intended to work. **Staging containers, database volumes and checkout have been explicitly decommissioned** to reclaim disk space, and staging is **not currently deployed**. Production app/database containers remain active and healthy. Do not assume staging exists, automatically recreate it, or claim staging-gate coverage without an explicit reviewed release decision/waiver. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md).
+
+Production and staging *when provisioned* use droplet-hosted containers with health-gated promotion.
 
 Runtime expectations:
 
@@ -77,6 +81,8 @@ From the droplet host, use:
 `/livez` is process liveness only. `/healthz` should succeed only when the app is ready.
 
 ## Deployment Notes
+
+- **Backup release gate (observed Nov 15):** A real encrypted off-host backup and separate disposable PostgreSQL 17 restore were operator-verified. Freshness, recovery custody, staging waiver, and the migration-bearing release still require explicit review/approval. The backup timer remains disabled.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.
 - If commands are missing, verify environment (`DISCORD_TOKEN`, `GUILD_ID`) and restart.

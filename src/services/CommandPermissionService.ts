@@ -12,6 +12,12 @@ export const FWA_LEADER_ROLE_SETTING_KEY = "fwa_leader_role";
 
 export const COMMAND_PERMISSION_TARGETS = [
   "help",
+  "dusk",
+  "dusk-admin",
+  "dusk-admin:audit",
+  "dusk-admin:adjust",
+  "dusk-admin:reverse",
+  "dusk-admin:resolve",
   "emoji",
   "emoji:add",
   "lastseen",
@@ -199,6 +205,7 @@ type GuildInteraction =
   | StringSelectMenuInteraction;
 
 const ADMIN_DEFAULT_TARGETS = new Set<string>([
+  "dusk-admin:audit",
   "clan:configure",
   "clan:rep:add",
   "clan:rep:remove",
