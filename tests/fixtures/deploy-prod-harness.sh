@@ -222,6 +222,10 @@ fi
 if [ "$scenario" = lock-busy ]; then
   mkdir -p "$lock_path"
 fi
+if [ "$scenario" = broker-owned-lock ]; then
+  mkdir -p "$lock_path"
+  printf '%s\n' '{"releaseId":"release-broker"}' > "$lock_path/owner.json"
+fi
 
 set +e
 PATH="$bin_dir:$PATH" \
@@ -232,6 +236,8 @@ DEPLOY_TEST_LOG="$log_file" \
 DEPLOY_TEST_STATE="$state_file" \
 DEPLOY_TEST_WORKTREE_STATE="$worktree_state_file" \
 DEPLOY_TEST_SCENARIO="$scenario" \
+DEPLOY_LOCK_ALREADY_HELD="$([ "$scenario" = broker-owned-lock ] && printf 1 || printf 0)" \
+DEPLOY_LOCK_OWNER_RELEASE_ID="$([ "$scenario" = broker-owned-lock ] && printf release-broker || printf '')" \
 HEALTH_TIMEOUT_SECONDS=1 \
 HEALTH_POLL_INTERVAL_SECONDS=0 \
 bash "$deploy_script" > "$output_file" 2>&1
@@ -245,5 +251,6 @@ printf 'OUTPUT_END\nLOG_BEGIN\n'
 cat "$log_file"
 printf 'LOG_END\nSTATE=%s\n' "$(cat "$state_file")"
 printf 'WORKTREE=%s\n' "$(cat "$worktree_state_file")"
+if [ -d "$lock_path" ]; then printf 'LOCK_STATE=held\n'; else printf 'LOCK_STATE=absent\n'; fi
 if [ -f "$replacement_dir/operator-marker" ]; then printf 'MARKER=preserved\n'; fi
 exit 0

@@ -420,6 +420,28 @@ acquire_deploy_lock() {
   log "lock=acquired"
 }
 
+assert_external_deploy_lock() {
+  [ "${DEPLOY_LOCK_ALREADY_HELD:-0}" = "1" ] || fatal "external_lock_authorization_missing"
+  [ -n "${DEPLOY_LOCK_OWNER_RELEASE_ID:-}" ] || fatal "external_lock_owner_missing"
+  [ -d "$LOCK_PATH" ] || fatal "external_lock_missing"
+  [ ! -L "$LOCK_PATH" ] || fatal "external_lock_symlinked"
+
+  local owner_path="$LOCK_PATH/owner.json"
+  [ -f "$owner_path" ] || fatal "external_lock_owner_missing"
+  [ ! -L "$owner_path" ] || fatal "external_lock_owner_symlinked"
+
+  local owner_release_id
+  owner_release_id="$(node -e '
+    const fs = require("node:fs");
+    try {
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      process.stdout.write(typeof value.releaseId === "string" ? value.releaseId : "");
+    } catch {}
+  ' "$owner_path")"
+  [ "$owner_release_id" = "$DEPLOY_LOCK_OWNER_RELEASE_ID" ] || fatal "external_lock_owner_mismatch"
+  log "lock=borrowed owner_release_id=${DEPLOY_LOCK_OWNER_RELEASE_ID}"
+}
+
 rollback_to_old_revision() {
   log "rollback=start revision=${OLD_SHA}"
 
@@ -452,7 +474,11 @@ require_command rmdir
 require_command stat
 require_command node
 
-acquire_deploy_lock
+if [ "${DEPLOY_LOCK_ALREADY_HELD:-0}" = "1" ]; then
+  assert_external_deploy_lock
+else
+  acquire_deploy_lock
+fi
 require_file "$APP_DIR/docker-compose.yml"
 assert_runtime_environment_source
 

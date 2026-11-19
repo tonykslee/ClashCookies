@@ -4,13 +4,13 @@ This repository-side contract is implemented for isolated tests and future revie
 
 ## Ownership and order
 
-`DEPLOY_LOCK_PATH` is one exclusive host-level directory lock shared by the version-controlled non-migration helper and the migration-aware orchestrator. Each entry point must acquire it before inspecting or mutating checkout, worktree, runtime, Compose, or release state.
+`DEPLOY_LOCK_PATH` is one exclusive host-level directory lock shared by the version-controlled non-migration helper and the migration-aware orchestrator. A standalone helper acquires it; the broker-invoked helper verifies the broker-owned directory and release-bound owner record and never recursively acquires or releases it. Each entry point must own or verify it before inspecting or mutating checkout, worktree, runtime, Compose, or release state.
 
 The migration-aware orchestrator owns the release lock for the whole deployment. During its migration stage it invokes the runner with `MIGRATION_LOCK_PATH`, a different directory owned only by that runner. The runner never acquires `DEPLOY_LOCK_PATH`, so the nested call has a fixed order and cannot recursively wait on the outer lock:
 
 ```text
 legacy VM wrapper (unverified) ─┐
-versioned deploy-prod.sh       ├─ acquire DEPLOY_LOCK_PATH
+versioned deploy-prod.sh       ├─ verify broker-owned DEPLOY_LOCK_PATH
 migration-aware orchestrator   ┘          │
                                          ├─ inspect / build / preflight
                                          ├─ acquire MIGRATION_LOCK_PATH
@@ -29,6 +29,6 @@ The shell helper and Node helpers use the same directory-path contract. `DEPLOY_
 
 ## VM boundary
 
-The actual VM-owned `/home/tilo/deploy-prod.sh` was not inspected by this repository change. Its reported SHA-256 is not evidence of its control flow or lock behavior. Until an authorized read-only inspection proves that it participates in this exact shared lock contract, the legacy wrapper is not considered coordinated and no wrapper installation or replacement is authorized.
+The actual VM-owned `/home/tilo/deploy-prod.sh` was not inspected by this repository change. Its reported SHA-256 is not evidence of its control flow or lock behavior. Until an authorized installation places the reviewed helper and proves the release-bound owner record, the legacy wrapper is not considered coordinated and no wrapper installation or replacement is authorized.
 
 The Phase 1 direct-Docker adapter remains unconditionally mutation-disabled. Its lock validator and operation surface are test infrastructure only.

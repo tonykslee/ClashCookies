@@ -313,6 +313,20 @@ describe("migration-aware deployment orchestrator", () => {
     expect(runnerCalls).toBe(0);
   });
 
+  it("awaits asynchronous broker reads and records before releasing the shared lock", async () => {
+    const order: string[] = [];
+    const harness = makeOperations({
+      readPreflightEvidence: async () => { order.push("preflight-start"); await Promise.resolve(); order.push("preflight-done"); return makeEvidence(); },
+      writeReleaseRecord: async (_path: string, line: string) => { order.push(`record-start:${JSON.parse(line).event}`); await Promise.resolve(); order.push(`record-done:${JSON.parse(line).event}`); },
+      acquireExclusiveLock: async () => { order.push("lock-start"); await Promise.resolve(); order.push("lock-done"); return async () => { order.push("unlock-start"); await Promise.resolve(); order.push("unlock-done"); return true; }; },
+    });
+    const env = makeEnvironment(); const exitCode = await orchestrator.runMigrationAwareDeployment({ env, repoRoot: process.cwd(), operations: harness.operations });
+    expect(exitCode).toBe(orchestrator.EXIT_CODES.SUCCESS);
+    expect(order.indexOf("preflight-done")).toBeLessThan(order.indexOf("record-start:preflight_authorized"));
+    expect(order.lastIndexOf("record-done:end")).toBeLessThan(order.indexOf("unlock-start"));
+    expect(order.indexOf("unlock-done")).toBeGreaterThan(order.indexOf("record-done:end"));
+  });
+
   it("keeps the outer lock through terminal record handling", async () => {
     let held = false;
     let releaseCalls = 0;
@@ -333,7 +347,7 @@ describe("migration-aware deployment orchestrator", () => {
     };
     const result = await runWith({
       acquireExclusiveLock: acquire,
-      writeReleaseRecord: (_path: string, line: string) => {
+      writeReleaseRecord: async (_path: string, line: string) => {
         const event = JSON.parse(line).event;
         if (event === "end") {
           expect(() => acquire()).toThrow(/already_held/i);
@@ -350,7 +364,7 @@ describe("migration-aware deployment orchestrator", () => {
 
   it("fails closed when terminal release-record writing fails", async () => {
     const result = await runWith({
-      writeReleaseRecord: (_path: string, line: string) => {
+      writeReleaseRecord: async (_path: string, line: string) => {
         if (JSON.parse(line).event === "end") throw new Error("record sink unavailable");
       },
     });

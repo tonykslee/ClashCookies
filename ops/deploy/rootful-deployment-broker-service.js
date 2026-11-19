@@ -64,9 +64,11 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
   }
   if (!socketBoundary || socketBoundary.verified !== true
     || socketBoundary.socketPath !== installation.manifest.broker.socketPath
-    || socketBoundary.ownerUid !== 0
+    || socketBoundary.ownerUid !== installation.manifest.broker.operator.uid
     || socketBoundary.ownerGid !== installation.manifest.broker.operator.gid
-    || socketBoundary.mode !== 0o660
+    || socketBoundary.mode !== 0o600
+    || socketBoundary.activationVerified !== true
+    || socketBoundary.exclusiveIdentity !== true
     || !socketBoundary.peerIdentity) {
     throw new broker.BrokerError("broker_socket_boundary_required", "broker_configuration_invalid");
   }
@@ -125,7 +127,10 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
     startRuntime: ({ sha }) => privileged.startRuntime({ sha }),
     healthCheck: () => privileged.healthCheck(`http://127.0.0.1:${manifest.adapter.runtime.hostPort}/healthz`),
     cleanupCandidate: ({ sha }) => privileged.cleanupCandidate({ path: manifest.candidateWorktreePath, sha }),
-    writeReleaseRecord: ({ line }) => privileged.writeReleaseRecord(manifest.adapter.releaseRecord.path, line),
+    writeReleaseRecord: ({ event }, context) => privileged.writeReleaseRecord(
+      manifest.adapter.releaseRecord.path,
+      broker.createReleaseRecordLine(context, event),
+    ),
     runNonMigration: (_payload, context) => {
       const helperPath = entrypoint.validateProtectedArtifact(manifest.nonMigrationHelper, manifest.appDir);
       const env = {
@@ -141,10 +146,15 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
         DEPLOY_APPROVED_BY: context.release.approvedBy,
         TARGET_REF: context.release.newSha,
         APP_DIR: manifest.appDir,
+        DEPLOY_LOCK_ALREADY_HELD: "1",
+        DEPLOY_LOCK_OWNER_RELEASE_ID: context.release.releaseId,
       };
       return entrypoint.checkedCommand(helperPath, [], { cwd: manifest.appDir, env, label: "non_migration_deploy" });
     },
   };
+  // The default identity is backed by the verified SocketUser/SocketMode=0600
+  // activation contract, not by a client-supplied claim. A custom resolver is
+  // accepted only for tests or a separately reviewed OS-credential adapter.
   const peerResolver = peerIdentityResolver || (() => socketBoundary.peerIdentity);
   if (typeof peerResolver !== "function") {
     throw new broker.BrokerError("broker_peer_identity_resolver_required", "broker_configuration_invalid");
@@ -188,6 +198,10 @@ function createRootfulBrokerService({ installation, socketBoundary, peerIdentity
       const expectedRevision = context.session.runtimeStarted ? context.release.newSha : context.release.oldSha;
       if (snapshot.revision !== expectedRevision) throw new broker.BrokerError("broker_runtime_revision_invalid", "phase_evidence_invalid");
       return snapshot;
+    },
+    runMigrationRunner: (result) => {
+      orchestrator.assertMigrationRunnerResult(result);
+      return result;
     },
     verifyMigration: (status) => {
       orchestrator.assertPostMigrationStatus(status);
@@ -246,6 +260,11 @@ if (require.main === module) {
       fd,
       socketPath: installation.manifest.broker.socketPath,
       operator: installation.manifest.broker.operator,
+      activation: {
+        listenPid: Number(process.env.LISTEN_PID),
+        listenFds: Number(process.env.LISTEN_FDS),
+        listenFd: fd,
+      },
     });
     createRootfulBrokerService({ installation, socketBoundary });
   } catch {
