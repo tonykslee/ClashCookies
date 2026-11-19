@@ -285,7 +285,7 @@ UTC timestamp: ____________________   Approver: ____________________   Scope/evi
 
 ## Gate 1 protected-path prerequisite resolution
 
-**Resolution status:** prepared offline; the fixed prerequisite probe is **NOT EXECUTED** and remains subject to its separate SSH authorization; the collector and retained-evidence paths remain **NOT AUTHORIZED**. The collector cannot be proposed with guessed protected paths. The matrix below separates the already reported delivery and metadata observations from resources that are actually absent and from canonical resources that remain unresolved.
+**Resolution status (2026-11-19):** the **repaired replacement** fixed prerequisite probe is **NOT EXECUTED** and requires fresh Gate B checks and a new one-time SSH authorization. The earlier malformed version **was executed once** but produced invalid output and did not establish trusted protected-path evidence; that authorization is consumed. The collector and retained-evidence paths remain **NOT AUTHORIZED**. The collector cannot be proposed with guessed protected paths. The matrix below separates the already reported delivery and metadata observations from resources that are actually absent and from canonical resources that remain unresolved.
 
 ### Prerequisite matrix
 
@@ -315,11 +315,20 @@ The safest distinction is a single, separately authorized prerequisite inspectio
 - Resources requiring further inspection: the actual wrapper-referenced lock/executor/credential/release paths, if any; current remote collector file hashes; current account/host identity.
 - Resources not to probe: credential contents, environment files, process arguments, Docker state, PostgreSQL state, whole-filesystem searches, unknown secret stores, and any path creation or lock/release-record operation.
 
-### Minimal prerequisite inspection packet — proposed, not executed
+### Minimal prerequisite inspection packet — repaired replacement, not executed
 
 #### Historical failed execution — 2026-11-19
 
 The owner reported one execution of the previous fixed read-only SSH command. Its terminal output was not structurally valid and was not accepted as Gate 1 evidence; no raw output is retained here and no retry is authorized by that historical approval. Offline reproduction identified shell word splitting of the group list and unquoted `regular file` metadata, including candidate records, plus the archive-path mismatch between the old probe and the recorded delivered archive. This audit record is retained for provenance only. The repaired command below requires a separate future one-time execution decision.
+
+#### Repaired packet merged to `dev` — 2026-11-19
+
+- **Implementation verified in repository:** [PR #2082](https://github.com/tonykslee/ClashCookies/pull/2082), reviewed head `cc7f861231d0f3633786ecf0a790d2784612b85f`, merged at `650ba69f0fc007d976c1c4eef88ff11d0f10ba84`. It corrected the delivered archive name, quoted group/metadata/hash/candidate fields, and replaced unsafe CMD caret-escaped double quotes with CMD doubled quotes (`""`). The prior CMD `^"` transport made embedded `|` vulnerable to host-shell pipeline interpretation; this is a **verified defect of the old command**, not a claim about the VM's configuration.
+- **Validation boundaries:** the new `tests/gate1-prerequisite-probe.test.ts` exercises the documented packet against synthetic Bash fixtures and the existing strict validator, and adds **two Windows-only native `cmd.exe` tests**. These resolve an isolated `ssh.cmd` before real SSH, check the received arguments/remote payload and one invocation, and execute synthetic success and malformed-hash/STOP fixtures. The owner/Codex **reported local Windows PASS** (57 focused tests passed, 3 intentional skips overall). GitHub [CI run 44601591863](https://github.com/tonykslee/ClashCookies/actions/runs/44601591863) passed lint, tests, and build on **Ubuntu**; its Windows-only tests were skipped there. The fake `ssh.cmd` batch forwarding layer is not identical to the real `ssh.exe` transport. A synthetic structural `VALID` remains `provenance=UNVERIFIED`, not host proof or readiness.
+- **Historical observation only:** the single owner-run SSH command returned malformed duplicate identity and file/candidate records; the archive `ABSENT` result referred to the wrong path and cannot prove loss. It did display a checkout revision and candidate states, but **none are accepted as structurally validated/current production evidence**. Do not copy the historical raw output into Git, treat candidate `ABSENT` as canonical path absence, or reuse the consumed SSH approval.
+- **Operational boundary:** this repaired packet has **never been run on the VM**. The next possible action is a **new, separately authorized one-shot protected-terminal-only inspection**, with fresh SSH alias/known-host/agent/account verification, no capture, redirection, transcript, logging, retry, or collector. Codex automation previously could not provide an isolated non-retaining protected CMD terminal; do not route real SSH through a logged runner. The two pre-existing evidence-root files remain untouched. Collector execution, retained ciphertext/provenance capture, protected-resource provisioning, and release promotion are separate blocked gates.
+
+
 
 **Target and operator:** one SSH connection and one remote command to the existing operator-managed alias `clash-vm` as `tilo`, using `BatchMode=yes`, `RequestTTY=no`, `ForwardAgent=no`, `StrictHostKeyChecking=yes`, `ConnectTimeout=5` and `ConnectionAttempts=1`. The operator must verify the existing approved alias and its configured known-hosts binding in the protected local SSH configuration before interpreting any output. Do not create keys, change SSH configuration, disable host-key checking, accept a new key, use `sudo`, open an interactive shell, or retry. A host/account/UID/GID mismatch is an immediate stop.
 
@@ -838,6 +847,8 @@ The trust boundary remains explicit: remote command output, transport completion
 12. Draft release PR #1983 remains blocked and unmerged. PR #2055 is merged, but that merge proves only the repository/offline trust boundary.
 
 ## Next executable milestone after approval
+
+**Immediate next possible step — not authorized:** the already merged, repaired **terminal-only protected-path prerequisite probe**, not the collector or the broad runtime/database verification. It requires fresh Gate B checks and a *new* explicit one-command owner authorization; the previous authorization was consumed by the malformed attempt. Its output is transient and no trusted captured evidence is created. Only after that bounded review can the owner choose a separate collector/capture decision; do not infer resolved canonical locks, executor, credentials or release-record paths from absent historical candidates.
 
 The next separately authorized milestone is **Gate 1 only**: one fresh, bounded, read-only production verification of the exact legacy wrapper, production checkout, approved operator identity, direct-Docker/Compose runtime topology, database identity and migration baseline, deployed startup behavior, health/monitoring state and protected-resource metadata. It must preserve `UNKNOWN/BLOCKED` for any path or identity not independently established.
 
