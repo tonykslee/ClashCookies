@@ -161,6 +161,17 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Design considerations (not yet decided):** Choose a clear command name and whether the author filter is optional or required; define whether the default view is the invoking user's posts or all accessible posts; reuse authoritative `LayoutRecord` post provenance and freshness (`lastConfirmedAt ?? submittedAt`), rather than `FwaLayouts` or `updatedAt`; exclude FWA-canonical records from the non-FWA view without losing other generic submissions; preserve guild visibility, authorization and privacy; handle untitled posts, missing/deleted Discord messages, unknown freshness, stable sorting/tie-breakers and pagination boundaries. Do not infer that a poster is the owner of a layout solely from a link.
 - **Done when:** A user can browse the requested poster's non-FWA layout posts in a readable paginated embed, sorted by Town Hall and title, with accurate freshness and links, without exposing inaccessible guild posts or mixing in the FWA catalog.
 
+### FB-014 — Improve FWA outcome intelligence using current points
+
+- **Status:** Proposed
+- **Suggested priority:** High
+- **Request:** Improve FWA war outcome inference when the FWA points site displays a stale or incorrect matchup. Currently this can leave the bot showing an UNKNOWN outcome despite having points for the relevant FWA clans.
+- **Owner-reported source behavior:** The points site displays each clan's current points and the timestamp of its latest war update; the owner reports that current points remain correct even when the displayed matchup is wrong. Treat this as a hypothesis to verify against actual snapshots, timing and existing outcome rules rather than silently assuming every observed value is fresh.
+- **Desired logic:** Use the **current points for both verified FWA clans** to determine the expected winner/loser even when the displayed opponent pairing is stale or incorrect. If points are tied, apply the **correct canonical sync number** and established tie-resolution policy; investigate and reuse existing sync-number hardening rather than reimplementing it.
+- **Requested presentation:** Do not show UNKNOWN radio bullets merely because the points-site matchup is wrong when both clans have known, sufficiently fresh and trustworthy points and the applicable sync/tie rules resolve the outcome. Preserve an explicit UNKNOWN state for genuinely insufficient, contradictory or stale evidence.
+- **Investigation and safeguards:** Trace points-site ingestion, latest-war-update timestamps, clan identity matching, outcome inference, sync number and Discord radio/indicator rendering. Establish when a points snapshot is applicable to the war being evaluated (including asynchronous updates, rollover, stale caches and opponent changes), and distinguish expected FWA winner from independently verified actual war result. Avoid guessing from one clan's points, an unverified opponent, or an unverified tie-break; record inference provenance and regression-test the failure cases.
+- **Done when:** A stale/mismatched points-site opponent no longer forces UNKNOWN for a verifiable FWA-versus-FWA matchup with applicable points (including correctly resolved ties), and the indicator reliably shows the inferred outcome without mislabeling ambiguous or outdated evidence.
+
 ## Archived / withdrawn requests
 
 _None yet._
