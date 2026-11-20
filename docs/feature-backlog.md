@@ -22,6 +22,7 @@ These are **not proposed implementation tasks**. Production deployment, migratio
 | Feature | Dev implementation | Production status | Historical record |
 | --- | --- | --- | --- |
 | `/link list` optional Compo surplus/deficit (`↑N`, `↓N`, `=`, `—`) | [#1987](https://github.com/tonykslee/ClashCookies/pull/1987) merged 2026-11-14 UTC; fallback fix [#2011](https://github.com/tonykslee/ClashCookies/pull/2011) merged 2026-11-16 UTC | **Pending production confirmation**. Selective release [#2007](https://github.com/tonykslee/ClashCookies/pull/2007) closed unmerged; full release [#1983](https://github.com/tonykslee/ClashCookies/pull/1983) open/unmerged. | [Feature history](feature-history.md) |
+| FB-012 — TH19 and Legend autorole safeguards | [#2089](https://github.com/tonykslee/ClashCookies/pull/2089) merged 2026-11-20 UTC at `ab6316a` | **Pending production verification**; historic removed roles not restored; cause of historic mass removal not established | [Feature history](feature-history.md) |
 | FB-005 — automatic `all spun` | [#2008](https://github.com/tonykslee/ClashCookies/pull/2008) merged 2026-11-16 UTC | Production delivery/activation not verified | [Feature history](feature-history.md) |
 | Immutable sync reaction history foundation (supporting FB-006/007) | [#2010](https://github.com/tonykslee/ClashCookies/pull/2010) merged 2026-11-16 UTC | Production deployment/migration not verified; leaderboard/analytics remain proposed | [Feature history](feature-history.md) |
 
@@ -39,7 +40,7 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-002 — Add TH19 weight ranges to composition tools
 
-- **Status:** Agreed range; implementation proposed.
+- **Status:** **Selected next (first)** — agreed range; implementation not started.
 - **Suggested priority:** High
 - **Request:** Update composition tools to support the new Town Hall 19 war-weight range.
 - **Owner-confirmed range (2026-11-19):** TH19 is **181,000–190,000 inclusive**, following the existing 10k TH bucket convention. Preserve TH18 as 171,000–180,000; malformed or out-of-band weights must not silently map to an adjacent TH.
@@ -49,7 +50,7 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-003 — Redesign `/compo state` for quick visual scanning
 
-- **Status:** Proposed
+- **Status:** **Queued next after FB-002 (second)** — redesign proposed
 - **Suggested priority:** Medium
 - **Request:** Make the composition state image easier to read at a glance.
 - **Desired changes:**
@@ -141,10 +142,10 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-012 — Urgent TH19 autorole and league-role regression
 
-- **Status:** In progress in [draft PR #2089](https://github.com/tonykslee/ClashCookies/pull/2089); not merged, deployed, or production-verified.
+- **Status:** **Implemented on `dev`** in [merged PR #2089](https://github.com/tonykslee/ClashCookies/pull/2089) (2026-11-20 UTC; merge `ab6316a`); **not production-verified**. No historical mass-role restoration has occurred.
 - **Priority:** **Urgent / P0** — role assignment is user-visible and reported to interfere with existing league autoroles.
 - **Observed by owner (2026-11-17 and clarified 2026-11-19):** No members were receiving the new **TH19** Discord role. Existing league roles were being **removed**, apparently including almost everyone with `@legend`, costing access to the Legend channel. An upstream API league-definition change is a hypothesis, **not** verified production evidence. Exact affected cohort, mappings, and how the symptoms relate remain unverified.
-- **Repository diagnosis (2026-11-19):** The autorole rule validator rejected TH19 due to a hardcoded TH18 maximum. League matching already understands Legend I/II/III, but stale removal can act on missing/unknown league observations. Draft #2089 adds future-compatible TH validation, league-tier ID matching, and fail-closed league removal protection; it does not establish the cause of historical Discord role removals or restore them.
+- **Repository diagnosis (2026-11-19):** The autorole rule validator rejected TH19 due to a hardcoded TH18 maximum. League matching already understands Legend I/II/III, but stale removal can act on missing/unknown league observations. Merged #2089 adds future-compatible TH validation, league-tier ID matching, and a shared evidence-safety predicate protecting both league-role grants and removals under missing, stale or contradictory observations. It does not establish the cause of historical Discord role removals or restore them.
 - **Request:** Update Dusk's Town Hall autorole support for **TH19** and investigate/fix the associated **league autorole** regression without breaking prior TH tiers or league assignment/removal rules.
 - **Diagnosis required before coding:** Inspect `/autorole` configuration, TH and league role mapping/resolution, account and Discord identity grouping, CoC source-level parsing, permission/role hierarchy and update/reconciliation paths. Verify why no TH19 roles were assigned and whether TH19 changes are suppressing, clearing, or misclassifying league roles; distinguish code behavior from missing role IDs/configuration or Discord permissions.
 - **Safety:** Use read-only diagnostics and synthetic/disposable tests; do not mass-edit Discord member roles, run production reconciliation, backfill assignments or deploy without separately reviewed authorization. Preserve intended roles on ambiguous/missing data; fail safely and avoid unnecessary role churn.
