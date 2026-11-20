@@ -226,6 +226,18 @@ describe("CompoPlaceService", () => {
     } as Awaited<ReturnType<InactiveWarService["listInactiveWarPlayers"]>>);
   });
 
+  it("shows TH19 placement input but withholds unsupported rankings", async () => {
+    const result = await new CompoPlaceService().readPlace(181000, "TH19", "guild-1");
+
+    expect(result.content).toContain("Bucket: **TH19**");
+    expect(result.content).toContain("Input weight: **181,000**");
+    expect(result.content).toContain("Observed clan TH19 count: **UNKNOWN (not queried)**");
+    expect(result.content).toContain("Target comparison: **UNKNOWN**");
+    expect(result.content).toContain("placement rankings and replacement suggestions are withheld");
+    expect(result.embeds).toEqual([]);
+    expect(result.candidateCount).toBe(0);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });

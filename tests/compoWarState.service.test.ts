@@ -87,6 +87,7 @@ function makeMember(input: {
 function makeWeightedMembers(input: {
   clanTag: string;
   counts: {
+    th19?: number;
     th18?: number;
     th17?: number;
     th16?: number;
@@ -105,6 +106,15 @@ function makeWeightedMembers(input: {
   let position = input.startPosition ?? 1;
   const townHall = input.townHall ?? 18;
   const members = [
+    ...Array.from({ length: input.counts.th19 ?? 0 }, () =>
+      makeMember({
+        clanTag: input.clanTag,
+        position: position++,
+        townHall,
+        rawWeight: 181000,
+        effectiveWeight: 181000,
+      }),
+    ),
     ...Array.from({ length: input.counts.th18 ?? 0 }, () =>
       makeMember({
         clanTag: input.clanTag,
@@ -244,6 +254,8 @@ describe("CompoWarStateService", () => {
   });
 
   it("classifies effective-weight boundaries into the expected WAR compo buckets", () => {
+    expect(getCompoWarWeightBucketForTest(181000)).toBe("TH19");
+    expect(getCompoWarWeightBucketForTest(190000)).toBe("TH19");
     expect(getCompoWarWeightBucketForTest(180000)).toBe("TH18");
     expect(getCompoWarWeightBucketForTest(170000)).toBe("TH17");
     expect(getCompoWarWeightBucketForTest(160000)).toBe("TH16");
@@ -255,6 +267,34 @@ describe("CompoWarStateService", () => {
     expect(getCompoWarWeightBucketForTest(90000)).toBe("TH10");
     expect(getCompoWarWeightBucketForTest(70000)).toBe("TH9");
     expect(getCompoWarWeightBucketForTest(55000)).toBe("TH8_OR_LOWER");
+  });
+
+  it("shows observed TH19 in WAR state while marking all target deltas unknown", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan-war" }]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      makeParent({
+        clanTag: "#AAA111",
+        clanName: "Alpha Clan-war",
+        totalEffectiveWeight: 8_106_000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      ...makeWeightedMembers({
+        clanTag: "#AAA111",
+        counts: { th19: 1, th18: 18, th17: 11, th16: 7, th15: 6, th14: 4, th13: 2, th12: 1 },
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 8_000_001, weightMaxInclusive: 8_200_000 }),
+    ]);
+
+    const result = await new CompoWarStateService({ runTracked: vi.fn() } as any).readState();
+
+    expect(result.stateRows).toEqual([
+      ["Clan", "Total", "Missing", "Players", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+      ["Alpha Clan", "8,106,000", "0", "50", "1", "?", "?", "?", "?", "?", "?"],
+    ]);
+    expect(result.contentLines.join("\n")).toContain("TH19=observed count");
   });
 
   it("classifies representative interior effective weights into the expected WAR compo buckets", () => {

@@ -43,11 +43,14 @@ describe("/compo helpers", () => {
     expect(warRows.map((entry) => entry.sheetRowNumber)).toEqual([8, 11]);
   });
 
-  it("keeps /compo place weight normalization unchanged", () => {
+  it("accepts only integer /compo place weights", () => {
     expect(parseWeightInputForTest("145000")).toBe(145000);
     expect(parseWeightInputForTest("145,000")).toBe(145000);
     expect(parseWeightInputForTest("145k")).toBe(145000);
     expect(parseWeightInputForTest("145.5k")).toBe(145500);
+    expect(parseWeightInputForTest("145000.5")).toBeNull();
+    expect(parseWeightInputForTest("181000")).toBe(181000);
+    expect(parseWeightInputForTest("190000")).toBe(190000);
     expect(parseWeightInputForTest("")).toBeNull();
     expect(parseWeightInputForTest("abc")).toBeNull();
   });

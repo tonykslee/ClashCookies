@@ -145,6 +145,7 @@ function buildActualStateRow(input: {
   view: CompoActualStateView;
   base: CompoActualStateBaseMetrics;
   projection: CompoActualStateProjection;
+  includeTh19: boolean;
 }): string[] {
   const row = [normalizeActualStateClanDisplayName(input.clanName)];
   if (input.view === "raw") {
@@ -153,6 +154,7 @@ function buildActualStateRow(input: {
       `${input.projection.unresolvedWeightCount}`,
       `${input.projection.deferredWeightCount}`,
       `${input.projection.memberCount}`,
+      ...(input.includeTh19 ? [`${input.projection.displayCounts.TH19 ?? 0}`] : []),
       `${input.projection.displayCounts.TH18}`,
       `${input.projection.displayCounts.TH17}`,
       `${input.projection.displayCounts.TH16}`,
@@ -169,6 +171,7 @@ function buildActualStateRow(input: {
     `${input.projection.missingWeights}`,
     `${input.projection.deferredWeightCount}`,
     `${input.projection.memberCount}`,
+    ...(input.includeTh19 ? [`${input.projection.displayCounts.TH19 ?? 0}`] : []),
     input.projection.deltaByBucket.TH18 !== null
       ? `${input.projection.deltaByBucket.TH18}`
       : "?",
@@ -208,17 +211,18 @@ function buildActualViewSummaryLines(
   latestSourceSyncedAt: Date | null,
   missingHeatMapBands: string[],
   missingTo50Count: number,
+  includeTh19: boolean,
 ): string[] {
   const contentLines = [
     `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(latestSourceSyncedAt)}`,
   ];
   if (view === "raw") {
     contentLines.push(
-      "Columns: Total=resolved weight; Missing=unresolved/fallback; DF=deferred-weight count; TH=resolved composition counts.",
+      `Columns: Total=resolved weight; Missing=unresolved/fallback; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=resolved composition counts.`,
     );
   } else {
     contentLines.push(
-      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; TH=roster delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=roster delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
     );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {
@@ -591,7 +595,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         continue;
       }
       totalResolvedWeight += resolvedWeight;
-      bucketCounts[bucket] += 1;
+      bucketCounts[bucket] = (bucketCounts[bucket] ?? 0) + 1;
       if (isMissing) {
         unresolvedWeightCount += 1;
       }
@@ -866,6 +870,9 @@ export class CompoActualStateService {
 
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
+    const includeTh19 = context.clans.some(
+      (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
+    );
     const rows: string[][] = [];
     const totalMissingTo50Count = context.clans.reduce(
       (sum, clan) => sum + Math.max(0, 50 - clan.base.memberCount),
@@ -893,6 +900,7 @@ export class CompoActualStateService {
         view,
         base: clan.base,
         projection,
+        includeTh19,
       });
       maybeLogCompoActualDiagnostics({
         surface: "state",
@@ -910,7 +918,20 @@ export class CompoActualStateService {
     return {
       stateRows: [
         view === "raw"
-          ? ["Clan", "Resolved Total", "Missing", "DF", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"]
+          ? [
+              "Clan",
+              "Resolved Total",
+              "Missing",
+              "DF",
+              "Players",
+              ...(includeTh19 ? ["TH19"] : []),
+              "TH18",
+              "TH17",
+              "TH16",
+              "TH15",
+              "TH14",
+              "<=TH13",
+            ]
           : [
               "Clan",
               "Resolved Total",
@@ -918,6 +939,7 @@ export class CompoActualStateService {
               "Missing",
               "DF",
               "Players",
+              ...(includeTh19 ? ["TH19"] : []),
               "TH18",
               "TH17",
               "TH16",
@@ -932,6 +954,7 @@ export class CompoActualStateService {
         context.latestSourceSyncedAt,
         missingHeatMapBands,
         totalMissingTo50Count,
+        includeTh19,
       ),
       trackedClanTags: context.trackedClanTags,
       renderableClanTags,

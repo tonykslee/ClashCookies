@@ -6,8 +6,12 @@ import {
   getCompoWarWeightBucket,
 } from "./compoWarWeightBuckets";
 
-export type CompoWarBucketCounts = Record<CompoWarWeightBucket, number>;
-export type CompoWarDisplayBucketCounts = Record<CompoWarDisplayBucket, number>;
+export type CompoWarBucketCounts = Record<Exclude<CompoWarWeightBucket, "TH19">, number> & {
+  TH19?: number;
+};
+export type CompoWarDisplayBucketCounts = Record<Exclude<CompoWarDisplayBucket, "TH19">, number> & {
+  TH19?: number;
+};
 
 export const EMPTY_COMPO_WAR_BUCKET_COUNTS: CompoWarBucketCounts = {
   TH18: 0,
@@ -40,7 +44,7 @@ export function buildCompoWarBucketCounts(
   for (const member of members) {
     const bucket = getCompoWarWeightBucket(member.effectiveWeight);
     if (!bucket) return null;
-    counts[bucket] += 1;
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
   }
   return counts;
 }
@@ -55,7 +59,8 @@ export function collapseCompoWarBucketCountsForDisplay(
   for (const [bucket, count] of Object.entries(counts) as Array<
     [CompoWarWeightBucket, number]
   >) {
-    collapsed[collapseCompoWarWeightBucketForDisplay(bucket)] += count;
+    const displayBucket = collapseCompoWarWeightBucketForDisplay(bucket);
+    collapsed[displayBucket] = (collapsed[displayBucket] ?? 0) + count;
   }
   return collapsed;
 }

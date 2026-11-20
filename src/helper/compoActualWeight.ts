@@ -2,11 +2,15 @@
 export function toPositiveCompoWeight(
   value: number | null | undefined,
 ): number | null {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value)
+  ) {
     return null;
   }
-  const normalized = Math.trunc(value);
-  return normalized > 0 ? normalized : null;
+  return value > 0 ? value : null;
 }
 
 /** Purpose: resolve one ACTUAL compo weight from persisted ACTUAL, deferred, then WAR fallback precedence. */
