@@ -7,6 +7,7 @@ import {
 import { formatError } from "../../helper/formatError";
 import {
   FWA_LAYOUT_TYPES,
+  FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL,
   FwaCanonicalLayout,
   FwaLayoutService,
   FwaLayoutTownhallMismatchError,
@@ -49,11 +50,10 @@ export const FWA_LAYOUT_SUBCOMMAND = {
   options: [
     {
       name: "th",
-      description: "Town Hall lookup (TH8-TH18); derived from link during updates",
+      description: "Town Hall lookup (TH8+); derived from link during updates",
       type: ApplicationCommandOptionType.Integer,
       required: false,
-      min_value: 8,
-      max_value: 18,
+      min_value: FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL,
     },
     {
       name: "type",
