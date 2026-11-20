@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 function dockerAvailable(): boolean {
@@ -23,16 +26,48 @@ describe("real Docker deployment artifact smoke", () => {
 
     const suffix = `${process.pid}-${Date.now()}`;
     const distVolume = `clashcookies-test-dist-${suffix}`;
+    const nodeModulesVolume = `clashcookies-test-node-modules-${suffix}`;
     const repo = process.cwd();
+    const fixture = mkdtempSync(join(tmpdir(), "clashcookies-docker-smoke-"));
+    const dockerUser = typeof process.getuid === "function" && typeof process.getgid === "function"
+      ? ["--user", `${process.getuid()}:${process.getgid()}`]
+      : [];
     try {
+      cpSync(repo, fixture, {
+        recursive: true,
+        filter: (source) => {
+          const path = relative(repo, source).replaceAll("\\", "/");
+          return path !== ".git" && !path.startsWith(".git/") && path !== "node_modules" && !path.startsWith("node_modules/") && path !== "dist" && !path.startsWith("dist/");
+        },
+      });
       execFileSync("docker", ["volume", "create", distVolume], { encoding: "utf8" });
+      execFileSync("docker", ["volume", "create", nodeModulesVolume], { encoding: "utf8" });
       execFileSync(
         "docker",
         [
           "run",
           "--rm",
           "-v",
-          `${repo}:/app`,
+          `${join(repo, "node_modules")}:/source:ro`,
+          "-v",
+          `${nodeModulesVolume}:/target`,
+          "node:20-bookworm",
+          "bash",
+          "-lc",
+          `cp -a /source/. /target/ && chown -R ${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000} /target`,
+        ],
+        { encoding: "utf8", timeout: 120_000 },
+      );
+      execFileSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          ...dockerUser,
+          "-v",
+          `${fixture}:/app`,
+          "-v",
+          `${nodeModulesVolume}:/app/node_modules`,
           "-v",
           `${distVolume}:/build-dist`,
           "-w",
@@ -47,12 +82,14 @@ describe("real Docker deployment artifact smoke", () => {
       expect(
         execFileSync(
           "docker",
-          ["run", "--rm", "-v", `${distVolume}:/dist:ro`, "node:20-bookworm", "bash", "-lc", "test -s /dist/ClashCookies.js"],
+          ["run", "--rm", ...dockerUser, "-v", `${distVolume}:/dist:ro`, "node:20-bookworm", "bash", "-lc", "test -s /dist/ClashCookies.js"],
           { encoding: "utf8", timeout: 30_000 },
         ),
       ).toBe("");
     } finally {
       execFileSync("docker", ["volume", "rm", "-f", distVolume], { stdio: "ignore" });
+      execFileSync("docker", ["volume", "rm", "-f", nodeModulesVolume], { stdio: "ignore" });
+      rmSync(fixture, { recursive: true, force: true });
     }
   }, 1_000_000);
 });
