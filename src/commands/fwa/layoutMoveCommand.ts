@@ -7,6 +7,7 @@ import {
 import { dozzleLog } from "../../helper/dozzleLogger";
 import {
   FWA_LAYOUT_TYPES,
+  FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL,
   FwaCanonicalLayout,
   FwaLayoutService,
   isSupportedTownhall,
@@ -46,16 +47,14 @@ export const FWA_LAYOUT_MOVE_SUBCOMMAND = {
       description: "Minimum Town Hall (default TH8)",
       type: ApplicationCommandOptionType.Integer,
       required: false,
-      min_value: 8,
-      max_value: 18,
+      min_value: FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL,
     },
     {
       name: "max-th",
-      description: "Maximum Town Hall (default TH18)",
+      description: "Maximum Town Hall (default all available)",
       type: ApplicationCommandOptionType.Integer,
       required: false,
-      min_value: 8,
-      max_value: 18,
+      min_value: FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL,
     },
     {
       name: "order",
@@ -113,16 +112,17 @@ export async function runFwaLayoutMoveCommand(
   }
 
   const type = normalizeLayoutType(interaction.options.getString("type", true));
-  const minTownhall = interaction.options.getInteger("min-th", false) ?? 8;
-  const maxTownhall = interaction.options.getInteger("max-th", false) ?? 18;
+  const minTownhall = interaction.options.getInteger("min-th", false) ?? FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL;
+  // Omitted upper bound means all existing and future Town Hall layouts.
+  const maxTownhall = interaction.options.getInteger("max-th", false);
   const requestedOrder = interaction.options.getString("order", false) ?? "descending";
   const order = parseLayoutMoveOrder(requestedOrder);
   if (!order) {
     await editPrivate(interaction, "`order` must be `ascending` or `descending`.");
     return;
   }
-  if (!isSupportedTownhall(minTownhall) || !isSupportedTownhall(maxTownhall) || minTownhall > maxTownhall) {
-    await editPrivate(interaction, "`min-th` and `max-th` must be an ordered range from TH8 through TH18.");
+  if (!isSupportedTownhall(minTownhall) || (maxTownhall !== null && (!isSupportedTownhall(maxTownhall) || minTownhall > maxTownhall))) {
+    await editPrivate(interaction, `\`min-th\` and \`max-th\` must be an ordered range starting at TH${FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL}.`);
     return;
   }
 
@@ -149,7 +149,7 @@ export async function runFwaLayoutMoveCommand(
           (row) =>
             row.Type === type &&
             row.Townhall >= minTownhall &&
-            row.Townhall <= maxTownhall,
+            (maxTownhall === null || row.Townhall <= maxTownhall),
         ),
       ),
       order,
@@ -409,11 +409,11 @@ function formatSummary(
   },
   type: string,
   minTownhall: number,
-  maxTownhall: number,
+  maxTownhall: number | null,
   destinationChannelId: string,
 ): string {
   const lines = [
-    `FWA layout relocation (${type}, TH${minTownhall}-TH${maxTownhall}) complete.`,
+    `FWA layout relocation (${type}, TH${minTownhall}${maxTownhall === null ? "+" : `-TH${maxTownhall}`}) complete.`,
     `Moved: ${summary.moved} · Skipped: ${summary.skipped} · Failed: ${summary.failed}`,
     `Destination: <#${destinationChannelId}>`,
   ];
