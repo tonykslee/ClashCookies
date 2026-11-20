@@ -3,6 +3,7 @@ import {
   calculateCompoDeviationScore,
   getCompoActualStateDeltaByBucket,
   getCompoDisplayBucketRepresentativeWeight,
+  hasUnsupportedCompoTh19Target,
   projectCompoActualStateView,
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
@@ -409,7 +410,10 @@ function buildCustomProjection(input: {
     base: input.base,
     heatMapRefs: input.heatMapRefs,
   });
-  if (!rawProjection.selectedHeatMapRef) {
+  if (
+    input.heatMapRefs.length === 0 ||
+    hasUnsupportedCompoTh19Target(rawProjection.displayCounts)
+  ) {
     return {
       currentProjection: scoreProjectionIfNeeded(rawProjection),
       targetProjection: scoreProjectionIfNeeded(rawProjection),

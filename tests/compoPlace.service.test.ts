@@ -230,7 +230,8 @@ describe("CompoPlaceService", () => {
     const result = await new CompoPlaceService().readPlace(181000, "TH19", "guild-1");
 
     expect(result.content).toContain("Bucket: **TH19**");
-    expect(result.content).toContain("Observed TH19: **1**");
+    expect(result.content).toContain("Input weight: **181,000**");
+    expect(result.content).toContain("Observed clan TH19 count: **UNKNOWN (not queried)**");
     expect(result.content).toContain("Target comparison: **UNKNOWN**");
     expect(result.content).toContain("placement rankings and replacement suggestions are withheld");
     expect(result.embeds).toEqual([]);

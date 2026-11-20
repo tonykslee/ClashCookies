@@ -1967,8 +1967,8 @@ async function buildCompoAdviceEmbed(input: {
             : ""
         }`,
         `Rushed: ${input.advice.rushedCount}`,
-        ...(summary.currentProjection.displayCounts.TH19 && summary.currentProjection.displayCounts.TH19 > 0
-          ? [`Observed TH19: ${summary.currentProjection.displayCounts.TH19}`]
+        ...((summary.currentProjection.displayCounts?.TH19 ?? 0) > 0
+          ? [`Observed TH19: ${summary.currentProjection.displayCounts?.TH19}`]
           : []),
       ].join("\n"),
     );

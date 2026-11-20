@@ -318,9 +318,9 @@ export class CompoPlaceService {
     if (bucket === "TH19") {
       return {
         content:
-          `Weight: **${inputWeight.toLocaleString("en-US")}**\n` +
+          `Input weight: **${inputWeight.toLocaleString("en-US")}**\n` +
           "Bucket: **TH19**\n" +
-          "Observed TH19: **1**\n" +
+          "Observed clan TH19 count: **UNKNOWN (not queried)**\n" +
           "Target comparison: **UNKNOWN** — historical HeatMapRef profiles have no valid TH19 target counts, so placement rankings and replacement suggestions are withheld.",
         embeds: [],
         trackedClanTags: [],
