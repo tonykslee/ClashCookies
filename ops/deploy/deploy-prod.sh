@@ -398,7 +398,7 @@ wait_for_health() {
 
 cleanup_candidate_worktree() {
   [ "$TEMP_WORKTREE_CREATED" = "1" ] || return 0
-  if git_safe worktree remove --quiet "$TEMP_WORKTREE"; then
+  if git_safe worktree remove "$TEMP_WORKTREE" >/dev/null; then
     TEMP_WORKTREE_CREATED="0"
     log "candidate_cleanup=success"
   else

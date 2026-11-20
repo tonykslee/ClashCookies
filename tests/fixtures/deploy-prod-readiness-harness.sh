@@ -64,6 +64,7 @@ case "$command" in
     if [ "$action" = add ]; then
       path="${@: -1}"; mkdir -p "$path"; log worktree-add
     elif [ "$action" = remove ]; then
+      [ "${1:-}" != --quiet ] || { log unsupported-worktree-option; exit 129; }
       path="${@: -1}"; rm -rf -- "$path"; log worktree-remove
     fi
     ;;
