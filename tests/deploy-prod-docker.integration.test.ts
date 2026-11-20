@@ -17,6 +17,10 @@ function dockerAvailable(): boolean {
   }
 }
 
+function bashExecutable(): string {
+  return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+}
+
 describe("real Docker deployment artifact smoke", () => {
   it("builds with the artifact volume mounted outside /app/dist", () => {
     if (!dockerAvailable()) {
