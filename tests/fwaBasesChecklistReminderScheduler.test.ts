@@ -123,6 +123,7 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
       null as any,
     );
     vi.spyOn(trackedMessageService, "claimFwaBasesChecklistReminderMarker").mockResolvedValue(true as any);
+    vi.spyOn(trackedMessageService, "releaseFwaBasesChecklistReminderMarker").mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -219,6 +220,88 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(send).not.toHaveBeenCalled();
     expect(dozzleLogMock.info).toHaveBeenCalledWith(
       expect.stringContaining("reason=bases_completion_exists"),
+    );
+  });
+
+  it("skips a completion written after planning but before delivery", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    const completion = {
+      messageId: "completion-after-plan",
+    } as any;
+    vi.mocked(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan,
+    )
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(completion);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).toHaveBeenCalledTimes(1);
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=bases_completion_exists_after_claim"),
+    );
+    expect(trackedMessageService.releaseFwaBasesChecklistReminderMarker).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a skipped marker so an unchecked correction can be delivered later", async () => {
+    plannerMocks.findPending
+      .mockResolvedValueOnce([makeCandidate()])
+      .mockResolvedValueOnce([makeCandidate()]);
+    vi.mocked(trackedMessageService.claimFwaBasesChecklistReminderMarker)
+      .mockResolvedValueOnce(true as any)
+      .mockResolvedValueOnce(true as any);
+    vi.mocked(trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ messageId: "completion-after-claim" } as any)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime()),
+    ).resolves.toMatchObject({ sent: 0, skipped: 1 });
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:01.000Z").getTime()),
+    ).resolves.toMatchObject({ sent: 1, skipped: 0 });
+
+    expect(trackedMessageService.releaseFwaBasesChecklistReminderMarker).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the final completion lookup cannot read the database", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    vi.mocked(trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("database unavailable"));
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 1,
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(trackedMessageService.releaseFwaBasesChecklistReminderMarker).toHaveBeenCalledTimes(1);
+    expect(dozzleLogMock.warn).toHaveBeenCalledWith(
+      expect.stringContaining("reason=database_read_failed"),
     );
   });
 
@@ -383,6 +466,30 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("deduplicates repeated scheduler cycles for the same reminder bucket", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    vi.mocked(trackedMessageService.claimFwaBasesChecklistReminderMarker)
+      .mockResolvedValueOnce(true as any)
+      .mockResolvedValueOnce(false as any);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime()),
+    ).resolves.toMatchObject({ sent: 1 });
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:01.000Z").getTime()),
+    ).resolves.toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      skipped: 0,
+      failed: 0,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("skips MM clans without claiming a reminder marker or sending", async () => {
     plannerMocks.findPending.mockResolvedValue([makeCandidate({ matchType: "MM" })]);
     const { client, send } = makeClient();
@@ -511,7 +618,7 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
           resolvePending = resolve;
         }),
     );
-    const { client } = makeClient();
+    const { client, send } = makeClient();
     const scheduler = await createScheduler(client);
 
     const firstRun = scheduler.runCycle();
@@ -525,13 +632,8 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
       failed: 0,
     });
 
-    resolvePending?.([]);
-    await expect(firstRun).resolves.toEqual({
-      evaluated: 0,
-      sent: 0,
-      deduped: 0,
-      skipped: 0,
-      failed: 0,
-    });
+    resolvePending?.([makeCandidate()]);
+    await expect(firstRun).resolves.toMatchObject({ evaluated: 1, sent: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

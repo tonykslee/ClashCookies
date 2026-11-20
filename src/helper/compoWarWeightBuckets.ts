@@ -1,4 +1,5 @@
 export type CompoWarWeightBucket =
+  | "TH19"
   | "TH18"
   | "TH17"
   | "TH16"
@@ -12,6 +13,7 @@ export type CompoWarWeightBucket =
   | "TH8_OR_LOWER";
 
 export type CompoWarDisplayBucket =
+  | "TH19"
   | "TH18"
   | "TH17"
   | "TH16"
@@ -19,25 +21,46 @@ export type CompoWarDisplayBucket =
   | "TH14"
   | "<=TH13";
 
+export type CompoWarWeightBand = {
+  bucket: CompoWarWeightBucket;
+  minInclusive: number;
+  maxInclusive: number;
+};
+
+/** Purpose: provide the single ordered weight-band definition shared by ACTUAL, WAR, placement, and filler flows. */
+export const COMPO_WAR_WEIGHT_BANDS: readonly CompoWarWeightBand[] = [
+  { bucket: "TH19", minInclusive: 181000, maxInclusive: 190000 },
+  { bucket: "TH18", minInclusive: 171000, maxInclusive: 180000 },
+  { bucket: "TH17", minInclusive: 161000, maxInclusive: 170000 },
+  { bucket: "TH16", minInclusive: 151000, maxInclusive: 160000 },
+  { bucket: "TH15", minInclusive: 141000, maxInclusive: 150000 },
+  { bucket: "TH14", minInclusive: 131000, maxInclusive: 140000 },
+  { bucket: "TH13", minInclusive: 121000, maxInclusive: 130000 },
+  { bucket: "TH12", minInclusive: 111000, maxInclusive: 120000 },
+  { bucket: "TH11", minInclusive: 91000, maxInclusive: 110000 },
+  { bucket: "TH10", minInclusive: 71000, maxInclusive: 90000 },
+  { bucket: "TH9", minInclusive: 56000, maxInclusive: 70000 },
+  { bucket: "TH8_OR_LOWER", minInclusive: 0, maxInclusive: 55000 },
+] as const;
+
 /** Purpose: classify one persisted effective roster weight into the WAR compo bucket ranges used for sheet parity. */
 export function getCompoWarWeightBucket(
   effectiveWeight: number | null,
 ): CompoWarWeightBucket | null {
-  if (effectiveWeight === null || !Number.isFinite(effectiveWeight) || effectiveWeight < 0) {
+  if (
+    effectiveWeight === null ||
+    !Number.isFinite(effectiveWeight) ||
+    !Number.isInteger(effectiveWeight) ||
+    effectiveWeight < 0
+  ) {
     return null;
   }
-  if (effectiveWeight >= 171000 && effectiveWeight <= 180000) return "TH18";
-  if (effectiveWeight >= 161000 && effectiveWeight <= 170000) return "TH17";
-  if (effectiveWeight >= 151000 && effectiveWeight <= 160000) return "TH16";
-  if (effectiveWeight >= 141000 && effectiveWeight <= 150000) return "TH15";
-  if (effectiveWeight >= 131000 && effectiveWeight <= 140000) return "TH14";
-  if (effectiveWeight >= 121000 && effectiveWeight <= 130000) return "TH13";
-  if (effectiveWeight >= 111000 && effectiveWeight <= 120000) return "TH12";
-  if (effectiveWeight >= 91000 && effectiveWeight <= 110000) return "TH11";
-  if (effectiveWeight >= 71000 && effectiveWeight <= 90000) return "TH10";
-  if (effectiveWeight >= 56000 && effectiveWeight <= 70000) return "TH9";
-  if (effectiveWeight <= 55000) return "TH8_OR_LOWER";
-  return null;
+  return (
+    COMPO_WAR_WEIGHT_BANDS.find(
+      (band) =>
+        effectiveWeight >= band.minInclusive && effectiveWeight <= band.maxInclusive,
+    )?.bucket ?? null
+  );
 }
 
 /** Purpose: collapse one granular WAR compo weight bucket into the stable display columns used by `/compo`. */

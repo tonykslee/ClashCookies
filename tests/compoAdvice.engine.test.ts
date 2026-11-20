@@ -63,6 +63,37 @@ function makeHeatMapRef(input: Partial<{
 }
 
 describe("CompoAdviceEngine", () => {
+  it("reports TH19 as observed but keeps target advice unknown", () => {
+    const summary = evaluateCompoAdvice({
+      mode: "actual",
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 181000,
+        unresolvedWeightCount: 0,
+        memberCount: 1,
+        bucketCounts: makeBucketCounts({ TH19: 1 }),
+      },
+      heatMapRefs: [
+        makeHeatMapRef({
+          weightMinInclusive: 0,
+          weightMaxInclusive: 999999,
+          th18Count: 1,
+        }),
+      ],
+    });
+
+    expect(summary.currentProjection.displayCounts.TH19).toBe(1);
+    expect(summary.targetHeatMapRef).toBeNull();
+    expect(summary.currentMatchrate).toBeNull();
+    expect(
+      buildCompoAdviceContentLinesForTest({
+        summary,
+        modeLabel: "Actual",
+        refreshLine: null,
+      }).join("\n"),
+    ).toContain("TH19: unknown (historical target unavailable)");
+  });
+
   it("recommends adding the highest-priority negative bucket when the clan is not full", () => {
     const summary = evaluateCompoAdvice({
       mode: "actual",

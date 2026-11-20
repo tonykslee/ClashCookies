@@ -545,6 +545,7 @@ function buildTrackedClanState(input: {
     base: input.clan.base,
     heatMapRefs: input.heatMapRefs,
   });
+  const hasUnsupportedTh19 = (input.clan.base.bucketCounts.TH19 ?? 0) > 0;
 
   return {
     clanTag: input.clan.clanTag,
@@ -552,7 +553,9 @@ function buildTrackedClanState(input: {
     shortName: input.clan.shortName,
     memberCount: input.clan.base.memberCount,
     currentBucketCounts: cloneBucketCounts(input.clan.base.bucketCounts),
-    targetBucketCounts: projection.selectedHeatMapRef
+    targetBucketCounts: hasUnsupportedTh19
+      ? cloneBucketCounts(input.clan.base.bucketCounts)
+      : projection.selectedHeatMapRef
       ? getCompoActualStateTargetBucketCounts(projection.selectedHeatMapRef)
       : buildFallbackTargetBucketCounts({
           baseBucketCounts: input.clan.base.bucketCounts,
@@ -582,6 +585,7 @@ function buildSummaryDescription(input: {
   remainingUnfilledClanSlots: CompoFillRemainingSlot[];
   unusedAvailableFillers: CompoFillAvailableFiller[];
   plannedMoveCount: number;
+  unsupportedTh19ClanNames?: readonly string[];
 }): string {
   const totalOpenSlots = input.remainingUnfilledClanSlots.reduce(
     (sum, slot) => sum + slot.remainingSlots,
@@ -594,6 +598,11 @@ function buildSummaryDescription(input: {
     `Open slots: ${totalOpenSlots}`,
     `Available fillers: ${availableFillerCount}`,
     `Recommended moves: ${input.plannedMoveCount}`,
+    ...(input.unsupportedTh19ClanNames && input.unsupportedTh19ClanNames.length > 0
+      ? [
+          `TH19 target comparison: UNKNOWN for ${input.unsupportedTh19ClanNames.join(", ")}; no fill moves are planned for those clans.`,
+        ]
+      : []),
   ].join(" | ");
 }
 
@@ -880,6 +889,9 @@ export class CompoFillService {
           remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
           unusedAvailableFillers: result.unusedAvailableFillers,
           plannedMoveCount,
+          unsupportedTh19ClanNames: context.clans
+            .filter((clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0)
+            .map((clan) => clan.clanName),
         });
         const sectionSources = buildFillSectionSources({
           result,

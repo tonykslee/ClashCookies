@@ -6,10 +6,12 @@ import type {
 import { prisma } from "../prisma";
 import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
-import { buildCompoWarBucketCounts } from "../helper/compoWarBucketCounts";
+import {
+  buildCompoWarBucketCounts,
+  type CompoWarBucketCounts,
+} from "../helper/compoWarBucketCounts";
 import {
   getCompoWarWeightBucket,
-  type CompoWarWeightBucket,
 } from "../helper/compoWarWeightBuckets";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
@@ -20,6 +22,7 @@ type CollapsedStateRow = {
   totalWeight: string;
   missingWeights: string;
   players: string;
+  th19Count?: string;
   th18Delta: string;
   th17Delta: string;
   th16Delta: string;
@@ -28,9 +31,7 @@ type CollapsedStateRow = {
   th13OrLowerDelta: string;
 };
 
-type GranularBucketKey = CompoWarWeightBucket;
-
-type BucketCounts = Record<GranularBucketKey, number>;
+type BucketCounts = CompoWarBucketCounts;
 
 export type CompoWarStateClanContext = {
   clanTag: string;
@@ -82,23 +83,26 @@ function buildCollapsedStateRow(input: {
   bucketCounts: BucketCounts;
   heatMapRef: HeatMapRef;
 }): CollapsedStateRow {
+  const hasUnsupportedTh19 = (input.bucketCounts.TH19 ?? 0) > 0;
   const deltas = {
-    TH18: input.bucketCounts.TH18 - input.heatMapRef.th18Count,
-    TH17: input.bucketCounts.TH17 - input.heatMapRef.th17Count,
-    TH16: input.bucketCounts.TH16 - input.heatMapRef.th16Count,
-    TH15: input.bucketCounts.TH15 - input.heatMapRef.th15Count,
-    TH14: input.bucketCounts.TH14 - input.heatMapRef.th14Count,
+    TH18: hasUnsupportedTh19 ? null : input.bucketCounts.TH18 - input.heatMapRef.th18Count,
+    TH17: hasUnsupportedTh19 ? null : input.bucketCounts.TH17 - input.heatMapRef.th17Count,
+    TH16: hasUnsupportedTh19 ? null : input.bucketCounts.TH16 - input.heatMapRef.th16Count,
+    TH15: hasUnsupportedTh19 ? null : input.bucketCounts.TH15 - input.heatMapRef.th15Count,
+    TH14: hasUnsupportedTh19 ? null : input.bucketCounts.TH14 - input.heatMapRef.th14Count,
     TH13_OR_LOWER:
-      input.bucketCounts.TH13 +
-      input.bucketCounts.TH12 +
-      input.bucketCounts.TH11 +
-      input.bucketCounts.TH10 +
-      input.bucketCounts.TH9 +
-      input.bucketCounts.TH8_OR_LOWER -
-      (input.heatMapRef.th13Count +
-        input.heatMapRef.th12Count +
-        input.heatMapRef.th11Count +
-        input.heatMapRef.th10OrLowerCount),
+      hasUnsupportedTh19
+        ? null
+        : input.bucketCounts.TH13 +
+          input.bucketCounts.TH12 +
+          input.bucketCounts.TH11 +
+          input.bucketCounts.TH10 +
+          input.bucketCounts.TH9 +
+          input.bucketCounts.TH8_OR_LOWER -
+          (input.heatMapRef.th13Count +
+            input.heatMapRef.th12Count +
+            input.heatMapRef.th11Count +
+            input.heatMapRef.th10OrLowerCount),
   };
 
   return {
@@ -106,12 +110,15 @@ function buildCollapsedStateRow(input: {
     totalWeight: input.totalEffectiveWeight.toLocaleString("en-US"),
     missingWeights: `${input.missingWeights}`,
     players: `${input.rosterSize}`,
-    th18Delta: `${deltas.TH18}`,
-    th17Delta: `${deltas.TH17}`,
-    th16Delta: `${deltas.TH16}`,
-    th15Delta: `${deltas.TH15}`,
-    th14Delta: `${deltas.TH14}`,
-    th13OrLowerDelta: `${deltas.TH13_OR_LOWER}`,
+    ...((input.bucketCounts.TH19 ?? 0) > 0
+      ? { th19Count: `${input.bucketCounts.TH19}` }
+      : {}),
+    th18Delta: deltas.TH18 === null ? "?" : `${deltas.TH18}`,
+    th17Delta: deltas.TH17 === null ? "?" : `${deltas.TH17}`,
+    th16Delta: deltas.TH16 === null ? "?" : `${deltas.TH16}`,
+    th15Delta: deltas.TH15 === null ? "?" : `${deltas.TH15}`,
+    th14Delta: deltas.TH14 === null ? "?" : `${deltas.TH14}`,
+    th13OrLowerDelta: deltas.TH13_OR_LOWER === null ? "?" : `${deltas.TH13_OR_LOWER}`,
   };
 }
 
@@ -273,6 +280,9 @@ export class CompoWarStateService {
       };
     }
     const renderableRows: string[][] = [];
+    const includeTh19 = context.clans.some(
+      (clan) => (clan.bucketCounts.TH19 ?? 0) > 0,
+    );
     for (const clan of context.clans) {
       const collapsed = buildCollapsedStateRow({
         clanName: clan.clanName,
@@ -287,6 +297,7 @@ export class CompoWarStateService {
         collapsed.totalWeight,
         collapsed.missingWeights,
         collapsed.players,
+        ...(includeTh19 ? [collapsed.th19Count ?? "0"] : []),
         collapsed.th18Delta,
         collapsed.th17Delta,
         collapsed.th16Delta,
@@ -298,7 +309,7 @@ export class CompoWarStateService {
 
     const contentLines = [
       `WAR · ${toRefreshLine(context.latestRefreshAt)}`,
-      "Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; TH columns=delta vs HeatMapRef.",
+      `Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; ${includeTh19 ? "TH19=observed count; " : ""}TH columns=delta vs HeatMapRef.`,
     ];
 
     if (context.skipped.length > 0) {
@@ -318,7 +329,19 @@ export class CompoWarStateService {
 
     return {
       stateRows: [
-        ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
+        [
+          "Clan",
+          "Total",
+          "Missing",
+          "Players",
+          ...(includeTh19 ? ["TH19"] : []),
+          "TH18",
+          "TH17",
+          "TH16",
+          "TH15",
+          "TH14",
+          "<=TH13",
+        ],
         ...renderableRows,
       ],
       trackedClanTags: context.trackedClanTags,

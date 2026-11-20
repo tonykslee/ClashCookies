@@ -5,6 +5,9 @@ branch="$(git branch --show-current)"
 base_branch="${PR_BASE_BRANCH:-dev}"
 pr_body_file=".git/AI_PR_BODY.md"
 commit_msg_file=".git/AI_COMMIT_MSG"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+bash "$script_dir/install-git-hooks.sh"
 
 if [ ! -f "$commit_msg_file" ]; then
   echo "Missing .git/AI_COMMIT_MSG. Generate and save a Conventional Commit message first."

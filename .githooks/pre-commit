@@ -1,0 +1,111 @@
+#!/bin/sh
+set -eu
+
+ALLOWED_BACKLOG_PATH='docs/feature-backlog.md'
+
+fail() {
+  echo "❌ $1"
+  exit 1
+}
+
+check_paths() {
+  commit_sha="$1"
+  paths="$2"
+
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    if [ "$path" != "$ALLOWED_BACKLOG_PATH" ]; then
+      fail "The upstream commit $commit_sha changes '$path'; only $ALLOWED_BACKLOG_PATH may explain a stale feature branch."
+    fi
+  done <<EOF
+$paths
+EOF
+}
+
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+[ -n "$current_branch" ] || fail "Cannot validate a detached HEAD."
+
+case "$current_branch" in
+  main)
+    fail "Direct commits to 'main' are not allowed."
+    ;;
+  dev)
+    fail "Direct commits to 'dev' are not allowed."
+    ;;
+esac
+
+merge_head_file="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || true)"
+if [ -f "$merge_head_file" ]; then
+  merge_heads="$(sed '/^[[:space:]]*$/d' "$merge_head_file")"
+  merge_head_count="$(printf '%s\n' "$merge_heads" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+  current_dev="$(git rev-parse --verify origin/dev^{commit} 2>/dev/null || true)"
+
+  # A merge commit from the exact current origin/dev is the one safe way to
+  # complete a stale branch's synchronization without recursively blocking it.
+  if [ "$merge_head_count" = '1' ] && [ "$merge_heads" = "$current_dev" ]; then
+    echo "✅ Legitimate merge from current origin/dev; freshness guard passed."
+    exit 0
+  fi
+
+  fail "An in-progress merge is only allowed when its single merge head is the current origin/dev."
+fi
+
+if ! git fetch origin dev >/dev/null 2>&1; then
+  fail "Could not fetch origin/dev; upstream freshness is unverifiable."
+fi
+
+latest_dev="$(git rev-parse --verify origin/dev^{commit} 2>/dev/null || true)"
+[ -n "$latest_dev" ] || fail "Could not resolve origin/dev; upstream freshness is unverifiable."
+
+merge_bases="$(git merge-base --all HEAD "$latest_dev" 2>/dev/null || true)"
+merge_base_count="$(printf '%s\n' "$merge_bases" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+[ "$merge_base_count" = '1' ] || fail "History has no unique merge-base with origin/dev; freshness is ambiguous."
+merge_base="$merge_bases"
+
+if [ "$merge_base" = "$latest_dev" ]; then
+  echo "✅ Branch is based on the latest origin/dev."
+  exit 0
+fi
+
+if ! intervening_commits="$(git rev-list --reverse "$merge_base..$latest_dev" 2>/dev/null)"; then
+  fail "Could not inspect every intervening origin/dev commit."
+fi
+[ -n "$intervening_commits" ] || fail "Could not inspect every intervening origin/dev commit."
+
+while IFS= read -r commit_sha; do
+  [ -n "$commit_sha" ] || continue
+
+  if ! parent_line="$(git rev-list --parents -n 1 "$commit_sha" 2>/dev/null)"; then
+    fail "Could not inspect upstream commit $commit_sha."
+  fi
+  [ -n "$parent_line" ] || fail "Could not inspect upstream commit $commit_sha."
+
+  set -- $parent_line
+  shift
+
+  if [ "$#" -eq 0 ]; then
+    if ! git cat-file -e "$commit_sha^{commit}" >/dev/null 2>&1; then
+      fail "Could not verify upstream commit $commit_sha."
+    fi
+    if ! changed_paths="$(git diff-tree --root --no-commit-id --name-only -r "$commit_sha" 2>/dev/null)"; then
+      fail "Could not inspect upstream commit $commit_sha."
+    fi
+    check_paths "$commit_sha" "$changed_paths"
+    continue
+  fi
+
+  for parent_sha in "$@"; do
+    if ! git cat-file -e "$parent_sha^{commit}" >/dev/null 2>&1; then
+      fail "Could not verify parent $parent_sha of upstream commit $commit_sha."
+    fi
+    if ! changed_paths="$(git diff --no-ext-diff --no-renames --name-only "$parent_sha" "$commit_sha" 2>/dev/null)"; then
+      fail "Could not inspect upstream commit $commit_sha against parent $parent_sha."
+    fi
+    check_paths "$commit_sha" "$changed_paths"
+  done
+done <<EOF
+$intervening_commits
+EOF
+
+echo "✅ Stale branch is allowed: every intervening origin/dev change is limited to $ALLOWED_BACKLOG_PATH."
+exit 0

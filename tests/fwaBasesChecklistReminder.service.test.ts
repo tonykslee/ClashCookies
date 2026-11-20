@@ -146,6 +146,86 @@ describe("fwa bases checklist reminder service", () => {
     );
   });
 
+  it("keeps an unchecked clan eligible beside a completed clan in the same war", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      {
+        tag: "#PYPY",
+        name: "Completed Clan",
+        shortName: "Done",
+        leaderChannelId: "leader-done",
+        notifyChannelId: null,
+        logChannelId: null,
+        clanRoleId: null,
+      },
+      {
+        tag: "#PYPL",
+        name: "Unchecked Clan",
+        shortName: "Open",
+        leaderChannelId: "leader-open",
+        notifyChannelId: null,
+        logChannelId: null,
+        clanRoleId: null,
+      },
+    ]);
+    prismaMock.currentWar.findMany.mockResolvedValue([
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        endTime: new Date("2026-05-27T18:00:00.000Z"),
+        state: "preparation",
+      },
+      {
+        guildId: "guild-1",
+        clanTag: "#PYPL",
+        warId: 1001,
+        opponentTag: "#OPP2",
+        prepStartTime: new Date("2026-05-26T12:00:00.000Z"),
+        startTime: new Date("2026-05-26T18:00:00.000Z"),
+        endTime: new Date("2026-05-27T18:00:00.000Z"),
+        state: "preparation",
+      },
+    ]);
+    renderStateMock.build.mockResolvedValueOnce({
+      viewType: "Bases",
+      rows: [
+        {
+          clanTag: "#PYPY",
+          compactCopyLine: "Done | ⚫ | ✅ Bases checked and all good",
+          basesStatus: "all_good",
+          badgeEmojiId: "111",
+          badgeEmojiName: "done",
+          badgeEmojiInline: "<:done:111>",
+          warId: 1001,
+          opponentTag: "#OPP1",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+        {
+          clanTag: "#PYPL",
+          compactCopyLine: "Open | ⚫ | ❌ Bases not checked",
+          basesStatus: "not_checked",
+          badgeEmojiId: "222",
+          badgeEmojiName: "open",
+          badgeEmojiInline: "<:open:222>",
+          warId: 1001,
+          opponentTag: "#OPP2",
+          warStartTimeIso: "2026-05-26T18:00:00.000Z",
+        },
+      ],
+      expiresAt: new Date("2026-05-26T18:00:00.000Z"),
+    });
+
+    const candidates = await findPendingFwaBasesChecklistReminderCandidates({
+      now: new Date("2026-05-26T15:00:00.000Z"),
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ clanTag: "#PYPL", destinationChannelId: "leader-open" });
+  });
+
   it("skips reminder eligibility for a skipped bases row even when another clan keeps the guild active", async () => {
     prismaMock.currentWar.findMany.mockResolvedValue([
       {
