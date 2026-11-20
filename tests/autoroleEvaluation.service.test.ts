@@ -83,6 +83,9 @@ function makePlayerCurrent(input: {
   currentClanTag?: string | null;
   townHall?: number;
   role?: "member" | "elder" | "coLeader" | "leader" | null;
+  lastFetchedAt?: Date | null;
+  lastSource?: string | null;
+  leagueObservationUncertain?: boolean;
 }): PlayerCurrentLike {
   return {
     playerTag: input.playerTag,
@@ -101,12 +104,13 @@ function makePlayerCurrent(input: {
     currentWeightMeasuredAt: null,
     achievementsJson: null,
     lastSeenAt: null,
-    lastFetchedAt: null,
-    lastSource: null,
+    lastFetchedAt: input.lastFetchedAt ?? new Date(),
+    lastSource: input.lastSource ?? "live_refresh",
     createdAt: null,
     updatedAt: null,
     source: "player_current",
     liveRefreshInvoked: false,
+    leagueObservationUncertain: input.leagueObservationUncertain,
   };
 }
 
@@ -252,6 +256,39 @@ describe("AutoRoleEvaluationService league rules", () => {
     expect(differentLeagueResult.matchedRuleIds).not.toContain("rule-1");
     expect(missingLeagueResult.desiredManagedRoleIds).not.toContain("222222222222222222");
     expect(missingLeagueResult.matchedRuleIds).not.toContain("rule-1");
+  });
+
+  it("does not grant from stale or uncertain league evidence", () => {
+    const member = makeMember();
+    const linkedAccounts = [makeLinkedAccount({ playerTag: "#2QG2C08UP" })];
+    const now = new Date("2026-11-20T12:00:00.000Z");
+    const evaluate = (current: PlayerCurrentLike) => service.evaluateMember({
+      config: makeConfig(),
+      rules: [makeRule("Legend League")],
+      managedRoleIds: new Set(["222222222222222222"]),
+      member,
+      linkedAccounts,
+      playerCurrentByTag: new Map([["#2QG2C08UP", current]]),
+      clanMembershipByTag,
+      trackedClanScope,
+      now,
+    });
+
+    expect(evaluate(makePlayerCurrent({
+      playerTag: "#2QG2C08UP",
+      leagueName: "Legend League",
+      lastFetchedAt: new Date("2026-11-20T00:00:00.000Z"),
+    })).desiredManagedRoleIds).not.toContain("222222222222222222");
+    expect(evaluate(makePlayerCurrent({
+      playerTag: "#2QG2C08UP",
+      leagueName: "Legend League",
+      leagueObservationUncertain: true,
+    })).desiredManagedRoleIds).not.toContain("222222222222222222");
+    expect(evaluate(makePlayerCurrent({
+      playerTag: "#2QG2C08UP",
+      leagueName: "Legend League",
+      lastFetchedAt: now,
+    })).desiredManagedRoleIds).toContain("222222222222222222");
   });
 
   it("grants the CWL clan role and family role for eligible linked accounts in tracked CWL clans", () => {

@@ -10,6 +10,7 @@ import {
 } from "./PlayerCurrentFreshness";
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import {
+  isKnownHomeVillageLeagueName,
   resolveHomeVillageLeagueObservation,
   type HomeVillageLeagueSource,
 } from "./HomeVillageLeagueTaxonomy";
@@ -72,6 +73,26 @@ export type PlayerCurrentLike = {
   /** In-memory tracked-clan overlays can retain a persisted value while the live league field is absent. */
   leagueObservationUncertain?: boolean;
 };
+
+/** Purpose: identify league evidence safe for both autorole grants and removals. */
+export function isLeagueObservationSafeForAutorole(
+  record: PlayerCurrentLike | null | undefined,
+  now = new Date(),
+): boolean {
+  if (!record || !isKnownHomeVillageLeagueName(record.leagueName) || record.leagueObservationUncertain) {
+    return false;
+  }
+
+  // In-memory tracked-clan overlays are scoped to the current live refresh.
+  if (record.source === "live_refresh") {
+    return true;
+  }
+
+  return Boolean(
+    isAuthoritativeLivePlayerCurrentSource(record.lastSource) &&
+      !isPlayerCurrentStaleForSignup(record, now, PLAYER_CURRENT_SIGNUP_MAX_AGE_MS),
+  );
+}
 
 type PlayerCurrentRow = {
   playerTag: string;

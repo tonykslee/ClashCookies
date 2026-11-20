@@ -4040,7 +4040,7 @@ describe("AutoRoleRefreshService", () => {
     });
   });
 
-  it("preserves persisted leagueName when tracked-clan roster data has no league payload", async () => {
+  it("does not grant from persisted leagueName when tracked-clan roster data has no league payload", async () => {
     const leagueRoleId = "222222222222222222";
     const memberId = "111111111111111111";
     const member = makeMember(memberId);
@@ -4122,15 +4122,15 @@ describe("AutoRoleRefreshService", () => {
     });
 
     expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
-    expect(member.roles.add).toHaveBeenCalledWith(leagueRoleId);
+    expect(member.roles.add).not.toHaveBeenCalledWith(leagueRoleId);
     expect(cocService.getClan).toHaveBeenCalledWith("#2QG2C08UP");
     expect(result).toMatchObject({
-      addedCount: 1,
+      addedCount: 0,
       removedCount: 0,
     });
   });
 
-  it("recognizes modern leagueTier payloads when tracking clan roster facts", async () => {
+  it("recognizes modern leagueTier payloads and rejects contradictory tracked roster facts", async () => {
     const leagueRoleId = "222222222222222222";
     const memberId = "111111111111111111";
     const member = makeMember(memberId);
@@ -4218,6 +4218,34 @@ describe("AutoRoleRefreshService", () => {
       addedCount: 1,
       removedCount: 0,
     });
+
+    cocService.getClan.mockImplementation(async (clanTag: string) => {
+      if (clanTag === "#2QG2C08UP") {
+        return {
+          tag: clanTag,
+          name: "Tracked Clan",
+          memberList: [
+            {
+              tag: "#PYLQ0289",
+              name: "Modern League Member",
+              townHallLevel: 16,
+              role: "member",
+              leagueTier: { id: 105000034, name: "Legend III" },
+              league: { name: "Champion I" },
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    await autoRoleRefreshService.refreshGuild({
+      guild,
+      guildId: "111111111111111111",
+      cocService,
+    });
+
+    expect(member.roles.add).toHaveBeenCalledTimes(1);
   });
 
   it("does not fetch the full guild when the cache already covers every member", async () => {

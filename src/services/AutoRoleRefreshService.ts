@@ -8,14 +8,10 @@ import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { isMirrorPollingMode } from "./PollingModeService";
 import {
   playerCurrentService,
-  isAuthoritativeLivePlayerCurrentSource,
+  isLeagueObservationSafeForAutorole,
   type PlayerCurrentLike,
   type PlayerCurrentResolutionField,
 } from "./PlayerCurrentService";
-import {
-  PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
-  isPlayerCurrentStaleForSignup,
-} from "./PlayerCurrentFreshness";
 import {
   autoRoleApplyService,
   type AutoRoleMemberApplyResult,
@@ -2540,16 +2536,7 @@ function collectUncertainLeagueRemovalSuppression(input: {
     eligibleAccounts.every((link) => {
       const playerCurrent = input.playerCurrentByTag.get(link.playerTag);
       if (!isKnownHomeVillageLeagueName(playerCurrent?.leagueName)) return false;
-      if (playerCurrent?.leagueObservationUncertain) return false;
-
-      // Persisted PlayerCurrent is only safe for removal when its league value
-      // is from a fresh authoritative observation. In-memory live clan overlays
-      // carry source=live_refresh and are already scoped to this refresh.
-      if (playerCurrent?.source === "live_refresh") return true;
-      return Boolean(
-        isAuthoritativeLivePlayerCurrentSource(playerCurrent?.lastSource) &&
-          !isPlayerCurrentStaleForSignup(playerCurrent, input.now, PLAYER_CURRENT_SIGNUP_MAX_AGE_MS),
-      );
+      return isLeagueObservationSafeForAutorole(playerCurrent, input.now);
     })
   ) {
     return new Set();
@@ -2884,6 +2871,7 @@ async function runRefreshPass(input: {
         trackedClans: input.trackedClans,
         preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
         trackedClanMembershipAuthoritative: input.trackedClanMembershipAuthoritative ?? false,
+        now: input.now,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
