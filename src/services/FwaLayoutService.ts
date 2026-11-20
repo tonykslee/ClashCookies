@@ -19,8 +19,7 @@ export const FWA_LAYOUT_TYPES = [
 export const FWA_LAYOUT_LINK_PREFIX =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH";
 
-const MIN_SUPPORTED_TOWNHALL = 8;
-const MAX_SUPPORTED_TOWNHALL = 18;
+export const FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL = 8;
 
 export type FwaLayoutSeedRow = {
   Townhall: number;
@@ -63,7 +62,7 @@ export class UnsupportedFwaLayoutTownhallError extends Error {
   readonly townhall: number;
 
   constructor(townhall: number) {
-    super("Unsupported Town Hall. Allowed values: TH8-TH18.");
+    super(`Unsupported Town Hall. Allowed values: TH${FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL} or higher.`);
     this.name = "UnsupportedFwaLayoutTownhallError";
     this.townhall = townhall;
   }
@@ -304,7 +303,7 @@ export function normalizeLayoutType(input?: string | null): FwaLayoutType {
 
 /** Purpose: enforce supported Town Hall values for FWA layout lookup/edit flows. */
 export function isSupportedTownhall(th: number): boolean {
-  return Number.isInteger(th) && th >= MIN_SUPPORTED_TOWNHALL && th <= MAX_SUPPORTED_TOWNHALL;
+  return Number.isSafeInteger(th) && th >= FWA_LAYOUT_MIN_SUPPORTED_TOWNHALL;
 }
 
 /** Purpose: validate that a layout URL uses the shared Clash parser's accepted domain. */

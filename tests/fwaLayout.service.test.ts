@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FwaLayoutService } from "../src/services/FwaLayoutService";
+import { FwaLayoutService, isSupportedTownhall } from "../src/services/FwaLayoutService";
 
 const LINK_TH18 =
   "https://link.clashofclans.com/en?action=OpenLayout&id=TH18%3AWB%3APAYLOAD18";
@@ -84,6 +84,21 @@ describe("FwaLayoutService", () => {
     db.fwaLayouts.updateMany.mockResolvedValue({ count: 1 });
     db.fwaLayouts.update.mockResolvedValue(buildFwaRow());
     service = new FwaLayoutService({ db: db as any, now: () => NOW });
+  });
+
+  it("accepts TH19 and future positive TH layout levels without a hardcoded ceiling", async () => {
+    expect(isSupportedTownhall(8)).toBe(true);
+    expect(isSupportedTownhall(19)).toBe(true);
+    expect(isSupportedTownhall(20)).toBe(true);
+    expect(isSupportedTownhall(7)).toBe(false);
+    expect(isSupportedTownhall(19.5)).toBe(false);
+    const link = "https://link.clashofclans.com/en?action=OpenLayout&id=TH19%3AWB%3APAYLOAD19";
+    await service.setCanonicalLayout({ type: "RISINGDAWN", layoutLink: link });
+    expect(db.fwaLayouts.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ Townhall: 19 }),
+      }),
+    );
   });
 
   it("derives TH from the link and creates a fresh canonical LayoutRecord", async () => {
