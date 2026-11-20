@@ -1023,6 +1023,213 @@ describe("fwa checklist tracked messages", () => {
     });
   });
 
+  it("does not reuse a completion from a previous sync in the same war", async () => {
+    const previousSyncRow = {
+      id: "tracked-previous-sync",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z|sync=sync-old",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "sync-old",
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: "1001",
+        opponentTag: "OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+        syncMessageId: "sync-old",
+        syncReferenceId: null,
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([previousSyncRow] as any);
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        syncMessageId: "sync-current",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects completion metadata that conflicts with the current war even when sync matches", async () => {
+    const conflictingRow = {
+      id: "tracked-conflicting-identity",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z|sync=sync-current",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "sync-current",
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: "9999",
+        opponentTag: "OLDOPP",
+        warStartTimeIso: "2026-05-12T18:00:00.000Z",
+        syncMessageId: "sync-current",
+        syncReferenceId: null,
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(conflictingRow as any);
+
+    await expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        syncMessageId: "sync-current",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects exact completion rows with contradictory sync identities", async () => {
+    const conflictingSyncRow = {
+      id: "tracked-conflicting-sync",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z|sync=sync-current",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "sync-old",
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: "1001",
+        opponentTag: "OPP1",
+        warStartTimeIso: "2026-05-13T18:00:00.000Z",
+        syncMessageId: "sync-current",
+        syncReferenceId: "sync-old",
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(conflictingSyncRow as any);
+
+    await expect(
+      trackedMessageService.findLatestFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        syncMessageId: "sync-current",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects fallback completion rows when tracked-message and metadata sync IDs disagree", async () => {
+    const conflictingSyncRow = {
+      id: "tracked-conflicting-fallback-sync",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=none|opponent=none|start=none|sync=sync-current",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "sync-current",
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: null,
+        opponentTag: null,
+        warStartTimeIso: null,
+        syncMessageId: "sync-old",
+        syncReferenceId: null,
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([conflictingSyncRow] as any);
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        syncMessageId: "sync-current",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("fails closed when an exact completion row is missing war identity", async () => {
+    const missingIdentityRow = {
+      id: "tracked-missing-identity",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId:
+        "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-05-13T18:00:00.000Z",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: null,
+      clanTag: "#PYPY",
+      expiresAt: null,
+      createdAt: new Date("2026-05-13T17:00:00.000Z"),
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T17:00:00.000Z",
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: null,
+        opponentTag: null,
+        warStartTimeIso: null,
+        syncMessageId: null,
+        syncReferenceId: null,
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(missingIdentityRow as any);
+    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([missingIdentityRow] as any);
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("falls back to sync-scoped mail checked tags when the refreshed scope has no state", async () => {
     prismaMock.trackedMessage.findMany.mockResolvedValueOnce([
       {
@@ -2213,6 +2420,7 @@ describe("fwa checklist tracked messages", () => {
     );
 
     prismaMock.trackedMessage.create.mockRejectedValueOnce({ code: "P2002" });
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 0 });
     await expect(
       trackedMessageService.claimFwaBasesChecklistReminderMarker({
         guildId: "guild-1",
@@ -2266,6 +2474,72 @@ describe("fwa checklist tracked messages", () => {
     expect(String(prismaMock.trackedMessage.create.mock.calls[1]?.[0]?.data?.messageId ?? "")).toContain(
       "war=1002",
     );
+  });
+
+  it("releases only its own unsent reminder marker and allows that bucket to be claimed again", async () => {
+    const markerMetadata = {
+      kind: "bases_check_reminder",
+      createdByUserId: "system",
+      createdAtIso: "2026-06-13T12:00:00.000Z",
+      guildId: "guild-1",
+      clanTag: "#PYPY",
+      clanName: "Alpha",
+      warId: "1001",
+      opponentTag: "OPP1",
+      warStartTimeIso: "2026-06-13T18:00:00.000Z",
+      bucketHours: 6,
+      destinationChannelId: "leader-channel-1",
+      destinationChannelKind: "leader",
+      clanRoleId: "role-1",
+    };
+    const markerRow = {
+      id: "marker-1",
+      guildId: "guild-1",
+      channelId: "leader-channel-1",
+      messageId:
+        "fwa_match_checklist_bases_reminder|guild=guild-1|clan=#PYPY|war=1001|opponent=OPP1|start=2026-06-13T18:00:00.000Z|bucket=6",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      metadata: markerMetadata,
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(markerRow as any);
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(
+      trackedMessageService.releaseFwaBasesChecklistReminderMarker({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        bucketHours: 6,
+        claimCreatedAtIso: markerMetadata.createdAtIso,
+      }),
+    ).resolves.toBe(true);
+    expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "marker-1",
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        }),
+        data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+      }),
+    );
+
+    prismaMock.trackedMessage.create.mockRejectedValueOnce({ code: "P2002" });
+    prismaMock.trackedMessage.updateMany.mockResolvedValueOnce({ count: 1 });
+    await expect(
+      trackedMessageService.claimFwaBasesChecklistReminderMarker({
+        guildId: "guild-1",
+        channelId: "leader-channel-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        opponentTag: "#OPP1",
+        warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+        bucketHours: 6,
+        createdAtIso: "2026-06-13T12:00:01.000Z",
+      }),
+    ).resolves.toBe(true);
   });
 
   it("builds checklist rows from compact copy text without duplicating the checklist column", () => {
