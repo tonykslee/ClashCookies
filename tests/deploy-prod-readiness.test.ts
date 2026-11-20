@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -12,7 +13,10 @@ type Scenario =
   | "container-failure"
   | "health-timeout"
   | "concurrent-active"
-  | "lock-busy";
+  | "lock-busy"
+  | "sequence"
+  | "reset-failure"
+  | "diagnostic-permissions";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -113,5 +117,41 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("diagnostics_saved label=promotion");
     expect(output).toContain("DIAGNOSTIC=promotion.log");
     expect(output).toContain("DIAGNOSTIC=promotion.state");
+  });
+
+  it("retains exact release artifacts across two promotions and rollback", () => {
+    const output = runScenario("sequence");
+    expect(output).toContain("PASS=1 STATUS=0");
+    expect(output).toContain("PASS=2 STATUS=0");
+    expect(output).toContain("PASS=3 STATUS=1");
+    expect(output).toContain("rollback_result=success final_state=old_sha:release-b");
+    expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-a prebuilt=1");
+    expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-b prebuilt=1");
+    expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-b prebuilt=1");
+    expect(output).toContain("STATE=active:release-b");
+    expect(output).toContain("artifact_cleanup=removed");
+  });
+
+  it("restores the old runtime when checkout fails after stopping it", () => {
+    const output = runScenario("reset-failure");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("reason=checkout_new_revision");
+    expect(output).toContain("rollback_result=success final_state=old_sha:old-reviewed-sha");
+    expect(output).toContain("STATE=active:old-reviewed-sha");
+  });
+
+  it("fails closed for a preexisting diagnostic directory with unsafe permissions", () => {
+    if (process.platform === "win32") {
+      console.warn("Skipping chmod assertion on Windows: MSYS reports ACL-backed paths as 755/644");
+      const script = readFileSync(join(process.cwd(), "ops", "deploy", "deploy-prod.sh"), "utf8");
+      expect(script).toContain("umask 077");
+      expect(script).toContain("private_directory_mode_invalid");
+      expect(script).toContain("private_file_mode_invalid");
+      return;
+    }
+    const output = runScenario("diagnostic-permissions");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("private_directory_mode_invalid");
+    expect(output).toContain("STATE=active:OLD");
   });
 });
