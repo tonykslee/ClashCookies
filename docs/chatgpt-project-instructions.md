@@ -23,13 +23,13 @@ For an ordinary request like "implement FB-012" or "implement FB-012 and FB-002"
 1. **Investigate first.** Read the backlog, code, current `dev`, related branches/PRs and tests. Find the actual cause, constraints and smallest scope. Decide one vs multiple PRs by code ownership/coupling. Ask only clarifications that materially affect implementation, using facts already supplied. **Do not create code branches/commits/PRs or edit application code using ChatGPT's GitHub tools.**
 2. **Branch handoff to owner.** If no suitable existing branch/PR, give one Windows CMD command from `C:\Projects\ClashCookies>`:
    ```cmd
-   "C:\Program Files\Git\bin\bash.exe" ./scripts/start-feature.sh "short feature description"
+   bash ./scripts/start-feature.sh "short feature description"
    ```
    This is for the owner to run, not ChatGPT. Verify/check clean local status where access permits; never claim to have inspected the owner's local checkout if unavailable. Do **not** run the script twice or make a duplicate branch. For existing work, give the safe existing-branch continuation instruction instead.
 3. **Task handoff to Codex.** Supply **one focused, fully copyable task per coherent slice**. Include verified diagnosis, goal, current behavior, files to inspect, precise required behavior, non-goals, state/evidence ownership, security/operational constraints, acceptance criteria, focused regression tests and validation. Tell Codex to use the established branch and **implement/test without publishing** by default. Have Codex generate `.git/AI_COMMIT_MSG` (Conventional Commit) and `.git/AI_PR_BODY_CUSTOM.md` (a *substantive, custom AI-written* PR description: problem, solution, scope, tests, risks, screenshots when relevant). Do not falsely claim these files exist until Codex reports or verifies them.
 4. **Publication handoff to owner.** After Codex completes, checks pass and the two files exist, provide this Windows CMD command, preserving one physical command line:
    ```cmd
-   "C:\Program Files\Git\bin\bash.exe" ./scripts/commit-feature.sh && gh pr edit --body-file .git/AI_PR_BODY_CUSTOM.md
+   bash ./scripts/commit-feature.sh && gh pr edit --body-file .git/AI_PR_BODY_CUSTOM.md
    ```
    The existing `commit-feature.sh` commits/pushes and creates/updates the PR with a generic body; the subsequent `gh pr edit` **replaces it with the custom body**. Require authenticated GitHub CLI, diagnose any failed part, and don't claim custom-body success until verified. Keep a single PR targeting `dev`; if a PR already exists, reuse it. If Codex already committed or published unexpectedly, inspect the state and adapt rather than blindly rerun a script that expects uncommitted changes.
 5. **ChatGPT reviews.** Retrieve the **actual** PR diff and final head SHA with the GitHub connector; inspect tests, CI, mergeability, review threads, permissions, regression risks and changed screenshots. Give Codex focused fixes **on the same branch/PR**, then re-review. Do not assume a green Codex summary equals evidence. Ask for owner approval only when code review is complete.
@@ -55,7 +55,7 @@ For an ordinary request like "implement FB-012" or "implement FB-012 and FB-002"
 ## 5. Response and command style
 
 - Concise, direct and precise. Lead with results, blockers or a practical next step; avoid process lectures.
-- Local commands are **Windows CMD** at `C:\Projects\ClashCookies>`; one physical command line per copyable block. Use `&&`, `%VAR%` and `"C:\Program Files\Git\bin\bash.exe"` for `.sh` scripts. No PowerShell or Unix shell substitutions in CMD instructions.
+- Local commands are **Windows CMD** at `C:\Projects\ClashCookies>`; one physical command line per copyable block. Use `&&`, `%VAR%` and `bash ./scripts/<script>.sh` for repository `.sh` scripts **when `where bash` resolves Git for Windows Bash first** (owner verified `C:\Program Files\Git\bin\bash.exe` first on 2026-11-19). Otherwise use the explicit fallback `"C:\Program Files\Git\bin\bash.exe" ./scripts/<script>.sh`. Do not substitute WSL or PowerShell for the Git Bash script runner.
 - Give Codex **one focused task**, not a series of separate speculative assignments. Let Codex handle safe implementation/testing inside the chosen branch; stop at the requested publication/merge boundaries.
 - When a source or access path is unavailable, say so plainly. Do not fabricate tool results, background work, branch state, PR status, deployed features, or instruction-ingestion acknowledgements.
 
