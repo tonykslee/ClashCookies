@@ -7,6 +7,13 @@ hook_path="$repo_root/.githooks"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/clashcookies-git-hooks.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
 
+for hook_name in pre-commit commit-msg; do
+  if [ ! -x "$hook_path/$hook_name" ]; then
+    echo "Tracked hook is not executable: .githooks/$hook_name" >&2
+    exit 1
+  fi
+done
+
 git_in() {
   local repo="$1"
   shift
@@ -17,7 +24,7 @@ configure_repo() {
   local repo="$1"
   git_in "$repo" config user.name "Git Hook Test"
   git_in "$repo" config user.email "git-hook-test@example.invalid"
-  git_in "$repo" config core.hooksPath "$hook_path"
+  git_in "$repo" config core.hooksPath .githooks
 }
 
 configure_identity() {
@@ -76,12 +83,32 @@ expect_commit_blocked() {
     echo "Expected commit to be blocked in $case_name" >&2
     exit 1
   fi
+  if ! grep -Eq '❌|origin/dev|upstream|history' "$output"; then
+    cat "$output"
+    echo "Blocked commit did not show tracked pre-commit guard output in $case_name" >&2
+    exit 1
+  fi
 }
 
 stage_local_change() {
   printf '%s\n' "$case_name" > "$repo/local-change.txt"
   git_in "$repo" add local-change.txt
 }
+
+case_name='git-executes-tracked-hooks'
+new_case "$case_name"
+stage_local_change
+if git_in "$repo" commit -q -m 'not conventional' >"$case_root/commit.log" 2>&1; then
+  cat "$case_root/commit.log"
+  echo 'Git did not execute the tracked hooks: invalid commit unexpectedly succeeded' >&2
+  exit 1
+fi
+if ! grep -q 'Branch is based on the latest origin/dev.' "$case_root/commit.log" || \
+   ! grep -q 'Commit message must follow Conventional Commit format.' "$case_root/commit.log"; then
+  cat "$case_root/commit.log"
+  echo 'Git did not execute both tracked hooks' >&2
+  exit 1
+fi
 
 case_name='fresh-branch-uses-exact-latest-dev'
 new_case "$case_name"
@@ -149,11 +176,43 @@ git_in "$seed" push -q origin dev
 stage_local_change
 expect_commit_blocked
 
+case_name='older-merged-side-branch-code-revert-blocked'
+new_case "$case_name"
+initial_sha="$(git_in "$seed" rev-parse dev)"
+printf '%s\n' 'backlog change before older side branch merge' >> "$seed/docs/feature-backlog.md"
+push_seed_commit 'docs(backlog): advance feature backlog before side branch'
+git_in "$seed" switch -q -c older-side "$initial_sha"
+printf '%s\n' 'older application change' > "$seed/src-app.ts"
+git_in "$seed" add src-app.ts
+git_in "$seed" commit -q -m 'feat(test): add older side branch application change'
+git_in "$seed" revert --no-edit HEAD >/dev/null
+git_in "$seed" switch -q dev
+git_in "$seed" merge -q --no-ff --no-edit older-side
+git_in "$seed" push -q origin dev
+stage_local_change
+expect_commit_blocked
+
 case_name='unverifiable-history-blocked'
 new_case "$case_name"
 git_in "$repo" remote set-url origin "$case_root/missing-origin.git"
 stage_local_change
 expect_commit_blocked
+
+case_name='custom-hooks-path-preserved'
+new_case "$case_name"
+custom_hooks_path="$case_root/custom-hooks"
+mkdir -p "$custom_hooks_path"
+git_in "$repo" config core.hooksPath "$custom_hooks_path"
+custom_hooks_before="$(git_in "$repo" config --get core.hooksPath)"
+if (cd "$repo" && bash "$repo_root/scripts/install-git-hooks.sh") >"$case_root/install.log" 2>&1; then
+  cat "$case_root/install.log"
+  echo 'Installer unexpectedly replaced a custom core.hooksPath' >&2
+  exit 1
+fi
+if [ "$(git_in "$repo" config --get core.hooksPath)" != "$custom_hooks_before" ]; then
+  echo 'Installer changed the custom core.hooksPath after refusing installation' >&2
+  exit 1
+fi
 
 case_name='legitimate-dev-merge-completes'
 new_case "$case_name"

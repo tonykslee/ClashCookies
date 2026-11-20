@@ -67,7 +67,7 @@ if [ "$merge_base" = "$latest_dev" ]; then
   exit 0
 fi
 
-if ! intervening_commits="$(git rev-list --ancestry-path --reverse "$merge_base..$latest_dev" 2>/dev/null)"; then
+if ! intervening_commits="$(git rev-list --reverse "$merge_base..$latest_dev" 2>/dev/null)"; then
   fail "Could not inspect every intervening origin/dev commit."
 fi
 [ -n "$intervening_commits" ] || fail "Could not inspect every intervening origin/dev commit."

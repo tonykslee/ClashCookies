@@ -32,10 +32,10 @@
 The requirement for a new feature branch remains strict: `scripts/start-feature.sh` fetches `origin/dev`, fast-forwards local `dev`, verifies that local `dev` exactly equals `origin/dev`, and only then creates the branch. Existing feature branches may be stale only for the narrow backlog case below:
 
 - The tracked `.githooks/pre-commit` hook fetches `origin/dev` and finds the unique merge-base with the current branch.
-- If the branch is behind, it enumerates every commit on the ancestry path from that merge-base to `origin/dev`, including merge commits, and compares each commit against every parent. Every changed path must be exactly `docs/feature-backlog.md`.
+- If the branch is behind, it enumerates every commit reachable in `merge-base..origin/dev`—including older merged side branches and merge commits—and compares each commit against every parent. Every changed path must be exactly `docs/feature-backlog.md`.
 - Mixed changes, any other documentation or repository path, reverted code, missing objects, fetch failures, non-unique history, and any other ambiguity block the commit. Commit messages, PR labels, and tags are never evidence for this exception.
 - While completing a merge, the hook permits only a single merge head equal to the current `origin/dev`; this prevents the guard from blocking the legitimate synchronization merge itself. Git-generated messages for that verified merge are accepted, while ordinary commits remain subject to Conventional Commit enforcement.
-- Fresh clones and existing clones use the same tracked hooks through `scripts/install-git-hooks.sh`; `start-feature.sh` and `commit-feature.sh` install them automatically.
+- Fresh clones and existing clones use the same tracked executable hooks through `scripts/install-git-hooks.sh`; `start-feature.sh` and `commit-feature.sh` install them automatically. The installer is idempotent for `.githooks`, but refuses to overwrite an effective custom `core.hooksPath` or active legacy `.git/hooks/*` files. An existing clone must review/diff those local hooks and explicitly set `git config --local core.hooksPath .githooks` before migration; unrelated safeguards are never silently discarded.
 
 ## 2A. Codex execution autonomy **within the owner's handoff boundaries**
 
