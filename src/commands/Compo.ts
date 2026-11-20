@@ -37,6 +37,7 @@ import {
 import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
+import type { CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
@@ -1572,13 +1573,12 @@ function parseWeightInput(input: string): number | null {
   const kMatch = compact.match(/^(\d+(?:\.\d+)?)k$/);
   if (kMatch) {
     const base = Number(kMatch[1]);
-    if (!Number.isFinite(base)) return null;
-    return Math.round(base * 1000);
+    const parsed = base * 1000;
+    return Number.isFinite(parsed) && Number.isInteger(parsed) ? parsed : null;
   }
 
   const numeric = Number(compact);
-  if (!Number.isFinite(numeric)) return null;
-  return Math.round(numeric);
+  return Number.isFinite(numeric) && Number.isInteger(numeric) ? numeric : null;
 }
 
 function clampCell(value: string): string {
@@ -1797,16 +1797,20 @@ function formatSignedValue(value: number | null): string {
 }
 
 function formatCompoAdviceDeltaLines(input: {
-  deltaByBucket: Record<"TH18" | "TH17" | "TH16" | "TH15" | "TH14" | "<=TH13", number | null>;
+  deltaByBucket: Record<CompoWarDisplayBucket, number | null>;
 }): string {
-  return [
+  const lines = [
     `TH18: ${formatSignedValue(input.deltaByBucket.TH18)}`,
     `TH17: ${formatSignedValue(input.deltaByBucket.TH17)}`,
     `TH16: ${formatSignedValue(input.deltaByBucket.TH16)}`,
     `TH15: ${formatSignedValue(input.deltaByBucket.TH15)}`,
     `TH14: ${formatSignedValue(input.deltaByBucket.TH14)}`,
     `<=TH13: ${formatSignedValue(input.deltaByBucket["<=TH13"])}`,
-  ].join("\n");
+  ];
+  if (input.deltaByBucket.TH19 === null) {
+    lines.unshift("TH19: n/a (historical target unavailable)");
+  }
+  return lines.join("\n");
 }
 
 function formatAdviceScore(value: number | null): string {
@@ -1963,6 +1967,9 @@ async function buildCompoAdviceEmbed(input: {
             : ""
         }`,
         `Rushed: ${input.advice.rushedCount}`,
+        ...(summary.currentProjection.displayCounts.TH19 && summary.currentProjection.displayCounts.TH19 > 0
+          ? [`Observed TH19: ${summary.currentProjection.displayCounts.TH19}`]
+          : []),
       ].join("\n"),
     );
     const currentValue = await renderCompoAdviceEmojiShortcodes(

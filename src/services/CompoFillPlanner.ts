@@ -131,6 +131,7 @@ type NormalizedCandidate = {
 };
 
 const COMPO_FILL_BUCKET_ORDER: CompoWarWeightBucket[] = [
+  "TH19",
   "TH18",
   "TH17",
   "TH16",
@@ -159,7 +160,7 @@ function trimToNull(value: string | null | undefined): string | null {
 function cloneBucketCounts(
   counts: Partial<Record<CompoWarWeightBucket, number>> | null | undefined,
 ): CompoWarBucketCounts {
-  return {
+  const result: CompoWarBucketCounts = {
     TH18: normalizeInteger(counts?.TH18),
     TH17: normalizeInteger(counts?.TH17),
     TH16: normalizeInteger(counts?.TH16),
@@ -172,10 +173,13 @@ function cloneBucketCounts(
     TH9: normalizeInteger(counts?.TH9),
     TH8_OR_LOWER: normalizeInteger(counts?.TH8_OR_LOWER),
   };
+  const th19 = normalizeInteger(counts?.TH19);
+  if (th19 > 0) result.TH19 = th19;
+  return result;
 }
 
 function sumBucketCounts(counts: CompoWarBucketCounts): number {
-  return COMPO_FILL_BUCKET_ORDER.reduce((sum, bucket) => sum + counts[bucket], 0);
+  return COMPO_FILL_BUCKET_ORDER.reduce((sum, bucket) => sum + (counts[bucket] ?? 0), 0);
 }
 
 function compareBucketsByPriority(
@@ -195,7 +199,7 @@ function getLargestBucketDeficit(
 ): { bucket: CompoWarWeightBucket; deficit: number } | null {
   let best: { bucket: CompoWarWeightBucket; deficit: number } | null = null;
   for (const bucket of COMPO_FILL_BUCKET_ORDER) {
-    const deficit = target[bucket] - current[bucket];
+    const deficit = (target[bucket] ?? 0) - (current[bucket] ?? 0);
     if (deficit <= 0) {
       continue;
     }
@@ -263,8 +267,8 @@ function isCandidateAvailableNow(
     reasonCodes.push("source_member_count_below_target");
   }
 
-  const bucketCountAfter = sourceClan.currentBucketCounts[candidate.resolvedWeightBucket] - 1;
-  const targetBucketCount = sourceClan.targetBucketCounts[candidate.resolvedWeightBucket];
+  const bucketCountAfter = (sourceClan.currentBucketCounts[candidate.resolvedWeightBucket] ?? 0) - 1;
+  const targetBucketCount = sourceClan.targetBucketCounts[candidate.resolvedWeightBucket] ?? 0;
   if (bucketCountAfter < targetBucketCount) {
     reasonCodes.push("source_bucket_deficit");
   }
@@ -304,7 +308,9 @@ function selectBestCandidateForDestination(input: {
   const bucketDeficits = COMPO_FILL_BUCKET_ORDER
     .map((bucket) => ({
       bucket,
-      deficit: input.destination.targetBucketCounts[bucket] - input.destination.currentBucketCounts[bucket],
+      deficit:
+        (input.destination.targetBucketCounts[bucket] ?? 0) -
+        (input.destination.currentBucketCounts[bucket] ?? 0),
     }))
     .filter((entry) => entry.deficit > 0)
     .sort((left, right) => {

@@ -172,6 +172,53 @@ describe("CompoActualStateService", () => {
     prismaMock.weightInputDeferment.findMany.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+  });
+
+  it("renders observed TH19 in ACTUAL state without target deltas", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 181000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
+
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan",
+      "Resolved Total",
+      "Missing",
+      "DF",
+      "Players",
+      "TH19",
+      "TH18",
+      "TH17",
+      "TH16",
+      "TH15",
+      "TH14",
+      "<=TH13",
+    ]);
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "181,000",
+      "0",
+      "0",
+      "1",
+      "1",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
   });
 
   it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {

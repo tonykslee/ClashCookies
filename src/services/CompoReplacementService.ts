@@ -273,6 +273,14 @@ export class CompoReplacementService {
         candidates: [],
       };
     }
+    if (bucket === "TH19") {
+      return {
+        inputWeight: input.weight,
+        bucket,
+        summaryByClan: [],
+        candidates: [],
+      };
+    }
 
     const context =
       input.context ?? (await loadCompoActualStateContext(input.guildId ?? null));
@@ -382,6 +390,9 @@ export class CompoReplacementService {
     }
 
     for (const clan of context.clans) {
+      if ((clan.base.bucketCounts.TH19 ?? 0) > 0) {
+        continue;
+      }
       const projection = projectCompoActualStateView({
         view: "auto",
         base: clan.base,

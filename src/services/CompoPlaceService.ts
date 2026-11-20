@@ -315,6 +315,22 @@ export class CompoPlaceService {
     bucket: CompoWarDisplayBucket,
     guildId?: string | null,
   ): Promise<CompoPlaceReadResult> {
+    if (bucket === "TH19") {
+      return {
+        content:
+          `Weight: **${inputWeight.toLocaleString("en-US")}**\n` +
+          "Bucket: **TH19**\n" +
+          "Observed TH19: **1**\n" +
+          "Target comparison: **UNKNOWN** — historical HeatMapRef profiles have no valid TH19 target counts, so placement rankings and replacement suggestions are withheld.",
+        embeds: [],
+        trackedClanTags: [],
+        eligibleClanTags: [],
+        candidateCount: 0,
+        recommendedCount: 0,
+        vacancyCount: 0,
+        compositionCount: 0,
+      };
+    }
     const context = await loadCompoActualStateContext(guildId ?? null);
     if (context.trackedClanTags.length === 0) {
       return {

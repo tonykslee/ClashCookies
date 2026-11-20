@@ -40,13 +40,14 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 
 ### FB-002 — Add TH19 weight ranges to composition tools
 
-- **Status:** **Selected next (first)** — agreed range; implementation not started.
+- **Status:** **In progress on `feature/fb-002-th19-compo-buckets`** — owner review pending; not merged or published.
 - **Suggested priority:** High
 - **Request:** Update composition tools to support the new Town Hall 19 war-weight range.
 - **Owner-confirmed range (2026-11-19):** TH19 is **181,000–190,000 inclusive**, following the existing 10k TH bucket convention. Preserve TH18 as 171,000–180,000; malformed or out-of-band weights must not silently map to an adjacent TH.
 - **Scope to investigate:** Shared weight-to-TH bucket logic, `/compo place`, `/compo advice`, `/compo state`, linked spreadsheet assumptions, and tests.
 - **Important:** The owner confirmed the classification cutoff, **not** a TH19 target composition or replacement HeatMapRef profile. Current reference tables and seed workbook top out at TH18. Extend actual classification and the user-facing commands without inventing TH19 reference counts or claiming unsupported composition advice; mark target comparisons UNKNOWN until valid reference data is available. Prefer one shared ordered TH weight-band definition and dynamic command upper limits rather than repeated hardcoded TH18/TH19 maximums.
 - **Done when:** TH19 weights are correctly recognized and represented across affected composition outputs with boundary tests and no regression to earlier TH buckets.
+- **Implementation note:** This slice keeps the existing `/compo state` layout for clans without observed TH19, adds factual TH19 count/weight visibility when present, and fails closed for target-derived advice, placement, replacement, fill, and `/link list` indicators. No schema or HeatMapRef seed change is included.
 
 ### FB-003 — Redesign `/compo state` for quick visual scanning
 

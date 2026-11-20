@@ -27,6 +27,7 @@ export const COMPO_ADVICE_DISPLAY_BUCKETS: readonly CompoWarDisplayBucket[] = [
 ];
 
 const COMPO_ADVICE_BUCKET_PRIORITY: Record<CompoWarDisplayBucket, number> = {
+  TH19: 0,
   TH18: 0,
   TH17: 1,
   TH16: 2,
@@ -39,6 +40,7 @@ const DISPLAY_BUCKET_TO_GRANULAR_BUCKET: Record<
   CompoWarDisplayBucket,
   keyof CompoWarBucketCounts
 > = {
+  TH19: "TH19",
   TH18: "TH18",
   TH17: "TH17",
   TH16: "TH16",
@@ -226,6 +228,9 @@ export function buildCompoActualDeltaLines(input: {
     return [`${bucket}: ${sign}${normalized}`];
   });
 
+  if (input.deltaByBucket.TH19 === null) {
+    lines.unshift("TH19: unknown (historical target unavailable)");
+  }
   return lines.length > 0 ? lines : ["No raw roster deficits detected."];
 }
 
@@ -404,6 +409,14 @@ function buildCustomProjection(input: {
     base: input.base,
     heatMapRefs: input.heatMapRefs,
   });
+  if (!rawProjection.selectedHeatMapRef) {
+    return {
+      currentProjection: scoreProjectionIfNeeded(rawProjection),
+      targetProjection: scoreProjectionIfNeeded(rawProjection),
+      selectedCustomBandIndex: null,
+      heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
+    };
+  }
   const selection = resolveCustomHeatMapRef({
     heatMapRefs: input.heatMapRefs,
     currentProjection: rawProjection,
@@ -457,15 +470,15 @@ function applyAdviceActionToBase(input: {
       : null;
 
   if (input.action.kind === "add") {
-    bucketCounts[incomingGranularBucket] += 1;
+    bucketCounts[incomingGranularBucket] = (bucketCounts[incomingGranularBucket] ?? 0) + 1;
     resolvedTotalWeight += getCompoDisplayBucketRepresentativeWeight(
       input.action.incomingBucket,
       input.referenceHeatMapRef,
     );
     memberCount += 1;
   } else {
-    bucketCounts[outgoingGranularBucket!] -= 1;
-    bucketCounts[incomingGranularBucket] += 1;
+    bucketCounts[outgoingGranularBucket!] = (bucketCounts[outgoingGranularBucket!] ?? 0) - 1;
+    bucketCounts[incomingGranularBucket] = (bucketCounts[incomingGranularBucket] ?? 0) + 1;
     resolvedTotalWeight +=
       getCompoDisplayBucketRepresentativeWeight(
         input.action.incomingBucket,

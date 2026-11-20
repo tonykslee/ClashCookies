@@ -58,7 +58,9 @@ export type CompoActualStateProjection = {
   deviationScore: number | null;
 };
 
-const DISPLAY_BUCKETS_ASC: CompoWarDisplayBucket[] = [
+type SupportedCompoWarDisplayBucket = Exclude<CompoWarDisplayBucket, "TH19">;
+
+const DISPLAY_BUCKETS_ASC: SupportedCompoWarDisplayBucket[] = [
   "TH18",
   "TH17",
   "TH16",
@@ -66,7 +68,7 @@ const DISPLAY_BUCKETS_ASC: CompoWarDisplayBucket[] = [
   "TH14",
   "<=TH13",
 ];
-const DISPLAY_BUCKETS_DESC: CompoWarDisplayBucket[] = [
+const DISPLAY_BUCKETS_DESC: SupportedCompoWarDisplayBucket[] = [
   "<=TH13",
   "TH14",
   "TH15",
@@ -74,7 +76,7 @@ const DISPLAY_BUCKETS_DESC: CompoWarDisplayBucket[] = [
   "TH17",
   "TH18",
 ];
-const DEVIATION_SCORE_WEIGHTS: Record<CompoWarDisplayBucket, number> = {
+const DEVIATION_SCORE_WEIGHTS: Record<Exclude<CompoWarDisplayBucket, "TH19">, number> = {
   TH18: 5,
   TH17: 4,
   TH16: 3,
@@ -82,7 +84,7 @@ const DEVIATION_SCORE_WEIGHTS: Record<CompoWarDisplayBucket, number> = {
   TH14: 1,
   "<=TH13": 0.5,
 };
-const REPRESENTATIVE_WEIGHTS: Record<Exclude<CompoWarDisplayBucket, "<=TH13">, number> =
+const REPRESENTATIVE_WEIGHTS: Record<Exclude<CompoWarDisplayBucket, "<=TH13" | "TH19">, number> =
   {
     TH18: 175000,
     TH17: 165000,
@@ -109,6 +111,13 @@ type FillPlan = {
   fillCounts: CompoWarDisplayBucketCounts;
   addedWeight: number;
 };
+
+/** Purpose: identify observed TH19 composition that cannot be compared with historical HeatMapRef targets. */
+export function hasUnsupportedCompoTh19Target(
+  counts: Pick<CompoWarDisplayBucketCounts, "TH19">,
+): boolean {
+  return (counts.TH19 ?? 0) > 0;
+}
 
 function buildEmptyDisplayCounts(): CompoWarDisplayBucketCounts {
   return {
@@ -171,8 +180,9 @@ export function getCompoActualStateDeltaByBucket(
   counts: CompoWarDisplayBucketCounts,
   heatMapRef: HeatMapRef | null,
 ): Record<CompoWarDisplayBucket, number | null> {
-  if (!heatMapRef) {
-    return {
+  const unsupportedTh19 = hasUnsupportedCompoTh19Target(counts);
+  if (!heatMapRef || unsupportedTh19) {
+    const result = {
       TH18: null,
       TH17: null,
       TH16: null,
@@ -180,9 +190,13 @@ export function getCompoActualStateDeltaByBucket(
       TH14: null,
       "<=TH13": null,
     };
+    if (unsupportedTh19) {
+      (result as Record<CompoWarDisplayBucket, number | null>).TH19 = null;
+    }
+    return result as Record<CompoWarDisplayBucket, number | null>;
   }
   const targetCounts = buildTargetCounts(heatMapRef);
-  return {
+  const result = {
     TH18: counts.TH18 - targetCounts.TH18,
     TH17: counts.TH17 - targetCounts.TH17,
     TH16: counts.TH16 - targetCounts.TH16,
@@ -190,6 +204,7 @@ export function getCompoActualStateDeltaByBucket(
     TH14: counts.TH14 - targetCounts.TH14,
     "<=TH13": counts["<=TH13"] - targetCounts["<=TH13"],
   };
+  return result as Record<CompoWarDisplayBucket, number | null>;
 }
 
 /** Purpose: compute the spreadsheet-style weighted deviation score for one projected ACTUAL or WAR display state. */
@@ -197,7 +212,7 @@ export function calculateCompoDeviationScore(input: {
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRef: HeatMapRef | null;
 }): number | null {
-  if (!input.heatMapRef) {
+  if (!input.heatMapRef || hasUnsupportedCompoTh19Target(input.displayCounts)) {
     return null;
   }
 
@@ -227,6 +242,9 @@ function getRepresentativeWeight(
   bucket: CompoWarDisplayBucket,
   heatMapRef: HeatMapRef | null,
 ): number {
+  if (bucket === "TH19") {
+    throw new Error("TH19 target representative weight is unavailable");
+  }
   if (bucket !== "<=TH13") {
     return REPRESENTATIVE_WEIGHTS[bucket];
   }
@@ -260,7 +278,7 @@ function addDisplayCounts(
   base: CompoWarDisplayBucketCounts,
   fillCounts: CompoWarDisplayBucketCounts,
 ): CompoWarDisplayBucketCounts {
-  return {
+  const result: CompoWarDisplayBucketCounts = {
     TH18: base.TH18 + fillCounts.TH18,
     TH17: base.TH17 + fillCounts.TH17,
     TH16: base.TH16 + fillCounts.TH16,
@@ -268,6 +286,9 @@ function addDisplayCounts(
     TH14: base.TH14 + fillCounts.TH14,
     "<=TH13": base["<=TH13"] + fillCounts["<=TH13"],
   };
+  const th19 = (base.TH19 ?? 0) + (fillCounts.TH19 ?? 0);
+  if (th19 > 0) result.TH19 = th19;
+  return result;
 }
 
 function buildFillPlan(input: {
@@ -307,13 +328,13 @@ function buildFillPlan(input: {
   // choosing the display bucket with the smallest non-negative post-fill delta,
   // breaking ties toward the lower Town Hall buckets first.
   while (remaining > 0) {
-    const nextBucket = DISPLAY_BUCKETS_DESC.reduce<CompoWarDisplayBucket>(
+    const nextBucket = DISPLAY_BUCKETS_DESC.reduce<SupportedCompoWarDisplayBucket>(
       (best, bucket) => {
         const bestDistance = Math.abs(
-          (deltas[best] ?? 0) + fillCounts[best],
+          (deltas[best] ?? 0) + (fillCounts[best] ?? 0),
         );
         const candidateDistance = Math.abs(
-          (deltas[bucket] ?? 0) + fillCounts[bucket],
+          (deltas[bucket] ?? 0) + (fillCounts[bucket] ?? 0),
         );
         if (candidateDistance !== bestDistance) {
           return candidateDistance < bestDistance ? bucket : best;
@@ -332,7 +353,7 @@ function buildFillPlan(input: {
   const addedWeight = DISPLAY_BUCKETS_ASC.reduce(
     (sum, bucket) =>
       sum +
-      fillCounts[bucket] * getRepresentativeWeight(bucket, input.heatMapRef),
+      (fillCounts[bucket] ?? 0) * getRepresentativeWeight(bucket, input.heatMapRef),
     0,
   );
 
@@ -473,10 +494,13 @@ function buildRawProjection(input: {
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRefs: readonly HeatMapRef[];
 }): CompoActualStateProjection {
-  const heatMapRef = findHeatMapRefForWeight(
+  const matchedHeatMapRef = findHeatMapRefForWeight(
     input.heatMapRefs,
     input.base.resolvedTotalWeight,
   );
+  const heatMapRef = hasUnsupportedCompoTh19Target(input.displayCounts)
+    ? null
+    : matchedHeatMapRef;
   const deferredWeightCount = input.base.deferredWeightCount ?? 0;
   return {
     view: "raw",

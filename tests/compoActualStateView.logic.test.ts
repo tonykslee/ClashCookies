@@ -91,6 +91,31 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket["<=TH13"]).toBe(0);
   });
 
+  it("keeps observed TH19 visible while withholding historical target comparison", () => {
+    const result = projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 181000 + 180000,
+        unresolvedWeightCount: 0,
+        memberCount: 2,
+        bucketCounts: makeBucketCounts({ TH19: 1, TH18: 1 }),
+      },
+      heatMapRefs: [
+        makeHeatMapRef({
+          weightMinInclusive: 300000,
+          weightMaxInclusive: 400000,
+          th18Count: 2,
+        }),
+      ],
+    });
+
+    expect(result.displayCounts).toMatchObject({ TH19: 1, TH18: 1 });
+    expect(result.selectedHeatMapRef).toBeNull();
+    expect(result.deltaByBucket.TH19).toBeNull();
+    expect(result.deltaByBucket.TH18).toBeNull();
+    expect(result.deviationScore).toBeNull();
+  });
+
   it("calculates Auto-Detect Band deviation on a complete roster without filling", () => {
     const result = projectCompoActualStateView({
       view: "auto",
