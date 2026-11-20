@@ -138,6 +138,32 @@ describe("/fwa layout-move", () => {
     ]);
   });
 
+  it("includes TH19 and future layouts when no max-th is set", async () => {
+    const records = [
+      buildCanonical(buildRecord({ id: "layout-18" }), { Townhall: 18 }),
+      buildCanonical(buildRecord({ id: "layout-19" }), { Townhall: 19 }),
+      buildCanonical(buildRecord({ id: "layout-20" }), { Townhall: 20 }),
+    ];
+    const relocate = vi.fn().mockImplementation(async ({ layout }: { layout: any }) => ({
+      layout,
+      messageId: `new-${layout.id}`,
+      jumpUrl: `https://discord.com/channels/guild-1/new-channel/new-${layout.id}`,
+      oldPostCleanupFailed: false,
+    }));
+    const { interaction, editReply } = makeInteraction({});
+    await runFwaLayoutMoveCommand(interaction, {
+      layoutService: { listCanonical: vi.fn().mockResolvedValue(records) } as any,
+      publicationService: { relocate } as any,
+      messageResolver: { resolve: vi.fn() },
+    });
+    expect(relocate.mock.calls.map((call) => call[0].layout.id)).toEqual([
+      "layout-20", "layout-19", "layout-18",
+    ]);
+    expect(editReply.mock.calls[0]?.[0].content).toContain("TH8+");
+    expect(FWA_LAYOUT_MOVE_SUBCOMMAND.options[2]).not.toHaveProperty("max_value");
+    expect(FWA_LAYOUT_MOVE_SUBCOMMAND.options[3]).not.toHaveProperty("max_value");
+  });
+
   it("publishes in descending order by default and ascending order when requested", async () => {
     const records = [
       buildRecord({ id: "layout-16" }),
