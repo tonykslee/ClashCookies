@@ -177,6 +177,22 @@ assert_volume_detached() {
   [ -z "$attached" ] || fatal "artifact_volume_attached volume=${volume} containers=${attached}"
 }
 
+artifact_volume_has_labels() {
+  local volume="$1"
+  local revision="$2"
+  local role="$3"
+  local labels
+  labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$volume" 2>/dev/null || true)"
+  [ "$labels" = "artifact|${revision}|${role}" ]
+}
+
+artifact_volume_attached_to_live_runtime() {
+  local volume="$1"
+  local attached
+  attached="$(docker ps --filter "volume=${volume}" --format '{{.Names}}')"
+  [ "$attached" = "$NORMAL_CONTAINER" ]
+}
+
 ensure_owned_artifact_volume() {
   local volume="$1"
   local revision="$2"
@@ -217,10 +233,36 @@ copy_artifacts_to_volumes() {
       find /target-node-modules -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
       cp -a /source-dist/. /target-dist/
       cp -a /source-node-modules/. /target-node-modules/
-      dist_digest="$(find /target-dist -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")"
-      node_digest="$(find /target-node-modules -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")"
-      printf "revision=%s\ndist_digest=%s\nnode_modules_digest=%s\n" "$BUILD_SHA" "$dist_digest" "$node_digest" > /target-dist/.clashcookies-artifact
-      cp /target-dist/.clashcookies-artifact /target-node-modules/.clashcookies-artifact
+    '
+  stamp_artifact_volumes "$target_dist" "$target_node_modules" "$revision"
+}
+
+stamp_artifact_volumes() {
+  local dist_volume="$1"
+  local node_modules_volume="$2"
+  local revision="$3"
+
+  docker run --rm --network bridge \
+    -e "EXPECTED_BUILD_SHA=${revision}" \
+    -v "${dist_volume}:/dist" \
+    -v "${node_modules_volume}:/node_modules" \
+    "$ARTIFACT_IMAGE" bash -lc '
+      set -euo pipefail
+      digest_tree() {
+        (
+          cd "$1"
+          find . -type f ! -name .clashcookies-artifact -printf "%P\\0" |
+            sort -z |
+            while IFS= read -r -d "" path; do
+              sha256sum -- "$path"
+            done |
+            sha256sum | awk "{print \$1}"
+        )
+      }
+      dist_digest="$(digest_tree /dist)"
+      node_digest="$(digest_tree /node_modules)"
+      printf "revision=%s\ndist_digest=%s\nnode_modules_digest=%s\n" "$EXPECTED_BUILD_SHA" "$dist_digest" "$node_digest" > /dist/.clashcookies-artifact
+      cp /dist/.clashcookies-artifact /node_modules/.clashcookies-artifact
     '
 }
 
@@ -239,8 +281,19 @@ verify_artifact_volumes() {
       test -s /node_modules/.clashcookies-artifact
       grep -Fx "revision=${EXPECTED_BUILD_SHA}" /dist/.clashcookies-artifact >/dev/null
       grep -Fx "revision=${EXPECTED_BUILD_SHA}" /node_modules/.clashcookies-artifact >/dev/null
-      dist_digest="$(find /dist -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")"
-      node_digest="$(find /node_modules -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")"
+      digest_tree() {
+        (
+          cd "$1"
+          find . -type f ! -name .clashcookies-artifact -printf "%P\\0" |
+            sort -z |
+            while IFS= read -r -d "" path; do
+              sha256sum -- "$path"
+            done |
+            sha256sum | awk "{print \$1}"
+        )
+      }
+      dist_digest="$(digest_tree /dist)"
+      node_digest="$(digest_tree /node_modules)"
       grep -Fx "dist_digest=${dist_digest}" /dist/.clashcookies-artifact >/dev/null
       grep -Fx "node_modules_digest=${node_digest}" /dist/.clashcookies-artifact >/dev/null
     '
@@ -266,6 +319,18 @@ prepare_rollback_artifact() {
   local source_dist source_node_modules
   ROLLBACK_DIST_VOLUME="$(artifact_volume_name "$OLD_SHA" rollback-dist)"
   ROLLBACK_NODE_MODULES_VOLUME="$(artifact_volume_name "$OLD_SHA" rollback-node-modules)"
+
+  if docker volume inspect "$ROLLBACK_DIST_VOLUME" >/dev/null 2>&1 && \
+    docker volume inspect "$ROLLBACK_NODE_MODULES_VOLUME" >/dev/null 2>&1 && \
+    artifact_volume_has_labels "$ROLLBACK_DIST_VOLUME" "$OLD_SHA" rollback-dist && \
+    artifact_volume_has_labels "$ROLLBACK_NODE_MODULES_VOLUME" "$OLD_SHA" rollback-node-modules && \
+    artifact_volume_attached_to_live_runtime "$ROLLBACK_DIST_VOLUME" && \
+    artifact_volume_attached_to_live_runtime "$ROLLBACK_NODE_MODULES_VOLUME"; then
+    verify_artifact_volumes "$ROLLBACK_DIST_VOLUME" "$ROLLBACK_NODE_MODULES_VOLUME" "$OLD_SHA" || \
+      fatal "rollback_artifact_verification_failed revision=${OLD_SHA}"
+    log "rollback_artifact_prepare=reused_attached revision=${OLD_SHA} dist=${ROLLBACK_DIST_VOLUME} node_modules=${ROLLBACK_NODE_MODULES_VOLUME}"
+    return 0
+  fi
 
   source_dist="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/dist"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
   source_node_modules="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/node_modules"}}{{.Source}}{{end}}{{end}}' "$NORMAL_CONTAINER")"
@@ -403,7 +468,7 @@ build_candidate_only() {
     -v "$NORMAL_YARN_CACHE_VOLUME:/usr/local/share/.cache/yarn" \
     -e "BUILD_SHA=${NEW_SHA}" \
     node:20-bookworm \
-    bash -lc './ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/ && dist_digest="$(find /build-dist -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")" && node_digest="$(find /app/node_modules -type f ! -name .clashcookies-artifact -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk "{print \$1}")" && printf "revision=%s\ndist_digest=%s\nnode_modules_digest=%s\n" "$BUILD_SHA" "$dist_digest" "$node_digest" > /build-dist/.clashcookies-artifact && cp /build-dist/.clashcookies-artifact /app/node_modules/.clashcookies-artifact' >"$log_file" 2>&1; then
+    bash -lc './ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/' >"$log_file" 2>&1 && stamp_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" >>"$log_file" 2>&1; then
     verify_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" || {
       log "candidate_build=failed reason=artifact_verification revision=${NEW_SHA} diagnostics=${log_file}" >&2
       return 1
@@ -498,6 +563,14 @@ rollback_to_old_revision() {
   log "rollback_result=failed reason=health final_state=unhealthy_old_sha:${OLD_SHA}" >&2
   return 1
 }
+
+if [ "${DEPLOY_PROD_ARTIFACT_TEST_MODE:-0}" = "1" ]; then
+  [ "$#" -eq 5 ] || fatal "artifact_test_requires_source_dist_source_node_modules_target_dist_target_node_modules_revision"
+  copy_artifacts_to_volumes "$@"
+  verify_artifact_volumes "$3" "$4" "$5"
+  log "artifact_test=success revision=$5"
+  exit 0
+fi
 
 require_command git
 require_command docker

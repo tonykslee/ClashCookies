@@ -48,6 +48,8 @@ case "$command" in
         2:*) printf '%s\n' release-b ;;
         3:HEAD) printf '%s\n' release-b ;;
         3:*) printf '%s\n' release-c ;;
+        4:HEAD) printf '%s\n' release-b ;;
+        4:*) printf '%s\n' release-c ;;
       esac
     elif [ "${1:-}" = HEAD ]; then
       printf '%s\n' old-reviewed-sha
@@ -169,7 +171,7 @@ case "${1:-}" in
       set_volume_ready "$node_volume" "$revision" || true
       exit 0
     fi
-    if [[ " $* " == *" dist_digest="* ]] && [[ " $* " == *" /target-dist "* ]]; then
+    if [[ " $* " == *" /target-dist "* ]] && [[ " $* " == *" /source-dist "* ]]; then
       revision="unknown"; previous=""; target_dist=""; target_node=""
       for argument in "$@"; do
         case "$argument" in BUILD_SHA=*) revision="${argument#*=}" ;; esac
@@ -180,6 +182,19 @@ case "${1:-}" in
       done
       set_volume_ready "$target_dist" "$revision"
       set_volume_ready "$target_node" "$revision"
+      exit 0
+    fi
+    if [[ " $* " == *" EXPECTED_BUILD_SHA="* ]] && [[ " $* " != *":ro"* ]] && [[ " $* " == *" /dist "* ]]; then
+      revision="unknown"; previous=""; dist_volume=""; node_volume=""
+      for argument in "$@"; do
+        case "$argument" in EXPECTED_BUILD_SHA=*) revision="${argument#*=}" ;; esac
+        if [ "$previous" = -v ]; then
+          case "$argument" in *:/dist) dist_volume="${argument%%:/dist}" ;; *:/node_modules) node_volume="${argument%%:/node_modules}" ;; esac
+        fi
+        previous="$argument"
+      done
+      set_volume_ready "$dist_volume" "$revision"
+      set_volume_ready "$node_volume" "$revision"
       exit 0
     fi
     if [[ " $* " == *" EXPECTED_BUILD_SHA="* ]]; then
@@ -263,7 +278,7 @@ export HEALTH_POLL_INTERVAL_SECONDS=0 HEALTH_REQUEST_TIMEOUT_SECONDS=1 TARGET_RE
 
 set +e
 if [ "$scenario" = sequence ]; then
-  for pass in 1 2 3; do
+  for pass in 1 2 3 4; do
     DEPLOY_TEST_PASS="$pass" bash "$deploy_script" >> "$output_file" 2>&1
     printf 'PASS=%s STATUS=%s\n' "$pass" "$?" >> "$output_file"
   done

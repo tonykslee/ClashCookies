@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -93,4 +93,67 @@ describe("real Docker deployment artifact smoke", () => {
       rmSync(fixture, { recursive: true, force: true });
     }
   }, 1_000_000);
+
+  it("stamps and verifies artifacts through the deployment helpers", () => {
+    if (!dockerAvailable()) {
+      console.warn("Skipping real Docker artifact verification: Docker daemon is unavailable");
+      return;
+    }
+
+    const suffix = `${process.pid}-${Date.now()}`;
+    const distVolume = `clashcookies-test-artifact-dist-${suffix}`;
+    const nodeModulesVolume = `clashcookies-test-artifact-node-modules-${suffix}`;
+    const repo = process.cwd();
+    const deployScript = join(repo, "ops", "deploy", "deploy-prod.sh");
+    const fixture = mkdtempSync(join(tmpdir(), "clashcookies-artifact-smoke-"));
+    const sourceDist = join(fixture, "dist");
+    const sourceNodeModules = join(fixture, "node_modules");
+    const revision = "artifact-test-revision";
+    mkdirSync(sourceDist, { recursive: true });
+    mkdirSync(join(sourceNodeModules, "fixture-package"), { recursive: true });
+    writeFileSync(join(sourceDist, "ClashCookies.js"), "artifact-source\n");
+    writeFileSync(join(sourceDist, "nested.txt"), "nested-source\n");
+    writeFileSync(join(sourceNodeModules, "fixture-package", "index.js"), "dependency-source\n");
+
+    try {
+      execFileSync("docker", ["volume", "create", distVolume], { encoding: "utf8" });
+      execFileSync("docker", ["volume", "create", nodeModulesVolume], { encoding: "utf8" });
+      const output = execFileSync(
+        bashExecutable(),
+        [deployScript, sourceDist, sourceNodeModules, distVolume, nodeModulesVolume, revision],
+        {
+          cwd: repo,
+          encoding: "utf8",
+          timeout: 120_000,
+          env: {
+            ...process.env,
+            DEPLOY_PROD_ARTIFACT_TEST_MODE: "1",
+            ARTIFACT_IMAGE: "node:20-bookworm",
+          },
+        },
+      );
+      expect(output).toContain(`artifact_test=success revision=${revision}`);
+      const marker = execFileSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "-v",
+          `${distVolume}:/dist:ro`,
+          "node:20-bookworm",
+          "bash",
+          "-lc",
+          "cat /dist/.clashcookies-artifact",
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      expect(marker).toContain(`revision=${revision}`);
+      expect(marker).toContain("dist_digest=");
+      expect(marker).toContain("node_modules_digest=");
+    } finally {
+      execFileSync("docker", ["volume", "rm", "-f", distVolume], { stdio: "ignore" });
+      execFileSync("docker", ["volume", "rm", "-f", nodeModulesVolume], { stdio: "ignore" });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

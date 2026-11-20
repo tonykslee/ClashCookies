@@ -124,12 +124,16 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("PASS=1 STATUS=0");
     expect(output).toContain("PASS=2 STATUS=0");
     expect(output).toContain("PASS=3 STATUS=1");
+    expect(output).toContain("PASS=4 STATUS=0");
     expect(output).toContain("rollback_result=success final_state=old_sha:release-b");
     expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-a prebuilt=1");
     expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-b prebuilt=1");
-    expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-b prebuilt=1");
-    expect(output).toContain("STATE=active:release-b");
+    expect(output).toContain("ACTIVE_RUN name=clashcookies-app revision=release-c prebuilt=1");
+    expect(output).toContain("rollback_artifact_prepare=reused_attached revision=release-b");
+    expect(output).toContain("STATE=active:release-c");
     expect(output).toContain("artifact_cleanup=removed");
+    expect(output).toContain("clashcookies-prod-artifact-release-b-rollback-dist");
+    expect(output).toContain("clashcookies-prod-artifact-release-b-rollback-node-modules");
   });
 
   it("restores the old runtime when checkout fails after stopping it", () => {
