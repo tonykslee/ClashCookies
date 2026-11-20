@@ -27,6 +27,7 @@ export type HomeVillageLeagueObservation = {
   leagueName: string | null;
   normalizedLeagueName: string | null;
   family: HomeVillageLeagueFamily | null;
+  contradictory: boolean;
 };
 
 export const HOME_VILLAGE_LEAGUE_TIER_RECORDS: readonly HomeVillageLeagueRecord[] = [
@@ -166,6 +167,17 @@ export function resolveHomeVillageLeagueObservation(input: {
       : "missing";
   const normalizedLeagueName = resolvedLeagueName ? normalizeHomeVillageLeagueMatchText(resolvedLeagueName) : null;
   const family = normalizedLeagueName ? resolveObservedLeagueFamily(normalizedLeagueName) : null;
+  const tierFamily = leagueTierName
+    ? resolveObservedLeagueFamily(normalizeHomeVillageLeagueMatchText(leagueTierName))
+    : null;
+  const legacyFamily = legacyLeagueName
+    ? resolveObservedLeagueFamily(normalizeHomeVillageLeagueMatchText(legacyLeagueName))
+    : null;
+  const contradictory = Boolean(
+    leagueTierName &&
+      legacyLeagueName &&
+      tierFamily !== legacyFamily,
+  );
 
   return {
     source,
@@ -173,6 +185,7 @@ export function resolveHomeVillageLeagueObservation(input: {
     leagueName: resolvedLeagueName,
     normalizedLeagueName,
     family,
+    contradictory,
   };
 }
 

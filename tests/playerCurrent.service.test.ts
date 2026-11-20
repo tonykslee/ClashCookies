@@ -308,6 +308,63 @@ describe("PlayerCurrentService", () => {
     );
   });
 
+  it("clears a previous league when a successful live response has no league evidence", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({ leagueName: "Legend League" }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(
+        makeLivePlayer({ leagueTier: null, league: null }),
+      ),
+    } as any;
+
+    await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags: ["#QGRJ2222"],
+      cocService,
+      source: "live_refresh",
+      now: new Date("2026-08-11T12:00:00.000Z"),
+    });
+
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#QGRJ2222" },
+        create: expect.objectContaining({ leagueName: null, lastSource: "live_refresh" }),
+      }),
+    );
+  });
+
+  it("clears a previous league when live league fields contradict", async () => {
+    prismaMock.playerCurrent.findMany.mockResolvedValueOnce([
+      makeCurrentRow({ leagueName: "Legend League" }),
+    ]);
+    prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
+    (todoSnapshotService.listSnapshotsByPlayerTags as any).mockResolvedValueOnce([]);
+    const cocService = {
+      getPlayerRaw: vi.fn().mockResolvedValue(
+        makeLivePlayer({
+          leagueTier: { id: 105000034, name: "Legend III" },
+          league: { name: "Champion I" },
+        }),
+      ),
+    } as any;
+
+    await playerCurrentService.refreshCurrentPlayersFromLiveTags({
+      playerTags: ["#QGRJ2222"],
+      cocService,
+      source: "live_refresh",
+      now: new Date("2026-08-11T12:00:00.000Z"),
+    });
+
+    expect(prismaMock.playerCurrent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { playerTag: "#QGRJ2222" },
+        create: expect.objectContaining({ leagueName: null, lastSource: "live_refresh" }),
+      }),
+    );
+  });
+
   it("persists an override current weight when upserting from a live player profile", async () => {
     const livePlayer = makeLivePlayer({
       clan: {

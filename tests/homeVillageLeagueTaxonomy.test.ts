@@ -62,6 +62,26 @@ describe("HomeVillageLeagueTaxonomy", () => {
     });
   });
 
+  it("marks conflicting tier and legacy league families as contradictory", () => {
+    expect(
+      resolveHomeVillageLeagueObservation({
+        leagueTier: { id: 105000034, name: "Legend III" },
+        league: { name: "Champion I" },
+      }),
+    ).toMatchObject({
+      source: "leagueTier",
+      leagueName: "Legend III",
+      contradictory: true,
+    });
+
+    expect(
+      resolveHomeVillageLeagueObservation({
+        leagueTier: { id: 105000034, name: "Legend III" },
+        league: { name: "Legend League" },
+      }),
+    ).toMatchObject({ contradictory: false });
+  });
+
   it("exposes the full current and legacy record lists", () => {
     expect(
       HOME_VILLAGE_LEAGUE_TIER_RECORDS.map(({ id, name }) => ({ id, name })),

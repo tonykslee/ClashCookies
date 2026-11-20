@@ -8,9 +8,14 @@ import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { isMirrorPollingMode } from "./PollingModeService";
 import {
   playerCurrentService,
+  isAuthoritativeLivePlayerCurrentSource,
   type PlayerCurrentLike,
   type PlayerCurrentResolutionField,
 } from "./PlayerCurrentService";
+import {
+  PLAYER_CURRENT_SIGNUP_MAX_AGE_MS,
+  isPlayerCurrentStaleForSignup,
+} from "./PlayerCurrentFreshness";
 import {
   autoRoleApplyService,
   type AutoRoleMemberApplyResult,
@@ -467,6 +472,10 @@ function mergeTrackedClanPlayerCurrentOverlay(input: {
     current.currentClanTag = overlay.currentClanTag ?? current.currentClanTag;
     current.currentClanName = overlay.currentClanName ?? current.currentClanName;
     current.role = overlay.role ?? current.role;
+    if (overlay.source === "live_refresh") {
+      current.source = "live_refresh";
+      current.leagueObservationUncertain = overlay.leagueName === null || overlay.leagueObservationUncertain === true;
+    }
     if (overlay.leagueName !== null) {
       current.leagueName = overlay.leagueName;
     }
@@ -499,6 +508,7 @@ function buildTrackedClanPlayerCurrentFromMember(input: {
     currentClanName: input.currentClanName,
     role: normalizeClanMemberRole(input.role ?? null),
     leagueName: leagueObservation.leagueName,
+    leagueObservationUncertain: leagueObservation.contradictory,
   });
 }
 
@@ -581,6 +591,7 @@ function createTrackedClanPlayerCurrent(input: {
   currentClanName: string | null;
   role: "member" | "elder" | "coLeader" | "leader" | null;
   leagueName: string | null;
+  leagueObservationUncertain?: boolean;
 }): PlayerCurrentLike {
   return {
     playerTag: input.playerTag,
@@ -605,6 +616,7 @@ function createTrackedClanPlayerCurrent(input: {
     updatedAt: null,
     source: "live_refresh",
     liveRefreshInvoked: false,
+    leagueObservationUncertain: input.leagueObservationUncertain,
   };
 }
 
@@ -2514,6 +2526,7 @@ function collectUncertainLeagueRemovalSuppression(input: {
   snapshot: AutoRoleGuildStateSnapshot;
   linkedAccounts: PlayerLinkWithTrust[];
   playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  now: Date;
 }): Set<string> {
   const config = input.snapshot.config;
   const eligibleAccounts = input.linkedAccounts.filter((link) =>
@@ -2524,9 +2537,20 @@ function collectUncertainLeagueRemovalSuppression(input: {
   // No eligible links is authoritative absence, not missing league evidence.
   if (
     eligibleAccounts.length === 0 ||
-    eligibleAccounts.every((link) =>
-      isKnownHomeVillageLeagueName(input.playerCurrentByTag.get(link.playerTag)?.leagueName),
-    )
+    eligibleAccounts.every((link) => {
+      const playerCurrent = input.playerCurrentByTag.get(link.playerTag);
+      if (!isKnownHomeVillageLeagueName(playerCurrent?.leagueName)) return false;
+      if (playerCurrent?.leagueObservationUncertain) return false;
+
+      // Persisted PlayerCurrent is only safe for removal when its league value
+      // is from a fresh authoritative observation. In-memory live clan overlays
+      // carry source=live_refresh and are already scoped to this refresh.
+      if (playerCurrent?.source === "live_refresh") return true;
+      return Boolean(
+        isAuthoritativeLivePlayerCurrentSource(playerCurrent?.lastSource) &&
+          !isPlayerCurrentStaleForSignup(playerCurrent, input.now, PLAYER_CURRENT_SIGNUP_MAX_AGE_MS),
+      );
+    })
   ) {
     return new Set();
   }
@@ -2871,6 +2895,7 @@ async function runRefreshPass(input: {
           snapshot: input.snapshot,
           linkedAccounts,
           playerCurrentByTag: input.playerCurrentByTag,
+          now: input.now,
         }),
       ]);
       const result = await autoRoleApplyService.applyMember({

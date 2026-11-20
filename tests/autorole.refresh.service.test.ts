@@ -257,6 +257,8 @@ function makePlayerCurrent(input: {
   currentClanTag?: string | null;
   role?: "member" | "elder" | "coLeader" | "leader" | null;
   leagueName?: string | null;
+  lastFetchedAt?: Date | null;
+  lastSource?: string | null;
 }) {
   return {
     playerTag: input.playerTag,
@@ -275,8 +277,8 @@ function makePlayerCurrent(input: {
     currentWeightMeasuredAt: new Date("2026-04-01T00:00:00.000Z"),
     achievementsJson: null,
     lastSeenAt: null,
-    lastFetchedAt: null,
-    lastSource: "player_current",
+    lastFetchedAt: input.lastFetchedAt ?? new Date(),
+    lastSource: input.lastSource ?? "live_refresh",
     createdAt: new Date("2026-04-01T00:00:00.000Z"),
     updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     source: "player_current",
@@ -3712,6 +3714,70 @@ describe("AutoRoleRefreshService", () => {
     });
     expect(holder.roles.remove).toHaveBeenCalledWith(leagueRoleId);
     expect(knownResult.removedCount).toBe(1);
+  });
+
+  it("preserves a league role when the persisted known league observation is stale", async () => {
+    const leagueRoleId = "222222222222222222";
+    const holderId = "111111111111111111";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const holder = makeMember(holderId, [leagueRoleId]);
+    const guild = makeGuild(new Map([[holderId, holder]]), [leagueRoleId]);
+    let current = makePlayerCurrent({
+      playerTag: "#PYLQ0289",
+      playerName: "Legend Holder",
+      leagueName: "Legend League",
+      lastFetchedAt: new Date("2026-08-11T00:00:00.000Z"),
+      lastSource: "live_refresh",
+    });
+
+    prismaMock.playerLink.findMany.mockImplementation(async ({ where }: any) =>
+      filterPlayerLinkRows([
+        makeLinkedAccount({
+          playerTag: "#PYLQ0289",
+          discordUserId: holderId,
+          playerName: "Legend Holder",
+        }),
+      ], where),
+    );
+    prismaMock.playerCurrent.findMany.mockImplementation(async ({ where }: any) =>
+      filterPlayerCurrentRows([current], where),
+    );
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+    prismaMock.cwlTrackedClan.findMany.mockResolvedValue([]);
+    vi.spyOn(autoRoleService, "getGuildStateSnapshot").mockResolvedValue({
+      config: makeConfig({ applyNicknames: false, removeStaleManagedRoles: true }),
+      rules: [
+        makeRule({
+          type: AutoRoleRuleType.LEAGUE,
+          targetValue: "Legend League",
+          discordRoleId: leagueRoleId,
+        }),
+      ],
+      exclusions: { users: [], roles: [] },
+    } as any);
+
+    await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: leagueRoleId,
+      now,
+    });
+    expect(holder.roles.remove).not.toHaveBeenCalledWith(leagueRoleId);
+
+    current = makePlayerCurrent({
+      playerTag: "#PYLQ0289",
+      playerName: "Legend Holder",
+      leagueName: "Golem League 19",
+      lastFetchedAt: now,
+      lastSource: "live_refresh",
+    });
+    await autoRoleRefreshService.refreshRole({
+      guild,
+      guildId: "111111111111111111",
+      discordRoleId: leagueRoleId,
+      now,
+    });
+    expect(holder.roles.remove).toHaveBeenCalledWith(leagueRoleId);
   });
 
   it("refreshes a generic LEAGUE role from linked members without a full guild fetch", async () => {

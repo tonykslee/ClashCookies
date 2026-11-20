@@ -69,6 +69,8 @@ export type PlayerCurrentLike = {
   updatedAt: Date | null;
   source: PlayerCurrentResolutionSource;
   liveRefreshInvoked: boolean;
+  /** In-memory tracked-clan overlays can retain a persisted value while the live league field is absent. */
+  leagueObservationUncertain?: boolean;
 };
 
 type PlayerCurrentRow = {
@@ -242,7 +244,10 @@ function applyLivePlayer(target: PlayerCurrentLike, livePlayer: any, now: Date):
   target.expLevel = normalizeNumber(livePlayer?.expLevel ?? null) ?? target.expLevel;
   target.role = normalizeText(livePlayer?.role ?? null) ?? target.role;
   const leagueObservation = resolveHomeVillageLeagueObservation(livePlayer);
-  target.leagueName = leagueObservation.leagueName ?? target.leagueName;
+  // A successful live response with no recognized league is an UNKNOWN
+  // observation; retaining an older league would authorize stale role removal.
+  target.leagueName = leagueObservation.contradictory ? null : leagueObservation.leagueName;
+  target.leagueObservationUncertain = leagueObservation.leagueName === null || leagueObservation.contradictory;
   target.achievementsJson = Array.isArray(livePlayer?.achievements) ? (livePlayer.achievements as Prisma.JsonValue) : target.achievementsJson;
   target.lastSeenAt = now;
   target.lastFetchedAt = now;
