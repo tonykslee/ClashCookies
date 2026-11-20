@@ -1,0 +1,28 @@
+#!/bin/sh
+
+commit_msg_file="$1"
+commit_msg="$(cat "$commit_msg_file")"
+
+# Git's generated merge message is allowed only for a merge from the exact
+# current origin/dev. Ordinary commits still require Conventional Commits.
+merge_head_file="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || true)"
+if [ -f "$merge_head_file" ]; then
+  merge_heads="$(sed '/^[[:space:]]*$/d' "$merge_head_file")"
+  current_dev="$(git rev-parse --verify origin/dev^{commit} 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$merge_heads" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')" = '1' ] && \
+     [ "$merge_heads" = "$current_dev" ] && \
+     printf '%s\n' "$commit_msg" | grep -Eq '^Merge[[:space:]]'; then
+    echo "✅ Current origin/dev merge message accepted."
+    exit 0
+  fi
+fi
+
+if ! printf '%s\n' "$commit_msg" | grep -Eq '^(feat|fix|refactor|docs|chore|test|perf|build|ci|revert)(\(.+\))?: .+'; then
+  echo "❌ Commit message must follow Conventional Commit format."
+  echo "Example:"
+  echo "  feat(war): refactor war service logic"
+  exit 1
+fi
+
+echo "✅ Commit message format valid."
+exit 0

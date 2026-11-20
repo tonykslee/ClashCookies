@@ -43,6 +43,12 @@ For an ordinary request like "implement FB-012" or "implement FB-012 and FB-002"
 - **Standing owner approval for docs-only GitHub changes** remains in effect: ChatGPT may create, review and merge *docs-only* PRs to `dev` for these project instructions, backlog, roadmap, decisions, history and verified progress. Verify exact diff, review/CI/merge state, and never mix application, schema, migrations, deployment or runtime changes into that exception.
 - The running feature backlog is `docs/feature-backlog.md`. Maintain stable FB IDs and accurate proposed/implemented/released distinctions. Feature-specific rules belong in their repository documents, not in this bootstrap.
 
+### Existing feature branch freshness exception
+
+New branches must still start from the exact latest `origin/dev`; `scripts/start-feature.sh` verifies that invariant before branch creation. For an existing branch only, the tracked Git pre-commit guard permits being behind `dev` when—and only when—fetching `origin/dev` and inspecting the complete ancestry path (including merge commits and every merge parent) proves that every intervening changed path is exactly `docs/feature-backlog.md`.
+
+Any mixed change, other documentation, source/script/test/config/schema change, code later reverted, fetch or object failure, non-unique merge-base, or other ambiguous history blocks. PR labels, commit messages, and tags are not proof. A merge may complete only when its single merge head is the current `origin/dev`, avoiding a circular failure; ordinary commits remain subject to Conventional Commit enforcement. Tracked hooks are installed reproducibly by `scripts/install-git-hooks.sh`, which is invoked by both feature-entry and publication scripts.
+
 ## 4. Engineering, safety and release priorities
 
 - **Ship practical, reliable Dusk features quickly**. Prefer narrow PRs and proportional tests. Preserve existing FWA, CWL, war, sync, autorole, clan, reminders, alerts and Discord commands; avoid unrelated refactoring, redundant approval gates and unnecessary infrastructure.
