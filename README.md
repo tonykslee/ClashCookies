@@ -52,7 +52,7 @@ The project is designed as a maintainable application, not a one-off bot script:
 
 ### Clan management tooling
 - Manages tracked clan configuration, mail channels/roles, and war plans.
-- Supports player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands, including guild-scoped default roster display columns via `/roster show`, `/roster set`, and `/roster reset`.
+- Supports TH19+ canonical FWA layout lookup, posting and relocation, plus player-linking, autorole role/nickname sync, roster-related utilities, and operational helper commands, including guild-scoped default roster display columns via `/roster show`, `/roster set`, and `/roster reset`.
 - `/roster ping` is independently configurable through `/permission` with `command:roster:ping`. It inherits `roster:manage` when no ping-specific policy exists, additive grants preserve inherited access, and the roster report button plus final confirmation enforce the same effective policy.
 - `/permission add` is additive and idempotent: it preserves built-in defaults and existing roles. `/permission remove` removes only the selected role or records a role/default exclusion, while Discord Administrator bypass remains unconditional; `/permission list` shows the effective policy and legacy restrictive state.
 - Includes `/fillers` for marking linked player accounts as filler accounts and listing filler accounts by guild, linked user, or current clan.
