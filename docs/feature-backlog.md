@@ -89,7 +89,7 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Status:** Implemented in repository; production deployment/activation not established by this backlog review.
 - **Original request:** Announce exactly `all spun` when every participating clan has a valid spin-status claim.
 - **Verified existing implementation:** `src/services/SyncAllSpunAnnouncementService.ts` and `docs/sync-all-spun-announcement.md` describe post-sync-time completion, the configured typed `sync` destination, persisted `SyncEvent` delivery state, one-minute recovery, and suppression outside active production. This is **not** a new proposed implementation task.
-- **Follow-up only if requested:** Verify deployment/operational behavior separately; do not duplicate the existing feature.
+- **Reported regression (2026-11-20):** The owner observed `all spun` after only one clan was marked spun, despite other participating clans remaining unchecked. Track the corrective investigation separately under **FB-015**; the existing `dev` implementation does not establish correct observed production behavior or a known root cause.
 
 ### FB-006 — Sync Spin Race Leaderboard
 
@@ -172,6 +172,26 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Requested presentation:** Do not show UNKNOWN radio bullets merely because the points-site matchup is wrong when both clans have known, sufficiently fresh and trustworthy points and the applicable sync/tie rules resolve the outcome. Preserve an explicit UNKNOWN state for genuinely insufficient, contradictory or stale evidence.
 - **Investigation and safeguards:** Trace points-site ingestion, latest-war-update timestamps, clan identity matching, outcome inference, sync number and Discord radio/indicator rendering. Establish when a points snapshot is applicable to the war being evaluated (including asynchronous updates, rollover, stale caches and opponent changes), and distinguish expected FWA winner from independently verified actual war result. Avoid guessing from one clan's points, an unverified opponent, or an unverified tie-break; record inference provenance and regression-test the failure cases.
 - **Done when:** A stale/mismatched points-site opponent no longer forces UNKNOWN for a verifiable FWA-versus-FWA matchup with applicable points (including correctly resolved ties), and the indicator reliably shows the inferred outcome without mislabeling ambiguous or outdated evidence.
+
+### FB-015 — Regression: `all spun` posts before every participating clan is marked spun
+
+- **Status:** Proposed regression fix; **owner-observed 2026-11-20**, root cause and deployed code revision not yet verified.
+- **Suggested priority:** High — false alliance-wide completion announcements.
+- **Observed:** Dusk sent the exact `all spun` message after **only one clan** was marked spun, even though other required clans had not been checked off.
+- **Expected:** Publish `all spun` **only once**, and only after every distinct participating clan on the **current canonical sync** has a valid active spin-status claim. A single clan's reaction must never complete a multi-clan sync.
+- **Investigation:** Examine the source sync root's `metadata.clans` participant set, root/status-child identity resolution, accepted reactions and persisted `TrackedMessageClaim` state, claimed/participating counts, and `SyncAllSpunAnnouncementService` delivery/recovery. Distinguish an incomplete/malformed participant denominator from incorrect claim counting, stale sync identity, or a deployed-version mismatch; do not pre-assign a cause.
+- **Regression coverage:** Multi-clan case with only 1/N, N−1/N, and N/N claims; duplicate/reacted-across-posts claims counting once; removed/reversed claims; stale/prior-sync claims and cross-guild isolation; missing/ambiguous participant data must fail closed; concurrent/replayed evaluations must not send duplicate announcements. Preserve the configured sync destination and production-only delivery guard.
+- **Done when:** The announcement never fires early for an incomplete current sync, fires once when the last required clan is acknowledged, and the underlying cause is documented with focused tests. Related implemented feature: **FB-005**; this entry is a **fix request**, not a claim that the original feature was never implemented.
+
+### FB-016 — Regression: Bases checklist completion does not suppress clan reminders
+
+- **Status:** Proposed regression fix; **owner-observed 2026-11-20**, root cause and affected cohort not yet verified.
+- **Suggested priority:** High — false, unnecessary clan-leader notifications.
+- **Observed:** Clan leaders marked their corresponding clan's **FWA Bases checklist** as checked and `Bases checked and all good`, yet those same clans still received messages saying bases needed checking.
+- **Expected:** A valid, persisted `/fwa match-checklist type:Bases` completion (via the supported command or reaction flow) for the **same guild, clan, war, and sync identity** must suppress `Bases not checked` reminders for that clan. Other clans with legitimately incomplete checklists must continue receiving applicable reminders.
+- **Investigation:** Trace persisted checklist acknowledgment/completion, current effective Bases render state, status refresh timing, `findPendingFwaBasesChecklistReminderCandidates`, `basesChecklistReminderSchedulerService`, active-war/sync fallback identity matching and offset dedupe. Inspect whether a completed acknowledgment was overlooked, became associated with a different identity, or raced with reminder delivery; do not conflate a Bases checklist acknowledgment with proof of an actual base swap/correction.
+- **Regression coverage:** Completed versus unchecked clans in the same guild/war; both command and reaction acknowledgments; late completion before an offset fires; stale/previous-war completion; missing or inconsistent identity; repeated scheduler ticks and reminder dedupe (currently 12h/6h/3h/1h buckets). Do not suppress genuine unchecked reminders or create new notification routing.
+- **Done when:** No `Bases not checked` reminder is delivered for a validly checked-and-all-good clan for that war/sync, while incomplete clans still receive correctly scoped, idempotent reminders. Related reporting request **FB-008** remains a separate feature, not this regression.
 
 ## Archived / withdrawn requests
 
