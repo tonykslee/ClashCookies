@@ -152,6 +152,15 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Done when:** Verified TH19 accounts are deterministically eligible for the configured TH19 role, prior TH roles and league autoroles continue to behave correctly, permission/missing-role cases fail safely, and focused tests cover TH18→TH19, multiple linked accounts, missing/unknown league information and role add/remove behavior. Any required production role reconciliation must have its own controlled plan and approval.
 - **Related but separate:** FB-002 (TH19 composition weight buckets) is **not** the autorole fix.
 
+### FB-013 — Browse non-FWA layout posts by author and freshness
+
+- **Status:** Proposed
+- **Suggested priority:** Medium
+- **Request:** Add a browse/list view for tracked non-FWA `/layout post` submissions, analogous to the existing `/fwa layout` listing and freshness table. Allow a user to specify a Discord poster to see that person's posted layouts.
+- **Requested presentation:** Paginated Discord embeds showing each post's **Town Hall**, **Title**, and the same useful freshness information available in the FWA layout listing. Order entries by **Town Hall first**, then **Title alphabetically** within each Town Hall. Include a direct link to each canonical Discord layout post where available.
+- **Design considerations (not yet decided):** Choose a clear command name and whether the author filter is optional or required; define whether the default view is the invoking user's posts or all accessible posts; reuse authoritative `LayoutRecord` post provenance and freshness (`lastConfirmedAt ?? submittedAt`), rather than `FwaLayouts` or `updatedAt`; exclude FWA-canonical records from the non-FWA view without losing other generic submissions; preserve guild visibility, authorization and privacy; handle untitled posts, missing/deleted Discord messages, unknown freshness, stable sorting/tie-breakers and pagination boundaries. Do not infer that a poster is the owner of a layout solely from a link.
+- **Done when:** A user can browse the requested poster's non-FWA layout posts in a readable paginated embed, sorted by Town Hall and title, with accurate freshness and links, without exposing inaccessible guild posts or mixing in the FWA catalog.
+
 ## Archived / withdrawn requests
 
 _None yet._
