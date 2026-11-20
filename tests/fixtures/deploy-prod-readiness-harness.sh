@@ -14,8 +14,10 @@ log_file="${root}/commands.log"
 output_file="${root}/output.log"
 probe_file="${root}/probes"
 mkdir -p "$app_dir/dist" "$app_dir/node_modules" "$bin_dir" "$volume_dir"
+mkdir -p "$app_dir/ops/deploy"
 printf 'legacy-build\n' > "$app_dir/dist/ClashCookies.js"
 printf 'legacy-dependency\n' > "$app_dir/node_modules/.fixture-dependency"
+printf '%s\n' '#!/usr/bin/env bash' './ops/deploy/ensure-yarn-deps.sh' 'npm run start' > "$app_dir/ops/deploy/container-start.sh"
 printf 'DISCORD_TOKEN=fixture-only\n' > "$app_dir/.env"
 printf 'services:\n  app:\n    environment:\n      DATABASE_URL: postgresql://fixture\n' > "$app_dir/docker-compose.yml"
 printf '%s\n' 'active:OLD' > "$state_file"
@@ -210,6 +212,11 @@ case "${1:-}" in
       [ "$(volume_field "$node_volume" ready)" = 1 ] && [ "$(volume_field "$node_volume" content_revision)" = "$expected" ]
       exit 0
     fi
+    if [ "$DEPLOY_TEST_SCENARIO" = legacy-rollback ] && [[ "$*" == *old-reviewed-sha* ]] && [[ "$*" == *"CLASHCOOKIES_PREBUILT=1"* ]]; then
+      [[ "$*" == *"npm run start:runtime"* ]] || exit 1
+      [[ "$*" != *"./ops/deploy/container-start.sh"* ]] || exit 1
+      printf 'LEGACY_ROLLBACK_LAUNCHER=inline\n' >> "$DEPLOY_TEST_LOG"
+    fi
     if { [ "$DEPLOY_TEST_SCENARIO" = container-failure ] || [ "$DEPLOY_TEST_SCENARIO" = rollback-cold-start ]; } && [[ "$*" == *new-reviewed-sha* ]]; then exit 1; fi
     revision=unknown; name=unknown; prebuilt=0; previous=""; dist_volume=""; node_volume=""
     for argument in "$@"; do
@@ -252,7 +259,7 @@ count="$(cat "$DEPLOY_TEST_PROBE_FILE")"; count=$((count + 1)); printf '%s\n' "$
 state="$(cat "$DEPLOY_TEST_STATE")"
 if { [ "$DEPLOY_TEST_SCENARIO" = cold-start ] || [ "$DEPLOY_TEST_SCENARIO" = rollback-cold-start ]; } && [ "$count" -le 3 ]; then exit 1; fi
 if [ "$DEPLOY_TEST_SCENARIO" = sequence ] && [ "${DEPLOY_TEST_PASS:-1}" = 3 ] && [[ "$state" != active:release-b ]]; then exit 1; fi
-if [ "$DEPLOY_TEST_SCENARIO" = health-failure ] && [[ "$state" != active:old-reviewed-sha ]]; then exit 1; fi
+if { [ "$DEPLOY_TEST_SCENARIO" = health-failure ] || [ "$DEPLOY_TEST_SCENARIO" = legacy-rollback ]; } && [[ "$state" != active:old-reviewed-sha ]]; then exit 1; fi
 if [ "$DEPLOY_TEST_SCENARIO" = rollback-cold-start ] && [[ "$state" != active:old-reviewed-sha ]]; then exit 1; fi
 if [ "$DEPLOY_TEST_SCENARIO" = rollback-failure ] || [ "$DEPLOY_TEST_SCENARIO" = health-timeout ]; then exit 1; fi
 exit 0

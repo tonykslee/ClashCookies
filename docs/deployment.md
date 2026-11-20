@@ -34,7 +34,7 @@ Flow:
 6. Stop the old app only after the candidate build succeeds and the singleton guard still observes exactly one active runtime.
 7. Before stopping the old app, copy its exact `dist` and dependency artifacts into owner-labeled rollback volumes. Start the canonical app on the normal port with the candidate's immutable dependency and `dist` volumes, using the normal production env and active polling mode.
 8. Verify the canonical app returns HTTP 200 from `/healthz` before reporting success.
-9. If canonical start or health fails, retain bounded diagnostics, remove only the deployment-owned failed container, reset to `OLD_SHA`, and restore the old app through the same readiness gate.
+9. If canonical start or health fails, retain bounded diagnostics, remove only the deployment-owned failed container, reset to `OLD_SHA`, and restore the old app through the same readiness gate. Rollback uses a deployment-owned prebuilt launcher, so it does not depend on whether the old checkout understands `CLASHCOOKIES_PREBUILT`; it verifies the mounted artifacts, skips compilation, and runs the old checkout's `npm run start:runtime` so Prisma startup behavior is preserved.
 
 The default promotion and rollback readiness budget is 1,500 seconds (25
 minutes), calibrated above the observed 12–13 minute cold start. Every probe

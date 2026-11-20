@@ -492,7 +492,8 @@ start_app_container() {
   local revision="${9:-unknown}"
   local prebuilt="${10:-0}"
   local dist_volume="${11:-}"
-  local -a restart_args=() volume_args=( -v "$node_modules_volume:/app/node_modules" )
+  local startup_mode="${12:-checkout}"
+  local -a restart_args=() volume_args=( -v "$node_modules_volume:/app/node_modules" ) startup_args=(bash ./ops/deploy/container-start.sh)
 
   require_file "$env_file"
   [ "$restart_mode" = "restart" ] && restart_args=(--restart unless-stopped)
@@ -500,6 +501,21 @@ start_app_container() {
   if [ "$prebuilt" = "1" ]; then
     [ -n "$dist_volume" ] || return 1
     verify_artifact_volumes "$dist_volume" "$node_modules_volume" "$revision" || return 1
+  fi
+  if [ "$startup_mode" = "prebuilt-inline" ]; then
+    startup_args=(bash -lc '
+      set -euo pipefail
+      [ "${CLASHCOOKIES_PREBUILT:-0}" = "1" ]
+      expected_build_sha="${BUILD_SHA:-}"
+      dist_revision="$(sed -n "s/^revision=//p" ./dist/.clashcookies-artifact 2>/dev/null || true)"
+      node_modules_revision="$(sed -n "s/^revision=//p" ./node_modules/.clashcookies-artifact 2>/dev/null || true)"
+      if [ -z "${expected_build_sha}" ] || [ "${dist_revision}" != "${expected_build_sha}" ] || [ "${node_modules_revision}" != "${expected_build_sha}" ]; then
+        echo "[deploy:start] action=refuse reason=artifact_sha_mismatch expected=${expected_build_sha:-unknown} dist=${dist_revision:-unknown} node_modules=${node_modules_revision:-unknown}" >&2
+        exit 1
+      fi
+      echo "[deploy:start] action=skip-build reason=prebuilt build_sha=${BUILD_SHA:-unknown}"
+      npm run start:runtime
+    ')
   fi
 
   ACTIVE_CONTAINER_ID="$(docker run -d \
@@ -521,7 +537,7 @@ start_app_container() {
     "${volume_args[@]}" \
     -v "$yarn_cache_volume:/usr/local/share/.cache/yarn" \
     node:20-bookworm \
-    bash ./ops/deploy/container-start.sh)"
+    "${startup_args[@]}")"
   [ -n "$ACTIVE_CONTAINER_ID" ] || return 1
   log "container_started name=${container_name} id=${ACTIVE_CONTAINER_ID} revision=${revision} prebuilt=${prebuilt}"
 }
@@ -548,7 +564,7 @@ rollback_to_old_revision() {
   }
   if ! start_app_container "$NORMAL_CONTAINER" "$APP_DIR" "$NORMAL_PORT" "$RUNTIME_ENV_FILE" \
     "$ROLLBACK_NODE_MODULES_VOLUME" "$NORMAL_YARN_CACHE_VOLUME" "$prod_database_url" restart \
-    "$OLD_SHA" 1 "$ROLLBACK_DIST_VOLUME"; then
+    "$OLD_SHA" 1 "$ROLLBACK_DIST_VOLUME" prebuilt-inline; then
     capture_diagnostics rollback "$NORMAL_CONTAINER"
     log "rollback_result=failed reason=start_old_revision final_state=unknown" >&2
     return 1

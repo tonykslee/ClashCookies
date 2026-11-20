@@ -16,7 +16,8 @@ type Scenario =
   | "lock-busy"
   | "sequence"
   | "reset-failure"
-  | "diagnostic-permissions";
+  | "diagnostic-permissions"
+  | "legacy-rollback";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -75,6 +76,15 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("diagnostics_saved label=promotion");
     expect(output).toContain("rollback_result=success final_state=old_sha:old-reviewed-sha");
     expect(output).toContain("STATE=active:old-reviewed-sha");
+  });
+
+  it("rolls back to an old-style checkout with the deployment-owned prebuilt launcher", () => {
+    const output = runScenario("legacy-rollback");
+    const log = section(output, "LOG");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("rollback_result=success final_state=old_sha:old-reviewed-sha");
+    expect(output).toContain("STATE=active:old-reviewed-sha");
+    expect(log).toContain("LEGACY_ROLLBACK_LAUNCHER=inline");
   });
 
   it("reports an unhealthy rollback without claiming recovery", () => {
