@@ -9,7 +9,10 @@ import {
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
 import { matchesHomeVillageLeagueTarget } from "./HomeVillageLeagueTaxonomy";
-import type { PlayerCurrentLike } from "./PlayerCurrentService";
+import {
+  isLeagueObservationSafeForAutorole,
+  type PlayerCurrentLike,
+} from "./PlayerCurrentService";
 
 export type AutoRoleClanMembershipSource = "FWA" | "CWL" | "AMBIGUOUS" | "UNKNOWN";
 
@@ -93,6 +96,7 @@ export type AutoRoleEvaluationInput = {
   trackedClans?: AutoRoleTrackedClanLeadRole[];
   preferCurrentClanTagForClanRules?: boolean;
   trackedClanMembershipAuthoritative?: boolean;
+  now?: Date;
 };
 
 type RankedLinkedAccount = PlayerLinkWithTrust & {
@@ -304,11 +308,24 @@ export class AutoRoleEvaluationService {
       };
     }
 
+    // A Discord identity may own multiple THs; only the highest configured matching TH role wins.
+    const highestMatchingTownHall = input.rules.reduce((highest, rule) => {
+      if (!rule.enabled || rule.type !== AutoRoleRuleType.TOWN_HALL || !input.managedRoleIds.has(rule.discordRoleId)) {
+        return highest;
+      }
+      const level = Number(rule.targetValue);
+      return Number.isSafeInteger(level) &&
+        linkedAccounts.some((account) => account.playerCurrent?.townHall === level)
+        ? Math.max(highest, level)
+        : highest;
+    }, 0);
+
     const desiredManagedRoleIds = new Set<string>();
     const matchedRuleIds = new Set<string>();
     for (const rule of input.rules) {
       if (!rule.enabled) continue;
       if (!input.managedRoleIds.has(rule.discordRoleId)) continue;
+      if (rule.type === AutoRoleRuleType.TOWN_HALL && Number(rule.targetValue) !== highestMatchingTownHall) continue;
 
       if (
         this.isRuleMatched(
@@ -317,6 +334,7 @@ export class AutoRoleEvaluationService {
           input.clanMembershipByTag,
           input.trackedClanScope,
           input.preferCurrentClanTagForClanRules ?? false,
+          input.now,
         )
       ) {
         desiredManagedRoleIds.add(rule.discordRoleId);
@@ -418,6 +436,7 @@ export class AutoRoleEvaluationService {
     clanMembershipByTag: AutoRoleClanMembershipIndex,
     trackedClanScope: AutoRoleTrackedClanScope,
     preferCurrentClanTagForClanRules: boolean,
+    now?: Date,
   ): boolean {
     switch (rule.type) {
       case AutoRoleRuleType.VERIFIED:
@@ -457,6 +476,7 @@ export class AutoRoleEvaluationService {
       }
       case AutoRoleRuleType.LEAGUE: {
         return linkedAccounts.some((account) =>
+          isLeagueObservationSafeForAutorole(account.playerCurrent, now) &&
           matchesHomeVillageLeagueTarget(rule.targetValue, account.playerCurrent?.leagueName),
         );
       }

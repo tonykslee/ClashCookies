@@ -489,8 +489,8 @@ describe("AutoRoleService", () => {
       },
       {
         type: "TOWN_HALL",
-        targetValue: 18,
-        expectedTarget: "18",
+        targetValue: 19,
+        expectedTarget: "19",
       },
       {
         type: "LABEL",
@@ -574,10 +574,18 @@ describe("AutoRoleService", () => {
     await expect(
       service.createRule("111111111111111111", {
         type: "TOWN_HALL",
-        targetValue: 19,
+        targetValue: 0,
         discordRoleId: "222222222222222222",
       }),
-    ).rejects.toThrow("TOWN_HALL rules require a TH value between 1 and 18.");
+    ).rejects.toThrow("TOWN_HALL rules require a positive integer TH level.");
+
+    await expect(
+      service.createRule("111111111111111111", {
+        type: "TOWN_HALL",
+        targetValue: "19.5",
+        discordRoleId: "222222222222222222",
+      }),
+    ).rejects.toThrow("TOWN_HALL rules require a positive integer TH level.");
 
     await expect(
       service.createRule("111111111111111111", {

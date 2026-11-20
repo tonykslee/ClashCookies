@@ -8,6 +8,7 @@ import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { isMirrorPollingMode } from "./PollingModeService";
 import {
   playerCurrentService,
+  isLeagueObservationSafeForAutorole,
   type PlayerCurrentLike,
   type PlayerCurrentResolutionField,
 } from "./PlayerCurrentService";
@@ -23,7 +24,7 @@ import {
   type AutoRoleTrackedClanLeadRole,
 } from "./AutoRoleEvaluationService";
 import type { AutoRoleNicknameTrackedClanLike } from "./AutoRoleNicknameService";
-import { resolveHomeVillageLeagueObservation } from "./HomeVillageLeagueTaxonomy";
+import { isKnownHomeVillageLeagueName, resolveHomeVillageLeagueObservation } from "./HomeVillageLeagueTaxonomy";
 import { normalizeNicknameTemplate } from "./AutoRoleService";
 import {
   autoRoleService,
@@ -37,6 +38,7 @@ import {
   normalizePersistedPlayerName,
   normalizePlayerTag,
   getPlayerLinksForDiscordUserWithTrust,
+  isPlayerLinkVerifiedForAutorole,
   type PlayerLinkWithTrust,
 } from "./PlayerLinkService";
 import { getCoCQueueContext, runWithCoCQueueContext } from "./CoCQueueContext";
@@ -466,6 +468,10 @@ function mergeTrackedClanPlayerCurrentOverlay(input: {
     current.currentClanTag = overlay.currentClanTag ?? current.currentClanTag;
     current.currentClanName = overlay.currentClanName ?? current.currentClanName;
     current.role = overlay.role ?? current.role;
+    if (overlay.source === "live_refresh") {
+      current.source = "live_refresh";
+      current.leagueObservationUncertain = overlay.leagueName === null || overlay.leagueObservationUncertain === true;
+    }
     if (overlay.leagueName !== null) {
       current.leagueName = overlay.leagueName;
     }
@@ -498,6 +504,7 @@ function buildTrackedClanPlayerCurrentFromMember(input: {
     currentClanName: input.currentClanName,
     role: normalizeClanMemberRole(input.role ?? null),
     leagueName: leagueObservation.leagueName,
+    leagueObservationUncertain: leagueObservation.contradictory,
   });
 }
 
@@ -580,6 +587,7 @@ function createTrackedClanPlayerCurrent(input: {
   currentClanName: string | null;
   role: "member" | "elder" | "coLeader" | "leader" | null;
   leagueName: string | null;
+  leagueObservationUncertain?: boolean;
 }): PlayerCurrentLike {
   return {
     playerTag: input.playerTag,
@@ -604,6 +612,7 @@ function createTrackedClanPlayerCurrent(input: {
     updatedAt: null,
     source: "live_refresh",
     liveRefreshInvoked: false,
+    leagueObservationUncertain: input.leagueObservationUncertain,
   };
 }
 
@@ -2508,6 +2517,41 @@ function collectPartialUserRefreshRemovalSuppression(input: {
   return roleIds;
 }
 
+/** Purpose: preserve league roles when any eligible linked account lacks a known league observation. */
+function collectUncertainLeagueRemovalSuppression(input: {
+  snapshot: AutoRoleGuildStateSnapshot;
+  linkedAccounts: PlayerLinkWithTrust[];
+  playerCurrentByTag: Map<string, PlayerCurrentLike>;
+  now: Date;
+}): Set<string> {
+  const config = input.snapshot.config;
+  const eligibleAccounts = input.linkedAccounts.filter((link) =>
+    link.verificationStatus !== "REVOKED" &&
+    (!(config.verifiedOnlyMode || config.trustedLinksAllowed === false) ||
+      isPlayerLinkVerifiedForAutorole(link)),
+  );
+  // No eligible links is authoritative absence, not missing league evidence.
+  if (
+    eligibleAccounts.length === 0 ||
+    eligibleAccounts.every((link) => {
+      const playerCurrent = input.playerCurrentByTag.get(link.playerTag);
+      if (!isKnownHomeVillageLeagueName(playerCurrent?.leagueName)) return false;
+      return isLeagueObservationSafeForAutorole(playerCurrent, input.now);
+    })
+  ) {
+    return new Set();
+  }
+
+  // An unknown observation is not evidence that a managed league role became stale.
+  // Keep other managed role families' normal removal semantics unchanged.
+  return new Set(
+    input.snapshot.rules
+      .filter((rule) => rule.enabled && rule.type === AutoRoleRuleType.LEAGUE)
+      .map((rule) => String(rule.discordRoleId ?? "").trim())
+      .filter(Boolean),
+  );
+}
+
 /** Purpose: build a failed user-refresh member result without running stale autorole evaluation. */
 function buildLinkedPlayerRefreshFailureResult(input: {
   guildId: string;
@@ -2827,11 +2871,21 @@ async function runRefreshPass(input: {
         trackedClans: input.trackedClans,
         preferCurrentClanTagForClanRules: input.preferCurrentClanTagForClanRules ?? false,
         trackedClanMembershipAuthoritative: input.trackedClanMembershipAuthoritative ?? false,
+        now: input.now,
       });
       dozzleLog.trace(
         `[autorole] event=evaluate guild_id=${input.guildId} scope=${input.scope.kind} user_id=${userId} skip_reason=${evaluation.skipReason ?? "none"} desired_roles=${evaluation.desiredManagedRoleIds.join(",") || "none"} primary_player=${evaluation.primaryPlayerTag ?? "none"}`,
       );
 
+      const memberSuppressedRoleIds = new Set([
+        ...suppressRemovalRoleIds,
+        ...collectUncertainLeagueRemovalSuppression({
+          snapshot: input.snapshot,
+          linkedAccounts,
+          playerCurrentByTag: input.playerCurrentByTag,
+          now: input.now,
+        }),
+      ]);
       const result = await autoRoleApplyService.applyMember({
         guildId: input.guildId,
         config: input.snapshot.config,
@@ -2844,7 +2898,7 @@ async function runRefreshPass(input: {
         playerCurrentByTag: input.playerCurrentByTag,
         trackedClans: input.trackedClans,
         clanRoleIds,
-        suppressRemovalRoleIds,
+        suppressRemovalRoleIds: memberSuppressedRoleIds,
         suppressNicknameUpdate: input.suppressNicknameUpdate,
         nicknameSuppressionReason: input.nicknameSuppressionReason,
         trackedFwaMemberTags: input.trackedFwaMemberTags,

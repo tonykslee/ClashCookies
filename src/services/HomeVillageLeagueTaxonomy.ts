@@ -27,6 +27,7 @@ export type HomeVillageLeagueObservation = {
   leagueName: string | null;
   normalizedLeagueName: string | null;
   family: HomeVillageLeagueFamily | null;
+  contradictory: boolean;
 };
 
 export const HOME_VILLAGE_LEAGUE_TIER_RECORDS: readonly HomeVillageLeagueRecord[] = [
@@ -98,6 +99,9 @@ export const HOME_VILLAGE_LEAGUE_LEGACY_RECORDS: readonly HomeVillageLeagueRecor
 const HOME_VILLAGE_LEAGUE_ALL_RECORDS = [...HOME_VILLAGE_LEAGUE_TIER_RECORDS, ...HOME_VILLAGE_LEAGUE_LEGACY_RECORDS];
 
 const HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD = new Map<string, HomeVillageLeagueRecord>();
+const HOME_VILLAGE_LEAGUE_CURRENT_ID_TO_RECORD = new Map(
+  HOME_VILLAGE_LEAGUE_TIER_RECORDS.map((record) => [record.id, record] as const),
+);
 const HOME_VILLAGE_LEAGUE_FAMILY_SELECTOR_TO_NAMES = new Map<HomeVillageLeagueFamily, readonly string[]>();
 const HOME_VILLAGE_LEAGUE_SELECTOR_TARGETS = new Map<string, HomeVillageLeagueFamily>();
 const HOME_VILLAGE_LEAGUE_COMPATIBILITY_ALIAS_TARGETS = new Map<string, HomeVillageLeagueFamily>();
@@ -148,7 +152,12 @@ export function resolveHomeVillageLeagueObservation(input: {
   leagueTier?: { id?: number | null; name?: string | null } | null;
   league?: { name?: string | null } | null;
 }): HomeVillageLeagueObservation {
-  const leagueTierName = normalizeHomeVillageLeagueText(input.leagueTier?.name ?? null);
+  const leagueTierId = input.leagueTier?.id ?? null;
+  // A known tier ID is authoritative even if the API omits or renames the display name.
+  const canonicalTierName = typeof leagueTierId === "number"
+    ? HOME_VILLAGE_LEAGUE_CURRENT_ID_TO_RECORD.get(leagueTierId)?.name
+    : undefined;
+  const leagueTierName = canonicalTierName ?? normalizeHomeVillageLeagueText(input.leagueTier?.name ?? null);
   const legacyLeagueName = normalizeHomeVillageLeagueText(input.league?.name ?? null);
   const resolvedLeagueName = leagueTierName || legacyLeagueName || null;
   const source: HomeVillageLeagueSource = leagueTierName
@@ -158,14 +167,38 @@ export function resolveHomeVillageLeagueObservation(input: {
       : "missing";
   const normalizedLeagueName = resolvedLeagueName ? normalizeHomeVillageLeagueMatchText(resolvedLeagueName) : null;
   const family = normalizedLeagueName ? resolveObservedLeagueFamily(normalizedLeagueName) : null;
+  const tierFamily = leagueTierName
+    ? resolveObservedLeagueFamily(normalizeHomeVillageLeagueMatchText(leagueTierName))
+    : null;
+  const legacyFamily = legacyLeagueName
+    ? resolveObservedLeagueFamily(normalizeHomeVillageLeagueMatchText(legacyLeagueName))
+    : null;
+  const contradictory = Boolean(
+    leagueTierName &&
+      legacyLeagueName &&
+      tierFamily !== legacyFamily,
+  );
 
   return {
     source,
-    leagueTierId: input.leagueTier?.id ?? null,
+    leagueTierId,
     leagueName: resolvedLeagueName,
     normalizedLeagueName,
     family,
+    contradictory,
   };
+}
+
+/** Purpose: report whether observed league data is a known current or legacy tier. */
+export function isKnownHomeVillageLeagueName(value: unknown): boolean {
+  const key = normalizeHomeVillageLeagueMatchText(value);
+  if (!key) return false;
+  if (HOME_VILLAGE_LEAGUE_EXACT_NAME_TO_RECORD.has(key)) return true;
+  // The legacy API sometimes returned a plain league family without a numbered tier.
+  return HOME_VILLAGE_LEAGUE_LEGACY_RECORDS.some(
+    (record) =>
+      normalizeHomeVillageLeagueMatchText(record.name.replace(/\s+(?:I|II|III)$/, "")) === key,
+  );
 }
 
 /** Purpose: determine whether one target value should match one observed league name. */
