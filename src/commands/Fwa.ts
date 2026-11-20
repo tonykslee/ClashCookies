@@ -19000,6 +19000,7 @@ export const Fwa: Command = {
           },
           select: {
             warId: true,
+            prepStartTime: true,
             startTime: true,
             opponentTag: true,
             state: true,
@@ -19016,9 +19017,14 @@ export const Fwa: Command = {
           );
           return;
         }
-        const latestActiveSyncPost = await trackedMessageService
-          .resolveLatestActiveSyncPost(interaction.guildId ?? "")
-          .catch(() => null);
+        const syncIdentity = await trackedMessageService
+          .resolveFwaBaseSwapSyncIdentityForClanWar({
+            guildId: interaction.guildId,
+            clanTag: resolvedClan.tag,
+            battleDayStart: currentWar.startTime ?? null,
+            prepStartTime: currentWar.prepStartTime ?? null,
+          })
+          .catch(() => ({ syncMessageId: null }));
         const updated =
           await trackedMessageService.setFwaMatchChecklistBasesCompletion({
             guildId: interaction.guildId ?? "",
@@ -19033,10 +19039,7 @@ export const Fwa: Command = {
             warStartTime: currentWar.startTime ?? null,
             opponentTag: currentWar.opponentTag ?? null,
             checked: Boolean(checklistCheckedOption),
-            syncMessageId:
-              latestActiveSyncPost?.messageId ??
-              latestActiveSyncPost?.referenceId ??
-              null,
+            syncMessageId: syncIdentity.syncMessageId ?? null,
           });
         if (!updated) {
           await editReplySafe("Unable to update bases completion state.");

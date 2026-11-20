@@ -2098,6 +2098,12 @@ describe("/fwa match response normalization", () => {
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
       .mockResolvedValue(true);
+    const syncIdentitySpy = vi
+      .spyOn(trackedMessageService, "resolveFwaBaseSwapSyncIdentityForClanWar")
+      .mockResolvedValue({
+        syncMessageId: "sync-expired",
+        source: "expired_sync_post_fallback",
+      });
 
     const run = makeMatchInteraction({
       subcommand: "match-checklist",
@@ -2120,6 +2126,14 @@ describe("/fwa match response normalization", () => {
         warId: 1001,
         warStartTime: new Date("2026-05-13T18:00:00.000Z"),
         opponentTag: "#OPP1",
+        syncMessageId: "sync-expired",
+      }),
+    );
+    expect(syncIdentitySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        battleDayStart: new Date("2026-05-13T18:00:00.000Z"),
       }),
     );
     expect(prismaMock.currentWar.findFirst).toHaveBeenCalledWith(

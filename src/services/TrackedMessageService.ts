@@ -1570,6 +1570,75 @@ function parseFwaMatchChecklistBasesCompletionMetadata(
   };
 }
 
+/** Purpose: accept a Bases completion only when its persisted identity proves the requested current scope. */
+function matchesFwaMatchChecklistBasesCompletionIdentity(input: {
+  metadata: FwaMatchChecklistBasesCompletionMetadata;
+  rowReferenceId?: string | null;
+  guildId: string;
+  clanTag: string;
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+  syncMessageId?: string | null;
+  syncReferenceId?: string | null;
+}): boolean {
+  const expectedGuildId = String(input.guildId ?? "").trim();
+  const expectedClanTag = normalizeChecklistClanTag(String(input.clanTag ?? ""));
+  const metadataClanTag = normalizeChecklistClanTag(input.metadata.clanTag);
+  if (!expectedGuildId || !expectedClanTag || metadataClanTag !== expectedClanTag) {
+    return false;
+  }
+
+  const expectedSyncIdentity = resolveTrackedMessageSyncIdentity({
+    messageId: input.syncMessageId ?? null,
+    referenceId: input.syncReferenceId ?? null,
+  });
+  const rowSyncIdentity = resolveTrackedMessageSyncIdentity({
+    messageId: input.metadata.syncMessageId ?? input.rowReferenceId ?? null,
+    referenceId: input.metadata.syncReferenceId ?? null,
+  });
+  if (expectedSyncIdentity) {
+    if (rowSyncIdentity !== expectedSyncIdentity) return false;
+  } else if (rowSyncIdentity) {
+    return false;
+  }
+
+  const expectedWarId = normalizeWarIdText(input.warId ?? null);
+  const actualWarId = normalizeWarIdText(input.metadata.warId ?? null);
+  const expectedOpponentTag = normalizeChecklistClanTag(String(input.opponentTag ?? "")) || null;
+  const actualOpponentTag = normalizeChecklistClanTag(String(input.metadata.opponentTag ?? "")) || null;
+  const expectedWarStartTimeIso = normalizeDateTimeIso(input.warStartTime ?? null);
+  const actualWarStartTimeIso = String(input.metadata.warStartTimeIso ?? "").trim() || null;
+
+  if (expectedWarId && actualWarId && expectedWarId !== actualWarId) return false;
+  if (expectedOpponentTag && actualOpponentTag && expectedOpponentTag !== actualOpponentTag) {
+    return false;
+  }
+  if (
+    expectedWarStartTimeIso &&
+    actualWarStartTimeIso &&
+    expectedWarStartTimeIso !== actualWarStartTimeIso
+  ) {
+    return false;
+  }
+
+  // A canonical sync identity is sufficient even when the completion predates a known war identity.
+  if (expectedSyncIdentity) return true;
+
+  // Without a sync identity, every supplied war identity component must be present and match.
+  if (expectedWarId && actualWarId !== expectedWarId) return false;
+  if (expectedOpponentTag && actualOpponentTag !== expectedOpponentTag) return false;
+  if (expectedWarStartTimeIso && actualWarStartTimeIso !== expectedWarStartTimeIso) {
+    return false;
+  }
+
+  // Require a matching war ID or start time as positive war evidence.
+  return Boolean(
+    (expectedWarId && actualWarId === expectedWarId) ||
+      (expectedWarStartTimeIso && actualWarStartTimeIso === expectedWarStartTimeIso),
+  );
+}
+
 export function parseFwaMatchChecklistMetadata(
   value: unknown,
 ): FwaMatchChecklistTrackedMetadata | null {
@@ -4275,6 +4344,22 @@ export class TrackedMessageService {
     if ((row.featureType as string) !== TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST) return null;
     const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
     if (!metadata || !metadata.checked) return null;
+    if (
+      row.guildId !== String(params.guildId ?? "").trim() ||
+      !matchesFwaMatchChecklistBasesCompletionIdentity({
+        metadata,
+        rowReferenceId: row.referenceId,
+        guildId: params.guildId,
+        clanTag: params.clanTag,
+        warId: params.warId,
+        warStartTime: params.warStartTime,
+        opponentTag: params.opponentTag,
+        syncMessageId: params.syncMessageId,
+        syncReferenceId: params.syncReferenceId,
+      })
+    ) {
+      return null;
+    }
     return {
       id: row.id,
       guildId: row.guildId,
@@ -4343,45 +4428,31 @@ export class TrackedMessageService {
     });
 
     const expectedWarId = normalizeWarIdText(params.warId ?? null);
-    const expectedOpponentTag = normalizeChecklistClanTag(String(params.opponentTag ?? "")) || null;
-    const expectedWarStartTimeIso =
-      params.warStartTime instanceof Date && Number.isFinite(params.warStartTime.getTime())
-        ? params.warStartTime.toISOString()
-        : null;
+    const expectedWarStartTimeIso = normalizeDateTimeIso(params.warStartTime ?? null);
     const expectedSyncIdentity = resolveTrackedMessageSyncIdentity({
       messageId: params.syncMessageId ?? null,
       referenceId: params.syncReferenceId ?? null,
     });
-    const allowWarStartTimeMatch = expectedWarStartTimeIso !== null;
-    const allowWarIdOpponentMatch = expectedWarId !== null && expectedOpponentTag !== null;
-    if (!allowWarStartTimeMatch && !allowWarIdOpponentMatch && !expectedSyncIdentity) return null;
+    if (!expectedWarId && !expectedWarStartTimeIso && !expectedSyncIdentity) return null;
 
     for (const row of rows) {
       const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row.metadata);
       if (!metadata || !metadata.checked) continue;
-      const rowSyncIdentity = resolveTrackedMessageSyncIdentity({
-        messageId: metadata.syncMessageId ?? row.referenceId ?? null,
-        referenceId: metadata.syncReferenceId ?? null,
-      });
-      const syncScopedFallbackMatches =
-        Boolean(expectedSyncIdentity) &&
-        rowSyncIdentity === expectedSyncIdentity &&
-        !metadata.warId &&
-        !metadata.opponentTag &&
-        !metadata.warStartTimeIso;
-      if (allowWarStartTimeMatch) {
-        if (metadata.warStartTimeIso !== expectedWarStartTimeIso && !syncScopedFallbackMatches) {
-          continue;
-        }
-      } else if (allowWarIdOpponentMatch) {
-        if (
-          (metadata.warId !== expectedWarId || metadata.opponentTag !== expectedOpponentTag) &&
-          !syncScopedFallbackMatches
-        ) {
-          continue;
-        }
-      } else if (expectedSyncIdentity) {
-        if (rowSyncIdentity !== expectedSyncIdentity) continue;
+      if (
+        row.guildId !== guildId ||
+        !matchesFwaMatchChecklistBasesCompletionIdentity({
+          metadata,
+          rowReferenceId: row.referenceId,
+          guildId,
+          clanTag: normalizedClanTag,
+          warId: params.warId,
+          warStartTime: params.warStartTime,
+          opponentTag: params.opponentTag,
+          syncMessageId: params.syncMessageId,
+          syncReferenceId: params.syncReferenceId,
+        })
+      ) {
+        continue;
       }
       return {
         id: row.id,

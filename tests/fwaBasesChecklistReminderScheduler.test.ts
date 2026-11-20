@@ -222,6 +222,36 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     );
   });
 
+  it("skips a completion written after planning but before delivery", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    const completion = {
+      messageId: "completion-after-plan",
+    } as any;
+    vi.mocked(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan,
+    )
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(completion);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    const counts = await scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime());
+
+    expect(counts).toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(trackedMessageService.claimFwaBasesChecklistReminderMarker).toHaveBeenCalledTimes(1);
+    expect(client.channels.fetch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(dozzleLogMock.info).toHaveBeenCalledWith(
+      expect.stringContaining("reason=bases_completion_exists_after_claim"),
+    );
+  });
+
   it("suppresses a candidate created before a manual completion using the real final lookup", async () => {
     plannerMocks.findPending.mockResolvedValue([makeCandidate({ syncMessageId: null })]);
     const completionMessageId =
@@ -381,6 +411,30 @@ describe("FwaBasesChecklistReminderSchedulerService", () => {
     });
     expect(client.channels.fetch).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated scheduler cycles for the same reminder bucket", async () => {
+    plannerMocks.findPending.mockResolvedValue([makeCandidate()]);
+    vi.mocked(trackedMessageService.claimFwaBasesChecklistReminderMarker)
+      .mockResolvedValueOnce(true as any)
+      .mockResolvedValueOnce(false as any);
+    const { client, send } = makeClient();
+    const scheduler = await createScheduler(client);
+
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:00.000Z").getTime()),
+    ).resolves.toMatchObject({ sent: 1 });
+    await expect(
+      scheduler.runCycle(new Date("2026-05-26T15:00:01.000Z").getTime()),
+    ).resolves.toEqual({
+      evaluated: 1,
+      sent: 0,
+      deduped: 1,
+      skipped: 0,
+      failed: 0,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("skips MM clans without claiming a reminder marker or sending", async () => {

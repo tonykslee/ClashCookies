@@ -284,6 +284,25 @@ export class FwaBasesChecklistReminderSchedulerService {
           continue;
         }
 
+        const completionAfterClaim = await trackedMessageService
+          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+            guildId: candidate.guildId,
+            clanTag: candidate.clanTag,
+            warId: candidate.warId,
+            warStartTime: candidate.battleDayStart,
+            opponentTag: candidate.opponentTag,
+            syncMessageId: currentSyncIdentity,
+            syncReferenceId: currentSyncIdentity,
+          })
+          .catch(() => null);
+        if (completionAfterClaim) {
+          skipped += 1;
+          dozzleLog.info(
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=bases_completion_exists_after_claim syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} completionMessageId=${completionAfterClaim.messageId}`,
+          );
+          continue;
+        }
+
         if (!candidate.destinationChannelId) {
           skipped += 1;
           dozzleLog.warn(
@@ -302,6 +321,25 @@ export class FwaBasesChecklistReminderSchedulerService {
           skipped += 1;
           dozzleLog.warn(
             `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=unavailable_channel`,
+          );
+          continue;
+        }
+
+        const completionBeforeSend = await trackedMessageService
+          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+            guildId: candidate.guildId,
+            clanTag: candidate.clanTag,
+            warId: candidate.warId,
+            warStartTime: candidate.battleDayStart,
+            opponentTag: candidate.opponentTag,
+            syncMessageId: currentSyncIdentity,
+            syncReferenceId: currentSyncIdentity,
+          })
+          .catch(() => null);
+        if (completionBeforeSend) {
+          skipped += 1;
+          dozzleLog.info(
+            `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=bases_completion_exists_before_send syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} completionMessageId=${completionBeforeSend.messageId}`,
           );
           continue;
         }
