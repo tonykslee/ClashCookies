@@ -75,7 +75,7 @@ describe("real Docker deployment artifact smoke", () => {
           "node:20-bookworm",
           "bash",
           "-lc",
-          "./ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/ && test -s /build-dist/ClashCookies.js",
+          "npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/ && test -s /build-dist/ClashCookies.js",
         ],
         { cwd: repo, stdio: "pipe", timeout: 900_000 },
       );
