@@ -1996,7 +1996,8 @@ describe("AutoRoleRefreshService", () => {
     expect(playerCurrentService.resolveCurrentPlayersForTags).not.toHaveBeenCalled();
     expect(staleHolder.roles.remove).toHaveBeenCalledWith(clanRoleId);
     expect(staleHolder.roles.remove).toHaveBeenCalledWith(townHallRoleId);
-    expect(staleHolder.roles.remove).toHaveBeenCalledWith(leagueRoleId);
+    // With no verified league observation for this link, preserve its existing Legend role.
+    expect(staleHolder.roles.remove).not.toHaveBeenCalledWith(leagueRoleId);
     expect(staleHolder.roles.remove).toHaveBeenCalledWith(clanRankRoleId);
     expect(qualifyingMember.roles.add).toHaveBeenCalledWith(clanRoleId);
     expect(qualifyingMember.roles.add).toHaveBeenCalledWith(townHallRoleId);
@@ -2007,7 +2008,7 @@ describe("AutoRoleRefreshService", () => {
     expect(result).toMatchObject({
       evaluatedCount: 3,
       addedCount: 4,
-      removedCount: 4,
+      removedCount: 3,
       skippedCount: 1,
       failedCount: 0,
     });
