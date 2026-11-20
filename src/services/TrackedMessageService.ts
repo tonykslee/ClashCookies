@@ -1589,14 +1589,20 @@ function matchesFwaMatchChecklistBasesCompletionIdentity(input: {
     return false;
   }
 
-  const expectedSyncIdentity = resolveTrackedMessageSyncIdentity({
-    messageId: input.syncMessageId ?? null,
-    referenceId: input.syncReferenceId ?? null,
-  });
-  const rowSyncIdentity = resolveTrackedMessageSyncIdentity({
-    messageId: input.metadata.syncMessageId ?? input.rowReferenceId ?? null,
-    referenceId: input.metadata.syncReferenceId ?? null,
-  });
+  const expectedSyncIdentities = [
+    normalizeTrackedMessageId(input.syncMessageId ?? null),
+    normalizeTrackedMessageId(input.syncReferenceId ?? null),
+  ].filter((value): value is string => Boolean(value));
+  const rowSyncIdentities = [
+    normalizeTrackedMessageId(input.metadata.syncMessageId ?? null),
+    normalizeTrackedMessageId(input.rowReferenceId ?? null),
+    normalizeTrackedMessageId(input.metadata.syncReferenceId ?? null),
+  ].filter((value): value is string => Boolean(value));
+  const expectedSyncIdentity = expectedSyncIdentities[0] ?? null;
+  const rowSyncIdentity = rowSyncIdentities[0] ?? null;
+  if (new Set(expectedSyncIdentities).size > 1 || new Set(rowSyncIdentities).size > 1) {
+    return false;
+  }
   if (expectedSyncIdentity) {
     if (rowSyncIdentity !== expectedSyncIdentity) return false;
   } else if (rowSyncIdentity) {
@@ -4138,27 +4144,90 @@ export class TrackedMessageService {
           : null,
       clanRoleId: String(params.clanRoleId ?? "").trim() || null,
     };
+    const markerData = {
+      guildId: String(params.guildId ?? "").trim(),
+      channelId:
+        String(params.channelId ?? "").trim() ||
+        String(params.destinationChannelId ?? "").trim() ||
+        "missing-channel",
+      messageId,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: null,
+      clanTag,
+      expiresAt: params.warStartTime ?? null,
+      metadata: metadata as any,
+    };
 
     try {
       await prisma.trackedMessage.create({
-        data: {
-          guildId: String(params.guildId ?? "").trim(),
-          channelId: String(params.channelId ?? "").trim() || String(params.destinationChannelId ?? "").trim() || "missing-channel",
-          messageId,
-          featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-          status: TRACKED_MESSAGE_STATUS.ACTIVE,
-          referenceId: null,
-          clanTag,
-          expiresAt: params.warStartTime ?? null,
-          metadata: metadata as any,
-        },
+        data: markerData,
       });
       return true;
     } catch (err) {
       const code = (err as { code?: string } | null | undefined)?.code ?? "";
-      if (code === "P2002") return false;
+      if (code === "P2002") {
+        const reactivated = await prisma.trackedMessage.updateMany({
+          where: {
+            messageId,
+            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+            status: TRACKED_MESSAGE_STATUS.REPLACED,
+          },
+          data: markerData,
+        });
+        return reactivated.count === 1;
+      }
       throw err;
     }
+  }
+
+  /** Purpose: release a reminder marker that was claimed but never delivered, allowing a later retry. */
+  async releaseFwaBasesChecklistReminderMarker(params: {
+    guildId: string;
+    clanTag: string;
+    warId?: string | number | null;
+    opponentTag?: string | null;
+    warStartTime?: Date | null;
+    bucketHours: number;
+    claimCreatedAtIso: string;
+  }): Promise<boolean> {
+    const messageId = buildFwaBasesChecklistReminderMessageId({
+      guildId: params.guildId,
+      clanTag: params.clanTag,
+      warId: params.warId ?? null,
+      opponentTag: params.opponentTag ?? null,
+      warStartTime: params.warStartTime ?? null,
+      bucketHours: params.bucketHours,
+    });
+    if (!messageId) return false;
+
+    const row = await prisma.trackedMessage.findUnique({
+      where: { messageId },
+    });
+    if (
+      !row ||
+      row.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST ||
+      row.status !== TRACKED_MESSAGE_STATUS.ACTIVE
+    ) {
+      return false;
+    }
+    const metadata = row.metadata as Partial<FwaBasesChecklistReminderMetadata> | null;
+    if (
+      metadata?.kind !== "bases_check_reminder" ||
+      metadata.createdAtIso !== String(params.claimCreatedAtIso ?? "").trim()
+    ) {
+      return false;
+    }
+
+    const released = await prisma.trackedMessage.updateMany({
+      where: {
+        id: row.id,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        metadata: { equals: row.metadata as any },
+      },
+      data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+    });
+    return released.count === 1;
   }
 
   async replaceOlderFwaMatchChecklistMessages(params: {
@@ -4382,7 +4451,7 @@ export class TrackedMessageService {
     syncMessageId?: string | null;
     syncReferenceId?: string | null;
   }): Promise<FwaMatchChecklistBasesCompletionSnapshot | null> {
-    const exact = await this.findLatestFwaMatchChecklistBasesCompletionForClan(params).catch(() => null);
+    const exact = await this.findLatestFwaMatchChecklistBasesCompletionForClan(params);
     if (exact) return exact;
 
     const guildId = String(params.guildId ?? "").trim();

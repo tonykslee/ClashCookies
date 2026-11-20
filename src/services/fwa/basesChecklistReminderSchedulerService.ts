@@ -5,7 +5,11 @@ import {
   isMirrorPollingMode,
   resolveRuntimeEnvironment,
 } from "../PollingModeService";
-import { TRACKED_MESSAGE_STATUS, trackedMessageService } from "../TrackedMessageService";
+import {
+  TRACKED_MESSAGE_STATUS,
+  trackedMessageService,
+  type FwaMatchChecklistBasesCompletionSnapshot,
+} from "../TrackedMessageService";
 import {
   buildFwaBasesChecklistReminderContent,
   findPendingFwaBasesChecklistReminderCandidates,
@@ -106,6 +110,60 @@ function classifySendFailureReason(err: unknown): string {
   if (code === "50013" || code === "50001") return "missing_permissions";
   if (code === "10003" || code === "10008") return "unavailable_channel";
   return "send_failed";
+}
+
+async function lookupBasesCompletion(input: {
+  candidate: FwaBasesChecklistReminderCandidate;
+  syncMessageId: string | null;
+}): Promise<
+  | { completion: FwaMatchChecklistBasesCompletionSnapshot | null; failed: false }
+  | { completion: null; failed: true }
+> {
+  try {
+    return {
+      completion: await trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: input.candidate.guildId,
+        clanTag: input.candidate.clanTag,
+        warId: input.candidate.warId,
+        warStartTime: input.candidate.battleDayStart,
+        opponentTag: input.candidate.opponentTag,
+        syncMessageId: input.syncMessageId,
+        syncReferenceId: input.syncMessageId,
+      }),
+      failed: false,
+    };
+  } catch (err) {
+    dozzleLog.warn(
+      `[fwa bases-check reminder] completion_lookup_failed guild=${input.candidate.guildId} clan=${input.candidate.clanTag} bucketHours=${input.candidate.dueBucketHours} reason=database_read_failed error=${formatError(err)}`,
+    );
+    return { completion: null, failed: true };
+  }
+}
+
+async function releaseClaimedReminderMarker(input: {
+  candidate: FwaBasesChecklistReminderCandidate;
+  claimCreatedAtIso: string;
+}): Promise<void> {
+  try {
+    const released = await trackedMessageService.releaseFwaBasesChecklistReminderMarker({
+      guildId: input.candidate.guildId,
+      clanTag: input.candidate.clanTag,
+      warId: input.candidate.warId,
+      opponentTag: input.candidate.opponentTag,
+      warStartTime: input.candidate.battleDayStart,
+      bucketHours: input.candidate.dueBucketHours,
+      claimCreatedAtIso: input.claimCreatedAtIso,
+    });
+    if (!released) {
+      dozzleLog.warn(
+        `[fwa bases-check reminder] marker_release_skipped guild=${input.candidate.guildId} clan=${input.candidate.clanTag} bucketHours=${input.candidate.dueBucketHours} reason=marker_changed_or_missing`,
+      );
+    }
+  } catch (err) {
+    dozzleLog.error(
+      `[fwa bases-check reminder] marker_release_failed guild=${input.candidate.guildId} clan=${input.candidate.clanTag} bucketHours=${input.candidate.dueBucketHours} error=${formatError(err)}`,
+    );
+  }
 }
 
 /** Purpose: run the Bases checklist reminder loop safely without changing public checklist output. */
@@ -229,17 +287,16 @@ export class FwaBasesChecklistReminderSchedulerService {
         const currentBaseSwapCompleted =
           Boolean(currentBaseSwap) &&
           currentBaseSwapStatus === TRACKED_MESSAGE_STATUS.COMPLETED;
-        const activeCompletion = await trackedMessageService
-          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
-            guildId: candidate.guildId,
-            clanTag: candidate.clanTag,
-            warId: candidate.warId,
-            warStartTime: candidate.battleDayStart,
-            opponentTag: candidate.opponentTag,
-            syncMessageId: currentSyncIdentity,
-            syncReferenceId: currentSyncIdentity,
-          })
-          .catch(() => null);
+        const activeCompletionLookup = await lookupBasesCompletion({
+          candidate,
+          syncMessageId: currentSyncIdentity,
+        });
+        if (activeCompletionLookup.failed) {
+          failed += 1;
+          skipped += 1;
+          continue;
+        }
+        const activeCompletion = activeCompletionLookup.completion;
         if (currentBaseSwap || activeCompletion) {
           skipped += 1;
           const suppressionReason = currentBaseSwap
@@ -284,19 +341,21 @@ export class FwaBasesChecklistReminderSchedulerService {
           continue;
         }
 
-        const completionAfterClaim = await trackedMessageService
-          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
-            guildId: candidate.guildId,
-            clanTag: candidate.clanTag,
-            warId: candidate.warId,
-            warStartTime: candidate.battleDayStart,
-            opponentTag: candidate.opponentTag,
-            syncMessageId: currentSyncIdentity,
-            syncReferenceId: currentSyncIdentity,
-          })
-          .catch(() => null);
+        const claimCreatedAtIso = new Date(nowMs).toISOString();
+        const completionAfterClaimLookup = await lookupBasesCompletion({
+          candidate,
+          syncMessageId: currentSyncIdentity,
+        });
+        if (completionAfterClaimLookup.failed) {
+          failed += 1;
+          skipped += 1;
+          await releaseClaimedReminderMarker({ candidate, claimCreatedAtIso });
+          continue;
+        }
+        const completionAfterClaim = completionAfterClaimLookup.completion;
         if (completionAfterClaim) {
           skipped += 1;
+          await releaseClaimedReminderMarker({ candidate, claimCreatedAtIso });
           dozzleLog.info(
             `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId ?? "missing"} reason=bases_completion_exists_after_claim syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} completionMessageId=${completionAfterClaim.messageId}`,
           );
@@ -325,19 +384,20 @@ export class FwaBasesChecklistReminderSchedulerService {
           continue;
         }
 
-        const completionBeforeSend = await trackedMessageService
-          .findLatestActiveFwaMatchChecklistBasesCompletionForClan({
-            guildId: candidate.guildId,
-            clanTag: candidate.clanTag,
-            warId: candidate.warId,
-            warStartTime: candidate.battleDayStart,
-            opponentTag: candidate.opponentTag,
-            syncMessageId: currentSyncIdentity,
-            syncReferenceId: currentSyncIdentity,
-          })
-          .catch(() => null);
+        const completionBeforeSendLookup = await lookupBasesCompletion({
+          candidate,
+          syncMessageId: currentSyncIdentity,
+        });
+        if (completionBeforeSendLookup.failed) {
+          failed += 1;
+          skipped += 1;
+          await releaseClaimedReminderMarker({ candidate, claimCreatedAtIso });
+          continue;
+        }
+        const completionBeforeSend = completionBeforeSendLookup.completion;
         if (completionBeforeSend) {
           skipped += 1;
+          await releaseClaimedReminderMarker({ candidate, claimCreatedAtIso });
           dozzleLog.info(
             `[fwa bases-check reminder] reminder_skipped guild=${candidate.guildId} clan=${candidate.clanTag} bucketHours=${candidate.dueBucketHours} destinationChannelId=${candidate.destinationChannelId} reason=bases_completion_exists_before_send syncIdentitySource=${currentSyncIdentitySource} syncMessageId=${currentSyncIdentity ?? "missing"} completionMessageId=${completionBeforeSend.messageId}`,
           );
