@@ -42,6 +42,7 @@ describe("real Docker deployment artifact smoke", () => {
       });
       execFileSync("docker", ["volume", "create", distVolume], { encoding: "utf8" });
       execFileSync("docker", ["volume", "create", nodeModulesVolume], { encoding: "utf8" });
+      execFileSync("docker", ["run", "--rm", "-v", `${distVolume}:/dist`, "node:20-bookworm", "bash", "-lc", "chmod -R a+rwX /dist"], { timeout: 30_000 });
       execFileSync(
         "docker",
         [
