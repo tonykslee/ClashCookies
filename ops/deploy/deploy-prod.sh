@@ -16,6 +16,7 @@ TEMP_WORKTREE="${TEMP_WORKTREE:-${APP_DIR}-replacement}"
 RUNTIME_ENV_FILE="${DEPLOY_RUNTIME_ENV_FILE:-${APP_DIR}/.env}"
 NORMAL_NODE_MODULES_VOLUME="${NORMAL_NODE_MODULES_VOLUME:-clashcookies-prod_node_modules}"
 NORMAL_YARN_CACHE_VOLUME="${NORMAL_YARN_CACHE_VOLUME:-clashcookies-prod_yarn_cache}"
+BUILD_WORKSPACE_VOLUME="${BUILD_WORKSPACE_VOLUME:-}"
 TARGET_REF="${TARGET_REF:-origin/main}"
 CANDIDATE_BUILD_TIMEOUT_SECONDS="${CANDIDATE_BUILD_TIMEOUT_SECONDS:-1500}"
 ARTIFACT_STAGE_TIMEOUT_SECONDS="${ARTIFACT_STAGE_TIMEOUT_SECONDS:-600}"
@@ -34,6 +35,7 @@ ARTIFACT_IMAGE="${ARTIFACT_IMAGE:-node:20-bookworm}"
 
 TEMP_WORKTREE_CREATED="0"
 BUILD_VOLUMES_IN_USE="0"
+BUILD_WORKSPACE_CREATED="0"
 BUILD_NODE_MODULES_CREATED="0"
 BUILD_DIST_CREATED="0"
 ACTIVE_CONTAINER_ID=""
@@ -469,8 +471,42 @@ cleanup_candidate_worktree() {
   fi
 }
 
+cleanup_candidate_workspace() {
+  local labels attached
+  [ "$BUILD_WORKSPACE_CREATED" = "1" ] || return 0
+
+  if ! labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
+    log "workspace_cleanup=failed reason=ownership_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if [ "$labels" != "artifact|${NEW_SHA}|build-workspace" ]; then
+    log "workspace_cleanup=failed reason=ownership_mismatch volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if ! attached="$(docker ps -a --filter "volume=${BUILD_WORKSPACE_VOLUME}" --format '{{.Names}}')"; then
+    log "workspace_cleanup=failed reason=reference_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if [ -n "$attached" ]; then
+    log "workspace_cleanup=failed reason=volume_attached volume=${BUILD_WORKSPACE_VOLUME} containers=${attached}" >&2
+    return 1
+  fi
+  if ! docker volume rm "$BUILD_WORKSPACE_VOLUME" >/dev/null 2>&1; then
+    log "workspace_cleanup=failed reason=remove volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+
+  BUILD_WORKSPACE_CREATED="0"
+  BUILD_WORKSPACE_VOLUME=""
+  log "workspace_cleanup=success"
+}
+
 cleanup_build_volumes() {
   [ "$BUILD_VOLUMES_IN_USE" = "0" ] || return 0
+  if [ "$BUILD_WORKSPACE_CREATED" = "1" ]; then
+    cleanup_candidate_workspace || \
+      log "build_artifacts_cleanup=deferred workspace=${BUILD_WORKSPACE_VOLUME}"
+  fi
   if [ "$BUILD_NODE_MODULES_CREATED" = "1" ]; then
     docker volume rm "$BUILD_NODE_MODULES_VOLUME" >/dev/null 2>&1 || \
       log "build_artifacts_cleanup=deferred node_modules=${BUILD_NODE_MODULES_VOLUME}"
@@ -516,6 +552,8 @@ build_candidate_only() {
   local build_status artifact_status reason
   validate_private_directory "$DIAGNOSTIC_DIR"
   prepare_private_file "$log_file"
+  ensure_owned_artifact_volume "$BUILD_WORKSPACE_VOLUME" "$NEW_SHA" build-workspace
+  BUILD_WORKSPACE_CREATED="1"
   ensure_owned_artifact_volume "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" release-node-modules
   BUILD_NODE_MODULES_CREATED="1"
   ensure_owned_artifact_volume "$BUILD_DIST_VOLUME" "$NEW_SHA" release-dist
@@ -525,13 +563,14 @@ build_candidate_only() {
       --label com.clashcookies.deploy=candidate-build-only \
       --network bridge \
       -w /app \
-      -v "$TEMP_WORKTREE:/app" \
+      -v "$TEMP_WORKTREE:/source:ro" \
+      -v "$BUILD_WORKSPACE_VOLUME:/app" \
       -v "$BUILD_NODE_MODULES_VOLUME:/app/node_modules" \
       -v "$BUILD_DIST_VOLUME:/build-dist" \
       -v "$NORMAL_YARN_CACHE_VOLUME:/usr/local/share/.cache/yarn" \
       -e "BUILD_SHA=${NEW_SHA}" \
       node:20-bookworm \
-      bash -lc './ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/' >"$log_file" 2>&1; then
+      bash -lc 'set -euo pipefail; cp -a /source/. /app/; ./ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/' >"$log_file" 2>&1; then
     build_status=0
   else
     build_status=$?
@@ -705,6 +744,7 @@ OLD_SHA="$(git_safe rev-parse HEAD)"
 NEW_SHA="$(git_safe rev-parse "${TARGET_REF}^{commit}")"
 BUILD_NODE_MODULES_VOLUME="${BUILD_NODE_MODULES_VOLUME:-clashcookies-prod-build-${NEW_SHA}}"
 BUILD_DIST_VOLUME="${BUILD_DIST_VOLUME:-clashcookies-prod-build-dist-${NEW_SHA}}"
+BUILD_WORKSPACE_VOLUME="${BUILD_WORKSPACE_VOLUME:-clashcookies-prod-build-workspace-${NEW_SHA}}"
 log "old_sha=${OLD_SHA}"
 log "new_sha=${NEW_SHA}"
 log "promotion_readiness_budget_seconds=${PROMOTION_HEALTH_TIMEOUT_SECONDS} rollback_readiness_budget_seconds=${ROLLBACK_HEALTH_TIMEOUT_SECONDS} candidate_build_timeout_seconds=${CANDIDATE_BUILD_TIMEOUT_SECONDS} artifact_stage_timeout_seconds=${ARTIFACT_STAGE_TIMEOUT_SECONDS} request_timeout_seconds=${HEALTH_REQUEST_TIMEOUT_SECONDS}"
@@ -750,6 +790,7 @@ git_safe worktree add --detach "$TEMP_WORKTREE" "$NEW_SHA"
 TEMP_WORKTREE_CREATED="1"
 build_candidate_only || fatal "candidate_build_failed final_state=old_sha:${OLD_SHA}"
 cleanup_candidate_worktree || fatal "candidate_cleanup_failed"
+cleanup_candidate_workspace || fatal "candidate_workspace_cleanup_failed final_state=old_runtime_still_active"
 assert_single_active_runtime || fatal "active_runtime_changed_during_candidate_build"
 prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state=old_runtime_still_active"
 
