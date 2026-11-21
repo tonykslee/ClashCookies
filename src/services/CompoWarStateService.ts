@@ -16,11 +16,8 @@ import {
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
-import {
-  readHeatMapRefReferenceAvailability,
-  type HeatMapRefReferenceAvailability,
-} from "../helper/heatMapRefAvailability";
-import { SettingsService } from "./SettingsService";
+import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
+import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 
 type CollapsedStateRow = {
   clanName: string;
@@ -183,7 +180,7 @@ export async function loadCompoWarStateContext(
     };
   }
 
-  const [parents, members, refs] = await Promise.all([
+  const [parents, members, reference] = await Promise.all([
     prisma.fwaTrackedClanWarRosterCurrent.findMany({
       where: { clanTag: { in: trackedTags } },
     }),
@@ -191,15 +188,10 @@ export async function loadCompoWarStateContext(
       where: { clanTag: { in: trackedTags } },
       orderBy: [{ clanTag: "asc" }, { position: "asc" }],
     }),
-    prisma.heatMapRef.findMany({
-      orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-    }),
+    resolveHeatMapRefReference({ guildId }),
   ]);
-  const referenceAvailability = await readHeatMapRefReferenceAvailability({
-    guildId,
-    settings: new SettingsService(),
-    heatMapRefs: refs,
-  });
+  const refs = reference.heatMapRefs;
+  const referenceAvailability = reference.availability;
   const availableRefs =
     referenceAvailability.status === "validated" ? refs : [];
 

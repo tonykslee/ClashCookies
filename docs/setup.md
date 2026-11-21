@@ -145,6 +145,7 @@ Operational notes:
 - Members polling uses tracked clans only.
 - Global WarMembers / optional global Wars use cursor-based distributed sweeps from `FwaClanCatalog`.
 - `HeatMapRef` is an explicit seed/import owner and is not refreshed by per-clan watch jobs.
+- FB-002 P2 also persists the additive `HeatMapRefBucketTarget` child projection. The migration backfills the exact legacy nine-bucket values, including zeroes and historical low-TH aggregation, without changing `HeatMapRef` parents. The legacy parent remains the v1 authority; the shared resolver requires exact child parity plus validated global provenance before target use. Missing or malformed child evidence leaves historical display available but makes target counts, deltas, readiness, placement, replacement, and fill UNKNOWN/withheld. No TH19 target is created.
 - `/compo state mode:war` now reads persisted feed-backed tracked-clan roster state only.
 - `/compo place` now reads persisted ACTUAL FWAStats current-member state from `TrackedClan` + `FwaClanMemberCurrent` + `HeatMapRef`, using the higher of FWA Stats and deferred/manual weight before falling back to lower-confidence sources like tracked WAR effective weight.
 - `/compo place` includes an explicit inline refresh button that refreshes tracked-clan ACTUAL feed-backed current-member/weight state plus live CoC member counts for all tracked clans before rerendering from persisted state.
@@ -160,3 +161,5 @@ npm run sync:fwa-feeds -- run-global --feed=clans
 npm run sync:fwa-feeds -- watch-status --tag=#2QG2C08UP
 npm run seed:heatmap-ref
 ```
+
+Migration recovery note: `prisma migrate deploy` applies the additive P2 SQL forward. Reverting application code does not undo the child table or backfill. If reconciliation is needed, repair derived child rows through a reviewed forward migration or seed/rebuild transaction; never rewrite historical parent rows or clear `heatmapref_reference_integrity` merely because the child backfill completed.

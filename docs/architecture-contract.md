@@ -207,6 +207,7 @@ Each domain concept must have exactly one authoritative owner.
 | Read-only Dusk rep-work reward evaluation | DuskRepWorkRewardEvaluator (consumer only; no ledger or wallet writes) |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
+| FWA compo normalized target projection (P2 transitional) | HeatMapRefBucketTarget, derived from and foreign-keyed to HeatMapRef |
 | FWA compo reference integrity/provenance | BotSetting key `heatmapref_reference_integrity` (global table-level fact; no new table) |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
@@ -415,3 +416,7 @@ The system should remain stable with:
 - years of historical data
 
 Design decisions should prefer long-term clarity over short-term convenience.
+
+## FB-002 P2 reference-model transition
+
+`HeatMapRefBucketTarget` is an additive, normalized child projection owned by the existing `HeatMapRef` parent. During P2, the parent columns remain authoritative for the version-1 content hash and legacy compatibility; the child must contain exactly the nine historical bucket identifiers with explicit nonnegative counts, including zero, and exact parent parity before target use. Missing, extra, malformed, duplicate, or tampered children are UNKNOWN. Future bucket identifiers are representable without a new column, but P2 creates no TH19 target. A later native profile needs separate source validation, approval, and a version-aware provenance/hash contract before ownership transfers. The migration is forward-recoverable: application rollback does not undo SQL, and backfill completion is not independent validation.

@@ -4,6 +4,7 @@ import {
   assertHeatMapRefContinuityOrThrow,
 } from "../helper/heatMapRefContinuity";
 import { acquireHeatMapRefReferenceWriteLock } from "../helper/heatMapRefAvailability";
+import { buildLegacyHeatMapRefBucketTargets } from "../helper/heatMapRefResolver";
 
 export type HeatMapRefSeedRow = {
   weightMinInclusive: number;
@@ -48,6 +49,16 @@ export async function upsertHeatMapRefSeedRows(
       },
     });
 
+    const bucketTargetDelegate = (client as typeof prisma & {
+      heatMapRefBucketTarget?: {
+        deleteMany: (args?: unknown) => Promise<unknown>;
+        createMany: (args: { data: unknown[] }) => Promise<unknown>;
+      };
+    }).heatMapRefBucketTarget;
+    if (bucketTargetDelegate) {
+      await bucketTargetDelegate.deleteMany({});
+    }
+
     for (const row of rows) {
       await client.heatMapRef.upsert({
         where: {
@@ -86,6 +97,12 @@ export async function upsertHeatMapRefSeedRows(
           sourceVersion: row.sourceVersion,
           refreshedAt: row.refreshedAt,
         },
+      });
+    }
+
+    if (bucketTargetDelegate) {
+      await bucketTargetDelegate.createMany({
+        data: buildLegacyHeatMapRefBucketTargets(rows),
       });
     }
 

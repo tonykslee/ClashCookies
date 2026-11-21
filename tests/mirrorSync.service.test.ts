@@ -263,6 +263,15 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         th10OrLowerCount: 50,
       },
     ],
+    HeatMapRefBucketTarget: [
+      {
+        weightMinInclusive: 0,
+        weightMaxInclusive: 100000,
+        bucketId: "TH18",
+        targetCount: 0,
+        status: "SUPPORTED",
+      },
+    ],
   };
 }
 
@@ -423,6 +432,9 @@ function buildSourceClient(
     heatMapRef: {
       findMany: vi.fn(async () => cloneRows(store.HeatMapRef)),
     },
+    heatMapRefBucketTarget: {
+      findMany: vi.fn(async () => cloneRows(store.HeatMapRefBucketTarget)),
+    },
     externalPlayerWeightCurrent: {
       findMany: vi.fn(async () => cloneRows(store.ExternalPlayerWeightCurrent)),
     },
@@ -573,6 +585,10 @@ function buildTargetClient(
       createMany: createMany("CwlSeasonRosterState"),
     },
     heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
+    heatMapRefBucketTarget: {
+      deleteMany: deleteMany("HeatMapRefBucketTarget"),
+      createMany: createMany("HeatMapRefBucketTarget"),
+    },
     externalPlayerWeightCurrent: {
       deleteMany: deleteMany("ExternalPlayerWeightCurrent"),
       createMany: createMany("ExternalPlayerWeightCurrent"),
