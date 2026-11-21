@@ -540,6 +540,13 @@ function buildTrackedClanState(input: {
   const referenceValidated = input.referenceValidated === true;
   const hasValidatedTarget =
     referenceValidated && !hasUnsupportedTh19 && projection.selectedHeatMapRef !== null;
+  const targetEvidenceReason = hasValidatedTarget
+    ? undefined
+    : !referenceValidated
+      ? "reference_unavailable"
+      : hasUnsupportedTh19
+        ? "th19_integrity"
+        : "no_selected_reference";
 
   return {
     clanTag: input.clan.clanTag,
@@ -551,6 +558,7 @@ function buildTrackedClanState(input: {
       ? getCompoActualStateTargetBucketCounts(projection.selectedHeatMapRef)
       : null,
     targetEvidence: hasValidatedTarget ? "validated" : "unavailable",
+    targetEvidenceReason,
     targetSupportsTh19: false,
     memberEvidence: input.clan.members.map((member) => ({
       playerTag: member.playerTag,
@@ -566,6 +574,7 @@ function buildFillerCandidate(row: FillerAccountViewRow): {
   resolvedWeight: number | null;
   currentClanTag: string | null;
   currentClanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
 } {
   return {
     playerTag: row.tag,
@@ -573,6 +582,7 @@ function buildFillerCandidate(row: FillerAccountViewRow): {
     resolvedWeight: row.weight,
     currentClanTag: row.clanTag,
     currentClanName: row.clanName,
+    clanState: row.clanState,
   };
 }
 
@@ -581,7 +591,9 @@ function buildSummaryDescription(input: {
   remainingUnfilledClanSlots: CompoFillRemainingSlot[];
   unusedAvailableFillers: CompoFillAvailableFiller[];
   plannedMoveCount: number;
+  underfilledClanCount: number;
   unsupportedTh19ClanNames?: readonly string[];
+  unknownTargetClanNames?: readonly string[];
   referenceAvailabilityWarning?: string | null;
 }): string {
   const totalOpenSlots = input.remainingUnfilledClanSlots.reduce(
@@ -591,12 +603,17 @@ function buildSummaryDescription(input: {
   const availableFillerCount =
     input.plannedMoveCount + input.unusedAvailableFillers.length;
   return [
-    `Clans under 50: ${input.destinationPlans.length > 0 ? input.destinationPlans.length : input.remainingUnfilledClanSlots.length}`,
+    `Clans under 50: ${input.underfilledClanCount}`,
     `Open slots: ${totalOpenSlots}`,
     `Available fillers: ${availableFillerCount}`,
     `Recommended moves: ${input.plannedMoveCount}`,
     ...(input.referenceAvailabilityWarning
       ? [`Reference integrity: ${input.referenceAvailabilityWarning}`]
+      : []),
+    ...(input.unknownTargetClanNames && input.unknownTargetClanNames.length > 0
+      ? [
+          `Target comparison: UNKNOWN for ${input.unknownTargetClanNames.join(", ")}; no target-dependent moves are planned for those clans.`,
+        ]
       : []),
     ...(input.unsupportedTh19ClanNames && input.unsupportedTh19ClanNames.length > 0
       ? [
@@ -903,15 +920,22 @@ export class CompoFillService {
         plannedMoveCount,
       },
       work: async () => {
+        const underfilledClanCount = context.clans.filter(
+          (clan) => Number.isFinite(clan.base.memberCount) && clan.base.memberCount < 50,
+        ).length;
         const summaryDescription = buildSummaryDescription({
           destinationPlans: renderResult.destinationPlans,
           remainingUnfilledClanSlots: renderResult.remainingUnfilledClanSlots,
           unusedAvailableFillers: renderResult.unusedAvailableFillers,
           plannedMoveCount,
+          underfilledClanCount,
           referenceAvailabilityWarning: referenceValidated
             ? null
             : context.referenceAvailability?.warning ??
               "Reference validation is unavailable; no target-dependent fill moves are planned.",
+          unknownTargetClanNames: trackedClans
+            .filter((clan) => clan.targetEvidenceReason === "no_selected_reference")
+            .map((clan) => clan.clanName),
           unsupportedTh19ClanNames: context.clans
             .filter((clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0)
             .map((clan) => clan.clanName),
@@ -982,9 +1006,9 @@ export class CompoFillService {
       components: render.components,
       trackedClanTags: context.trackedClanTags,
       destinationClanCount:
-        renderResult.destinationPlans.length > 0
-          ? renderResult.destinationPlans.length
-          : renderResult.remainingUnfilledClanSlots.length,
+        context.clans.filter(
+          (clan) => Number.isFinite(clan.base.memberCount) && clan.base.memberCount < 50,
+        ).length,
       plannedMoveCount,
       availableFillerCount,
       pageIndex: render.pageIndex,

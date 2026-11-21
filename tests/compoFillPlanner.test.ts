@@ -41,6 +41,7 @@ function makeFiller(input: {
   resolvedWeight: number | null;
   currentClanTag?: string | null;
   currentClanName?: string | null;
+  clanState?: "known" | "no_clan" | "unknown";
 }) {
   return {
     playerTag: input.playerTag,
@@ -48,6 +49,7 @@ function makeFiller(input: {
     resolvedWeight: input.resolvedWeight,
     currentClanTag: input.currentClanTag ?? null,
     currentClanName: input.currentClanName ?? null,
+    clanState: input.clanState ?? "no_clan",
   };
 }
 

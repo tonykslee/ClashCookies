@@ -15,6 +15,10 @@ export type CompoFillTrackedClanState = {
   /** Target counts are null when the selected reference is not validated for this clan. */
   targetBucketCounts: Partial<Record<CompoWarWeightBucket, number>> | null;
   targetEvidence: "validated" | "unavailable";
+  targetEvidenceReason?:
+    | "reference_unavailable"
+    | "no_selected_reference"
+    | "th19_integrity";
   /** Legacy HeatMapRef rows do not contain a supported TH19 target profile. */
   targetSupportsTh19?: boolean;
   /** When supplied, this is the authoritative per-account ACTUAL evidence for source removal. */
@@ -34,6 +38,7 @@ export type CompoFillCandidate = {
   resolvedWeightBucket?: CompoWarWeightBucket | null;
   currentClanTag?: string | null;
   currentClanName?: string | null;
+  clanState: "known" | "no_clan" | "unknown";
 };
 
 export type CompoFillReasonCode =
@@ -44,7 +49,9 @@ export type CompoFillReasonCode =
   | "source_context_unavailable"
   | "source_target_evidence_unavailable"
   | "source_bucket_evidence_mismatch"
-  | "self_transfer";
+  | "self_transfer"
+  | "source_membership_unknown"
+  | "source_membership_inconsistent";
 
 type CompoFillSourceKind = "untracked" | "tracked_surplus";
 
@@ -55,6 +62,7 @@ export type CompoFillBaseFiller = {
   resolvedWeightBucket: CompoWarWeightBucket;
   currentClanTag: string | null;
   currentClanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
 };
 
 export type CompoFillAvailableFiller = CompoFillBaseFiller & {
@@ -76,6 +84,7 @@ export type CompoFillExcludedFiller = {
   resolvedWeightBucket: CompoWarWeightBucket | null;
   currentClanTag: string | null;
   currentClanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
   reasonCodes: CompoFillReasonCode[];
 };
 
@@ -147,6 +156,7 @@ type NormalizedCandidate = {
   resolvedWeightBucket: CompoWarWeightBucket;
   currentClanTag: string | null;
   currentClanName: string | null;
+  clanState: "known" | "no_clan" | "unknown";
 };
 
 const COMPO_FILL_BUCKET_ORDER: CompoWarWeightBucket[] = [
@@ -291,6 +301,27 @@ function isCandidateAvailableNow(
   reasonCodes: CompoFillReasonCode[];
 } {
   const sourceClanTag = candidate.currentClanTag;
+
+  if (candidate.clanState === "unknown") {
+    return {
+      available: false,
+      sourceClanTag,
+      sourceClanName: candidate.currentClanName,
+      sourceKind: "untracked",
+      reasonCodes: ["source_membership_unknown"],
+    };
+  }
+
+  if (candidate.clanState === "known" && !sourceClanTag) {
+    return {
+      available: false,
+      sourceClanTag,
+      sourceClanName: candidate.currentClanName,
+      sourceKind: "untracked",
+      reasonCodes: ["source_membership_inconsistent"],
+    };
+  }
+
   const sourceClan = sourceClanTag
     ? sourceStateByTag.get(normalizeIdentity(sourceClanTag)) ?? null
     : null;
@@ -481,6 +512,7 @@ function buildAvailableFiller(
     resolvedWeightBucket: candidate.resolvedWeightBucket,
     currentClanTag: candidate.currentClanTag,
     currentClanName: candidate.currentClanName,
+    clanState: candidate.clanState,
     sourceClanTag: availability.sourceClanTag,
     sourceClanName: availability.sourceClanName,
     sourceKind: availability.sourceKind,
@@ -497,6 +529,7 @@ function buildBaseFiller(
     resolvedWeightBucket: candidate.resolvedWeightBucket,
     currentClanTag: candidate.currentClanTag,
     currentClanName: candidate.currentClanName,
+    clanState: candidate.clanState,
   };
 }
 
@@ -645,6 +678,7 @@ export function buildCompoFillPlan(input: {
     const playerName = String(candidate.playerName ?? "").trim() || playerTag;
     const currentClanTag = trimToNull(candidate.currentClanTag);
     const currentClanName = trimToNull(candidate.currentClanName);
+    const clanState = candidate.clanState;
 
     if (resolvedWeight === null) {
       excludedFillers.push({
@@ -654,6 +688,7 @@ export function buildCompoFillPlan(input: {
         resolvedWeightBucket: null,
         currentClanTag,
         currentClanName,
+        clanState,
         reasonCodes: ["missing_weight"],
       });
       continue;
@@ -668,6 +703,7 @@ export function buildCompoFillPlan(input: {
         resolvedWeightBucket: null,
         currentClanTag,
         currentClanName,
+        clanState,
         reasonCodes: ["missing_bucket"],
       });
       continue;
@@ -680,6 +716,7 @@ export function buildCompoFillPlan(input: {
       resolvedWeightBucket,
       currentClanTag,
       currentClanName,
+      clanState,
     });
   }
 
