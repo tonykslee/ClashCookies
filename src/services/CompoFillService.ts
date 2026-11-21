@@ -4,6 +4,7 @@ import { formatClanBadgeEmoji } from "../helper/clanBadgeEmoji";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import { formatError } from "../helper/formatError";
 import { type CompoWarBucketCounts } from "../helper/compoWarBucketCounts";
+import { getCompoWarWeightBucket } from "../helper/compoWarWeightBuckets";
 import {
   getCompoActualStateTargetBucketCounts,
   projectCompoActualStateView,
@@ -526,6 +527,76 @@ function cloneBucketCounts(counts: CompoWarBucketCounts): CompoWarBucketCounts {
   };
 }
 
+function sumBucketCounts(counts: CompoWarBucketCounts): number {
+  return Object.values(counts).reduce((sum, count) => {
+    return sum + (Number.isFinite(count) && count >= 0 ? count : 0);
+  }, 0);
+}
+
+function assessActualRosterEvidence(input: {
+  clan: CompoActualStateContext["clans"][number];
+}): "complete" | "actual_roster_incomplete" | "actual_roster_inconsistent" {
+  const { base, members } = input.clan;
+  const memberCount = base.memberCount;
+  const bucketCountTotal = sumBucketCounts(base.bucketCounts);
+  const memberTags = members.map((member) => String(member.playerTag ?? "").trim().toUpperCase());
+  const hasDuplicateOrMissingMemberTags =
+    memberTags.some((tag) => !tag) || new Set(memberTags).size !== memberTags.length;
+  const memberCountIsCoherent =
+    Number.isInteger(memberCount) &&
+    memberCount >= 0 &&
+    members.length === memberCount &&
+    bucketCountTotal === memberCount &&
+    !hasDuplicateOrMissingMemberTags;
+  const bucketCountsMatchMembers = members.reduce<CompoWarBucketCounts | null>(
+    (counts, member) => {
+      const bucket = getCompoWarWeightBucket(member.resolvedWeight);
+      if (
+        !counts ||
+        !bucket ||
+        member.resolvedBucket !== bucket ||
+        member.resolvedWeightSource === null ||
+        // PlayerCurrent and war fallbacks are lower-confidence evidence; do not
+        // let a valid-looking bucket derived from either source authorize fills.
+        member.resolvedWeightSource === "current" ||
+        member.resolvedWeightSource === "war"
+      ) {
+        return null;
+      }
+      counts[bucket] = (counts[bucket] ?? 0) + 1;
+      return counts;
+    }, {
+      TH18: 0,
+      TH17: 0,
+      TH16: 0,
+      TH15: 0,
+      TH14: 0,
+      TH13: 0,
+      TH12: 0,
+      TH11: 0,
+      TH10: 0,
+      TH9: 0,
+      TH8_OR_LOWER: 0,
+    },
+  );
+
+  if (!memberCountIsCoherent) {
+    return members.length < memberCount || base.unresolvedWeightCount > 0
+      ? "actual_roster_incomplete"
+      : "actual_roster_inconsistent";
+  }
+  if (
+    base.unresolvedWeightCount > 0 ||
+    !bucketCountsMatchMembers ||
+    Object.entries(base.bucketCounts).some(([bucket, count]) => {
+      return count !== (bucketCountsMatchMembers[bucket as keyof CompoWarBucketCounts] ?? 0);
+    })
+  ) {
+    return "actual_roster_incomplete";
+  }
+  return "complete";
+}
+
 function buildTrackedClanState(input: {
   clan: CompoActualStateContext["clans"][number];
   heatMapRefs: readonly HeatMapRef[];
@@ -538,15 +609,21 @@ function buildTrackedClanState(input: {
   });
   const hasUnsupportedTh19 = (input.clan.base.bucketCounts.TH19 ?? 0) > 0;
   const referenceValidated = input.referenceValidated === true;
+  const actualRosterEvidence = assessActualRosterEvidence({ clan: input.clan });
   const hasValidatedTarget =
-    referenceValidated && !hasUnsupportedTh19 && projection.selectedHeatMapRef !== null;
+    referenceValidated &&
+    !hasUnsupportedTh19 &&
+    actualRosterEvidence === "complete" &&
+    projection.selectedHeatMapRef !== null;
   const targetEvidenceReason = hasValidatedTarget
     ? undefined
     : !referenceValidated
       ? "reference_unavailable"
       : hasUnsupportedTh19
         ? "th19_integrity"
-        : "no_selected_reference";
+        : actualRosterEvidence !== "complete"
+          ? actualRosterEvidence
+          : "no_selected_reference";
 
   return {
     clanTag: input.clan.clanTag,
@@ -934,7 +1011,12 @@ export class CompoFillService {
             : context.referenceAvailability?.warning ??
               "Reference validation is unavailable; no target-dependent fill moves are planned.",
           unknownTargetClanNames: trackedClans
-            .filter((clan) => clan.targetEvidenceReason === "no_selected_reference")
+            .filter(
+              (clan) =>
+                clan.targetEvidenceReason === "no_selected_reference" ||
+                clan.targetEvidenceReason === "actual_roster_incomplete" ||
+                clan.targetEvidenceReason === "actual_roster_inconsistent",
+            )
             .map((clan) => clan.clanName),
           unsupportedTh19ClanNames: context.clans
             .filter((clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0)

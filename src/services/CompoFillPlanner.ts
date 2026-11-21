@@ -18,7 +18,9 @@ export type CompoFillTrackedClanState = {
   targetEvidenceReason?:
     | "reference_unavailable"
     | "no_selected_reference"
-    | "th19_integrity";
+    | "th19_integrity"
+    | "actual_roster_incomplete"
+    | "actual_roster_inconsistent";
   /** Legacy HeatMapRef rows do not contain a supported TH19 target profile. */
   targetSupportsTh19?: boolean;
   /** When supplied, this is the authoritative per-account ACTUAL evidence for source removal. */
