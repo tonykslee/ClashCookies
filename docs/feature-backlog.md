@@ -202,6 +202,15 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Scope:** Presentation only; retain the existing composition calculations, weight buckets, data sources, optional view behavior, and sorting. Maintain readable alignment and Discord message/pagination limits for larger magnitudes without silently misrepresenting counts. Update affected render tests, help/legend text and screenshot records when implemented.
 - **Done when:** All affected Compo rows render the corresponding repeated signs, equal and unknown remain distinguishable, and existing surplus/deficit calculations are unchanged.
 
+### FB-018 — CWL spin status, league updates and targeted polling
+
+- **Status:** Proposed regression fix; implementation and root cause not yet verified.
+- **Suggested priority:** High
+- **Request (2026-11-21):** Fix `/clan list type:CWL display:Minimal` to display `<a:a_search_1:1511521538715685016>` in place of `:crossed_swords:` while a clan is searching for a CWL match. Replace the search emoji with `:crossed_swords:` once a match is confirmed.
+- **League lifecycle:** When a previously unranked clan matches, persist and display its newly assigned league and corresponding badge. Previously ranked clans should already have their league reconciled at the end of the prior month's CWL; verify and repair that lifecycle if needed.
+- **Polling:** Query only still-searching CWL clans every five minutes; stop search-specific polling for each clan after confirmed matching. Do not refresh all clans to check one clan's spin status, except on explicit manual Refresh button activation. Preserve existing active/mirror ownership, DB-first rendering and authoritative state ownership. Missing or failed API observations must not imply a confirmed match.
+- **Done when:** Searching and matched clans display the correct indicators, newly seeded clans show their actual assigned league, previously ranked clans retain correctly reconciled leagues, and tests verify targeted five-minute polling, stopping after match, manual full refresh, and safe handling of missing evidence and season rollover.
+
 ## Archived / withdrawn requests
 
 _None yet._
