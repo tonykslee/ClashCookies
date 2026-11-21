@@ -6,6 +6,10 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     delete: vi.fn(),
   },
+  heatMapRefBucketTarget: {
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
   $transaction: vi.fn(),
   $executeRaw: vi.fn(),
 }));
@@ -22,6 +26,8 @@ describe("HeatMapRefService", () => {
     vi.clearAllMocks();
     prismaMock.$transaction.mockImplementation(async (fn: any) => fn(prismaMock));
     prismaMock.$executeRaw.mockResolvedValue(0);
+    prismaMock.heatMapRefBucketTarget.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.heatMapRefBucketTarget.createMany.mockResolvedValue({ count: 0 });
   });
 
   it("uses the corrected checked-in HeatMapRef bootstrap rows", () => {

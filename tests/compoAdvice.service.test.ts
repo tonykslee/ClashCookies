@@ -6,6 +6,7 @@ import {
   countRushedCompoMembers,
 } from "../src/services/CompoAdviceService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -37,6 +38,9 @@ const prismaMock = vi.hoisted(() => ({
   },
   $queryRaw: vi.fn(),
   heatMapRef: {
+    findMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
   weightInputDeferment: {
@@ -192,8 +196,10 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     prismaMock.$queryRaw.mockReset();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);

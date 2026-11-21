@@ -49,6 +49,14 @@ function makeClient(targets: unknown[]) {
   } as never;
 }
 
+function makeParentOnlyClient() {
+  return {
+    heatMapRef: {
+      findMany: vi.fn(async () => [parent]),
+    },
+  } as never;
+}
+
 describe("HeatMapRef normalized reference resolver", () => {
   it("round-trips exact legacy values, including zero and non-50 totals", () => {
     const targets = buildLegacyHeatMapRefBucketTargets([parent]);
@@ -66,6 +74,40 @@ describe("HeatMapRef normalized reference resolver", () => {
     expect(targets.some((row) => row.bucketId === "TH19")).toBe(false);
     const result = validateLegacyHeatMapRefTargetsForTest([parent], targets);
     expect(result.ok).toBe(true);
+  });
+
+  it("fails closed when the normalized delegate is missing", async () => {
+    const result = await resolveHeatMapRefReference({
+      client: makeParentOnlyClient(),
+      settings: validatedSettings(),
+    });
+    expect(result.normalizedState).toBe("unavailable");
+    expect(result.availability.status).toBe("unknown");
+    expect(result.supportedBucketIds).toEqual([]);
+    expect(result.heatMapRefs).toEqual([parent]);
+    expect(result.availability.warning).toContain("child-table reader is missing");
+  });
+
+  it("preserves factual parents but fails closed when the child query rejects", async () => {
+    const client = {
+      heatMapRef: {
+        findMany: vi.fn(async () => [parent]),
+      },
+      heatMapRefBucketTarget: {
+        findMany: vi.fn(async () => {
+          throw new Error("child database unavailable");
+        }),
+      },
+    } as never;
+    const result = await resolveHeatMapRefReference({
+      client,
+      settings: validatedSettings(),
+    });
+    expect(result.normalizedState).toBe("unavailable");
+    expect(result.availability.status).toBe("unknown");
+    expect(result.supportedBucketIds).toEqual([]);
+    expect(result.heatMapRefs).toEqual([parent]);
+    expect(result.availability.warning).toContain("factual composition observations remain available");
   });
 
   it.each([

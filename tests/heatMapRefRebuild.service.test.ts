@@ -13,6 +13,7 @@ import {
   HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
   readHeatMapRefReferenceAvailability,
 } from "../src/helper/heatMapRefAvailability";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   fwaClanCatalog: {
@@ -25,6 +26,11 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   heatMapRef: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
     deleteMany: vi.fn(),
     createMany: vi.fn(),
@@ -244,6 +250,10 @@ describe("HeatMapRefRebuildService", () => {
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows());
     prismaMock.heatMapRef.deleteMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
     prismaMock.heatMapRef.createMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.heatMapRefBucketTarget.createMany.mockResolvedValue({ count: 0 });
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as never);

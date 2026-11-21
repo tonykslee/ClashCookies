@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   heatMapRef: {
     findMany: vi.fn(),
   },
+  heatMapRefBucketTarget: {
+    findMany: vi.fn(),
+  },
   fwaPlayerCatalog: {
     findMany: vi.fn(),
   },
@@ -49,6 +52,7 @@ import {
 } from "../src/services/SyncTimeFwaClanListViewService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 function makeBaseMetadata() {
   return {
@@ -202,6 +206,8 @@ describe("SyncTimeFwaClanListViewService", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();

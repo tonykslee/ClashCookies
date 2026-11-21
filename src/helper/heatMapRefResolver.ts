@@ -26,10 +26,9 @@ export type HeatMapRefBucketTargetLike = Pick<
   "weightMinInclusive" | "weightMaxInclusive" | "bucketId" | "targetCount" | "status"
 >;
 
-type HeatMapRefReferenceClient = Pick<
-  PrismaClient,
-  "heatMapRef" | "heatMapRefBucketTarget"
->;
+type HeatMapRefReferenceClient = Pick<PrismaClient, "heatMapRef"> & {
+  heatMapRefBucketTarget?: PrismaClient["heatMapRefBucketTarget"];
+};
 
 export type HeatMapRefReferenceResolution = {
   /** Legacy parent rows remain the authoritative v1 projection during P2. */
@@ -37,7 +36,7 @@ export type HeatMapRefReferenceResolution = {
   /** Child rows are exposed for diagnostics and future native profiles. */
   bucketTargets: HeatMapRefBucketTargetLike[];
   supportedBucketIds: readonly string[];
-  normalizedState: "verified" | "missing" | "invalid" | "legacy_compatibility";
+  normalizedState: "verified" | "missing" | "invalid" | "unavailable";
   availability: HeatMapRefReferenceAvailability;
 };
 
@@ -48,6 +47,11 @@ function unknownAvailability(warning: string): HeatMapRefReferenceAvailability {
     lastSuccessAtIso: null,
     warning,
   };
+}
+
+function boundedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown";
+  return message.replace(/\s+/g, " ").slice(0, 160);
 }
 
 function isIntegerCount(value: unknown): value is number {
@@ -142,30 +146,47 @@ export async function resolveHeatMapRefReference(input: {
   });
   const bucketTargetDelegate = client.heatMapRefBucketTarget;
 
-  // Test doubles and an older generated client do not expose the additive
-  // delegate. Real new readers have it and fail closed on absent rows.
+  // A reader without the additive delegate cannot prove normalized evidence.
+  // Keep the factual parent projection, but never reuse v1 provenance to
+  // authorize target-dependent composition output.
   if (!bucketTargetDelegate || typeof bucketTargetDelegate.findMany !== "function") {
-    const availability = await readHeatMapRefReferenceAvailability({
-      guildId: input.guildId,
-      settings: input.settings ?? new SettingsService(),
-      heatMapRefs,
-    });
+    console.warn(
+      "[heatmapref-reference] normalized target read unavailable reason=child_delegate_missing",
+    );
     return {
       heatMapRefs,
       bucketTargets: [],
-      supportedBucketIds: LEGACY_HEAT_MAP_REF_BUCKET_IDS,
-      normalizedState: "legacy_compatibility",
-      availability,
+      supportedBucketIds: [],
+      normalizedState: "unavailable",
+      availability: unknownAvailability(
+        "HeatMapRef normalized target evidence is unavailable because the child-table reader is missing; target-dependent composition output is withheld until the normalized projection is readable.",
+      ),
     };
   }
 
-  const bucketTargets = await bucketTargetDelegate.findMany({
-    orderBy: [
-      { weightMinInclusive: "asc" },
-      { weightMaxInclusive: "asc" },
-      { bucketId: "asc" },
-    ],
-  });
+  let bucketTargets: HeatMapRefBucketTargetLike[];
+  try {
+    bucketTargets = await bucketTargetDelegate.findMany({
+      orderBy: [
+        { weightMinInclusive: "asc" },
+        { weightMaxInclusive: "asc" },
+        { bucketId: "asc" },
+      ],
+    });
+  } catch (error) {
+    console.warn(
+      `[heatmapref-reference] normalized target read failed; target-dependent composition output is withheld error=${boundedErrorMessage(error)}`,
+    );
+    return {
+      heatMapRefs,
+      bucketTargets: [],
+      supportedBucketIds: [],
+      normalizedState: "unavailable",
+      availability: unknownAvailability(
+        "HeatMapRef normalized target evidence could not be read; factual composition observations remain available, but target-dependent output is withheld until the child projection is readable.",
+      ),
+    };
+  }
   const validation = validateLegacyTargets(heatMapRefs, bucketTargets);
   if (!validation.ok) {
     return {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -11,6 +12,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   heatMapRef: {
+    findMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
   $queryRaw: vi.fn(),
@@ -253,6 +257,7 @@ function makeHeatMapRef(input?: {
 describe("CompoWarStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];
@@ -599,5 +604,26 @@ describe("CompoWarStateService", () => {
       ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
       ["Alpha Clan", "8,100,000", "0", "50", "0", "0", "0", "0", "0", "0"],
     ]);
+  });
+
+  it("keeps WAR factual rows and warns when the normalized target query fails", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan" }]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue(
+      makeWeightedMembers({ clanTag: "#AAA111", counts: { th14: 50 } }),
+    );
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.heatMapRefBucketTarget.findMany.mockRejectedValueOnce(
+      new Error("normalized child unavailable"),
+    );
+
+    const result = await new CompoWarStateService({ runTracked: vi.fn() } as any).readState();
+
+    expect(result.stateRows).not.toBeNull();
+    expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
+    expect(result.contentLines.join("\n")).toContain("normalized target evidence could not be read");
+    expect(result.contentLines.join("\n")).toContain("Reference warning:");
   });
 });
