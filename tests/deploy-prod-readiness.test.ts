@@ -20,7 +20,8 @@ type Scenario =
   | "sequence"
   | "reset-failure"
   | "diagnostic-permissions"
-  | "legacy-rollback";
+  | "legacy-rollback"
+  | "cleanup-failure";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -44,6 +45,14 @@ function section(output: string, name: string): string {
 }
 
 describe("version-controlled production deployment readiness", () => {
+  it("keeps candidate compilation outside the Git worktree", () => {
+    const deployScript = readFileSync(join(process.cwd(), "ops", "deploy", "deploy-prod.sh"), "utf8");
+    expect(deployScript).toContain('-v "$TEMP_WORKTREE:/source:ro"');
+    expect(deployScript).toContain('-v "$BUILD_WORKSPACE_VOLUME:/app"');
+    expect(deployScript).toContain("cp -a /source/. /app/");
+    expect(deployScript).not.toContain('-v "$TEMP_WORKTREE:/app"');
+  });
+
   it("keeps the SSH ceiling above the version-controlled recovery budget", () => {
     const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "deploy-prod.yml"), "utf8");
     const deployScript = readFileSync(join(process.cwd(), "ops", "deploy", "deploy-prod.sh"), "utf8");
@@ -135,6 +144,14 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("STATUS=1");
     expect(output).toContain("candidate_build_failed");
     expect(output).not.toContain("ACTIVE_RUN name=clashcookies-app revision=new-reviewed-sha");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("fails closed and reports candidate cleanup errors", () => {
+    const output = runScenario("cleanup-failure");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("candidate_cleanup=failed");
+    expect(output).toContain("candidate_cleanup_failed");
     expect(output).toContain("STATE=active:OLD");
   });
 
