@@ -55,6 +55,9 @@ const BLACKLIST_PROFILE_BAND_WIDTH = 100_000;
 const BLACKLIST_PROFILE_USABLE_CONFIDENCE = new Set(["high", "medium"]);
 const BLACKLIST_PROFILE_MIN_CONFIDENCE_SCORE_FOR_MEDIUM = 40;
 const BLACKLIST_PROFILE_MIN_CONFIDENCE_SCORE_FOR_HIGH = 75;
+const BLACKLIST_SAMPLE_ROSTER_SIZE = 50;
+
+type BlacklistSampleValidationReason = "roster_size" | "invalid_counts" | "bucket_sum";
 
 function normalizeTag(input: string | null | undefined): string {
   const value = String(input ?? "").trim().toUpperCase();
@@ -184,10 +187,10 @@ function countSampleBuckets(input: {
     input.th13Count,
     input.th12Count,
     input.th11PlusCount,
-  ].reduce((sum, count) => sum + Math.max(0, Math.trunc(count)), 0);
+  ].reduce((sum, count) => sum + count, 0);
 }
 
-function isCompleteBlacklistSample(row: {
+function getBlacklistSampleValidationReason(row: {
   rosterSize: number;
   th18Count: number;
   th17Count: number;
@@ -197,9 +200,24 @@ function isCompleteBlacklistSample(row: {
   th13Count: number;
   th12Count: number;
   th11PlusCount: number;
-}): boolean {
-  const rosterSize = Math.trunc(row.rosterSize);
-  return rosterSize > 0 && countSampleBuckets(row) === rosterSize;
+}): BlacklistSampleValidationReason | null {
+  if (row.rosterSize !== BLACKLIST_SAMPLE_ROSTER_SIZE) {
+    return "roster_size";
+  }
+  const counts = [
+    row.th18Count,
+    row.th17Count,
+    row.th16Count,
+    row.th15Count,
+    row.th14Count,
+    row.th13Count,
+    row.th12Count,
+    row.th11PlusCount,
+  ];
+  if (counts.some((count) => !Number.isInteger(count) || count < 0)) {
+    return "invalid_counts";
+  }
+  return countSampleBuckets(row) === BLACKLIST_SAMPLE_ROSTER_SIZE ? null : "bucket_sum";
 }
 
 function buildSummaryLines(input: {
@@ -208,6 +226,7 @@ function buildSummaryLines(input: {
   addedCount: number;
   updatedCount: number;
   removedCount: number;
+  invalidSampleReasonCounts?: Readonly<Record<string, number>>;
   status: BlacklistHeatmapRefRebuildResult["status"];
   reason: string | null;
 }): string[] {
@@ -221,6 +240,14 @@ function buildSummaryLines(input: {
   ];
   if (input.reason) {
     lines.push(`reason: ${input.reason}`);
+  }
+  if (input.invalidSampleReasonCounts && Object.keys(input.invalidSampleReasonCounts).length > 0) {
+    lines.push(
+      `rejected sample reasons: ${Object.entries(input.invalidSampleReasonCounts)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([reasonCode, count]) => `${reasonCode}=${count}`)
+        .join(", ")}`,
+    );
   }
   return lines;
 }
@@ -272,14 +299,21 @@ export class BlacklistHeatmapRefService {
       },
     });
 
-    const completeSampleRows = sampleRows.filter((row) => isCompleteBlacklistSample(row));
+    const invalidSampleReasonCounts: Record<string, number> = {};
+    const completeSampleRows = sampleRows.filter((row) => {
+      const reason = getBlacklistSampleValidationReason(row);
+      if (reason) {
+        invalidSampleReasonCounts[reason] = (invalidSampleReasonCounts[reason] ?? 0) + 1;
+      }
+      return reason === null;
+    });
     const incompleteSampleCount = sampleRows.length - completeSampleRows.length;
 
     if (completeSampleRows.length === 0) {
       const reason =
         sampleRows.length === 0
           ? "no usable blacklist samples are available; existing rows were preserved"
-          : `all ${incompleteSampleCount} blacklist samples were incomplete; existing rows were preserved`;
+          : `all ${incompleteSampleCount} blacklist samples were rejected as incomplete or malformed; existing rows were preserved`;
       return {
         status: "skipped",
         reason,
@@ -296,6 +330,7 @@ export class BlacklistHeatmapRefService {
           removedCount: 0,
           status: "skipped",
           reason,
+          invalidSampleReasonCounts,
         }),
       };
     }
@@ -309,14 +344,14 @@ export class BlacklistHeatmapRefService {
       aggregate.uniqueSourceClanTags.add(normalizeTag(row.sourceClanTag));
       aggregate.uniqueOpponentTags.add(normalizeTag(row.opponentBlacklistTag));
       aggregate.totalMissingWeightCount += Math.max(0, Math.trunc(row.missingWeightCount ?? 0));
-      aggregate.sumCounts.th18Count += Math.max(0, Math.trunc(row.th18Count ?? 0));
-      aggregate.sumCounts.th17Count += Math.max(0, Math.trunc(row.th17Count ?? 0));
-      aggregate.sumCounts.th16Count += Math.max(0, Math.trunc(row.th16Count ?? 0));
-      aggregate.sumCounts.th15Count += Math.max(0, Math.trunc(row.th15Count ?? 0));
-      aggregate.sumCounts.th14Count += Math.max(0, Math.trunc(row.th14Count ?? 0));
-      aggregate.sumCounts.th13Count += Math.max(0, Math.trunc(row.th13Count ?? 0));
-      aggregate.sumCounts.th12Count += Math.max(0, Math.trunc(row.th12Count ?? 0));
-      aggregate.sumCounts.th11PlusCount += Math.max(0, Math.trunc(row.th11PlusCount ?? 0));
+      aggregate.sumCounts.th18Count += row.th18Count;
+      aggregate.sumCounts.th17Count += row.th17Count;
+      aggregate.sumCounts.th16Count += row.th16Count;
+      aggregate.sumCounts.th15Count += row.th15Count;
+      aggregate.sumCounts.th14Count += row.th14Count;
+      aggregate.sumCounts.th13Count += row.th13Count;
+      aggregate.sumCounts.th12Count += row.th12Count;
+      aggregate.sumCounts.th11PlusCount += row.th11PlusCount;
       aggregates.set(key, aggregate);
     }
 
@@ -445,6 +480,7 @@ export class BlacklistHeatmapRefService {
         removedCount,
         status,
         reason,
+        invalidSampleReasonCounts,
       }),
     };
   }

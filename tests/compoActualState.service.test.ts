@@ -940,6 +940,29 @@ describe("CompoActualStateService", () => {
       expect(result?.sourceAgeMs).toBe(3_600_000);
     });
 
+    it("fails closed for readiness and downstream goal inputs when TH19 is observed", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: index === 0 ? 181_000 : 175_000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 10_000_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
+      expect(result?.projection.deltaByBucket.TH18).toBeNull();
+    });
+
     it("marks a healthy 50/50 roster with a shared deviation at or below the threshold", async () => {
       const result = await loadComposition({
         members: Array.from({ length: 50 }, (_, index) => ({

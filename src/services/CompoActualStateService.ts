@@ -1,6 +1,5 @@
 import type {
   HeatMapRef,
-  FwaClanCatalog,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
   TrackedClan,

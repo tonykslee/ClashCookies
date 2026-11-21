@@ -378,4 +378,66 @@ describe("BlacklistHeatmapRefService", () => {
     expect(profileRows).toHaveLength(1);
     expect(prismaMock.blacklistHeatMapRef.upsert).not.toHaveBeenCalled();
   });
+
+  it("rejects non-50 rosters and malformed raw bucket counts while retaining valid samples", async () => {
+    sampleRows.push(
+      makeSampleRow({
+        sourceClanTag: "#SIZE49",
+        opponentBlacklistTag: "#OPP49",
+        totalRosterWeight: 6_450_001,
+        rosterSize: 49,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: 49 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+      makeSampleRow({
+        sourceClanTag: "#SIZE51",
+        opponentBlacklistTag: "#OPP51",
+        totalRosterWeight: 6_450_001,
+        rosterSize: 51,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: 50, th17: 1 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+      makeSampleRow({
+        sourceClanTag: "#NEGATIVE",
+        opponentBlacklistTag: "#OPPNEG",
+        totalRosterWeight: 6_450_001,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: -1, th17: 51 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+      makeSampleRow({
+        sourceClanTag: "#INVALID",
+        opponentBlacklistTag: "#OPPINVALID",
+        totalRosterWeight: 6_450_001,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: 49.5, th17: 0.5 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+      makeSampleRow({
+        sourceClanTag: "#VALID",
+        opponentBlacklistTag: "#OPPVALID",
+        totalRosterWeight: 6_450_001,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: 50 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+    );
+
+    const result = await service.rebuildBlacklistHeatmapRef({ now });
+
+    expect(result.status).toBe("success");
+    expect(result.usableSampleCount).toBe(1);
+    expect(result.reason).toContain("excluded 4 incomplete blacklist sample(s)");
+    expect(result.summaryLines.join(" ")).toContain("invalid_counts=2");
+    expect(result.summaryLines.join(" ")).toContain("roster_size=2");
+    expect(profileRows).toHaveLength(1);
+    expect(profileRows[0]?.sampleCount).toBe(1);
+  });
 });

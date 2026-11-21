@@ -33,7 +33,7 @@ type HeatMapRefRebuildCheckpoint = {
   cycleKey: string;
   anchoredSyncTimeIso: string;
   dueAtIso: string;
-  status: "scheduled" | "running" | "success" | "failed" | "no_op";
+  status: "scheduled" | "running" | "success" | "failed" | "no_op" | "blocked";
   lastAttemptAtIso: string | null;
   lastSuccessAtIso: string | null;
   failureReason: string | null;
@@ -86,7 +86,8 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
           parsed.status === "running" ||
           parsed.status === "success" ||
           parsed.status === "failed" ||
-          parsed.status === "no_op") &&
+          parsed.status === "no_op" ||
+          parsed.status === "blocked") &&
         typeof parsed.anchoredSyncTimeIso === "string" &&
         typeof parsed.dueAtIso === "string"
       ) {
@@ -137,6 +138,7 @@ function stringifyCheckpoint(value: HeatMapRefRebuildCheckpoint): string {
 
 function buildCheckpointForCycle(input: {
   cycle: RebuildCycleContext;
+  previous?: HeatMapRefRebuildCheckpoint | null;
 }): HeatMapRefRebuildCheckpoint {
   return {
     cycleKey: input.cycle.cycleKey,
@@ -144,15 +146,15 @@ function buildCheckpointForCycle(input: {
     dueAtIso: input.cycle.dueAt.toISOString(),
     status: "scheduled",
     lastAttemptAtIso: null,
-    lastSuccessAtIso: null,
+    lastSuccessAtIso: input.previous?.lastSuccessAtIso ?? null,
     failureReason: null,
-    contentHash: null,
+    contentHash: input.previous?.contentHash ?? null,
     roleId: input.cycle.roleId,
   };
 }
 
 function isTerminalCheckpointStatus(status: HeatMapRefRebuildCheckpoint["status"]): boolean {
-  return status === "success" || status === "failed" || status === "no_op";
+  return status === "success" || status === "failed" || status === "no_op" || status === "blocked";
 }
 
 function buildSeedBandDefinitions(): HeatMapRefBandDefinition[] {
@@ -237,6 +239,15 @@ function buildSummaryLines(input: {
     `heatmap rows: ${input.rows.length}`,
     `result: ${input.status}`,
   ];
+  if (input.sourceRosterCount === 0) {
+    lines.push("evidence: unavailable");
+  } else if (input.excludedRosters.length > 0 && input.qualifyingRosters.length > 0) {
+    lines.push(`evidence: partial (${input.excludedRosters.length} roster(s) excluded)`);
+  } else if (input.excludedRosters.length > 0) {
+    lines.push("evidence: excluded (no safe roster evidence)");
+  } else {
+    lines.push("evidence: supported");
+  }
   if (input.reason) {
     lines.push(`reason: ${input.reason}`);
   }
@@ -245,9 +256,6 @@ function buildSummaryLines(input: {
     exclusionCounts.set(row.reasonCode, (exclusionCounts.get(row.reasonCode) ?? 0) + 1);
   }
   if (exclusionCounts.size > 0) {
-    if (input.qualifyingRosters.length > 0) {
-      lines.push(`evidence: partial (${input.excludedRosters.length} roster(s) excluded)`);
-    }
     lines.push(
       `excluded reasons: ${[...exclusionCounts.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
@@ -349,40 +357,14 @@ export class HeatMapRefRebuildService {
     const currentHash = computeHeatMapRefRebuildContentHash(currentComparableRows as HeatMapRefRebuildRow[]);
     const nextHash = computeHeatMapRefRebuildContentHash(rebuilt);
 
-    if (sourceRosters.length === 0 && currentHash === nextHash) {
-      const reason = "rebuilt content matched the stored HeatMapRef rows";
-      return {
-        status: "noop",
-        reason,
-        cycleKey: null,
-        dueAt: null,
-        trackedClanCount: fwaClanTags.length,
-        sourceRosterCount: 0,
-        qualifyingRosterCount: 0,
-        excludedRosterCount: 0,
-        rowCount: rebuilt.length,
-        changedRowCount: 0,
-        contentHash: nextHash,
-        alertSent: false,
-        summaryLines: buildSummaryLines({
-          trackedClanCount: fwaClanTags.length,
-          sourceRosterCount: 0,
-          qualifyingRosters: rebuiltResult.qualifyingRosters,
-          excludedRosters: rebuiltResult.excludedRosters,
-          rows: rebuilt,
-          status: "noop",
-          reason,
-        }),
-      };
-    }
-
-    if (rebuiltResult.qualifyingRosters.length === 0) {
+    if (sourceRosters.length === 0 || rebuiltResult.excludedRosters.length > 0) {
       const reason =
         sourceRosters.length === 0
-          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved"
-          : "no qualifying FWA rosters; existing HeatMapRef rows were preserved";
-      const status: HeatMapRefRebuildRunResult["status"] =
-        sourceRosters.length === 0 ? "noop" : "skipped";
+          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved and rebuild was blocked"
+          : rebuiltResult.qualifyingRosters.length === 0
+            ? "no qualifying FWA rosters; existing HeatMapRef rows were preserved and rebuild was blocked"
+            : "excluded current FWA roster evidence prevents a safe replacement; existing HeatMapRef rows were preserved";
+      const status: HeatMapRefRebuildRunResult["status"] = "skipped";
       return {
         status,
         reason,
@@ -390,7 +372,7 @@ export class HeatMapRefRebuildService {
         dueAt: null,
         trackedClanCount: fwaClanTags.length,
         sourceRosterCount: sourceRosters.length,
-        qualifyingRosterCount: 0,
+        qualifyingRosterCount: rebuiltResult.qualifyingRosters.length,
         excludedRosterCount: rebuiltResult.excludedRosters.length,
         rowCount: currentRows.length,
         changedRowCount: 0,
@@ -557,9 +539,13 @@ export class HeatMapRefRebuildService {
     }
 
     if (isTerminalCheckpointStatus(activeCheckpoint.status)) {
+      const terminalReason =
+        activeCheckpoint.status === "blocked" && activeCheckpoint.failureReason
+          ? `cycle ${activeCheckpoint.cycleKey} already handled with blocked: ${activeCheckpoint.failureReason}`
+          : `cycle ${activeCheckpoint.cycleKey} already handled with ${activeCheckpoint.status}`;
       return {
         status: "skipped",
-        reason: `cycle ${activeCheckpoint.cycleKey} already handled with ${activeCheckpoint.status}`,
+        reason: terminalReason,
         cycleKey: activeCheckpoint.cycleKey,
         dueAt: new Date(activeCheckpoint.dueAtIso),
         trackedClanCount: 0,
@@ -571,7 +557,7 @@ export class HeatMapRefRebuildService {
         contentHash: activeCheckpoint.contentHash,
         alertSent: false,
         summaryLines: [
-          `Cycle ${activeCheckpoint.cycleKey} already handled with status ${activeCheckpoint.status}.`,
+          `${terminalReason}.`,
         ],
       };
     }
@@ -623,15 +609,19 @@ export class HeatMapRefRebuildService {
 
     try {
       const result = await this.rebuildHeatMapRef(now);
-      const finalStatus =
-        result.status === "noop" || result.status === "skipped" ? "no_op" : "success";
+      const blocked = result.status === "skipped";
+      const finalStatus = blocked
+        ? "blocked"
+        : result.status === "noop"
+          ? "no_op"
+          : "success";
       await this.writeCheckpoint(input.guildId, {
         ...activeCheckpoint,
         status: finalStatus,
         lastAttemptAtIso: now.toISOString(),
-        lastSuccessAtIso: now.toISOString(),
-        failureReason: null,
-        contentHash: result.contentHash,
+        lastSuccessAtIso: blocked ? activeCheckpoint.lastSuccessAtIso : now.toISOString(),
+        failureReason: blocked ? result.reason : null,
+        contentHash: blocked ? activeCheckpoint.contentHash : result.contentHash,
       });
       return {
         ...result,
@@ -645,7 +635,7 @@ export class HeatMapRefRebuildService {
         status: "failed",
         lastAttemptAtIso: now.toISOString(),
         failureReason: reason,
-        contentHash: null,
+        contentHash: activeCheckpoint.contentHash,
       });
       const alertSent = await this.sendFailureAlert({
         client: input.client,
@@ -692,11 +682,16 @@ export class HeatMapRefRebuildService {
         await this.writeCheckpoint(input.guildId, {
           ...checkpoint,
           status:
-            result.status === "noop" || result.status === "skipped" ? "no_op" : "success",
+            result.status === "skipped"
+              ? "blocked"
+              : result.status === "noop"
+                ? "no_op"
+                : "success",
           lastAttemptAtIso: now.toISOString(),
-          lastSuccessAtIso: now.toISOString(),
-          failureReason: null,
-          contentHash: result.contentHash,
+          lastSuccessAtIso:
+            result.status === "skipped" ? checkpoint.lastSuccessAtIso : now.toISOString(),
+          failureReason: result.status === "skipped" ? result.reason : null,
+          contentHash: result.status === "skipped" ? checkpoint.contentHash : result.contentHash,
         });
       }
       return result;
@@ -758,6 +753,7 @@ export class HeatMapRefRebuildService {
 
     const nextCheckpoint = buildCheckpointForCycle({
       cycle: input.latestCycle,
+      previous: existing,
     });
     await this.writeCheckpoint(input.guildId, nextCheckpoint);
     return nextCheckpoint;

@@ -75,13 +75,30 @@ function makeCurrentHeatMapRows() {
   }));
 }
 
-function makeNoopHeatMapRows(now: Date) {
+function makeSupportedSourceRoster(clanTag = "#AAA111", weight = 175_000) {
+  return {
+    clanTag,
+    members: Array.from({ length: 50 }, (_, index) => ({
+      clanTag,
+      playerTag: `${clanTag}-${String(index + 1).padStart(3, "0")}`,
+      position: index + 1,
+      townHall: 18,
+      weight,
+      sourceSyncedAt: new Date("2026-04-13T00:00:00.000Z"),
+    })),
+  };
+}
+
+function makeRowsForSourceRoster(
+  now: Date,
+  sourceRosters: ReturnType<typeof makeSupportedSourceRoster>[],
+) {
   const seedBands: HeatMapRefBandDefinition[] = HEAT_MAP_REF_SEED_ROWS.map((row) => ({
     weightMinInclusive: row.weightMinInclusive,
     weightMaxInclusive: row.weightMaxInclusive,
   }));
   return buildHeatMapRefRebuildRows({
-    sourceRosters: [],
+    sourceRosters,
     seedBands,
     seedRowsByBandKey: getHeatMapRefSeedRowCountsByBandKey(
       seedBands,
@@ -176,7 +193,7 @@ describe("HeatMapRefRebuildService", () => {
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as never);
   });
 
-  it("returns noop when the rebuilt content already matches the stored HeatMapRef rows", async () => {
+  it("returns noop for a genuinely unchanged supported rebuild", async () => {
     const service = new HeatMapRefRebuildService({
       settings: settings as never,
       botLogChannels: botLogChannels as never,
@@ -185,7 +202,11 @@ describe("HeatMapRefRebuildService", () => {
     const now = new Date("2026-04-13T00:00:00.000Z");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    prismaMock.heatMapRef.findMany.mockResolvedValue(makeNoopHeatMapRows(now) as never);
+    const sourceRoster = makeSupportedSourceRoster();
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(sourceRoster.members as never);
+    prismaMock.heatMapRef.findMany.mockResolvedValue(
+      makeRowsForSourceRoster(now, [sourceRoster]) as never,
+    );
 
     const result = await service.rebuildHeatMapRef(now);
 
@@ -196,6 +217,22 @@ describe("HeatMapRefRebuildService", () => {
     expect(logSpy.mock.calls[0]?.[0]).toContain("continuity=ok");
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
     expect(result.summaryLines.join(" ")).toContain("rebuilt content matched");
+    expect(result.summaryLines.join(" ")).toContain("evidence: supported");
+  });
+
+  it("blocks no-source evaluation instead of treating retained seed rows as a successful no-op", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const result = await service.rebuildHeatMapRef(new Date("2026-04-13T00:00:00.000Z"));
+
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toContain("no current FWA roster evidence");
+    expect(result.summaryLines.join(" ")).toContain("evidence: unavailable");
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
 
   it("includes qualifying untracked FWA clans from the persisted catalog", async () => {
@@ -273,6 +310,65 @@ describe("HeatMapRefRebuildService", () => {
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
 
+  it("blocks mixed supported and TH19 rosters even when they resolve to one band", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SUPPORTED", 175_000);
+    const mixed = makeSupportedSourceRoster("#MIXED", 175_000);
+    mixed.members[0] = { ...mixed.members[0]!, townHall: 19, weight: 181_000 };
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#SUPPORTED" },
+      { clanTag: "#MIXED" },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      ...supported.members,
+      ...mixed.members,
+    ] as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("skipped");
+    expect(result.qualifyingRosterCount).toBe(1);
+    expect(result.excludedRosterCount).toBe(1);
+    expect(result.summaryLines.join(" ")).toContain("evidence: partial");
+    expect(result.summaryLines.join(" ")).toContain("unsupported_th19=1");
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+  });
+
+  it("blocks supported and TH19 rosters in different bands instead of publishing a seed-only band", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SUPPORTED", 175_000);
+    const th19 = makeSupportedSourceRoster("#TH19", 185_000);
+    th19.members = th19.members.map((member) => ({ ...member, townHall: 19 }));
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#SUPPORTED" },
+      { clanTag: "#TH19" },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      ...supported.members,
+      ...th19.members,
+    ] as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("skipped");
+    expect(result.qualifyingRosterCount).toBe(1);
+    expect(result.excludedRosterCount).toBe(1);
+    expect(result.reason).toContain("safe replacement");
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+  });
+
   it("keeps scheduled and manual containment paths side-effect free for unsupported evidence", async () => {
     const service = new HeatMapRefRebuildService({
       settings: settings as never,
@@ -306,8 +402,107 @@ describe("HeatMapRefRebuildService", () => {
     expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
     expect(getStoredCheckpoint(settingsStore, "guild-1")).toMatchObject({
-      status: "no_op",
+      status: "blocked",
+      lastSuccessAtIso: null,
+      failureReason: expect.stringContaining("preserved"),
     });
+  });
+
+  it("preserves prior checkpoint success provenance when a scheduled cycle is blocked", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    const syncTimeIso = "2026-04-11T00:00:00.000Z";
+    const previousSuccess = "2026-04-12T23:05:00.000Z";
+    const previousHash = "previous-valid-hash";
+    settingsStore.set(
+      `heatmapref_rebuild_state:${guildId}`,
+      JSON.stringify({
+        cycleKey: "message-th19:1775865600",
+        anchoredSyncTimeIso: syncTimeIso,
+        dueAtIso: "2026-04-12T23:00:00.000Z",
+        status: "scheduled",
+        lastAttemptAtIso: null,
+        lastSuccessAtIso: previousSuccess,
+        failureReason: null,
+        contentHash: previousHash,
+        roleId: "role-1",
+      }),
+    );
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-th19", syncTimeIso }),
+    );
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 50 }, (_, index) => ({
+        clanTag: "#AAA111",
+        playerTag: `#T${String(index + 1).padStart(3, "0")}`,
+        position: index + 1,
+        townHall: 19,
+        weight: 185_000,
+        sourceSyncedAt: new Date(syncTimeIso),
+      })),
+    );
+
+    const result = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-13T00:00:00.000Z"),
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(getStoredCheckpoint(settingsStore, guildId)).toMatchObject({
+      status: "blocked",
+      lastSuccessAtIso: previousSuccess,
+      contentHash: previousHash,
+      failureReason: expect.stringContaining("preserved"),
+    });
+  });
+
+  it("treats a blocked scheduled cycle as terminal until the next sync cycle", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    const syncTimeIso = "2026-04-11T00:00:00.000Z";
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-th19", syncTimeIso }),
+    );
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 50 }, (_, index) => ({
+        clanTag: "#AAA111",
+        playerTag: `#T${String(index + 1).padStart(3, "0")}`,
+        position: index + 1,
+        townHall: 19,
+        weight: 185_000,
+        sourceSyncedAt: new Date(syncTimeIso),
+      })),
+    );
+    const now = new Date("2026-04-13T00:00:00.000Z");
+
+    const first = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now,
+    });
+    const firstReadCount = prismaMock.fwaWarMemberCurrent.findMany.mock.calls.length;
+    const second = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date(now.getTime() + 60_000),
+    });
+
+    expect(first.status).toBe("skipped");
+    expect(second.status).toBe("skipped");
+    expect(second.reason).toContain("already handled with blocked");
+    expect(prismaMock.fwaWarMemberCurrent.findMany).toHaveBeenCalledTimes(firstReadCount);
   });
 
   it("skips the scheduled rebuild in mirror mode", async () => {
