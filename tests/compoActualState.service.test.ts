@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -22,6 +23,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   heatMapRef: {
+    findMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
   weightInputDeferment: {
@@ -171,7 +175,9 @@ describe("CompoActualStateService", () => {
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
@@ -645,9 +651,11 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
-    expect(result.contentLines).toHaveLength(2);
+    expect(result.contentLines).toHaveLength(3);
     expect(result.contentLines[1]).toContain("DF=deferred-weight count");
     expect(result.contentLines[1]).toContain("TH=resolved composition counts");
+    expect(result.contentLines[2]).toContain("Reference warning:");
+    expect(result.contentLines[2]).toContain("target comparisons remain UNKNOWN");
   });
 
   it("shows planning totals separately in ACTUAL auto view while keeping displayed deltas on resolved counts", async () => {
@@ -1287,6 +1295,46 @@ describe("CompoActualStateService", () => {
       expect(result?.deviationScore).toBeNull();
       expect(result?.healthy).toBe(false);
       expect(result?.compositionComplete).toBe(false);
+    });
+
+    it("keeps ACTUAL factual rows and warns when the normalized target query fails", async () => {
+      prismaMock.fwaClanCatalog.findFirst.mockResolvedValue({
+        clanTag: "#EXT444",
+        name: "External Delta",
+        th18Count: 1,
+        th17Count: 2,
+        th16Count: 3,
+        th15Count: 4,
+        th14Count: 5,
+        th13Count: 6,
+        th12Count: 7,
+        th11Count: 8,
+        th10Count: 4,
+        th9Count: 3,
+        th8Count: 2,
+        thLowCount: 5,
+        estimatedWeight: 145000,
+        lastSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+      });
+      prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({
+        weightMinInclusive: 140000,
+        weightMaxInclusive: 150000,
+      })]);
+      prismaMock.heatMapRefBucketTarget.findMany.mockRejectedValueOnce(
+        new Error("normalized child unavailable"),
+      );
+
+      const result = await readExternalClanCurrentComposition({
+        clanTag: "#EXT444",
+        now: new Date("2026-03-09T12:00:00.000Z"),
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.displayCounts.TH18).toBe(1);
+      expect(result?.memberCount).toBe(50);
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
     });
   });
 });

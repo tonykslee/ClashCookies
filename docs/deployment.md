@@ -6,6 +6,8 @@
 
 > **Deployment-state caveat (operator-observed 2026-11-14):** The design below documents how production and optional staging/mirror deployments are intended to work. **Staging containers, database volumes and checkout have been explicitly decommissioned** to reclaim disk space, and staging is **not currently deployed**. Production app/database containers remain active and healthy. Do not assume staging exists, automatically recreate it, or claim staging-gate coverage without an explicit reviewed release decision/waiver. See [backup/droplet preflight](diagnostics/backup-operator-preflight-2026-11-14.md).
 
+The mirror schema gate is intentionally strict for FB-002 P2: the production source must already be migrated with `HeatMapRefBucketTarget` before a staging mirror can read or copy the parent/child projection. A pre-migration source fails the gate before target writes. Staging remains decommissioned; do not provision or access infrastructure for this correction.
+
 Production and staging *when provisioned* use droplet-hosted containers with health-gated promotion.
 
 Runtime expectations:

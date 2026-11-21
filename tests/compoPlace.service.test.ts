@@ -5,6 +5,7 @@ import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMemb
 import { CompoReplacementService } from "../src/services/CompoReplacementService";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -23,6 +24,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   heatMapRef: {
+    findMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
   weightInputDeferment: {
@@ -207,12 +211,14 @@ describe("CompoPlaceService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     prismaMock.clanWarHistory.findMany.mockReset();
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.$queryRaw.mockReset();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.clanWarHistory.findMany.mockResolvedValue([]);

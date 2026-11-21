@@ -135,7 +135,8 @@ Important owners:
 | Delayed-signup role IDs | AutoRoleGuildConfig.delayedSignupRoleIds |
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
-| FWA compo reference bands | HeatMapRef |
+| FWA compo reference bands | HeatMapRef (legacy v1 parent remains authoritative during FB-002 P2 transition) |
+| FWA compo normalized target projection | HeatMapRefBucketTarget (transactional derived child; exact nine-bucket parity required; future IDs representable but not activated) |
 | FWA compo reference integrity/provenance | Versioned BotSetting key `heatmapref_reference_integrity` (global; guild checkpoints remain scheduler metadata; rows and matching SHA-256 provenance publish in one transaction; generation token fences superseded evaluations) |
 | Telemetry rollups and report schedules | Telemetry* tables |
 
@@ -257,6 +258,10 @@ Important expectations:
 - documentation updated for user-facing, architectural, runtime, or platform changes
 
 ---
+
+# FB-002 P2 reference-model transition
+
+`HeatMapRefBucketTarget` is a normalized child derived from and foreign-keyed to `HeatMapRef`. P2 keeps the legacy parent authoritative for the version-1 hash and compatibility projection; exact nine-bucket child parity, explicit nonnegative counts (including zero), and validated global provenance are required before target use. Missing, extra, malformed, duplicate, or tampered child evidence is UNKNOWN. No TH19 target is created. A future native profile needs separate source validation, approval, and a version-aware integrity contract before ownership transfers; migration backfill is not independent validation.
 
 # If Architectural Conflict Appears
 

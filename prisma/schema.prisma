@@ -2347,8 +2347,30 @@ model HeatMapRef {
   contributingClanCount Int      @default(0)
   sourceVersion         String?
   refreshedAt           DateTime
+  bucketTargets         HeatMapRefBucketTarget[]
 
   @@id([weightMinInclusive, weightMaxInclusive])
+}
+
+enum HeatMapRefBucketTargetStatus {
+  SUPPORTED
+  MISSING
+}
+
+/// Transitional normalized targets owned by the legacy HeatMapRef band.
+/// P2 only backfills the historical buckets; additional identifiers are
+/// representable but do not become validated until a versioned provenance
+/// contract explicitly authorizes them.
+model HeatMapRefBucketTarget {
+  weightMinInclusive Int
+  weightMaxInclusive Int
+  bucketId           String
+  targetCount        Int?
+  status             HeatMapRefBucketTargetStatus
+  heatMapRef         HeatMapRef @relation(fields: [weightMinInclusive, weightMaxInclusive], references: [weightMinInclusive, weightMaxInclusive], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([weightMinInclusive, weightMaxInclusive, bucketId])
+  @@index([bucketId])
 }
 
 model FwaClanWarLogCurrent {

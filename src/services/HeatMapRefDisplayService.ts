@@ -13,11 +13,8 @@ import {
   buildHeatMapRefDisplayRows,
 } from "../helper/heatMapRefDisplay";
 import { getHeatMapRefBandKey } from "../helper/compoHeatMap";
-import {
-  readHeatMapRefReferenceAvailability,
-  type HeatMapRefReferenceAvailability,
-} from "../helper/heatMapRefAvailability";
-import { SettingsService } from "./SettingsService";
+import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
+import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 
 type HeatMapRefSourceMember = {
   clanTag: string;
@@ -96,16 +93,10 @@ export class HeatMapRefDisplayService {
     copyText: string;
     availability: HeatMapRefReferenceAvailability;
   }> {
-    const heatMapRefs = await prisma.heatMapRef.findMany({
-      orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-    });
+    const reference = await resolveHeatMapRefReference({ guildId: input?.guildId });
     const [display, availability] = await Promise.all([
-      this.buildDisplayData(heatMapRefs),
-      readHeatMapRefReferenceAvailability({
-        guildId: input?.guildId,
-        settings: new SettingsService(),
-        heatMapRefs,
-      }),
+      this.buildDisplayData(reference.heatMapRefs),
+      Promise.resolve(reference.availability),
     ]);
     return { ...display, availability };
   }

@@ -24,6 +24,10 @@ import { normalizeFwaTag } from "./fwa-feeds/normalize";
 import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
 import { getAllHeatMapRefs } from "./HeatMapRefService";
 import {
+  buildLegacyHeatMapRefBucketTargets,
+  validateLegacyHeatMapRefTargets,
+} from "../helper/heatMapRefResolver";
+import {
   parseSyncTimeMetadata,
   trackedMessageService,
 } from "./TrackedMessageService";
@@ -546,15 +550,45 @@ export class HeatMapRefRebuildService {
         if (currentHash !== result.contentHash) {
           throw new Error("HeatMapRef rows changed before unchanged validation could be committed");
         }
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.findMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target reader is unavailable: heatMapRefBucketTarget is required",
+          );
+        }
+        const bucketTargets = await bucketTargetDelegate.findMany({
+          orderBy: [
+            { weightMinInclusive: "asc" },
+            { weightMaxInclusive: "asc" },
+            { bucketId: "asc" },
+          ],
+        });
+        const normalized = validateLegacyHeatMapRefTargets(currentRows, bucketTargets as never);
+        if (!normalized.ok) {
+          throw new Error(`HeatMapRef normalized target validation failed: ${normalized.reason}`);
+        }
       }
       if (validated && result.status === "success") {
         if (!publicationRows) {
           throw new Error("validated HeatMapRef publication has no rows");
         }
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.deleteMany !== "function" ||
+          typeof bucketTargetDelegate.createMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target writer is unavailable: heatMapRefBucketTarget is required",
+          );
+        }
+        await bucketTargetDelegate.deleteMany({});
         await tx.heatMapRef.deleteMany({});
         if (publicationRows.length > 0) {
-          await tx.heatMapRef.createMany({
-            data: publicationRows.map((row) => ({
+          const parentRows = publicationRows.map((row) => ({
               weightMinInclusive: row.weightMinInclusive,
               weightMaxInclusive: row.weightMaxInclusive,
               th18Count: row.th18Count,
@@ -569,7 +603,10 @@ export class HeatMapRefRebuildService {
               contributingClanCount: row.contributingClanCount,
               sourceVersion: row.sourceVersion,
               refreshedAt: row.refreshedAt,
-            })),
+            }));
+          await tx.heatMapRef.createMany({ data: parentRows });
+          await bucketTargetDelegate.createMany({
+            data: buildLegacyHeatMapRefBucketTargets(parentRows),
           });
         }
       }

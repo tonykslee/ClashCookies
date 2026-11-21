@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   heatMapRef: {
+    findMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
   fwaClanCatalog: {
@@ -100,6 +104,7 @@ function makeRosterMembers(clanTag: string, weight: number): ReturnType<typeof m
 describe("HeatMapRefDisplayService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
   });
 
   it("computes band match% as a weighted average by evaluatedWarCount", async () => {

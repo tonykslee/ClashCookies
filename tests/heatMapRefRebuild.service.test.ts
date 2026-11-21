@@ -13,6 +13,8 @@ import {
   HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
   readHeatMapRefReferenceAvailability,
 } from "../src/helper/heatMapRefAvailability";
+import { buildLegacyHeatMapRefBucketTargets } from "../src/helper/heatMapRefResolver";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   fwaClanCatalog: {
@@ -25,6 +27,11 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   heatMapRef: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
+  heatMapRefBucketTarget: {
     findMany: vi.fn(),
     deleteMany: vi.fn(),
     createMany: vi.fn(),
@@ -244,6 +251,10 @@ describe("HeatMapRefRebuildService", () => {
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows());
     prismaMock.heatMapRef.deleteMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
     prismaMock.heatMapRef.createMany.mockResolvedValue({ count: HEAT_MAP_REF_SEED_ROWS.length });
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.heatMapRefBucketTarget.createMany.mockResolvedValue({ count: 0 });
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(null as never);
@@ -272,8 +283,111 @@ describe("HeatMapRefRebuildService", () => {
     );
     expect(logSpy.mock.calls[0]?.[0]).toContain("continuity=ok");
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRefBucketTarget.findMany).toHaveBeenCalled();
     expect(result.summaryLines.join(" ")).toContain("rebuilt content matched");
     expect(result.summaryLines.join(" ")).toContain("evidence: supported");
+  });
+
+  it("requires normalized children for a validated rebuild no-op", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const currentRows = makeCurrentHeatMapRows();
+    const generation = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    const bucketTargetDelegate = prismaMock.heatMapRefBucketTarget;
+    (prismaMock as { heatMapRefBucketTarget?: typeof bucketTargetDelegate }).heatMapRefBucketTarget =
+      undefined;
+
+    try {
+      await expect(
+        hooks.finalizeReferenceIntegrity(
+          makeSyntheticIntegrityResult({
+            status: "noop",
+            reason: "unchanged",
+            contentHash: computeHeatMapRefContentHash(currentRows),
+          }),
+          new Date("2026-04-13T00:00:00.000Z"),
+          generation,
+        ),
+      ).rejects.toThrow("heatMapRefBucketTarget is required");
+    } finally {
+      prismaMock.heatMapRefBucketTarget = bucketTargetDelegate;
+    }
+  });
+
+  it.each([
+    ["missing", () => []],
+    [
+      "tampered",
+      () => buildLegacyHeatMapRefBucketTargets(makeCurrentHeatMapRows()).map((row) =>
+        row.bucketId === "TH18" ? { ...row, targetCount: row.targetCount + 1 } : row,
+      ),
+    ],
+  ])("rejects %s normalized children during rebuild no-op validation", async (_label, makeTargets) => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const currentRows = makeCurrentHeatMapRows();
+    const generation = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    prismaMock.heatMapRefBucketTarget.findMany.mockResolvedValue(makeTargets() as never);
+
+    await expect(
+      hooks.finalizeReferenceIntegrity(
+        makeSyntheticIntegrityResult({
+          status: "noop",
+          reason: "unchanged",
+          contentHash: computeHeatMapRefContentHash(currentRows),
+        }),
+        new Date("2026-04-13T00:00:00.000Z"),
+        generation,
+      ),
+    ).rejects.toThrow("normalized target validation failed");
+  });
+
+  it("fails before parent replacement when the normalized rebuild writer is missing", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const currentRows = makeCurrentHeatMapRows();
+    const generation = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    const bucketTargetDelegate = prismaMock.heatMapRefBucketTarget;
+    (prismaMock as { heatMapRefBucketTarget?: typeof bucketTargetDelegate }).heatMapRefBucketTarget =
+      undefined;
+
+    try {
+      await expect(
+        hooks.finalizeReferenceIntegrity(
+          makeSyntheticIntegrityResult({
+            status: "success",
+            reason: null,
+            contentHash: computeHeatMapRefContentHash(currentRows),
+          }),
+          new Date("2026-04-13T00:00:00.000Z"),
+          generation,
+          currentRows,
+        ),
+      ).rejects.toThrow("heatMapRefBucketTarget is required");
+    } finally {
+      prismaMock.heatMapRefBucketTarget = bucketTargetDelegate;
+    }
+
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
 
   it("blocks no-source evaluation instead of treating retained seed rows as a successful no-op", async () => {
@@ -928,11 +1042,85 @@ describe("HeatMapRefRebuildService", () => {
     expect(settings.set).toHaveBeenCalledTimes(2);
     expect(settings.set.mock.calls[0]?.[2]).toBe(prismaMock);
     expect(settings.set.mock.calls[1]?.[2]).toBe(prismaMock);
+    expect(prismaMock.heatMapRefBucketTarget.deleteMany).toHaveBeenCalledWith({});
+    expect(prismaMock.heatMapRefBucketTarget.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({ bucketId: "TH18", status: "SUPPORTED" }),
+      ]),
+    });
     expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
       version: 1,
       status: "validated",
       contentHash: expect.any(String),
       evaluationGeneration: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    });
+  });
+
+  it("rolls back parent, child, and provenance publication when child creation fails", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const beforeParents = makeCurrentHeatMapRows();
+    const beforeChildren = buildLegacyHeatMapRefBucketTargets(beforeParents);
+    let parentRows = beforeParents;
+    let childRows = beforeChildren;
+    const generation = await hooks.beginReferenceIntegrityEvaluation(now);
+
+    prismaMock.heatMapRef.deleteMany.mockImplementationOnce(async () => {
+      const deleted = parentRows.length;
+      parentRows = [];
+      return { count: deleted };
+    });
+    prismaMock.heatMapRef.createMany.mockImplementationOnce(async ({ data }: { data: typeof beforeParents }) => {
+      parentRows = data;
+      return { count: data.length };
+    });
+    prismaMock.heatMapRefBucketTarget.deleteMany.mockImplementationOnce(async () => {
+      const deleted = childRows.length;
+      childRows = [];
+      return { count: deleted };
+    });
+    prismaMock.heatMapRefBucketTarget.createMany.mockRejectedValueOnce(
+      new Error("normalized child publication failed"),
+    );
+
+    prismaMock.$transaction.mockImplementationOnce(async (fn: any) => {
+      const parentsSnapshot = parentRows;
+      const childrenSnapshot = childRows;
+      const settingsSnapshot = new Map(settingsStore);
+      try {
+        return await fn(prismaMock);
+      } catch (error) {
+        parentRows = parentsSnapshot;
+        childRows = childrenSnapshot;
+        settingsStore.clear();
+        for (const [key, value] of settingsSnapshot) settingsStore.set(key, value);
+        throw error;
+      }
+    });
+
+    await expect(
+      hooks.finalizeReferenceIntegrity(
+        makeSyntheticIntegrityResult({
+          status: "success",
+          reason: null,
+          contentHash: computeHeatMapRefContentHash(beforeParents),
+        }),
+        now,
+        generation,
+        beforeParents,
+      ),
+    ).rejects.toThrow("normalized child publication failed");
+
+    expect(parentRows).toEqual(beforeParents);
+    expect(childRows).toEqual(beforeChildren);
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "pending",
+      evaluationGeneration: generation,
     });
   });
 
