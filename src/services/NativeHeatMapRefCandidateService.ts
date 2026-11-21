@@ -11,7 +11,7 @@ import {
 } from "../helper/nativeHeatMapRefCandidate";
 import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
 
-type NativeCandidateDb = Pick<PrismaClient, "fwaTrackedClanWarRosterCurrent" | "currentWar" | "fwaWarMemberCurrent">;
+type NativeCandidateDb = Pick<PrismaClient, "fwaTrackedClanWarRosterCurrent">;
 
 /** Purpose: read the persisted tracked-war snapshot without invoking feed, reference, setting, or scheduler owners. */
 export class NativeHeatMapRefCandidateService {
@@ -39,25 +39,6 @@ export class NativeHeatMapRefCandidateService {
         },
       },
     });
-    const clanTags = rows.map((row) => row.clanTag);
-    const [currentWars, memberEvidence] = await Promise.all([
-      clanTags.length > 0
-        ? this.db.currentWar.findMany({
-            where: { clanTag: { in: clanTags } },
-            select: { clanTag: true, guildId: true, warId: true, startTime: true, opponentTag: true, matchType: true, state: true, updatedAt: true },
-          })
-        : Promise.resolve([]),
-      clanTags.length > 0
-        ? this.db.fwaWarMemberCurrent.findMany({
-            where: { clanTag: { in: clanTags } },
-            select: { clanTag: true, playerTag: true, position: true, sourceSyncedAt: true },
-          })
-        : Promise.resolve([]),
-    ]);
-    const currentWarCountByClan = new Map<string, number>();
-    const memberEvidenceCountByClan = new Map<string, number>();
-    for (const row of currentWars) currentWarCountByClan.set(row.clanTag, (currentWarCountByClan.get(row.clanTag) ?? 0) + 1);
-    for (const row of memberEvidence) memberEvidenceCountByClan.set(row.clanTag, (memberEvidenceCountByClan.get(row.clanTag) ?? 0) + 1);
     return rows.map((row) => ({
       clanTag: row.clanTag,
       rosterSize: row.rosterSize,

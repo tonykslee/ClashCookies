@@ -155,7 +155,7 @@ describe("native HeatMapRef candidate generation", () => {
     rejected.sourceIdentityStatus = "UNAVAILABLE";
     const rejectedArtifact = generate([rejected]);
     expect(rejectedArtifact.unknownReason).toBe("rejected_source_evidence");
-    expect(rejectedArtifact.diagnostics.find((diagnostic) => diagnostic.sourceObservationCount > 0)?.reasonCode).toBe("invalid_evidence");
+    expect(rejectedArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)?.reasonCode).toBe("invalid_evidence");
     expect(generate([makeRoster({ clanTag: "#SHORT", weightForPosition: () => 181_000 })]).unknownReason).toBe("insufficient_source_support");
   });
 
@@ -322,6 +322,112 @@ describe("native HeatMapRef candidate generation", () => {
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(report.overallStatus).toBe("UNKNOWN");
     expect(Object.keys(service)).toEqual(["db"]);
+  });
+
+  it("rejects rehashed semantic contradictions and persisted-unverified support", () => {
+    const artifact = generate(Array.from({ length: 10 }, (_, index) => makeRoster({
+      clanTag: `#SEMANTIC${index}`,
+      weightForPosition: (position) => position <= 5 ? 181_000 : 171_000,
+    })));
+    expect(validateNativeReferenceCandidateArtifact(artifact)).toBe(true);
+    const rehash = (value: Record<string, unknown>) => {
+      const { contentFingerprint: _old, ...payload } = value;
+      return { ...payload, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(payload as never) };
+    };
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      sourceCategory: "persisted_fwa_snapshot",
+      evidenceTrust: "persisted_unverified_source_binding",
+    }))).toBe(false);
+
+    const supportedDiagnostic = artifact.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED");
+    expect(supportedDiagnostic).toBeDefined();
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      diagnostics: artifact.diagnostics.map((diagnostic) => diagnostic === supportedDiagnostic
+        ? { ...diagnostic, qualifyingRosterCount: 0, distinctQualifyingClanCount: 0 }
+        : diagnostic),
+    }))).toBe(false);
+
+    const contradictoryTargets = artifact.diagnostics.map((diagnostic) => {
+      if (diagnostic.status !== "SUPPORTED") return diagnostic;
+      const positive = diagnostic.normalizedTargets
+        .map((target, index) => ({ target, index }))
+        .filter(({ target }) => (target.targetCount ?? 0) > 0);
+      const first = positive[0];
+      const second = positive[1];
+      if (!first || !second) return diagnostic;
+      return {
+        ...diagnostic,
+        normalizedTargets: diagnostic.normalizedTargets.map((target, index) =>
+          index === first.index ? { ...target, targetCount: (target.targetCount ?? 0) + 1 }
+            : index === second.index ? { ...target, targetCount: (target.targetCount ?? 0) - 1 }
+              : target),
+      };
+    });
+    expect(validateNativeReferenceCandidateArtifact(rehash({ ...artifact, diagnostics: contradictoryTargets }))).toBe(false);
+    expect(validateNativeReferenceCandidateArtifact(rehash({ ...artifact, overallStatus: "UNKNOWN" }))).toBe(false);
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      diagnostics: artifact.diagnostics.map((diagnostic) => diagnostic.status === "SUPPORTED"
+        ? { ...diagnostic, observedBucketTotals: { ...diagnostic.observedBucketTotals, EXTRA: 0 } }
+        : diagnostic),
+    }))).toBe(false);
+    expect(() => validateNativeReferenceCandidateArtifact({ ...artifact, bucketRegistry: null })).not.toThrow();
+    expect(validateNativeReferenceCandidateArtifact({ ...artifact, bucketRegistry: null })).toBe(false);
+    const nullTarget = artifact.diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      normalizedTargets: [null, ...diagnostic.normalizedTargets.slice(1)],
+    }));
+    expect(() => validateNativeReferenceCandidateArtifact({ ...artifact, diagnostics: nullTarget })).not.toThrow();
+    expect(validateNativeReferenceCandidateArtifact({ ...artifact, diagnostics: nullTarget })).toBe(false);
+  });
+
+  it("canonicalizes conflicting duplicate rosters and members independent of input order", () => {
+    const first = makeRoster({ clanTag: "#CONFLICT", weightForPosition: () => 181_000 });
+    const second = makeRoster({ clanTag: "#CONFLICT", weightForPosition: (position) => position === 1 ? 171_000 : 181_000 });
+    const firstReversed = { ...first, members: [...first.members].reverse() };
+    const secondReversed = { ...second, members: [...second.members].reverse() };
+    const left = generate([first, secondReversed]);
+    const right = generate([second, firstReversed]);
+    expect(left.sourceEvidenceFingerprint).toBe(right.sourceEvidenceFingerprint);
+    expect(left.contentFingerprint).toBe(right.contentFingerprint);
+    expect(left.exclusions).toEqual(right.exclusions);
+  });
+
+  it("enforces state-specific chronology and complete member timing", () => {
+    const notInWar = makeRoster({ clanTag: "#NOTINWAR", weightForPosition: () => 181_000 });
+    notInWar.sourceWarState = "notInWar";
+    expect(generate([notInWar]).exclusionCounts.source_metadata).toBe(1);
+    const activeWithEnd = makeRoster({ clanTag: "#ACTIVEEND", weightForPosition: () => 181_000 });
+    activeWithEnd.sourceWarState = "inWar";
+    expect(generate([activeWithEnd]).exclusionCounts.source_metadata).toBe(1);
+    const missingCurrentWarTimestamp = makeRoster({ clanTag: "#MISSINGCURRENT", weightForPosition: () => 181_000 });
+    missingCurrentWarTimestamp.sourceCurrentWarUpdatedAt = null;
+    expect(generate([missingCurrentWarTimestamp]).exclusionCounts.source_metadata).toBe(1);
+    const partialMemberTiming = makeRoster({ clanTag: "#PARTIALMEMBERTIME", weightForPosition: () => 181_000 });
+    partialMemberTiming.members = partialMemberTiming.members.map((member, index) => index === 0
+      ? { ...member, sourceSyncedAt: "2026-11-20T23:00:00.000Z" }
+      : member);
+    expect(generate([partialMemberTiming]).exclusionCounts.source_metadata).toBe(1);
+    const futureEnd = makeRoster({ clanTag: "#FUTUREEND", weightForPosition: () => 181_000 });
+    futureEnd.sourceWarEndTime = "2026-11-22T00:00:00.000Z";
+    expect(generate([futureEnd]).exclusionCounts.source_metadata).toBe(1);
+  });
+
+  it("keeps persisted candidates fail-closed without CurrentWar or WarMembers reads", async () => {
+    const findMany = vi.fn().mockResolvedValue(Array.from({ length: 10 }, (_, index) => makeRoster({
+      clanTag: `#PERSISTED${index}`,
+      weightForPosition: () => 181_000,
+    })));
+    const service = new NativeHeatMapRefCandidateService({ fwaTrackedClanWarRosterCurrent: { findMany } } as never);
+    const report = await service.generate({ evaluationAt, eraPolicy });
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(report.sourceCategory).toBe("persisted_fwa_snapshot");
+    expect(report.evidenceTrust).toBe("persisted_unverified_source_binding");
+    expect(report.overallStatus).toBe("UNKNOWN");
+    expect(report.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
+    expect(report.unknownReason).toBe("rejected_source_evidence");
   });
 
   it("runs the fixture diagnostic CLI without touching the database", () => {
