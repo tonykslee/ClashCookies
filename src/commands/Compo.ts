@@ -485,6 +485,8 @@ type CompoRefreshPayload =
       kind: "place";
       userId: string;
       weight: number;
+      page?: number;
+      pageDirection?: "prev" | "next";
     }
   | {
       kind: "fill";
@@ -527,6 +529,9 @@ function buildCompoRefreshCustomId(payload: CompoRefreshPayload): string {
     return `${COMPO_REFRESH_PREFIX}:advice-band:${payload.userId}:${payload.targetTag}:${Math.trunc(payload.customBandCount)}:${Math.trunc(payload.customBandIndex)}:${payload.direction}`;
   }
   if (payload.kind === "place") {
+    if (payload.page !== undefined && payload.pageDirection) {
+      return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}:p:${Math.trunc(payload.page)}:${payload.pageDirection}`;
+    }
     return `${COMPO_REFRESH_PREFIX}:place:${payload.userId}:${Math.trunc(payload.weight)}`;
   }
   return `${COMPO_REFRESH_PREFIX}:fill:${payload.userId}`;
@@ -721,11 +726,25 @@ function parseCompoRefreshCustomId(
       direction,
     };
   }
-  if (kind === "place" && parts.length === 4) {
+  if (kind === "place" && (parts.length === 4 || parts.length === 7)) {
     const value = parts[3];
     if (!value) return null;
     const weight = Number(value);
     if (!Number.isFinite(weight) || weight <= 0) return null;
+    if (parts.length === 7) {
+      const page = Number(parts[5]);
+      const direction = parts[6];
+      if (parts[4] !== "p" || !Number.isInteger(page) || page < 0 || (direction !== "prev" && direction !== "next")) {
+        return null;
+      }
+      return {
+        kind: "place",
+        userId,
+        weight: Math.trunc(weight),
+        page,
+        pageDirection: direction,
+      };
+    }
     return {
       kind: "place",
       userId,
@@ -2389,6 +2408,7 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
 function buildCompoRefreshComponents(input: {
   refreshPayload: Extract<CompoRefreshPayload, { kind: "state" | "advice" | "place" | "fill" }>;
   loading: boolean;
+  placePage?: { page: number; totalPages: number };
   adviceClanChoices?: readonly CompoAdviceClanChoice[];
   selectedAdviceClanTag?: string | null;
   supplementalRows?: Array<
@@ -2478,6 +2498,35 @@ function buildCompoRefreshComponents(input: {
     if (clanRow) {
       components.push(clanRow);
     }
+  }
+  if (input.refreshPayload.kind === "place" && input.placePage && input.placePage.totalPages > 1) {
+    const page = Math.max(0, Math.min(input.placePage.totalPages - 1, Math.trunc(input.placePage.page)));
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildCompoRefreshCustomId({
+            kind: "place",
+            userId: input.refreshPayload.userId,
+            weight: input.refreshPayload.weight,
+            page,
+            pageDirection: "prev",
+          }))
+          .setLabel("Prev")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(input.loading || page <= 0),
+        new ButtonBuilder()
+          .setCustomId(buildCompoRefreshCustomId({
+            kind: "place",
+            userId: input.refreshPayload.userId,
+            weight: input.refreshPayload.weight,
+            page,
+            pageDirection: "next",
+          }))
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(input.loading || page >= input.placePage.totalPages - 1),
+      ),
+    );
   }
   if (input.supplementalRows && input.supplementalRows.length > 0) {
     components.push(...input.supplementalRows);
@@ -2848,6 +2897,12 @@ export async function handleCompoRefreshButton(
         mode: "actual",
         actualView: parsed.actualView,
       };
+    } else if (parsed.kind === "place" && parsed.pageDirection) {
+      loadingRefreshPayload = {
+        kind: "place",
+        userId: parsed.userId,
+        weight: parsed.weight,
+      };
     } else {
       loadingRefreshPayload = parsed;
     }
@@ -2995,14 +3050,25 @@ export async function handleCompoRefreshButton(
       if (!bucket) {
         throw new Error("Invalid placement bucket for refresh.");
       }
-      const placeResult = await new CompoPlaceService().refreshPlace(
-        parsed.weight,
-        bucket,
-        interaction.guildId ?? null,
-      );
+      const placeResult = parsed.pageDirection
+        ? await new CompoPlaceService().readPlace(
+            parsed.weight,
+            bucket,
+            interaction.guildId ?? null,
+          )
+        : await new CompoPlaceService().refreshPlace(
+            parsed.weight,
+            bucket,
+            interaction.guildId ?? null,
+          );
+      const totalPages = Math.max(1, placeResult.embeds.length);
+      const requestedPage = parsed.pageDirection
+        ? (parsed.page ?? 0) + (parsed.pageDirection === "next" ? 1 : -1)
+        : 0;
+      const page = Math.max(0, Math.min(totalPages - 1, requestedPage));
       await interaction.editReply({
         content: placeResult.content,
-        embeds: placeResult.embeds,
+        embeds: placeResult.embeds[page] ? [placeResult.embeds[page]] : [],
         components: buildCompoRefreshComponents({
           refreshPayload: {
             kind: "place",
@@ -3010,6 +3076,7 @@ export async function handleCompoRefreshButton(
             weight: parsed.weight,
           },
           loading: false,
+          placePage: { page, totalPages },
           adviceClanChoices,
           selectedAdviceClanTag: null,
           supplementalRows,
@@ -4005,7 +4072,7 @@ export const Compo: Command = {
         });
         await interaction.editReply({
           content: placeResult.content,
-          embeds: placeResult.embeds,
+          embeds: placeResult.embeds[0] ? [placeResult.embeds[0]] : [],
           components: buildCompoRefreshComponents({
             refreshPayload: {
               kind: "place",
@@ -4013,6 +4080,10 @@ export const Compo: Command = {
               weight: inputWeight,
             },
             loading: false,
+            placePage: {
+              page: 0,
+              totalPages: Math.max(1, placeResult.embeds.length),
+            },
           }),
         });
         logCompoStage(interaction, "response_sent", {

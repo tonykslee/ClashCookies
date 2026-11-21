@@ -199,6 +199,11 @@ export class CoCService {
         ...data,
         tag: data.tag ?? "",
         name: data.name ?? "Unknown Clan",
+        memberListPresent: Array.isArray(data.memberList),
+        declaredMemberCount:
+          Number.isInteger(data.members) && Number(data.members) >= 0
+            ? Number(data.members)
+            : null,
         members: data.memberList ?? [],
       };
     } catch (err) {

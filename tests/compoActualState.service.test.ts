@@ -50,6 +50,10 @@ import {
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -101,6 +105,16 @@ function makeMember(input: {
     sourceSyncedAt:
       input.sourceSyncedAt ?? new Date("2026-04-11T01:30:00.000Z"),
   };
+}
+
+function hashCurrentRows(rows: Array<Record<string, unknown>>): string {
+  return computeClanMembersSnapshotHash(
+    rows.map((row) => toPersistedClanMembersSnapshotRow({
+      clanTag: String(row.clanTag),
+      playerTag: String(row.playerTag),
+      ...row,
+    })),
+  );
 }
 
 function makeCatalog(input: { playerTag: string; latestKnownWeight: number | null }) {
@@ -243,6 +257,10 @@ describe("CompoActualStateService", () => {
       lastStatus: row.lastStatus,
       lastRowCount: row.lastRowCount,
       lastChangedRowCount: 1,
+      lastContentHash:
+        row.lastRowCount === 1
+          ? hashCurrentRows([makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 })])
+          : null,
     })));
 
     const context = await loadCompoActualStateContext("guild-1");
@@ -270,12 +288,61 @@ describe("CompoActualStateService", () => {
       lastStatus: "NOOP",
       lastRowCount: 1,
       lastChangedRowCount: 0,
+      lastContentHash: hashCurrentRows([
+        makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      ]),
     }]);
 
     const context = await loadCompoActualStateContext("guild-1");
     expect(context.clans[0]?.base.rosterCoverage).toBe("complete");
     expect(context.clans[0]?.base.memberCountEvidence).toBe("observed");
     expect(context.clans[0]?.base.rosterEvidenceReason).toBe("sync_noop_current");
+  });
+
+  it("rejects future, non-authoritative, and same-cardinality snapshot evidence", async () => {
+    const member = makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 });
+    prismaMock.trackedClan.findMany.mockResolvedValue([makeTrackedClan("#AAA111", "Alpha Clan")]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([member]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 })]);
+
+    const hash = hashCurrentRows([member]);
+    const futureTimestamp = new Date(Date.now() + 60_000);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: futureTimestamp,
+      lastSuccessAt: futureTimestamp,
+      lastStatus: "SUCCESS",
+      lastRowCount: 1,
+      lastChangedRowCount: 1,
+      lastContentHash: hash,
+    }]);
+    const future = await loadCompoActualStateContext("guild-1");
+    expect(future.clans[0]?.base.rosterCoverage).toBe("contradictory");
+
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: new Date("2026-05-20T11:00:00.000Z"),
+      lastSuccessAt: new Date("2026-05-20T10:00:00.000Z"),
+      lastStatus: "SKIPPED",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+      lastContentHash: hash,
+    }]);
+    const skipped = await loadCompoActualStateContext("guild-1");
+    expect(skipped.clans[0]?.base.rosterCoverage).toBe("unavailable");
+
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: new Date("2026-05-20T11:00:00.000Z"),
+      lastSuccessAt: new Date("2026-05-20T10:00:00.000Z"),
+      lastStatus: "NOOP",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+      lastContentHash: "different-same-cardinality-snapshot",
+    }]);
+    const changed = await loadCompoActualStateContext("guild-1");
+    expect(changed.clans[0]?.base.rosterCoverage).toBe("contradictory");
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {

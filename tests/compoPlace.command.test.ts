@@ -154,6 +154,49 @@ describe("/compo place command", () => {
     });
   });
 
+  it("delivers only one bounded placement page per Discord message and preserves page ownership", async () => {
+    vi.spyOn(CompoPlaceService.prototype, "readPlace").mockResolvedValue({
+      content: "",
+      embeds: [
+        new EmbedBuilder().setTitle("Page 1"),
+        new EmbedBuilder().setTitle("Page 2"),
+        new EmbedBuilder().setTitle("Page 3"),
+      ],
+      trackedClanTags: ["#AAA111"],
+      eligibleClanTags: ["#AAA111"],
+      candidateCount: 1,
+      recommendedCount: 0,
+      vacancyCount: 0,
+      compositionCount: 1,
+    });
+
+    const interaction = makeInteraction("145k");
+    await Compo.run({} as any, interaction as any, {} as any);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(payload?.embeds).toHaveLength(1);
+    expect(JSON.stringify(payload?.embeds ?? []).length).toBeLessThanOrEqual(6000);
+    expect(getComponentCustomIds(payload)).toContain("compo-refresh:place:user-1:145000:p:0:next");
+
+    const pageInteraction: any = {
+      customId: "compo-refresh:place:user-1:145000:p:0:next",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      message: { id: "message-1", components: [] },
+      replied: false,
+      deferred: false,
+      update: vi.fn(async () => { pageInteraction.deferred = true; }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+    const { handleCompoRefreshButton } = await import("../src/commands/Compo");
+    await handleCompoRefreshButton(pageInteraction as any, {} as any);
+    const pagePayload = pageInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(pagePayload?.embeds).toHaveLength(1);
+    expect(JSON.stringify(pagePayload?.embeds ?? []).length).toBeLessThanOrEqual(6000);
+    expect(pagePayload?.embeds?.[0]?.toJSON?.().title).toBe("Page 2");
+  });
+
   it("maps lower persisted weight buckets into the stable <=TH13 place bucket", async () => {
     const readPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "readPlace")

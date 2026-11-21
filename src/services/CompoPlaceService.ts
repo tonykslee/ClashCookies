@@ -154,13 +154,13 @@ function buildCompoPlaceFields(params: {
       : observation.rosterCoverage === "complete"
         ? `${observation.memberCount}/50`
         : observation.rosterCoverage === "stale"
-          ? `stale ${observation.memberCount}/50`
-          : `partial ${observation.memberCount} rows · unknown/50`;
+          ? `stale observed ${observation.memberCount} rows · current total UNKNOWN`
+          : `observed ${observation.memberCount} rows · current total UNKNOWN`;
     const bucketCount = observation.observedBucketCount === null
       ? "UNKNOWN"
       : observation.rosterCoverage === "complete" && observation.classificationComplete
-        ? `observed ${observation.observedBucketCount}`
-        : `partial ≥${observation.observedBucketCount}`;
+        ? `observed ${observation.observedBucketCount} ${params.bucket}`
+        : `observed ${observation.observedBucketCount} ${params.bucket} (coverage not complete)`;
     const coverage = [
       `coverage ${observation.rosterCoverage}`,
       !observation.classificationComplete ? "classification partial" : null,
@@ -175,7 +175,7 @@ function buildCompoPlaceFields(params: {
         ? `<t:${Math.floor(observation.sourceSyncedAt.getTime() / 1000)}:R>`
         : "unavailable"}`,
     ].filter((value): value is string => Boolean(value));
-    return `${abbreviateClan(normalizePlaceClanDisplayName(observation.clanName))} - ${bucketCount} ${params.bucket} · ${memberCount}${coverage.length > 0 ? ` · ${coverage.join(" · ")}` : ""}`;
+    return `${abbreviateClan(normalizePlaceClanDisplayName(observation.clanName))} - ${bucketCount} · ${memberCount}${coverage.length > 0 ? ` · ${coverage.join(" · ")}` : ""}`;
   });
 
   const fields = [
@@ -368,6 +368,7 @@ function buildFactualObservations(input: {
   clans: CompoActualStateClanContext[];
   bucket: CompoWarDisplayBucket;
   targetComparisonAvailable: boolean;
+  eligibleTargetClanTags: ReadonlySet<string>;
 }): FactualObservation[] {
   return input.clans.map((clan) => {
     const displayCounts = collapseCompoWarBucketCountsForDisplay(clan.base.bucketCounts);
@@ -377,7 +378,12 @@ function buildFactualObservations(input: {
     const observedBucketCount = coverage === "complete" || hasPersistedRows
       ? displayCounts[input.bucket] ?? 0
       : null;
-    const targetEligible = input.targetComparisonAvailable && evidence === "complete";
+    const targetEligible = input.targetComparisonAvailable && input.eligibleTargetClanTags.has(clan.clanTag);
+    const targetUnavailableReason = input.bucket === "TH19"
+      ? "target UNKNOWN (unsupported TH19)"
+      : evidence !== "complete"
+        ? "target UNKNOWN (roster evidence unavailable)"
+        : "target UNKNOWN (no applicable validated reference)";
     return {
       clanName: clan.clanName,
       observedBucketCount,
@@ -390,9 +396,7 @@ function buildFactualObservations(input: {
       targetEligible,
       targetAvailabilityLabel: targetEligible
         ? "target eligible"
-        : input.bucket === "TH19"
-          ? "target UNKNOWN (TH19)"
-          : "target UNKNOWN",
+        : targetUnavailableReason,
     };
   });
 }
@@ -449,7 +453,7 @@ function buildPlacementCandidates(input: {
     if (assessCompoActualRosterEvidence({ clan }) !== "complete") {
       continue;
     }
-    if (clan.base.resolvedTotalWeight <= 0) {
+    if (clan.base.resolvedTotalWeight <= 0 || (clan.base.bucketCounts.TH19 ?? 0) > 0) {
       continue;
     }
     const projection = projectCompoActualStateView({
@@ -566,13 +570,28 @@ export class CompoPlaceService {
   ): Promise<CompoPlaceReadResult> {
     const context = await loadCompoActualStateContext(guildId ?? null);
     if (context.trackedClanTags.length === 0) {
+      const unknownEmbed = new EmbedBuilder()
+        .setTitle("Compo Placement Suggestions")
+        .setDescription(
+          `Mode: **${buildCompoPlaceModeLabel()}**\n` +
+          "Deltas: **UNKNOWN target comparison**\n" +
+          `Weight: **${inputWeight.toLocaleString("en-US")}**\n` +
+          `Bucket: **${bucket}**\n` +
+          "RAW Data last refreshed: (not available)",
+        )
+        .addFields(
+          { name: "Factual observations", value: "UNKNOWN — no tracked clans configured", inline: false },
+          { name: "Recommended", value: "UNKNOWN — target comparison unavailable", inline: false },
+          { name: "Vacancy", value: "UNKNOWN — roster observations unavailable", inline: false },
+          { name: "Composition", value: "UNKNOWN — target comparison unavailable", inline: false },
+        );
       return {
         content:
           `Input weight: **${inputWeight.toLocaleString("en-US")}**\n` +
           `Bucket: **${bucket}**\n` +
           "Factual roster observations: **UNKNOWN — no tracked clans configured**\n" +
           "Target comparison: **UNKNOWN** — placement rankings and replacement suggestions are withheld.",
-        embeds: [],
+        embeds: [unknownEmbed],
         trackedClanTags: [],
         eligibleClanTags: [],
         candidateCount: 0,
@@ -582,19 +601,14 @@ export class CompoPlaceService {
       };
     }
 
-    const targetComparisonAvailable =
+    const referenceComparisonAvailable =
       bucket !== "TH19" && context.referenceAvailability?.status === "validated";
-    const factualObservations = buildFactualObservations({
-      clans: context.clans,
-      bucket,
-      targetComparisonAvailable,
-    });
     const factualVacancyList = buildFactualVacancyList(context.clans);
 
     const { candidates } = buildPlacementCandidates({
       clans: context.clans,
       heatMapRefs: context.heatMapRefs,
-      targetComparisonAvailable,
+      targetComparisonAvailable: referenceComparisonAvailable,
     });
 
     const compositionNeeds = candidates
@@ -625,17 +639,33 @@ export class CompoPlaceService {
       bucket,
       context,
     });
+    const eligiblePlacementTags = new Set(candidates.map((candidate) => candidate.clanTag));
+    const eligibleReplacementTags = new Set(replacementResolution.evaluation.eligibleClanTags);
+    const eligibleTargetClanTags = new Set(
+      [...eligiblePlacementTags].filter((tag) => eligibleReplacementTags.has(tag)),
+    );
+    const targetComparisonAvailable =
+      referenceComparisonAvailable && eligibleTargetClanTags.size > 0;
+    const factualObservations = buildFactualObservations({
+      clans: context.clans,
+      bucket,
+      targetComparisonAvailable: referenceComparisonAvailable,
+      eligibleTargetClanTags,
+    });
     const possibleReplacementsField = buildPossibleReplacementsField({
       clansInDisplayOrder: context.clans,
       summaryByClan: replacementResolution.summaryByClan,
       evaluation: replacementResolution.evaluation,
     });
 
+    const noEligiblePlacementMessage = "No eligible placement data found in persisted ACTUAL current-member state.";
     const targetWarning = targetComparisonAvailable
       ? null
       : bucket === "TH19"
-        ? "Target comparison is UNKNOWN for TH19; placement rankings and replacement suggestions are withheld."
-        : `${context.referenceAvailability.warning ?? "HeatMapRef validation is unavailable."} Target-derived placement and replacement recommendations are withheld.`;
+        ? `Target comparison is UNKNOWN for TH19; placement rankings and replacement suggestions are withheld.\n${noEligiblePlacementMessage}`
+        : !referenceComparisonAvailable
+          ? `${context.referenceAvailability?.warning ?? "HeatMapRef validation is unavailable."} Target-derived placement and replacement recommendations are withheld.\n${noEligiblePlacementMessage}`
+          : `Target comparison is UNKNOWN because no tracked clan has an applicable validated target; placement rankings and replacement suggestions are withheld.\n${noEligiblePlacementMessage}`;
 
     const embeds = buildBoundedCompoPlaceEmbeds(
       {

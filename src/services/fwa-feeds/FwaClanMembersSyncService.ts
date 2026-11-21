@@ -1,6 +1,5 @@
 import type { FwaFeedType } from "@prisma/client";
 import { prisma } from "../../prisma";
-import { computeFeedContentHash } from "./hash";
 import { normalizeFwaTag } from "./normalize";
 import { CoCService } from "../CoCService";
 import { FwaStatsClient } from "./FwaStatsClient";
@@ -8,6 +7,10 @@ import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
 import { normalizePersistedPlayerName, normalizePlayerTag } from "../PlayerLinkService";
 import type { FwaSyncResult } from "./types";
+import {
+  computeClanMembersSnapshotHash,
+  toClanMembersSnapshotRow,
+} from "./clanMembersSnapshot";
 
 type SyncOptions = {
   force?: boolean;
@@ -43,8 +46,23 @@ export class FwaClanMembersSyncService {
     const results = await mapWithConcurrency(normalizedClanTags, concurrency, async (clanTag) => {
       try {
         const clan = await cocService.getClan(clanTag);
-        if (!Array.isArray(clan?.members)) {
-          throw new Error("CLAN_MEMBERS response did not include a member array");
+        if (clan?.memberListPresent !== true || !Array.isArray(clan?.members)) {
+          throw new Error("CLAN_MEMBERS response did not include an authoritative member list");
+        }
+        if (normalizeFwaTag(clan?.tag) !== clanTag) {
+          throw new Error("CLAN_MEMBERS response clan identity did not match the requested tag");
+        }
+        if (
+          clan?.declaredMemberCount !== null &&
+          (!Number.isInteger(clan.declaredMemberCount) ||
+            clan.declaredMemberCount < 0 ||
+            clan.declaredMemberCount > 50 ||
+            clan.declaredMemberCount !== clan.members.length)
+        ) {
+          throw new Error("CLAN_MEMBERS response declared member count was incomplete or contradictory");
+        }
+        if (clan.members.length > 50) {
+          throw new Error("CLAN_MEMBERS response exceeded clan capacity");
         }
         const members = clan.members;
         const playerTags: Array<string | null> = members.map((row: any) =>
@@ -52,11 +70,30 @@ export class FwaClanMembersSyncService {
         );
         if (
           playerTags.some((tag) => !tag) ||
-          new Set(playerTags).size !== playerTags.length
+          new Set(playerTags).size !== playerTags.length ||
+          members.some((row: any) => !String(row?.name ?? "").trim())
         ) {
-          throw new Error("CLAN_MEMBERS response contained missing or duplicate player tags");
+          throw new Error("CLAN_MEMBERS response contained malformed, missing, or duplicate member data");
         }
         const validPlayerTags = playerTags.filter((tag): tag is string => Boolean(tag));
+        const snapshotRows = members.map((row: any) => ({
+          clanTag,
+          playerTag: normalizePlayerTag(String(row?.tag ?? ""))!,
+          playerName: normalizePersistedPlayerName(String(row?.name ?? "")) ?? "",
+          role: String(row?.role ?? "").trim() || null,
+          level: Number.isFinite(Number(row?.expLevel)) ? Math.trunc(Number(row.expLevel)) : null,
+          donated: Number.isFinite(Number(row?.donations)) ? Math.trunc(Number(row.donations)) : null,
+          received: Number.isFinite(Number(row?.donationsReceived)) ? Math.trunc(Number(row.donationsReceived)) : null,
+          rank: Number.isFinite(Number(row?.clanRank)) ? Math.trunc(Number(row.clanRank)) : null,
+          trophies: Number.isFinite(Number(row?.trophies)) ? Math.trunc(Number(row.trophies)) : null,
+          league: String(row?.league?.name ?? "").trim() || null,
+          townHall: Number.isFinite(Number(row?.townHallLevel ?? row?.townhallLevel ?? row?.townHall))
+            ? Math.trunc(Number(row?.townHallLevel ?? row?.townhallLevel ?? row?.townHall))
+            : null,
+          weight: null,
+          inWar: null,
+        }));
+        const contentHash = computeClanMembersSnapshotHash(snapshotRows);
         const result = await prisma.$transaction(async (tx) => {
           const staleDelete = await tx.fwaClanMemberCurrent.deleteMany({
             where: {
@@ -155,7 +192,7 @@ export class FwaClanMembersSyncService {
             scopeKey: clanTag,
             rowCount: result.rowCount,
             changedRowCount: result.changedRowCount,
-            contentHash: null,
+            contentHash,
             status: "SUCCESS",
             nextEligibleAt: null,
           },
@@ -276,8 +313,7 @@ export class FwaClanMembersSyncService {
     await this.syncState.recordAttempt(scope, nextEligibleAt, now);
     try {
       const rows = await this.client.fetchClanMembers(normalizedClanTag);
-      const sortedRows = [...rows].sort((a, b) => a.playerTag.localeCompare(b.playerTag));
-      const contentHash = computeFeedContentHash(sortedRows);
+      const contentHash = computeClanMembersSnapshotHash(rows.map(toClanMembersSnapshotRow));
       const previousState = await this.syncState.getState(scope);
       if (previousState?.lastContentHash === contentHash) {
         const result: FwaSyncResult = {

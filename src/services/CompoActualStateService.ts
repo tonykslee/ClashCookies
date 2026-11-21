@@ -41,14 +41,34 @@ import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
-import { getHomeRosterCoverage } from "./HomeRosterService";
+import {
+  getConfiguredClanMembersCadenceMinutes,
+  getHomeRosterCoverage,
+} from "./HomeRosterService";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "./fwa-feeds/clanMembersSnapshot";
 
 type TrackedClanRow = Pick<TrackedClan, "tag" | "name"> & {
   shortName?: string | null;
 };
 type CurrentMemberRow = Pick<
   FwaClanMemberCurrent,
-  "clanTag" | "playerTag" | "playerName" | "townHall" | "weight" | "sourceSyncedAt"
+  | "clanTag"
+  | "playerTag"
+  | "playerName"
+  | "role"
+  | "level"
+  | "donated"
+  | "received"
+  | "rank"
+  | "trophies"
+  | "league"
+  | "townHall"
+  | "weight"
+  | "inWar"
+  | "sourceSyncedAt"
 >;
 type ClanMembersSyncStateRow = {
   scopeKey: string;
@@ -57,6 +77,7 @@ type ClanMembersSyncStateRow = {
   lastStatus: FwaFeedSyncStatus;
   lastRowCount: number | null;
   lastChangedRowCount: number | null;
+  lastContentHash: string | null;
 };
 type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
@@ -391,7 +412,7 @@ function assessPersistedClanMembersCoverage(input: {
   syncState: ClanMembersSyncStateRow | null;
   memberCount: number;
   now: Date;
-  syncMetadataAvailable: boolean;
+  snapshotHash: string;
 }): {
   coverage: CompoActualRosterCoverage;
   memberCountEvidence: "observed" | "unknown";
@@ -399,31 +420,10 @@ function assessPersistedClanMembersCoverage(input: {
   sourceStatus: CompoActualRosterSourceStatus | null;
   reason: string;
 } {
-  // The production Prisma client always exposes the sync-state delegate. The
-  // fallback only keeps lightweight pure/test doubles usable; a real missing
-  // CLAN_MEMBERS row is unavailable and therefore fails closed below.
-  if (!input.syncMetadataAvailable) {
-    return input.memberCount > 0
-      ? {
-          coverage: "complete",
-          memberCountEvidence: "observed",
-          observedAt: null,
-          sourceStatus: null,
-          reason: "sync_state_delegate_not_present_in_test_double",
-        }
-      : {
-          coverage: "unavailable",
-          memberCountEvidence: "unknown",
-          observedAt: null,
-          sourceStatus: null,
-          reason: "sync_state_missing",
-        };
-  }
-
   const state = input.syncState;
-  const observedAt = state?.lastSuccessAt instanceof Date && Number.isFinite(state.lastSuccessAt.getTime())
-    ? state.lastSuccessAt
-    : null;
+  const isValidDate = (value: unknown): value is Date =>
+    value instanceof Date && Number.isFinite(value.getTime());
+  const observedAt = isValidDate(state?.lastSuccessAt) ? state.lastSuccessAt : null;
   const sourceStatus = state?.lastStatus ?? null;
   if (!state || !observedAt) {
     return {
@@ -432,6 +432,29 @@ function assessPersistedClanMembersCoverage(input: {
       observedAt,
       sourceStatus,
       reason: "sync_state_missing_success",
+    };
+  }
+  if (
+    !isValidDate(state.lastAttemptAt) ||
+    state.lastAttemptAt.getTime() < observedAt.getTime() ||
+    observedAt.getTime() > input.now.getTime() ||
+    state.lastAttemptAt.getTime() > input.now.getTime()
+  ) {
+    return {
+      coverage: "contradictory",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_timestamp_order_invalid",
+    };
+  }
+  if (state.lastStatus !== "SUCCESS" && state.lastStatus !== "NOOP") {
+    return {
+      coverage: state.lastStatus === "FAILURE" ? "stale" : "unavailable",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_status_not_authoritative",
     };
   }
   if (state.lastRowCount === null || state.lastRowCount === undefined) {
@@ -452,19 +475,20 @@ function assessPersistedClanMembersCoverage(input: {
       reason: "sync_state_row_count_mismatch",
     };
   }
-  if (state.lastStatus === "FAILURE") {
+  if (!state.lastContentHash || state.lastContentHash !== input.snapshotHash) {
     return {
-      coverage: "stale",
+      coverage: state.lastContentHash ? "contradictory" : "partial",
       memberCountEvidence: "unknown",
       observedAt,
       sourceStatus,
-      reason: "latest_sync_failed",
+      reason: state.lastContentHash ? "sync_snapshot_hash_mismatch" : "sync_snapshot_hash_missing",
     };
   }
 
   const freshness = getHomeRosterCoverage({
     lastSuccessAt: observedAt,
     now: input.now,
+    cadenceMinutes: getConfiguredClanMembersCadenceMinutes(),
   });
   if (freshness.coverage !== "CURRENT") {
     return {
@@ -510,12 +534,6 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
   }
 
-  const feedSyncStateDelegate = (prisma as unknown as {
-    fwaFeedSyncState?: {
-      findMany?: (args: unknown) => Promise<ClanMembersSyncStateRow[]>;
-    };
-  }).fwaFeedSyncState;
-  const syncMetadataAvailable = typeof feedSyncStateDelegate?.findMany === "function";
   const [members, reference, feedStates] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
       where: { clanTag: { in: trackedClanTags } },
@@ -523,30 +541,37 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         clanTag: true,
         playerTag: true,
         playerName: true,
+        role: true,
+        level: true,
+        donated: true,
+        received: true,
+        rank: true,
+        trophies: true,
+        league: true,
         townHall: true,
         weight: true,
+        inWar: true,
         sourceSyncedAt: true,
       },
       orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
     }),
     resolveHeatMapRefReference({ guildId: input.guildId }),
-    syncMetadataAvailable
-      ? feedSyncStateDelegate!.findMany!({
-          where: {
-            feedType: "CLAN_MEMBERS",
-            scopeType: "CLAN_TAG",
-            scopeKey: { in: trackedClanTags },
-          },
-          select: {
-            scopeKey: true,
-            lastAttemptAt: true,
-            lastSuccessAt: true,
-            lastStatus: true,
-            lastRowCount: true,
-            lastChangedRowCount: true,
-          },
-        })
-      : Promise.resolve([]),
+    prisma.fwaFeedSyncState.findMany({
+      where: {
+        feedType: "CLAN_MEMBERS",
+        scopeType: "CLAN_TAG",
+        scopeKey: { in: trackedClanTags },
+      },
+      select: {
+        scopeKey: true,
+        lastAttemptAt: true,
+        lastSuccessAt: true,
+        lastStatus: true,
+        lastRowCount: true,
+        lastChangedRowCount: true,
+        lastContentHash: true,
+      },
+    }),
   ]);
   const heatMapRefs = reference.heatMapRefs;
   const referenceAvailability = reference.availability;
@@ -754,11 +779,14 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       }
     }
 
+    const snapshotHash = computeClanMembersSnapshotHash(
+      clanMembers.map((member) => toPersistedClanMembersSnapshotRow(member)),
+    );
     const rosterEvidence = assessPersistedClanMembersCoverage({
       syncState: syncStateByClanTag.get(clanTag) ?? null,
       memberCount: clanMembers.length,
       now,
-      syncMetadataAvailable,
+      snapshotHash,
     });
     clans.push({
       clanTag,

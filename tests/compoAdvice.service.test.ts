@@ -7,6 +7,7 @@ import {
 } from "../src/services/CompoAdviceService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import { computeClanMembersSnapshotHash, toPersistedClanMembersSnapshotRow } from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -44,6 +45,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   weightInputDeferment: {
+    findMany: vi.fn(),
+  },
+  fwaFeedSyncState: {
     findMany: vi.fn(),
   },
 }));
@@ -198,6 +202,7 @@ describe("CompoAdviceService", () => {
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.heatMapRefBucketTarget.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
     prismaMock.$queryRaw.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
@@ -205,6 +210,27 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockImplementation(async (args: any) => {
+      const memberResult = prismaMock.fwaClanMemberCurrent.findMany.mock.results.at(-1);
+      const rows = memberResult?.type === "return" ? await memberResult.value : [];
+      const byClan = new Map<string, any[]>();
+      for (const row of rows as any[]) {
+        const list = byClan.get(row.clanTag) ?? [];
+        list.push(row);
+        byClan.set(row.clanTag, list);
+      }
+      return (args?.where?.scopeKey?.in ?? []).map((scopeKey: string) => ({
+        scopeKey,
+        lastAttemptAt: new Date(),
+        lastSuccessAt: new Date(),
+        lastStatus: "SUCCESS",
+        lastRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastChangedRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastContentHash: computeClanMembersSnapshotHash(
+          (byClan.get(scopeKey) ?? []).map((row) => toPersistedClanMembersSnapshotRow(row)),
+        ),
+      }));
+    });
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];

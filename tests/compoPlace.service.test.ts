@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EmbedBuilder } from "discord.js";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
@@ -6,6 +7,10 @@ import { CompoReplacementService } from "../src/services/CompoReplacementService
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -123,6 +128,17 @@ function validPlayerTag(index: number): string {
   return `#P${suffix.padStart(6, "0")}`;
 }
 
+function serializedDiscordEmbedCharacterCount(embed: ReturnType<EmbedBuilder["toJSON"]>): number {
+  return (embed.title?.length ?? 0)
+    + (embed.description?.length ?? 0)
+    + (embed.footer?.text?.length ?? 0)
+    + (embed.author?.name?.length ?? 0)
+    + (embed.fields ?? []).reduce(
+      (sum, field) => sum + field.name.length + field.value.length,
+      0,
+    );
+}
+
 function makeCurrentMembers(input: {
   clanTag: string;
   counts: Partial<
@@ -173,6 +189,16 @@ function makeZeroWeightMember(input: {
     sourceSyncedAt: input.sourceSyncedAt ?? new Date("2026-04-10T16:30:00.000Z"),
     townHall: input.townHall ?? 18,
   };
+}
+
+function hashCurrentRows(rows: Array<Record<string, unknown>>): string {
+  return computeClanMembersSnapshotHash(
+    rows.map((row) => toPersistedClanMembersSnapshotRow({
+      clanTag: String(row.clanTag),
+      playerTag: String(row.playerTag),
+      ...row,
+    })),
+  );
 }
 
 function makeWarFallback(input: {
@@ -243,6 +269,9 @@ describe("CompoPlaceService", () => {
         lastStatus: "SUCCESS",
         lastRowCount: countByClan.get(scopeKey) ?? 0,
         lastChangedRowCount: countByClan.get(scopeKey) ?? 0,
+        lastContentHash: hashCurrentRows(
+          (rows as Array<Record<string, unknown>>).filter((row) => row.clanTag === scopeKey),
+        ),
       }));
     });
     prismaMock.$queryRaw.mockImplementation(async () => {
@@ -276,7 +305,8 @@ describe("CompoPlaceService", () => {
     expect(result.content).toContain("Factual roster observations: **UNKNOWN — no tracked clans configured**");
     expect(result.content).toContain("Target comparison: **UNKNOWN**");
     expect(result.content).toContain("placement rankings and replacement suggestions are withheld");
-    expect(result.embeds).toEqual([]);
+    expect(result.embeds).toHaveLength(1);
+    expect(result.embeds[0]?.toJSON().fields?.find((field) => field.name === "Recommended")?.value).toContain("UNKNOWN");
     expect(result.candidateCount).toBe(0);
   });
 
@@ -289,7 +319,8 @@ describe("CompoPlaceService", () => {
     expect(result.content).toContain(`Bucket: **${bucket}**`);
     expect(result.content).toContain("Factual roster observations: **UNKNOWN — no tracked clans configured**");
     expect(result.content).toContain("Target comparison: **UNKNOWN**");
-    expect(result.embeds).toEqual([]);
+    expect(result.embeds).toHaveLength(1);
+    expect(result.embeds[0]?.toJSON().fields?.find((field) => field.name === "Composition")?.value).toContain("UNKNOWN");
     expect(result.candidateCount).toBe(0);
   });
 
@@ -358,6 +389,7 @@ describe("CompoPlaceService", () => {
       lastStatus: "SUCCESS",
       lastRowCount: 1,
       lastChangedRowCount: 1,
+      lastContentHash: hashCurrentRows(makeCurrentMembers({ clanTag: "#AAA111", counts: { TH18: 1 } })),
     }]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
@@ -389,6 +421,7 @@ describe("CompoPlaceService", () => {
       lastStatus: "NOOP",
       lastRowCount: 1,
       lastChangedRowCount: 0,
+      lastContentHash: "contradictory-fixture-hash",
     }]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
@@ -431,16 +464,11 @@ describe("CompoPlaceService", () => {
     expect(payloads.every((embed) =>
       (embed.fields ?? []).every((field) => (field.value?.length ?? 0) <= 1024),
     )).toBe(true);
-    expect(payloads.every((embed) => {
-      const fieldChars = (embed.fields ?? []).reduce(
-        (sum, field) => sum + field.name.length + field.value.length,
-        0,
-      );
-      return fieldChars + (embed.description?.length ?? 0) < 6000;
-    })).toBe(true);
+    expect(payloads.every((embed) => serializedDiscordEmbedCharacterCount(embed) <= 6000)).toBe(true);
     const serialized = JSON.stringify(payloads);
-    expect(serialized).toContain("Clan 0 with a deliberately long representative display name");
-    expect(serialized).toContain(`Clan ${clanCount - 1} with a deliberately long representative display name`);
+    for (const clan of tracked) {
+      expect(serialized).toContain(clan.name);
+    }
   });
 
   it("keeps factual rows for unsupported clans while ranking only supported legacy clans", async () => {
@@ -735,7 +763,7 @@ describe("CompoPlaceService", () => {
     expect(result.compositionCount).toBe(0);
     const embed = result.embeds[0]?.toJSON();
     expect(embed?.fields?.find((field) => field.name === "Factual observations")?.value).toContain(
-      "Alpha Clan - partial ≥1 TH15",
+      "Alpha Clan - observed 1 TH15 (coverage not complete)",
     );
     expect(resolvePlacementWeightForTest({
       memberWeight: 145000,

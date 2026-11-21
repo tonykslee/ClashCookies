@@ -37,12 +37,9 @@ export function assessCompoActualRosterEvidence(input: {
     bucketCountTotal === memberCount &&
     !hasDuplicateOrMissingMemberTags;
 
-  // An absent persisted roster is not proof that the clan is empty. Keep the
-  // factual row, but do not authorize target-derived work or 50 vacancies.
-  if (memberCount === 0 && members.length === 0 && base.memberCountEvidence !== "observed") {
-    return "actual_roster_incomplete";
-  }
-  if (base.rosterCoverage && base.rosterCoverage !== "complete") {
+  // Coverage is authoritative only when the CLAN_MEMBERS sync owner has
+  // validated the persisted snapshot. Rows alone never establish a roster.
+  if (base.rosterCoverage !== "complete") {
     return "actual_roster_incomplete";
   }
 
@@ -98,10 +95,5 @@ export function assessCompoActualRosterEvidence(input: {
 export function hasCompoActualRosterCountEvidence(
   clan: CompoActualStateClanContext,
 ): boolean {
-  // The sync-state-backed coverage gate is authoritative in production. The
-  // legacy memberCountEvidence fallback keeps pure P1 fixtures compatible;
-  // runtime contexts always populate rosterCoverage from CLAN_MEMBERS state.
-  return clan.base.rosterCoverage
-    ? clan.base.rosterCoverage === "complete"
-    : clan.base.memberCountEvidence === "observed";
+  return clan.base.rosterCoverage === "complete";
 }

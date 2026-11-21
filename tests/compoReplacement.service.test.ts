@@ -3,6 +3,7 @@ import { InactiveWarService } from "../src/services/InactiveWarService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 import { getCompoWarWeightBucket } from "../src/helper/compoWarWeightBuckets";
+import { computeClanMembersSnapshotHash, toPersistedClanMembersSnapshotRow } from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -36,6 +37,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   fillerAccount: {
+    findMany: vi.fn(),
+  },
+  fwaFeedSyncState: {
     findMany: vi.fn(),
   },
   $queryRaw: vi.fn(),
@@ -171,6 +175,7 @@ describe("CompoReplacementService", () => {
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.fillerAccount.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
     prismaMock.$queryRaw.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.trackedClan.findMany.mockResolvedValue([makeTrackedClan("#AAA111", "Alpha Clan")]);
@@ -185,6 +190,27 @@ describe("CompoReplacementService", () => {
       { playerTag: "#P000002" },
       { playerTag: "#P000028" },
     ]);
+    prismaMock.fwaFeedSyncState.findMany.mockImplementation(async (args: any) => {
+      const memberResult = prismaMock.fwaClanMemberCurrent.findMany.mock.results.at(-1);
+      const rows = memberResult?.type === "return" ? await memberResult.value : [];
+      const byClan = new Map<string, any[]>();
+      for (const row of rows as any[]) {
+        const list = byClan.get(row.clanTag) ?? [];
+        list.push(row);
+        byClan.set(row.clanTag, list);
+      }
+      return (args?.where?.scopeKey?.in ?? []).map((scopeKey: string) => ({
+        scopeKey,
+        lastAttemptAt: new Date("2026-05-20T12:00:00.000Z"),
+        lastSuccessAt: new Date("2026-05-20T12:00:00.000Z"),
+        lastStatus: "SUCCESS",
+        lastRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastChangedRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastContentHash: computeClanMembersSnapshotHash(
+          (byClan.get(scopeKey) ?? []).map((row) => toPersistedClanMembersSnapshotRow(row)),
+        ),
+      }));
+    });
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];
@@ -710,6 +736,43 @@ function makeFilterCandidate(input: {
 
     expect(result.candidates).toEqual([]);
     expect(result.evaluation).toMatchObject({
+      status: "unavailable",
+      reasonCode: "reference_unavailable",
+    });
+  });
+
+  it("removes candidates after reference invalidation when the actual resolver is re-run", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [],
+    } as any);
+    const context = makeContext({
+      members: [{ playerTag: "#P000090", playerName: "Candidate", resolvedWeight: 145000 }],
+      bucketCounts: { TH15: 1 },
+      heatMapRef: makeHeatMapRef({ th15Count: 1 }),
+    }) as any;
+
+    const service = new CompoReplacementService();
+    const first = await service.resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+    expect(first.candidates).toHaveLength(1);
+    expect(first.evaluation.status).toBe("evaluated_with_candidates");
+
+    context.referenceAvailability = { status: "blocked" };
+    const second = await service.resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+    expect(second.candidates).toEqual([]);
+    expect(second.evaluation).toMatchObject({
       status: "unavailable",
       reasonCode: "reference_unavailable",
     });

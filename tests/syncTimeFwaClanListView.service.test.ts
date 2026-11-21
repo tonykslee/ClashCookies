@@ -36,6 +36,9 @@ const prismaMock = vi.hoisted(() => ({
   fwaTrackedClanWarRosterMemberCurrent: {
     findMany: vi.fn(),
   },
+  fwaFeedSyncState: {
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -53,6 +56,10 @@ import {
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 function makeBaseMetadata() {
   return {
@@ -95,6 +102,16 @@ function mockReadinessState(
   rows?: Array<Record<string, unknown>>,
   heatMapRefs?: Array<Record<string, unknown>>,
 ) {
+  const persistedRows = rows ?? [
+    {
+      clanTag: "#2QG2C08UP",
+      playerTag: "#PYLQ0289",
+      playerName: "Player One",
+      townHall: 16,
+      weight: 150000,
+      sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
+    },
+  ];
   prismaMock.trackedClan.findMany.mockResolvedValueOnce([
     {
       tag: "#2QG2C08UP",
@@ -102,18 +119,7 @@ function mockReadinessState(
       shortName: "AC",
     },
   ]);
-  prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce(
-    rows ?? [
-      {
-        clanTag: "#2QG2C08UP",
-        playerTag: "#PYLQ0289",
-        playerName: "Player One",
-        townHall: 16,
-        weight: 150000,
-        sourceSyncedAt: new Date("2026-06-10T11:55:00.000Z"),
-      },
-    ],
-  );
+  prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce(persistedRows);
   prismaMock.heatMapRef.findMany.mockResolvedValueOnce(heatMapRefs ?? []);
   prismaMock.$queryRaw.mockResolvedValueOnce([
     {
@@ -132,6 +138,23 @@ function mockReadinessState(
   prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
   prismaMock.weightInputDeferment.findMany.mockResolvedValueOnce([]);
   prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValueOnce([]);
+  prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+    scopeKey: "#2QG2C08UP",
+    lastAttemptAt: new Date("2026-06-10T11:55:01.000Z"),
+    lastSuccessAt: new Date("2026-06-10T11:55:00.000Z"),
+    lastStatus: "SUCCESS",
+    lastRowCount: persistedRows.length,
+    lastChangedRowCount: persistedRows.length,
+    lastContentHash: computeClanMembersSnapshotHash(
+      persistedRows.map((row) => toPersistedClanMembersSnapshotRow({
+        clanTag: String(row.clanTag),
+        playerTag: String(row.playerTag),
+        playerName: String(row.playerName ?? ""),
+        townHall: typeof row.townHall === "number" ? row.townHall : null,
+        weight: typeof row.weight === "number" ? row.weight : null,
+      })),
+    ),
+  }]);
 }
 
 const VALID_CLASH_TAG_CHARS = "PYLQGRJCUV0289";
@@ -212,6 +235,7 @@ describe("SyncTimeFwaClanListViewService", () => {
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
     prismaMock.trackedClan.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.heatMapRef.findMany.mockResolvedValue([]);
@@ -219,6 +243,7 @@ describe("SyncTimeFwaClanListViewService", () => {
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([]);
   });
 
   it("builds the sync-time payload with the shared FWA readiness embed and refresh button", async () => {

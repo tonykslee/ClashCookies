@@ -323,18 +323,7 @@ export class CompoReplacementService {
       return buildUnavailable("th19_target_unavailable");
     }
     if (context.clans.length === 0) {
-      return {
-        inputWeight: input.weight,
-        bucket,
-        summaryByClan: [],
-        candidates: [],
-        evaluation: {
-          status: "evaluated_no_candidates",
-          reasonCode: null,
-          eligibleClanTags: [],
-          unavailableClanTags: [],
-        },
-      };
+      return buildUnavailable("roster_context_empty", []);
     }
     if (context.referenceAvailability?.status !== "validated") {
       return buildUnavailable("reference_unavailable");

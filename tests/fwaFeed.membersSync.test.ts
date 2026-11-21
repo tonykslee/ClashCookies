@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
-import { computeFeedContentHash } from "../src/services/fwa-feeds/hash";
+import { computeClanMembersSnapshotHash, toClanMembersSnapshotRow } from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 const txMock = vi.hoisted(() => ({
   fwaClanMemberCurrent: {
@@ -39,6 +39,9 @@ describe("FwaClanMembersSyncService", () => {
   it("refreshes only the requested clan tags from CoC into the current-member owner", async () => {
     const cocService = {
       getClan: vi.fn().mockResolvedValue({
+        tag: "#AAA111",
+        memberListPresent: true,
+        declaredMemberCount: 2,
         members: [
         {
           tag: "#PYLQ0289",
@@ -179,6 +182,28 @@ describe("FwaClanMembersSyncService", () => {
     expect(result.changedRowCount).toBe(3);
   });
 
+  it("fails closed when CoC omits the member list or declares contradictory coverage", async () => {
+    const missingListService = new FwaClanMembersSyncService();
+    const missing = await missingListService.refreshCurrentClanMembersForClanTags(["#AAA111"], {
+      cocService: { getClan: vi.fn().mockResolvedValue({ tag: "#AAA111", members: [] }) } as any,
+    });
+    expect(missing.failedClans).toEqual(["#AAA111"]);
+    expect(txMock.fwaClanMemberCurrent.upsert).not.toHaveBeenCalled();
+
+    const contradictory = await missingListService.refreshCurrentClanMembersForClanTags(["#AAA111"], {
+      cocService: {
+        getClan: vi.fn().mockResolvedValue({
+          tag: "#AAA111",
+          memberListPresent: true,
+          declaredMemberCount: 2,
+          members: [{ tag: "#PYLQ0289", name: "Only one" }],
+        }),
+      } as any,
+    });
+    expect(contradictory.failedClans).toEqual(["#AAA111"]);
+    expect(txMock.fwaClanMemberCurrent.upsert).not.toHaveBeenCalled();
+  });
+
   it("updates linked playerName when observed name changes", async () => {
     const client = {
       fetchClanMembers: vi.fn().mockResolvedValue([
@@ -236,7 +261,7 @@ describe("FwaClanMembersSyncService", () => {
         inWar: true,
       },
     ];
-    const hash = computeFeedContentHash(rows);
+    const hash = computeClanMembersSnapshotHash(rows.map(toClanMembersSnapshotRow));
     const client = {
       fetchClanMembers: vi.fn().mockResolvedValue(rows),
     } as any;
