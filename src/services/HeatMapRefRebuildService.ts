@@ -226,7 +226,7 @@ function buildSummaryLines(input: {
   qualifyingRosters: HeatMapRefRebuildQualifiedRoster[];
   excludedRosters: HeatMapRefRebuildExcludedRoster[];
   rows: HeatMapRefRebuildRow[];
-  status: "success" | "noop" | "failed";
+  status: "success" | "noop" | "skipped" | "failed";
   reason: string | null;
 }): string[] {
   const lines = [
@@ -239,6 +239,21 @@ function buildSummaryLines(input: {
   ];
   if (input.reason) {
     lines.push(`reason: ${input.reason}`);
+  }
+  const exclusionCounts = new Map<string, number>();
+  for (const row of input.excludedRosters) {
+    exclusionCounts.set(row.reasonCode, (exclusionCounts.get(row.reasonCode) ?? 0) + 1);
+  }
+  if (exclusionCounts.size > 0) {
+    if (input.qualifyingRosters.length > 0) {
+      lines.push(`evidence: partial (${input.excludedRosters.length} roster(s) excluded)`);
+    }
+    lines.push(
+      `excluded reasons: ${[...exclusionCounts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([reasonCode, count]) => `${reasonCode}=${count}`)
+        .join(", ")}`,
+    );
   }
   const excludedPreview = input.excludedRosters
     .slice(0, 3)
@@ -309,11 +324,12 @@ export class HeatMapRefRebuildService {
       now,
     });
     const rebuilt = rebuiltResult.rows;
+    const currentRows = await getAllHeatMapRefs();
     assertHeatMapRefContinuityOrThrow({
       operation: "rebuild",
       rows: rebuilt,
     });
-    const currentRows = await getAllHeatMapRefs();
+
     const currentComparableRows = currentRows.map((row) => ({
       weightMinInclusive: row.weightMinInclusive,
       weightMaxInclusive: row.weightMaxInclusive,
@@ -324,14 +340,74 @@ export class HeatMapRefRebuildService {
       th14Count: row.th14Count,
       th13Count: row.th13Count,
       th12Count: row.th12Count,
-      th11Count: row.th11Count,
       th10OrLowerCount: row.th10OrLowerCount,
+      th11Count: row.th11Count,
       contributingClanCount: row.contributingClanCount,
       sourceVersion: row.sourceVersion,
       refreshedAt: row.refreshedAt,
     }));
     const currentHash = computeHeatMapRefRebuildContentHash(currentComparableRows as HeatMapRefRebuildRow[]);
     const nextHash = computeHeatMapRefRebuildContentHash(rebuilt);
+
+    if (sourceRosters.length === 0 && currentHash === nextHash) {
+      const reason = "rebuilt content matched the stored HeatMapRef rows";
+      return {
+        status: "noop",
+        reason,
+        cycleKey: null,
+        dueAt: null,
+        trackedClanCount: fwaClanTags.length,
+        sourceRosterCount: 0,
+        qualifyingRosterCount: 0,
+        excludedRosterCount: 0,
+        rowCount: rebuilt.length,
+        changedRowCount: 0,
+        contentHash: nextHash,
+        alertSent: false,
+        summaryLines: buildSummaryLines({
+          trackedClanCount: fwaClanTags.length,
+          sourceRosterCount: 0,
+          qualifyingRosters: rebuiltResult.qualifyingRosters,
+          excludedRosters: rebuiltResult.excludedRosters,
+          rows: rebuilt,
+          status: "noop",
+          reason,
+        }),
+      };
+    }
+
+    if (rebuiltResult.qualifyingRosters.length === 0) {
+      const reason =
+        sourceRosters.length === 0
+          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved"
+          : "no qualifying FWA rosters; existing HeatMapRef rows were preserved";
+      const status: HeatMapRefRebuildRunResult["status"] =
+        sourceRosters.length === 0 ? "noop" : "skipped";
+      return {
+        status,
+        reason,
+        cycleKey: null,
+        dueAt: null,
+        trackedClanCount: fwaClanTags.length,
+        sourceRosterCount: sourceRosters.length,
+        qualifyingRosterCount: 0,
+        excludedRosterCount: rebuiltResult.excludedRosters.length,
+        rowCount: currentRows.length,
+        changedRowCount: 0,
+        contentHash: null,
+        alertSent: false,
+        summaryLines: buildSummaryLines({
+          trackedClanCount: fwaClanTags.length,
+          sourceRosterCount: sourceRosters.length,
+          qualifyingRosters: rebuiltResult.qualifyingRosters,
+          excludedRosters: rebuiltResult.excludedRosters,
+          rows: currentRows as HeatMapRefRebuildRow[],
+          status,
+          reason,
+        }),
+      };
+    }
+
     if (currentHash === nextHash) {
       return {
         status: "noop",

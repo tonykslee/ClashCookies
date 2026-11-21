@@ -165,6 +165,43 @@ function buildNormalizedCountsFromAverages(input: {
   };
 }
 
+function countSampleBuckets(input: {
+  th18Count: number;
+  th17Count: number;
+  th16Count: number;
+  th15Count: number;
+  th14Count: number;
+  th13Count: number;
+  th12Count: number;
+  th11PlusCount: number;
+}): number {
+  return [
+    input.th18Count,
+    input.th17Count,
+    input.th16Count,
+    input.th15Count,
+    input.th14Count,
+    input.th13Count,
+    input.th12Count,
+    input.th11PlusCount,
+  ].reduce((sum, count) => sum + Math.max(0, Math.trunc(count)), 0);
+}
+
+function isCompleteBlacklistSample(row: {
+  rosterSize: number;
+  th18Count: number;
+  th17Count: number;
+  th16Count: number;
+  th15Count: number;
+  th14Count: number;
+  th13Count: number;
+  th12Count: number;
+  th11PlusCount: number;
+}): boolean {
+  const rosterSize = Math.trunc(row.rosterSize);
+  return rosterSize > 0 && countSampleBuckets(row) === rosterSize;
+}
+
 function buildSummaryLines(input: {
   usableSampleCount: number;
   bandCount: number;
@@ -220,6 +257,7 @@ export class BlacklistHeatmapRefService {
         sourceClanTag: true,
         opponentBlacklistTag: true,
         totalRosterWeight: true,
+        rosterSize: true,
         missingWeightCount: true,
         th18Count: true,
         th17Count: true,
@@ -234,45 +272,36 @@ export class BlacklistHeatmapRefService {
       },
     });
 
-    if (sampleRows.length === 0) {
-      const existingRows = await prisma.blacklistHeatMapRef.findMany({
-        select: {
-          weightMinInclusive: true,
-          weightMaxInclusive: true,
-        },
-      });
-      for (const row of existingRows) {
-        await prisma.blacklistHeatMapRef.delete({
-          where: {
-            weightMinInclusive_weightMaxInclusive: {
-              weightMinInclusive: row.weightMinInclusive,
-              weightMaxInclusive: row.weightMaxInclusive,
-            },
-          },
-        });
-      }
+    const completeSampleRows = sampleRows.filter((row) => isCompleteBlacklistSample(row));
+    const incompleteSampleCount = sampleRows.length - completeSampleRows.length;
+
+    if (completeSampleRows.length === 0) {
+      const reason =
+        sampleRows.length === 0
+          ? "no usable blacklist samples are available; existing rows were preserved"
+          : `all ${incompleteSampleCount} blacklist samples were incomplete; existing rows were preserved`;
       return {
         status: "skipped",
-        reason: "no usable blacklist samples are available",
+        reason,
         usableSampleCount: 0,
         bandCount: 0,
         addedCount: 0,
         updatedCount: 0,
-        removedCount: existingRows.length,
+        removedCount: 0,
         summaryLines: buildSummaryLines({
           usableSampleCount: 0,
           bandCount: 0,
           addedCount: 0,
           updatedCount: 0,
-          removedCount: existingRows.length,
+          removedCount: 0,
           status: "skipped",
-          reason: "no usable blacklist samples are available",
+          reason,
         }),
       };
     }
 
     const aggregates = new Map<string, BandAggregate>();
-    for (const row of sampleRows) {
+    for (const row of completeSampleRows) {
       const band = buildBandRange(row.totalRosterWeight);
       const key = `${band.weightMinInclusive}:${band.weightMaxInclusive}`;
       const aggregate = aggregates.get(key) ?? createEmptyBandAggregate(band);
@@ -390,21 +419,26 @@ export class BlacklistHeatmapRefService {
 
     const status: BlacklistHeatmapRefRebuildResult["status"] =
       desiredRows.length > 0 ? "success" : "noop";
-    const reason =
+    const baseReason =
       desiredRows.length > 0
         ? null
         : "no blacklist profile bands qualified from the usable samples";
+    const reason =
+      baseReason ??
+      (incompleteSampleCount > 0
+        ? `excluded ${incompleteSampleCount} incomplete blacklist sample(s)`
+        : null);
 
     return {
       status,
       reason,
-      usableSampleCount: sampleRows.length,
+      usableSampleCount: completeSampleRows.length,
       bandCount: desiredRows.length,
       addedCount,
       updatedCount,
       removedCount,
       summaryLines: buildSummaryLines({
-        usableSampleCount: sampleRows.length,
+        usableSampleCount: completeSampleRows.length,
         bandCount: desiredRows.length,
         addedCount,
         updatedCount,

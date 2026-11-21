@@ -5,6 +5,7 @@ type BlacklistMatchSampleRow = {
   sourceClanTag: string;
   opponentBlacklistTag: string;
   totalRosterWeight: number;
+  rosterSize: number;
   missingWeightCount: number;
   th18Count: number;
   th17Count: number;
@@ -92,6 +93,7 @@ function makeSampleRow(input: {
   sourceClanTag: string;
   opponentBlacklistTag: string;
   totalRosterWeight: number;
+  rosterSize?: number;
   missingWeightCount: number;
   counts: ReturnType<typeof makeCounts>;
   sampleQuality: "full" | "partial";
@@ -101,6 +103,7 @@ function makeSampleRow(input: {
     sourceClanTag: input.sourceClanTag,
     opponentBlacklistTag: input.opponentBlacklistTag,
     totalRosterWeight: input.totalRosterWeight,
+    rosterSize: input.rosterSize ?? 50,
     missingWeightCount: input.missingWeightCount,
     ...input.counts,
     sampleQuality: input.sampleQuality,
@@ -292,7 +295,7 @@ describe("BlacklistHeatmapRefService", () => {
     expect(second.removedCount).toBe(0);
   });
 
-  it("skips low-confidence samples consistently and clears stale profile rows", async () => {
+  it("skips low-confidence samples consistently and preserves stale profile rows", async () => {
     sampleRows.push(
       makeSampleRow({
         sourceClanTag: "#PYLQ0288",
@@ -329,7 +332,50 @@ describe("BlacklistHeatmapRefService", () => {
     expect(result.status).toBe("skipped");
     expect(result.bandCount).toBe(0);
     expect(result.usableSampleCount).toBe(0);
-    expect(result.removedCount).toBe(1);
-    expect(profileRows).toHaveLength(0);
+    expect(result.removedCount).toBe(0);
+    expect(profileRows).toHaveLength(1);
+  });
+
+  it("excludes incomplete samples before normalization and preserves existing profiles", async () => {
+    sampleRows.push(
+      makeSampleRow({
+        sourceClanTag: "#PYLQ0288",
+        opponentBlacklistTag: "#PYLQ0289",
+        totalRosterWeight: 6_450_001,
+        rosterSize: 50,
+        missingWeightCount: 0,
+        counts: makeCounts({ th18: 49 }),
+        sampleQuality: "full",
+        confidence: "high",
+      }),
+    );
+    profileRows.push({
+      weightMinInclusive: 6_400_000,
+      weightMaxInclusive: 6_499_999,
+      th18Count: 50,
+      th17Count: 0,
+      th16Count: 0,
+      th15Count: 0,
+      th14Count: 0,
+      th13Count: 0,
+      th12Count: 0,
+      th11PlusCount: 0,
+      sampleCount: 1,
+      uniqueSourceClanCount: 1,
+      uniqueOpponentCount: 1,
+      totalMissingWeightCount: 0,
+      confidenceLabel: "high",
+      confidenceScore: 100,
+      generatedAt: now,
+    });
+
+    const result = await service.rebuildBlacklistHeatmapRef({ now });
+
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toContain("incomplete");
+    expect(result.usableSampleCount).toBe(0);
+    expect(result.removedCount).toBe(0);
+    expect(profileRows).toHaveLength(1);
+    expect(prismaMock.blacklistHeatMapRef.upsert).not.toHaveBeenCalled();
   });
 });

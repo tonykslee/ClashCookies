@@ -8,6 +8,13 @@ export const HEAT_MAP_REF_REBUILD_THRESHOLD = 10;
 export const HEAT_MAP_REF_REBUILD_SOURCE_VERSION = "heatmapref-rebuild-v1";
 export const HEAT_MAP_REF_REBUILD_DELAY_HOURS = 47;
 
+export type HeatMapRefRebuildExclusionReasonCode =
+  | "roster_size"
+  | "missing_weights"
+  | "no_reference_band"
+  | "unresolved_effective_weights"
+  | "unsupported_th19";
+
 export type HeatMapRefBucketCounts = {
   th18Count: number;
   th17Count: number;
@@ -52,6 +59,7 @@ export type HeatMapRefRebuildExcludedRoster = {
   clanTag: string;
   rosterSize: number;
   missingWeightCount: number;
+  reasonCode: HeatMapRefRebuildExclusionReasonCode;
   reason: string;
 };
 
@@ -304,26 +312,43 @@ function deriveEffectiveWeights(
 
 function resolveRosterBucketCounts(
   members: readonly (HeatMapRefRebuildSourceMember & { effectiveWeight: number | null })[],
-): HeatMapRefBucketCounts | null {
+): {
+  bucketCounts: HeatMapRefBucketCounts | null;
+  reasonCode: HeatMapRefRebuildExclusionReasonCode | null;
+} {
   const granular = buildCompoWarBucketCounts(
     members.map((member) => ({
       effectiveWeight: member.effectiveWeight,
     })),
   );
-  if (!granular) return null;
-  return toHeatMapRefBucketCountsFromGranularCounts({
-    th18: granular.TH18,
-    th17: granular.TH17,
-    th16: granular.TH16,
-    th15: granular.TH15,
-    th14: granular.TH14,
-    th13: granular.TH13,
-    th12: granular.TH12,
-    th11: granular.TH11,
-    th10: granular.TH10,
-    th9: granular.TH9,
-    th8OrLower: granular.TH8_OR_LOWER,
-  });
+  if (!granular) {
+    return {
+      bucketCounts: null,
+      reasonCode: "unresolved_effective_weights",
+    };
+  }
+  if ((granular.TH19 ?? 0) > 0) {
+    return {
+      bucketCounts: null,
+      reasonCode: "unsupported_th19",
+    };
+  }
+  return {
+    bucketCounts: toHeatMapRefBucketCountsFromGranularCounts({
+      th18: granular.TH18,
+      th17: granular.TH17,
+      th16: granular.TH16,
+      th15: granular.TH15,
+      th14: granular.TH14,
+      th13: granular.TH13,
+      th12: granular.TH12,
+      th11: granular.TH11,
+      th10: granular.TH10,
+      th9: granular.TH9,
+      th8OrLower: granular.TH8_OR_LOWER,
+    }),
+    reasonCode: null,
+  };
 }
 
 export function buildHeatMapRefRebuildRows(input: {
@@ -354,6 +379,7 @@ export function buildHeatMapRefRebuildRows(input: {
         clanTag: roster.clanTag,
         rosterSize,
         missingWeightCount,
+        reasonCode: "roster_size",
         reason: `roster size ${rosterSize}/50`,
       });
       continue;
@@ -363,6 +389,7 @@ export function buildHeatMapRefRebuildRows(input: {
         clanTag: roster.clanTag,
         rosterSize,
         missingWeightCount,
+        reasonCode: "missing_weights",
         reason: `missing weights ${missingWeightCount}/50`,
       });
       continue;
@@ -381,18 +408,23 @@ export function buildHeatMapRefRebuildRows(input: {
         clanTag: roster.clanTag,
         rosterSize,
         missingWeightCount,
+        reasonCode: "no_reference_band",
         reason: `no HeatMapRef band for total weight ${totalEffectiveWeight}`,
       });
       continue;
     }
 
-    const bucketCounts = resolveRosterBucketCounts(members);
-    if (!bucketCounts) {
+    const resolvedBuckets = resolveRosterBucketCounts(members);
+    if (!resolvedBuckets.bucketCounts) {
       excludedRosters.push({
         clanTag: roster.clanTag,
         rosterSize,
         missingWeightCount,
-        reason: "unresolved effective weights",
+        reasonCode: resolvedBuckets.reasonCode ?? "unresolved_effective_weights",
+        reason:
+          resolvedBuckets.reasonCode === "unsupported_th19"
+            ? "unsupported TH19 effective weight bucket"
+            : "unresolved effective weights",
       });
       continue;
     }
@@ -403,7 +435,7 @@ export function buildHeatMapRefRebuildRows(input: {
       missingWeightCount,
       totalEffectiveWeight,
       band,
-      bucketCounts,
+      bucketCounts: resolvedBuckets.bucketCounts,
     });
   }
 

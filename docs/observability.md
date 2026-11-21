@@ -72,6 +72,12 @@ Representative examples:
 
 Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
 
+### FWA composition reference containment
+
+HeatMapRef rebuild summaries must distinguish safe evidence from excluded or blocked evidence. The shared rebuild helper reports explicit exclusion codes including `unsupported_th19`, `roster_size`, `missing_weights`, `no_reference_band`, and `unresolved_effective_weights`. A rebuild with no qualifying current-era roster evidence is blocked/skipped and preserves the existing HeatMapRef rows; it must not publish seed-only rows as a replacement. Mixed evidence is reported through the excluded-roster count and reason summary while supported rosters remain eligible to contribute.
+
+Blacklist sample generation reuses the same effective-weight containment and reports skipped reason codes. Blacklist profile aggregation validates that persisted bucket counts equal the recorded roster size before normalization. If no complete samples remain, existing blacklist profile rows are preserved. These safeguards do not prove that already-persisted legacy references are uncontaminated; production verification requires read-only comparison of source roster evidence, persisted sample/reference timestamps, source versions, and rebuild checkpoints before any repair or backfill.
+
 ### Automatic sync-status lookup
 
 `/sync post status` and `/sync spin status` emit one bounded `[sync-status] automatic_lookup` event for automatic discovery. The event records the guild, resolution result (`active`, `expired`, `deleted`, `missing`, `unavailable`, `format_mismatch`, `no_active_tracked_announcement`, or `stale_saved_pointer`), selected root identity/status, saved-pointer identity, and whether the saved pointer matched the DB-selected root. Discord permission, temporary API, and format failures preserve `TrackedMessage`; only a definitive missing-message response may mark the tracked root deleted. Message contents and unbounded exception text are not logged.
