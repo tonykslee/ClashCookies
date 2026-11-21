@@ -43,15 +43,25 @@ export class FwaClanMembersSyncService {
     const results = await mapWithConcurrency(normalizedClanTags, concurrency, async (clanTag) => {
       try {
         const clan = await cocService.getClan(clanTag);
-        const members = Array.isArray(clan?.members) ? clan.members : [];
+        if (!Array.isArray(clan?.members)) {
+          throw new Error("CLAN_MEMBERS response did not include a member array");
+        }
+        const members = clan.members;
+        const playerTags: Array<string | null> = members.map((row: any) =>
+          normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? "")),
+        );
+        if (
+          playerTags.some((tag) => !tag) ||
+          new Set(playerTags).size !== playerTags.length
+        ) {
+          throw new Error("CLAN_MEMBERS response contained missing or duplicate player tags");
+        }
+        const validPlayerTags = playerTags.filter((tag): tag is string => Boolean(tag));
         const result = await prisma.$transaction(async (tx) => {
-          const playerTags = members
-            .map((row: any) => normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? "")))
-            .filter(Boolean);
           const staleDelete = await tx.fwaClanMemberCurrent.deleteMany({
             where: {
               clanTag,
-              ...(playerTags.length > 0 ? { playerTag: { notIn: playerTags } } : {}),
+              ...(validPlayerTags.length > 0 ? { playerTag: { notIn: validPlayerTags } } : {}),
             },
           });
           for (const row of members) {
@@ -138,11 +148,41 @@ export class FwaClanMembersSyncService {
             changedRowCount: staleDelete.count + members.length,
           };
         });
+        await this.syncState.recordSuccess(
+          {
+            feedType: FwaClanMembersSyncService.FEED_TYPE,
+            scopeType: "CLAN_TAG",
+            scopeKey: clanTag,
+            rowCount: result.rowCount,
+            changedRowCount: result.changedRowCount,
+            contentHash: null,
+            status: "SUCCESS",
+            nextEligibleAt: null,
+          },
+          now,
+        );
         console.info(
           `[fwa-feed] cwl_overview_current_members_refresh clan=${clanTag} status=SUCCESS rows=${result.rowCount} persisted=${result.rowCount}`,
         );
         return { clanTag, failed: false, ...result };
       } catch (error) {
+        try {
+          await this.syncState.recordFailure(
+            {
+              feedType: FwaClanMembersSyncService.FEED_TYPE,
+              scopeType: "CLAN_TAG",
+              scopeKey: clanTag,
+              errorCode: "COC_REFRESH_FAILED",
+              errorSummary: String(
+                (error as { message?: unknown })?.message ?? error,
+              ).slice(0, 200),
+              nextEligibleAt: null,
+            },
+            now,
+          );
+        } catch {
+          // Preserve the bounded per-clan failure result if diagnostics cannot persist.
+        }
         console.warn(
           `[fwa-feed] cwl_overview_current_members_refresh clan=${clanTag} status=FAILURE error=${String(
             (error as { message?: unknown })?.message ?? error,

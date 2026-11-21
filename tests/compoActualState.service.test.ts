@@ -28,6 +28,9 @@ const prismaMock = vi.hoisted(() => ({
   heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
+  fwaFeedSyncState: {
+    findMany: vi.fn(),
+  },
   weightInputDeferment: {
     findMany: vi.fn(),
   },
@@ -176,12 +179,14 @@ describe("CompoActualStateService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.heatMapRefBucketTarget.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([]);
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];
@@ -195,6 +200,82 @@ describe("CompoActualStateService", () => {
         contentHash: computeHeatMapRefContentHash(refs as never),
       }) }];
     });
+  });
+
+  it.each([
+    {
+      name: "missing",
+      state: [],
+      expectedCoverage: "unavailable",
+    },
+    {
+      name: "partial row count",
+      state: [{ lastRowCount: null, lastStatus: "SUCCESS" }],
+      expectedCoverage: "partial",
+    },
+    {
+      name: "contradictory row count",
+      state: [{ lastRowCount: 99, lastStatus: "SUCCESS" }],
+      expectedCoverage: "contradictory",
+    },
+    {
+      name: "stale success",
+      state: [{ lastRowCount: 1, lastStatus: "SUCCESS", lastSuccessAt: new Date("2026-01-01T00:00:00.000Z") }],
+      expectedCoverage: "stale",
+    },
+  ])("fails closed for $name CLAN_MEMBERS evidence", async ({ state, expectedCoverage }) => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({
+      weightMinInclusive: 0,
+      weightMaxInclusive: 1_000_000,
+    })]);
+    const now = new Date();
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue(state.map((row) => ({
+      scopeKey: "#AAA111",
+      lastAttemptAt: (row as { lastSuccessAt?: Date }).lastSuccessAt ?? now,
+      lastSuccessAt: (row as { lastSuccessAt?: Date }).lastSuccessAt ?? now,
+      lastStatus: row.lastStatus,
+      lastRowCount: row.lastRowCount,
+      lastChangedRowCount: 1,
+    })));
+
+    const context = await loadCompoActualStateContext("guild-1");
+    expect(context.clans[0]?.base.rosterCoverage).toBe(expectedCoverage);
+    expect(context.clans[0]?.base.memberCountEvidence).toBe("unknown");
+  });
+
+  it("accepts a fresh current-row-count NOOP as authoritative roster coverage", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({
+      weightMinInclusive: 0,
+      weightMaxInclusive: 1_000_000,
+    })]);
+    const now = new Date();
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: now,
+      lastSuccessAt: new Date(now.getTime() - 60_000),
+      lastStatus: "NOOP",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+    }]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    expect(context.clans[0]?.base.rosterCoverage).toBe("complete");
+    expect(context.clans[0]?.base.memberCountEvidence).toBe("observed");
+    expect(context.clans[0]?.base.rosterEvidenceReason).toBe("sync_noop_current");
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {

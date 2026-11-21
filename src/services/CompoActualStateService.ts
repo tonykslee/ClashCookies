@@ -2,6 +2,7 @@ import type {
   HeatMapRef,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
+  FwaFeedSyncStatus,
   TrackedClan,
 } from "@prisma/client";
 import {
@@ -16,6 +17,8 @@ import {
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
   type CompoActualStateView,
+  type CompoActualRosterCoverage,
+  type CompoActualRosterSourceStatus,
 } from "../helper/compoActualStateView";
 import { findHeatMapRefForWeight, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -38,6 +41,7 @@ import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import { getHomeRosterCoverage } from "./HomeRosterService";
 
 type TrackedClanRow = Pick<TrackedClan, "tag" | "name"> & {
   shortName?: string | null;
@@ -46,6 +50,14 @@ type CurrentMemberRow = Pick<
   FwaClanMemberCurrent,
   "clanTag" | "playerTag" | "playerName" | "townHall" | "weight" | "sourceSyncedAt"
 >;
+type ClanMembersSyncStateRow = {
+  scopeKey: string;
+  lastAttemptAt: Date | null;
+  lastSuccessAt: Date | null;
+  lastStatus: FwaFeedSyncStatus;
+  lastRowCount: number | null;
+  lastChangedRowCount: number | null;
+};
 type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
   "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
@@ -375,6 +387,103 @@ export function maybeLogCompoActualDiagnostics(input: {
 
 export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
 
+function assessPersistedClanMembersCoverage(input: {
+  syncState: ClanMembersSyncStateRow | null;
+  memberCount: number;
+  now: Date;
+  syncMetadataAvailable: boolean;
+}): {
+  coverage: CompoActualRosterCoverage;
+  memberCountEvidence: "observed" | "unknown";
+  observedAt: Date | null;
+  sourceStatus: CompoActualRosterSourceStatus | null;
+  reason: string;
+} {
+  // The production Prisma client always exposes the sync-state delegate. The
+  // fallback only keeps lightweight pure/test doubles usable; a real missing
+  // CLAN_MEMBERS row is unavailable and therefore fails closed below.
+  if (!input.syncMetadataAvailable) {
+    return input.memberCount > 0
+      ? {
+          coverage: "complete",
+          memberCountEvidence: "observed",
+          observedAt: null,
+          sourceStatus: null,
+          reason: "sync_state_delegate_not_present_in_test_double",
+        }
+      : {
+          coverage: "unavailable",
+          memberCountEvidence: "unknown",
+          observedAt: null,
+          sourceStatus: null,
+          reason: "sync_state_missing",
+        };
+  }
+
+  const state = input.syncState;
+  const observedAt = state?.lastSuccessAt instanceof Date && Number.isFinite(state.lastSuccessAt.getTime())
+    ? state.lastSuccessAt
+    : null;
+  const sourceStatus = state?.lastStatus ?? null;
+  if (!state || !observedAt) {
+    return {
+      coverage: "unavailable",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_missing_success",
+    };
+  }
+  if (state.lastRowCount === null || state.lastRowCount === undefined) {
+    return {
+      coverage: "partial",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_row_count_missing",
+    };
+  }
+  if (!Number.isInteger(state.lastRowCount) || state.lastRowCount < 0 || state.lastRowCount !== input.memberCount) {
+    return {
+      coverage: "contradictory",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_row_count_mismatch",
+    };
+  }
+  if (state.lastStatus === "FAILURE") {
+    return {
+      coverage: "stale",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "latest_sync_failed",
+    };
+  }
+
+  const freshness = getHomeRosterCoverage({
+    lastSuccessAt: observedAt,
+    now: input.now,
+  });
+  if (freshness.coverage !== "CURRENT") {
+    return {
+      coverage: "stale",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_stale",
+    };
+  }
+  return {
+    coverage: "complete",
+    memberCountEvidence: "observed",
+    observedAt,
+    sourceStatus,
+    reason: state.lastStatus === "NOOP" ? "sync_noop_current" : "sync_success_current",
+  };
+}
+
 async function loadCompoActualStateContextFromTrackedClans(input: {
   guildId?: string | null;
   trackedClans: readonly (
@@ -401,7 +510,13 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
   }
 
-  const [members, reference] = await Promise.all([
+  const feedSyncStateDelegate = (prisma as unknown as {
+    fwaFeedSyncState?: {
+      findMany?: (args: unknown) => Promise<ClanMembersSyncStateRow[]>;
+    };
+  }).fwaFeedSyncState;
+  const syncMetadataAvailable = typeof feedSyncStateDelegate?.findMany === "function";
+  const [members, reference, feedStates] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
       where: { clanTag: { in: trackedClanTags } },
       select: {
@@ -415,11 +530,35 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
     }),
     resolveHeatMapRefReference({ guildId: input.guildId }),
+    syncMetadataAvailable
+      ? feedSyncStateDelegate!.findMany!({
+          where: {
+            feedType: "CLAN_MEMBERS",
+            scopeType: "CLAN_TAG",
+            scopeKey: { in: trackedClanTags },
+          },
+          select: {
+            scopeKey: true,
+            lastAttemptAt: true,
+            lastSuccessAt: true,
+            lastStatus: true,
+            lastRowCount: true,
+            lastChangedRowCount: true,
+          },
+        })
+      : Promise.resolve([]),
   ]);
   const heatMapRefs = reference.heatMapRefs;
   const referenceAvailability = reference.availability;
   const availableHeatMapRefs =
     referenceAvailability.status === "validated" ? heatMapRefs : [];
+
+  const syncStateByClanTag = new Map<string, ClanMembersSyncStateRow>();
+  for (const row of feedStates ?? []) {
+    const clanTag = normalizeTag(row.scopeKey);
+    if (clanTag) syncStateByClanTag.set(clanTag, row);
+  }
+  const now = new Date();
 
   const membersByClanTag = new Map<string, CurrentMemberRow[]>();
   const allPlayerTags = new Set<string>();
@@ -615,6 +754,12 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       }
     }
 
+    const rosterEvidence = assessPersistedClanMembersCoverage({
+      syncState: syncStateByClanTag.get(clanTag) ?? null,
+      memberCount: clanMembers.length,
+      now,
+      syncMetadataAvailable,
+    });
     clans.push({
       clanTag,
       clanName: clan.name?.trim() || clan.tag,
@@ -626,7 +771,11 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         unclassifiedWeightCount,
         deferredWeightCount,
         memberCount: clanMembers.length,
-        memberCountEvidence: clanMembers.length > 0 ? "observed" : "unknown",
+        memberCountEvidence: rosterEvidence.memberCountEvidence,
+        rosterCoverage: rosterEvidence.coverage,
+        rosterObservedAt: rosterEvidence.observedAt ?? clanSourceSyncedAt,
+        rosterSourceStatus: rosterEvidence.sourceStatus,
+        rosterEvidenceReason: rosterEvidence.reason,
         bucketCounts,
       },
       members,

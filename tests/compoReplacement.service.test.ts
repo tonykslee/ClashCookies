@@ -89,6 +89,12 @@ function makeContext(input: {
     renderableClanTags: ["#AAA111"],
     latestSourceSyncedAt: null,
     heatMapRefs: [input.heatMapRef],
+    referenceAvailability: {
+      status: "validated",
+      blockReasonCode: null,
+      lastSuccessAtIso: "2026-05-20T12:00:00.000Z",
+      warning: null,
+    },
     clans: [
       {
         clanTag: "#AAA111",
@@ -98,6 +104,9 @@ function makeContext(input: {
           resolvedTotalWeight: input.members.reduce((sum, member) => sum + member.resolvedWeight, 0),
           unresolvedWeightCount: 0,
           memberCountEvidence: "observed",
+          rosterCoverage: "complete",
+          rosterObservedAt: new Date("2026-05-20T12:00:00.000Z"),
+          rosterSourceStatus: "SUCCESS",
           unclassifiedWeightCount: 0,
           memberCount: input.members.length,
           bucketCounts: {
@@ -364,6 +373,65 @@ describe("CompoReplacementService", () => {
     expect(result.summaryByClan[0]?.surplusCount).toBe(1);
   });
 
+  it("preserves detailed positive reason flags, exclusions, deterministic order, and WAR inactivity labels", async () => {
+    prismaMock.playerLink.findMany.mockResolvedValue([
+      { playerTag: "#P000000", discordUserId: "111111111111111111" },
+      { playerTag: "#P000002", discordUserId: "222222222222222222" },
+      { playerTag: "#P000020", discordUserId: "444444444444444444" },
+      { playerTag: "#P000028", discordUserId: "555555555555555555" },
+    ]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([{ playerTag: "#P000000" }]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
+      results: [{
+        clanTag: "#AAA111",
+        playerTag: "#P000002",
+        playerName: "Inactive",
+        townHall: 15,
+        missedWars: 2,
+        participationWars: 3,
+        totalTrueStars: 0,
+        avgAttackDelay: null,
+        lateAttacks: 0,
+        warsAvailable: 3,
+        missedWarStates: [],
+      }],
+    } as any);
+
+    const result = await new CompoReplacementService().resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      context: makeContext({
+        members: [
+          { playerTag: "#P000000", playerName: "Filler", resolvedWeight: 145000 },
+          { playerTag: "#P000002", playerName: "Inactive", resolvedWeight: 145000 },
+          { playerTag: "#P000008", playerName: "Unlinked", resolvedWeight: 145000 },
+          { playerTag: "#P000020", playerName: "Surplus", resolvedWeight: 165000 },
+          { playerTag: "#P000028", playerName: "Excluded", resolvedWeight: 145000 },
+        ],
+        bucketCounts: { TH15: 4, TH17: 1 },
+        heatMapRef: makeHeatMapRef({ th15Count: 4, th17Count: 0 }),
+      }),
+    });
+
+    expect(result.evaluation.status).toBe("evaluated_with_candidates");
+    expect(result.candidates.map((candidate) => candidate.playerTag)).toEqual([
+      "#P000000",
+      "#P000002",
+      "#P000020",
+      "#P000008",
+    ]);
+    expect(result.candidates.map((candidate) => candidate.reasons)).toEqual([
+      { filler: true, inactive: false, unlinked: false, surplus: false },
+      { filler: false, inactive: true, unlinked: false, surplus: false },
+      { filler: false, inactive: false, unlinked: false, surplus: true },
+      { filler: false, inactive: false, unlinked: true, surplus: false },
+    ]);
+    expect(result.candidates[1]?.inactiveLabel).toBe("2WAR");
+    expect(result.candidates[2]?.surplusDelta).toBe(1);
+    expect(result.candidates.some((candidate) => candidate.playerTag === "#P000028")).toBe(false);
+  });
+
   it("normalizes lower weights into the <=TH13 display bucket for surplus detection", async () => {
     prismaMock.playerLink.findMany.mockResolvedValue([
       { playerTag: "#P000088", discordUserId: "666666666666666666" },
@@ -626,6 +694,27 @@ function makeFilterCandidate(input: {
     expect(unavailable.evaluation.reasonCode).toBe("th19_target_unavailable");
   });
 
+  it("fails closed when reference availability metadata is missing even if refs are populated", async () => {
+    const context = makeContext({
+      members: [{ playerTag: "#P000090", playerName: "Active", resolvedWeight: 145000 }],
+      bucketCounts: { TH15: 1 },
+      heatMapRef: makeHeatMapRef({ th15Count: 1 }),
+    });
+    delete (context as any).referenceAvailability;
+
+    const result = await new CompoReplacementService().resolveReplacementCandidates({
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.evaluation).toMatchObject({
+      status: "unavailable",
+      reasonCode: "reference_unavailable",
+    });
+  });
+
   it("reports mixed eligibility without dropping factual-only clans", async () => {
     const context = makeContext({
       members: [{ playerTag: "#P000090", playerName: "Active", resolvedWeight: 145000 }],
@@ -643,6 +732,9 @@ function makeFilterCandidate(input: {
         unresolvedWeightCount: 0,
         memberCount: 1,
         memberCountEvidence: "observed",
+        rosterCoverage: "complete",
+        rosterObservedAt: new Date("2026-05-20T12:00:00.000Z"),
+        rosterSourceStatus: "SUCCESS",
         bucketCounts: {
           TH19: 1,
           TH18: 0,

@@ -46,11 +46,15 @@ type PlacementCandidateWithDelta = PlacementCandidate & {
 
 type FactualObservation = {
   clanName: string;
-  observedBucketCount: number;
+  observedBucketCount: number | null;
   memberCount: number | null;
   unresolvedWeightCount: number;
   unclassifiedWeightCount: number;
   sourceSyncedAt: Date | null;
+  rosterCoverage: NonNullable<CompoActualStateClanContext["base"]["rosterCoverage"]>;
+  classificationComplete: boolean;
+  targetEligible: boolean;
+  targetAvailabilityLabel: string;
 };
 export type CompoPlaceReadResult = {
   content: string;
@@ -107,8 +111,10 @@ function formatPlacementRows(lines: string[]): string {
   return lines.length > 0 ? lines.join("\n") : "None";
 }
 
+type CompoPlaceField = { name: string; value: string; inline: boolean };
+
 /** Purpose: preserve the existing `/compo place` embed structure while swapping the source to persisted ACTUAL data. */
-function buildCompoPlaceEmbed(params: {
+function buildCompoPlaceFields(params: {
   inputWeight: number;
   bucket: CompoWarDisplayBucket;
   modeLabel?: string;
@@ -119,11 +125,15 @@ function buildCompoPlaceEmbed(params: {
   compositionList: PlacementCandidateWithDelta[];
   refreshLine: string;
   replacementEvaluationLabel?: string;
-}): EmbedBuilder {
-  const recommendedRows = params.recommended.map(
+  targetComparisonAvailable?: boolean;
+}): CompoPlaceField[] {
+  const targetComparisonAvailable = params.targetComparisonAvailable !== false;
+  const recommendedRows = targetComparisonAvailable
+    ? params.recommended.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - needs ${candidate.delta === null ? "UNKNOWN" : Math.abs(candidate.delta)} ${params.bucket}`,
-  );
+      )
+    : ["UNKNOWN — target comparison unavailable"];
   const vacancyRows = params.vacancyList.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${
@@ -132,23 +142,40 @@ function buildCompoPlaceEmbed(params: {
           : "unknown/50"
       }`,
   );
-  const compositionRows = params.compositionList.map(
+  const compositionRows = targetComparisonAvailable
+    ? params.compositionList.map(
     (candidate) =>
       `${abbreviateClan(normalizePlaceClanDisplayName(candidate.clanName))} - ${candidate.delta}`,
-  );
+      )
+    : ["UNKNOWN — target comparison unavailable"];
   const factualRows = (params.factualObservations ?? []).map((observation) => {
     const memberCount = observation.memberCount === null
       ? "unknown/50"
-      : `${observation.memberCount}/50`;
+      : observation.rosterCoverage === "complete"
+        ? `${observation.memberCount}/50`
+        : observation.rosterCoverage === "stale"
+          ? `stale ${observation.memberCount}/50`
+          : `partial ${observation.memberCount} rows · unknown/50`;
+    const bucketCount = observation.observedBucketCount === null
+      ? "UNKNOWN"
+      : observation.rosterCoverage === "complete" && observation.classificationComplete
+        ? `observed ${observation.observedBucketCount}`
+        : `partial ≥${observation.observedBucketCount}`;
     const coverage = [
+      `coverage ${observation.rosterCoverage}`,
+      !observation.classificationComplete ? "classification partial" : null,
       observation.unresolvedWeightCount > 0
         ? `unresolved ${observation.unresolvedWeightCount}`
         : null,
       observation.unclassifiedWeightCount > 0
         ? `unclassified ${observation.unclassifiedWeightCount}`
         : null,
+      observation.targetAvailabilityLabel,
+      `source ${observation.sourceSyncedAt
+        ? `<t:${Math.floor(observation.sourceSyncedAt.getTime() / 1000)}:R>`
+        : "unavailable"}`,
     ].filter((value): value is string => Boolean(value));
-    return `${abbreviateClan(normalizePlaceClanDisplayName(observation.clanName))} - observed ${observation.observedBucketCount} ${params.bucket} · ${memberCount}${coverage.length > 0 ? ` · ${coverage.join(" · ")}` : ""}`;
+    return `${abbreviateClan(normalizePlaceClanDisplayName(observation.clanName))} - ${bucketCount} ${params.bucket} · ${memberCount}${coverage.length > 0 ? ` · ${coverage.join(" · ")}` : ""}`;
   });
 
   const fields = [
@@ -176,6 +203,23 @@ function buildCompoPlaceEmbed(params: {
     },
   ];
 
+  return fields;
+}
+
+function buildCompoPlaceEmbed(params: {
+  inputWeight: number;
+  bucket: CompoWarDisplayBucket;
+  modeLabel?: string;
+  deltaLabel?: string;
+  recommended: PlacementCandidateWithDelta[];
+  factualObservations?: FactualObservation[];
+  vacancyList: PlacementCandidate[];
+  compositionList: PlacementCandidateWithDelta[];
+  refreshLine: string;
+  replacementEvaluationLabel?: string;
+  targetComparisonAvailable?: boolean;
+}): EmbedBuilder {
+  const fields = buildCompoPlaceFields(params);
   return new EmbedBuilder()
     .setTitle("Compo Placement Suggestions")
     .setDescription(
@@ -186,6 +230,91 @@ function buildCompoPlaceEmbed(params: {
         params.refreshLine,
     )
     .addFields(fields);
+}
+
+const COMPO_PLACE_FIELD_VALUE_LIMIT = 1024;
+const COMPO_PLACE_EMBED_TOTAL_LIMIT = 5800;
+const COMPO_PLACE_MAX_EMBEDS = 10;
+
+function splitCompoPlaceFieldValue(value: string): string[] {
+  const lines = value.split("\n");
+  const chunks: string[] = [];
+  let current = "";
+  for (const line of lines) {
+    const boundedLine = line.length <= COMPO_PLACE_FIELD_VALUE_LIMIT
+      ? line
+      : line.slice(0, COMPO_PLACE_FIELD_VALUE_LIMIT - 1) + "…";
+    const candidate = current ? `${current}\n${boundedLine}` : boundedLine;
+    if (candidate.length <= COMPO_PLACE_FIELD_VALUE_LIMIT) {
+      current = candidate;
+      continue;
+    }
+    if (current) chunks.push(current);
+    current = boundedLine;
+  }
+  if (current || chunks.length === 0) chunks.push(current);
+  return chunks;
+}
+
+/** Purpose: keep every placement fact/status while respecting Discord field/embed limits. */
+function buildBoundedCompoPlaceEmbeds(
+  params: Parameters<typeof buildCompoPlaceEmbed>[0],
+  replacementField: CompoPlaceField | null,
+): EmbedBuilder[] {
+  const description = [
+    `Mode: **${params.modeLabel ?? buildCompoPlaceModeLabel()}**`,
+    `Deltas: **${params.deltaLabel ?? buildCompoPlaceDeltaLabel()}**`,
+    `Weight: **${params.inputWeight.toLocaleString("en-US")}**`,
+    `Bucket: **${params.bucket}**`,
+    params.refreshLine,
+  ].join("\n");
+  const sourceFields = [
+    ...buildCompoPlaceFields(params),
+    ...(replacementField ? [replacementField] : []),
+  ];
+  const boundedFields: CompoPlaceField[] = [];
+  for (const field of sourceFields) {
+    const parts = splitCompoPlaceFieldValue(field.value);
+    for (const [index, value] of parts.entries()) {
+      boundedFields.push({
+        name: parts.length === 1 ? field.name : `${field.name} ${index + 1}/${parts.length}`,
+        value,
+        inline: Boolean(field.inline),
+      });
+    }
+  }
+
+  const embeds: EmbedBuilder[] = [];
+  let fields: CompoPlaceField[] = [];
+  let estimatedSize = description.length + 64;
+  const flush = () => {
+    if (fields.length === 0) return;
+    embeds.push(
+      new EmbedBuilder()
+        .setTitle("Compo Placement Suggestions")
+        .setDescription(description)
+        .addFields(fields),
+    );
+    fields = [];
+    estimatedSize = description.length + 64;
+  };
+  for (const field of boundedFields) {
+    const fieldSize = field.name.length + field.value.length + 16;
+    if (
+      fields.length >= 25 ||
+      (fields.length > 0 && estimatedSize + fieldSize > COMPO_PLACE_EMBED_TOTAL_LIMIT)
+    ) {
+      flush();
+    }
+    fields.push(field);
+    estimatedSize += fieldSize;
+  }
+  flush();
+
+  if (embeds.length > COMPO_PLACE_MAX_EMBEDS) {
+    throw new Error("Placement result exceeds Discord embed limits; use a smaller tracked-clan cohort.");
+  }
+  return embeds;
 }
 
 function buildPersistedRefreshLine(latestSourceSyncedAt: Date | null): string {
@@ -238,16 +367,32 @@ function buildBucketDeltaByHeaderFromProjection(
 function buildFactualObservations(input: {
   clans: CompoActualStateClanContext[];
   bucket: CompoWarDisplayBucket;
+  targetComparisonAvailable: boolean;
 }): FactualObservation[] {
   return input.clans.map((clan) => {
     const displayCounts = collapseCompoWarBucketCountsForDisplay(clan.base.bucketCounts);
+    const evidence = assessCompoActualRosterEvidence({ clan });
+    const coverage = clan.base.rosterCoverage ?? (evidence === "complete" ? "complete" : "unavailable");
+    const hasPersistedRows = clan.members.length > 0;
+    const observedBucketCount = coverage === "complete" || hasPersistedRows
+      ? displayCounts[input.bucket] ?? 0
+      : null;
+    const targetEligible = input.targetComparisonAvailable && evidence === "complete";
     return {
       clanName: clan.clanName,
-      observedBucketCount: displayCounts[input.bucket] ?? 0,
+      observedBucketCount,
       memberCount: hasCompoActualRosterCountEvidence(clan) ? clan.base.memberCount : null,
       unresolvedWeightCount: clan.base.unresolvedWeightCount,
       unclassifiedWeightCount: clan.base.unclassifiedWeightCount ?? 0,
-      sourceSyncedAt: clan.sourceSyncedAt ?? null,
+      sourceSyncedAt: clan.base.rosterObservedAt ?? clan.sourceSyncedAt ?? null,
+      rosterCoverage: coverage,
+      classificationComplete: evidence === "complete",
+      targetEligible,
+      targetAvailabilityLabel: targetEligible
+        ? "target eligible"
+        : input.bucket === "TH19"
+          ? "target UNKNOWN (TH19)"
+          : "target UNKNOWN",
     };
   });
 }
@@ -425,7 +570,7 @@ export class CompoPlaceService {
         content:
           `Input weight: **${inputWeight.toLocaleString("en-US")}**\n` +
           `Bucket: **${bucket}**\n` +
-          "Observed clan TH19 count: **UNKNOWN (not queried)**\n" +
+          "Factual roster observations: **UNKNOWN — no tracked clans configured**\n" +
           "Target comparison: **UNKNOWN** — placement rankings and replacement suggestions are withheld.",
         embeds: [],
         trackedClanTags: [],
@@ -438,10 +583,11 @@ export class CompoPlaceService {
     }
 
     const targetComparisonAvailable =
-      bucket !== "TH19" && context.referenceAvailability.status === "validated";
+      bucket !== "TH19" && context.referenceAvailability?.status === "validated";
     const factualObservations = buildFactualObservations({
       clans: context.clans,
       bucket,
+      targetComparisonAvailable,
     });
     const factualVacancyList = buildFactualVacancyList(context.clans);
 
@@ -491,8 +637,8 @@ export class CompoPlaceService {
         ? "Target comparison is UNKNOWN for TH19; placement rankings and replacement suggestions are withheld."
         : `${context.referenceAvailability.warning ?? "HeatMapRef validation is unavailable."} Target-derived placement and replacement recommendations are withheld.`;
 
-    const embeds = [
-      buildCompoPlaceEmbed({
+    const embeds = buildBoundedCompoPlaceEmbeds(
+      {
         inputWeight,
         bucket,
         recommended,
@@ -504,12 +650,10 @@ export class CompoPlaceService {
         deltaLabel: targetComparisonAvailable
           ? buildCompoPlaceDeltaLabel()
           : "UNKNOWN target comparison",
-      }),
-    ];
-    const placementEmbed = embeds[0];
-    if (placementEmbed && possibleReplacementsField) {
-      placementEmbed.addFields(possibleReplacementsField);
-    }
+        targetComparisonAvailable,
+      },
+      possibleReplacementsField,
+    );
 
     return {
       content: targetWarning ?? (candidates.length === 0

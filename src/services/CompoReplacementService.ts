@@ -336,10 +336,7 @@ export class CompoReplacementService {
         },
       };
     }
-    if (
-      context.referenceAvailability &&
-      context.referenceAvailability.status !== "validated"
-    ) {
+    if (context.referenceAvailability?.status !== "validated") {
       return buildUnavailable("reference_unavailable");
     }
 
