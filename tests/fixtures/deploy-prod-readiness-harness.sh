@@ -66,6 +66,10 @@ case "$command" in
     elif [ "$action" = remove ]; then
       [ "${1:-}" != --quiet ] || { log unsupported-worktree-option; exit 129; }
       path="${@: -1}"; rm -rf -- "$path"; log worktree-remove
+      if [ "$DEPLOY_TEST_SCENARIO" = cleanup-failure ]; then
+        log worktree-remove-failure
+        exit 1
+      fi
     fi
     ;;
   reset)
@@ -136,7 +140,13 @@ case "${1:-}" in
         ;;
       rm)
         shift 2
-        for name in "$@"; do rm -f "$(volume_meta "$name")"; done
+        for name in "$@"; do
+          if [ "$DEPLOY_TEST_SCENARIO" = workspace-cleanup-failure ] && [[ "$name" == *build-workspace* ]]; then
+            log volume-remove-failure "$name"
+            exit 1
+          fi
+          rm -f "$(volume_meta "$name")"
+        done
         ;;
     esac
     ;;
