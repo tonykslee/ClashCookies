@@ -292,6 +292,17 @@ export class CompoReplacementService {
         candidates: [],
       };
     }
+    if (
+      context.referenceAvailability &&
+      context.referenceAvailability.status !== "validated"
+    ) {
+      return {
+        inputWeight: input.weight,
+        bucket,
+        summaryByClan: [],
+        candidates: [],
+      };
+    }
 
     const clanOrder = new Map(
       context.clans.map((clan, index) => [clan.clanTag, index] as const),

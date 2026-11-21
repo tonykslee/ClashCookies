@@ -1,6 +1,5 @@
 import type {
   HeatMapRef,
-  FwaClanCatalog,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
   TrackedClan,
@@ -37,6 +36,11 @@ import {
 } from "./WeightInputDefermentService";
 import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
+import {
+  readHeatMapRefReferenceAvailability,
+  type HeatMapRefReferenceAvailability,
+} from "../helper/heatMapRefAvailability";
+import { SettingsService } from "./SettingsService";
 
 type TrackedClanRow = Pick<TrackedClan, "tag" | "name"> & {
   shortName?: string | null;
@@ -82,6 +86,7 @@ export type CompoActualStateContext = {
   renderableClanTags: string[];
   latestSourceSyncedAt: Date | null;
   heatMapRefs: HeatMapRef[];
+  referenceAvailability: HeatMapRefReferenceAvailability;
   clans: CompoActualStateClanContext[];
 };
 
@@ -389,6 +394,12 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       renderableClanTags: [],
       latestSourceSyncedAt: null,
       heatMapRefs: [],
+      referenceAvailability: {
+        status: "unknown",
+        blockReasonCode: null,
+        lastSuccessAtIso: null,
+        warning: null,
+      },
       clans: [],
     };
   }
@@ -410,6 +421,13 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     }),
   ]);
+  const referenceAvailability = await readHeatMapRefReferenceAvailability({
+    guildId: input.guildId,
+    settings: new SettingsService(),
+    heatMapRefs,
+  });
+  const availableHeatMapRefs =
+    referenceAvailability.status === "validated" ? heatMapRefs : [];
 
   const membersByClanTag = new Map<string, CurrentMemberRow[]>();
   const allPlayerTags = new Set<string>();
@@ -621,7 +639,8 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     trackedClanTags,
     renderableClanTags: clans.map((clan) => clan.clanTag),
     latestSourceSyncedAt,
-    heatMapRefs,
+    heatMapRefs: availableHeatMapRefs,
+    referenceAvailability,
     clans,
   };
 }
@@ -691,6 +710,7 @@ export async function readTrackedClanCurrentComposition(input: {
 /** Purpose: load the persisted catalog-backed composition snapshot for one active FWA clan. */
 export async function readExternalClanCurrentComposition(input: {
   clanTag: string;
+  guildId?: string | null;
   now?: Date;
 }): Promise<CompoActualStateExternalClanComposition | null> {
   const normalizedClanTag = normalizeTag(input.clanTag);
@@ -803,10 +823,16 @@ export async function readExternalClanCurrentComposition(input: {
         ? th13Count + th12Count + th11Count + th10Count + th9Count + th8Count + thLowCount
         : null,
   };
-  const selectedHeatMapRef = estimatedWeight !== null
-    ? findHeatMapRefForWeight(await prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }), estimatedWeight)
+  const heatMapRefs = await prisma.heatMapRef.findMany({
+    orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+  });
+  const referenceAvailability = await readHeatMapRefReferenceAvailability({
+    guildId: input.guildId,
+    settings: new SettingsService(),
+    heatMapRefs,
+  });
+  const selectedHeatMapRef = estimatedWeight !== null && referenceAvailability.status === "validated"
+    ? findHeatMapRefForWeight(heatMapRefs, estimatedWeight)
     : null;
   const deviationScore =
     compositionComplete && selectedHeatMapRef
@@ -915,6 +941,17 @@ export class CompoActualStateService {
       renderableClanTags.push(clan.clanTag);
     }
 
+    const contentLines = buildActualViewSummaryLines(
+      view,
+      context.latestSourceSyncedAt,
+      missingHeatMapBands,
+      totalMissingTo50Count,
+      includeTh19,
+    );
+    if (context.referenceAvailability.warning) {
+      contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
+    }
+
     return {
       stateRows: [
         view === "raw"
@@ -949,13 +986,7 @@ export class CompoActualStateService {
             ],
         ...rows,
       ],
-      contentLines: buildActualViewSummaryLines(
-        view,
-        context.latestSourceSyncedAt,
-        missingHeatMapBands,
-        totalMissingTo50Count,
-        includeTh19,
-      ),
+      contentLines,
       trackedClanTags: context.trackedClanTags,
       renderableClanTags,
       view,

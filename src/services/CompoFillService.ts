@@ -539,6 +539,7 @@ function buildFallbackTargetBucketCounts(input: {
 function buildTrackedClanState(input: {
   clan: CompoActualStateContext["clans"][number];
   heatMapRefs: readonly HeatMapRef[];
+  referenceValidated?: boolean;
 }): CompoFillTrackedClanState {
   const projection = projectCompoActualStateView({
     view: "auto",
@@ -546,6 +547,7 @@ function buildTrackedClanState(input: {
     heatMapRefs: input.heatMapRefs,
   });
   const hasUnsupportedTh19 = (input.clan.base.bucketCounts.TH19 ?? 0) > 0;
+  const referenceValidated = input.referenceValidated ?? true;
 
   return {
     clanTag: input.clan.clanTag,
@@ -553,7 +555,7 @@ function buildTrackedClanState(input: {
     shortName: input.clan.shortName,
     memberCount: input.clan.base.memberCount,
     currentBucketCounts: cloneBucketCounts(input.clan.base.bucketCounts),
-    targetBucketCounts: hasUnsupportedTh19
+    targetBucketCounts: !referenceValidated || hasUnsupportedTh19
       ? cloneBucketCounts(input.clan.base.bucketCounts)
       : projection.selectedHeatMapRef
       ? getCompoActualStateTargetBucketCounts(projection.selectedHeatMapRef)
@@ -586,6 +588,7 @@ function buildSummaryDescription(input: {
   unusedAvailableFillers: CompoFillAvailableFiller[];
   plannedMoveCount: number;
   unsupportedTh19ClanNames?: readonly string[];
+  referenceAvailabilityWarning?: string | null;
 }): string {
   const totalOpenSlots = input.remainingUnfilledClanSlots.reduce(
     (sum, slot) => sum + slot.remainingSlots,
@@ -594,10 +597,13 @@ function buildSummaryDescription(input: {
   const availableFillerCount =
     input.plannedMoveCount + input.unusedAvailableFillers.length;
   return [
-    `Clans under 50: ${input.destinationPlans.length}`,
+    `Clans under 50: ${input.destinationPlans.length > 0 ? input.destinationPlans.length : input.remainingUnfilledClanSlots.length}`,
     `Open slots: ${totalOpenSlots}`,
     `Available fillers: ${availableFillerCount}`,
     `Recommended moves: ${input.plannedMoveCount}`,
+    ...(input.referenceAvailabilityWarning
+      ? [`Reference integrity: ${input.referenceAvailabilityWarning}`]
+      : []),
     ...(input.unsupportedTh19ClanNames && input.unsupportedTh19ClanNames.length > 0
       ? [
           `TH19 target comparison: UNKNOWN for ${input.unsupportedTh19ClanNames.join(", ")}; no fill moves are planned for those clans.`,
@@ -762,6 +768,9 @@ export class CompoFillService {
       }),
     });
 
+    const referenceValidated =
+      context.referenceAvailability === undefined ||
+      context.referenceAvailability.status === "validated";
     const trackedClans = await measureFillStage({
       stage: "build_tracked_clans",
       startDetail: {
@@ -775,6 +784,7 @@ export class CompoFillService {
           buildTrackedClanState({
             clan,
             heatMapRefs: context.heatMapRefs,
+            referenceValidated,
           }),
         ),
       completeDetail: (plannedClans) => ({
@@ -866,12 +876,28 @@ export class CompoFillService {
       },
     });
 
-    const plannedMoveCount = result.destinationPlans.reduce(
+    const renderResult = referenceValidated
+      ? result
+      : {
+          ...result,
+          remainingUnfilledClanSlots: context.clans
+            .filter((clan) => clan.base.memberCount < 50)
+            .map((clan) => ({
+              clanTag: clan.clanTag,
+              clanName: clan.clanName,
+              shortName: clan.shortName,
+              remainingSlots: Math.max(0, 50 - clan.base.memberCount),
+              currentMemberCount: clan.base.memberCount,
+              targetMemberCount: 50,
+            })),
+        };
+
+    const plannedMoveCount = renderResult.destinationPlans.reduce(
       (sum, plan) => sum + plan.plannedMoves.length,
       0,
     );
     const availableFillerCount =
-      plannedMoveCount + result.unusedAvailableFillers.length;
+      plannedMoveCount + renderResult.unusedAvailableFillers.length;
 
     const render = await measureFillStage({
       stage: "build_render",
@@ -880,21 +906,25 @@ export class CompoFillService {
         contextClans: context.clans.length,
         heatMapRefs: context.heatMapRefs.length,
         fillerRows: fillers.length,
-        destinationPlans: result.destinationPlans.length,
+        destinationPlans: renderResult.destinationPlans.length,
         plannedMoveCount,
       },
       work: async () => {
         const summaryDescription = buildSummaryDescription({
-          destinationPlans: result.destinationPlans,
-          remainingUnfilledClanSlots: result.remainingUnfilledClanSlots,
-          unusedAvailableFillers: result.unusedAvailableFillers,
+          destinationPlans: renderResult.destinationPlans,
+          remainingUnfilledClanSlots: renderResult.remainingUnfilledClanSlots,
+          unusedAvailableFillers: renderResult.unusedAvailableFillers,
           plannedMoveCount,
+          referenceAvailabilityWarning: referenceValidated
+            ? null
+            : context.referenceAvailability?.warning ??
+              "Reference validation is unavailable; no target-dependent fill moves are planned.",
           unsupportedTh19ClanNames: context.clans
             .filter((clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0)
             .map((clan) => clan.clanName),
         });
         const sectionSources = buildFillSectionSources({
-          result,
+          result: renderResult,
           fillerAccountsByTag: new Map(
             fillers.map((filler) => [
               normalizeLinkTag(String(filler.tag ?? "")),
@@ -940,16 +970,16 @@ export class CompoFillService {
           pageCount: pages.pages.length,
         };
       },
-      completeDetail: (renderResult) => ({
+      completeDetail: (rendered) => ({
         trackedClanTags: context.trackedClanTags.length,
         contextClans: context.clans.length,
         heatMapRefs: context.heatMapRefs.length,
         fillerRows: fillers.length,
-        destinationPlans: result.destinationPlans.length,
+        destinationPlans: renderResult.destinationPlans.length,
         plannedMoveCount,
-        embedCount: renderResult.embeds.length,
-        componentRows: renderResult.components.length,
-        pageCount: renderResult.pageCount,
+        embedCount: rendered.embeds.length,
+        componentRows: rendered.components.length,
+        pageCount: rendered.pageCount,
       }),
     });
 
@@ -958,7 +988,10 @@ export class CompoFillService {
       embeds: render.embeds,
       components: render.components,
       trackedClanTags: context.trackedClanTags,
-      destinationClanCount: result.destinationPlans.length,
+      destinationClanCount:
+        renderResult.destinationPlans.length > 0
+          ? renderResult.destinationPlans.length
+          : renderResult.remainingUnfilledClanSlots.length,
       plannedMoveCount,
       availableFillerCount,
       pageIndex: render.pageIndex,

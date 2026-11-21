@@ -1,18 +1,23 @@
 import { prisma } from "../prisma";
 import { Prisma } from "@prisma/client";
 
+export type SettingsDbClient = Pick<
+  Prisma.TransactionClient,
+  "$queryRaw" | "$executeRaw"
+>;
+
 export class SettingsService {
   /** Purpose: get. */
-  async get(key: string): Promise<string | null> {
-    const rows = await prisma.$queryRaw<Array<{ value: string }>>(
+  async get(key: string, client: SettingsDbClient = prisma): Promise<string | null> {
+    const rows = await client.$queryRaw<Array<{ value: string }>>(
       Prisma.sql`SELECT "value" FROM "BotSetting" WHERE "key" = ${key} LIMIT 1`
     );
     return rows[0]?.value ?? null;
   }
 
   /** Purpose: set. */
-  async set(key: string, value: string): Promise<void> {
-    await prisma.$executeRaw(
+  async set(key: string, value: string, client: SettingsDbClient = prisma): Promise<void> {
+    await client.$executeRaw(
       Prisma.sql`
       INSERT INTO "BotSetting" ("key", "value", "createdAt", "updatedAt")
       VALUES (${key}, ${value}, NOW(), NOW())
@@ -23,8 +28,8 @@ export class SettingsService {
   }
 
   /** Purpose: delete. */
-  async delete(key: string): Promise<void> {
-    await prisma.$executeRaw(
+  async delete(key: string, client: SettingsDbClient = prisma): Promise<void> {
+    await client.$executeRaw(
       Prisma.sql`DELETE FROM "BotSetting" WHERE "key" = ${key}`
     );
   }

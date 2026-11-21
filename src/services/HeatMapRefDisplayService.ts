@@ -13,6 +13,11 @@ import {
   buildHeatMapRefDisplayRows,
 } from "../helper/heatMapRefDisplay";
 import { getHeatMapRefBandKey } from "../helper/compoHeatMap";
+import {
+  readHeatMapRefReferenceAvailability,
+  type HeatMapRefReferenceAvailability,
+} from "../helper/heatMapRefAvailability";
+import { SettingsService } from "./SettingsService";
 
 type HeatMapRefSourceMember = {
   clanTag: string;
@@ -86,14 +91,23 @@ function formatMatchPercent(matchRate: number, evaluatedWarCount: number): strin
 /** Purpose: build the copyable HeatMapRef table display from persisted current-state rows. */
 export class HeatMapRefDisplayService {
   /** Purpose: compute display rows and copy text without mutating HeatMapRef state. */
-  async readHeatMapRefDisplayTable(): Promise<{
+  async readHeatMapRefDisplayTable(input?: { guildId?: string | null }): Promise<{
     rows: string[][];
     copyText: string;
+    availability: HeatMapRefReferenceAvailability;
   }> {
     const heatMapRefs = await prisma.heatMapRef.findMany({
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     });
-    return this.buildDisplayData(heatMapRefs);
+    const [display, availability] = await Promise.all([
+      this.buildDisplayData(heatMapRefs),
+      readHeatMapRefReferenceAvailability({
+        guildId: input?.guildId,
+        settings: new SettingsService(),
+        heatMapRefs,
+      }),
+    ]);
+    return { ...display, availability };
   }
 
   async readHeatMapRefBandMatchRates(input?: {

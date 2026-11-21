@@ -27,6 +27,7 @@ const prismaMock = vi.hoisted(() => ({
   weightInputDeferment: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -41,6 +42,7 @@ import {
 } from "../src/services/CompoActualStateService";
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -170,9 +172,23 @@ describe("CompoActualStateService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {
@@ -219,6 +235,43 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
+  });
+
+  it("preserves factual TH18 composition while withholding retained refs after an integrity block", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000, th18Count: 1 }),
+    ]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          version: 1,
+          status: "blocked",
+          blockReasonCode: "th19_integrity",
+          reason: "TH19 evidence",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+          updatedAtIso: "2026-04-12T01:00:00.000Z",
+          contentHash: null,
+        }),
+      },
+    ]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(context.referenceAvailability.status).toBe("retained_unverified");
+    expect(context.clans[0]?.base.bucketCounts.TH18).toBe(1);
+    expect(context.heatMapRefs).toEqual([]);
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    expect(result.contentLines.join(" ")).toContain("retained historical data");
   });
 
   it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {
@@ -938,6 +991,29 @@ describe("CompoActualStateService", () => {
       expect(result?.deviationScore).toBe(0);
       expect(result?.healthy).toBe(true);
       expect(result?.sourceAgeMs).toBe(3_600_000);
+    });
+
+    it("fails closed for readiness and downstream goal inputs when TH19 is observed", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: index === 0 ? 181_000 : 175_000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 10_000_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
+      expect(result?.projection.deltaByBucket.TH18).toBeNull();
     });
 
     it("marks a healthy 50/50 roster with a shared deviation at or below the threshold", async () => {

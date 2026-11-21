@@ -9,7 +9,6 @@ import { type CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { prisma } from "../prisma";
 import {
   loadCompoActualStateContext,
-  type CompoActualStateContext,
   type CompoActualStateClanContext,
 } from "./CompoActualStateService";
 import { normalizeTag } from "./war-events/core";
@@ -341,6 +340,23 @@ export class CompoPlaceService {
         candidateCount: 0,
         recommendedCount: 0,
         vacancyCount: 0,
+        compositionCount: 0,
+      };
+    }
+
+    if (
+      context.referenceAvailability &&
+      context.referenceAvailability.status !== "validated"
+    ) {
+      return {
+        content:
+          `${context.referenceAvailability.warning ?? "HeatMapRef validation is unavailable."} Placement and replacement recommendations are withheld; factual vacancies remain visible in the persisted state views.`,
+        embeds: [],
+        trackedClanTags: context.trackedClanTags,
+        eligibleClanTags: [],
+        candidateCount: 0,
+        recommendedCount: 0,
+        vacancyCount: context.clans.filter((clan) => clan.base.memberCount < 50).length,
         compositionCount: 0,
       };
     }

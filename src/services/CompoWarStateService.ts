@@ -16,6 +16,11 @@ import {
 import { mapWithConcurrency } from "./fwa-feeds/concurrency";
 import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
+import {
+  readHeatMapRefReferenceAvailability,
+  type HeatMapRefReferenceAvailability,
+} from "../helper/heatMapRefAvailability";
+import { SettingsService } from "./SettingsService";
 
 type CollapsedStateRow = {
   clanName: string;
@@ -40,7 +45,7 @@ export type CompoWarStateClanContext = {
   rosterSize: number;
   missingWeights: number;
   bucketCounts: BucketCounts;
-  heatMapRef: HeatMapRef;
+  heatMapRef: HeatMapRef | null;
 };
 
 export type CompoWarStateContext = {
@@ -51,6 +56,7 @@ export type CompoWarStateContext = {
   skipped: string[];
   clans: CompoWarStateClanContext[];
   heatMapRefs: HeatMapRef[];
+  referenceAvailability: HeatMapRefReferenceAvailability;
 };
 
 export type CompoWarStateReadResult = {
@@ -81,17 +87,17 @@ function buildCollapsedStateRow(input: {
   rosterSize: number;
   missingWeights: number;
   bucketCounts: BucketCounts;
-  heatMapRef: HeatMapRef;
+  heatMapRef: HeatMapRef | null;
 }): CollapsedStateRow {
   const hasUnsupportedTh19 = (input.bucketCounts.TH19 ?? 0) > 0;
   const deltas = {
-    TH18: hasUnsupportedTh19 ? null : input.bucketCounts.TH18 - input.heatMapRef.th18Count,
-    TH17: hasUnsupportedTh19 ? null : input.bucketCounts.TH17 - input.heatMapRef.th17Count,
-    TH16: hasUnsupportedTh19 ? null : input.bucketCounts.TH16 - input.heatMapRef.th16Count,
-    TH15: hasUnsupportedTh19 ? null : input.bucketCounts.TH15 - input.heatMapRef.th15Count,
-    TH14: hasUnsupportedTh19 ? null : input.bucketCounts.TH14 - input.heatMapRef.th14Count,
+    TH18: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH18 - input.heatMapRef.th18Count,
+    TH17: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH17 - input.heatMapRef.th17Count,
+    TH16: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH16 - input.heatMapRef.th16Count,
+    TH15: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH15 - input.heatMapRef.th15Count,
+    TH14: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH14 - input.heatMapRef.th14Count,
     TH13_OR_LOWER:
-      hasUnsupportedTh19
+      hasUnsupportedTh19 || !input.heatMapRef
         ? null
         : input.bucketCounts.TH13 +
           input.bucketCounts.TH12 +
@@ -127,6 +133,7 @@ function getIneligibleReason(input: {
   parent: FwaTrackedClanWarRosterCurrent;
   memberCount: number;
   heatMapRef: HeatMapRef | null;
+  allowMissingHeatMapRef?: boolean;
 }): string | null {
   if (input.parent.rosterSize !== 50) {
     return `roster size ${input.parent.rosterSize}/50`;
@@ -140,14 +147,16 @@ function getIneligibleReason(input: {
   if (input.memberCount !== input.parent.rosterSize) {
     return `persisted member rows ${input.memberCount}/${input.parent.rosterSize}`;
   }
-  if (!input.heatMapRef) {
+  if (!input.heatMapRef && !input.allowMissingHeatMapRef) {
     return "missing HeatMapRef band";
   }
   return null;
 }
 
 /** Purpose: load the persisted WAR compo state snapshot used by both state rendering and advice simulation. */
-export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> {
+export async function loadCompoWarStateContext(
+  guildId?: string | null,
+): Promise<CompoWarStateContext> {
   const tracked = await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true },
@@ -165,6 +174,12 @@ export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> 
       skipped: [],
       clans: [],
       heatMapRefs: [],
+      referenceAvailability: {
+        status: "unknown",
+        blockReasonCode: null,
+        lastSuccessAtIso: null,
+        warning: null,
+      },
     };
   }
 
@@ -180,6 +195,13 @@ export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> 
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     }),
   ]);
+  const referenceAvailability = await readHeatMapRefReferenceAvailability({
+    guildId,
+    settings: new SettingsService(),
+    heatMapRefs: refs,
+  });
+  const availableRefs =
+    referenceAvailability.status === "validated" ? refs : [];
 
   const trackedByTag = new Map(
     trackedTags.map((tag, index) => [tag, tracked[index]?.name?.trim() ?? null]),
@@ -206,11 +228,12 @@ export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> 
     const clanMembers = membersByTag.get(clanTag) ?? [];
     const effectiveWeight = parent.totalEffectiveWeight;
     const heatMapRef =
-      effectiveWeight === null ? null : findHeatMapRefForWeight(refs, effectiveWeight);
+      effectiveWeight === null ? null : findHeatMapRefForWeight(availableRefs, effectiveWeight);
     const ineligibleReason = getIneligibleReason({
       parent,
       memberCount: clanMembers.length,
       heatMapRef,
+      allowMissingHeatMapRef: referenceAvailability.status !== "validated",
     });
     const displayName =
       parent.clanName?.trim() ||
@@ -240,7 +263,7 @@ export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> 
       rosterSize: parent.rosterSize,
       missingWeights,
       bucketCounts,
-      heatMapRef: heatMapRef as HeatMapRef,
+      heatMapRef,
     });
     renderableClanTags.push(clanTag);
   }
@@ -252,7 +275,8 @@ export async function loadCompoWarStateContext(): Promise<CompoWarStateContext> 
     latestRefreshAt,
     skipped,
     clans,
-    heatMapRefs: refs,
+    heatMapRefs: availableRefs,
+    referenceAvailability,
   };
 }
 
@@ -264,8 +288,8 @@ export class CompoWarStateService {
   constructor(private readonly feedOps: FeedOpsLike = new FwaFeedOpsService()) {}
 
   /** Purpose: load alliance-wide tracked-clan war state rows from persisted feed-owned tables only. */
-  async readState(): Promise<CompoWarStateReadResult> {
-    const context = await loadCompoWarStateContext();
+  async readState(guildId?: string | null): Promise<CompoWarStateReadResult> {
+    const context = await loadCompoWarStateContext(guildId);
 
     if (context.trackedClanTags.length === 0) {
       return {
@@ -315,6 +339,9 @@ export class CompoWarStateService {
     if (context.skipped.length > 0) {
       contentLines.push(`Skipped ineligible clans: ${context.skipped.join("; ")}`);
     }
+    if (context.referenceAvailability.warning) {
+      contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
+    }
 
     if (renderableRows.length === 0) {
       contentLines.push("No DB-backed WAR roster snapshots are currently renderable.");
@@ -352,8 +379,8 @@ export class CompoWarStateService {
   }
 
   /** Purpose: explicitly refresh the currently persisted tracked-clan war roster scopes and rerender from DB. */
-  async refreshState(): Promise<CompoWarStateReadResult> {
-    const current = await this.readState();
+  async refreshState(guildId?: string | null): Promise<CompoWarStateReadResult> {
+    const current = await this.readState(guildId);
     if (current.trackedClanTags.length === 0) {
       return current;
     }
@@ -367,7 +394,7 @@ export class CompoWarStateService {
       }
     });
 
-    const next = await this.readState();
+    const next = await this.readState(guildId);
     if (failures.length > 0) {
       next.contentLines = [
         ...next.contentLines,

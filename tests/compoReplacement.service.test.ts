@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InactiveWarService } from "../src/services/InactiveWarService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -32,6 +33,7 @@ const prismaMock = vi.hoisted(() => ({
   fillerAccount: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -152,6 +154,7 @@ describe("CompoReplacementService", () => {
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.fillerAccount.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.trackedClan.findMany.mockResolvedValue([makeTrackedClan("#AAA111", "Alpha Clan")]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
@@ -164,6 +167,19 @@ describe("CompoReplacementService", () => {
       { playerTag: "#P000002" },
       { playerTag: "#P000028" },
     ]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   afterEach(() => {
@@ -377,6 +393,19 @@ describe("CompoReplacementService", () => {
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [],
     } as any);

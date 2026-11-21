@@ -6,6 +6,8 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     delete: vi.fn(),
   },
+  $transaction: vi.fn(),
+  $executeRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -18,6 +20,8 @@ import { getAllHeatMapRefs, upsertHeatMapRefSeedRows } from "../src/services/Hea
 describe("HeatMapRefService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$transaction.mockImplementation(async (fn: any) => fn(prismaMock));
+    prismaMock.$executeRaw.mockResolvedValue(0);
   });
 
   it("uses the corrected checked-in HeatMapRef bootstrap rows", () => {
@@ -195,6 +199,8 @@ describe("HeatMapRefService", () => {
         },
       },
     });
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it("does not create duplicate rows on reseed when the same corrected keys already exist", async () => {

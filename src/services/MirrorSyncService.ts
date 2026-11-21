@@ -1103,6 +1103,9 @@ export class MirrorSyncService {
     }
 
     if (table === "HeatMapRef") {
+      await tx.$executeRawUnsafe(
+        "SELECT pg_advisory_xact_lock(hashtextextended('heatmapref_reference_integrity', 0))",
+      );
       const deletedRows = (await tx.heatMapRef.deleteMany()).count;
       const insertedRows = await this.insertBatches(rows as HeatMapRef[], (batch) =>
         tx.heatMapRef.createMany({ data: batch }),

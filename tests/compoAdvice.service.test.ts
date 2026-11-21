@@ -5,6 +5,7 @@ import {
   CompoAdviceService,
   countRushedCompoMembers,
 } from "../src/services/CompoAdviceService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -34,6 +35,7 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMatchStatsCurrent: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
   heatMapRef: {
     findMany: vi.fn(),
   },
@@ -191,11 +193,25 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   it("uses link-list fallback weights before deferred and war fallbacks in ACTUAL advice", async () => {

@@ -1283,6 +1283,11 @@ export default (client: Client, cocService: CoCService): void => {
             console.log(
               `[heatmapref] status=${result.status} cycle=${result.cycleKey ?? "none"} fwa_clans=${result.trackedClanCount} rosters=${result.sourceRosterCount} qualifying=${result.qualifyingRosterCount} excluded=${result.excludedRosterCount} rows=${result.rowCount} alerted=${result.alertSent}`,
             );
+          } else if (result.evaluationPerformed) {
+            const boundedSummary = (result.summaryLines ?? []).slice(0, 8).join(" | ");
+            console.warn(
+              `[heatmapref] evaluation=blocked cycle=${result.cycleKey ?? "none"} reason_code=${result.blockReasonCode ?? "unknown"} reason=${result.reason ?? "none"} summary=${boundedSummary}`,
+            );
           }
           if (result.status === "failed") {
             await markPollJobFailed({
@@ -1310,6 +1315,9 @@ export default (client: Client, cocService: CoCService): void => {
                 status: result.status,
                 reason: result.reason,
                 cycleKey: result.cycleKey,
+                evaluationPerformed: result.evaluationPerformed ?? false,
+                blockReasonCode: result.blockReasonCode ?? null,
+                summary: (result.summaryLines ?? []).slice(0, 8).join(" | "),
               },
             });
           } else {
