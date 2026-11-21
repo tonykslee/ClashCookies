@@ -1,6 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   generateNativeHeatMapRefCandidate,
+  computeNativeReferenceBucketDefinitionFingerprint,
+  computeNativeReferenceCandidateContentFingerprint,
   NATIVE_REFERENCE_BUCKET_REGISTRY,
   normalizeNativeReferenceAverageCountsForTest,
   validateNativeReferenceCandidateArtifact,
@@ -56,6 +62,9 @@ function makeRoster(input: {
     sourceWarEndTime: "2026-11-21T00:00:00.000Z",
     sourceWarState: "warEnded",
     sourceCurrentWarUpdatedAt: "2026-11-20T23:30:00.000Z",
+    sourceIdentityStatus: "VERIFIED",
+    sourceMatchType: "FWA",
+    sourceMemberCompletenessStatus: "VERIFIED",
     members,
   };
 }
@@ -94,6 +103,20 @@ describe("native HeatMapRef candidate generation", () => {
     expect(target).toMatchObject({ status: "SUPPORTED", countStatus: "EXPLICIT_ZERO", targetCount: 0 });
   });
 
+  it("marks observed-but-rounded-away counts separately from factual zero", () => {
+    const rosters = [makeRoster({
+      clanTag: "#ROUNDED0",
+      weightForPosition: (position) => position === 1 ? 181_000 : 171_000,
+    }), ...Array.from({ length: 9 }, (_, index) => makeRoster({
+      clanTag: `#ROUNDED${index + 1}`,
+      weightForPosition: () => 171_000,
+    }))];
+    const target = generate(rosters).diagnostics
+      .find((diagnostic) => diagnostic.status === "SUPPORTED")?.normalizedTargets
+      .find((candidate) => candidate.bucketId === "TH19");
+    expect(target).toMatchObject({ status: "SUPPORTED", countStatus: "ROUNDED_ZERO", observedTotal: 1, targetCount: 0 });
+  });
+
   it("does not make unsupported TH19 or insufficient bands actionable", () => {
     const artifact = generate([makeRoster({ clanTag: "#ONE", weightForPosition: () => 181_000 })]);
     expect(artifact.overallStatus).toBe("UNKNOWN");
@@ -101,6 +124,46 @@ describe("native HeatMapRef candidate generation", () => {
     expect(artifact.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
     expect(artifact.diagnostics.flatMap((diagnostic) => diagnostic.normalizedTargets)
       .every((target) => target.targetCount === null)).toBe(true);
+  });
+
+  it("requires independently verified FWA identity and rejects stale, future, mixed, or unsupported source evidence", () => {
+    const unavailable = makeRoster({ clanTag: "#UNAVAILABLE", weightForPosition: () => 181_000 });
+    expect(generate([{ ...unavailable, sourceIdentityStatus: "UNAVAILABLE" }]).unknownReason).toBe("rejected_source_evidence");
+
+    const nonFwa = makeRoster({ clanTag: "#BLMM", weightForPosition: () => 181_000 });
+    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).exclusionCounts.source_metadata).toBe(1);
+
+    const future = makeRoster({ clanTag: "#FUTURETIME", weightForPosition: () => 181_000 });
+    future.sourceUpdatedAt = "2026-11-21T01:00:00.000Z";
+    expect(generate([future]).exclusionCounts.source_metadata).toBe(1);
+
+    const unsupportedState = makeRoster({ clanTag: "#UNSUPPORTEDSTATE", weightForPosition: () => 181_000 });
+    unsupportedState.sourceWarState = "cancelled";
+    expect(generate([unsupportedState]).exclusionCounts.source_metadata).toBe(1);
+
+    const mixed = makeRoster({ clanTag: "#MIXEDTIME", weightForPosition: () => 181_000 });
+    mixed.members = mixed.members.map((member, index) => ({
+      ...member,
+      sourceSyncedAt: index === 0 ? "2026-11-20T22:00:00.000Z" : "2026-11-20T23:00:00.000Z",
+    }));
+    expect(generate([mixed]).exclusionCounts.source_metadata).toBe(1);
+  });
+
+  it("distinguishes no source, rejected source, and insufficient source support", () => {
+    expect(generate([]).unknownReason).toBe("no_source_evidence");
+    const rejected = makeRoster({ clanTag: "#REJECTED", weightForPosition: () => 181_000 });
+    rejected.sourceIdentityStatus = "UNAVAILABLE";
+    const rejectedArtifact = generate([rejected]);
+    expect(rejectedArtifact.unknownReason).toBe("rejected_source_evidence");
+    expect(rejectedArtifact.diagnostics.find((diagnostic) => diagnostic.sourceObservationCount > 0)?.reasonCode).toBe("invalid_evidence");
+    expect(generate([makeRoster({ clanTag: "#SHORT", weightForPosition: () => 181_000 })]).unknownReason).toBe("insufficient_source_support");
+  });
+
+  it("honors the cutoff and rejects an explicitly invalid threshold", () => {
+    const rosters = Array.from({ length: 9 }, (_, index) => makeRoster({ clanTag: `#CUTOFF${index}`, weightForPosition: () => 181_000 }));
+    expect(generate(rosters).overallStatus).toBe("UNKNOWN");
+    expect(generate(rosters, 9).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    expect(generate(rosters, 0).unknownReason).toBe("invalid_sample_threshold");
   });
 
   it("rejects imputation, malformed weights, duplicate identities, and duplicate positions", () => {
@@ -187,8 +250,12 @@ describe("native HeatMapRef candidate generation", () => {
       sampleThreshold: 10,
       bucketRegistry: futureRegistry,
     });
+    expect(artifact.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.th19ContainingRosterCount).toBe(10);
     expect(artifact.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.normalizedTargets)
       .toEqual(expect.arrayContaining([expect.objectContaining({ bucketId: "TH19_TO_TH18", targetCount: 50 })]));
+    expect(computeNativeReferenceBucketDefinitionFingerprint(NATIVE_REFERENCE_BUCKET_REGISTRY)).not.toBe(
+      computeNativeReferenceBucketDefinitionFingerprint([...NATIVE_REFERENCE_BUCKET_REGISTRY].reverse()),
+    );
   });
 
   it("uses largest-remainder rounding with ordered tie breaking and rejects incomplete counts", () => {
@@ -223,6 +290,30 @@ describe("native HeatMapRef candidate generation", () => {
     expect(validateNativeReferenceCandidateArtifact({ ...artifact, profileVersion: "native-reference-v0" })).toBe(false);
     expect(validateNativeReferenceCandidateArtifact({ ...artifact, diagnostics: [] })).toBe(false);
 
+    const { contentFingerprint: _contentFingerprint, ...missingDiagnostics } = { ...artifact, diagnostics: [] };
+    expect(validateNativeReferenceCandidateArtifact({
+      ...missingDiagnostics,
+      contentFingerprint: computeNativeReferenceCandidateContentFingerprint(missingDiagnostics),
+    })).toBe(false);
+
+    const contradictoryDiagnostics = artifact.diagnostics.map((diagnostic) => diagnostic.status === "SUPPORTED"
+      ? {
+          ...diagnostic,
+          normalizedTargets: diagnostic.normalizedTargets.map((target, index) => index === 0
+            ? { ...target, targetCount: (target.targetCount ?? 0) + 1 }
+            : target),
+        }
+      : diagnostic);
+    const { contentFingerprint: _validContentFingerprint, ...contradictoryPayload } = { ...artifact, diagnostics: contradictoryDiagnostics };
+    expect(validateNativeReferenceCandidateArtifact({
+      ...contradictoryPayload,
+      contentFingerprint: computeNativeReferenceCandidateContentFingerprint(contradictoryPayload),
+    })).toBe(false);
+
+    expect(computeNativeReferenceBucketDefinitionFingerprint()).not.toBe(
+      computeNativeReferenceBucketDefinitionFingerprint(undefined, [{ bucket: "TH19", minInclusive: 181001, maxInclusive: 190000 }]),
+    );
+
     const findMany = vi.fn().mockResolvedValue([]);
     const service = new NativeHeatMapRefCandidateService({
       fwaTrackedClanWarRosterCurrent: { findMany },
@@ -231,6 +322,25 @@ describe("native HeatMapRef candidate generation", () => {
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(report.overallStatus).toBe("UNKNOWN");
     expect(Object.keys(service)).toEqual(["db"]);
+  });
+
+  it("runs the fixture diagnostic CLI without touching the database", () => {
+    const directory = mkdtempSync(join(tmpdir(), "native-ref-cli-"));
+    const fixturePath = join(directory, "empty.json");
+    writeFileSync(fixturePath, JSON.stringify({ rosters: [] }), "utf8");
+    const scriptPath = join(process.cwd(), "src", "scripts", "diagnoseNativeHeatMapRef.ts");
+    try {
+      const valid = spawnSync(process.execPath, ["-r", require.resolve("ts-node/register"), scriptPath, "--fixture", fixturePath, "--evaluation-at", evaluationAt, "--era-start", eraPolicy.eraStartIso, "--era-end", eraPolicy.eraEndIso], { encoding: "utf8" });
+      expect(valid.status, `${valid.stdout}\n${valid.stderr}`).toBe(0);
+      expect(valid.stdout).toContain('"sourceCategory": "synthetic_fixture"');
+      expect(valid.stdout).toContain('"evidenceTrust": "synthetic_untrusted"');
+
+      const strict = spawnSync(process.execPath, ["-r", require.resolve("ts-node/register"), scriptPath, "--fixture", fixturePath, "--evaluation-at", evaluationAt, "--era-start", eraPolicy.eraStartIso, "--era-end", eraPolicy.eraEndIso, "--not-an-option"], { encoding: "utf8" });
+      expect(strict.status).not.toBe(0);
+      expect(`${strict.stdout}\n${strict.stderr}`).not.toContain("Can't reach database");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

@@ -110,13 +110,15 @@ npm start
 
 ## Native composition reference diagnostics
 
-FB-002 P3 includes a read-only native candidate inspector. It requires explicit evaluation and era-window parameters and can read either persisted local tracked-war snapshots or a deterministic JSON fixture:
+FB-002 P3 includes a read-only native candidate inspector. It requires explicit evaluation and era-window parameters plus an explicit source mode:
 
 ```bash
-npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z [--fixture path/to/fixture.json]
+npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z --fixture path/to/fixture.json
+# Or use the explicitly requested local persisted-source diagnostic:
+npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z --db
 ```
 
-The report is versioned and fail-closed. It does not publish references, alter settings or scheduler state, call feeds, contact Discord, or make composition recommendations. Fixture results are synthetic evidence only; native candidates remain separate from the active legacy HeatMapRef v1 contract.
+The report is versioned and fail-closed. It does not publish references, alter settings or scheduler state, call feeds, contact Discord, or make composition recommendations. Fixture results carry an explicit synthetic marker and are not real-world support evidence. Persisted DB rows currently lack an authoritative binding between the tracked roster, its member rows, and an exact FWA `CurrentWar`; DB-derived candidates therefore remain UNKNOWN until that source identity and completeness can be independently verified. Native candidates remain separate from the active legacy HeatMapRef v1 contract.
 
 ## Deployment Model
 Production and staging currently run on a droplet-based container deployment.

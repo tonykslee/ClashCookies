@@ -2,6 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
   generateNativeHeatMapRefCandidate,
+  NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST,
+  NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY,
   type NativeReferenceBandDefinition,
   type NativeReferenceCandidateArtifact,
   type NativeReferenceEraPolicy,
@@ -9,7 +11,7 @@ import {
 } from "../helper/nativeHeatMapRefCandidate";
 import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
 
-type NativeCandidateDb = Pick<PrismaClient, "fwaTrackedClanWarRosterCurrent">;
+type NativeCandidateDb = Pick<PrismaClient, "fwaTrackedClanWarRosterCurrent" | "currentWar" | "fwaWarMemberCurrent">;
 
 /** Purpose: read the persisted tracked-war snapshot without invoking feed, reference, setting, or scheduler owners. */
 export class NativeHeatMapRefCandidateService {
@@ -37,6 +39,25 @@ export class NativeHeatMapRefCandidateService {
         },
       },
     });
+    const clanTags = rows.map((row) => row.clanTag);
+    const [currentWars, memberEvidence] = await Promise.all([
+      clanTags.length > 0
+        ? this.db.currentWar.findMany({
+            where: { clanTag: { in: clanTags } },
+            select: { clanTag: true, guildId: true, warId: true, startTime: true, opponentTag: true, matchType: true, state: true, updatedAt: true },
+          })
+        : Promise.resolve([]),
+      clanTags.length > 0
+        ? this.db.fwaWarMemberCurrent.findMany({
+            where: { clanTag: { in: clanTags } },
+            select: { clanTag: true, playerTag: true, position: true, sourceSyncedAt: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const currentWarCountByClan = new Map<string, number>();
+    const memberEvidenceCountByClan = new Map<string, number>();
+    for (const row of currentWars) currentWarCountByClan.set(row.clanTag, (currentWarCountByClan.get(row.clanTag) ?? 0) + 1);
+    for (const row of memberEvidence) memberEvidenceCountByClan.set(row.clanTag, (memberEvidenceCountByClan.get(row.clanTag) ?? 0) + 1);
     return rows.map((row) => ({
       clanTag: row.clanTag,
       rosterSize: row.rosterSize,
@@ -49,6 +70,12 @@ export class NativeHeatMapRefCandidateService {
       sourceWarEndTime: row.sourceWarEndTime,
       sourceWarState: row.sourceWarState,
       sourceCurrentWarUpdatedAt: row.sourceCurrentWarUpdatedAt,
+      // CurrentWar and WarMembers are separate persisted owners. There is no persisted
+      // foreign key proving that these member rows belong to this exact war, so the
+      // native contract must remain UNKNOWN rather than infer a binding.
+      sourceIdentityStatus: "UNAVAILABLE" as const,
+      sourceMatchType: null,
+      sourceMemberCompletenessStatus: "UNAVAILABLE" as const,
       members: row.members.map((member) => ({
         clanTag: member.clanTag,
         playerTag: member.playerTag,
@@ -78,6 +105,8 @@ export class NativeHeatMapRefCandidateService {
       eraPolicy: input.eraPolicy,
       evaluationAt: input.evaluationAt,
       sampleThreshold: input.sampleThreshold,
+      sourceCategory: NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY,
+      evidenceTrust: NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST,
     });
   }
 }

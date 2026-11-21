@@ -11,6 +11,10 @@ export const NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION = "compo-war-buckets-v1"
 export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
 export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
 export const NATIVE_REFERENCE_TARGET_TOTAL = 50;
+export const NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY = "persisted_fwa_snapshot";
+export const NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY = "synthetic_fixture";
+export const NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST = "persisted_unverified_source_binding";
+export const NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST = "synthetic_untrusted";
 
 export type NativeReferenceBucketDefinition = {
   id: string;
@@ -47,6 +51,9 @@ export type NativeReferenceSourceMember = {
   sourceSyncedAt?: Date | string | null;
 };
 
+export type NativeReferenceSourceBindingStatus = "VERIFIED" | "UNAVAILABLE" | "CONFLICTING";
+export type NativeReferenceSourceCompletenessStatus = "VERIFIED" | "UNAVAILABLE" | "CONFLICTING";
+
 export type NativeReferenceSourceRoster = {
   clanTag: string;
   rosterSize: number;
@@ -59,6 +66,9 @@ export type NativeReferenceSourceRoster = {
   sourceWarEndTime: Date | string | null;
   sourceWarState: string | null;
   sourceCurrentWarUpdatedAt: Date | string | null;
+  sourceIdentityStatus?: NativeReferenceSourceBindingStatus;
+  sourceMatchType?: string | null;
+  sourceMemberCompletenessStatus?: NativeReferenceSourceCompletenessStatus;
   members: readonly NativeReferenceSourceMember[];
 };
 
@@ -88,6 +98,8 @@ export type NativeReferenceExclusionReasonCode =
 
 export type NativeReferenceExclusion = {
   clanTag: string | null;
+  bandKey: string | null;
+  bandAttribution: "INDEPENDENT" | "UNATTRIBUTABLE";
   reasonCode: NativeReferenceExclusionReasonCode;
   reason: string;
 };
@@ -95,7 +107,9 @@ export type NativeReferenceExclusion = {
 export type NativeReferenceBucketTarget = {
   bucketId: string;
   status: "SUPPORTED" | "UNKNOWN";
-  countStatus: "POSITIVE" | "EXPLICIT_ZERO" | "MISSING_OR_UNSUPPORTED" | "INVALID_EVIDENCE";
+  countStatus: "POSITIVE" | "EXPLICIT_ZERO" | "ROUNDED_ZERO" | "MISSING_OR_UNSUPPORTED" | "INVALID_EVIDENCE";
+  observedTotal: number | null;
+  observedAverage: number | null;
   targetCount: number | null;
   reasonCode: string | null;
 };
@@ -105,6 +119,7 @@ export type NativeReferenceBandDiagnostic = {
   status: "SUPPORTED" | "UNKNOWN";
   reasonCode: "supported" | "no_source" | "insufficient_source" | "invalid_evidence";
   candidateSourceRosterCount: number;
+  sourceObservationCount: number;
   distinctQualifyingClanCount: number;
   excludedRosterCount: number;
   exclusionCounts: Readonly<Record<string, number>>;
@@ -119,6 +134,7 @@ export type NativeReferenceCandidateArtifact = {
   profileVersion: string;
   overallStatus: "SUPPORTED" | "PARTIAL" | "UNKNOWN";
   sourceCategory: string;
+  evidenceTrust: string;
   sampleThreshold: number;
   eraPolicy: NativeReferenceEraPolicy;
   evaluationAtIso: string;
@@ -133,6 +149,7 @@ export type NativeReferenceCandidateArtifact = {
   sourceEvidenceFingerprint: string;
   contentFingerprint: string;
   unknownReason: string | null;
+  unattributedExclusionCount: number;
 };
 
 type NativeCandidateConfig = {
@@ -142,6 +159,7 @@ type NativeCandidateConfig = {
   evaluationAt: Date | string;
   sampleThreshold?: number;
   sourceCategory?: string;
+  evidenceTrust?: string;
   bucketRegistry?: readonly NativeReferenceBucketDefinition[];
 };
 
@@ -256,7 +274,7 @@ function validatePolicy(input: NativeCandidateConfig): { policy: NativeReference
     !eraStart ||
     !eraEnd ||
     !input.eraPolicy.policyId.trim() ||
-    !input.eraPolicy.policyVersion.trim() ||
+    input.eraPolicy.policyVersion !== NATIVE_REFERENCE_ERA_POLICY_VERSION ||
     eraStart.getTime() > eraEnd.getTime() ||
     evaluationAt.getTime() < eraStart.getTime()
   ) {
@@ -270,6 +288,38 @@ function validatePolicy(input: NativeCandidateConfig): { policy: NativeReference
     },
     evaluationAt,
   };
+}
+
+function sourceCategoryFor(input: NativeCandidateConfig): { category: string; trust: string } {
+  if (input.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY) {
+    return {
+      category: NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY,
+      trust: input.evidenceTrust ?? NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST,
+    };
+  }
+  return {
+    category: input.sourceCategory ?? NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY,
+    trust: input.evidenceTrust ?? NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST,
+  };
+}
+
+function sourceIdentityIsIndependentlyVerified(roster: NativeReferenceSourceRoster): boolean {
+  return (
+    roster.sourceIdentityStatus === "VERIFIED" &&
+    roster.sourceMatchType === "FWA" &&
+    roster.sourceMemberCompletenessStatus === "VERIFIED"
+  );
+}
+
+function inferIndependentlySupportableBand(
+  roster: NativeReferenceSourceRoster,
+  bands: readonly NativeReferenceBandDefinition[],
+): NativeReferenceBandDefinition | null {
+  if (roster.members.length !== NATIVE_REFERENCE_TARGET_TOTAL) return null;
+  const weights = roster.members.map((member) => member.effectiveWeight);
+  if (weights.some((weight) => !Number.isInteger(weight) || (weight as number) <= 0)) return null;
+  const total = weights.reduce<number>((sum, weight) => sum + (weight as number), 0);
+  return findBand(total, bands);
 }
 
 function findBand(
@@ -344,7 +394,13 @@ function qualifyRoster(input: {
   const { roster } = input;
   const exclusion = (reasonCode: NativeReferenceExclusionReasonCode, reason: string) => ({
     qualified: null,
-    exclusion: { clanTag: input.normalizedClanTag, reasonCode, reason },
+    exclusion: {
+      clanTag: input.normalizedClanTag,
+      bandKey: null,
+      bandAttribution: "UNATTRIBUTABLE" as const,
+      reasonCode,
+      reason,
+    },
   });
   if (input.duplicateClan) return exclusion("duplicate_clan_observation", "repeated clan observation was rejected");
   if (roster.rosterSize !== NATIVE_REFERENCE_TARGET_TOTAL || roster.members.length !== NATIVE_REFERENCE_TARGET_TOTAL) {
@@ -373,6 +429,7 @@ function qualifyRoster(input: {
   const eraStart = new Date(input.policy.eraStartIso).getTime();
   const eraEnd = new Date(input.policy.eraEndIso).getTime();
   if (
+    !sourceIdentityIsIndependentlyVerified(roster) ||
     !observedAt ||
     !sourceUpdatedAt ||
     !sourceWarStartTime ||
@@ -381,10 +438,23 @@ function qualifyRoster(input: {
     !roster.sourceWarState?.trim() ||
     sourceUpdatedAt.getTime() > input.evaluationAt.getTime() ||
     observedAt.getTime() > input.evaluationAt.getTime() ||
+    sourceWarStartTime.getTime() > input.evaluationAt.getTime() ||
+    sourceWarStartTime.getTime() > observedAt.getTime() ||
+    sourceWarStartTime.getTime() > sourceUpdatedAt.getTime() ||
+    (sourceCurrentWarUpdatedAt && sourceCurrentWarUpdatedAt.getTime() < sourceWarStartTime.getTime()) ||
+    observedAt.getTime() < sourceUpdatedAt.getTime() ||
     (sourceCurrentWarUpdatedAt && sourceCurrentWarUpdatedAt.getTime() > input.evaluationAt.getTime()) ||
     (sourceWarEndTime && sourceWarEndTime.getTime() < sourceWarStartTime.getTime())
   ) {
-    return exclusion("source_metadata", "source war identity or observation metadata is incomplete or contradictory");
+    return exclusion("source_metadata", "source war identity, FWA match type, completeness, or observation metadata is unavailable or contradictory");
+  }
+  const allowedStates = new Set(["preparation", "inwar", "warended", "notinwar"]);
+  const normalizedState = roster.sourceWarState.trim().toLowerCase().replace(/[_-]/g, "");
+  if (!allowedStates.has(normalizedState)) {
+    return exclusion("source_metadata", "source war state is unsupported");
+  }
+  if (normalizedState === "warended" && !sourceWarEndTime) {
+    return exclusion("source_metadata", "ended source war is missing its end timestamp");
   }
   if (
     sourceWarStartTime.getTime() < eraStart ||
@@ -411,6 +481,7 @@ function qualifyRoster(input: {
   const rawWeights: number[] = [];
   const effectiveWeights: number[] = [];
   const bucketCounts = emptyCounts(input.registry);
+  let factualTh19Count = 0;
   for (const member of roster.members) {
     if (member.effectiveWeightStatus !== "RAW") {
       return exclusion("imputed_weight", "imputed or unresolved effective weights are not candidate-eligible");
@@ -426,6 +497,7 @@ function qualifyRoster(input: {
     }
     const sourceBucket = getCompoWarWeightBucket(member.effectiveWeight);
     if (!sourceBucket) return exclusion("unsupported_weight", "weight is outside the shared classification bands");
+    if (sourceBucket === "TH19") factualTh19Count += 1;
     const nativeBucket = bucketForSource(sourceBucket, input.registry);
     if (!nativeBucket) return exclusion("unsupported_weight", `shared bucket ${sourceBucket} is not in the native registry`);
     rawWeights.push(member.rawWeight as number);
@@ -450,7 +522,7 @@ function qualifyRoster(input: {
       band,
       bucketCounts,
       totalEffectiveWeight,
-      th19Count: bucketCounts.TH19 ?? 0,
+      th19Count: factualTh19Count,
       sourceObservationTimes,
     },
     exclusion: null,
@@ -465,13 +537,57 @@ function buildUnknownTargets(
     bucketId: bucket.id,
     status: "UNKNOWN",
     countStatus: reasonCode === "invalid_evidence" ? "INVALID_EVIDENCE" : "MISSING_OR_UNSUPPORTED",
+    observedTotal: null,
+    observedAverage: null,
     targetCount: null,
     reasonCode,
   }));
 }
 
+function canonicalizeSourceEvidence(rosters: readonly NativeReferenceSourceRoster[]): unknown[] {
+  return [...rosters]
+    .map((roster) => ({
+      clanTag: normalizeIdentity(roster.clanTag),
+      rosterSize: roster.rosterSize,
+      totalRawWeight: roster.totalRawWeight,
+      totalEffectiveWeight: roster.totalEffectiveWeight,
+      observedAt: parseDate(roster.observedAt)?.toISOString() ?? null,
+      sourceUpdatedAt: parseDate(roster.sourceUpdatedAt)?.toISOString() ?? null,
+      sourceWarId: roster.sourceWarId,
+      sourceWarStartTime: parseDate(roster.sourceWarStartTime)?.toISOString() ?? null,
+      sourceWarEndTime: parseDate(roster.sourceWarEndTime)?.toISOString() ?? null,
+      sourceWarState: roster.sourceWarState,
+      sourceCurrentWarUpdatedAt: parseDate(roster.sourceCurrentWarUpdatedAt)?.toISOString() ?? null,
+      sourceIdentityStatus: roster.sourceIdentityStatus ?? "UNAVAILABLE",
+      sourceMatchType: roster.sourceMatchType ?? null,
+      sourceMemberCompletenessStatus: roster.sourceMemberCompletenessStatus ?? "UNAVAILABLE",
+      members: [...roster.members]
+        .map((member) => ({
+          clanTag: normalizeIdentity(member.clanTag),
+          playerTag: normalizeIdentity(member.playerTag),
+          position: member.position,
+          townHall: member.townHall,
+          rawWeight: member.rawWeight,
+          effectiveWeight: member.effectiveWeight,
+          effectiveWeightStatus: member.effectiveWeightStatus,
+          sourceSyncedAt: parseDate(member.sourceSyncedAt)?.toISOString() ?? null,
+        }))
+        .sort((left, right) =>
+          (left.position ?? 0) - (right.position ?? 0) ||
+          (left.playerTag ?? "").localeCompare(right.playerTag ?? "") ||
+          (left.clanTag ?? "").localeCompare(right.clanTag ?? ""),
+        ),
+    }))
+    .sort((left, right) =>
+      (left.clanTag ?? "").localeCompare(right.clanTag ?? "") ||
+      String(left.sourceWarId ?? "").localeCompare(String(right.sourceWarId ?? "")) ||
+      String(left.sourceUpdatedAt ?? "").localeCompare(String(right.sourceUpdatedAt ?? "")),
+    );
+}
+
 function buildInvalidArtifact(input: NativeCandidateConfig, reason: string): NativeReferenceCandidateArtifact {
   const registry = input.bucketRegistry ?? NATIVE_REFERENCE_BUCKET_REGISTRY;
+  const source = sourceCategoryFor(input);
   const bands = sortedBands(input.bandDefinitions);
   const policy = input.eraPolicy;
   const evaluationAtIso = typeof input.evaluationAt === "string" ? input.evaluationAt : input.evaluationAt.toISOString();
@@ -480,6 +596,7 @@ function buildInvalidArtifact(input: NativeCandidateConfig, reason: string): Nat
     status: "UNKNOWN" as const,
     reasonCode: "invalid_evidence" as const,
     candidateSourceRosterCount: 0,
+    sourceObservationCount: 0,
     distinctQualifyingClanCount: 0,
     excludedRosterCount: 0,
     exclusionCounts: {},
@@ -492,8 +609,11 @@ function buildInvalidArtifact(input: NativeCandidateConfig, reason: string): Nat
     profileId: NATIVE_REFERENCE_PROFILE_ID,
     profileVersion: NATIVE_REFERENCE_PROFILE_VERSION,
     overallStatus: "UNKNOWN" as const,
-    sourceCategory: input.sourceCategory ?? "fwa-tracked-war-roster-current",
-    sampleThreshold: input.sampleThreshold ?? NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
+    sourceCategory: source.category,
+    evidenceTrust: source.trust,
+    sampleThreshold: Number.isInteger(input.sampleThreshold) && (input.sampleThreshold ?? 0) > 0
+      ? input.sampleThreshold!
+      : 0,
     eraPolicy: policy,
     evaluationAtIso,
     sourceObservationBounds: { minIso: null, maxIso: null },
@@ -503,8 +623,9 @@ function buildInvalidArtifact(input: NativeCandidateConfig, reason: string): Nat
     bandDefinitions: bands,
     exclusions: [],
     exclusionCounts: {},
+    unattributedExclusionCount: 0,
     diagnostics,
-    sourceEvidenceFingerprint: sha256({ sourceRosters: input.sourceRosters }),
+    sourceEvidenceFingerprint: sha256({ sourceCategory: source.category, evidenceTrust: source.trust, sourceEvidence: canonicalizeSourceEvidence(input.sourceRosters) }),
     unknownReason: reason,
   };
   return { ...base, contentFingerprint: sha256(base) };
@@ -516,11 +637,18 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
   const registryError = validateRegistry(registry);
   const bandError = validateBandDefinitions(input.bandDefinitions);
   const policyResult = validatePolicy(input);
-  const threshold = Number.isInteger(input.sampleThreshold) && (input.sampleThreshold ?? 0) > 0
-    ? input.sampleThreshold!
-    : NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD;
-  if (registryError || bandError || !policyResult) {
-    return buildInvalidArtifact(input, registryError ?? bandError ?? "evaluation timestamp or era policy is invalid");
+  const threshold = input.sampleThreshold === undefined
+    ? NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD
+    : Number.isInteger(input.sampleThreshold) && input.sampleThreshold > 0
+      ? input.sampleThreshold
+      : 0;
+  if (registryError || bandError || !policyResult || threshold === 0) {
+    return buildInvalidArtifact(
+      input,
+      threshold === 0
+        ? "invalid_sample_threshold"
+        : registryError ?? bandError ?? "evaluation timestamp or era policy is invalid",
+    );
   }
 
   const normalizedRosters = input.sourceRosters.map((roster) => ({
@@ -535,7 +663,13 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
   const qualified: QualifiedRoster[] = [];
   for (const row of normalizedRosters) {
     if (!row.normalizedClanTag) {
-      exclusions.push({ clanTag: null, reasonCode: "invalid_clan_identity", reason: "clan identity is missing or invalid" });
+      exclusions.push({
+        clanTag: null,
+        bandKey: null,
+        bandAttribution: "UNATTRIBUTABLE",
+        reasonCode: "invalid_clan_identity",
+        reason: "clan identity is missing or invalid",
+      });
       continue;
     }
     const result = qualifyRoster({
@@ -548,11 +682,21 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       registry,
     });
     if (result.qualified) qualified.push(result.qualified);
-    if (result.exclusion) exclusions.push(result.exclusion);
+    if (result.exclusion) {
+      const attributableBand = inferIndependentlySupportableBand(row.roster, input.bandDefinitions);
+      exclusions.push({
+        ...result.exclusion,
+        bandKey: attributableBand ? bandKey(attributableBand) : null,
+        bandAttribution: attributableBand ? "INDEPENDENT" : "UNATTRIBUTABLE",
+      });
+    }
   }
 
   const bandDiagnostics = sortedBands(input.bandDefinitions).map((band) => {
     const rows = qualified.filter((roster) => bandKey(roster.band) === bandKey(band));
+    const sourceObservationCount = input.sourceRosters.filter(
+      (roster) => bandKey(inferIndependentlySupportableBand(roster, input.bandDefinitions) ?? { weightMinInclusive: -1, weightMaxInclusive: -1 }) === bandKey(band),
+    ).length;
     const observedBucketTotals = emptyCounts(registry);
     for (const row of rows) {
       for (const bucket of registry) observedBucketTotals[bucket.id] += row.bucketCounts[bucket.id] ?? 0;
@@ -560,19 +704,17 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     const averages = Object.fromEntries(
       registry.map((bucket) => [bucket.id, rows.length > 0 ? observedBucketTotals[bucket.id]! / rows.length : 0]),
     );
-    const normalized = normalizeAverageCounts({ averages, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL });
-    const bandExclusions = exclusions.filter((exclusion) => {
-      const roster = input.sourceRosters.find((candidate) => normalizeIdentity(candidate.clanTag) === exclusion.clanTag);
-      if (!roster) return false;
-      const total = roster.members.reduce((sum, member) => sum + (member.effectiveWeight ?? 0), 0);
-      return findBand(total, input.bandDefinitions)?.weightMinInclusive === band.weightMinInclusive &&
-        findBand(total, input.bandDefinitions)?.weightMaxInclusive === band.weightMaxInclusive;
-    });
+    const normalized = rows.length > 0
+      ? normalizeAverageCounts({ averages, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL })
+      : { counts: {}, invalidReason: null };
+    const bandExclusions = exclusions.filter(
+      (exclusion) => exclusion.bandKey === bandKey(band) && exclusion.bandAttribution === "INDEPENDENT",
+    );
     const supported = rows.length >= threshold && !normalized.invalidReason;
-    const reasonCode: NativeReferenceBandDiagnostic["reasonCode"] = normalized.invalidReason
-      ? "invalid_evidence"
-      : rows.length === 0
-        ? "no_source"
+    const reasonCode: NativeReferenceBandDiagnostic["reasonCode"] = rows.length === 0
+      ? sourceObservationCount === 0 ? "no_source" : "invalid_evidence"
+      : normalized.invalidReason
+        ? "invalid_evidence"
         : rows.length < threshold
           ? "insufficient_source"
           : "supported";
@@ -580,7 +722,13 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       ? registry.map((bucket) => ({
           bucketId: bucket.id,
           status: "SUPPORTED" as const,
-          countStatus: normalized.counts[bucket.id] > 0 ? "POSITIVE" as const : "EXPLICIT_ZERO" as const,
+          countStatus: (observedBucketTotals[bucket.id] ?? 0) === 0
+            ? "EXPLICIT_ZERO" as const
+            : normalized.counts[bucket.id] === 0
+              ? "ROUNDED_ZERO" as const
+              : "POSITIVE" as const,
+          observedTotal: observedBucketTotals[bucket.id] ?? 0,
+          observedAverage: averages[bucket.id] ?? 0,
           targetCount: normalized.counts[bucket.id]!,
           reasonCode: null,
         }))
@@ -590,6 +738,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       status: supported ? "SUPPORTED" as const : "UNKNOWN" as const,
       reasonCode,
       candidateSourceRosterCount: rows.length,
+      sourceObservationCount,
       distinctQualifyingClanCount: new Set(rows.map((row) => row.clanTag)).size,
       excludedRosterCount: bandExclusions.length,
       exclusionCounts: countReasons(bandExclusions),
@@ -600,47 +749,29 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     };
   });
 
-  const sourceEvidence = [...input.sourceRosters]
-    .map((roster) => ({
-      clanTag: normalizeIdentity(roster.clanTag),
-      rosterSize: roster.rosterSize,
-      totalRawWeight: roster.totalRawWeight,
-      totalEffectiveWeight: roster.totalEffectiveWeight,
-      observedAt: parseDate(roster.observedAt)?.toISOString() ?? null,
-      sourceUpdatedAt: parseDate(roster.sourceUpdatedAt)?.toISOString() ?? null,
-      sourceWarId: roster.sourceWarId,
-      sourceWarStartTime: parseDate(roster.sourceWarStartTime)?.toISOString() ?? null,
-      sourceWarEndTime: parseDate(roster.sourceWarEndTime)?.toISOString() ?? null,
-      sourceWarState: roster.sourceWarState,
-      sourceCurrentWarUpdatedAt: parseDate(roster.sourceCurrentWarUpdatedAt)?.toISOString() ?? null,
-      members: [...roster.members]
-        .map((member) => ({
-          clanTag: normalizeIdentity(member.clanTag),
-          playerTag: normalizeIdentity(member.playerTag),
-          position: member.position,
-          townHall: member.townHall,
-          rawWeight: member.rawWeight,
-          effectiveWeight: member.effectiveWeight,
-          effectiveWeightStatus: member.effectiveWeightStatus,
-          sourceSyncedAt: parseDate(member.sourceSyncedAt)?.toISOString() ?? null,
-        }))
-        .sort((left, right) => (left.position ?? 0) - (right.position ?? 0) || (left.playerTag ?? "").localeCompare(right.playerTag ?? "")),
-    }))
-    .sort((left, right) => (left.clanTag ?? "").localeCompare(right.clanTag ?? ""));
-  const sourceTimes = sourceEvidence.flatMap((roster) => [roster.observedAt, roster.sourceUpdatedAt, roster.sourceWarStartTime, roster.sourceWarEndTime, roster.sourceCurrentWarUpdatedAt]
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => new Date(value)));
+  const sourceEvidence = canonicalizeSourceEvidence(input.sourceRosters);
+  const sourceTimes = input.sourceRosters.flatMap((roster) => [roster.observedAt, roster.sourceUpdatedAt, roster.sourceWarStartTime, roster.sourceWarEndTime, roster.sourceCurrentWarUpdatedAt]
+    .map((value) => parseDate(value))
+    .filter((value): value is Date => Boolean(value)));
   const sourceObservationBounds = {
     minIso: sourceTimes.length > 0 ? new Date(Math.min(...sourceTimes.map((date) => date.getTime()))).toISOString() : null,
     maxIso: sourceTimes.length > 0 ? new Date(Math.max(...sourceTimes.map((date) => date.getTime()))).toISOString() : null,
   };
-  const sourceEvidenceFingerprint = sha256({ sourceCategory: input.sourceCategory ?? "fwa-tracked-war-roster-current", sourceEvidence });
+  const source = sourceCategoryFor(input);
+  const sourceEvidenceFingerprint = sha256({ sourceCategory: source.category, evidenceTrust: source.trust, sourceEvidence });
+  const canonicalExclusions = [...exclusions].sort((left, right) =>
+    (left.clanTag ?? "").localeCompare(right.clanTag ?? "") ||
+    (left.bandKey ?? "").localeCompare(right.bandKey ?? "") ||
+    left.reasonCode.localeCompare(right.reasonCode) ||
+    left.reason.localeCompare(right.reason),
+  );
   const supportedBandCount = bandDiagnostics.filter((band) => band.status === "SUPPORTED").length;
   const artifactBase = {
     profileId: NATIVE_REFERENCE_PROFILE_ID,
     profileVersion: NATIVE_REFERENCE_PROFILE_VERSION,
     overallStatus: supportedBandCount === 0 ? "UNKNOWN" as const : supportedBandCount === bandDiagnostics.length ? "SUPPORTED" as const : "PARTIAL" as const,
-    sourceCategory: input.sourceCategory ?? "fwa-tracked-war-roster-current",
+    sourceCategory: source.category,
+    evidenceTrust: source.trust,
     sampleThreshold: threshold,
     eraPolicy: policyResult.policy,
     evaluationAtIso: policyResult.evaluationAt.toISOString(),
@@ -649,12 +780,13 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     bucketDefinitionFingerprint: computeNativeReferenceBucketDefinitionFingerprint(registry),
     bucketRegistry: registry,
     bandDefinitions: sortedBands(input.bandDefinitions),
-    exclusions,
-    exclusionCounts: countReasons(exclusions),
+    exclusions: canonicalExclusions,
+    exclusionCounts: countReasons(canonicalExclusions),
+    unattributedExclusionCount: canonicalExclusions.filter((exclusion) => exclusion.bandAttribution === "UNATTRIBUTABLE").length,
     diagnostics: bandDiagnostics,
     sourceEvidenceFingerprint,
     unknownReason: supportedBandCount === 0
-      ? input.sourceRosters.length === 0 ? "no_source_evidence" : qualified.length === 0 ? "no_qualifying_evidence" : "insufficient_source_support"
+      ? input.sourceRosters.length === 0 ? "no_source_evidence" : qualified.length === 0 ? "rejected_source_evidence" : "insufficient_source_support"
       : null,
   };
   return { ...artifactBase, contentFingerprint: sha256(artifactBase) };
@@ -662,28 +794,144 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
 
 export function computeNativeReferenceBucketDefinitionFingerprint(
   registry: readonly NativeReferenceBucketDefinition[] = NATIVE_REFERENCE_BUCKET_REGISTRY,
+  weightBands: readonly { bucket: CompoWarWeightBucket; minInclusive: number; maxInclusive: number }[] = COMPO_WAR_WEIGHT_BANDS,
 ): string {
-  return sha256(registry.map((bucket) => ({ id: bucket.id, sourceBuckets: [...bucket.sourceBuckets].sort() })).sort((left, right) => left.id.localeCompare(right.id)));
+  return sha256({
+    version: NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION,
+    orderedRegistry: registry.map((bucket, index) => ({
+      order: index,
+      id: bucket.id,
+      sourceBuckets: [...bucket.sourceBuckets],
+    })),
+    orderedWeightBands: weightBands.map((band) => ({
+      bucket: band.bucket,
+      minInclusive: band.minInclusive,
+      maxInclusive: band.maxInclusive,
+    })),
+  });
+}
+
+/** Purpose: expose the artifact checksum calculation for contract tests and offline tooling. */
+export function computeNativeReferenceCandidateContentFingerprint(
+  artifact: Omit<NativeReferenceCandidateArtifact, "contentFingerprint">,
+): string {
+  return sha256(artifact);
 }
 
 export function validateNativeReferenceCandidateArtifact(
-  artifact: Partial<NativeReferenceCandidateArtifact> | null | undefined,
+  artifact: unknown,
 ): artifact is NativeReferenceCandidateArtifact {
-  return Boolean(
-    artifact &&
-      artifact.profileId === NATIVE_REFERENCE_PROFILE_ID &&
-      artifact.profileVersion === NATIVE_REFERENCE_PROFILE_VERSION &&
-      typeof artifact.bucketDefinitionFingerprint === "string" &&
-      /^[a-f0-9]{64}$/i.test(artifact.bucketDefinitionFingerprint) &&
-      typeof artifact.contentFingerprint === "string" &&
-      /^[a-f0-9]{64}$/i.test(artifact.contentFingerprint) &&
-      typeof artifact.sourceEvidenceFingerprint === "string" &&
-      /^[a-f0-9]{64}$/i.test(artifact.sourceEvidenceFingerprint) &&
-      (() => {
-        const { contentFingerprint, ...payload } = artifact as NativeReferenceCandidateArtifact;
-        return sha256(payload) === contentFingerprint;
-      })(),
-  );
+  const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
+  const isIso = (value: unknown): value is string => typeof value === "string" && Number.isFinite(new Date(value).getTime()) && new Date(value).toISOString() === value;
+  const candidate = artifact;
+  if (!isRecord(candidate)) return false;
+  if (
+    candidate.profileId !== NATIVE_REFERENCE_PROFILE_ID ||
+    candidate.profileVersion !== NATIVE_REFERENCE_PROFILE_VERSION ||
+    !["SUPPORTED", "PARTIAL", "UNKNOWN"].includes(String(candidate.overallStatus)) ||
+    ![NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY, NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY].includes(String(candidate.sourceCategory)) ||
+    (candidate.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST) ||
+    (candidate.sourceCategory === NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST) ||
+    !Number.isInteger(candidate.sampleThreshold) ||
+    (candidate.sampleThreshold as number) <= 0 ||
+    !isIso(candidate.evaluationAtIso) ||
+    !isRecord(candidate.eraPolicy) ||
+    candidate.eraPolicy.policyVersion !== NATIVE_REFERENCE_ERA_POLICY_VERSION ||
+    typeof candidate.eraPolicy.policyId !== "string" ||
+    !isIso(candidate.eraPolicy.eraStartIso) ||
+    !isIso(candidate.eraPolicy.eraEndIso) ||
+    new Date(candidate.eraPolicy.eraStartIso).getTime() > new Date(candidate.eraPolicy.eraEndIso).getTime() ||
+    new Date(candidate.evaluationAtIso).getTime() < new Date(candidate.eraPolicy.eraStartIso).getTime() ||
+    !isRecord(candidate.sourceObservationBounds) ||
+    (candidate.sourceObservationBounds.minIso !== null && !isIso(candidate.sourceObservationBounds.minIso)) ||
+    (candidate.sourceObservationBounds.maxIso !== null && !isIso(candidate.sourceObservationBounds.maxIso))
+  ) return false;
+  if (
+    candidate.sourceObservationBounds.minIso !== null &&
+    candidate.sourceObservationBounds.maxIso !== null &&
+    new Date(candidate.sourceObservationBounds.minIso).getTime() > new Date(candidate.sourceObservationBounds.maxIso).getTime()
+  ) return false;
+  if (!Array.isArray(candidate.bucketRegistry) || validateRegistry(candidate.bucketRegistry as NativeReferenceBucketDefinition[]) !== null) return false;
+  if (!Array.isArray(candidate.bandDefinitions) || validateBandDefinitions(candidate.bandDefinitions as NativeReferenceBandDefinition[]) !== null) return false;
+  const registry = candidate.bucketRegistry as NativeReferenceBucketDefinition[];
+  const bands = candidate.bandDefinitions as NativeReferenceBandDefinition[];
+  if (
+    candidate.bucketDefinitionVersion !== NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION ||
+    typeof candidate.bucketDefinitionFingerprint !== "string" ||
+    candidate.bucketDefinitionFingerprint !== computeNativeReferenceBucketDefinitionFingerprint(registry) ||
+    !/^[a-f0-9]{64}$/i.test(String(candidate.sourceEvidenceFingerprint)) ||
+    !/^[a-f0-9]{64}$/i.test(String(candidate.contentFingerprint)) ||
+    !Array.isArray(candidate.exclusions) ||
+    !Array.isArray(candidate.diagnostics) ||
+    candidate.diagnostics.length !== bands.length ||
+    typeof candidate.unattributedExclusionCount !== "number" ||
+    !Number.isInteger(candidate.unattributedExclusionCount) ||
+    candidate.unattributedExclusionCount < 0
+  ) return false;
+  const expectedBandKeys = new Set(bands.map(bandKey));
+  const diagnosticKeys = new Set<string>();
+  const registryIds = new Set(registry.map((bucket) => bucket.id));
+  for (const diagnosticValue of candidate.diagnostics) {
+    if (!isRecord(diagnosticValue) || !isRecord(diagnosticValue.band)) return false;
+    const diagnostic = diagnosticValue as unknown as NativeReferenceBandDiagnostic;
+    const key = bandKey(diagnostic.band);
+    if (!expectedBandKeys.has(key) || diagnosticKeys.has(key)) return false;
+    diagnosticKeys.add(key);
+    if (
+      !["SUPPORTED", "UNKNOWN"].includes(diagnostic.status) ||
+      !["supported", "no_source", "insufficient_source", "invalid_evidence"].includes(diagnostic.reasonCode) ||
+      ![diagnostic.candidateSourceRosterCount, diagnostic.sourceObservationCount, diagnostic.distinctQualifyingClanCount, diagnostic.excludedRosterCount, diagnostic.th19ContainingRosterCount].every((value) => Number.isInteger(value) && value >= 0) ||
+      diagnostic.distinctQualifyingClanCount > diagnostic.candidateSourceRosterCount ||
+      diagnostic.candidateSourceRosterCount > diagnostic.sourceObservationCount ||
+      diagnostic.th19ContainingRosterCount > diagnostic.candidateSourceRosterCount ||
+      !isRecord(diagnostic.observedBucketTotals) ||
+      !isRecord(diagnostic.averageBucketCounts) ||
+      !isRecord(diagnostic.exclusionCounts) ||
+      !Array.isArray(diagnostic.normalizedTargets)
+    ) return false;
+    const observedTotal = registry.reduce((sum, bucket) => {
+      const value = diagnostic.observedBucketTotals[bucket.id];
+      return Number.isFinite(value) && (value as number) >= 0 ? sum + (value as number) : Number.NaN;
+    }, 0);
+    if (!Number.isFinite(observedTotal) || observedTotal !== diagnostic.candidateSourceRosterCount * NATIVE_REFERENCE_TARGET_TOTAL) return false;
+    for (const bucket of registry) {
+      const total = diagnostic.observedBucketTotals[bucket.id];
+      const average = diagnostic.averageBucketCounts[bucket.id];
+      if (!Number.isFinite(total) || !Number.isFinite(average) || (average as number) !== ((total as number) / Math.max(1, diagnostic.candidateSourceRosterCount))) return false;
+    }
+    const targets = diagnostic.normalizedTargets;
+    if (targets.length !== registry.length || new Set(targets.map((target) => target.bucketId)).size !== registry.length || targets.some((target) => !registryIds.has(target.bucketId))) return false;
+    const supported = diagnostic.status === "SUPPORTED";
+    const targetTotal = targets.reduce((sum, target) => sum + (target.targetCount ?? 0), 0);
+    for (const targetValue of targets) {
+      if (!isRecord(targetValue)) return false;
+      const target = targetValue as unknown as NativeReferenceBucketTarget;
+      const observed = diagnostic.observedBucketTotals[target.bucketId];
+      const average = diagnostic.averageBucketCounts[target.bucketId];
+      if (typeof target.bucketId !== "string" || !["SUPPORTED", "UNKNOWN"].includes(target.status) || !["POSITIVE", "EXPLICIT_ZERO", "ROUNDED_ZERO", "MISSING_OR_UNSUPPORTED", "INVALID_EVIDENCE"].includes(target.countStatus)) return false;
+      if (supported) {
+        if (target.status !== "SUPPORTED" || !Number.isInteger(target.targetCount) || (target.targetCount as number) < 0 || target.observedTotal !== observed || target.observedAverage !== average) return false;
+        if (target.countStatus === "EXPLICIT_ZERO" && ((observed as number) !== 0 || target.targetCount !== 0)) return false;
+        if (target.countStatus === "ROUNDED_ZERO" && ((observed as number) <= 0 || target.targetCount !== 0)) return false;
+        if (target.countStatus === "POSITIVE" && ((observed as number) <= 0 || (target.targetCount as number) <= 0)) return false;
+      } else if (target.status !== "UNKNOWN" || target.targetCount !== null || target.observedTotal !== null || target.observedAverage !== null) return false;
+    }
+    if (supported) {
+      if (diagnostic.reasonCode !== "supported" || diagnostic.candidateSourceRosterCount < (candidate.sampleThreshold as number) || targetTotal !== NATIVE_REFERENCE_TARGET_TOTAL) return false;
+    } else {
+      if (diagnostic.reasonCode === "supported" || targets.some((target) => target.targetCount !== null)) return false;
+      if (diagnostic.reasonCode === "no_source" && diagnostic.sourceObservationCount !== 0) return false;
+      if (diagnostic.reasonCode === "insufficient_source" && diagnostic.candidateSourceRosterCount >= (candidate.sampleThreshold as number)) return false;
+    }
+  }
+  if (diagnosticKeys.size !== expectedBandKeys.size) return false;
+  const exclusions = candidate.exclusions as unknown[];
+  for (const exclusion of exclusions) {
+    if (!isRecord(exclusion) || (exclusion.bandKey !== null && !expectedBandKeys.has(String(exclusion.bandKey))) || !["INDEPENDENT", "UNATTRIBUTABLE"].includes(String(exclusion.bandAttribution)) || typeof exclusion.reasonCode !== "string" || typeof exclusion.reason !== "string") return false;
+  }
+  if (candidate.unattributedExclusionCount !== exclusions.filter((exclusion) => isRecord(exclusion) && exclusion.bandAttribution === "UNATTRIBUTABLE").length) return false;
+  const { contentFingerprint, ...payload } = candidate;
+  return sha256(payload) === contentFingerprint;
 }
 
 export const normalizeNativeReferenceAverageCountsForTest = normalizeAverageCounts;
