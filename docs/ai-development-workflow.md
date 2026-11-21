@@ -27,6 +27,12 @@
 7. **Production-ready `dev` contract:** A feature must be reviewed, tested, and deployable before it merges into `dev`; migration compatibility and feature-specific recovery concerns belong in that feature PR. Never auto-merge `dev` to `main` without explicit owner approval. The reviewed `dev` → `main` promotion triggers the existing automatic SSH production deployment; it is not a new engineering or infrastructure phase. Check the final release delta, CI, migration scope, current backup/recovery evidence and active runtime readiness as release-time operational verification, not as permission to invent replacement infrastructure.
 8. **Standing documentation-only merge approval:** For docs-only roadmap/vision/priorities, policy decisions, or shipped-progress reconciliation, a reviewed PR targeting `dev` may be merged without separate user approval. Check actual diff, consistency, CI/mergeability and review state. This does **not** authorize schema/migration/code/runtime/deploy/issuance changes. Do not commit directly to `dev`.
 
+### Issue-based feature intake
+
+The running feature backlog is [GitHub Issues](https://github.com/tonykslee/ClashCookies/issues?q=is%3Aissue+label%3Abacklog). ChatGPT has standing owner authorization to create, update, label, reprioritize and close backlog issues directly when requested or when verified progress warrants reconciliation; no branch, commit, PR or separate approval is required for issue metadata. Search existing issues first, preserve legacy FB identifiers, requirements and history, link related PRs, and distinguish proposed, in progress, merged-to-dev, and production-verified status. Keep implementation and deployment approval gates unchanged. `docs/feature-backlog.md` is a migration pointer, not a second backlog; feature history and durable architecture/roadmaps remain in versioned docs.
+
+Routine issue changes do not advance `dev`. The existing narrow backlog-file freshness exception below remains a legacy compatibility rule; do not interpret it as permission to bypass freshness checks for other changes.
+
 ### Existing feature branch freshness exception
 
 The requirement for a new feature branch remains strict: `scripts/start-feature.sh` fetches `origin/dev`, fast-forwards local `dev`, verifies that local `dev` exactly equals `origin/dev`, and only then creates the branch. Existing feature branches may be stale only for the narrow backlog case below:
