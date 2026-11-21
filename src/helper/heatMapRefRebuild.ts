@@ -2,6 +2,7 @@ import type { HeatMapRef } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { buildCompoWarBucketCounts } from "./compoWarBucketCounts";
 import { findHeatMapRefForWeight, getHeatMapRefBandKey } from "./compoHeatMap";
+import { getCompoWarWeightBucket } from "./compoWarWeightBuckets";
 
 export const HEAT_MAP_REF_REBUILD_TARGET_TOTAL = 50;
 export const HEAT_MAP_REF_REBUILD_THRESHOLD = 10;
@@ -374,6 +375,19 @@ export function buildHeatMapRefRebuildRows(input: {
     const missingWeightCount = members.filter(
       (member) => toPositiveInt(member.weight) === null,
     ).length;
+    const hasUnsupportedTh19 = members.some(
+      (member) => getCompoWarWeightBucket(member.effectiveWeight) === "TH19",
+    );
+    if (hasUnsupportedTh19) {
+      excludedRosters.push({
+        clanTag: roster.clanTag,
+        rosterSize,
+        missingWeightCount,
+        reasonCode: "unsupported_th19",
+        reason: "unsupported TH19 effective weight bucket",
+      });
+      continue;
+    }
     if (rosterSize !== HEAT_MAP_REF_REBUILD_TARGET_TOTAL) {
       excludedRosters.push({
         clanTag: roster.clanTag,

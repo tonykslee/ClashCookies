@@ -235,6 +235,64 @@ describe("HeatMapRefRebuildService", () => {
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
 
+  it("publishes the supported cohort when another catalog roster is ordinarily ineligible", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SUPPORTED");
+    const incomplete = makeSupportedSourceRoster("#INCOMPLETE");
+    incomplete.members = incomplete.members.slice(0, 49);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#SUPPORTED" },
+      { clanTag: "#INCOMPLETE" },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      ...supported.members,
+      ...incomplete.members,
+    ] as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("success");
+    expect(result.qualifyingRosterCount).toBe(1);
+    expect(result.excludedRosterCount).toBe(1);
+    expect(result.summaryLines.join(" ")).toContain("evidence: partial");
+    expect(prismaMock.heatMapRef.createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the TH19 integrity block when the TH19 roster also fails ordinary size eligibility", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SUPPORTED");
+    const th19Incomplete = makeSupportedSourceRoster("#TH19-INCOMPLETE");
+    th19Incomplete.members = th19Incomplete.members
+      .slice(0, 49)
+      .map((member, index) => index === 0 ? { ...member, weight: 181_000 } : member);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([
+      { clanTag: "#SUPPORTED" },
+      { clanTag: "#TH19-INCOMPLETE" },
+    ]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([
+      ...supported.members,
+      ...th19Incomplete.members,
+    ] as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("skipped");
+    expect(result.blockReasonCode).toBe("th19_integrity");
+    expect(result.qualifyingRosterCount).toBe(1);
+    expect(result.summaryLines.join(" ")).toContain("unsupported_th19=1");
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+  });
+
   it("includes qualifying untracked FWA clans from the persisted catalog", async () => {
     const service = new HeatMapRefRebuildService({
       settings: settings as never,

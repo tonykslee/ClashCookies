@@ -1774,11 +1774,13 @@ function buildCompoStatePayloadFromRows(input: {
 
 function buildCompoHeatMapRefPayloadFromRows(input: {
   rows: string[][];
+  content?: string;
   components?: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
   title?: string;
   fileName?: string;
 }): CompoRenderPayload {
   return {
+    content: input.content,
     files: [
       {
         attachment: renderStatePng(input.title ?? "HEATMAP REF", input.rows),
@@ -2844,7 +2846,9 @@ export async function handleCompoRefreshButton(
     if (parsed.kind === "state") {
       let payload: CompoRenderPayload;
       if (parsed.mode === "war") {
-        const warState = await new CompoWarStateService().refreshState();
+        const warState = await new CompoWarStateService().refreshState(
+          interaction.guildId ?? null,
+        );
         payload = warState.stateRows
           ? buildCompoStatePayloadFromRows({
               mode: "war",
@@ -3157,7 +3161,9 @@ export async function handleCompoHeatMapRefCopyButton(
     const display =
       parsed.mode === "blacklist"
         ? await blacklistHeatmapRefService.readBlacklistHeatMapRefDisplayTable()
-        : await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+        : await new HeatMapRefDisplayService().readHeatMapRefDisplayTable({
+            guildId: interaction.guildId ?? null,
+          });
     const copyText = buildCompoHeatMapRefCopyText(display.copyText);
     await interaction.editReply({
       content: copyText,
@@ -3743,7 +3749,9 @@ export const Compo: Command = {
         const payload =
           resolvedMode === "war"
             ? await (async () => {
-                const warState = await new CompoWarStateService().readState();
+        const warState = await new CompoWarStateService().readState(
+          interaction.guildId ?? null,
+        );
                 logCompoStage(interaction, "db_fetch", {
                   entity: "tracked_war_roster_current",
                   mode: resolvedMode,
@@ -3873,7 +3881,9 @@ export const Compo: Command = {
           });
           return;
         }
-        const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+        const display = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable({
+          guildId: interaction.guildId ?? null,
+        });
         logCompoStage(interaction, "db_fetch", {
           entity: "heat_map_ref",
           mode: heatMapRefMode,
@@ -3888,6 +3898,7 @@ export const Compo: Command = {
         await interaction.editReply({
           ...buildCompoHeatMapRefPayloadFromRows({
             rows: display.rows,
+            content: display.availability?.warning ?? undefined,
             components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id, heatMapRefMode)],
           }),
         });

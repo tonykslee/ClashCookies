@@ -13,6 +13,7 @@ const prismaMock = vi.hoisted(() => ({
   heatMapRef: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -251,6 +252,7 @@ function makeHeatMapRef(input?: {
 describe("CompoWarStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$queryRaw.mockResolvedValue([]);
   });
 
   it("classifies effective-weight boundaries into the expected WAR compo buckets", () => {
@@ -335,6 +337,35 @@ describe("CompoWarStateService", () => {
     ]);
     expect(result.contentLines[0]).toContain("WAR · refreshed");
     expect(result.contentLines[1]).toContain("Columns: Total=effective weight");
+  });
+
+  it("keeps a TH18-only WAR roster factual while marking retained blocked targets unknown", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan-war" }]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan-war", totalEffectiveWeight: 8_100_000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      ...makeWeightedMembers({
+        clanTag: "#AAA111",
+        counts: { th18: 19, th17: 11, th16: 7, th15: 6, th14: 4, th13: 2, th12: 1 },
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "blocked",
+          blockReasonCode: "th19_integrity",
+          lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
+
+    const result = await new CompoWarStateService({ runTracked: vi.fn() } as any).readState("guild-1");
+
+    expect(result.renderableClanTags).toEqual(["#AAA111"]);
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    expect(result.contentLines.join(" ")).toContain("retained historical data");
   });
 
   it("derives WAR deltas from effective-weight buckets instead of literal town halls", async () => {

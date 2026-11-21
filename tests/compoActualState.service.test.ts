@@ -27,6 +27,7 @@ const prismaMock = vi.hoisted(() => ({
   weightInputDeferment: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -170,9 +171,11 @@ describe("CompoActualStateService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([]);
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {
@@ -219,6 +222,39 @@ describe("CompoActualStateService", () => {
       "0",
       "0",
     ]);
+  });
+
+  it("preserves factual TH18 composition while withholding retained refs after an integrity block", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000, th18Count: 1 }),
+    ]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "blocked",
+          blockReasonCode: "th19_integrity",
+          lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(context.referenceAvailability.status).toBe("retained_unverified");
+    expect(context.clans[0]?.base.bucketCounts.TH18).toBe(1);
+    expect(context.heatMapRefs).toEqual([]);
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    expect(result.contentLines.join(" ")).toContain("retained historical data");
   });
 
   it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {

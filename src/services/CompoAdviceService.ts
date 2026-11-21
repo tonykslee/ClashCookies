@@ -308,7 +308,7 @@ export class CompoAdviceService {
       });
     }
 
-    const context = await loadCompoWarStateContext();
+    const context = await loadCompoWarStateContext(input.guildId ?? null);
     const trackedClanChoices = buildTrackedClanChoices({
       clans: context.clans,
     });
@@ -391,7 +391,7 @@ export class CompoAdviceService {
         view: getActualRefreshView(view),
       });
     } else {
-      await this.warStateService.refreshState();
+      await this.warStateService.refreshState(input.guildId ?? null);
     }
 
     return this.readAdvice(input);

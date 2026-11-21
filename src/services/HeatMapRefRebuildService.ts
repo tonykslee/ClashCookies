@@ -26,8 +26,10 @@ import {
   trackedMessageService,
 } from "./TrackedMessageService";
 import { isMirrorPollingMode, type PollingMode } from "./PollingModeService";
-
-const HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX = "heatmapref_rebuild_state";
+import {
+  HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX,
+  type HeatMapRefRebuildBlockReasonCode,
+} from "../helper/heatMapRefAvailability";
 
 type HeatMapRefRebuildCheckpoint = {
   cycleKey: string;
@@ -39,6 +41,7 @@ type HeatMapRefRebuildCheckpoint = {
   failureReason: string | null;
   contentHash: string | null;
   roleId: string | null;
+  blockReasonCode: HeatMapRefRebuildBlockReasonCode | null;
 };
 
 export type HeatMapRefRebuildRunResult = {
@@ -55,6 +58,8 @@ export type HeatMapRefRebuildRunResult = {
   contentHash: string | null;
   alertSent: boolean;
   summaryLines: string[];
+  blockReasonCode?: HeatMapRefRebuildBlockReasonCode | null;
+  evaluationPerformed?: boolean;
 };
 
 type RebuildCycleContext = {
@@ -104,6 +109,12 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
             typeof parsed.failureReason === "string" ? parsed.failureReason : null,
           contentHash: typeof parsed.contentHash === "string" ? parsed.contentHash : null,
           roleId: typeof parsed.roleId === "string" ? parsed.roleId : null,
+          blockReasonCode:
+            parsed.blockReasonCode === "th19_integrity" ||
+            parsed.blockReasonCode === "no_source_evidence" ||
+            parsed.blockReasonCode === "no_qualifying_evidence"
+              ? parsed.blockReasonCode
+              : null,
         };
       }
 
@@ -123,6 +134,7 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
           failureReason: null,
           contentHash: typeof legacyParsed.contentHash === "string" ? legacyParsed.contentHash : null,
           roleId: null,
+          blockReasonCode: null,
         };
       }
     }
@@ -150,6 +162,7 @@ function buildCheckpointForCycle(input: {
     failureReason: null,
     contentHash: input.previous?.contentHash ?? null,
     roleId: input.cycle.roleId,
+    blockReasonCode: null,
   };
 }
 
@@ -357,13 +370,24 @@ export class HeatMapRefRebuildService {
     const currentHash = computeHeatMapRefRebuildContentHash(currentComparableRows as HeatMapRefRebuildRow[]);
     const nextHash = computeHeatMapRefRebuildContentHash(rebuilt);
 
-    if (sourceRosters.length === 0 || rebuiltResult.excludedRosters.length > 0) {
-      const reason =
-        sourceRosters.length === 0
-          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved and rebuild was blocked"
+    const hasTh19IntegrityBlock = rebuiltResult.excludedRosters.some(
+      (roster) => roster.reasonCode === "unsupported_th19",
+    );
+    const blockReasonCode: HeatMapRefRebuildBlockReasonCode | null =
+      sourceRosters.length === 0
+        ? "no_source_evidence"
+        : hasTh19IntegrityBlock
+          ? "th19_integrity"
           : rebuiltResult.qualifyingRosters.length === 0
+            ? "no_qualifying_evidence"
+            : null;
+    if (blockReasonCode) {
+      const reason =
+        blockReasonCode === "no_source_evidence"
+          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved and rebuild was blocked"
+          : blockReasonCode === "no_qualifying_evidence"
             ? "no qualifying FWA rosters; existing HeatMapRef rows were preserved and rebuild was blocked"
-            : "excluded current FWA roster evidence prevents a safe replacement; existing HeatMapRef rows were preserved";
+            : "TH19-containing roster evidence cannot be represented by the legacy HeatMapRef schema and prevents a safe replacement; existing HeatMapRef rows were preserved and rebuild was blocked";
       const status: HeatMapRefRebuildRunResult["status"] = "skipped";
       return {
         status,
@@ -378,6 +402,7 @@ export class HeatMapRefRebuildService {
         changedRowCount: 0,
         contentHash: null,
         alertSent: false,
+        blockReasonCode,
         summaryLines: buildSummaryLines({
           trackedClanCount: fwaClanTags.length,
           sourceRosterCount: sourceRosters.length,
@@ -622,11 +647,13 @@ export class HeatMapRefRebuildService {
         lastSuccessAtIso: blocked ? activeCheckpoint.lastSuccessAtIso : now.toISOString(),
         failureReason: blocked ? result.reason : null,
         contentHash: blocked ? activeCheckpoint.contentHash : result.contentHash,
+        blockReasonCode: blocked ? result.blockReasonCode ?? null : null,
       });
       return {
         ...result,
         cycleKey: activeCheckpoint.cycleKey,
         dueAt,
+        evaluationPerformed: true,
       };
     } catch (error) {
       const reason = formatError(error);
@@ -636,6 +663,7 @@ export class HeatMapRefRebuildService {
         lastAttemptAtIso: now.toISOString(),
         failureReason: reason,
         contentHash: activeCheckpoint.contentHash,
+        blockReasonCode: null,
       });
       const alertSent = await this.sendFailureAlert({
         client: input.client,
@@ -660,6 +688,7 @@ export class HeatMapRefRebuildService {
           `Rebuild failed: ${reason}`,
           `Alert sent: ${alertSent ? "yes" : "no"}`,
         ],
+        evaluationPerformed: true,
       };
     }
   }
@@ -692,9 +721,10 @@ export class HeatMapRefRebuildService {
             result.status === "skipped" ? checkpoint.lastSuccessAtIso : now.toISOString(),
           failureReason: result.status === "skipped" ? result.reason : null,
           contentHash: result.status === "skipped" ? checkpoint.contentHash : result.contentHash,
+          blockReasonCode: result.status === "skipped" ? result.blockReasonCode ?? null : null,
         });
       }
-      return result;
+      return { ...result, evaluationPerformed: true };
     } catch (error) {
       return {
         status: "failed",
@@ -710,6 +740,7 @@ export class HeatMapRefRebuildService {
         contentHash: null,
         alertSent: false,
         summaryLines: [`Rebuild failed: ${formatError(error)}`],
+        evaluationPerformed: true,
       };
     }
   }
