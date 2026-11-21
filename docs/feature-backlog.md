@@ -193,6 +193,15 @@ For other dev-completed features and patches, see [Feature Patch History and Rel
 - **Regression coverage:** Completed versus unchecked clans in the same guild/war; both command and reaction acknowledgments; late completion before an offset fires; stale/previous-war completion; missing or inconsistent identity; repeated scheduler ticks and reminder dedupe (currently 12h/6h/3h/1h buckets). Do not suppress genuine unchecked reminders or create new notification routing.
 - **Done when:** No `Bases not checked` reminder is delivered for a validly checked-and-all-good clan for that war/sync, while incomplete clans still receive correctly scoped, idempotent reminders. Related reporting request **FB-008** remains a separate feature, not this regression.
 
+### FB-017 — Replace `/link list` Compo arrows with repeated plus/minus signs
+
+- **Status:** Proposed
+- **Suggested priority:** Low (display refinement)
+- **Request (2026-11-20):** Replace the numeric up/down arrow indicators in the optional `/link list` Compo view with one `+` per surplus unit and one `-` per deficit unit; retain `=` for an equal composition bucket.
+- **Examples:** Three surplus: `+++` instead of `↑3`; two deficit: `--` instead of `↓2`; equal: `=`. Magnitude is represented by the number of signs, not a numeric suffix. Preserve the existing distinct `—` unknown/unavailable indicator.
+- **Scope:** Presentation only; retain the existing composition calculations, weight buckets, data sources, optional view behavior, and sorting. Maintain readable alignment and Discord message/pagination limits for larger magnitudes without silently misrepresenting counts. Update affected render tests, help/legend text and screenshot records when implemented.
+- **Done when:** All affected Compo rows render the corresponding repeated signs, equal and unknown remain distinguishable, and existing surplus/deficit calculations are unchanged.
+
 ## Archived / withdrawn requests
 
 _None yet._
