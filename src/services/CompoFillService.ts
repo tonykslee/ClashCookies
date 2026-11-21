@@ -526,16 +526,6 @@ function cloneBucketCounts(counts: CompoWarBucketCounts): CompoWarBucketCounts {
   };
 }
 
-function buildFallbackTargetBucketCounts(input: {
-  baseBucketCounts: CompoWarBucketCounts;
-  memberCount: number;
-}): CompoWarBucketCounts {
-  const bucketCounts = cloneBucketCounts(input.baseBucketCounts);
-  const missingSlots = Math.max(0, 50 - Math.trunc(input.memberCount));
-  bucketCounts.TH13 += missingSlots;
-  return bucketCounts;
-}
-
 function buildTrackedClanState(input: {
   clan: CompoActualStateContext["clans"][number];
   heatMapRefs: readonly HeatMapRef[];
@@ -547,7 +537,9 @@ function buildTrackedClanState(input: {
     heatMapRefs: input.heatMapRefs,
   });
   const hasUnsupportedTh19 = (input.clan.base.bucketCounts.TH19 ?? 0) > 0;
-  const referenceValidated = input.referenceValidated ?? true;
+  const referenceValidated = input.referenceValidated === true;
+  const hasValidatedTarget =
+    referenceValidated && !hasUnsupportedTh19 && projection.selectedHeatMapRef !== null;
 
   return {
     clanTag: input.clan.clanTag,
@@ -555,14 +547,16 @@ function buildTrackedClanState(input: {
     shortName: input.clan.shortName,
     memberCount: input.clan.base.memberCount,
     currentBucketCounts: cloneBucketCounts(input.clan.base.bucketCounts),
-    targetBucketCounts: !referenceValidated || hasUnsupportedTh19
-      ? cloneBucketCounts(input.clan.base.bucketCounts)
-      : projection.selectedHeatMapRef
+    targetBucketCounts: hasValidatedTarget
       ? getCompoActualStateTargetBucketCounts(projection.selectedHeatMapRef)
-      : buildFallbackTargetBucketCounts({
-          baseBucketCounts: input.clan.base.bucketCounts,
-          memberCount: input.clan.base.memberCount,
-        }),
+      : null,
+    targetEvidence: hasValidatedTarget ? "validated" : "unavailable",
+    targetSupportsTh19: false,
+    memberEvidence: input.clan.members.map((member) => ({
+      playerTag: member.playerTag,
+      resolvedWeight: member.resolvedWeight,
+      resolvedWeightBucket: member.resolvedBucket,
+    })),
   };
 }
 
@@ -768,9 +762,7 @@ export class CompoFillService {
       }),
     });
 
-    const referenceValidated =
-      context.referenceAvailability === undefined ||
-      context.referenceAvailability.status === "validated";
+    const referenceValidated = context.referenceAvailability?.status === "validated";
     const trackedClans = await measureFillStage({
       stage: "build_tracked_clans",
       startDetail: {
@@ -858,6 +850,7 @@ export class CompoFillService {
       work: async () =>
         buildCompoFillPlan({
           trackedClans,
+          trackedClanTags: context.trackedClanTags,
           fillers: fillers.map(buildFillerCandidate),
         }),
       completeDetail: (planResult) => {

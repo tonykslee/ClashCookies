@@ -30,6 +30,8 @@ function makeClan(input: {
     memberCount: input.memberCount,
     currentBucketCounts: makeCounts(input.currentBucketCounts),
     targetBucketCounts: makeCounts(input.targetBucketCounts),
+    targetEvidence: "validated" as const,
+    targetSupportsTh19: false,
   };
 }
 
@@ -291,5 +293,167 @@ describe("buildCompoFillPlan", () => {
       "#A",
       "#B",
     ]);
+  });
+
+  it("accounts for the actual bucket on a nonmatching fallback while preserving null metadata", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 49 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#FALLBACK",
+          playerName: "Fallback",
+          resolvedWeight: 135000,
+        }),
+      ],
+    });
+
+    const move = result.destinationPlans[0]?.plannedMoves[0];
+    expect(move?.matchedBucket).toBeNull();
+    expect(move?.destinationMemberCountBefore).toBe(49);
+    expect(move?.destinationMemberCountAfter).toBe(50);
+    expect(move?.destinationBucketCountsBefore.TH14).toBe(49);
+    expect(move?.destinationBucketCountsAfter.TH14).toBe(50);
+    expect(move?.destinationBucketCountsAfter.TH15).toBe(0);
+  });
+
+  it("conserves tracked-source bucket and member deltas for fallback moves", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 49 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+        makeClan({
+          clanTag: "#SRC",
+          clanName: "Source",
+          memberCount: 51,
+          currentBucketCounts: { TH15: 1, TH14: 50 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#TRACKED-FALLBACK",
+          playerName: "Tracked Fallback",
+          resolvedWeight: 135000,
+          currentClanTag: "#SRC",
+          currentClanName: "Source",
+        }),
+      ],
+    });
+
+    const move = result.destinationPlans[0]?.plannedMoves[0];
+    expect(move?.matchedBucket).toBeNull();
+    expect(move?.sourceMemberCountBefore).toBe(51);
+    expect(move?.sourceMemberCountAfter).toBe(50);
+    expect(move?.sourceBucketCountsBefore?.TH14).toBe(50);
+    expect(move?.sourceBucketCountsAfter?.TH14).toBe(49);
+    expect(move?.destinationBucketCountsAfter.TH14).toBe(50);
+  });
+
+  it("replays sequential matched and fallback snapshots without shared mutable state", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 48,
+          currentBucketCounts: { TH14: 48 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({ playerTag: "#MATCH", playerName: "Match", resolvedWeight: 145000 }),
+        makeFiller({ playerTag: "#FALLBACK", playerName: "Fallback", resolvedWeight: 155000 }),
+      ],
+    });
+
+    const moves = result.destinationPlans[0]?.plannedMoves ?? [];
+    expect(moves).toHaveLength(2);
+    expect(moves[0]?.matchedBucket).toBe("TH15");
+    expect(moves[1]?.matchedBucket).toBeNull();
+    expect(moves[0]?.destinationBucketCountsAfter.TH15).toBe(1);
+    expect(moves[1]?.destinationBucketCountsBefore.TH15).toBe(1);
+    expect(moves[1]?.destinationBucketCountsAfter.TH16).toBe(1);
+    expect(moves[0]?.destinationBucketCountsAfter).not.toBe(
+      moves[1]?.destinationBucketCountsBefore,
+    );
+  });
+
+  it("withholds TH19 and malformed weights from legacy targets", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#LEGACY",
+          clanName: "Legacy",
+          memberCount: 49,
+          currentBucketCounts: { TH18: 49 },
+          targetBucketCounts: { TH18: 50 },
+        }),
+      ],
+      fillers: [
+        makeFiller({ playerTag: "#TH19", playerName: "TH19", resolvedWeight: 181000 }),
+        makeFiller({ playerTag: "#FRACTION", playerName: "Fraction", resolvedWeight: 181000.5 }),
+        makeFiller({ playerTag: "#GAP", playerName: "Gap", resolvedWeight: 180500 }),
+        makeFiller({ playerTag: "#HIGH", playerName: "High", resolvedWeight: 190001 }),
+      ],
+    });
+
+    expect(result.destinationPlans[0]?.plannedMoves).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots[0]?.remainingSlots).toBe(1);
+    expect(result.unusedAvailableFillers.map((filler) => filler.playerTag)).toEqual(["#TH19"]);
+    expect(result.excludedFillers.map((filler) => filler.playerTag)).toEqual([
+      "#FRACTION",
+      "#GAP",
+      "#HIGH",
+    ]);
+  });
+
+  it("fails closed for unavailable targets and omitted tracked source context", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClanTags: ["#MISSING-SOURCE", "#UNKNOWN-TARGET"],
+      trackedClans: [
+        {
+          ...makeClan({
+            clanTag: "#UNKNOWN-TARGET",
+            clanName: "Unknown Target",
+            memberCount: 49,
+            currentBucketCounts: { TH14: 49 },
+            targetBucketCounts: null as any,
+          }),
+          targetBucketCounts: null,
+          targetEvidence: "unavailable",
+        },
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#TRACKED",
+          playerName: "Tracked",
+          resolvedWeight: 135000,
+          currentClanTag: "#MISSING-SOURCE",
+          currentClanName: "Missing Source",
+        }),
+      ],
+    });
+
+    expect(result.destinationPlans).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots).toMatchObject([
+      { clanTag: "#UNKNOWN-TARGET", remainingSlots: 1, targetMemberCount: 50 },
+    ]);
+    expect(result.unavailableFillers[0]).toMatchObject({
+      playerTag: "#TRACKED",
+      reasonCodes: ["source_context_unavailable"],
+    });
   });
 });
