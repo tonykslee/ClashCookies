@@ -17,9 +17,14 @@ RUNTIME_ENV_FILE="${DEPLOY_RUNTIME_ENV_FILE:-${APP_DIR}/.env}"
 NORMAL_NODE_MODULES_VOLUME="${NORMAL_NODE_MODULES_VOLUME:-clashcookies-prod_node_modules}"
 NORMAL_YARN_CACHE_VOLUME="${NORMAL_YARN_CACHE_VOLUME:-clashcookies-prod_yarn_cache}"
 TARGET_REF="${TARGET_REF:-origin/main}"
+CANDIDATE_BUILD_TIMEOUT_SECONDS="${CANDIDATE_BUILD_TIMEOUT_SECONDS:-1500}"
+ARTIFACT_STAGE_TIMEOUT_SECONDS="${ARTIFACT_STAGE_TIMEOUT_SECONDS:-600}"
 READINESS_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-1500}"
 PROMOTION_HEALTH_TIMEOUT_SECONDS="${PROMOTION_HEALTH_TIMEOUT_SECONDS:-$READINESS_TIMEOUT_SECONDS}"
 ROLLBACK_HEALTH_TIMEOUT_SECONDS="${ROLLBACK_HEALTH_TIMEOUT_SECONDS:-$READINESS_TIMEOUT_SECONDS}"
+CLEANUP_OVERHEAD_SECONDS="${CLEANUP_OVERHEAD_SECONDS:-300}"
+DEPLOYMENT_OVERHEAD_SECONDS="${DEPLOYMENT_OVERHEAD_SECONDS:-900}"
+DEPLOY_OUTER_TIMEOUT_SECONDS="${DEPLOY_OUTER_TIMEOUT_SECONDS:-10800}"
 HEALTH_POLL_INTERVAL_SECONDS="${HEALTH_POLL_INTERVAL_SECONDS:-2}"
 HEALTH_REQUEST_TIMEOUT_SECONDS="${HEALTH_REQUEST_TIMEOUT_SECONDS:-5}"
 DEPLOY_LOCK_PATH="${DEPLOY_LOCK_PATH:-${APP_DIR}-deploy.lock}"
@@ -39,6 +44,7 @@ BUILD_DIST_VOLUME=""
 ROLLBACK_NODE_MODULES_VOLUME=""
 ROLLBACK_DIST_VOLUME=""
 LOCK_HELD="0"
+ARTIFACT_STAGE_DEADLINE="0"
 
 log() {
   printf '%s\n' "[deploy-prod] $*"
@@ -55,6 +61,59 @@ require_command() {
 
 require_file() {
   [ -f "$1" ] || fatal "missing_required_file=$1"
+}
+
+is_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_deadline_configuration() {
+  local name value required margin
+  for name in \
+    CANDIDATE_BUILD_TIMEOUT_SECONDS \
+    ARTIFACT_STAGE_TIMEOUT_SECONDS \
+    PROMOTION_HEALTH_TIMEOUT_SECONDS \
+    ROLLBACK_HEALTH_TIMEOUT_SECONDS \
+    CLEANUP_OVERHEAD_SECONDS \
+    DEPLOYMENT_OVERHEAD_SECONDS \
+    DEPLOY_OUTER_TIMEOUT_SECONDS; do
+    value="${!name}"
+    is_positive_integer "$value" || fatal "invalid_deadline_configuration name=${name} value=${value:-empty}"
+  done
+
+  # The failure path can consume candidate build, seven bounded artifact stages
+  # (stamp/verify, rollback copy/stamp/verify, promotion verify, rollback
+  # verify), both readiness gates, and the documented cleanup/control margin.
+  required=$((
+    CANDIDATE_BUILD_TIMEOUT_SECONDS +
+    (ARTIFACT_STAGE_TIMEOUT_SECONDS * 7) +
+    PROMOTION_HEALTH_TIMEOUT_SECONDS +
+    ROLLBACK_HEALTH_TIMEOUT_SECONDS +
+    CLEANUP_OVERHEAD_SECONDS +
+    DEPLOYMENT_OVERHEAD_SECONDS
+  ))
+  margin=$((DEPLOY_OUTER_TIMEOUT_SECONDS - required))
+  [ "$margin" -ge 0 ] || fatal "unsafe_deadline_configuration outer=${DEPLOY_OUTER_TIMEOUT_SECONDS} required=${required} margin=${margin}"
+  log "deadline_budget_seconds=outer:${DEPLOY_OUTER_TIMEOUT_SECONDS} candidate:${CANDIDATE_BUILD_TIMEOUT_SECONDS} artifact_stage:${ARTIFACT_STAGE_TIMEOUT_SECONDS} promotion:${PROMOTION_HEALTH_TIMEOUT_SECONDS} rollback:${ROLLBACK_HEALTH_TIMEOUT_SECONDS} cleanup:${CLEANUP_OVERHEAD_SECONDS} overhead:${DEPLOYMENT_OVERHEAD_SECONDS} margin:${margin}"
+}
+
+run_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+  timeout --foreground --signal=TERM --kill-after=5s "${timeout_seconds}s" "$@"
+}
+
+begin_artifact_stage() {
+  ARTIFACT_STAGE_DEADLINE=$((SECONDS + ARTIFACT_STAGE_TIMEOUT_SECONDS))
+}
+
+run_artifact_command() {
+  local remaining=$((ARTIFACT_STAGE_DEADLINE - SECONDS))
+  [ "$remaining" -gt 0 ] || return 124
+  run_with_timeout "$remaining" "$@"
 }
 
 git_safe() {
@@ -221,7 +280,8 @@ copy_artifacts_to_volumes() {
   local target_node_modules="$4"
   local revision="$5"
 
-  docker run --rm --network bridge \
+  begin_artifact_stage
+  run_artifact_command docker run --rm --network bridge \
     -e "BUILD_SHA=${revision}" \
     -v "${source_dist}:/source-dist:ro" \
     -v "${source_node_modules}:/source-node-modules:ro" \
@@ -242,7 +302,8 @@ stamp_artifact_volumes() {
   local node_modules_volume="$2"
   local revision="$3"
 
-  docker run --rm --network bridge \
+  begin_artifact_stage
+  run_artifact_command docker run --rm --network bridge \
     -e "EXPECTED_BUILD_SHA=${revision}" \
     -v "${dist_volume}:/dist" \
     -v "${node_modules_volume}:/node_modules" \
@@ -271,7 +332,8 @@ verify_artifact_volumes() {
   local node_modules_volume="$2"
   local revision="$3"
 
-  docker run --rm --network bridge \
+  begin_artifact_stage
+  run_artifact_command docker run --rm --network bridge \
     -e "EXPECTED_BUILD_SHA=${revision}" \
     -v "${dist_volume}:/dist:ro" \
     -v "${node_modules_volume}:/node_modules:ro" \
@@ -451,33 +513,60 @@ extract_database_url() {
 
 build_candidate_only() {
   local log_file="${DIAGNOSTIC_DIR}/candidate-build.log"
+  local build_status artifact_status reason
   validate_private_directory "$DIAGNOSTIC_DIR"
   prepare_private_file "$log_file"
   ensure_owned_artifact_volume "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" release-node-modules
   BUILD_NODE_MODULES_CREATED="1"
   ensure_owned_artifact_volume "$BUILD_DIST_VOLUME" "$NEW_SHA" release-dist
   BUILD_DIST_CREATED="1"
-  if docker run --rm \
-    --name "$BUILD_CONTAINER" \
-    --label com.clashcookies.deploy=candidate-build-only \
-    --network bridge \
-    -w /app \
-    -v "$TEMP_WORKTREE:/app" \
-    -v "$BUILD_NODE_MODULES_VOLUME:/app/node_modules" \
-    -v "$BUILD_DIST_VOLUME:/build-dist" \
-    -v "$NORMAL_YARN_CACHE_VOLUME:/usr/local/share/.cache/yarn" \
-    -e "BUILD_SHA=${NEW_SHA}" \
-    node:20-bookworm \
-    bash -lc './ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/' >"$log_file" 2>&1 && stamp_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" >>"$log_file" 2>&1; then
-    verify_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" || {
-      log "candidate_build=failed reason=artifact_verification revision=${NEW_SHA} diagnostics=${log_file}" >&2
-      return 1
-    }
-    log "candidate_build=success revision=${NEW_SHA} diagnostics=${log_file}"
+  if run_with_timeout "$CANDIDATE_BUILD_TIMEOUT_SECONDS" docker run --rm \
+      --name "$BUILD_CONTAINER" \
+      --label com.clashcookies.deploy=candidate-build-only \
+      --network bridge \
+      -w /app \
+      -v "$TEMP_WORKTREE:/app" \
+      -v "$BUILD_NODE_MODULES_VOLUME:/app/node_modules" \
+      -v "$BUILD_DIST_VOLUME:/build-dist" \
+      -v "$NORMAL_YARN_CACHE_VOLUME:/usr/local/share/.cache/yarn" \
+      -e "BUILD_SHA=${NEW_SHA}" \
+      node:20-bookworm \
+      bash -lc './ops/deploy/ensure-yarn-deps.sh && npm run build && test -d /app/dist && find /build-dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && cp -a /app/dist/. /build-dist/' >"$log_file" 2>&1; then
+    build_status=0
   else
-    log "candidate_build=failed revision=${NEW_SHA} diagnostics=${log_file}" >&2
+    build_status=$?
+  fi
+  if [ "$build_status" -ne 0 ]; then
+    reason="build"
+    { [ "$build_status" -eq 124 ] || [ "$build_status" -eq 137 ]; } && reason="build_deadline"
+    log "candidate_build=failed reason=${reason} status=${build_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
     return 1
   fi
+
+  if stamp_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" >>"$log_file" 2>&1; then
+    artifact_status=0
+  else
+    artifact_status=$?
+  fi
+  if [ "$artifact_status" -ne 0 ]; then
+    reason="artifact_stamp"
+    { [ "$artifact_status" -eq 124 ] || [ "$artifact_status" -eq 137 ]; } && reason="artifact_stamp_deadline"
+    log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
+    return 1
+  fi
+
+  if verify_artifact_volumes "$BUILD_DIST_VOLUME" "$BUILD_NODE_MODULES_VOLUME" "$NEW_SHA" >>"$log_file" 2>&1; then
+    artifact_status=0
+  else
+    artifact_status=$?
+  fi
+  if [ "$artifact_status" -ne 0 ]; then
+    reason="artifact_verification"
+    { [ "$artifact_status" -eq 124 ] || [ "$artifact_status" -eq 137 ]; } && reason="artifact_verification_deadline"
+    log "candidate_build=failed reason=${reason} status=${artifact_status} revision=${NEW_SHA} diagnostics=${log_file}" >&2
+    return 1
+  fi
+  log "candidate_build=success revision=${NEW_SHA} diagnostics=${log_file}"
 }
 
 start_app_container() {
@@ -591,6 +680,7 @@ fi
 require_command git
 require_command docker
 require_command curl
+require_command timeout
 require_command mkdir
 require_command rmdir
 require_command sed
@@ -600,6 +690,7 @@ require_command id
 require_command stat
 require_command chmod
 require_file "$APP_DIR/docker-compose.yml"
+validate_deadline_configuration
 assert_runtime_environment_source
 assert_safe_temp_worktree_path
 assert_checkout_safe
@@ -616,7 +707,7 @@ BUILD_NODE_MODULES_VOLUME="${BUILD_NODE_MODULES_VOLUME:-clashcookies-prod-build-
 BUILD_DIST_VOLUME="${BUILD_DIST_VOLUME:-clashcookies-prod-build-dist-${NEW_SHA}}"
 log "old_sha=${OLD_SHA}"
 log "new_sha=${NEW_SHA}"
-log "promotion_readiness_budget_seconds=${PROMOTION_HEALTH_TIMEOUT_SECONDS} rollback_readiness_budget_seconds=${ROLLBACK_HEALTH_TIMEOUT_SECONDS} request_timeout_seconds=${HEALTH_REQUEST_TIMEOUT_SECONDS}"
+log "promotion_readiness_budget_seconds=${PROMOTION_HEALTH_TIMEOUT_SECONDS} rollback_readiness_budget_seconds=${ROLLBACK_HEALTH_TIMEOUT_SECONDS} candidate_build_timeout_seconds=${CANDIDATE_BUILD_TIMEOUT_SECONDS} artifact_stage_timeout_seconds=${ARTIFACT_STAGE_TIMEOUT_SECONDS} request_timeout_seconds=${HEALTH_REQUEST_TIMEOUT_SECONDS}"
 
 changed_prisma_files="$(git_safe diff --name-only "$OLD_SHA" "$NEW_SHA" -- prisma/migrations prisma/schema.prisma || true)"
 prod_database_url="$(extract_database_url "$APP_DIR/docker-compose.yml")"

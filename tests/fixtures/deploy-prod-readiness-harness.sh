@@ -162,6 +162,9 @@ case "${1:-}" in
     if [[ " $* " == *" npm run build "* ]]; then
       printf 'BUILD %s\n' "$*" >> "$DEPLOY_TEST_LOG"
       [ "$DEPLOY_TEST_SCENARIO" != build-failure ] || exit 1
+      if [ "$DEPLOY_TEST_SCENARIO" = slow-candidate-build ]; then
+        /usr/bin/sleep 2
+      fi
       revision="new-reviewed-sha"; previous=""; dist_volume=""; node_volume=""
       for argument in "$@"; do
         case "$argument" in BUILD_SHA=*) revision="${argument#*=}" ;; esac
@@ -262,6 +265,10 @@ if { [ "$DEPLOY_TEST_SCENARIO" = cold-start ] || [ "$DEPLOY_TEST_SCENARIO" = rol
 if [ "$DEPLOY_TEST_SCENARIO" = sequence ] && [ "${DEPLOY_TEST_PASS:-1}" = 3 ] && [[ "$state" != active:release-b ]]; then exit 1; fi
 if { [ "$DEPLOY_TEST_SCENARIO" = health-failure ] || [ "$DEPLOY_TEST_SCENARIO" = legacy-rollback ]; } && [[ "$state" != active:old-reviewed-sha ]]; then exit 1; fi
 if [ "$DEPLOY_TEST_SCENARIO" = rollback-cold-start ] && [[ "$state" != active:old-reviewed-sha ]]; then exit 1; fi
+if [ "$DEPLOY_TEST_SCENARIO" = promotion-timeout-rollback-slow ]; then
+  [[ "$state" = active:old-reviewed-sha ]] || exit 1
+  [ "$count" -gt 3 ] || exit 1
+fi
 if [ "$DEPLOY_TEST_SCENARIO" = rollback-failure ] || [ "$DEPLOY_TEST_SCENARIO" = health-timeout ]; then exit 1; fi
 exit 0
 EOF
@@ -280,8 +287,38 @@ export PATH="$bin_dir:$PATH"
 export APP_DIR="$app_dir" TEMP_WORKTREE="$replacement_dir" DEPLOY_LOCK_PATH="${root}/deploy.lock"
 export DEPLOY_DIAGNOSTIC_DIR="${root}/diagnostics" DEPLOY_TEST_LOG="$log_file" DEPLOY_TEST_STATE="$state_file"
 export DEPLOY_TEST_PROBE_FILE="$probe_file" DEPLOY_TEST_MOUNTS="$mounts_file" DEPLOY_TEST_VOLUME_DIR="$volume_dir"
-export DEPLOY_TEST_SCENARIO="$scenario" PROMOTION_HEALTH_TIMEOUT_SECONDS="$([ "$scenario" = cold-start ] && printf 601 || printf 1)"
-export ROLLBACK_HEALTH_TIMEOUT_SECONDS="$([ "$scenario" = rollback-cold-start ] && printf 601 || printf 1)"
+candidate_timeout=1500
+artifact_timeout=600
+promotion_timeout=1
+rollback_timeout=1
+cleanup_overhead=300
+deployment_overhead=900
+outer_timeout=10800
+case "$scenario" in
+  slow-candidate-build)
+    candidate_timeout=1
+    ;;
+  cold-start)
+    promotion_timeout=601
+    ;;
+  rollback-cold-start)
+    rollback_timeout=601
+    ;;
+  promotion-timeout-rollback-slow)
+    candidate_timeout=1
+    artifact_timeout=1
+    rollback_timeout=601
+    cleanup_overhead=1
+    deployment_overhead=1
+    outer_timeout=1000
+    ;;
+  unsafe-deadlines)
+    outer_timeout=10
+    ;;
+esac
+export DEPLOY_TEST_SCENARIO="$scenario" CANDIDATE_BUILD_TIMEOUT_SECONDS="$candidate_timeout" ARTIFACT_STAGE_TIMEOUT_SECONDS="$artifact_timeout"
+export PROMOTION_HEALTH_TIMEOUT_SECONDS="$promotion_timeout" ROLLBACK_HEALTH_TIMEOUT_SECONDS="$rollback_timeout"
+export CLEANUP_OVERHEAD_SECONDS="$cleanup_overhead" DEPLOYMENT_OVERHEAD_SECONDS="$deployment_overhead" DEPLOY_OUTER_TIMEOUT_SECONDS="$outer_timeout"
 export HEALTH_POLL_INTERVAL_SECONDS=0 HEALTH_REQUEST_TIMEOUT_SECONDS=1 TARGET_REF=origin/main
 
 set +e

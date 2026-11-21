@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 
 type Scenario =
   | "success"
+  | "slow-candidate-build"
+  | "promotion-timeout-rollback-slow"
+  | "unsafe-deadlines"
   | "cold-start"
   | "rollback-cold-start"
   | "health-failure"
@@ -41,6 +44,14 @@ function section(output: string, name: string): string {
 }
 
 describe("version-controlled production deployment readiness", () => {
+  it("keeps the SSH ceiling above the version-controlled recovery budget", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github", "workflows", "deploy-prod.yml"), "utf8");
+    const deployScript = readFileSync(join(process.cwd(), "ops", "deploy", "deploy-prod.sh"), "utf8");
+    expect(workflow).toContain("command_timeout: 180m");
+    expect(workflow).toContain("DEPLOY_OUTER_TIMEOUT_SECONDS=10800");
+    expect(deployScript).toContain("(ARTIFACT_STAGE_TIMEOUT_SECONDS * 7)");
+  });
+
   it("builds offline and promotes one prebuilt active runtime", () => {
     const output = runScenario("success");
     const log = section(output, "LOG");
@@ -53,6 +64,31 @@ describe("version-controlled production deployment readiness", () => {
     expect(log).toContain("ACTIVE_RUN name=clashcookies-app revision=new-reviewed-sha prebuilt=1");
     expect(log.indexOf("BUILD ")).toBeLessThan(log.indexOf("ACTIVE_RUN"));
     expect(output).toContain("health_result=promotion status=200");
+  });
+
+  it("fails with preserved evidence when candidate build exceeds its deadline", () => {
+    const output = runScenario("slow-candidate-build");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("candidate_build=failed reason=build_deadline");
+    expect(output).toContain("candidate-build.log");
+    expect(output).not.toContain("ACTIVE_RUN name=clashcookies-app revision=new-reviewed-sha");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("keeps the outer deadline safe through promotion timeout and slow rollback", () => {
+    const output = runScenario("promotion-timeout-rollback-slow");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("health_result=rollback status=200 probes=4");
+    expect(output).toContain("rollback_result=success final_state=old_sha:old-reviewed-sha");
+    expect(output).toContain("STATE=active:old-reviewed-sha");
+  });
+
+  it("rejects an outer deadline that cannot cover bounded recovery", () => {
+    const output = runScenario("unsafe-deadlines");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("unsafe_deadline_configuration");
+    expect(output).toContain("STATE=active:OLD");
+    expect(output).not.toContain("BUILD ");
   });
 
   it("allows a cold start beyond the old 600-second promotion budget", () => {
