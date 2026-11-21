@@ -8,6 +8,10 @@ import {
   getHeatMapRefSeedRowCountsByBandKey,
   type HeatMapRefBandDefinition,
 } from "../src/helper/heatMapRefRebuild";
+import {
+  HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+  readHeatMapRefReferenceAvailability,
+} from "../src/helper/heatMapRefAvailability";
 
 const prismaMock = vi.hoisted(() => ({
   fwaClanCatalog: {
@@ -31,6 +35,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   $transaction: vi.fn(),
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -180,6 +185,14 @@ describe("HeatMapRefRebuildService", () => {
     vi.clearAllMocks();
     settingsStore.clear();
     prismaMock.$transaction.mockImplementation(async (fn: any) => fn(prismaMock));
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#AAA111" }]);
     prismaMock.trackedClan.findMany.mockResolvedValue([
       { tag: "#AAA111", logChannelId: "log-1" },
@@ -847,5 +860,223 @@ describe("HeatMapRefRebuildService", () => {
 
     expect(readState.stateRows).not.toBeNull();
     expect(readState.stateRows?.[1]?.[4]).toBe(expectedDelta);
+  });
+
+  it("keeps a global TH19 block across a new scheduled cycle and lifecycle statuses", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const guildId = "guild-1";
+    settingsStore.set(
+      HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+      JSON.stringify({
+        status: "blocked",
+        blockReasonCode: "th19_integrity",
+        reason: "TH19 evidence",
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T01:00:00.000Z",
+      }),
+    );
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      makeSupportedSourceRoster("#TH19", 185_000).members.map((member) => ({
+        ...member,
+        townHall: 19,
+      })) as never,
+    );
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-next", syncTimeIso: "2026-04-14T00:00:00.000Z" }),
+    );
+
+    const scheduled = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-16T00:00:00.000Z"),
+    });
+    expect(scheduled.status).toBe("skipped");
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "blocked",
+      blockReasonCode: "th19_integrity",
+    });
+
+    settingsStore.set(
+      `heatmapref_rebuild_state:${guildId}`,
+      JSON.stringify({
+        cycleKey: "message-next:1776124800",
+        anchoredSyncTimeIso: "2026-04-14T00:00:00.000Z",
+        dueAtIso: "2026-04-15T23:00:00.000Z",
+        status: "running",
+        lastAttemptAtIso: "2026-04-15T23:00:00.000Z",
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        failureReason: null,
+        contentHash: "old",
+        roleId: null,
+      }),
+    );
+    const running = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-16T00:00:00.000Z"),
+    });
+    expect(running.reason).toContain("already running");
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}").status).toBe("blocked");
+
+    settingsStore.set(
+      `heatmapref_rebuild_state:${guildId}`,
+      JSON.stringify({
+        cycleKey: "message-next:1776124800",
+        anchoredSyncTimeIso: "2026-04-14T00:00:00.000Z",
+        dueAtIso: "2026-04-15T23:00:00.000Z",
+        status: "failed",
+        lastAttemptAtIso: "2026-04-15T23:00:00.000Z",
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        failureReason: "upstream unavailable",
+        contentHash: "old",
+        roleId: null,
+      }),
+    );
+    const failed = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId,
+      pollingMode: "active",
+      now: new Date("2026-04-16T00:00:00.000Z"),
+    });
+    expect(failed.reason).toContain("already handled");
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}").status).toBe("blocked");
+  });
+
+  it("lets a genuinely safe successful or unchanged rebuild clear the global block", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    settingsStore.set(
+      HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+      JSON.stringify({ status: "blocked", blockReasonCode: "th19_integrity" }),
+    );
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SAFE", 175_000);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#SAFE" }]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(supported.members as never);
+    prismaMock.heatMapRef.findMany.mockResolvedValue(makeRowsForSourceRoster(now, [supported]) as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("noop");
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "validated",
+    });
+  });
+
+  it("keeps the global block when a blocked-state write partially fails", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    settingsStore.set(
+      HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+      JSON.stringify({ status: "blocked", blockReasonCode: "th19_integrity" }),
+    );
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
+      makeSupportedSourceRoster("#TH19", 185_000).members.map((member) => ({
+        ...member,
+        townHall: 19,
+      })) as never,
+    );
+    settings.set.mockRejectedValueOnce(new Error("settings write failed"));
+
+    await service.rebuildHeatMapRef(new Date("2026-04-13T00:00:00.000Z"));
+
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "blocked",
+      blockReasonCode: "th19_integrity",
+    });
+  });
+
+  it("fails closed when validated publication cannot persist replacement provenance", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    settingsStore.set(
+      HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+      JSON.stringify({ status: "validated", validatedAtIso: "2026-04-12T00:00:00.000Z" }),
+    );
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#SAFE", 175_000);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#SAFE" }]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(supported.members as never);
+    prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows() as never);
+    settings.set.mockRejectedValueOnce(new Error("provenance write failed"));
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("success");
+    expect(settingsStore.has(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY)).toBe(false);
+  });
+
+  it("reads one global integrity record for every guild and unscoped consumers", async () => {
+    settingsStore.set(
+      HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+      JSON.stringify({
+        status: "blocked",
+        blockReasonCode: "th19_integrity",
+        reason: "TH19 evidence",
+      }),
+    );
+
+    const [firstGuild, secondGuild, unscoped] = await Promise.all([
+      readHeatMapRefReferenceAvailability({ guildId: "guild-1", settings: settings as never }),
+      readHeatMapRefReferenceAvailability({ guildId: "guild-2", settings: settings as never }),
+      readHeatMapRefReferenceAvailability({ settings: settings as never }),
+    ]);
+    expect(firstGuild.status).toBe("retained_unverified");
+    expect(secondGuild.status).toBe("retained_unverified");
+    expect(unscoped.status).toBe("retained_unverified");
+  });
+
+  it("fails closed for missing, malformed, or unreadable integrity settings", async () => {
+    const missing = await readHeatMapRefReferenceAvailability({
+      settings: { get: vi.fn(async () => null) },
+    });
+    const malformed = await readHeatMapRefReferenceAvailability({
+      settings: { get: vi.fn(async () => "not-json") },
+    });
+    const failed = await readHeatMapRefReferenceAvailability({
+      settings: { get: vi.fn(async () => { throw new Error("read failed"); }) },
+    });
+
+    expect(missing.status).toBe("unknown");
+    expect(malformed.status).toBe("unknown");
+    expect(failed.status).toBe("unknown");
+    expect(missing.warning).toContain("UNKNOWN");
+    expect(failed.warning).toContain("could not be read");
+  });
+
+  it("does not create or clear global integrity state in mirror mode", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    vi.spyOn(trackedMessageService, "resolveLatestActiveSyncPost").mockResolvedValue(
+      makeSyncPost({ messageId: "message-mirror", syncTimeIso: "2026-04-14T00:00:00.000Z" }),
+    );
+
+    const result = await service.runScheduledRebuildCycle({
+      client: {} as never,
+      guildId: "guild-1",
+      pollingMode: "mirror",
+      now: new Date("2026-04-16T00:00:00.000Z"),
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(settingsStore.has(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY)).toBe(false);
   });
 });

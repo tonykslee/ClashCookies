@@ -34,6 +34,7 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMatchStatsCurrent: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
   heatMapRef: {
     findMany: vi.fn(),
   },
@@ -191,11 +192,20 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
   });
 
   it("uses link-list fallback weights before deferred and war fallbacks in ACTUAL advice", async () => {

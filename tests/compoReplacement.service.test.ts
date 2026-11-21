@@ -32,6 +32,7 @@ const prismaMock = vi.hoisted(() => ({
   fillerAccount: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -152,6 +153,7 @@ describe("CompoReplacementService", () => {
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.fillerAccount.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.trackedClan.findMany.mockResolvedValue([makeTrackedClan("#AAA111", "Alpha Clan")]);
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
@@ -163,6 +165,14 @@ describe("CompoReplacementService", () => {
       { playerTag: "#P000000" },
       { playerTag: "#P000002" },
       { playerTag: "#P000028" },
+    ]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
     ]);
   });
 
@@ -377,6 +387,14 @@ describe("CompoReplacementService", () => {
     ]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [],
     } as any);

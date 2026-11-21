@@ -252,7 +252,14 @@ function makeHeatMapRef(input?: {
 describe("CompoWarStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
   });
 
   it("classifies effective-weight boundaries into the expected WAR compo buckets", () => {

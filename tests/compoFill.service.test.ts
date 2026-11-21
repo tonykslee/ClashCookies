@@ -928,6 +928,74 @@ describe("/compo fill service", () => {
     ).toBe(true);
   });
 
+  it("preserves vacancies and filler availability without recommending moves when integrity is blocked", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      latestSourceSyncedAt: null,
+      heatMapRefs: [],
+      referenceAvailability: {
+        status: "retained_unverified",
+        blockReasonCode: "th19_integrity",
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        warning: "retained historical data; target comparisons remain UNKNOWN",
+      },
+      clans: [
+        {
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          shortName: "A",
+          base: {
+            resolvedTotalWeight: 7_000_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 48,
+            bucketCounts: {
+              TH18: 48,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 0,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: [],
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#FILLER",
+        name: "Filler",
+        clanTag: null,
+        clanName: null,
+        weight: 175000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const result = await new CompoFillService().readFill("guild-1", {
+      userId: "user-1",
+    });
+    const text = JSON.stringify(getEmbedJSON(result.embeds[0]));
+
+    expect(result.destinationClanCount).toBe(1);
+    expect(result.plannedMoveCount).toBe(0);
+    expect(result.availableFillerCount).toBe(1);
+    expect(text).toContain("Open slots: 2");
+    expect(text).toContain("Recommended moves: 0");
+    expect(text).toContain("Reference integrity:");
+    expect(text).not.toContain('"name":"Recommended Moves"');
+  });
+
   it("keeps the total embed payload within budget for production-like large output", async () => {
     vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
       trackedClanTags: Array.from({ length: 11 }, (_value, index) => `#CLAN${index}`),

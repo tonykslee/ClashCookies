@@ -207,11 +207,14 @@ Each domain concept must have exactly one authoritative owner.
 | Read-only Dusk rep-work reward evaluation | DuskRepWorkRewardEvaluator (consumer only; no ledger or wallet writes) |
 | FWA feed current state | FwaClanCatalog, FwaPlayerCatalog, FwaClanMemberCurrent, FwaWarMemberCurrent, FwaTrackedClanWarRosterCurrent, FwaTrackedClanWarRosterMemberCurrent, FwaClanWarLogCurrent, FwaClanMatchStatsCurrent |
 | FWA compo reference bands | HeatMapRef |
+| FWA compo reference integrity/provenance | BotSetting key `heatmapref_reference_integrity` (global table-level fact; no new table) |
 | FWA feed scheduler metadata | FwaFeedSyncState, FwaClanWarsWatchState, FwaFeedCursor |
 | Unlinked alert routing and unresolved members | UnlinkedAlertConfig, UnlinkedPlayer |
 | Telemetry rollups and scheduled reports | TelemetryCommandAggregate, TelemetryUserCommandAggregate, TelemetryApiAggregate, TelemetryStageAggregate, TelemetryReportSchedule, TelemetryReportRun |
 | Police-handled dedupe | FwaPoliceHandledViolation |
 | Roster signup lifecycle and deadline | Roster.lifecycleState and Roster.endsAt |
+
+`HeatMapRef` is a physically global reference table. Its table-level integrity/provenance is owned by the existing `BotSetting` key `heatmapref_reference_integrity`, not by any guild's scheduler checkpoint. `heatmapref_rebuild_state:<guild>` records only that guild's sync-cycle cadence, attempt, failure, and prior-success metadata. A blocked global integrity record is retained across scheduler lifecycle changes and is cleared only by a genuinely safe validated rebuild; mirror mode does not rebuild or clear it, and missing mirror-side provenance is fail-closed for target consumers.
 
 `ClanWarParticipation` is the canonical complete ended-war own-clan roster. For each canonical ended war, it contains one row per distinct participating player, including players with zero attacks; its distinct `playerTag` count is the roster/team size. It is not merely an attack-participation table. Historical membership positives and negatives may use this roster.
 

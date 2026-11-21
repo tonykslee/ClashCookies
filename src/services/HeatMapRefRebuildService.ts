@@ -27,9 +27,29 @@ import {
 } from "./TrackedMessageService";
 import { isMirrorPollingMode, type PollingMode } from "./PollingModeService";
 import {
+  HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
   HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX,
+  buildHeatMapRefReferenceIntegrityRecord,
+  readHeatMapRefReferenceAvailability,
+  stringifyHeatMapRefReferenceIntegrity,
   type HeatMapRefRebuildBlockReasonCode,
 } from "../helper/heatMapRefAvailability";
+
+let heatMapRefRebuildLock: Promise<void> = Promise.resolve();
+
+async function withHeatMapRefRebuildLock<T>(work: () => Promise<T>): Promise<T> {
+  const previous = heatMapRefRebuildLock;
+  let release!: () => void;
+  heatMapRefRebuildLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
 
 type HeatMapRefRebuildCheckpoint = {
   cycleKey: string;
@@ -303,9 +323,13 @@ export class HeatMapRefRebuildService {
 
   /** Purpose: rebuild HeatMapRef directly from persisted source tables without any scheduling or alert side-effects. */
   async rebuildHeatMapRef(now: Date = new Date()): Promise<HeatMapRefRebuildRunResult> {
+    return withHeatMapRefRebuildLock(() => this.rebuildHeatMapRefUnlocked(now));
+  }
+
+  private async rebuildHeatMapRefUnlocked(now: Date): Promise<HeatMapRefRebuildRunResult> {
     const fwaClanTags = await loadAllFwaClanTags();
     if (fwaClanTags.length === 0) {
-      return {
+      return this.finalizeReferenceIntegrity({
         status: "skipped",
         reason: "no persisted FWA clans are configured",
         cycleKey: null,
@@ -318,8 +342,9 @@ export class HeatMapRefRebuildService {
         changedRowCount: 0,
         contentHash: null,
         alertSent: false,
+        blockReasonCode: "no_source_evidence",
         summaryLines: ["No persisted FWA clans are configured."],
-      };
+      }, now);
     }
 
     const members = await prisma.fwaWarMemberCurrent.findMany({
@@ -389,7 +414,7 @@ export class HeatMapRefRebuildService {
             ? "no qualifying FWA rosters; existing HeatMapRef rows were preserved and rebuild was blocked"
             : "TH19-containing roster evidence cannot be represented by the legacy HeatMapRef schema and prevents a safe replacement; existing HeatMapRef rows were preserved and rebuild was blocked";
       const status: HeatMapRefRebuildRunResult["status"] = "skipped";
-      return {
+      return this.finalizeReferenceIntegrity({
         status,
         reason,
         cycleKey: null,
@@ -412,11 +437,11 @@ export class HeatMapRefRebuildService {
           status,
           reason,
         }),
-      };
+      }, now);
     }
 
     if (currentHash === nextHash) {
-      return {
+      return this.finalizeReferenceIntegrity({
         status: "noop",
         reason: "rebuilt content matched the stored HeatMapRef rows",
         cycleKey: null,
@@ -438,7 +463,7 @@ export class HeatMapRefRebuildService {
         status: "noop",
         reason: "rebuilt content matched the stored HeatMapRef rows",
       }),
-    };
+      }, now);
     }
 
     await prisma.$transaction(async (tx) => {
@@ -474,7 +499,7 @@ export class HeatMapRefRebuildService {
       status: "success",
       reason: null,
     });
-    return {
+    return this.finalizeReferenceIntegrity({
       status: "success",
       reason: null,
       cycleKey: null,
@@ -488,7 +513,42 @@ export class HeatMapRefRebuildService {
       contentHash: nextHash,
       alertSent: false,
       summaryLines: result,
-    };
+    }, now);
+  }
+
+  private async finalizeReferenceIntegrity(
+    result: HeatMapRefRebuildRunResult,
+    now: Date,
+  ): Promise<HeatMapRefRebuildRunResult> {
+    const previous = await readHeatMapRefReferenceAvailability({
+      settings: this.settings,
+    });
+    const validated = result.status === "success" || result.status === "noop";
+    const record = buildHeatMapRefReferenceIntegrityRecord({
+      status: validated ? "validated" : "blocked",
+      blockReasonCode: result.blockReasonCode ?? "no_source_evidence",
+      reason: result.reason,
+      validatedAtIso: validated ? now.toISOString() : previous.lastSuccessAtIso,
+      updatedAtIso: now.toISOString(),
+      contentHash: validated ? result.contentHash : null,
+    });
+    try {
+      if (previous.status === "validated") {
+        // Remove a stale validated marker before replacing it. If the provenance
+        // write fails after publication, the missing setting is fail-closed rather
+        // than allowing consumers to treat the new rows as freshly validated.
+        await this.settings.delete(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY);
+      }
+      await this.settings.set(
+        HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+        stringifyHeatMapRefReferenceIntegrity(record),
+      );
+    } catch (error) {
+      console.error(
+        `[heatmapref] integrity_state_write_failed status=${record.status} error=${formatError(error)}`,
+      );
+    }
+    return result;
   }
 
   /** Purpose: run the rebuild once when a sync cycle is due and persist a single-cycle checkpoint. */

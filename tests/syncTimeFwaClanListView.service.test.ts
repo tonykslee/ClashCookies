@@ -6,6 +6,7 @@ import {
 } from "../src/services/TrackedMessageService";
 
 const prismaMock = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   trackedMessage: {
     findUnique: vi.fn(),
     update: vi.fn(),
@@ -166,6 +167,19 @@ function makeReadinessHeatMapRef(
 describe("SyncTimeFwaClanListViewService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$queryRaw.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          blockReasonCode: null,
+          reason: null,
+          validatedAtIso: "2026-06-10T00:00:00.000Z",
+          updatedAtIso: "2026-06-10T00:00:00.000Z",
+          contentHash: "test-content-hash",
+        }),
+      },
+    ]);
     prismaMock.trackedMessage.findUnique.mockReset();
     prismaMock.trackedMessage.update.mockReset();
     prismaMock.trackedMessage.updateMany.mockReset();

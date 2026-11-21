@@ -39,6 +39,7 @@ const prismaMock = vi.hoisted(() => ({
   fillerAccount: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -210,12 +211,21 @@ describe("CompoPlaceService", () => {
     prismaMock.playerLink.findMany.mockReset();
     prismaMock.playerActivity.findMany.mockReset();
     prismaMock.fillerAccount.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.clanWarHistory.findMany.mockResolvedValue([]);
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          status: "validated",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+        }),
+      },
+    ]);
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [],
       trackedTags: [],

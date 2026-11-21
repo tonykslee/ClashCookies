@@ -200,7 +200,7 @@ export async function loadCompoWarStateContext(
     }),
   ]);
   const availableRefs =
-    referenceAvailability.status === "retained_unverified" ? [] : refs;
+    referenceAvailability.status === "validated" ? refs : [];
 
   const trackedByTag = new Map(
     trackedTags.map((tag, index) => [tag, tracked[index]?.name?.trim() ?? null]),
@@ -232,7 +232,7 @@ export async function loadCompoWarStateContext(
       parent,
       memberCount: clanMembers.length,
       heatMapRef,
-      allowMissingHeatMapRef: referenceAvailability.status === "retained_unverified",
+      allowMissingHeatMapRef: referenceAvailability.status !== "validated",
     });
     const displayName =
       parent.clanName?.trim() ||

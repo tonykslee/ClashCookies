@@ -426,7 +426,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     }),
   ]);
   const availableHeatMapRefs =
-    referenceAvailability.status === "retained_unverified" ? [] : heatMapRefs;
+    referenceAvailability.status === "validated" ? heatMapRefs : [];
 
   const membersByClanTag = new Map<string, CurrentMemberRow[]>();
   const allPlayerTags = new Set<string>();
@@ -826,7 +826,7 @@ export async function readExternalClanCurrentComposition(input: {
     guildId: input.guildId,
     settings: new SettingsService(),
   });
-  const selectedHeatMapRef = estimatedWeight !== null && referenceAvailability.status !== "retained_unverified"
+  const selectedHeatMapRef = estimatedWeight !== null && referenceAvailability.status === "validated"
     ? findHeatMapRefForWeight(await prisma.heatMapRef.findMany({
         orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
       }), estimatedWeight)
