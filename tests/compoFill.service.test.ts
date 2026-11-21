@@ -280,6 +280,40 @@ function makePlannerResult(): any {
   };
 }
 
+function makeActualMemberRows(
+  bucketCounts: Record<string, number>,
+  prefix = "MEM",
+): any[] {
+  const weightByBucket: Record<string, number> = {
+    TH18: 175000,
+    TH17: 165000,
+    TH16: 155000,
+    TH15: 145000,
+    TH14: 135000,
+    TH13: 125000,
+    TH12: 115000,
+    TH11: 95000,
+    TH10: 75000,
+    TH9: 60000,
+    TH8_OR_LOWER: 10000,
+  };
+  const members: any[] = [];
+  for (const [bucket, count] of Object.entries(bucketCounts)) {
+    for (let index = 0; index < count; index += 1) {
+      members.push({
+        clanTag: "#TEST",
+        playerTag: `#${prefix}${members.length}`,
+        playerName: `${prefix} ${members.length}`,
+        townHall: null,
+        resolvedWeight: weightByBucket[bucket],
+        resolvedBucket: bucket,
+        resolvedWeightSource: "member",
+      });
+    }
+  }
+  return members;
+}
+
 function makePagedPlannerResult(): any {
   return {
     destinationPlans: Array.from({ length: 11 }, (_value, clanIndex) =>
@@ -400,6 +434,12 @@ describe("/compo fill service", () => {
           th10OrLowerCount: 0,
         },
       ],
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        warning: null,
+      },
       clans: [
         {
           clanTag: "#AAA111",
@@ -424,7 +464,7 @@ describe("/compo fill service", () => {
               TH8_OR_LOWER: 0,
             },
           },
-          members: [],
+          members: makeActualMemberRows({ TH15: 1, TH14: 47 }, "ALPHA"),
         },
         {
           clanTag: "#BBB222",
@@ -449,7 +489,7 @@ describe("/compo fill service", () => {
               TH8_OR_LOWER: 0,
             },
           },
-          members: [],
+          members: makeActualMemberRows({ TH14: 49 }, "BRAVO"),
         },
       ],
     } as any);
@@ -623,7 +663,10 @@ describe("/compo fill service", () => {
               TH8_OR_LOWER: 0,
             },
           },
-          members: [],
+          members: makeActualMemberRows({ TH15: 1, TH14: 48 }, "MENTION").map((member) => ({
+            ...member,
+            clanTag: "#AAA111",
+          })),
         },
       ],
     } as any);
@@ -749,6 +792,581 @@ describe("/compo fill service", () => {
     expect(text).toContain(
       "[Alice](<https://link.clashofclans.com/en/?action=OpenPlayerProfile&tag=P1>) (`#P1`)",
     );
+  });
+
+  it("executes the real planner and conserves a tracked fallback transfer", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#DST", "#SRC"],
+      renderableClanTags: ["#DST", "#SRC"],
+      latestSourceSyncedAt: null,
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        warning: null,
+      },
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 10_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 1,
+          th14Count: 49,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#DST",
+          clanName: "Destination",
+          shortName: "D",
+          base: {
+            resolvedTotalWeight: 49 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 49,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH14: 49 }, "DEST").map((member) => ({
+            ...member,
+            clanTag: "#DST",
+          })),
+        },
+        {
+          clanTag: "#SRC",
+          clanName: "Source",
+          shortName: "S",
+          base: {
+            resolvedTotalWeight: 51 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 51,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 1,
+              TH14: 50,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH15: 1, TH14: 50 }, "SRC").map((member, index) => ({
+            ...member,
+            clanTag: "#SRC",
+            ...(index === 1
+              ? { playerTag: "#TRACKED", playerName: "Tracked", townHall: 14 }
+              : {}),
+          })),
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#TRACKED",
+        name: "Tracked",
+        clanTag: "#SRC",
+        clanName: "Source",
+        clanState: "known",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const plannerSpy = vi.spyOn(planner, "buildCompoFillPlan");
+    const result = await new CompoFillService().readFill("guild-1");
+    expect(result.plannedMoveCount).toBe(1);
+    expect(result.destinationClanCount).toBe(1);
+    expect((plannerSpy.mock.calls[0]?.[0] as any).trackedClans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ clanTag: "#DST", targetEvidence: "validated" }),
+        expect.objectContaining({ clanTag: "#SRC", targetEvidence: "validated" }),
+      ]),
+    );
+    const plan = plannerSpy.mock.results[0]?.value as ReturnType<
+      typeof planner.buildCompoFillPlan
+    >;
+    const move = plan.destinationPlans[0]?.plannedMoves[0];
+    expect(move?.matchedBucket).toBeNull();
+    expect(move?.destinationBucketCountsAfter.TH14).toBe(50);
+    expect(move?.sourceBucketCountsAfter?.TH14).toBe(49);
+  });
+
+  it("preserves unknown, no-clan, and known tracked membership through the planner", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#DST", "#SRC"],
+      renderableClanTags: ["#DST", "#SRC"],
+      latestSourceSyncedAt: null,
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        warning: null,
+      },
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 10_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#DST",
+          clanName: "Destination",
+          shortName: "D",
+          base: {
+            resolvedTotalWeight: 48 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 48,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 48,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH14: 48 }, "MEMBERSHIP-DST").map((member) => ({
+            ...member,
+            clanTag: "#DST",
+          })),
+        },
+        {
+          clanTag: "#SRC",
+          clanName: "Source",
+          shortName: "S",
+          base: {
+            resolvedTotalWeight: 51 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 51,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 51,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH14: 51 }, "MEMBERSHIP-SRC").map((member, index) => ({
+            ...member,
+            clanTag: "#SRC",
+            ...(index === 0
+              ? { playerTag: "#KNOWN", playerName: "Known", townHall: 14 }
+              : {}),
+          })),
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#UNKNOWN",
+        name: "Unknown Membership",
+        clanTag: null,
+        clanName: null,
+        clanState: "unknown",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+      {
+        tag: "#NOCLAN",
+        name: "Verified No Clan",
+        clanTag: null,
+        clanName: null,
+        clanState: "no_clan",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+      {
+        tag: "#KNOWN",
+        name: "Known Tracked",
+        clanTag: "#SRC",
+        clanName: "Source",
+        clanState: "known",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const plannerSpy = vi.spyOn(planner, "buildCompoFillPlan");
+    const result = await new CompoFillService().readFill("guild-1");
+    const plannerInput = plannerSpy.mock.calls[0]?.[0] as any;
+    const plan = plannerSpy.mock.results[0]?.value as ReturnType<
+      typeof planner.buildCompoFillPlan
+    >;
+
+    expect(plannerInput.fillers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ playerTag: "#UNKNOWN", clanState: "unknown" }),
+        expect.objectContaining({ playerTag: "#NOCLAN", clanState: "no_clan" }),
+        expect.objectContaining({ playerTag: "#KNOWN", clanState: "known" }),
+      ]),
+    );
+    expect(plan.destinationPlans[0]?.plannedMoves.map((move) => move.filler.playerTag)).toEqual([
+      "#NOCLAN",
+      "#KNOWN",
+    ]);
+    expect(plan.destinationPlans[0]?.plannedMoves[0]?.filler.sourceKind).toBe("untracked");
+    expect(plan.destinationPlans[0]?.plannedMoves[1]?.filler.sourceKind).toBe("tracked_surplus");
+    expect(plan.unavailableFillers).toEqual([
+      expect.objectContaining({
+        playerTag: "#UNKNOWN",
+        reasonCodes: ["source_membership_unknown"],
+      }),
+    ]);
+    expect(result.plannedMoveCount).toBe(2);
+  });
+
+  it("identifies a validated-but-unselected target and counts mixed underfilled clans", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#VALID", "#UNKNOWN-TARGET"],
+      renderableClanTags: ["#VALID", "#UNKNOWN-TARGET"],
+      latestSourceSyncedAt: null,
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+        warning: null,
+      },
+      heatMapRefs: [
+        {
+          weightMinInclusive: 6_000_000,
+          weightMaxInclusive: 7_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#VALID",
+          clanName: "Valid Target",
+          shortName: "V",
+          base: {
+            resolvedTotalWeight: 6_615_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 49,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH14: 49 }, "VALID").map((member) => ({
+            ...member,
+            clanTag: "#VALID",
+          })),
+        },
+        {
+          clanTag: "#UNKNOWN-TARGET",
+          clanName: "Unknown Target",
+          shortName: "U",
+          base: {
+            resolvedTotalWeight: 7_500_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 49,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: [],
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#FILLER",
+        name: "Filler",
+        clanTag: null,
+        clanName: null,
+        clanState: "no_clan",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const result = await new CompoFillService().readFill("guild-1");
+    const text = JSON.stringify(getEmbedJSON(result.embeds[0]));
+
+    expect(result.destinationClanCount).toBe(2);
+    expect(result.plannedMoveCount).toBe(1);
+    expect(text).toContain("Clans under 50: 2");
+    expect(text).toContain(
+      "Target comparison: UNKNOWN for Unknown Target; no target-dependent moves are planned for those clans.",
+    );
+    expect(text).toContain("Open slots: 1");
+    expect(text).toContain("Unknown Target");
+  });
+
+  it("withholds target-dependent moves when destination weight coverage is incomplete", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#DST"],
+      renderableClanTags: ["#DST"],
+      latestSourceSyncedAt: null,
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-11-21T00:00:00.000Z",
+        warning: null,
+      },
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 10_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#DST",
+          clanName: "Incomplete Destination",
+          shortName: "D",
+          base: {
+            resolvedTotalWeight: 48 * 135_000,
+            unresolvedWeightCount: 1,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 48,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: [
+            ...makeActualMemberRows({ TH14: 48 }, "INCOMPLETE"),
+            {
+              clanTag: "#DST",
+              playerTag: "#UNKNOWN-WEIGHT",
+              playerName: "Unknown Weight",
+              townHall: null,
+              resolvedWeight: null,
+              resolvedBucket: null,
+              resolvedWeightSource: null,
+            },
+          ],
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#FILLER",
+        name: "Verified Filler",
+        clanTag: null,
+        clanName: null,
+        clanState: "no_clan",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const plannerSpy = vi.spyOn(planner, "buildCompoFillPlan");
+    const result = await new CompoFillService().readFill("guild-1");
+    const plannerInput = plannerSpy.mock.calls[0]?.[0] as any;
+    const plan = plannerSpy.mock.results[0]?.value as ReturnType<
+      typeof planner.buildCompoFillPlan
+    >;
+    const text = JSON.stringify(getEmbedJSON(result.embeds[0]));
+
+    expect(plannerInput.trackedClans[0]).toMatchObject({
+      targetBucketCounts: null,
+      targetEvidence: "unavailable",
+      targetEvidenceReason: "actual_roster_incomplete",
+    });
+    expect(result.destinationClanCount).toBe(1);
+    expect(result.plannedMoveCount).toBe(0);
+    expect(result.availableFillerCount).toBe(1);
+    expect(plan.unusedAvailableFillers.map((filler) => filler.playerTag)).toEqual([
+      "#FILLER",
+    ]);
+    expect(text).toContain(
+      "Target comparison: UNKNOWN for Incomplete Destination; no target-dependent moves are planned for those clans.",
+    );
+  });
+
+  it("withholds target-dependent moves when member and bucket counts disagree", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#DST"],
+      renderableClanTags: ["#DST"],
+      latestSourceSyncedAt: null,
+      referenceAvailability: {
+        status: "validated",
+        blockReasonCode: null,
+        lastSuccessAtIso: "2026-11-21T00:00:00.000Z",
+        warning: null,
+      },
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 10_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#DST",
+          clanName: "Inconsistent Destination",
+          shortName: "D",
+          base: {
+            resolvedTotalWeight: 49 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 48,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: makeActualMemberRows({ TH14: 49 }, "INCONSISTENT"),
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#FILLER",
+        name: "Verified Filler",
+        clanTag: null,
+        clanName: null,
+        clanState: "no_clan",
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+
+    const plannerSpy = vi.spyOn(planner, "buildCompoFillPlan");
+    const result = await new CompoFillService().readFill("guild-1");
+    const plannerInput = plannerSpy.mock.calls[0]?.[0] as any;
+
+    expect(plannerInput.trackedClans[0]).toMatchObject({
+      targetBucketCounts: null,
+      targetEvidence: "unavailable",
+      targetEvidenceReason: "actual_roster_inconsistent",
+    });
+    expect(result.destinationClanCount).toBe(1);
+    expect(result.plannedMoveCount).toBe(0);
+    expect(result.availableFillerCount).toBe(1);
   });
 
   it("builds profile URLs and compact display helpers", () => {
@@ -994,6 +1612,80 @@ describe("/compo fill service", () => {
     expect(text).toContain("Recommended moves: 0");
     expect(text).toContain("Reference integrity:");
     expect(text).not.toContain('"name":"Recommended Moves"');
+  });
+
+  it("does not fabricate a TH13 target when selected reference provenance is missing", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      trackedClanTags: ["#AAA111"],
+      renderableClanTags: ["#AAA111"],
+      latestSourceSyncedAt: null,
+      heatMapRefs: [
+        {
+          weightMinInclusive: 0,
+          weightMaxInclusive: 10_000_000,
+          th18Count: 0,
+          th17Count: 0,
+          th16Count: 0,
+          th15Count: 0,
+          th14Count: 50,
+          th13Count: 0,
+          th12Count: 0,
+          th11Count: 0,
+          th10OrLowerCount: 0,
+        },
+      ],
+      clans: [
+        {
+          clanTag: "#AAA111",
+          clanName: "Alpha",
+          shortName: "A",
+          base: {
+            resolvedTotalWeight: 49 * 135_000,
+            unresolvedWeightCount: 0,
+            deferredWeightCount: 0,
+            memberCount: 49,
+            bucketCounts: {
+              TH18: 0,
+              TH17: 0,
+              TH16: 0,
+              TH15: 0,
+              TH14: 49,
+              TH13: 0,
+              TH12: 0,
+              TH11: 0,
+              TH10: 0,
+              TH9: 0,
+              TH8_OR_LOWER: 0,
+            },
+          },
+          members: [],
+        },
+      ],
+    } as any);
+    vi.spyOn(fillerAccountService, "listFillerAccountsForGuild").mockResolvedValue([
+      {
+        tag: "#FILLER",
+        name: "Filler",
+        clanTag: null,
+        clanName: null,
+        weight: 135000,
+        discordUserId: null,
+        discordUsername: null,
+        linkedName: null,
+        isFiller: true,
+      },
+    ] as any);
+    const plannerSpy = vi.spyOn(planner, "buildCompoFillPlan");
+
+    const result = await new CompoFillService().readFill("guild-1");
+    const plannerInput = plannerSpy.mock.calls[0]?.[0] as any;
+    expect(plannerInput.trackedClans[0]).toMatchObject({
+      targetBucketCounts: null,
+      targetEvidence: "unavailable",
+    });
+    expect(result.plannedMoveCount).toBe(0);
+    expect(result.availableFillerCount).toBe(1);
+    expect(JSON.stringify(getEmbedJSON(result.embeds[0]))).toContain("Open slots: 1");
   });
 
   it("keeps the total embed payload within budget for production-like large output", async () => {
