@@ -21,7 +21,8 @@ type Scenario =
   | "reset-failure"
   | "diagnostic-permissions"
   | "legacy-rollback"
-  | "cleanup-failure";
+  | "cleanup-failure"
+  | "workspace-cleanup-failure";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -72,6 +73,8 @@ describe("version-controlled production deployment readiness", () => {
     expect(buildLine).not.toContain("container-start.sh");
     expect(log).toContain("ACTIVE_RUN name=clashcookies-app revision=new-reviewed-sha prebuilt=1");
     expect(log.indexOf("BUILD ")).toBeLessThan(log.indexOf("ACTIVE_RUN"));
+    expect(output).toContain("workspace_cleanup=success");
+    expect(output.indexOf("workspace_cleanup=success")).toBeLessThan(output.indexOf("promotion_step=stop_old_app"));
     expect(output).toContain("health_result=promotion status=200");
   });
 
@@ -152,6 +155,15 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("STATUS=1");
     expect(output).toContain("candidate_cleanup=failed");
     expect(output).toContain("candidate_cleanup_failed");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("aborts before promotion when the owned workspace cannot be removed", () => {
+    const output = runScenario("workspace-cleanup-failure");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("workspace_cleanup=failed reason=remove");
+    expect(output).toContain("candidate_workspace_cleanup_failed");
+    expect(output).not.toContain("promotion_step=stop_old_app");
     expect(output).toContain("STATE=active:OLD");
   });
 

@@ -471,10 +471,40 @@ cleanup_candidate_worktree() {
   fi
 }
 
+cleanup_candidate_workspace() {
+  local labels attached
+  [ "$BUILD_WORKSPACE_CREATED" = "1" ] || return 0
+
+  if ! labels="$(docker volume inspect --format '{{index .Labels "com.clashcookies.deploy"}}|{{index .Labels "com.clashcookies.revision"}}|{{index .Labels "com.clashcookies.role"}}' "$BUILD_WORKSPACE_VOLUME" 2>/dev/null)"; then
+    log "workspace_cleanup=failed reason=ownership_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if [ "$labels" != "artifact|${NEW_SHA}|build-workspace" ]; then
+    log "workspace_cleanup=failed reason=ownership_mismatch volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if ! attached="$(docker ps -a --filter "volume=${BUILD_WORKSPACE_VOLUME}" --format '{{.Names}}')"; then
+    log "workspace_cleanup=failed reason=reference_check volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+  if [ -n "$attached" ]; then
+    log "workspace_cleanup=failed reason=volume_attached volume=${BUILD_WORKSPACE_VOLUME} containers=${attached}" >&2
+    return 1
+  fi
+  if ! docker volume rm "$BUILD_WORKSPACE_VOLUME" >/dev/null 2>&1; then
+    log "workspace_cleanup=failed reason=remove volume=${BUILD_WORKSPACE_VOLUME}" >&2
+    return 1
+  fi
+
+  BUILD_WORKSPACE_CREATED="0"
+  BUILD_WORKSPACE_VOLUME=""
+  log "workspace_cleanup=success"
+}
+
 cleanup_build_volumes() {
   [ "$BUILD_VOLUMES_IN_USE" = "0" ] || return 0
   if [ "$BUILD_WORKSPACE_CREATED" = "1" ]; then
-    docker volume rm "$BUILD_WORKSPACE_VOLUME" >/dev/null 2>&1 || \
+    cleanup_candidate_workspace || \
       log "build_artifacts_cleanup=deferred workspace=${BUILD_WORKSPACE_VOLUME}"
   fi
   if [ "$BUILD_NODE_MODULES_CREATED" = "1" ]; then
@@ -760,6 +790,7 @@ git_safe worktree add --detach "$TEMP_WORKTREE" "$NEW_SHA"
 TEMP_WORKTREE_CREATED="1"
 build_candidate_only || fatal "candidate_build_failed final_state=old_sha:${OLD_SHA}"
 cleanup_candidate_worktree || fatal "candidate_cleanup_failed"
+cleanup_candidate_workspace || fatal "candidate_workspace_cleanup_failed final_state=old_runtime_still_active"
 assert_single_active_runtime || fatal "active_runtime_changed_during_candidate_build"
 prepare_rollback_artifact || fatal "rollback_artifact_prepare_failed final_state=old_runtime_still_active"
 
