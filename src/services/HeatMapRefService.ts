@@ -49,15 +49,17 @@ export async function upsertHeatMapRefSeedRows(
       },
     });
 
-    const bucketTargetDelegate = (client as typeof prisma & {
-      heatMapRefBucketTarget?: {
-        deleteMany: (args?: unknown) => Promise<unknown>;
-        createMany: (args: { data: unknown[] }) => Promise<unknown>;
-      };
-    }).heatMapRefBucketTarget;
-    if (bucketTargetDelegate) {
-      await bucketTargetDelegate.deleteMany({});
+    const bucketTargetDelegate = client.heatMapRefBucketTarget;
+    if (
+      !bucketTargetDelegate ||
+      typeof bucketTargetDelegate.deleteMany !== "function" ||
+      typeof bucketTargetDelegate.createMany !== "function"
+    ) {
+      throw new Error(
+        "HeatMapRef normalized target writer is unavailable: heatMapRefBucketTarget is required",
+      );
     }
+    await bucketTargetDelegate.deleteMany({});
 
     for (const row of rows) {
       await client.heatMapRef.upsert({
@@ -100,11 +102,9 @@ export async function upsertHeatMapRefSeedRows(
       });
     }
 
-    if (bucketTargetDelegate) {
-      await bucketTargetDelegate.createMany({
-        data: buildLegacyHeatMapRefBucketTargets(rows),
-      });
-    }
+    await bucketTargetDelegate.createMany({
+      data: buildLegacyHeatMapRefBucketTargets(rows),
+    });
 
     for (const row of existingRows) {
       const key = `${row.weightMinInclusive}:${row.weightMaxInclusive}`;
@@ -121,13 +121,8 @@ export async function upsertHeatMapRefSeedRows(
     return rows.length;
   };
 
-  if (typeof prisma.$transaction !== "function") {
-    return writeRows(prisma);
-  }
   return prisma.$transaction(async (tx) => {
-    if (typeof tx.$executeRaw === "function") {
-      await acquireHeatMapRefReferenceWriteLock(tx);
-    }
+    await acquireHeatMapRefReferenceWriteLock(tx);
     return writeRows(tx as unknown as typeof prisma);
   });
 }

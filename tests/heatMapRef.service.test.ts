@@ -205,8 +205,52 @@ describe("HeatMapRefService", () => {
         },
       },
     });
+    expect(prismaMock.heatMapRefBucketTarget.deleteMany).toHaveBeenCalledWith({});
+    expect(prismaMock.heatMapRefBucketTarget.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({
+          bucketId: "TH18",
+          targetCount: HEAT_MAP_REF_SEED_ROWS[0].th18Count,
+          status: "SUPPORTED",
+        }),
+      ]),
+    });
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
     expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before parent writes when the normalized writer delegate is missing", async () => {
+    const bucketTargetDelegate = prismaMock.heatMapRefBucketTarget;
+    (prismaMock as { heatMapRefBucketTarget?: typeof bucketTargetDelegate }).heatMapRefBucketTarget =
+      undefined;
+
+    try {
+      await expect(upsertHeatMapRefSeedRows(HEAT_MAP_REF_SEED_ROWS)).rejects.toThrow(
+        "heatMapRefBucketTarget is required",
+      );
+    } finally {
+      prismaMock.heatMapRefBucketTarget = bucketTargetDelegate;
+    }
+
+    expect(prismaMock.heatMapRef.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.delete).not.toHaveBeenCalled();
+  });
+
+  it("fails the seed transaction when normalized child publication rejects", async () => {
+    prismaMock.heatMapRef.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.upsert.mockResolvedValue(undefined);
+    prismaMock.heatMapRef.delete.mockResolvedValue(undefined);
+    prismaMock.heatMapRefBucketTarget.createMany.mockRejectedValueOnce(
+      new Error("normalized child write failed"),
+    );
+
+    await expect(upsertHeatMapRefSeedRows(HEAT_MAP_REF_SEED_ROWS)).rejects.toThrow(
+      "normalized child write failed",
+    );
+
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.heatMapRef.upsert).toHaveBeenCalled();
+    expect(prismaMock.heatMapRefBucketTarget.createMany).toHaveBeenCalled();
   });
 
   it("does not create duplicate rows on reseed when the same corrected keys already exist", async () => {

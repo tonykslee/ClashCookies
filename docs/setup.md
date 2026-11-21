@@ -69,6 +69,8 @@ Mirror mode behavior:
   - `WarLookup`
   - `ExternalPlayerWeightCurrent`
 - Sync direction is always source/prod -> target/current DATABASE_URL.
+- The mirror schema gate is strict for FB-002 P2: the production source must already be migrated with the `HeatMapRefBucketTarget` table before staging mirror sync can read and copy the parent/child projection. A pre-P2 production source is rejected before any target writes.
+- Staging is currently decommissioned. Do not provision, access, or claim staging mirror validation without a separately approved operational request.
 
 Manual sync now:
 ```bash

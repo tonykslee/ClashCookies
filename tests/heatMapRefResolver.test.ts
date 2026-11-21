@@ -89,6 +89,7 @@ describe("HeatMapRef normalized reference resolver", () => {
   });
 
   it("preserves factual parents but fails closed when the child query rejects", async () => {
+    const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const client = {
       heatMapRef: {
         findMany: vi.fn(async () => [parent]),
@@ -108,6 +109,11 @@ describe("HeatMapRef normalized reference resolver", () => {
     expect(result.supportedBucketIds).toEqual([]);
     expect(result.heatMapRefs).toEqual([parent]);
     expect(result.availability.warning).toContain("factual composition observations remain available");
+    expect(warningSpy).toHaveBeenCalledWith(
+      expect.stringContaining("code=child_query_failed"),
+    );
+    expect(warningSpy.mock.calls.flat().join(" ")).not.toContain("child database unavailable");
+    warningSpy.mockRestore();
   });
 
   it.each([

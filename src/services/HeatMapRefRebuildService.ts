@@ -550,36 +550,42 @@ export class HeatMapRefRebuildService {
         if (currentHash !== result.contentHash) {
           throw new Error("HeatMapRef rows changed before unchanged validation could be committed");
         }
-        const bucketTargetDelegate = (tx as typeof tx & {
-          heatMapRefBucketTarget?: { findMany: (args?: unknown) => Promise<unknown[]> };
-        }).heatMapRefBucketTarget;
-        if (bucketTargetDelegate) {
-          const bucketTargets = await bucketTargetDelegate.findMany({
-            orderBy: [
-              { weightMinInclusive: "asc" },
-              { weightMaxInclusive: "asc" },
-              { bucketId: "asc" },
-            ],
-          });
-          const normalized = validateLegacyHeatMapRefTargets(currentRows, bucketTargets as never);
-          if (!normalized.ok) {
-            throw new Error(`HeatMapRef normalized target validation failed: ${normalized.reason}`);
-          }
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.findMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target reader is unavailable: heatMapRefBucketTarget is required",
+          );
+        }
+        const bucketTargets = await bucketTargetDelegate.findMany({
+          orderBy: [
+            { weightMinInclusive: "asc" },
+            { weightMaxInclusive: "asc" },
+            { bucketId: "asc" },
+          ],
+        });
+        const normalized = validateLegacyHeatMapRefTargets(currentRows, bucketTargets as never);
+        if (!normalized.ok) {
+          throw new Error(`HeatMapRef normalized target validation failed: ${normalized.reason}`);
         }
       }
       if (validated && result.status === "success") {
         if (!publicationRows) {
           throw new Error("validated HeatMapRef publication has no rows");
         }
-        const bucketTargetDelegate = (tx as typeof tx & {
-          heatMapRefBucketTarget?: {
-            deleteMany: (args?: unknown) => Promise<unknown>;
-            createMany: (args: { data: unknown[] }) => Promise<unknown>;
-          };
-        }).heatMapRefBucketTarget;
-        if (bucketTargetDelegate) {
-          await bucketTargetDelegate.deleteMany({});
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.deleteMany !== "function" ||
+          typeof bucketTargetDelegate.createMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target writer is unavailable: heatMapRefBucketTarget is required",
+          );
         }
+        await bucketTargetDelegate.deleteMany({});
         await tx.heatMapRef.deleteMany({});
         if (publicationRows.length > 0) {
           const parentRows = publicationRows.map((row) => ({
@@ -599,11 +605,9 @@ export class HeatMapRefRebuildService {
               refreshedAt: row.refreshedAt,
             }));
           await tx.heatMapRef.createMany({ data: parentRows });
-          if (bucketTargetDelegate) {
-            await bucketTargetDelegate.createMany({
-              data: buildLegacyHeatMapRefBucketTargets(parentRows),
-            });
-          }
+          await bucketTargetDelegate.createMany({
+            data: buildLegacyHeatMapRefBucketTargets(parentRows),
+          });
         }
       }
       const record = buildHeatMapRefReferenceIntegrityRecord({

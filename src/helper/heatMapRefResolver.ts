@@ -49,10 +49,10 @@ function unknownAvailability(warning: string): HeatMapRefReferenceAvailability {
   };
 }
 
-function boundedErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "unknown";
-  return message.replace(/\s+/g, " ").slice(0, 160);
-}
+const NORMALIZED_TARGET_READ_FAILURE_CODES = {
+  childDelegateMissing: "child_delegate_missing",
+  childQueryFailed: "child_query_failed",
+} as const;
 
 function isIntegerCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -151,7 +151,7 @@ export async function resolveHeatMapRefReference(input: {
   // authorize target-dependent composition output.
   if (!bucketTargetDelegate || typeof bucketTargetDelegate.findMany !== "function") {
     console.warn(
-      "[heatmapref-reference] normalized target read unavailable reason=child_delegate_missing",
+      `[heatmapref-reference] normalized target read unavailable code=${NORMALIZED_TARGET_READ_FAILURE_CODES.childDelegateMissing}`,
     );
     return {
       heatMapRefs,
@@ -173,9 +173,9 @@ export async function resolveHeatMapRefReference(input: {
         { bucketId: "asc" },
       ],
     });
-  } catch (error) {
+  } catch {
     console.warn(
-      `[heatmapref-reference] normalized target read failed; target-dependent composition output is withheld error=${boundedErrorMessage(error)}`,
+      `[heatmapref-reference] normalized target read failed code=${NORMALIZED_TARGET_READ_FAILURE_CODES.childQueryFailed}; target-dependent composition output is withheld`,
     );
     return {
       heatMapRefs,
