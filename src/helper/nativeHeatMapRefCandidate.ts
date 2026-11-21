@@ -16,6 +16,16 @@ export const NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY = "synthetic_fixture";
 export const NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST = "persisted_unverified_source_binding";
 export const NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST = "synthetic_untrusted";
 
+export class NativeReferenceCandidateConfigurationError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "NativeReferenceCandidateConfigurationError";
+    this.code = code;
+  }
+}
+
 export type NativeReferenceBucketDefinition = {
   id: string;
   sourceBuckets: readonly CompoWarWeightBucket[];
@@ -140,7 +150,10 @@ export type NativeReferenceCandidateArtifact = {
   sampleThreshold: number;
   eraPolicy: NativeReferenceEraPolicy;
   evaluationAtIso: string;
+  /** Bounds over every parseable source timestamp supplied to the generator, including rejected evidence. */
   sourceObservationBounds: { minIso: string | null; maxIso: string | null };
+  /** Bounds over timestamps belonging only to rosters that passed eligibility. */
+  qualifyingSourceObservationBounds: { minIso: string | null; maxIso: string | null };
   bucketDefinitionVersion: string;
   bucketDefinitionFingerprint: string;
   bucketRegistry: readonly NativeReferenceBucketDefinition[];
@@ -181,6 +194,27 @@ function parseDate(value: Date | string | null | undefined): ParsedDate {
   if (typeof value !== "string" || !value.trim()) return null;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function boundsFromDates(dates: readonly Date[]): { minIso: string | null; maxIso: string | null } {
+  if (dates.length === 0) return { minIso: null, maxIso: null };
+  return {
+    minIso: new Date(Math.min(...dates.map((date) => date.getTime()))).toISOString(),
+    maxIso: new Date(Math.max(...dates.map((date) => date.getTime()))).toISOString(),
+  };
+}
+
+function rawSourceObservationDates(rosters: readonly NativeReferenceSourceRoster[]): Date[] {
+  return rosters.flatMap((roster) => [
+    roster.observedAt,
+    roster.sourceUpdatedAt,
+    roster.sourceWarStartTime,
+    roster.sourceWarEndTime,
+    roster.sourceCurrentWarUpdatedAt,
+    ...roster.members.map((member) => member.sourceSyncedAt ?? null),
+  ]
+    .map((value) => parseDate(value))
+    .filter((value): value is Date => Boolean(value)));
 }
 
 function normalizeIdentity(value: unknown): string | null {
@@ -649,52 +683,6 @@ function canonicalizeSourceEvidence(rosters: readonly NativeReferenceSourceRoste
     .sort(compareCanonical);
 }
 
-function buildInvalidArtifact(input: NativeCandidateConfig, reason: string): NativeReferenceCandidateArtifact {
-  const registry = input.bucketRegistry ?? NATIVE_REFERENCE_BUCKET_REGISTRY;
-  const source = sourceCategoryFor(input);
-  const bands = sortedBands(input.bandDefinitions);
-  const policy = input.eraPolicy;
-  const evaluationAtIso = typeof input.evaluationAt === "string" ? input.evaluationAt : input.evaluationAt.toISOString();
-  const diagnostics = bands.map((band) => ({
-    band,
-    status: "UNKNOWN" as const,
-    reasonCode: "invalid_evidence" as const,
-    observedCandidateCount: 0,
-    qualifyingRosterCount: 0,
-    distinctQualifyingClanCount: 0,
-    excludedRosterCount: 0,
-    exclusionCounts: {},
-    th19ContainingRosterCount: 0,
-    observedBucketTotals: emptyCounts(registry),
-    averageBucketCounts: emptyCounts(registry),
-    normalizedTargets: buildUnknownTargets(registry, "invalid_evidence"),
-  }));
-  const base = {
-    profileId: NATIVE_REFERENCE_PROFILE_ID,
-    profileVersion: NATIVE_REFERENCE_PROFILE_VERSION,
-    overallStatus: "UNKNOWN" as const,
-    sourceCategory: source.category,
-    evidenceTrust: source.trust,
-    sampleThreshold: Number.isInteger(input.sampleThreshold) && (input.sampleThreshold ?? 0) > 0
-      ? input.sampleThreshold!
-      : 0,
-    eraPolicy: policy,
-    evaluationAtIso,
-    sourceObservationBounds: { minIso: null, maxIso: null },
-    bucketDefinitionVersion: NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION,
-    bucketDefinitionFingerprint: computeNativeReferenceBucketDefinitionFingerprint(registry),
-    bucketRegistry: registry,
-    bandDefinitions: bands,
-    exclusions: [],
-    exclusionCounts: {},
-    unattributedExclusionCount: 0,
-    diagnostics,
-    sourceEvidenceFingerprint: sha256({ sourceCategory: source.category, evidenceTrust: source.trust, sourceEvidence: canonicalizeSourceEvidence(input.sourceRosters) }),
-    unknownReason: reason,
-  };
-  return { ...base, contentFingerprint: sha256(base) };
-}
-
 /** Purpose: generate a read-only, versioned native candidate from explicitly qualified persisted evidence. */
 export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig): NativeReferenceCandidateArtifact {
   const registry = input.bucketRegistry ?? NATIVE_REFERENCE_BUCKET_REGISTRY;
@@ -707,11 +695,16 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       ? input.sampleThreshold
       : 0;
   if (registryError || bandError || !policyResult || threshold === 0) {
-    return buildInvalidArtifact(
-      input,
-      threshold === 0
-        ? "invalid_sample_threshold"
-        : registryError ?? bandError ?? "evaluation timestamp or era policy is invalid",
+    const code = threshold === 0
+      ? "invalid_sample_threshold"
+      : registryError
+        ? "invalid_bucket_registry"
+        : bandError
+          ? "invalid_band_definitions"
+          : "invalid_era_policy";
+    throw new NativeReferenceCandidateConfigurationError(
+      code,
+      registryError ?? bandError ?? "evaluation timestamp or era policy is invalid",
     );
   }
 
@@ -816,22 +809,16 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
   });
 
   const sourceEvidence = canonicalizeSourceEvidence(input.sourceRosters);
-  const sourceTimes = input.sourceRosters.flatMap((roster) => [
-    roster.observedAt,
-    roster.sourceUpdatedAt,
-    roster.sourceWarStartTime,
-    roster.sourceWarEndTime,
-    roster.sourceCurrentWarUpdatedAt,
-    ...roster.members.map((member) => member.sourceSyncedAt ?? null),
-  ]
-    .map((value) => parseDate(value))
-    .filter((value): value is Date => Boolean(value)));
-  const sourceObservationBounds = {
-    minIso: sourceTimes.length > 0 ? new Date(Math.min(...sourceTimes.map((date) => date.getTime()))).toISOString() : null,
-    maxIso: sourceTimes.length > 0 ? new Date(Math.max(...sourceTimes.map((date) => date.getTime()))).toISOString() : null,
-  };
+  const sourceObservationBounds = boundsFromDates(rawSourceObservationDates(input.sourceRosters));
+  const qualifyingSourceObservationBounds = boundsFromDates(qualified.flatMap((row) => row.sourceObservationTimes));
   const source = sourceCategoryFor(input);
-  const sourceEvidenceFingerprint = sha256({ sourceCategory: source.category, evidenceTrust: source.trust, sourceEvidence });
+  const sourceEvidenceFingerprint = sha256({
+    sourceCategory: source.category,
+    evidenceTrust: source.trust,
+    rawSourceObservationBounds: sourceObservationBounds,
+    qualifyingSourceObservationBounds,
+    sourceEvidence,
+  });
   const canonicalExclusions = [...exclusions].sort((left, right) =>
     compareCanonical(left, right),
   );
@@ -846,6 +833,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     eraPolicy: policyResult.policy,
     evaluationAtIso: policyResult.evaluationAt.toISOString(),
     sourceObservationBounds,
+    qualifyingSourceObservationBounds,
     bucketDefinitionVersion: NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION,
     bucketDefinitionFingerprint: computeNativeReferenceBucketDefinitionFingerprint(registry),
     bucketRegistry: registry,
@@ -896,6 +884,13 @@ function validateNativeReferenceCandidateArtifactInternal(
   const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
     Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
   const isNonnegativeInteger = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+  const isBoundsRecord = (value: unknown): value is { minIso: string | null; maxIso: string | null } =>
+    isRecordValue(value) &&
+    Object.keys(value).length === 2 &&
+    Object.prototype.hasOwnProperty.call(value, "minIso") &&
+    Object.prototype.hasOwnProperty.call(value, "maxIso") &&
+    (value.minIso === null || isIso(value.minIso)) &&
+    (value.maxIso === null || isIso(value.maxIso));
   if (!isRecordValue(artifact)) return false;
   const candidate = artifact;
   if (
@@ -917,20 +912,19 @@ function validateNativeReferenceCandidateArtifactInternal(
     new Date(candidate.eraPolicy.eraStartIso).getTime() > new Date(candidate.eraPolicy.eraEndIso as string).getTime() ||
     new Date(candidate.evaluationAtIso).getTime() < new Date(candidate.eraPolicy.eraStartIso).getTime() ||
     new Date(candidate.evaluationAtIso).getTime() > new Date(candidate.eraPolicy.eraEndIso as string).getTime() ||
-    !isRecordValue(candidate.sourceObservationBounds) ||
-    !Object.prototype.hasOwnProperty.call(candidate.sourceObservationBounds, "minIso") ||
-    !Object.prototype.hasOwnProperty.call(candidate.sourceObservationBounds, "maxIso") ||
-    (candidate.sourceObservationBounds.minIso !== null && !isIso(candidate.sourceObservationBounds.minIso)) ||
-    (candidate.sourceObservationBounds.maxIso !== null && !isIso(candidate.sourceObservationBounds.maxIso))
+    !isBoundsRecord(candidate.sourceObservationBounds) ||
+    !isBoundsRecord(candidate.qualifyingSourceObservationBounds)
   ) return false;
-  const minIso = candidate.sourceObservationBounds.minIso;
-  const maxIso = candidate.sourceObservationBounds.maxIso;
-  if ((minIso === null) !== (maxIso === null) || (minIso !== null && maxIso !== null && new Date(minIso as string).getTime() > new Date(maxIso as string).getTime())) return false;
-  if (minIso !== null && maxIso !== null) {
+  const rawBounds = candidate.sourceObservationBounds;
+  const qualifyingBounds = candidate.qualifyingSourceObservationBounds;
+  for (const bounds of [rawBounds, qualifyingBounds]) {
+    if ((bounds.minIso === null) !== (bounds.maxIso === null) || (bounds.minIso !== null && bounds.maxIso !== null && new Date(bounds.minIso).getTime() > new Date(bounds.maxIso).getTime())) return false;
+  }
+  if (qualifyingBounds.minIso !== null && qualifyingBounds.maxIso !== null) {
     const eraStart = new Date(candidate.eraPolicy.eraStartIso as string).getTime();
     const eraEnd = new Date(candidate.eraPolicy.eraEndIso as string).getTime();
     const evaluation = new Date(candidate.evaluationAtIso).getTime();
-    if (new Date(minIso as string).getTime() < eraStart || new Date(maxIso as string).getTime() > eraEnd || new Date(maxIso as string).getTime() > evaluation) return false;
+    if (new Date(qualifyingBounds.minIso).getTime() < eraStart || new Date(qualifyingBounds.maxIso).getTime() > eraEnd || new Date(qualifyingBounds.maxIso).getTime() > evaluation) return false;
   }
   if (
     !Array.isArray(candidate.bucketRegistry) ||
@@ -1012,17 +1006,33 @@ function validateNativeReferenceCandidateArtifactInternal(
       if (!Number.isInteger(total) || (total as number) < 0 || !Number.isFinite(average) || (average as number) < 0 || (average as number) !== ((total as number) / Math.max(1, diagnostic.qualifyingRosterCount))) return false;
     }
     const expectedBandExclusionCounts = countReasons(exclusionRows.filter((row) => isRecordValue(row) && row.bandAttribution === "INDEPENDENT" && row.bandKey === key) as NativeReferenceExclusion[]);
-    if (canonicalSortKey(diagnostic.exclusionCounts) !== canonicalSortKey(expectedBandExclusionCounts) || diagnostic.excludedRosterCount !== Object.values(expectedBandExclusionCounts).reduce((sum, count) => sum + count, 0)) return false;
+    const expectedExcludedRosterCount = Object.values(expectedBandExclusionCounts).reduce((sum, count) => sum + count, 0);
+    if (
+      canonicalSortKey(diagnostic.exclusionCounts) !== canonicalSortKey(expectedBandExclusionCounts) ||
+      diagnostic.excludedRosterCount !== expectedExcludedRosterCount ||
+      diagnostic.observedCandidateCount !== diagnostic.qualifyingRosterCount + diagnostic.excludedRosterCount ||
+      diagnostic.distinctQualifyingClanCount !== diagnostic.qualifyingRosterCount
+    ) return false;
     const targets = diagnostic.normalizedTargets as unknown[];
     if (targets.length !== registry.length) return false;
     for (let index = 0; index < targets.length; index += 1) {
       const targetValue = targets[index];
       if (!isRecordValue(targetValue) || targetValue.bucketId !== registry[index]!.id) return false;
     }
-    const supported = diagnostic.status === "SUPPORTED";
+    const normalized = diagnostic.qualifyingRosterCount > 0
+      ? normalizeAverageCounts({ averages: diagnostic.averageBucketCounts, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL })
+      : { counts: {}, invalidReason: null };
+    const expectedReasonCode: NativeReferenceBandDiagnostic["reasonCode"] = diagnostic.qualifyingRosterCount === 0
+      ? diagnostic.observedCandidateCount === 0 ? "no_source" : "invalid_evidence"
+      : normalized.invalidReason
+        ? "invalid_evidence"
+        : diagnostic.qualifyingRosterCount < (candidate.sampleThreshold as number)
+          ? "insufficient_source"
+          : "supported";
+    const supported = expectedReasonCode === "supported";
+    if (diagnostic.reasonCode !== expectedReasonCode || diagnostic.status !== (supported ? "SUPPORTED" : "UNKNOWN")) return false;
     if (supported) {
-      const normalized = normalizeAverageCounts({ averages: diagnostic.averageBucketCounts, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL });
-      if (diagnostic.reasonCode !== "supported" || diagnostic.qualifyingRosterCount < (candidate.sampleThreshold as number) || diagnostic.distinctQualifyingClanCount < (candidate.sampleThreshold as number) || normalized.invalidReason) return false;
+      if (normalized.invalidReason) return false;
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index] as Record<string, unknown>;
         const observed = diagnostic.observedBucketTotals[registry[index]!.id];
@@ -1035,7 +1045,6 @@ function validateNativeReferenceCandidateArtifactInternal(
         ) return false;
       }
     } else {
-      if (diagnostic.reasonCode === "supported" || (diagnostic.reasonCode === "insufficient_source" && diagnostic.qualifyingRosterCount >= (candidate.sampleThreshold as number))) return false;
       const expectedCountStatus = diagnostic.reasonCode === "invalid_evidence" ? "INVALID_EVIDENCE" : "MISSING_OR_UNSUPPORTED";
       for (const targetValue of targets) {
         const target = targetValue as Record<string, unknown>;
@@ -1044,14 +1053,23 @@ function validateNativeReferenceCandidateArtifactInternal(
     }
   }
   if (diagnosticKeys.size !== expectedBandKeys.size) return false;
-  const supportedCount = (candidate.diagnostics as unknown[]).filter((value) => isRecordValue(value) && value.status === "SUPPORTED").length;
+  const diagnostics = candidate.diagnostics as unknown as NativeReferenceBandDiagnostic[];
+  const totalQualifyingRosterCount = diagnostics.reduce((sum, diagnostic) => sum + diagnostic.qualifyingRosterCount, 0);
+  if ((qualifyingBounds.minIso === null) !== (totalQualifyingRosterCount === 0)) return false;
+  const supportedCount = diagnostics.filter((diagnostic) => diagnostic.status === "SUPPORTED").length;
   const expectedOverall = supportedCount === 0 ? "UNKNOWN" : supportedCount === bands.length ? "SUPPORTED" : "PARTIAL";
   if (candidate.overallStatus !== expectedOverall) return false;
   if (candidate.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY && supportedCount > 0) return false;
   if (supportedCount > 0) {
     if (candidate.unknownReason !== null) return false;
-  } else if (typeof candidate.unknownReason !== "string" || !candidate.unknownReason.trim()) {
-    return false;
+  } else {
+    const totalObservedCandidateCount = diagnostics.reduce((sum, diagnostic) => sum + diagnostic.observedCandidateCount, 0);
+    const expectedUnknownReason = totalQualifyingRosterCount > 0
+      ? "insufficient_source_support"
+      : totalObservedCandidateCount > 0 || exclusionRows.length > 0
+        ? "rejected_source_evidence"
+        : "no_source_evidence";
+    if (candidate.unknownReason !== expectedUnknownReason) return false;
   }
   const { contentFingerprint, ...payload } = candidate;
   return sha256(payload) === contentFingerprint;

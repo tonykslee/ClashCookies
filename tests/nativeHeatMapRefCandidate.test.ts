@@ -7,6 +7,7 @@ import {
   generateNativeHeatMapRefCandidate,
   computeNativeReferenceBucketDefinitionFingerprint,
   computeNativeReferenceCandidateContentFingerprint,
+  NativeReferenceCandidateConfigurationError,
   NATIVE_REFERENCE_BUCKET_REGISTRY,
   normalizeNativeReferenceAverageCountsForTest,
   validateNativeReferenceCandidateArtifact,
@@ -77,6 +78,10 @@ function generate(rosters: readonly NativeReferenceSourceRoster[], threshold = 1
     evaluationAt,
     sampleThreshold: threshold,
   });
+}
+
+function roundTripArtifact(artifact: unknown) {
+  return JSON.parse(JSON.stringify(artifact)) as unknown;
 }
 
 describe("native HeatMapRef candidate generation", () => {
@@ -163,7 +168,7 @@ describe("native HeatMapRef candidate generation", () => {
     const rosters = Array.from({ length: 9 }, (_, index) => makeRoster({ clanTag: `#CUTOFF${index}`, weightForPosition: () => 181_000 }));
     expect(generate(rosters).overallStatus).toBe("UNKNOWN");
     expect(generate(rosters, 9).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
-    expect(generate(rosters, 0).unknownReason).toBe("invalid_sample_threshold");
+    expect(() => generate(rosters, 0)).toThrowError(NativeReferenceCandidateConfigurationError);
   });
 
   it("rejects imputation, malformed weights, duplicate identities, and duplicate positions", () => {
@@ -381,6 +386,85 @@ describe("native HeatMapRef candidate generation", () => {
     }));
     expect(() => validateNativeReferenceCandidateArtifact({ ...artifact, diagnostics: nullTarget })).not.toThrow();
     expect(validateNativeReferenceCandidateArtifact({ ...artifact, diagnostics: nullTarget })).toBe(false);
+  });
+
+  it("round-trips every generator evidence state through JSON and validates its own output", () => {
+    const rejected = makeRoster({ clanTag: "#ROUNDREJECTED", weightForPosition: () => 181_000 });
+    rejected.sourceIdentityStatus = "UNAVAILABLE";
+    const stale = makeRoster({ clanTag: "#ROUNDSTALE", weightForPosition: () => 181_000, sourceWarStartTime: "2026-10-20T00:00:00.000Z" });
+    const future = makeRoster({ clanTag: "#ROUNDFUTURE", weightForPosition: () => 181_000 });
+    future.sourceUpdatedAt = "2026-11-21T01:00:00.000Z";
+    const valid = makeRoster({ clanTag: "#ROUNDVALID", weightForPosition: () => 181_000 });
+    const supported = Array.from({ length: 10 }, (_, index) => makeRoster({
+      clanTag: `#ROUNDSUPPORTED${index}`,
+      weightForPosition: () => 181_000,
+    }));
+    const partial = [
+      ...Array.from({ length: 10 }, (_, index) => makeRoster({
+        clanTag: `#ROUNDPARTIAL${index}`,
+        weightForPosition: () => 181_000,
+      })),
+      makeRoster({ clanTag: "#ROUNDPARTIALSTALE", weightForPosition: () => 181_000, sourceWarStartTime: "2026-10-20T00:00:00.000Z" }),
+    ];
+    const persistedRosters = Array.from({ length: 10 }, (_, index) => {
+      const roster = makeRoster({ clanTag: `#ROUNDPERSISTED${index}`, weightForPosition: () => 181_000 });
+      roster.sourceIdentityStatus = "UNAVAILABLE";
+      return roster;
+    });
+    const artifacts = [
+      generate([]),
+      generate([rejected]),
+      generate([stale]),
+      generate([future]),
+      generate([valid]),
+      generate(supported),
+      generate(partial),
+      generateNativeHeatMapRefCandidate({
+        sourceRosters: persistedRosters,
+        bandDefinitions: bands,
+        eraPolicy,
+        evaluationAt,
+        sourceCategory: "persisted_fwa_snapshot",
+        evidenceTrust: "persisted_unverified_source_binding",
+      }),
+    ];
+    for (const artifact of artifacts) {
+      expect(validateNativeReferenceCandidateArtifact(artifact)).toBe(true);
+      expect(validateNativeReferenceCandidateArtifact(roundTripArtifact(artifact))).toBe(true);
+    }
+    expect(artifacts[0]?.unknownReason).toBe("no_source_evidence");
+    expect(artifacts[1]?.unknownReason).toBe("rejected_source_evidence");
+    expect(artifacts[2]?.unknownReason).toBe("rejected_source_evidence");
+    expect(artifacts[3]?.unknownReason).toBe("rejected_source_evidence");
+    expect(artifacts[4]?.unknownReason).toBe("insufficient_source_support");
+    expect(artifacts[5]?.overallStatus).toBe("PARTIAL");
+    expect(artifacts[6]?.overallStatus).toBe("PARTIAL");
+    expect(artifacts[7]?.overallStatus).toBe("UNKNOWN");
+  });
+
+  it("rejects rehashed accounting and derived-reason contradictions", () => {
+    const artifact = generate(Array.from({ length: 10 }, (_, index) => makeRoster({
+      clanTag: `#ACCOUNTING${index}`,
+      weightForPosition: () => 181_000,
+    })));
+    const rehash = (value: Record<string, unknown>) => {
+      const { contentFingerprint: _old, ...payload } = value;
+      return { ...payload, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(payload as never) };
+    };
+    const supported = artifact.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED");
+    expect(supported).toBeDefined();
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      diagnostics: artifact.diagnostics.map((diagnostic) => diagnostic === supported
+        ? { ...diagnostic, observedCandidateCount: diagnostic.qualifyingRosterCount + 1 }
+        : diagnostic),
+    }))).toBe(false);
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      diagnostics: artifact.diagnostics.map((diagnostic) => diagnostic === supported
+        ? { ...diagnostic, status: "UNKNOWN", reasonCode: "insufficient_source" }
+        : diagnostic),
+    }))).toBe(false);
   });
 
   it("canonicalizes conflicting duplicate rosters and members independent of input order", () => {
