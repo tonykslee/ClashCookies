@@ -20,19 +20,46 @@ Runtime expectations:
 
 ### Non-migration deploy
 
-Non-migration deploys are near-zero downtime, not true zero downtime.
+Non-migration deploys are near-zero downtime, not true zero downtime. The
+version-controlled procedure is `ops/deploy/deploy-prod.sh`; the live
+`~/deploy-prod.sh` wrapper remains a separately approved VM artifact.
 
 Flow:
 
 1. Capture `OLD_SHA` from the current checkout.
 2. Fetch the target branch tip into `NEW_SHA`.
 3. Diff `OLD_SHA..NEW_SHA` for `prisma/migrations/**` and `prisma/schema.prisma`.
-4. If no Prisma files changed, create a temporary worktree and start a replacement container in parallel.
-5. Wait for the replacement container to return HTTP 200 from `/healthz`.
-6. Stop the old app only after replacement health passes.
-7. Start the canonical app on the normal port.
-8. Verify the canonical app returns HTTP 200 from `/healthz`.
-9. If the canonical app fails health, roll back to `OLD_SHA` and restore the old app.
+4. If no Prisma files changed, create a temporary worktree and build the target in a build-only container.
+5. The candidate build receives no production env file, database URL, production network, Discord credentials, active polling mode or startup helper; it cannot log in, register commands, run migrations or start schedulers.
+6. Stop the old app only after the candidate build succeeds and the singleton guard still observes exactly one active runtime.
+7. Before stopping the old app, copy its exact `dist` and dependency artifacts into owner-labeled rollback volumes. Start the canonical app on the normal port with the candidate's immutable dependency and `dist` volumes, using the normal production env and active polling mode.
+8. Verify the canonical app returns HTTP 200 from `/healthz` before reporting success.
+9. If canonical start or health fails, retain bounded diagnostics, remove only the deployment-owned failed container, reset to `OLD_SHA`, and restore the old app through the same readiness gate. Rollback uses a deployment-owned prebuilt launcher, so it does not depend on whether the old checkout understands `CLASHCOOKIES_PREBUILT`; it verifies the mounted artifacts, skips compilation, and runs the old checkout's `npm run start:runtime` so Prisma startup behavior is preserved.
+
+The default promotion and rollback readiness budget is 1,500 seconds (25
+minutes), calibrated above the observed 12–13 minute cold start. Every probe
+has a five-second `curl --max-time` bound. The budget and per-request bound
+are overrideable for an operator rehearsal through environment variables, and
+the procedure logs both values. The build-only candidate compiles with the
+worktree's real `/app/dist` path and copies the verified result into a
+separate artifact volume; this avoids deleting a Docker mountpoint while
+preserving clean-build behavior. The generated dependency and `dist` volumes
+are reused by promotion, so the canonical container does not rebuild the
+identical target source. Rollback uses the exact artifact snapshot captured
+from the previously running container and verifies its release SHA before
+starting it.
+
+Deployment-owned artifact volumes carry explicit labels for release and role.
+After a successful promotion or rollback, only detached, verified volumes
+owned by this deployment are eligible for cleanup. The live release and the
+known-good rollback release are retained. Diagnostic state and bounded logs
+are kept in a `0700` directory with `0600` files; preexisting paths are
+validated for ownership, type and symlink safety.
+
+No pre-promotion application container is started. This is intentional:
+`/healthz` remains the full Discord-plus-database readiness gate for the
+canonical production runtime, while the build-only validation cannot be
+mistaken for application readiness.
 
 ### Prisma migration deploy
 
