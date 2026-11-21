@@ -5,6 +5,7 @@ import { trackedMessageService } from "../src/services/TrackedMessageService";
 import { CompoWarStateService } from "../src/services/CompoWarStateService";
 import {
   buildHeatMapRefRebuildRows,
+  computeHeatMapRefContentHash,
   getHeatMapRefSeedRowCountsByBandKey,
   type HeatMapRefBandDefinition,
 } from "../src/helper/heatMapRefRebuild";
@@ -36,6 +37,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   $transaction: vi.fn(),
   $queryRaw: vi.fn(),
+  $executeRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -185,11 +187,17 @@ describe("HeatMapRefRebuildService", () => {
     vi.clearAllMocks();
     settingsStore.clear();
     prismaMock.$transaction.mockImplementation(async (fn: any) => fn(prismaMock));
+    prismaMock.$executeRaw.mockResolvedValue(0);
     prismaMock.$queryRaw.mockResolvedValue([
       {
         value: JSON.stringify({
+          version: 1,
           status: "validated",
+          blockReasonCode: null,
+          reason: null,
           validatedAtIso: "2026-04-12T00:00:00.000Z",
+          updatedAtIso: "2026-04-12T00:00:00.000Z",
+          contentHash: computeHeatMapRefContentHash(makeCurrentHeatMapRows()),
         }),
       },
     ]);
@@ -854,12 +862,42 @@ describe("HeatMapRefRebuildService", () => {
         effectiveWeight: 175_000,
       })),
     );
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      { value: settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) },
+    ]);
 
     const readState = await new CompoWarStateService().readState();
     const expectedDelta = String(50 - (rebuiltRows[rebuiltRows.length - 1]?.th18Count ?? 0));
 
     expect(readState.stateRows).not.toBeNull();
     expect(readState.stateRows?.[1]?.[4]).toBe(expectedDelta);
+  });
+
+  it("publishes replacement rows and matching provenance through two locked transaction phases", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const now = new Date("2026-04-13T00:00:00.000Z");
+    const supported = makeSupportedSourceRoster("#ATOMIC", 175_000);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#ATOMIC" }]);
+    prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(supported.members as never);
+    prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows() as never);
+
+    const result = await service.rebuildHeatMapRef(now);
+
+    expect(result.status).toBe("success");
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(settings.set).toHaveBeenCalledTimes(2);
+    expect(settings.set.mock.calls[0]?.[2]).toBe(prismaMock);
+    expect(settings.set.mock.calls[1]?.[2]).toBe(prismaMock);
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      version: 1,
+      status: "validated",
+      contentHash: expect.any(String),
+    });
   });
 
   it("keeps a global TH19 block across a new scheduled cycle and lifecycle statuses", async () => {
@@ -872,11 +910,13 @@ describe("HeatMapRefRebuildService", () => {
     settingsStore.set(
       HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
       JSON.stringify({
+        version: 1,
         status: "blocked",
         blockReasonCode: "th19_integrity",
         reason: "TH19 evidence",
         validatedAtIso: "2026-04-12T00:00:00.000Z",
         updatedAtIso: "2026-04-12T01:00:00.000Z",
+        contentHash: null,
       }),
     );
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
@@ -956,7 +996,7 @@ describe("HeatMapRefRebuildService", () => {
     });
     settingsStore.set(
       HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
-      JSON.stringify({ status: "blocked", blockReasonCode: "th19_integrity" }),
+      JSON.stringify({ version: 1, status: "blocked", blockReasonCode: "th19_integrity", reason: "TH19 evidence", validatedAtIso: null, updatedAtIso: "2026-04-12T00:00:00.000Z", contentHash: null }),
     );
     const now = new Date("2026-04-13T00:00:00.000Z");
     const supported = makeSupportedSourceRoster("#SAFE", 175_000);
@@ -980,7 +1020,7 @@ describe("HeatMapRefRebuildService", () => {
     });
     settingsStore.set(
       HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
-      JSON.stringify({ status: "blocked", blockReasonCode: "th19_integrity" }),
+      JSON.stringify({ version: 1, status: "blocked", blockReasonCode: "th19_integrity", reason: "TH19 evidence", validatedAtIso: null, updatedAtIso: "2026-04-12T00:00:00.000Z", contentHash: null }),
     );
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(
       makeSupportedSourceRoster("#TH19", 185_000).members.map((member) => ({
@@ -990,7 +1030,9 @@ describe("HeatMapRefRebuildService", () => {
     );
     settings.set.mockRejectedValueOnce(new Error("settings write failed"));
 
-    await service.rebuildHeatMapRef(new Date("2026-04-13T00:00:00.000Z"));
+    await expect(service.rebuildHeatMapRef(new Date("2026-04-13T00:00:00.000Z"))).rejects.toThrow(
+      "settings write failed",
+    );
 
     expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
       status: "blocked",
@@ -1006,28 +1048,35 @@ describe("HeatMapRefRebuildService", () => {
     });
     settingsStore.set(
       HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
-      JSON.stringify({ status: "validated", validatedAtIso: "2026-04-12T00:00:00.000Z" }),
+      JSON.stringify({ version: 1, status: "validated", blockReasonCode: null, reason: null, validatedAtIso: "2026-04-12T00:00:00.000Z", updatedAtIso: "2026-04-12T00:00:00.000Z", contentHash: computeHeatMapRefContentHash(makeCurrentHeatMapRows()) }),
     );
     const now = new Date("2026-04-13T00:00:00.000Z");
     const supported = makeSupportedSourceRoster("#SAFE", 175_000);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([{ clanTag: "#SAFE" }]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue(supported.members as never);
     prismaMock.heatMapRef.findMany.mockResolvedValue(makeCurrentHeatMapRows() as never);
-    settings.set.mockRejectedValueOnce(new Error("provenance write failed"));
+    settings.set
+      .mockImplementationOnce(async (key: string, value: string) => {
+        settingsStore.set(key, value);
+      })
+      .mockRejectedValueOnce(new Error("provenance write failed"));
 
-    const result = await service.rebuildHeatMapRef(now);
+    await expect(service.rebuildHeatMapRef(now)).rejects.toThrow("provenance write failed");
 
-    expect(result.status).toBe("success");
-    expect(settingsStore.has(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY)).toBe(false);
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}").status).toBe("pending");
   });
 
   it("reads one global integrity record for every guild and unscoped consumers", async () => {
     settingsStore.set(
       HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
       JSON.stringify({
+        version: 1,
         status: "blocked",
         blockReasonCode: "th19_integrity",
         reason: "TH19 evidence",
+        validatedAtIso: null,
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: null,
       }),
     );
 

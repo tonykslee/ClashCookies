@@ -610,6 +610,11 @@ describe("MirrorSyncService", () => {
     expect(MIRRORED_RUNTIME_TABLES.some((table) => table.toLowerCase().includes("baseline"))).toBe(false);
   });
 
+  it("does not mirror BotSetting provenance with HeatMapRef rows", () => {
+    expect(MIRRORED_RUNTIME_TABLES).toContain("HeatMapRef");
+    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain("BotSetting");
+  });
+
   it("runs full-overwrite sync for only the allowlisted runtime tables", async () => {
     const sourceStore = makeDefaultTableStore();
     const targetStore = makeDefaultTableStore();

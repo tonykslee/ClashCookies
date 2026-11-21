@@ -48,6 +48,7 @@ import {
   tryClaimRefreshLock,
 } from "../src/services/SyncTimeFwaClanListViewService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 function makeBaseMetadata() {
   return {
@@ -110,6 +111,19 @@ function mockReadinessState(
     ],
   );
   prismaMock.heatMapRef.findMany.mockResolvedValueOnce(heatMapRefs ?? []);
+  prismaMock.$queryRaw.mockResolvedValueOnce([
+    {
+      value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-06-10T00:00:00.000Z",
+        updatedAtIso: "2026-06-10T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash((heatMapRefs ?? []) as never),
+      }),
+    },
+  ]);
   prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([]);
   prismaMock.playerCurrent.findMany.mockResolvedValueOnce([]);
   prismaMock.weightInputDeferment.findMany.mockResolvedValueOnce([]);
@@ -171,12 +185,13 @@ describe("SyncTimeFwaClanListViewService", () => {
     prismaMock.$queryRaw.mockResolvedValue([
       {
         value: JSON.stringify({
+          version: 1,
           status: "validated",
           blockReasonCode: null,
           reason: null,
           validatedAtIso: "2026-06-10T00:00:00.000Z",
           updatedAtIso: "2026-06-10T00:00:00.000Z",
-          contentHash: "test-content-hash",
+          contentHash: computeHeatMapRefContentHash([]),
         }),
       },
     ]);

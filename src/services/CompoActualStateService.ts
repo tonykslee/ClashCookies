@@ -404,7 +404,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
   }
 
-  const [members, heatMapRefs, referenceAvailability] = await Promise.all([
+  const [members, heatMapRefs] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
       where: { clanTag: { in: trackedClanTags } },
       select: {
@@ -420,11 +420,12 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     prisma.heatMapRef.findMany({
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     }),
-    readHeatMapRefReferenceAvailability({
-      guildId: input.guildId,
-      settings: new SettingsService(),
-    }),
   ]);
+  const referenceAvailability = await readHeatMapRefReferenceAvailability({
+    guildId: input.guildId,
+    settings: new SettingsService(),
+    heatMapRefs,
+  });
   const availableHeatMapRefs =
     referenceAvailability.status === "validated" ? heatMapRefs : [];
 
@@ -822,14 +823,16 @@ export async function readExternalClanCurrentComposition(input: {
         ? th13Count + th12Count + th11Count + th10Count + th9Count + th8Count + thLowCount
         : null,
   };
+  const heatMapRefs = await prisma.heatMapRef.findMany({
+    orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+  });
   const referenceAvailability = await readHeatMapRefReferenceAvailability({
     guildId: input.guildId,
     settings: new SettingsService(),
+    heatMapRefs,
   });
   const selectedHeatMapRef = estimatedWeight !== null && referenceAvailability.status === "validated"
-    ? findHeatMapRefForWeight(await prisma.heatMapRef.findMany({
-        orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
-      }), estimatedWeight)
+    ? findHeatMapRefForWeight(heatMapRefs, estimatedWeight)
     : null;
   const deviationScore =
     compositionComplete && selectedHeatMapRef

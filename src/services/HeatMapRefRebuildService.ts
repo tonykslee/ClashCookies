@@ -9,6 +9,7 @@ import { assertHeatMapRefContinuityOrThrow } from "../helper/heatMapRefContinuit
 import {
   buildHeatMapRefRebuildCycleKey,
   buildHeatMapRefRebuildRows,
+  computeHeatMapRefContentHash,
   computeHeatMapRefRebuildContentHash,
   computeHeatMapRefRebuildDueAt,
   type HeatMapRefBandDefinition,
@@ -29,8 +30,9 @@ import { isMirrorPollingMode, type PollingMode } from "./PollingModeService";
 import {
   HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
   HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX,
+  acquireHeatMapRefReferenceWriteLock,
   buildHeatMapRefReferenceIntegrityRecord,
-  readHeatMapRefReferenceAvailability,
+  parseHeatMapRefReferenceAvailability,
   stringifyHeatMapRefReferenceIntegrity,
   type HeatMapRefRebuildBlockReasonCode,
 } from "../helper/heatMapRefAvailability";
@@ -327,6 +329,7 @@ export class HeatMapRefRebuildService {
   }
 
   private async rebuildHeatMapRefUnlocked(now: Date): Promise<HeatMapRefRebuildRunResult> {
+    await this.beginReferenceIntegrityEvaluation(now);
     const fwaClanTags = await loadAllFwaClanTags();
     if (fwaClanTags.length === 0) {
       return this.finalizeReferenceIntegrity({
@@ -466,30 +469,6 @@ export class HeatMapRefRebuildService {
       }, now);
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.heatMapRef.deleteMany({});
-      if (rebuilt.length > 0) {
-        await tx.heatMapRef.createMany({
-          data: rebuilt.map((row) => ({
-            weightMinInclusive: row.weightMinInclusive,
-            weightMaxInclusive: row.weightMaxInclusive,
-            th18Count: row.th18Count,
-            th17Count: row.th17Count,
-            th16Count: row.th16Count,
-            th15Count: row.th15Count,
-            th14Count: row.th14Count,
-            th13Count: row.th13Count,
-            th12Count: row.th12Count,
-            th11Count: row.th11Count,
-            th10OrLowerCount: row.th10OrLowerCount,
-            contributingClanCount: row.contributingClanCount,
-            sourceVersion: row.sourceVersion,
-            refreshedAt: row.refreshedAt,
-          })),
-        });
-      }
-    });
-
     const result = buildSummaryLines({
       trackedClanCount: fwaClanTags.length,
       sourceRosterCount: sourceRosters.length,
@@ -513,42 +492,95 @@ export class HeatMapRefRebuildService {
       contentHash: nextHash,
       alertSent: false,
       summaryLines: result,
-    }, now);
+    }, now, rebuilt);
+  }
+
+  private async beginReferenceIntegrityEvaluation(now: Date): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      if (typeof tx.$executeRaw === "function") {
+        await acquireHeatMapRefReferenceWriteLock(tx);
+      }
+      const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
+      const availability = parseHeatMapRefReferenceAvailability(raw);
+      if (availability.status === "retained_unverified") {
+        return;
+      }
+      const pending = buildHeatMapRefReferenceIntegrityRecord({
+        status: "pending",
+        reason: "reference validation is in progress",
+        validatedAtIso: availability.lastSuccessAtIso,
+        updatedAtIso: now.toISOString(),
+      });
+      await this.settings.set(
+        HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+        stringifyHeatMapRefReferenceIntegrity(pending),
+        tx,
+      );
+    });
   }
 
   private async finalizeReferenceIntegrity(
     result: HeatMapRefRebuildRunResult,
     now: Date,
+    publicationRows?: readonly HeatMapRefRebuildRow[],
   ): Promise<HeatMapRefRebuildRunResult> {
-    const previous = await readHeatMapRefReferenceAvailability({
-      settings: this.settings,
-    });
-    const validated = result.status === "success" || result.status === "noop";
-    const record = buildHeatMapRefReferenceIntegrityRecord({
-      status: validated ? "validated" : "blocked",
-      blockReasonCode: result.blockReasonCode ?? "no_source_evidence",
-      reason: result.reason,
-      validatedAtIso: validated ? now.toISOString() : previous.lastSuccessAtIso,
-      updatedAtIso: now.toISOString(),
-      contentHash: validated ? result.contentHash : null,
-    });
-    try {
-      if (previous.status === "validated") {
-        // Remove a stale validated marker before replacing it. If the provenance
-        // write fails after publication, the missing setting is fail-closed rather
-        // than allowing consumers to treat the new rows as freshly validated.
-        await this.settings.delete(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY);
+    return prisma.$transaction(async (tx) => {
+      if (typeof tx.$executeRaw === "function") {
+        await acquireHeatMapRefReferenceWriteLock(tx);
       }
+      const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
+      const previous = parseHeatMapRefReferenceAvailability(raw);
+      const validated = result.status === "success" || result.status === "noop";
+      if (validated && result.status === "noop") {
+        const currentRows = await tx.heatMapRef.findMany({
+          orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+        });
+        const currentHash = computeHeatMapRefContentHash(currentRows);
+        if (currentHash !== result.contentHash) {
+          throw new Error("HeatMapRef rows changed before unchanged validation could be committed");
+        }
+      }
+      if (validated && result.status === "success") {
+        if (!publicationRows) {
+          throw new Error("validated HeatMapRef publication has no rows");
+        }
+        await tx.heatMapRef.deleteMany({});
+        if (publicationRows.length > 0) {
+          await tx.heatMapRef.createMany({
+            data: publicationRows.map((row) => ({
+              weightMinInclusive: row.weightMinInclusive,
+              weightMaxInclusive: row.weightMaxInclusive,
+              th18Count: row.th18Count,
+              th17Count: row.th17Count,
+              th16Count: row.th16Count,
+              th15Count: row.th15Count,
+              th14Count: row.th14Count,
+              th13Count: row.th13Count,
+              th12Count: row.th12Count,
+              th11Count: row.th11Count,
+              th10OrLowerCount: row.th10OrLowerCount,
+              contributingClanCount: row.contributingClanCount,
+              sourceVersion: row.sourceVersion,
+              refreshedAt: row.refreshedAt,
+            })),
+          });
+        }
+      }
+      const record = buildHeatMapRefReferenceIntegrityRecord({
+        status: validated ? "validated" : "blocked",
+        blockReasonCode: result.blockReasonCode ?? "no_source_evidence",
+        reason: result.reason,
+        validatedAtIso: validated ? now.toISOString() : previous.lastSuccessAtIso,
+        updatedAtIso: now.toISOString(),
+        contentHash: validated ? result.contentHash : null,
+      });
       await this.settings.set(
         HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
         stringifyHeatMapRefReferenceIntegrity(record),
+        tx,
       );
-    } catch (error) {
-      console.error(
-        `[heatmapref] integrity_state_write_failed status=${record.status} error=${formatError(error)}`,
-      );
-    }
-    return result;
+      return result;
+    });
   }
 
   /** Purpose: run the rebuild once when a sync cycle is due and persist a single-cycle checkpoint. */

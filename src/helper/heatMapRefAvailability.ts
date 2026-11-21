@@ -1,7 +1,22 @@
+import type { HeatMapRef } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { SettingsService } from "../services/SettingsService";
+import {
+  computeHeatMapRefContentHash,
+  type HeatMapRefContentHashRow,
+} from "./heatMapRefRebuild";
 
 export const HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX = "heatmapref_rebuild_state";
 export const HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY = "heatmapref_reference_integrity";
+export const HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION = 1;
+
+export async function acquireHeatMapRefReferenceWriteLock(
+  client: Pick<Prisma.TransactionClient, "$executeRaw">,
+): Promise<void> {
+  await client.$executeRaw(
+    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY}, 0))`,
+  );
+}
 
 export type HeatMapRefRebuildBlockReasonCode =
   | "th19_integrity"
@@ -16,14 +31,93 @@ export type HeatMapRefReferenceAvailability = {
 };
 
 type CheckpointLike = {
+  version?: unknown;
   status?: unknown;
-  lastSuccessAtIso?: unknown;
   blockReasonCode?: unknown;
   reason?: unknown;
   updatedAtIso?: unknown;
   validatedAtIso?: unknown;
   contentHash?: unknown;
 };
+
+function isValidIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isValidSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityRecord | null {
+  if (!raw) return null;
+  try {
+    const record = JSON.parse(raw) as CheckpointLike;
+    if (
+      record.version !== HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION ||
+      !isValidIsoTimestamp(record.updatedAtIso) ||
+      (record.validatedAtIso !== null && !isValidIsoTimestamp(record.validatedAtIso))
+    ) {
+      return null;
+    }
+    if (record.status === "blocked") {
+      if (
+        (record.blockReasonCode !== "th19_integrity" &&
+          record.blockReasonCode !== "no_source_evidence" &&
+          record.blockReasonCode !== "no_qualifying_evidence") ||
+        typeof record.reason !== "string" ||
+        !record.reason.trim() ||
+        record.contentHash !== null
+      ) {
+        return null;
+      }
+      return {
+        version: HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION,
+        status: "blocked",
+        blockReasonCode: record.blockReasonCode,
+        reason: record.reason.trim(),
+        validatedAtIso: record.validatedAtIso,
+        updatedAtIso: record.updatedAtIso,
+        contentHash: null,
+      };
+    }
+    if (record.status === "pending") {
+      if (typeof record.reason !== "string" || !record.reason.trim() || record.contentHash !== null) {
+        return null;
+      }
+      return {
+        version: HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION,
+        status: "pending",
+        blockReasonCode: null,
+        reason: record.reason.trim(),
+        validatedAtIso: record.validatedAtIso,
+        updatedAtIso: record.updatedAtIso,
+        contentHash: null,
+      };
+    }
+    if (
+      record.status === "validated" &&
+      record.blockReasonCode === null &&
+      record.reason === null &&
+      isValidIsoTimestamp(record.validatedAtIso) &&
+      isValidSha256(record.contentHash)
+    ) {
+      return {
+        version: HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: record.validatedAtIso,
+        updatedAtIso: record.updatedAtIso,
+        contentHash: record.contentHash.toLowerCase(),
+      };
+    }
+  } catch {
+    // Treat malformed or legacy state as unknown rather than validated.
+  }
+  return null;
+}
 
 export function heatMapRefRebuildCheckpointKey(guildId: string): string {
   return `${HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX}:${guildId}`;
@@ -32,7 +126,8 @@ export function heatMapRefRebuildCheckpointKey(guildId: string): string {
 export function parseHeatMapRefReferenceAvailability(
   raw: string | null,
 ): HeatMapRefReferenceAvailability {
-  if (!raw) {
+  const record = parseIntegrityRecord(raw);
+  if (!record) {
     return {
       status: "unknown",
       blockReasonCode: null,
@@ -41,46 +136,32 @@ export function parseHeatMapRefReferenceAvailability(
         "HeatMapRef validation provenance is unavailable; historical rows remain displayable but target comparisons remain UNKNOWN.",
     };
   }
-
-  try {
-    const checkpoint = JSON.parse(raw) as CheckpointLike;
-    const blockReasonCode =
-      checkpoint.blockReasonCode === "th19_integrity" ||
-      checkpoint.blockReasonCode === "no_source_evidence" ||
-      checkpoint.blockReasonCode === "no_qualifying_evidence"
-        ? checkpoint.blockReasonCode
-        : null;
-    const lastSuccessAtIso =
-      typeof checkpoint.validatedAtIso === "string"
-        ? checkpoint.validatedAtIso
-        : typeof checkpoint.lastSuccessAtIso === "string"
-          ? checkpoint.lastSuccessAtIso
-        : null;
-    const blocked = checkpoint.status === "blocked";
-    if (blocked) {
-      return {
-        status: "retained_unverified",
-        blockReasonCode,
-        lastSuccessAtIso,
-        warning:
-          `HeatMapRef rows are retained historical data; current reference validation is blocked${typeof checkpoint.reason === "string" && checkpoint.reason.trim() ? ` (${checkpoint.reason.trim()})` : ""}, so target comparisons remain UNKNOWN.`,
-      };
-    }
-    if (
-      checkpoint.status === "validated" &&
-      lastSuccessAtIso
-    ) {
-      return {
-        status: "validated",
-        blockReasonCode: null,
-        lastSuccessAtIso,
-        warning: null,
-      };
-    }
-  } catch {
-    // Treat malformed or legacy checkpoint state as unknown rather than validated.
+  if (record.status === "blocked") {
+    return {
+      status: "retained_unverified",
+      blockReasonCode: record.blockReasonCode,
+      lastSuccessAtIso: record.validatedAtIso,
+      warning:
+        `HeatMapRef rows are retained historical data; current reference validation is blocked (${record.reason}), so target comparisons remain UNKNOWN.`,
+    };
   }
-
+  if (record.status === "validated") {
+    return {
+      status: "validated",
+      blockReasonCode: null,
+      lastSuccessAtIso: record.validatedAtIso,
+      warning: null,
+    };
+  }
+  if (record.status === "pending") {
+    return {
+      status: "unknown",
+      blockReasonCode: null,
+      lastSuccessAtIso: record.validatedAtIso,
+      warning:
+        "HeatMapRef validation is in progress; historical rows remain displayable but target comparisons remain UNKNOWN.",
+    };
+  }
   return {
     status: "unknown",
     blockReasonCode: null,
@@ -93,10 +174,33 @@ export function parseHeatMapRefReferenceAvailability(
 export async function readHeatMapRefReferenceAvailability(input: {
   guildId?: string | null;
   settings: Pick<SettingsService, "get">;
+  heatMapRefs?: readonly (HeatMapRefContentHashRow | HeatMapRef)[];
 }): Promise<HeatMapRefReferenceAvailability> {
   try {
     const raw = await input.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY);
-    return parseHeatMapRefReferenceAvailability(raw);
+    const record = parseIntegrityRecord(raw);
+    const availability = parseHeatMapRefReferenceAvailability(raw);
+    if (record?.status !== "validated") return availability;
+    if (!input.heatMapRefs) {
+      return {
+        status: "unknown",
+        blockReasonCode: null,
+        lastSuccessAtIso: null,
+        warning:
+          "HeatMapRef validation provenance could not be matched to reference rows; target comparisons remain UNKNOWN.",
+      };
+    }
+    const actualHash = computeHeatMapRefContentHash(input.heatMapRefs);
+    if (actualHash !== record.contentHash) {
+      return {
+        status: "unknown",
+        blockReasonCode: null,
+        lastSuccessAtIso: null,
+        warning:
+          "HeatMapRef validation provenance does not match the current reference rows; target comparisons remain UNKNOWN.",
+      };
+    }
+    return availability;
   } catch {
     return {
       status: "unknown",
@@ -109,7 +213,8 @@ export async function readHeatMapRefReferenceAvailability(input: {
 }
 
 export type HeatMapRefReferenceIntegrityRecord = {
-  status: "validated" | "blocked";
+  version: typeof HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION;
+  status: "validated" | "blocked" | "pending";
   blockReasonCode: HeatMapRefRebuildBlockReasonCode | null;
   reason: string | null;
   validatedAtIso: string | null;
@@ -118,7 +223,7 @@ export type HeatMapRefReferenceIntegrityRecord = {
 };
 
 export function buildHeatMapRefReferenceIntegrityRecord(input: {
-  status: "validated" | "blocked";
+  status: "validated" | "blocked" | "pending";
   blockReasonCode?: HeatMapRefRebuildBlockReasonCode | null;
   reason?: string | null;
   validatedAtIso?: string | null;
@@ -126,9 +231,10 @@ export function buildHeatMapRefReferenceIntegrityRecord(input: {
   contentHash?: string | null;
 }): HeatMapRefReferenceIntegrityRecord {
   return {
+    version: HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION,
     status: input.status,
     blockReasonCode: input.status === "blocked" ? input.blockReasonCode ?? null : null,
-    reason: input.status === "blocked" ? input.reason ?? null : null,
+    reason: input.status === "blocked" || input.status === "pending" ? input.reason ?? null : null,
     validatedAtIso: input.validatedAtIso ?? null,
     updatedAtIso: input.updatedAtIso,
     contentHash: input.status === "validated" ? input.contentHash ?? null : null,

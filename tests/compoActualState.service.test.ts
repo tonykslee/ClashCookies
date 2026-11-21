@@ -42,6 +42,7 @@ import {
 } from "../src/services/CompoActualStateService";
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -175,14 +176,19 @@ describe("CompoActualStateService", () => {
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
-    prismaMock.$queryRaw.mockResolvedValue([
-      {
-        value: JSON.stringify({
-          status: "validated",
-          validatedAtIso: "2026-04-12T00:00:00.000Z",
-        }),
-      },
-    ]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {
@@ -245,9 +251,13 @@ describe("CompoActualStateService", () => {
     prismaMock.$queryRaw.mockResolvedValue([
       {
         value: JSON.stringify({
+          version: 1,
           status: "blocked",
           blockReasonCode: "th19_integrity",
-          lastSuccessAtIso: "2026-04-12T00:00:00.000Z",
+          reason: "TH19 evidence",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+          updatedAtIso: "2026-04-12T01:00:00.000Z",
+          contentHash: null,
         }),
       },
     ]);

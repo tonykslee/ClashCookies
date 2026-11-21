@@ -183,7 +183,7 @@ export async function loadCompoWarStateContext(
     };
   }
 
-  const [parents, members, refs, referenceAvailability] = await Promise.all([
+  const [parents, members, refs] = await Promise.all([
     prisma.fwaTrackedClanWarRosterCurrent.findMany({
       where: { clanTag: { in: trackedTags } },
     }),
@@ -194,11 +194,12 @@ export async function loadCompoWarStateContext(
     prisma.heatMapRef.findMany({
       orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
     }),
-    readHeatMapRefReferenceAvailability({
-      guildId,
-      settings: new SettingsService(),
-    }),
   ]);
+  const referenceAvailability = await readHeatMapRefReferenceAvailability({
+    guildId,
+    settings: new SettingsService(),
+    heatMapRefs: refs,
+  });
   const availableRefs =
     referenceAvailability.status === "validated" ? refs : [];
 

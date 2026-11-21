@@ -77,6 +77,22 @@ export type HeatMapRefRebuildRow = HeatMapRefBandDefinition &
     refreshedAt: Date;
   };
 
+export type HeatMapRefContentHashRow = Pick<
+  HeatMapRef,
+  | "weightMinInclusive"
+  | "weightMaxInclusive"
+  | "th18Count"
+  | "th17Count"
+  | "th16Count"
+  | "th15Count"
+  | "th14Count"
+  | "th13Count"
+  | "th12Count"
+  | "th11Count"
+  | "th10OrLowerCount"
+  | "contributingClanCount"
+>;
+
 type HeatMapRefBucketName = keyof HeatMapRefBucketCounts;
 
 const HEAT_MAP_REF_BUCKET_ORDER: HeatMapRefBucketName[] = [
@@ -598,7 +614,32 @@ export function buildHeatMapRefRebuildComparisonRows(
 export function computeHeatMapRefRebuildContentHash(
   rows: readonly HeatMapRefRebuildRow[],
 ): string {
-  const normalized = buildHeatMapRefRebuildComparisonRows(rows);
+  return computeHeatMapRefContentHash(rows);
+}
+
+export function computeHeatMapRefContentHash(
+  rows: readonly HeatMapRefContentHashRow[],
+): string {
+  const normalized = [...rows]
+    .map((row) => ({
+      weightMinInclusive: row.weightMinInclusive,
+      weightMaxInclusive: row.weightMaxInclusive,
+      th18Count: row.th18Count,
+      th17Count: row.th17Count,
+      th16Count: row.th16Count,
+      th15Count: row.th15Count,
+      th14Count: row.th14Count,
+      th13Count: row.th13Count,
+      th12Count: row.th12Count,
+      th11Count: row.th11Count,
+      th10OrLowerCount: row.th10OrLowerCount,
+      contributingClanCount: row.contributingClanCount,
+    }))
+    .sort((left, right) => {
+      const minDelta = left.weightMinInclusive - right.weightMinInclusive;
+      if (minDelta !== 0) return minDelta;
+      return left.weightMaxInclusive - right.weightMaxInclusive;
+    });
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 

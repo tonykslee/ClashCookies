@@ -4,6 +4,7 @@ import { InactiveWarService } from "../src/services/InactiveWarService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
 import { CompoReplacementService } from "../src/services/CompoReplacementService";
 import { WarPlanViolationHistoryService } from "../src/services/WarPlanViolationHistoryService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -218,14 +219,19 @@ describe("CompoPlaceService", () => {
     prismaMock.playerLink.findMany.mockResolvedValue([]);
     prismaMock.playerActivity.findMany.mockResolvedValue([]);
     prismaMock.fillerAccount.findMany.mockResolvedValue([]);
-    prismaMock.$queryRaw.mockResolvedValue([
-      {
-        value: JSON.stringify({
-          status: "validated",
-          validatedAtIso: "2026-04-12T00:00:00.000Z",
-        }),
-      },
-    ]);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
     vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({
       results: [],
       trackedTags: [],

@@ -104,6 +104,7 @@ export class HeatMapRefDisplayService {
       readHeatMapRefReferenceAvailability({
         guildId: input?.guildId,
         settings: new SettingsService(),
+        heatMapRefs,
       }),
     ]);
     return { ...display, availability };
