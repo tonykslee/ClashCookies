@@ -27,6 +27,7 @@
     "lint:fix": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --fix",
     "seed:fwa-layouts": "ts-node src/scripts/seedFwaLayouts.ts",
     "seed:heatmap-ref": "ts-node src/scripts/seedHeatMapRef.ts",
+    "diagnose:heatmap-ref-native": "ts-node src/scripts/diagnoseNativeHeatMapRef.ts",
     "repair:fwa-ended-war": "ts-node src/scripts/repairEndedWarState.ts",
     "diagnose:membership-history-backfill": "node dist/scripts/auditMembershipHistoryBackfill.js",
     "diagnose:historical-sync-reconciliation": "node dist/scripts/auditHistoricalSyncReconciliation.js",

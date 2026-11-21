@@ -1,0 +1,84 @@
+import type { PrismaClient } from "@prisma/client";
+import { prisma } from "../prisma";
+import {
+  generateNativeHeatMapRefCandidate,
+  type NativeReferenceBandDefinition,
+  type NativeReferenceCandidateArtifact,
+  type NativeReferenceEraPolicy,
+  type NativeReferenceSourceRoster,
+} from "../helper/nativeHeatMapRefCandidate";
+import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
+
+type NativeCandidateDb = Pick<PrismaClient, "fwaTrackedClanWarRosterCurrent">;
+
+/** Purpose: read the persisted tracked-war snapshot without invoking feed, reference, setting, or scheduler owners. */
+export class NativeHeatMapRefCandidateService {
+  private readonly db: NativeCandidateDb;
+
+  constructor(db: NativeCandidateDb = prisma) {
+    this.db = db;
+  }
+
+  async readPersistedSourceRosters(): Promise<NativeReferenceSourceRoster[]> {
+    const rows = await this.db.fwaTrackedClanWarRosterCurrent.findMany({
+      orderBy: { clanTag: "asc" },
+      include: {
+        members: {
+          orderBy: [{ position: "asc" }, { playerTag: "asc" }],
+          select: {
+            clanTag: true,
+            playerTag: true,
+            position: true,
+            townHall: true,
+            rawWeight: true,
+            effectiveWeight: true,
+            effectiveWeightStatus: true,
+          },
+        },
+      },
+    });
+    return rows.map((row) => ({
+      clanTag: row.clanTag,
+      rosterSize: row.rosterSize,
+      totalRawWeight: row.totalRawWeight,
+      totalEffectiveWeight: row.totalEffectiveWeight,
+      observedAt: row.observedAt,
+      sourceUpdatedAt: row.sourceUpdatedAt,
+      sourceWarId: row.sourceWarId,
+      sourceWarStartTime: row.sourceWarStartTime,
+      sourceWarEndTime: row.sourceWarEndTime,
+      sourceWarState: row.sourceWarState,
+      sourceCurrentWarUpdatedAt: row.sourceCurrentWarUpdatedAt,
+      members: row.members.map((member) => ({
+        clanTag: member.clanTag,
+        playerTag: member.playerTag,
+        position: member.position,
+        townHall: member.townHall,
+        rawWeight: member.rawWeight,
+        effectiveWeight: member.effectiveWeight,
+        effectiveWeightStatus: member.effectiveWeightStatus,
+      })),
+    }));
+  }
+
+  /** Purpose: generate a candidate artifact from persisted rows and explicit operator policy parameters. */
+  async generate(input: {
+    evaluationAt: Date | string;
+    eraPolicy: NativeReferenceEraPolicy;
+    sampleThreshold?: number;
+    bandDefinitions?: readonly NativeReferenceBandDefinition[];
+  }): Promise<NativeReferenceCandidateArtifact> {
+    const sourceRosters = await this.readPersistedSourceRosters();
+    return generateNativeHeatMapRefCandidate({
+      sourceRosters,
+      bandDefinitions: input.bandDefinitions ?? HEAT_MAP_REF_SEED_ROWS.map((row) => ({
+        weightMinInclusive: row.weightMinInclusive,
+        weightMaxInclusive: row.weightMaxInclusive,
+      })),
+      eraPolicy: input.eraPolicy,
+      evaluationAt: input.evaluationAt,
+      sampleThreshold: input.sampleThreshold,
+    });
+  }
+}
+
