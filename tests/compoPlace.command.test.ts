@@ -521,6 +521,51 @@ describe("/compo place command", () => {
     expect(payload?.embeds ?? []).toEqual([]);
   });
 
+  it("shows unavailable evaluation instead of claiming no candidates", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      guildId: "guild-1",
+      sourceSyncedAt: null,
+      latestSourceSyncedAt: null,
+      trackedClanTags: ["#RR"],
+      eligibleClanTags: [],
+      heatMapRefs: [],
+      referenceAvailability: { status: "blocked" },
+      clans: [],
+    } as any);
+    vi.spyOn(CompoReplacementService.prototype, "resolveReplacementCandidates").mockResolvedValue({
+      inputWeight: 181000,
+      bucket: "TH19",
+      summaryByClan: [],
+      candidates: [],
+      evaluation: {
+        status: "unavailable",
+        reasonCode: "th19_target_unavailable",
+        eligibleClanTags: [],
+        unavailableClanTags: ["#RR"],
+      },
+    } as any);
+
+    const interaction: any = {
+      customId: "compo-replacements:open:user-1:181000",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(async () => {
+        interaction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { handleCompoReplacementButton } = await import("../src/commands/Compo");
+    await handleCompoReplacementButton(interaction as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toContain("evaluation unavailable");
+    expect(String(payload?.content ?? "")).not.toContain("No replacement candidates found");
+  });
+
   it("keeps explorer controls when filters remove every candidate", async () => {
     vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
       guildId: "guild-1",

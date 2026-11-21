@@ -2633,6 +2633,31 @@ function buildCompoReplacementEmptyFilterPage(input: {
   ].join("\n");
 }
 
+function buildCompoReplacementUnavailableMessage(
+  resolution: CompoReplacementResolution,
+): string {
+  if (resolution.evaluation?.status === "unavailable") {
+    return "Replacement evaluation unavailable from current stored evidence; factual filler, inactive, and unlinked observations are not composition recommendations.";
+  }
+  if (resolution.evaluation?.status === "partial") {
+    return "Replacement evaluation is partially unavailable for some tracked clans; no target-derived recommendation is shown for those clans.";
+  }
+  return "No replacement candidates found from current stored data.";
+}
+
+function buildCompoReplacementShowingSummary(input: {
+  filteredCount: number;
+  totalCount: number;
+  resolution: CompoReplacementResolution;
+}): string {
+  const availabilityNote = input.resolution.evaluation?.status === "partial"
+    ? " · some clans UNKNOWN"
+    : input.resolution.evaluation?.status === "unavailable"
+      ? " · evaluation UNKNOWN"
+      : "";
+  return `Showing ${input.filteredCount} of ${input.totalCount} candidates${availabilityNote}`;
+}
+
 function buildCompoReplacementDetailComponents(input: {
   state: CompoReplacementExplorerState;
   context: CompoActualStateContext;
@@ -3257,7 +3282,11 @@ export async function handleCompoReplacementButton(
       } satisfies CompoReplacementFilter,
     });
     const filterSummary = buildCompoReplacementFilterSummary({ state, context });
-    const showingSummary = `Showing ${filtered.filteredCount} of ${filtered.totalCandidateCount} candidates`;
+    const showingSummary = buildCompoReplacementShowingSummary({
+      filteredCount: filtered.filteredCount,
+      totalCount: filtered.totalCandidateCount,
+      resolution,
+    });
     const pages = buildCompoReplacementDetailPages({
       context,
       resolution,
@@ -3268,7 +3297,7 @@ export async function handleCompoReplacementButton(
 
     if (resolution.candidates.length === 0) {
       await interaction.editReply({
-        content: "No replacement candidates found from current stored data.",
+        content: buildCompoReplacementUnavailableMessage(resolution),
         embeds: [],
         components: [],
       });
@@ -3376,7 +3405,11 @@ export async function handleCompoReplacementSelectMenuInteraction(
       },
     });
     const filterSummary = buildCompoReplacementFilterSummary({ state, context });
-    const showingSummary = `Showing ${filtered.filteredCount} of ${filtered.totalCandidateCount} candidates`;
+    const showingSummary = buildCompoReplacementShowingSummary({
+      filteredCount: filtered.filteredCount,
+      totalCount: filtered.totalCandidateCount,
+      resolution,
+    });
     const pages = buildCompoReplacementDetailPages({
       context,
       resolution,
@@ -3386,7 +3419,7 @@ export async function handleCompoReplacementSelectMenuInteraction(
     });
     if (resolution.candidates.length === 0) {
       await interaction.editReply({
-        content: "No replacement candidates found from current stored data.",
+        content: buildCompoReplacementUnavailableMessage(resolution),
         embeds: [],
         components: [],
       });

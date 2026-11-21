@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InactiveWarService } from "../src/services/InactiveWarService";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import { getCompoWarWeightBucket } from "../src/helper/compoWarWeightBuckets";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -96,6 +97,8 @@ function makeContext(input: {
         base: {
           resolvedTotalWeight: input.members.reduce((sum, member) => sum + member.resolvedWeight, 0),
           unresolvedWeightCount: 0,
+          memberCountEvidence: "observed",
+          unclassifiedWeightCount: 0,
           memberCount: input.members.length,
           bucketCounts: {
             TH18: 0,
@@ -118,7 +121,7 @@ function makeContext(input: {
           playerName: member.playerName,
           townHall: 15,
           resolvedWeight: member.resolvedWeight,
-          resolvedBucket: null,
+          resolvedBucket: getCompoWarWeightBucket(member.resolvedWeight),
           resolvedWeightSource: "member",
         })),
       },
@@ -302,94 +305,16 @@ describe("CompoReplacementService", () => {
 
     expect(result.bucket).toBe("TH15");
     expect(result.inputWeight).toBe(145000);
-    expect(prismaMock.fillerAccount.findMany).toHaveBeenCalled();
+    expect(prismaMock.fillerAccount.findMany).not.toHaveBeenCalled();
     expect(result.summaryByClan).toHaveLength(1);
-    expect(result.summaryByClan[0]).toEqual({
+    expect(result.summaryByClan[0]).toMatchObject({
       clanTag: "#AAA111",
       clanName: "Alpha Clan",
-      uniqueCandidateCount: 5,
-      fillerCount: 3,
-      inactiveCount: 3,
-      unlinkedCount: 2,
-      surplusCount: 0,
+      uniqueCandidateCount: 0,
+      evaluationStatus: "unavailable",
     });
-
-    const byTag = new Map(result.candidates.map((row) => [row.playerTag, row] as const));
-    expect([...byTag.keys()]).toEqual([
-      "#P000000",
-      "#P000002",
-      "#P000020",
-      "#P000028",
-      "#P000008",
-    ]);
-    expect(result.candidates).toHaveLength(5);
-    expect(byTag.get("#P000000")).toMatchObject({
-      playerName: "Alpha",
-      resolvedWeight: 145000,
-      resolvedBucket: "TH15",
-      discordUserId: "111111111111111111",
-      discordMention: "<@111111111111111111>",
-      reasons: {
-        filler: true,
-        inactive: false,
-        unlinked: false,
-      },
-    });
-    expect(byTag.get("#P000002")).toMatchObject({
-      playerName: "Beta",
-      resolvedWeight: 145000,
-      resolvedBucket: "TH15",
-      discordUserId: null,
-      discordMention: null,
-      reasons: {
-        filler: true,
-        inactive: false,
-        unlinked: true,
-      },
-    });
-    expect(byTag.get("#P000008")).toMatchObject({
-      playerName: "Gamma",
-      resolvedWeight: 145000,
-      resolvedBucket: "TH15",
-      discordUserId: "333333333333333333",
-      discordMention: "<@333333333333333333>",
-      inactiveLabel: "7d",
-      reasons: {
-        filler: false,
-        inactive: true,
-        unlinked: false,
-      },
-    });
-    expect(byTag.get("#P000020")).toMatchObject({
-      playerName: "Delta",
-      resolvedWeight: 145000,
-      resolvedBucket: "TH15",
-      discordUserId: null,
-      discordMention: null,
-      inactiveLabel: "2WAR",
-      reasons: {
-        filler: false,
-        inactive: true,
-        unlinked: true,
-      },
-    });
-    expect(byTag.get("#P000028")).toMatchObject({
-      playerName: "Epsilon",
-      resolvedWeight: 145000,
-      resolvedBucket: "TH15",
-      discordUserId: "555555555555555555",
-      discordMention: "<@555555555555555555>",
-      inactiveLabel: "7d",
-      reasons: {
-        filler: true,
-        inactive: true,
-        unlinked: false,
-      },
-    });
-
-    expect(byTag.has("#P000080")).toBe(false);
-    expect(byTag.has("#P000082")).toBe(false);
-    expect(byTag.has("#P000088")).toBe(false);
+    expect(result.candidates).toEqual([]);
+    expect(result.evaluation).toMatchObject({ status: "unavailable" });
   });
 
   it("includes ordinary members from positive ACTUAL Auto-Detect surplus buckets and excludes non-surplus buckets", async () => {
@@ -676,6 +601,85 @@ function makeFilterCandidate(input: {
     reasons,
   };
 }
+
+  it("distinguishes unavailable evaluation from an evaluated empty result", async () => {
+    const context = makeContext({
+      members: [{ playerTag: "#P000090", playerName: "Active", resolvedWeight: 145000 }],
+      bucketCounts: { TH15: 1 },
+      heatMapRef: makeHeatMapRef({ th15Count: 1 }),
+    });
+
+    const empty = await new CompoReplacementService().resolveReplacementCandidates({
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+    expect(empty.candidates).toEqual([]);
+    expect(empty.evaluation.status).toBe("evaluated_no_candidates");
+
+    const unavailable = await new CompoReplacementService().resolveReplacementCandidates({
+      weight: 181000,
+      bucket: "TH19",
+      context,
+    });
+    expect(unavailable.evaluation.status).toBe("unavailable");
+    expect(unavailable.evaluation.reasonCode).toBe("th19_target_unavailable");
+  });
+
+  it("reports mixed eligibility without dropping factual-only clans", async () => {
+    const context = makeContext({
+      members: [{ playerTag: "#P000090", playerName: "Active", resolvedWeight: 145000 }],
+      bucketCounts: { TH15: 1 },
+      heatMapRef: makeHeatMapRef({ th15Count: 1 }),
+    }) as any;
+    context.trackedClanTags.push("#BBB222");
+    context.renderableClanTags.push("#BBB222");
+    context.clans.push({
+      clanTag: "#BBB222",
+      clanName: "Bravo Clan",
+      shortName: "BB",
+      base: {
+        resolvedTotalWeight: 181000,
+        unresolvedWeightCount: 0,
+        memberCount: 1,
+        memberCountEvidence: "observed",
+        bucketCounts: {
+          TH19: 1,
+          TH18: 0,
+          TH17: 0,
+          TH16: 0,
+          TH15: 0,
+          TH14: 0,
+          TH13: 0,
+          TH12: 0,
+          TH11: 0,
+          TH10: 0,
+          TH9: 0,
+          TH8_OR_LOWER: 0,
+        },
+      },
+      members: [{
+        clanTag: "#BBB222",
+        playerTag: "#P000092",
+        playerName: "TH19",
+        townHall: 19,
+        resolvedWeight: 181000,
+        resolvedBucket: "TH19",
+        resolvedWeightSource: "member",
+      }],
+    });
+
+    const result = await new CompoReplacementService().resolveReplacementCandidates({
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+    expect(result.evaluation.status).toBe("partial");
+    expect(result.evaluation.eligibleClanTags).toEqual(["#AAA111"]);
+    expect(result.evaluation.unavailableClanTags).toEqual(["#BBB222"]);
+    expect(result.summaryByClan.find((summary) => summary.clanTag === "#BBB222"))
+      .toMatchObject({ evaluationStatus: "unavailable", uniqueCandidateCount: 0 });
+  });
 
 describe("filterAndSortCompoReplacementCandidates", () => {
   const candidates = [

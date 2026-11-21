@@ -37,8 +37,11 @@ export function isCompoActualStateProjectionComplete(input: {
 export type CompoActualStateBaseMetrics = {
   resolvedTotalWeight: number;
   unresolvedWeightCount: number;
+  unclassifiedWeightCount?: number;
   deferredWeightCount?: number;
   memberCount: number;
+  /** Whether the persisted current-member rows establish an observed count. */
+  memberCountEvidence?: "observed" | "unknown";
   bucketCounts: CompoWarBucketCounts;
 };
 

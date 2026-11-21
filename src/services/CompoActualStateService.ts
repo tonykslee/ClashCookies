@@ -556,6 +556,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
     let totalResolvedWeight = 0;
     let unresolvedWeightCount = 0;
+    let unclassifiedWeightCount = 0;
     let deferredWeightCount = 0;
     const members: CompoActualStateMemberContext[] = [];
 
@@ -599,6 +600,9 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         resolvedWeightSource,
       });
       if (resolvedWeight === null || !bucket) {
+        if (resolvedWeight !== null && !bucket) {
+          unclassifiedWeightCount += 1;
+        }
         if (isMissing) {
           unresolvedWeightCount += 1;
         }
@@ -619,8 +623,10 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
+        unclassifiedWeightCount,
         deferredWeightCount,
         memberCount: clanMembers.length,
+        memberCountEvidence: clanMembers.length > 0 ? "observed" : "unknown",
         bucketCounts,
       },
       members,
@@ -641,10 +647,10 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
 export async function loadCompoActualStateContext(
   guildId?: string | null,
 ): Promise<CompoActualStateContext> {
-  const tracked = await prisma.trackedClan.findMany({
+  const tracked = (await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true, shortName: true },
-  });
+  })) ?? [];
   return loadCompoActualStateContextFromTrackedClans({
     guildId,
     trackedClans: tracked,

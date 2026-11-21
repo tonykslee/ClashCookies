@@ -243,6 +243,34 @@ describe("CompoActualStateService", () => {
     ]);
   });
 
+  it("classifies a TH19 Town Hall by its resolved war-weight bucket", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 180000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", { view: "raw" });
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "180,000",
+      "0",
+      "0",
+      "1",
+      "1",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+  });
+
   it("preserves factual TH18 composition while withholding retained refs after an integrity block", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),
