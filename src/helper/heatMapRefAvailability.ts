@@ -38,6 +38,7 @@ type CheckpointLike = {
   updatedAtIso?: unknown;
   validatedAtIso?: unknown;
   contentHash?: unknown;
+  evaluationGeneration?: unknown;
 };
 
 function isValidIsoTimestamp(value: unknown): value is string {
@@ -50,6 +51,11 @@ function isValidSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
 
+function isValidEvaluationGeneration(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityRecord | null {
   if (!raw) return null;
   try {
@@ -59,6 +65,16 @@ function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityR
       !isValidIsoTimestamp(record.updatedAtIso) ||
       (record.validatedAtIso !== null && !isValidIsoTimestamp(record.validatedAtIso))
     ) {
+      return null;
+    }
+    const hasEvaluationGeneration = Object.prototype.hasOwnProperty.call(record, "evaluationGeneration");
+    const evaluationGeneration =
+      record.evaluationGeneration === null || record.evaluationGeneration === undefined
+        ? null
+        : isValidEvaluationGeneration(record.evaluationGeneration)
+          ? record.evaluationGeneration
+          : null;
+    if (hasEvaluationGeneration && record.evaluationGeneration !== null && evaluationGeneration === null) {
       return null;
     }
     if (record.status === "blocked") {
@@ -80,6 +96,7 @@ function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityR
         validatedAtIso: record.validatedAtIso,
         updatedAtIso: record.updatedAtIso,
         contentHash: null,
+        evaluationGeneration,
       };
     }
     if (record.status === "pending") {
@@ -94,6 +111,7 @@ function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityR
         validatedAtIso: record.validatedAtIso,
         updatedAtIso: record.updatedAtIso,
         contentHash: null,
+        evaluationGeneration,
       };
     }
     if (
@@ -111,12 +129,19 @@ function parseIntegrityRecord(raw: string | null): HeatMapRefReferenceIntegrityR
         validatedAtIso: record.validatedAtIso,
         updatedAtIso: record.updatedAtIso,
         contentHash: record.contentHash.toLowerCase(),
+        evaluationGeneration,
       };
     }
   } catch {
     // Treat malformed or legacy state as unknown rather than validated.
   }
   return null;
+}
+
+export function parseHeatMapRefReferenceIntegrityRecord(
+  raw: string | null,
+): HeatMapRefReferenceIntegrityRecord | null {
+  return parseIntegrityRecord(raw);
 }
 
 export function heatMapRefRebuildCheckpointKey(guildId: string): string {
@@ -220,6 +245,7 @@ export type HeatMapRefReferenceIntegrityRecord = {
   validatedAtIso: string | null;
   updatedAtIso: string;
   contentHash: string | null;
+  evaluationGeneration: string | null;
 };
 
 export function buildHeatMapRefReferenceIntegrityRecord(input: {
@@ -229,6 +255,7 @@ export function buildHeatMapRefReferenceIntegrityRecord(input: {
   validatedAtIso?: string | null;
   updatedAtIso: string;
   contentHash?: string | null;
+  evaluationGeneration?: string | null;
 }): HeatMapRefReferenceIntegrityRecord {
   return {
     version: HEAT_MAP_REF_REFERENCE_INTEGRITY_VERSION,
@@ -238,6 +265,7 @@ export function buildHeatMapRefReferenceIntegrityRecord(input: {
     validatedAtIso: input.validatedAtIso ?? null,
     updatedAtIso: input.updatedAtIso,
     contentHash: input.status === "validated" ? input.contentHash ?? null : null,
+    evaluationGeneration: input.evaluationGeneration ?? null,
   };
 }
 

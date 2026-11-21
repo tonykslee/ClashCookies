@@ -165,6 +165,41 @@ function getStoredCheckpoint(settingsStore: Map<string, string>, guildId: string
   };
 }
 
+type HeatMapRefRebuildIntegrityHooks = {
+  beginReferenceIntegrityEvaluation(now: Date): Promise<string>;
+  finalizeReferenceIntegrity(
+    result: unknown,
+    now: Date,
+    evaluationGeneration: string,
+    publicationRows?: unknown,
+  ): Promise<unknown>;
+};
+
+function getIntegrityHooks(service: HeatMapRefRebuildService): HeatMapRefRebuildIntegrityHooks {
+  return service as unknown as HeatMapRefRebuildIntegrityHooks;
+}
+
+function makeSyntheticIntegrityResult(input: {
+  status: "success" | "skipped" | "noop";
+  reason: string | null;
+  blockReasonCode?: "th19_integrity" | "no_source_evidence" | "no_qualifying_evidence";
+  contentHash: string | null;
+}) {
+  return {
+    ...input,
+    cycleKey: null,
+    dueAt: null,
+    trackedClanCount: 1,
+    sourceRosterCount: 1,
+    qualifyingRosterCount: input.status === "skipped" ? 0 : 1,
+    excludedRosterCount: input.status === "skipped" ? 1 : 0,
+    rowCount: 1,
+    changedRowCount: input.status === "success" ? 1 : 0,
+    alertSent: false,
+    summaryLines: [],
+  };
+}
+
 describe("HeatMapRefRebuildService", () => {
   const settingsStore = new Map<string, string>();
   const settings = {
@@ -897,6 +932,121 @@ describe("HeatMapRefRebuildService", () => {
       version: 1,
       status: "validated",
       contentHash: expect.any(String),
+      evaluationGeneration: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    });
+  });
+
+  it("rejects an older supported publication after a newer TH19 block", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const olderGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    const newerGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:01:00.000Z"),
+    );
+    await hooks.finalizeReferenceIntegrity(
+      makeSyntheticIntegrityResult({
+        status: "skipped",
+        reason: "newer TH19 evidence blocked publication",
+        blockReasonCode: "th19_integrity",
+        contentHash: null,
+      }),
+      new Date("2026-04-13T00:01:00.000Z"),
+      newerGeneration,
+    );
+
+    await expect(
+      hooks.finalizeReferenceIntegrity(
+        makeSyntheticIntegrityResult({
+          status: "success",
+          reason: null,
+          contentHash: "a".repeat(64),
+        }),
+        new Date("2026-04-13T00:02:00.000Z"),
+        olderGeneration,
+        makeCurrentHeatMapRows(),
+      ),
+    ).rejects.toThrow("superseded");
+
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "blocked",
+      blockReasonCode: "th19_integrity",
+      evaluationGeneration: newerGeneration,
+    });
+  });
+
+  it("rejects an older success while a newer evaluation remains pending", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const olderGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    const newerGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:01:00.000Z"),
+    );
+
+    await expect(
+      hooks.finalizeReferenceIntegrity(
+        makeSyntheticIntegrityResult({
+          status: "success",
+          reason: null,
+          contentHash: "b".repeat(64),
+        }),
+        new Date("2026-04-13T00:02:00.000Z"),
+        olderGeneration,
+        makeCurrentHeatMapRows(),
+      ),
+    ).rejects.toThrow("superseded");
+
+    expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "pending",
+      evaluationGeneration: newerGeneration,
+    });
+  });
+
+  it("rejects a superseded blocked evaluation without overwriting newer pending state", async () => {
+    const service = new HeatMapRefRebuildService({
+      settings: settings as never,
+      botLogChannels: botLogChannels as never,
+      permissions: permissions as never,
+    });
+    const hooks = getIntegrityHooks(service);
+    const olderGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:00:00.000Z"),
+    );
+    const newerGeneration = await hooks.beginReferenceIntegrityEvaluation(
+      new Date("2026-04-13T00:01:00.000Z"),
+    );
+
+    await expect(
+      hooks.finalizeReferenceIntegrity(
+        makeSyntheticIntegrityResult({
+          status: "skipped",
+          reason: "older TH19 evidence",
+          blockReasonCode: "th19_integrity",
+          contentHash: null,
+        }),
+        new Date("2026-04-13T00:02:00.000Z"),
+        olderGeneration,
+      ),
+    ).rejects.toThrow("superseded");
+
+    expect(JSON.parse(settingsStore.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY) ?? "{}")).toMatchObject({
+      status: "pending",
+      evaluationGeneration: newerGeneration,
     });
   });
 

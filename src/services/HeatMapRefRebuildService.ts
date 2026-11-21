@@ -1,4 +1,5 @@
 import type { Client } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../prisma";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { CommandPermissionService } from "./CommandPermissionService";
@@ -32,6 +33,7 @@ import {
   HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX,
   acquireHeatMapRefReferenceWriteLock,
   buildHeatMapRefReferenceIntegrityRecord,
+  parseHeatMapRefReferenceIntegrityRecord,
   parseHeatMapRefReferenceAvailability,
   stringifyHeatMapRefReferenceIntegrity,
   type HeatMapRefRebuildBlockReasonCode,
@@ -329,7 +331,7 @@ export class HeatMapRefRebuildService {
   }
 
   private async rebuildHeatMapRefUnlocked(now: Date): Promise<HeatMapRefRebuildRunResult> {
-    await this.beginReferenceIntegrityEvaluation(now);
+    const evaluationGeneration = await this.beginReferenceIntegrityEvaluation(now);
     const fwaClanTags = await loadAllFwaClanTags();
     if (fwaClanTags.length === 0) {
       return this.finalizeReferenceIntegrity({
@@ -347,7 +349,7 @@ export class HeatMapRefRebuildService {
         alertSent: false,
         blockReasonCode: "no_source_evidence",
         summaryLines: ["No persisted FWA clans are configured."],
-      }, now);
+      }, now, evaluationGeneration);
     }
 
     const members = await prisma.fwaWarMemberCurrent.findMany({
@@ -440,7 +442,7 @@ export class HeatMapRefRebuildService {
           status,
           reason,
         }),
-      }, now);
+      }, now, evaluationGeneration);
     }
 
     if (currentHash === nextHash) {
@@ -466,7 +468,7 @@ export class HeatMapRefRebuildService {
         status: "noop",
         reason: "rebuilt content matched the stored HeatMapRef rows",
       }),
-      }, now);
+      }, now, evaluationGeneration);
     }
 
     const result = buildSummaryLines({
@@ -492,36 +494,37 @@ export class HeatMapRefRebuildService {
       contentHash: nextHash,
       alertSent: false,
       summaryLines: result,
-    }, now, rebuilt);
+    }, now, evaluationGeneration, rebuilt);
   }
 
-  private async beginReferenceIntegrityEvaluation(now: Date): Promise<void> {
-    await prisma.$transaction(async (tx) => {
+  private async beginReferenceIntegrityEvaluation(now: Date): Promise<string> {
+    return prisma.$transaction(async (tx) => {
       if (typeof tx.$executeRaw === "function") {
         await acquireHeatMapRefReferenceWriteLock(tx);
       }
+      const evaluationGeneration = randomUUID();
       const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
       const availability = parseHeatMapRefReferenceAvailability(raw);
-      if (availability.status === "retained_unverified") {
-        return;
-      }
       const pending = buildHeatMapRefReferenceIntegrityRecord({
         status: "pending",
         reason: "reference validation is in progress",
         validatedAtIso: availability.lastSuccessAtIso,
         updatedAtIso: now.toISOString(),
+        evaluationGeneration,
       });
       await this.settings.set(
         HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
         stringifyHeatMapRefReferenceIntegrity(pending),
         tx,
       );
+      return evaluationGeneration;
     });
   }
 
   private async finalizeReferenceIntegrity(
     result: HeatMapRefRebuildRunResult,
     now: Date,
+    evaluationGeneration: string,
     publicationRows?: readonly HeatMapRefRebuildRow[],
   ): Promise<HeatMapRefRebuildRunResult> {
     return prisma.$transaction(async (tx) => {
@@ -529,6 +532,10 @@ export class HeatMapRefRebuildService {
         await acquireHeatMapRefReferenceWriteLock(tx);
       }
       const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
+      const currentIntegrity = parseHeatMapRefReferenceIntegrityRecord(raw);
+      if (currentIntegrity?.evaluationGeneration !== evaluationGeneration) {
+        throw new Error("HeatMapRef evaluation was superseded by a newer evaluation");
+      }
       const previous = parseHeatMapRefReferenceAvailability(raw);
       const validated = result.status === "success" || result.status === "noop";
       if (validated && result.status === "noop") {
@@ -573,6 +580,7 @@ export class HeatMapRefRebuildService {
         validatedAtIso: validated ? now.toISOString() : previous.lastSuccessAtIso,
         updatedAtIso: now.toISOString(),
         contentHash: validated ? result.contentHash : null,
+        evaluationGeneration,
       });
       await this.settings.set(
         HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,

@@ -67,6 +67,7 @@ describe("HeatMapRef reference availability", () => {
     ["invalid timestamp", { version: 1, status: "validated", validatedAtIso: "yesterday" }],
     ["invalid hash", { version: 1, status: "validated", validatedAtIso: "2026-11-21T00:00:00.000Z", updatedAtIso: "2026-11-21T00:00:00.000Z", contentHash: "not-sha256", blockReasonCode: null, reason: null }],
     ["incomplete JSON", { version: 1, status: "validated", validatedAtIso: "2026-11-21T00:00:00.000Z", updatedAtIso: "2026-11-21T00:00:00.000Z", contentHash: null, blockReasonCode: null, reason: null }],
+    ["invalid evaluation generation", { version: 1, status: "validated", validatedAtIso: "2026-11-21T00:00:00.000Z", updatedAtIso: "2026-11-21T00:00:00.000Z", contentHash: "a".repeat(64), evaluationGeneration: "older", blockReasonCode: null, reason: null }],
   ])("returns UNKNOWN for %s provenance", (_label, record) => {
     expect(parseHeatMapRefReferenceAvailability(JSON.stringify(record)).status).toBe("unknown");
   });

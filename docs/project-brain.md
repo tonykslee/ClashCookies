@@ -136,7 +136,7 @@ Important owners:
 | Tracked long-lived posts | TrackedMessage* tables |
 | FWA feed current-state tables | Fwa* current-state tables, including derived recreatable snapshots like `FwaClanMatchStatsCurrent` |
 | FWA compo reference bands | HeatMapRef |
-| FWA compo reference integrity/provenance | Versioned BotSetting key `heatmapref_reference_integrity` (global; guild checkpoints remain scheduler metadata; rows and matching SHA-256 provenance publish in one transaction) |
+| FWA compo reference integrity/provenance | Versioned BotSetting key `heatmapref_reference_integrity` (global; guild checkpoints remain scheduler metadata; rows and matching SHA-256 provenance publish in one transaction; generation token fences superseded evaluations) |
 | Telemetry rollups and report schedules | Telemetry* tables |
 
 `FwaWeightAlertConfig` owns per-clan alert enablement and stale-age threshold policy. `FwaWeightAlertDelivery` owns the durable per-clan/per-`weightSubmitDate` claim, retry, and Discord delivery outcome. Routing continues to be read from `TrackedClan.leaderChannelId` and `TrackedClan.leadRoleId`; neither routing field is copied into the alert tables. `FwaClanCatalog.weightSubmitDate` remains the authoritative persisted submission date used for stale-age evaluation. After each fresh Clans.json sync reports `SUCCESS` or `NOOP`, the active runtime evaluates enabled policies and may deliver claimed episodes; mirror/staging runtime never sends, and no separate alert scheduler or poller exists.
