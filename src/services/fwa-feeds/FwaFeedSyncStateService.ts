@@ -24,12 +24,16 @@ type RecordSuccessParams = SyncScope & {
 type RecordFailureParams = SyncScope & {
   errorCode: string;
   errorSummary: string;
-  nextEligibleAt: Date | null;
+  nextEligibleAt: Date | null | undefined;
 };
 
 type SyncStateClient = typeof prisma | Prisma.TransactionClient;
 
 type ExpectedAttemptAt = Date | undefined;
+
+type RecordAttemptOptions = {
+  minimumIntervalMs?: number;
+};
 
 /** Purpose: own persistent sync-state metadata updates for all fwa feed scopes. */
 export class FwaFeedSyncStateService {
@@ -98,6 +102,16 @@ export class FwaFeedSyncStateService {
     now: Date = new Date(),
   ): Promise<boolean> {
     const state = await this.getState(scope);
+    return this.isStateEligible(scope, state, minimumIntervalMs, now);
+  }
+
+  /** Purpose: apply the pre-existing scheduler guard to one loaded state row. */
+  private isStateEligible(
+    scope: SyncScope,
+    state: { nextEligibleAt?: unknown; lastAttemptAt?: unknown } | null,
+    minimumIntervalMs: number,
+    now: Date,
+  ): boolean {
     if (!state) return true;
     const nowMs = now.getTime();
     const nextEligibleMs =
@@ -105,11 +119,13 @@ export class FwaFeedSyncStateService {
       Number.isFinite(state.nextEligibleAt.getTime())
         ? state.nextEligibleAt.getTime()
         : null;
-    if (nextEligibleMs !== null) return nextEligibleMs <= nowMs;
+    if (nextEligibleMs !== null && nextEligibleMs > nowMs) return false;
     // CoC attendance refreshes share this row but must not create a new
     // scheduler cadence when no FWA next-eligible boundary exists yet.
     if (this.requiresClanMembersFence(scope)) return true;
-    if (!state.lastAttemptAt) return true;
+    if (!(state.lastAttemptAt instanceof Date) || !Number.isFinite(state.lastAttemptAt.getTime())) {
+      return true;
+    }
     const elapsedMs = nowMs - state.lastAttemptAt.getTime();
     return elapsedMs >= minimumIntervalMs;
   }
@@ -117,36 +133,52 @@ export class FwaFeedSyncStateService {
   /** Purpose: persist sync-attempt timestamps before fetch/parse work starts. */
   async recordAttempt(
     scope: SyncScope,
-    nextEligibleAt: Date | null,
+    nextEligibleAt: Date | null | undefined,
     now: Date = new Date(),
+    options?: RecordAttemptOptions,
   ): Promise<boolean> {
     const resolved = this.resolveScope(scope);
     if (this.requiresClanMembersFence(resolved)) {
       return prisma.$transaction((tx) =>
-        this.recordAttemptLocked(resolved, nextEligibleAt, now, tx),
+        this.recordAttemptLocked(resolved, nextEligibleAt, now, tx, options),
       );
     }
-    return this.recordAttemptLocked(resolved, nextEligibleAt, now, prisma);
+    return this.recordAttemptLocked(resolved, nextEligibleAt, now, prisma, options);
   }
 
   /** Purpose: register one attempt while holding the shared per-clan synchronization fence. */
   private async recordAttemptLocked(
     scope: SyncScope,
-    nextEligibleAt: Date | null,
+    nextEligibleAt: Date | null | undefined,
     now: Date,
     client: SyncStateClient,
+    options?: RecordAttemptOptions,
   ): Promise<boolean> {
     const delegate = this.getDelegate(client);
     const resolved = this.resolveScope(scope);
     await this.lockScope(resolved, client);
     const existing = await this.getState(resolved, client);
     if (
-      existing?.lastAttemptAt instanceof Date &&
-      Number.isFinite(existing.lastAttemptAt.getTime()) &&
-      existing.lastAttemptAt.getTime() >= now.getTime()
+      options?.minimumIntervalMs !== undefined &&
+      !this.isStateEligible(resolved, existing, options.minimumIntervalMs, now)
     ) {
       return false;
     }
+    if (
+      existing?.lastAttemptAt instanceof Date &&
+      Number.isFinite(existing.lastAttemptAt.getTime()) &&
+      (existing.lastAttemptAt.getTime() > now.getTime() ||
+        (this.requiresClanMembersFence(resolved) &&
+          existing.lastAttemptAt.getTime() === now.getTime()))
+    ) {
+      return false;
+    }
+    const persistedNextEligibleAt =
+      nextEligibleAt === undefined && this.requiresClanMembersFence(resolved)
+        ? existing?.nextEligibleAt instanceof Date && Number.isFinite(existing.nextEligibleAt.getTime())
+          ? existing.nextEligibleAt
+          : null
+        : nextEligibleAt ?? null;
     await delegate.upsert({
       where: this.buildCompoundScopeWhere(resolved),
       create: {
@@ -154,11 +186,11 @@ export class FwaFeedSyncStateService {
         scopeType: resolved.scopeType,
         scopeKey: resolved.scopeKey,
         lastAttemptAt: now,
-        nextEligibleAt,
+        nextEligibleAt: persistedNextEligibleAt,
       },
       update: {
         lastAttemptAt: now,
-        nextEligibleAt,
+        nextEligibleAt: persistedNextEligibleAt,
       },
     });
     return true;
@@ -252,12 +284,21 @@ export class FwaFeedSyncStateService {
     const delegate = this.getDelegate(client);
     const resolved = this.resolveScope(params);
     await this.lockScope(resolved, client);
+    const current =
+      expectedAttemptAt || params.nextEligibleAt === undefined
+        ? await this.getState(resolved, client)
+        : null;
     if (expectedAttemptAt) {
-      const current = await this.getState(resolved, client);
       if (!current || !isSameAttemptAt(current.lastAttemptAt, expectedAttemptAt)) {
         return false;
       }
     }
+    const persistedNextEligibleAt =
+      params.nextEligibleAt === undefined && this.requiresClanMembersFence(resolved)
+        ? current?.nextEligibleAt instanceof Date && Number.isFinite(current.nextEligibleAt.getTime())
+          ? current.nextEligibleAt
+          : null
+        : params.nextEligibleAt ?? null;
     await delegate.upsert({
       where: this.buildCompoundScopeWhere(resolved),
       create: {
@@ -268,14 +309,14 @@ export class FwaFeedSyncStateService {
         lastStatus: "FAILURE",
         lastErrorCode: params.errorCode,
         lastErrorSummary: params.errorSummary,
-        nextEligibleAt: params.nextEligibleAt,
+        nextEligibleAt: persistedNextEligibleAt,
       },
       update: {
         lastAttemptAt: now,
         lastStatus: "FAILURE",
         lastErrorCode: params.errorCode,
         lastErrorSummary: params.errorSummary,
-        nextEligibleAt: params.nextEligibleAt,
+        nextEligibleAt: persistedNextEligibleAt,
       },
     });
     return true;

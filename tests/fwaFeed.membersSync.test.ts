@@ -402,6 +402,12 @@ describe("FwaClanMembersSyncService", () => {
     expect(result.status).toBe("NOOP");
     expect(result.changedRowCount).toBe(0);
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
+    expect(txMock.fwaFeedSyncState.findUnique).toHaveBeenCalledTimes(3);
+    expect(txMock.fwaFeedSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ lastAttemptAt: now }),
+      }),
+    );
   });
 
   it("repairs divergent persisted rows and publishes coherent add/remove/empty snapshots", async () => {

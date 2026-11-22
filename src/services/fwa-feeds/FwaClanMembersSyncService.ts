@@ -102,10 +102,9 @@ export class FwaClanMembersSyncService {
         scopeKey: clanTag,
       };
       try {
-        const previousState = await this.syncState.getState(scope);
         const attemptAccepted = await this.syncState.recordAttempt(
           scope,
-          previousState?.nextEligibleAt ?? null,
+          undefined,
           now,
         );
         if (!attemptAccepted) {
@@ -230,7 +229,6 @@ export class FwaClanMembersSyncService {
           return { clanTag, failed: false, rowCount: 0, changedRowCount: 0 };
         }
         try {
-          const currentState = await this.syncState.getState(scope).catch(() => null);
           await this.syncState.recordFailure(
             {
               ...scope,
@@ -238,7 +236,7 @@ export class FwaClanMembersSyncService {
               errorSummary: String(
                 (error as { message?: unknown })?.message ?? error,
               ).slice(0, 200),
-              nextEligibleAt: currentState?.nextEligibleAt ?? null,
+              nextEligibleAt: undefined,
             },
             now,
             now,
@@ -348,14 +346,12 @@ export class FwaClanMembersSyncService {
     };
     const nextEligibleAt =
       minimumIntervalMs > 0 ? new Date(now.getTime() + minimumIntervalMs) : null;
-    if (!options?.force && minimumIntervalMs > 0) {
-      const eligible = await this.syncState.isEligible(scope, minimumIntervalMs, now);
-      if (!eligible) {
-        return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
-      }
-    }
-
-    const attemptAccepted = await this.syncState.recordAttempt(scope, nextEligibleAt, now);
+    const attemptAccepted = await this.syncState.recordAttempt(
+      scope,
+      nextEligibleAt,
+      now,
+      !options?.force && minimumIntervalMs > 0 ? { minimumIntervalMs } : undefined,
+    );
     if (!attemptAccepted) {
       return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
     }
@@ -388,11 +384,15 @@ export class FwaClanMembersSyncService {
             contentHash: persistedBeforeHash,
             status: "NOOP",
           };
-          await this.syncState.recordSuccess(
+          const recorded = await this.syncState.recordSuccess(
             { ...scope, ...result, nextEligibleAt },
             now,
             tx,
+            now,
           );
+          if (!recorded) {
+            throw new SupersededClanMembersSyncError();
+          }
           return result;
         }
 
