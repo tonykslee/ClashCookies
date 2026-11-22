@@ -317,3 +317,7 @@ docker compose -f ops/observability/docker-compose.yml logs --tail=100
 - Netdata is configured for local-only access in `ops/observability/netdata/netdata.conf`.
 - The bot and database deployment flow stays separate from the observability compose stack.
 - Keep internal telemetry docs and external stack docs aligned when monitors, health paths, or scheduled report behavior change.
+
+## FB-002 P4b calculation diagnostics
+
+Composition calculation policy is identified by the immutable `legacy-v1` profile and its policy version inside code; this is diagnostic context, not reference provenance. Calculation output must preserve factual observations while reporting target-dependent results as UNKNOWN when normalized target evidence, global integrity, or roster evidence is unavailable. Diagnostic native profile/candidate artifacts remain non-authoritative and must never be logged or treated as active targets solely because they contain a profile name or populated counts. P4b does not add persistence, scheduler, source-ingestion, or native activation behavior.

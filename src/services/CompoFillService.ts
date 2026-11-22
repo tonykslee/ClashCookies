@@ -9,6 +9,7 @@ import {
   getCompoActualStateTargetBucketCounts,
   projectCompoActualStateView,
 } from "../helper/compoActualStateView";
+import { LEGACY_COMPO_CALCULATION_PROFILE } from "../helper/compoCalculationProfile";
 import type { CompoActualStateContext } from "./CompoActualStateService";
 import {
   listFillerAccountsForGuild,
@@ -537,19 +538,21 @@ function buildTrackedClanState(input: {
     base: input.clan.base,
     heatMapRefs: input.heatMapRefs,
   });
-  const hasUnsupportedTh19 = (input.clan.base.bucketCounts.TH19 ?? 0) > 0;
+  const hasUnsupportedTarget = LEGACY_COMPO_CALCULATION_PROFILE.unsupportedFactualBucketIds.some(
+    (bucketId) => (input.clan.base.bucketCounts[bucketId as keyof typeof input.clan.base.bucketCounts] ?? 0) > 0,
+  );
   const referenceValidated = input.referenceValidated === true;
   const actualRosterEvidence = assessCompoActualRosterEvidence({ clan: input.clan });
   const hasValidatedTarget =
     referenceValidated &&
-    !hasUnsupportedTh19 &&
+    !hasUnsupportedTarget &&
     actualRosterEvidence === "complete" &&
     projection.selectedHeatMapRef !== null;
   const targetEvidenceReason = hasValidatedTarget
     ? undefined
     : !referenceValidated
       ? "reference_unavailable"
-      : hasUnsupportedTh19
+      : hasUnsupportedTarget
         ? "th19_integrity"
         : actualRosterEvidence !== "complete"
           ? actualRosterEvidence
@@ -566,7 +569,6 @@ function buildTrackedClanState(input: {
       : null,
     targetEvidence: hasValidatedTarget ? "validated" : "unavailable",
     targetEvidenceReason,
-    targetSupportsTh19: false,
     memberEvidence: input.clan.members.map((member) => ({
       playerTag: member.playerTag,
       resolvedWeight: member.resolvedWeight,
@@ -949,7 +951,9 @@ export class CompoFillService {
             )
             .map((clan) => clan.clanName),
           unsupportedTh19ClanNames: context.clans
-            .filter((clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0)
+            .filter((clan) => LEGACY_COMPO_CALCULATION_PROFILE.unsupportedFactualBucketIds.some(
+              (bucketId) => (clan.base.bucketCounts[bucketId as keyof typeof clan.base.bucketCounts] ?? 0) > 0,
+            ))
             .map((clan) => clan.clanName),
         });
         const sectionSources = buildFillSectionSources({

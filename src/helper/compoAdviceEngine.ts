@@ -2,7 +2,6 @@ import type { HeatMapRef } from "@prisma/client";
 import {
   calculateCompoDeviationScore,
   getCompoActualStateDeltaByBucket,
-  getCompoDisplayBucketRepresentativeWeight,
   hasUnsupportedCompoTh19Target,
   projectCompoActualStateView,
   type CompoActualStateBaseMetrics,
@@ -17,38 +16,32 @@ import {
 import { buildFwaWeightPageUrl } from "../services/FwaWeightCatalogService";
 import type { CompoWarBucketCounts } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
+import {
+  getCompoProfileRepresentativeWeight,
+  LEGACY_COMPO_CALCULATION_PROFILE,
+} from "./compoCalculationProfile";
 
-export const COMPO_ADVICE_DISPLAY_BUCKETS: readonly CompoWarDisplayBucket[] = [
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "<=TH13",
-];
+export const COMPO_ADVICE_DISPLAY_BUCKETS: readonly CompoWarDisplayBucket[] =
+  LEGACY_COMPO_CALCULATION_PROFILE.buckets.map(
+    (bucket) => bucket.id as CompoWarDisplayBucket,
+  );
 
 const COMPO_ADVICE_BUCKET_PRIORITY: Record<CompoWarDisplayBucket, number> = {
-  TH19: 0,
-  TH18: 0,
-  TH17: 1,
-  TH16: 2,
-  TH15: 3,
-  TH14: 4,
-  "<=TH13": 5,
-};
+  TH19: Number.POSITIVE_INFINITY,
+  ...Object.fromEntries(
+    LEGACY_COMPO_CALCULATION_PROFILE.buckets.map((bucket) => [bucket.id, bucket.actionPriority]),
+  ),
+} as Record<CompoWarDisplayBucket, number>;
 
-const DISPLAY_BUCKET_TO_GRANULAR_BUCKET: Record<
-  CompoWarDisplayBucket,
-  keyof CompoWarBucketCounts
-> = {
+const DISPLAY_BUCKET_TO_GRANULAR_BUCKET: Record<CompoWarDisplayBucket, keyof CompoWarBucketCounts> = {
   TH19: "TH19",
-  TH18: "TH18",
-  TH17: "TH17",
-  TH16: "TH16",
-  TH15: "TH15",
-  TH14: "TH14",
-  "<=TH13": "TH13",
-};
+  ...Object.fromEntries(
+    LEGACY_COMPO_CALCULATION_PROFILE.buckets.map((bucket) => [
+      bucket.id,
+      LEGACY_COMPO_CALCULATION_PROFILE.compatibility.plannerBucketByCalculationBucket[bucket.id],
+    ]),
+  ),
+} as Record<CompoWarDisplayBucket, keyof CompoWarBucketCounts>;
 
 export const COMPO_ADVICE_VIEWS = [
   "raw",
@@ -466,8 +459,7 @@ function applyAdviceActionToBase(input: {
   let resolvedTotalWeight = input.base.resolvedTotalWeight;
   let memberCount = input.base.memberCount;
 
-  const incomingGranularBucket =
-    DISPLAY_BUCKET_TO_GRANULAR_BUCKET[input.action.incomingBucket];
+  const incomingGranularBucket = DISPLAY_BUCKET_TO_GRANULAR_BUCKET[input.action.incomingBucket];
   const outgoingGranularBucket =
     input.action.kind === "swap"
       ? DISPLAY_BUCKET_TO_GRANULAR_BUCKET[input.action.outgoingBucket]
@@ -475,23 +467,26 @@ function applyAdviceActionToBase(input: {
 
   if (input.action.kind === "add") {
     bucketCounts[incomingGranularBucket] = (bucketCounts[incomingGranularBucket] ?? 0) + 1;
-    resolvedTotalWeight += getCompoDisplayBucketRepresentativeWeight(
+    resolvedTotalWeight += getCompoProfileRepresentativeWeight(
+      LEGACY_COMPO_CALCULATION_PROFILE,
       input.action.incomingBucket,
       input.referenceHeatMapRef,
-    );
+    ) ?? 0;
     memberCount += 1;
   } else {
     bucketCounts[outgoingGranularBucket!] = (bucketCounts[outgoingGranularBucket!] ?? 0) - 1;
     bucketCounts[incomingGranularBucket] = (bucketCounts[incomingGranularBucket] ?? 0) + 1;
     resolvedTotalWeight +=
-      getCompoDisplayBucketRepresentativeWeight(
+      (getCompoProfileRepresentativeWeight(
+        LEGACY_COMPO_CALCULATION_PROFILE,
         input.action.incomingBucket,
         input.referenceHeatMapRef,
-      ) -
-      getCompoDisplayBucketRepresentativeWeight(
+      ) ?? 0) -
+      (getCompoProfileRepresentativeWeight(
+        LEGACY_COMPO_CALCULATION_PROFILE,
         input.action.outgoingBucket,
         input.referenceHeatMapRef,
-      );
+      ) ?? 0);
   }
 
   return {
@@ -638,6 +633,9 @@ function generateAdviceActions(input: {
   base: CompoActualStateBaseMetrics;
   currentProjection: CompoActualStateProjection;
 }): CompoAdviceAction[] {
+  if (!input.currentProjection.selectedHeatMapRef || input.currentProjection.deviationScore === null) {
+    return [];
+  }
   if (input.base.memberCount < 50) {
     return [...COMPO_ADVICE_DISPLAY_BUCKETS].map((incomingBucket) => ({
       kind: "add" as const,

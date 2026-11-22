@@ -9,6 +9,7 @@ import { normalizePlayerTag } from "./PlayerLinkService";
 import { projectCompoActualStateView } from "../helper/compoActualStateView";
 import { WarPlanViolationHistoryService } from "./WarPlanViolationHistoryService";
 import { assessCompoActualRosterEvidence } from "../helper/compoActualRosterEvidence";
+import { LEGACY_COMPO_CALCULATION_PROFILE } from "../helper/compoCalculationProfile";
 
 export type CompoReplacementTypeFilter =
   | "filler"
@@ -319,7 +320,7 @@ export class CompoReplacementService {
     if (!bucket) {
       return buildUnavailable("invalid_weight_bucket");
     }
-    if (bucket === "TH19") {
+    if (!LEGACY_COMPO_CALCULATION_PROFILE.buckets.some((definition) => definition.id === bucket)) {
       return buildUnavailable("th19_target_unavailable");
     }
     if (context.clans.length === 0) {
@@ -340,7 +341,9 @@ export class CompoReplacementService {
       });
       if (
         evidence === "complete" &&
-        (clan.base.bucketCounts.TH19 ?? 0) === 0 &&
+        !LEGACY_COMPO_CALCULATION_PROFILE.unsupportedFactualBucketIds.some(
+          (bucketId) => (clan.base.bucketCounts[bucketId as keyof typeof clan.base.bucketCounts] ?? 0) > 0,
+        ) &&
         projection.selectedHeatMapRef !== null
       ) {
         eligibleClanTags.push(clan.clanTag);
@@ -458,13 +461,10 @@ export class CompoReplacementService {
       const surplusDeltaByBucket = new Map<CompoWarDisplayBucket, number>();
       if (projection.selectedHeatMapRef) {
         for (const displayBucket of [
-          "TH18",
-          "TH17",
-          "TH16",
-          "TH15",
-          "TH14",
-          "<=TH13",
-        ] as CompoWarDisplayBucket[]) {
+          ...LEGACY_COMPO_CALCULATION_PROFILE.buckets.map(
+            (definition) => definition.id as CompoWarDisplayBucket,
+          ),
+        ]) {
           const delta = projection.deltaByBucket[displayBucket];
           if (delta !== null && delta > 0) {
             surplusDeltaByBucket.set(displayBucket, delta);
