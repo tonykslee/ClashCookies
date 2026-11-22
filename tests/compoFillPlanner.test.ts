@@ -494,7 +494,7 @@ describe("buildCompoFillPlan", () => {
         clanTag: "#SYNTHETIC",
         clanName: "Synthetic",
         memberCount: 0,
-        currentBucketCounts: makeCounts(),
+        currentBucketCounts: makeCounts({ TH19: 0 }),
         targetBucketCounts: makeCounts({ TH19: 25, TH18: 25 }),
         targetEvidence: "validated",
       }],
@@ -508,5 +508,56 @@ describe("buildCompoFillPlan", () => {
     expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationMemberCountBefore).toBe(1);
     expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationBucketCountsBefore.TH19).toBe(1);
     expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationBucketCountsAfter.TH19).toBe(1);
+  });
+
+  it.each([
+    { label: "negative", currentBucketCounts: { TH14: -1, TH13: 50 }, memberCount: 49 },
+    { label: "fractional", currentBucketCounts: { TH14: 0.5, TH13: 49.5 }, memberCount: 50 },
+    { label: "unsupported positive", currentBucketCounts: { TH19: 1, TH13: 49 }, memberCount: 50 },
+    { label: "inconsistent member total", currentBucketCounts: { TH14: 1, TH13: 48 }, memberCount: 50 },
+  ])("withholds destination moves for $label current evidence", (input) => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [makeClan({
+        clanTag: "#INVALID",
+        clanName: "Invalid",
+        memberCount: input.memberCount,
+        currentBucketCounts: input.currentBucketCounts,
+        targetBucketCounts: { TH14: 2, TH13: 48 },
+      })],
+      fillers: [makeFiller({ playerTag: "#FILL", playerName: "Fill", resolvedWeight: 135000 })],
+    });
+    expect(result.destinationPlans).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots[0]).toMatchObject({ clanTag: "#INVALID" });
+  });
+
+  it("withholds tracked-source surplus when the source current evidence is invalid", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DEST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 1, TH13: 48 },
+          targetBucketCounts: { TH14: 2, TH13: 48 },
+        }),
+        makeClan({
+          clanTag: "#SOURCE",
+          clanName: "Source",
+          memberCount: 50,
+          currentBucketCounts: { TH14: -1, TH13: 51 },
+          targetBucketCounts: { TH14: 0, TH13: 50 },
+        }),
+      ],
+      fillers: [makeFiller({
+        playerTag: "#TRACKED",
+        playerName: "Tracked",
+        resolvedWeight: 135000,
+        currentClanTag: "#SOURCE",
+        currentClanName: "Source",
+        clanState: "known",
+      })],
+    });
+    expect(result.destinationPlans[0]?.plannedMoves).toHaveLength(0);
+    expect(result.unavailableFillers[0]?.reasonCodes).toContain("source_current_evidence_unavailable");
   });
 });

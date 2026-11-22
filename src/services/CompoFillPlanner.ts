@@ -12,6 +12,7 @@ import {
   type CompoCalculationProfile,
   validateCompoCalculationProfile,
   validateCompoProfileFactualCounts,
+  validateCompoProfilePlannerCounts,
 } from "../helper/compoCalculationProfile";
 
 export type CompoFillTrackedClanState = {
@@ -58,6 +59,7 @@ export type CompoFillReasonCode =
   | "source_bucket_deficit"
   | "source_context_unavailable"
   | "source_target_evidence_unavailable"
+  | "source_current_evidence_unavailable"
   | "source_bucket_evidence_mismatch"
   | "self_transfer"
   | "source_membership_unknown"
@@ -154,6 +156,7 @@ type MutableClanState = {
   currentBucketCounts: CompoWarBucketCounts;
   targetBucketCounts: CompoWarBucketCounts;
   targetEvidence: "validated" | "unavailable";
+  currentEvidence: "validated" | "unavailable";
   memberEvidenceByTag: Map<string, CompoFillMemberEvidence> | null;
   targetMemberCount: number;
 };
@@ -276,6 +279,25 @@ function safeCount(value: number | null | undefined): number {
     : 0;
 }
 
+function validateCurrentClanEvidence(
+  profile: CompoCalculationProfile,
+  clan: CompoFillTrackedClanState,
+): { status: "supported" | "unavailable"; reason: string | null } {
+  if (!Number.isSafeInteger(clan.memberCount) || clan.memberCount < 0) {
+    return { status: "unavailable", reason: "invalid current member count" };
+  }
+  const validation = validateCompoProfileFactualCounts(profile, clan.currentBucketCounts);
+  if (validation.status !== "supported") return validation;
+  const classifiedTotal = getCompoProfileSourceBucketIds(profile).reduce(
+    (sum, sourceBucketId) => sum + (clan.currentBucketCounts[sourceBucketId as CompoWarWeightBucket] ?? 0),
+    0,
+  );
+  if (classifiedTotal !== clan.memberCount) {
+    return { status: "unavailable", reason: "current member count disagrees with classified buckets" };
+  }
+  return { status: "supported", reason: null };
+}
+
 function setBucketCount(
   counts: CompoWarBucketCounts,
   bucket: CompoWarWeightBucket,
@@ -352,6 +374,9 @@ function isCandidateAvailableNow(
   }
   if (sourceClan.targetEvidence !== "validated") {
     reasonCodes.push("source_target_evidence_unavailable");
+  }
+  if (sourceClan.currentEvidence !== "validated") {
+    reasonCodes.push("source_current_evidence_unavailable");
   }
   if (!getCompoCalculationBucket(profile, candidate.resolvedWeightBucket)) {
     if (!reasonCodes.includes("source_target_evidence_unavailable")) {
@@ -598,9 +623,10 @@ export function buildCompoFillPlan(input: {
   if (profileError) throw new Error(`Invalid composition calculation profile: ${profileError}`);
   const bucketOrder = getCompoFillBucketOrder(profile);
   const trackedStates: MutableClanState[] = input.trackedClans.map((clan) => {
+    const currentCountsValidation = validateCurrentClanEvidence(profile, clan);
     const currentBucketCounts = cloneBucketCounts(clan.currentBucketCounts);
     const targetCountsValidation = clan.targetEvidence === "validated"
-      ? validateCompoProfileFactualCounts(profile, clan.targetBucketCounts)
+      ? validateCompoProfilePlannerCounts(profile, clan.targetBucketCounts)
       : { status: "unavailable" as const, reason: "target evidence is unavailable" };
     const targetEvidence = targetCountsValidation.status === "supported" ? "validated" : "unavailable";
     const targetBucketCounts = cloneBucketCounts(clan.targetBucketCounts);
@@ -617,6 +643,7 @@ export function buildCompoFillPlan(input: {
       shortName: trimToNull(clan.shortName),
       memberCount: normalizeInteger(clan.memberCount),
       currentBucketCounts,
+      currentEvidence: currentCountsValidation.status === "supported" ? "validated" : "unavailable",
       targetBucketCounts,
       targetEvidence,
       memberEvidenceByTag,
@@ -635,7 +662,11 @@ export function buildCompoFillPlan(input: {
       memberCount: clan.memberCount,
       targetMemberCount: clan.targetMemberCount,
     });
-    if (clan.targetEvidence !== "validated" || remainingSlots <= 0) {
+    if (
+      clan.targetEvidence !== "validated" ||
+      clan.currentEvidence !== "validated" ||
+      remainingSlots <= 0
+    ) {
       continue;
     }
     const plan: CompoFillDestinationPlan = {
@@ -884,7 +915,7 @@ export function buildCompoFillPlan(input: {
         targetMemberCount: plan.targetMemberCount,
       })),
     ...trackedStates
-      .filter((clan) => clan.targetEvidence !== "validated")
+      .filter((clan) => clan.targetEvidence !== "validated" || clan.currentEvidence !== "validated")
       .map((clan) => ({
         clanTag: clan.clanTag,
         clanName: clan.clanName,

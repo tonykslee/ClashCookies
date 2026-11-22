@@ -42,6 +42,11 @@ export type CompoCalculationProfile = Readonly<{
   maximumEstimatedWeightBucketId: string;
 }>;
 
+export type CompoProfileReferenceCountReader<TReference> = (
+  reference: TReference,
+  referenceBucketId: string,
+) => unknown;
+
 export type CompoCalculationTargetStatus =
   | "supported"
   | "missing"
@@ -102,6 +107,27 @@ function isValidCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isUsableProfile(profile: CompoCalculationProfile): boolean {
+  return Boolean(
+    profile &&
+      typeof profile === "object" &&
+      Object.isFrozen(profile) &&
+      validateCompoCalculationProfile(profile) === null,
+  );
+}
+
+function readReferenceCountSafely<TReference>(
+  reader: CompoProfileReferenceCountReader<TReference>,
+  reference: TReference,
+  referenceBucketId: string,
+): unknown {
+  try {
+    return reader(reference, referenceBucketId);
+  } catch {
+    return null;
+  }
+}
+
 /** Validate profile structure before it can be used by a calculation path. */
 export function validateCompoCalculationProfile(
   profile: CompoCalculationProfile,
@@ -155,7 +181,7 @@ export function validateCompoCalculationProfile(
     if (!Array.isArray(bucket.sourceBucketIds)) return `missing source coverage (${bucket.id})`;
     const sourceIds = new Set<string>();
     for (const sourceId of bucket.sourceBucketIds) {
-      if (!sourceId.trim() || sourceIds.has(sourceId)) {
+      if (typeof sourceId !== "string" || !sourceId.trim() || sourceIds.has(sourceId)) {
         return `duplicate or empty source bucket id (${bucket.id})`;
       }
       const previousOwner = sourceOwners.get(sourceId);
@@ -188,6 +214,8 @@ export function validateCompoCalculationProfile(
       const componentIds = new Set<string>();
       for (const component of representative.components) {
         if (
+          !component ||
+          typeof component.referenceBucketId !== "string" ||
           !component.referenceBucketId.trim() ||
           componentIds.has(component.referenceBucketId) ||
           !isFiniteNonnegative(component.midpoint)
@@ -203,7 +231,7 @@ export function validateCompoCalculationProfile(
 
   const unsupported = new Set<string>();
   for (const factualId of profile.unsupportedFactualBucketIds) {
-    if (!factualId.trim() || unsupported.has(factualId)) {
+    if (typeof factualId !== "string" || !factualId.trim() || unsupported.has(factualId)) {
       return `duplicate or empty unsupported factual bucket id (${factualId})`;
     }
     unsupported.add(factualId);
@@ -228,7 +256,9 @@ export function validateCompoCalculationProfile(
     }
   }
   for (const [factualId, mappedId] of Object.entries(factualMappings)) {
-    if (!factualId.trim()) return "empty factual coverage mapping id";
+    if (!factualId.trim() || (!sourceOwners.has(factualId) && !unsupported.has(factualId))) {
+      return `factual mapping is outside declared source coverage (${factualId})`;
+    }
     if (mappedId !== null && !bucketIds.has(mappedId)) {
       return `invalid factual bucket mapping (${factualId})`;
     }
@@ -241,6 +271,9 @@ export function validateCompoCalculationProfile(
   const mappedReferenceIds = new Set<string>();
   for (const mapping of profile.targetMappings) {
     if (
+      !mapping ||
+      typeof mapping.calculationBucketId !== "string" ||
+      !Array.isArray(mapping.referenceBucketIds) ||
       !bucketIds.has(mapping.calculationBucketId) ||
       targetMappingByBucket.has(mapping.calculationBucketId)
     ) {
@@ -251,7 +284,7 @@ export function validateCompoCalculationProfile(
     }
     targetMappingByBucket.set(mapping.calculationBucketId, mapping);
     for (const referenceId of mapping.referenceBucketIds) {
-      if (!referenceId.trim() || mappedReferenceIds.has(referenceId)) {
+      if (typeof referenceId !== "string" || !referenceId.trim() || mappedReferenceIds.has(referenceId)) {
         return `ambiguous reference target mapping (${referenceId})`;
       }
       mappedReferenceIds.add(referenceId);
@@ -265,7 +298,8 @@ export function validateCompoCalculationProfile(
     const representative = bucket.representativeWeight;
     if (representative.kind !== "weighted-reference-midpoint") continue;
     for (const component of representative.components) {
-      if (!mappedReferenceIds.has(component.referenceBucketId)) {
+      const targetMapping = targetMappingByBucket.get(bucket.id);
+      if (!targetMapping?.referenceBucketIds.includes(component.referenceBucketId)) {
         return `representative component is not covered by target mappings (${bucket.id})`;
       }
     }
@@ -273,6 +307,8 @@ export function validateCompoCalculationProfile(
 
   const plannerCompatibility = profile.compatibility.plannerBucketByCalculationBucket;
   const displayCompatibility = profile.compatibility.displayBucketByCalculationBucket;
+  const displayOwners = new Set<string>();
+  const plannerOwners = new Set<string>();
   for (const bucket of profile.buckets) {
     if (
       typeof plannerCompatibility[bucket.id] !== "string" ||
@@ -282,6 +318,17 @@ export function validateCompoCalculationProfile(
     ) {
       return `incomplete compatibility mapping (${bucket.id})`;
     }
+    if (!bucket.sourceBucketIds.includes(plannerCompatibility[bucket.id])) {
+      return `planner compatibility is outside factual source group (${bucket.id})`;
+    }
+    if (plannerOwners.has(plannerCompatibility[bucket.id])) {
+      return `planner compatibility is ambiguous (${plannerCompatibility[bucket.id]})`;
+    }
+    plannerOwners.add(plannerCompatibility[bucket.id]);
+    if (displayOwners.has(displayCompatibility[bucket.id])) {
+      return `display compatibility is ambiguous (${displayCompatibility[bucket.id]})`;
+    }
+    displayOwners.add(displayCompatibility[bucket.id]);
   }
   if (
     Object.keys(plannerCompatibility).some((id) => !bucketIds.has(id)) ||
@@ -291,6 +338,29 @@ export function validateCompoCalculationProfile(
   }
   if (!bucketIds.has(profile.maximumEstimatedWeightBucketId)) {
     return "maximum estimated-weight bucket is not defined";
+  }
+  const maximumBucket = profile.buckets.find(
+    (bucket) => bucket.id === profile.maximumEstimatedWeightBucketId,
+  );
+  if (!maximumBucket) return "maximum estimated-weight bucket must have a fixed upper bound";
+  const maximumWeight = maximumBucket.representativeWeight.kind === "fixed"
+    ? maximumBucket.representativeWeight.value
+    : Math.max(
+        maximumBucket.representativeWeight.fallback,
+        ...maximumBucket.representativeWeight.components.map((component: { midpoint: number }) => component.midpoint),
+      );
+  for (const bucket of profile.buckets) {
+    const representative = bucket.representativeWeight;
+    if (representative.kind === "fixed" && representative.value > maximumWeight) {
+      return "maximum estimated-weight bound is insufficient";
+    }
+    if (
+      representative.kind === "weighted-reference-midpoint" &&
+      (representative.fallback > maximumWeight ||
+        representative.components.some((component: { midpoint: number }) => component.midpoint > maximumWeight))
+    ) {
+      return "maximum estimated-weight bound is insufficient";
+    }
   }
   return null;
 }
@@ -384,16 +454,19 @@ export function getCompoLegacyReferenceBucketCount(ref: HeatMapRef, bucketId: st
   return isValidCount(values[bucketId]) ? values[bucketId] as number : null;
 }
 
-export type CompoProfileReferenceCountReader<TReference> = (
-  reference: TReference,
-  referenceBucketId: string,
-) => number | null;
-
 export function resolveCompoProfileTargets<TReference>(input: {
   profile: CompoCalculationProfile;
   reference: TReference | null;
   readCount: CompoProfileReferenceCountReader<TReference>;
 }): CompoCalculationTargetResolution {
+  if (!isUsableProfile(input.profile)) {
+    return {
+      status: "invalid",
+      counts: {},
+      unsupportedBucketIds: [],
+      reason: "profile is not validated and immutable",
+    };
+  }
   if (!input.reference) {
     return { status: "missing", counts: {}, unsupportedBucketIds: input.profile.unsupportedFactualBucketIds, reason: "reference band is missing" };
   }
@@ -401,9 +474,12 @@ export function resolveCompoProfileTargets<TReference>(input: {
   for (const mapping of input.profile.targetMappings) {
     let total = 0;
     for (const referenceBucketId of mapping.referenceBucketIds) {
-      const count = input.readCount(input.reference, referenceBucketId);
-      if (count === null) {
+      const count = readReferenceCountSafely(input.readCount, input.reference, referenceBucketId);
+      if (!isValidCount(count)) {
         return { status: "invalid", counts: {}, unsupportedBucketIds: input.profile.unsupportedFactualBucketIds, reason: `invalid reference count (${referenceBucketId})` };
+      }
+      if (total > Number.MAX_SAFE_INTEGER - count) {
+        return { status: "invalid", counts: {}, unsupportedBucketIds: input.profile.unsupportedFactualBucketIds, reason: `reference count overflow (${referenceBucketId})` };
       }
       total += count;
     }
@@ -417,18 +493,21 @@ export function resolveLegacyProfileTargets(ref: HeatMapRef | null): CompoCalcul
 }
 
 export function getCompoCalculationBucket(profile: CompoCalculationProfile, factualBucketId: string | null | undefined): string | null {
-  if (!factualBucketId) return null;
+  if (!isUsableProfile(profile) || !factualBucketId) return null;
   return profile.factualToCalculationBucket[factualBucketId] ?? null;
 }
 
 export function getCompoProfileSourceBucketIds(profile: CompoCalculationProfile): readonly string[] {
-  return profile.buckets.flatMap((bucket) => bucket.sourceBucketIds);
+  return isUsableProfile(profile) ? profile.buckets.flatMap((bucket) => bucket.sourceBucketIds) : [];
 }
 
 export function validateCompoProfileFactualCounts(
   profile: CompoCalculationProfile,
   counts: Readonly<Record<string, number | undefined>> | null | undefined,
 ): { status: "supported" | "unavailable"; reason: string | null } {
+  if (!isUsableProfile(profile)) {
+    return { status: "unavailable", reason: "profile is not validated and immutable" };
+  }
   if (!counts) return { status: "unavailable", reason: "factual count evidence is missing" };
   const sourceIds = new Set(getCompoProfileSourceBucketIds(profile));
   for (const sourceId of sourceIds) {
@@ -438,6 +517,33 @@ export function validateCompoProfileFactualCounts(
   for (const [id, value] of Object.entries(counts)) {
     if (!isValidCount(value)) return { status: "unavailable", reason: `invalid factual count (${id})` };
     if (!sourceIds.has(id) && value > 0) return { status: "unavailable", reason: `unsupported factual observation (${id})` };
+  }
+  return { status: "supported", reason: null };
+}
+
+export function validateCompoProfilePlannerCounts(
+  profile: CompoCalculationProfile,
+  counts: Readonly<Record<string, number | undefined>> | null | undefined,
+): { status: "supported" | "unavailable"; reason: string | null } {
+  if (!isUsableProfile(profile)) {
+    return { status: "unavailable", reason: "profile is not validated and immutable" };
+  }
+  if (!counts) return { status: "unavailable", reason: "planner target evidence is missing" };
+  const plannerIds = new Set(
+    profile.buckets.map((bucket) => profile.compatibility.plannerBucketByCalculationBucket[bucket.id]),
+  );
+  for (const plannerId of plannerIds) {
+    if (!Object.prototype.hasOwnProperty.call(counts, plannerId)) {
+      return { status: "unavailable", reason: `missing planner target count (${plannerId})` };
+    }
+    if (!isValidCount(counts[plannerId])) {
+      return { status: "unavailable", reason: `invalid planner target count (${plannerId})` };
+    }
+  }
+  for (const [id, value] of Object.entries(counts)) {
+    if (!isValidCount(value) || (!plannerIds.has(id) && value > 0)) {
+      return { status: "unavailable", reason: `unexpected or invalid planner target count (${id})` };
+    }
   }
   return { status: "supported", reason: null };
 }
@@ -467,7 +573,28 @@ function validateProfileCountEvidence(input: {
   return { status: "supported", observedCounts: { ...input.observedCounts }, targetCounts: { ...input.targetCounts }, reason: null };
 }
 
-export function getCompoProfileRepresentativeWeight(profile: CompoCalculationProfile, calculationBucketId: string, reference: HeatMapRef | null): number | null {
+export function validateCompoProfileCalculationCounts(
+  profile: CompoCalculationProfile,
+  counts: Readonly<Record<string, number>> | null | undefined,
+): { status: "supported" | "unavailable"; reason: string | null } {
+  if (!isUsableProfile(profile)) {
+    return { status: "unavailable", reason: "profile is not validated and immutable" };
+  }
+  const validation = validateProfileCountEvidence({
+    profile,
+    observedCounts: counts ?? {},
+    targetCounts: Object.fromEntries(profile.buckets.map((bucket) => [bucket.id, 0])),
+  });
+  return { status: validation.status, reason: validation.reason };
+}
+
+export function getCompoProfileRepresentativeWeight<TReference = HeatMapRef>(
+  profile: CompoCalculationProfile,
+  calculationBucketId: string,
+  reference: TReference | null,
+  readCount: CompoProfileReferenceCountReader<TReference> = getCompoLegacyReferenceBucketCount as CompoProfileReferenceCountReader<TReference>,
+): number | null {
+  if (!isUsableProfile(profile)) return null;
   const bucket = profile.buckets.find((candidate) => candidate.id === calculationBucketId);
   if (!bucket) return null;
   if (bucket.representativeWeight.kind === "fixed") return bucket.representativeWeight.value;
@@ -475,26 +602,57 @@ export function getCompoProfileRepresentativeWeight(profile: CompoCalculationPro
   let total = 0;
   let count = 0;
   for (const component of bucket.representativeWeight.components) {
-    const componentCount = getCompoLegacyReferenceBucketCount(reference, component.referenceBucketId);
-    if (componentCount === null) return null;
+    const componentCount = readReferenceCountSafely(readCount, reference, component.referenceBucketId);
+    if (!isValidCount(componentCount)) return null;
+    if (componentCount > 0 && component.midpoint > Number.MAX_SAFE_INTEGER / componentCount) return null;
     total += componentCount * component.midpoint;
     count += componentCount;
+    if (!Number.isSafeInteger(total) || !Number.isSafeInteger(count)) return null;
   }
   return count > 0 ? Math.round(total / count) : bucket.representativeWeight.fallback;
 }
 
-export function getCompoProfileMaximumRepresentativeWeight(profile: CompoCalculationProfile, reference: HeatMapRef | null): number | null {
-  return getCompoProfileRepresentativeWeight(profile, profile.maximumEstimatedWeightBucketId, reference);
+export function getCompoProfileMaximumRepresentativeWeight<TReference = HeatMapRef>(
+  profile: CompoCalculationProfile,
+  reference: TReference | null,
+  readCount?: CompoProfileReferenceCountReader<TReference>,
+): number | null {
+  return getCompoProfileRepresentativeWeight(
+    profile,
+    profile.maximumEstimatedWeightBucketId,
+    reference,
+    readCount,
+  );
+}
+
+export function getCompoProfileMaximumEstimatedWeightBound(
+  profile: CompoCalculationProfile,
+): number | null {
+  if (!isUsableProfile(profile)) return null;
+  const bucket = profile.buckets.find(
+    (candidate) => candidate.id === profile.maximumEstimatedWeightBucketId,
+  );
+  if (!bucket) return null;
+  return bucket.representativeWeight.kind === "fixed"
+    ? bucket.representativeWeight.value
+    : Math.max(
+        bucket.representativeWeight.fallback,
+        ...bucket.representativeWeight.components.map((component: { midpoint: number }) => component.midpoint),
+      );
 }
 
 export function calculateProfileDeviationScore(input: { profile: CompoCalculationProfile; observedCounts: Readonly<Record<string, number>>; targetCounts: Readonly<Record<string, number>> | null }): number | null {
+  if (!isUsableProfile(input.profile)) return null;
   const validation = validateProfileCountEvidence(input);
   if (validation.status !== "supported" || !validation.targetCounts) return null;
   return input.profile.buckets.reduce((sum, bucket) => sum + Math.abs(validation.observedCounts[bucket.id]! - validation.targetCounts![bucket.id]!) * bucket.deviationPenalty, 0);
 }
 
 /** Project missing slots once using the selected profile's ordered policy. */
-export function projectCompoProfileCounts(input: { profile: CompoCalculationProfile; observedCounts: Readonly<Record<string, number>>; targetCounts: Readonly<Record<string, number>> | null; missingCount: number; reference: HeatMapRef | null }): CompoProfileProjection {
+export function projectCompoProfileCounts<TReference = HeatMapRef>(input: { profile: CompoCalculationProfile; observedCounts: Readonly<Record<string, number>>; targetCounts: Readonly<Record<string, number>> | null; missingCount: number; reference: TReference | null; readReferenceCount?: CompoProfileReferenceCountReader<TReference> }): CompoProfileProjection {
+  if (!isUsableProfile(input.profile)) {
+    return { status: "unavailable", counts: { ...input.observedCounts }, addedWeight: 0, deviationScore: null, reason: "profile is not validated and immutable" };
+  }
   const validation = validateProfileCountEvidence(input);
   if (validation.status !== "supported" || !Number.isSafeInteger(input.missingCount) || input.missingCount < 0) {
     return { status: "unavailable", counts: { ...input.observedCounts }, addedWeight: 0, deviationScore: null, reason: validation.reason ?? "missing or invalid missing-slot evidence" };
@@ -520,7 +678,12 @@ export function projectCompoProfileCounts(input: { profile: CompoCalculationProf
   }
   let addedWeight = 0;
   for (const bucket of input.profile.buckets) {
-    const representative = getCompoProfileRepresentativeWeight(input.profile, bucket.id, input.reference);
+    const representative = getCompoProfileRepresentativeWeight(
+      input.profile,
+      bucket.id,
+      input.reference,
+      input.readReferenceCount,
+    );
     if (representative === null) return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `representative weight is unavailable (${bucket.id})` };
     addedWeight += Math.max(0, counts[bucket.id]! - validation.observedCounts[bucket.id]!) * representative;
   }
@@ -529,6 +692,7 @@ export function projectCompoProfileCounts(input: { profile: CompoCalculationProf
 
 /** Generate only actions for buckets with complete, explicit profile targets. */
 export function generateProfileAdviceActions(input: { profile: CompoCalculationProfile; observedCounts: Readonly<Record<string, number>>; targetCounts: Readonly<Record<string, number>> | null; memberCount: number }): CompoProfileAdviceAction[] {
+  if (!isUsableProfile(input.profile)) return [];
   const validation = validateProfileCountEvidence(input);
   if (validation.status !== "supported" || !Number.isSafeInteger(input.memberCount) || input.memberCount < 0) return [];
   if (input.memberCount < 50) return input.profile.buckets.map((bucket) => ({ kind: "add" as const, incomingBucketId: bucket.id }));

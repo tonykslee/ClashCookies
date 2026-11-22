@@ -26,6 +26,7 @@ import {
   resolveCompoProfileTargets,
   type CompoCalculationProfile,
   type CompoProfileAdviceEvaluation,
+  type CompoProfileReferenceCountReader,
 } from "./compoCalculationProfile";
 
 export const COMPO_ADVICE_DISPLAY_BUCKETS: readonly CompoWarDisplayBucket[] =
@@ -62,6 +63,11 @@ export type CompoAdviceAction =
       outgoingBucket: CompoWarDisplayBucket;
       incomingBucket: CompoWarDisplayBucket;
     };
+
+type ProfileBackedCompoAdviceAction = CompoAdviceAction & {
+  incomingCalculationBucketId: string;
+  outgoingCalculationBucketId?: string;
+};
 
 export type CompoAdviceEvaluation = {
   action: CompoAdviceAction;
@@ -312,6 +318,10 @@ function getProfileDisplayBucketPriority(profile: CompoCalculationProfile, displ
     : Number.POSITIVE_INFINITY;
 }
 
+function getCalculationBucketPriority(profile: CompoCalculationProfile, calculationBucketId: string): number {
+  return profile.buckets.find((bucket) => bucket.id === calculationBucketId)?.actionPriority ?? Number.POSITIVE_INFINITY;
+}
+
 function compareEvaluations(
   left: CompoAdviceEvaluation,
   right: CompoAdviceEvaluation,
@@ -412,14 +422,26 @@ function buildCustomProjection(input: {
     heatMapRefs: input.heatMapRefs,
     profile: input.profile,
   });
-  const applicableRefs = getSupportedCompoCalculationHeatMapRefs(input.heatMapRefs, input.profile);
+  const applicableRefs = getSupportedCompoCalculationHeatMapRefs(
+    input.heatMapRefs,
+    input.profile,
+    input.base.profileReferenceCountReader,
+  );
+  if (rawProjection.targetStatus === "unavailable") {
+    return {
+      currentProjection: rawProjection,
+      targetProjection: rawProjection,
+      selectedCustomBandIndex: null,
+      heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
+    };
+  }
   if (
     applicableRefs.length === 0 ||
     (rawProjection.displayCounts.TH19 ?? 0) > 0 && input.profile.factualToCalculationBucket.TH19 == null
   ) {
     return {
-      currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile),
-      targetProjection: scoreProjectionIfNeeded(rawProjection, input.profile),
+      currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
+      targetProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
       selectedCustomBandIndex: null,
       heatMapRefs: sortHeatMapRefs(input.heatMapRefs),
     };
@@ -432,8 +454,8 @@ function buildCustomProjection(input: {
 
   if (!selection.selectedHeatMapRef) {
     return {
-      currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile),
-      targetProjection: scoreProjectionIfNeeded(rawProjection, input.profile),
+      currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
+      targetProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
       selectedCustomBandIndex: null,
       heatMapRefs: selection.heatMapRefs,
     };
@@ -443,15 +465,16 @@ function buildCustomProjection(input: {
     rawProjection.displayCounts,
     selection.selectedHeatMapRef,
     input.profile,
+    input.base.profileReferenceCountReader,
   );
   const targetResolution = resolveCompoProfileTargets({
     profile: input.profile,
     reference: selection.selectedHeatMapRef,
-    readCount: getCompoLegacyReferenceBucketCount,
+    readCount: input.base.profileReferenceCountReader ?? getCompoLegacyReferenceBucketCount,
   });
 
   return {
-    currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile),
+    currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
     targetProjection: {
       ...rawProjection,
       selectedHeatMapRef: selection.selectedHeatMapRef,
@@ -476,31 +499,34 @@ function applyAdviceActionToBase(input: {
   action: CompoAdviceAction;
   referenceHeatMapRef: HeatMapRef | null;
   profile: CompoCalculationProfile;
+  calculationAction?: ProfileBackedCompoAdviceAction;
 }): CompoActualStateBaseMetrics | null {
   const bucketCounts = cloneBucketCounts(input.base.bucketCounts);
   let resolvedTotalWeight = input.base.resolvedTotalWeight;
   let memberCount = input.base.memberCount;
 
-  const incomingCalculationBucket = getProfileCalculationBucket(input.profile, input.action.incomingBucket);
+  const incomingCalculationBucket = input.calculationAction?.incomingCalculationBucketId ??
+    getProfileCalculationBucket(input.profile, input.action.incomingBucket);
   const incomingGranularBucket = incomingCalculationBucket
     ? input.profile.compatibility.plannerBucketByCalculationBucket[incomingCalculationBucket]
     : null;
   const outgoingCalculationBucket = input.action.kind === "swap"
-    ? getProfileCalculationBucket(input.profile, input.action.outgoingBucket)
+    ? input.calculationAction?.outgoingCalculationBucketId ?? getProfileCalculationBucket(input.profile, input.action.outgoingBucket)
     : null;
-  const outgoingGranularBucket = outgoingCalculationBucket
-    ? input.profile.compatibility.plannerBucketByCalculationBucket[outgoingCalculationBucket]
+  const outgoingDefinition = outgoingCalculationBucket
+    ? input.profile.buckets.find((bucket) => bucket.id === outgoingCalculationBucket)
     : null;
-  if (!incomingCalculationBucket || !incomingGranularBucket || (input.action.kind === "swap" && (!outgoingCalculationBucket || !outgoingGranularBucket))) {
+  if (!incomingCalculationBucket || !incomingGranularBucket || (input.action.kind === "swap" && (!outgoingCalculationBucket || !outgoingDefinition))) {
     return null;
   }
   const incomingRepresentative = getCompoProfileRepresentativeWeight(
     input.profile,
     incomingCalculationBucket,
     input.referenceHeatMapRef,
+    input.base.profileReferenceCountReader,
   );
   const outgoingRepresentative = outgoingCalculationBucket
-    ? getCompoProfileRepresentativeWeight(input.profile, outgoingCalculationBucket, input.referenceHeatMapRef)
+    ? getCompoProfileRepresentativeWeight(input.profile, outgoingCalculationBucket, input.referenceHeatMapRef, input.base.profileReferenceCountReader)
     : 0;
   if (incomingRepresentative === null || outgoingRepresentative === null) return null;
 
@@ -509,9 +535,11 @@ function applyAdviceActionToBase(input: {
     resolvedTotalWeight += incomingRepresentative;
     memberCount += 1;
   } else {
-    const outgoingKey = outgoingGranularBucket as keyof CompoWarBucketCounts;
+    const outgoingKey = outgoingDefinition?.sourceBucketIds.find(
+      (sourceBucketId) => (bucketCounts[sourceBucketId as keyof CompoWarBucketCounts] ?? 0) > 0,
+    ) as keyof CompoWarBucketCounts | undefined;
     const incomingKey = incomingGranularBucket as keyof CompoWarBucketCounts;
-    if ((bucketCounts[outgoingKey] ?? 0) <= 0) return null;
+    if (!outgoingKey || (bucketCounts[outgoingKey] ?? 0) <= 0) return null;
     bucketCounts[outgoingKey] -= 1;
     bucketCounts[incomingKey] = (bucketCounts[incomingKey] ?? 0) + 1;
     resolvedTotalWeight += incomingRepresentative - outgoingRepresentative;
@@ -551,7 +579,7 @@ function projectAdviceState(input: {
     base: input.base,
     heatMapRefs: input.heatMapRefs,
     profile: input.profile,
-  }), input.profile);
+  }), input.profile, input.base.profileReferenceCountReader);
   return {
     currentProjection: projection,
     targetProjection: projection,
@@ -565,6 +593,7 @@ function projectAdviceState(input: {
 function scoreProjectionIfNeeded(
   projection: CompoActualStateProjection,
   profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
+  profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>,
 ): CompoActualStateProjection {
   if (projection.deviationScore !== null || projection.selectedHeatMapRef === null) {
     return projection;
@@ -576,6 +605,7 @@ function scoreProjectionIfNeeded(
       heatMapRef: projection.selectedHeatMapRef,
       profile,
       calculationCounts: projection.calculationCounts,
+      profileReferenceCountReader,
     }),
   };
 }
@@ -589,12 +619,14 @@ function evaluateAdviceAction(input: {
   action: CompoAdviceAction;
   profile: CompoCalculationProfile;
   customBandIndex?: number | null;
+  calculationAction?: ProfileBackedCompoAdviceAction;
 }): CompoAdviceEvaluation | null {
   const nextBase = applyAdviceActionToBase({
     base: input.base,
     action: input.action,
     referenceHeatMapRef: input.currentProjection.selectedHeatMapRef,
     profile: input.profile,
+    calculationAction: input.calculationAction,
   });
   if (!nextBase) return null;
   const afterProjection = projectAdviceState({
@@ -602,7 +634,9 @@ function evaluateAdviceAction(input: {
     base: nextBase,
     heatMapRefs: input.heatMapRefs,
     profile: input.profile,
-    customBandIndex: input.customBandIndex,
+    // Preserve the legacy evaluator: a custom action is evaluated against the
+    // resulting auto-selected band, while the initial custom target remains pinned.
+    customBandIndex: undefined,
   }).targetProjection;
   const resultingScore = afterProjection.deviationScore;
   const scoreImprovement =
@@ -628,10 +662,14 @@ function evaluateAdviceAction(input: {
     totalWeightJump: Math.abs(
       afterProjection.totalWeight - input.currentProjection.totalWeight,
     ),
-    incomingPriority: getProfileDisplayBucketPriority(input.profile, input.action.incomingBucket),
+    incomingPriority: input.calculationAction
+      ? getCalculationBucketPriority(input.profile, input.calculationAction.incomingCalculationBucketId)
+      : getProfileDisplayBucketPriority(input.profile, input.action.incomingBucket),
     outgoingPriority:
       input.action.kind === "swap"
-        ? getProfileDisplayBucketPriority(input.profile, input.action.outgoingBucket)
+        ? input.calculationAction?.outgoingCalculationBucketId
+          ? getCalculationBucketPriority(input.profile, input.calculationAction.outgoingCalculationBucketId)
+          : getProfileDisplayBucketPriority(input.profile, input.action.outgoingBucket)
         : Number.POSITIVE_INFINITY,
   };
 }
@@ -640,7 +678,7 @@ function generateAdviceActions(input: {
   base: CompoActualStateBaseMetrics;
   currentProjection: CompoActualStateProjection;
   profile: CompoCalculationProfile;
-}): CompoAdviceAction[] {
+}): ProfileBackedCompoAdviceAction[] {
   if (!input.currentProjection.selectedHeatMapRef || input.currentProjection.deviationScore === null) {
     return [];
   }
@@ -650,13 +688,21 @@ function generateAdviceActions(input: {
     observedCounts: input.currentProjection.calculationCounts,
     targetCounts: input.currentProjection.targetCalculationCounts,
     memberCount: input.base.memberCount,
-  }).flatMap((action): CompoAdviceAction[] => {
+  }).flatMap((action): ProfileBackedCompoAdviceAction[] => {
     const incomingBucket = getProfileDisplayBucket(input.profile, action.incomingBucketId);
     if (!incomingBucket) return [];
-    if (action.kind === "add") return [{ kind: "add", incomingBucket }];
+    if (action.kind === "add") {
+      return [{ kind: "add", incomingBucket, incomingCalculationBucketId: action.incomingBucketId }];
+    }
     const outgoingBucket = getProfileDisplayBucket(input.profile, action.outgoingBucketId);
     return outgoingBucket && outgoingBucket !== incomingBucket
-      ? [{ kind: "swap", outgoingBucket, incomingBucket }]
+      ? [{
+          kind: "swap",
+          outgoingBucket,
+          incomingBucket,
+          outgoingCalculationBucketId: action.outgoingBucketId,
+          incomingCalculationBucketId: action.incomingBucketId,
+        }]
       : [];
   });
 }
@@ -815,6 +861,7 @@ export function evaluateCompoAdvice(input: {
         action,
         profile,
         customBandIndex: projectionState.selectedCustomBandIndex,
+        calculationAction: action,
       }),
     )
     .filter((evaluation): evaluation is CompoAdviceEvaluation => evaluation !== null);

@@ -7,6 +7,8 @@ import {
   LEGACY_COMPO_CALCULATION_PROFILE,
   projectCompoProfileCounts,
   resolveLegacyProfileTargets,
+  resolveCompoProfileTargets,
+  getCompoProfileRepresentativeWeight,
   validateCompoCalculationProfile,
 } from "../src/helper/compoCalculationProfile";
 import { evaluateCompoAdvice } from "../src/helper/compoAdviceEngine";
@@ -61,6 +63,28 @@ function syntheticRuntimeProfile() {
       displayBucketByCalculationBucket: { future: "TH19", upper: "TH18", lower: "<=TH13" },
     },
     maximumEstimatedWeightBucketId: "future",
+  });
+}
+
+function syntheticReferenceContractProfile() {
+  return createCompoCalculationProfile({
+    profileId: "test-only-reference-contract",
+    policyVersion: "test-only-reference-contract-1",
+    buckets: [
+      { id: "alpha", order: 0, sourceBucketIds: ["a"], displayLabel: "Alpha", deviationPenalty: 2, actionPriority: 0, representativeWeight: { kind: "fixed", value: 300 } },
+      { id: "beta", order: 1, sourceBucketIds: ["b"], displayLabel: "Beta", deviationPenalty: 1, actionPriority: 1, representativeWeight: { kind: "weighted-reference-midpoint", components: [{ referenceBucketId: "future-member", midpoint: 100 }], fallback: 80 } },
+    ],
+    unsupportedFactualBucketIds: [],
+    factualToCalculationBucket: { a: "alpha", b: "beta" },
+    targetMappings: [
+      { calculationBucketId: "alpha", referenceBucketIds: ["future-max"] },
+      { calculationBucketId: "beta", referenceBucketIds: ["future-member"] },
+    ],
+    compatibility: {
+      plannerBucketByCalculationBucket: { alpha: "a", beta: "b" },
+      displayBucketByCalculationBucket: { alpha: "alpha", beta: "beta" },
+    },
+    maximumEstimatedWeightBucketId: "alpha",
   });
 }
 
@@ -221,6 +245,35 @@ describe("composition calculation profiles", () => {
     expect(summary.alternateTexts).toEqual([]);
   });
 
+  it("supports a genuinely new reference contract and weighted representative reader", () => {
+    const profile = syntheticReferenceContractProfile();
+    const reference = { counts: { "future-max": 1, "future-member": 2 } };
+    const readCount = (value: typeof reference, id: string) => value.counts[id];
+    expect(resolveCompoProfileTargets({ profile, reference, readCount })).toMatchObject({
+      status: "supported",
+      counts: { alpha: 1, beta: 2 },
+    });
+    expect(getCompoProfileRepresentativeWeight(profile, "beta", reference, readCount)).toBe(100);
+  });
+
+  it("simulates a grouped synthetic swap from a non-representative populated source", () => {
+    const profile = syntheticRuntimeProfile();
+    const summary = evaluateCompoAdvice({
+      mode: "actual",
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeRuntimeCounts({ TH17: 2, TH13: 48 }),
+      },
+      heatMapRefs: [makeRuntimeRef({ min: 0, max: 700000, future: 2, upper: 0, lower: 48 })],
+      profile,
+    });
+    expect(summary.recommendationText).toBe("Replace one TH18 with one TH19");
+    expect(summary.resultingScore).toBe(11);
+  });
+
   it("rejects malformed count evidence without dropping factual observations", () => {
     const profile = syntheticProfile();
     expect(calculateProfileDeviationScore({
@@ -310,5 +363,50 @@ describe("composition calculation profiles", () => {
       unsupportedFactualBucketIds: ["future"],
       factualToCalculationBucket: { ...profile.factualToCalculationBucket, future: "alpha" },
     })).toContain("unsupported factual bucket maps");
+    expect(validateCompoCalculationProfile({
+      ...profile,
+      factualToCalculationBucket: { ...profile.factualToCalculationBucket, extra: "alpha" },
+    })).toContain("outside declared source coverage");
+    expect(validateCompoCalculationProfile({
+      ...profile,
+      buckets: profile.buckets.map((bucket, index) => index === 0
+        ? {
+            ...bucket,
+            representativeWeight: {
+              kind: "weighted-reference-midpoint" as const,
+              components: [{ referenceBucketId: "beta", midpoint: 300 }],
+              fallback: 300,
+            },
+          }
+        : bucket),
+    })).toContain("not covered by target mappings");
+    expect(validateCompoCalculationProfile({
+      ...profile,
+      compatibility: {
+        ...profile.compatibility,
+        plannerBucketByCalculationBucket: { ...profile.compatibility.plannerBucketByCalculationBucket, alpha: "b" },
+      },
+    })).toContain("outside factual source group");
+    expect(validateCompoCalculationProfile({
+      ...profile,
+      buckets: profile.buckets.map((bucket, index) => index === 0
+        ? { ...bucket, representativeWeight: { kind: "fixed" as const, value: 50 } }
+        : bucket),
+    })).toContain("maximum estimated-weight bound is insufficient");
+  });
+
+  it("rejects malformed generic reference-reader results", () => {
+    const profile = syntheticReferenceContractProfile();
+    const reference = { counts: { "future-max": 1, "future-member": -1 } };
+    expect(resolveCompoProfileTargets({
+      profile,
+      reference,
+      readCount: (value, id) => value.counts[id],
+    }).status).toBe("invalid");
+    expect(resolveCompoProfileTargets({
+      profile,
+      reference: { counts: { "future-max": 1, "future-member": 0.5 } },
+      readCount: (value, id) => value.counts[id],
+    }).status).toBe("invalid");
   });
 });
