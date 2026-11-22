@@ -17,14 +17,13 @@ upstream contract cannot supply the missing identity and contradiction facts.
 
 ## 1. Scope, baseline, and authorization
 
-This inventory was prepared during Codex's pre-publication work for PR #2142;
-PR #2142 is now published. The checked-out branch is
-`feature/p4d-1-source-authority-feasibility`, at local SHA
-`660f3689193b21bedb543ff0cb53a1ab7e82194d7`, which matches local
-`origin/dev` and the supplied starting development baseline. The repository is
-clean at the verified baseline. No application code, Prisma schema or
-migration, runtime configuration, production process, external service, or
-backup was changed.
+This inventory was prepared during Codex's pre-publication work and
+subsequently published in PR #2142 from the owner-created branch
+`feature/p4d-1-source-authority-feasibility`. The branch began at
+`dev@660f3689193b21bedb543ff0cb53a1ab7e82194d`, matching `origin/dev`
+at creation; subsequent documentation commits advanced the branch HEAD.
+No application code, Prisma schema or migration, runtime configuration,
+production process, external service, or backup was changed.
 
 An earlier GitHub file-API lookup failed with `404 No commit found for the
 ref`; that was an access/tooling result during the earlier inspection, not
@@ -542,5 +541,7 @@ git status --short --untracked-files=all
 git diff --name-only
 ```
 
-The work stops without committing, pushing, creating or updating a PR,
-merging, deploying, connecting to production, or restoring a backup.
+Codex's investigation stopped before publication; the owner subsequently
+committed and pushed the docs-only PR. Publishing this diagnostic does not
+authorize a merge, deployment, production connection, SQL execution,
+external upstream fetch, or backup restoration.
