@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
 import { FwaClanMembersSyncService } from "../src/services/fwa-feeds/FwaClanMembersSyncService";
+import { CompoPlaceService } from "../src/services/CompoPlaceService";
+import { CompoReplacementService } from "../src/services/CompoReplacementService";
+import { CompoFillService } from "../src/services/CompoFillService";
+import { InactiveWarService } from "../src/services/InactiveWarService";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
@@ -11,10 +15,13 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
   },
   fwaClanMemberCurrent: {
+    deleteMany: vi.fn(),
     findMany: vi.fn(),
+    upsert: vi.fn(),
   },
   fwaPlayerCatalog: {
     findMany: vi.fn(),
+    upsert: vi.fn(),
   },
   playerCurrent: {
     findMany: vi.fn(),
@@ -28,6 +35,26 @@ const prismaMock = vi.hoisted(() => ({
   heatMapRefBucketTarget: {
     findMany: vi.fn(),
   },
+  fwaFeedSyncState: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
+  playerLink: {
+    findMany: vi.fn(),
+    updateMany: vi.fn(),
+  },
+  playerActivity: {
+    findMany: vi.fn(),
+  },
+  fillerAccount: {
+    findMany: vi.fn(),
+  },
+  externalPlayerWeightCurrent: {
+    findMany: vi.fn(),
+  },
+  $transaction: vi.fn(),
+  $executeRaw: vi.fn(),
   weightInputDeferment: {
     findMany: vi.fn(),
   },
@@ -47,6 +74,10 @@ import {
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -98,6 +129,16 @@ function makeMember(input: {
     sourceSyncedAt:
       input.sourceSyncedAt ?? new Date("2026-04-11T01:30:00.000Z"),
   };
+}
+
+function hashCurrentRows(rows: Array<Record<string, unknown>>): string {
+  return computeClanMembersSnapshotHash(
+    rows.map((row) => toPersistedClanMembersSnapshotRow({
+      clanTag: String(row.clanTag),
+      playerTag: String(row.playerTag),
+      ...row,
+    })),
+  );
 }
 
 function makeCatalog(input: { playerTag: string; latestKnownWeight: number | null }) {
@@ -171,17 +212,38 @@ describe("CompoActualStateService", () => {
     prismaMock.trackedClan.findMany.mockReset();
     prismaMock.fwaClanCatalog.findFirst.mockReset();
     prismaMock.fwaClanMemberCurrent.findMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.deleteMany.mockReset();
+    prismaMock.fwaClanMemberCurrent.upsert.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockReset();
+    prismaMock.fwaPlayerCatalog.upsert.mockReset();
     prismaMock.playerCurrent.findMany.mockReset();
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
     prismaMock.heatMapRefBucketTarget.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findUnique.mockReset();
+    prismaMock.fwaFeedSyncState.upsert.mockReset();
+    prismaMock.playerLink.findMany.mockReset();
+    prismaMock.playerLink.updateMany.mockReset();
+    prismaMock.playerActivity.findMany.mockReset();
+    prismaMock.fillerAccount.findMany.mockReset();
+    prismaMock.externalPlayerWeightCurrent.findMany.mockReset();
+    prismaMock.$transaction.mockReset();
+    prismaMock.$executeRaw.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockReset();
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fillerAccount.findMany.mockResolvedValue([]);
+    prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
+    prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof prismaMock) => Promise<unknown>) => callback(prismaMock));
+    prismaMock.$executeRaw.mockResolvedValue(0);
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];
@@ -195,6 +257,275 @@ describe("CompoActualStateService", () => {
         contentHash: computeHeatMapRefContentHash(refs as never),
       }) }];
     });
+  });
+
+  it("round-trips FWA then CoC persistence into authoritative ACTUAL placement, replacement, and fill context", async () => {
+    const persistedRows: any[] = [];
+    const syncState: any = {
+      scopeKey: "#AAA111",
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastStatus: "IDLE",
+      lastRowCount: null,
+      lastChangedRowCount: null,
+      lastContentHash: null,
+      nextEligibleAt: null,
+    };
+    const now = new Date(Date.now() - 5_000);
+    const ref = makeHeatMapRef({ th15Count: 1 });
+    prismaMock.trackedClan.findMany.mockResolvedValue([{
+      tag: "#AAA111",
+      name: "Alpha Clan",
+      shortName: "AC",
+      clanBadge: null,
+    }]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([ref]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockImplementation(async () => [...persistedRows]);
+    prismaMock.fwaFeedSyncState.findMany.mockImplementation(async () => [syncState]);
+    prismaMock.fwaFeedSyncState.findUnique.mockImplementation(async () => syncState);
+    const applyStateUpsert = (args: any) => {
+      Object.assign(syncState, args.update ?? args.create ?? {});
+      return undefined;
+    };
+    prismaMock.fwaFeedSyncState.upsert.mockImplementation(applyStateUpsert);
+    prismaMock.fwaClanMemberCurrent.deleteMany.mockImplementation(async (args: any) => {
+      const before = persistedRows.length;
+      const notIn = args.where.playerTag?.notIn as string[] | undefined;
+      if (notIn) {
+        for (let index = persistedRows.length - 1; index >= 0; index -= 1) {
+          if (!notIn.includes(persistedRows[index]?.playerTag)) persistedRows.splice(index, 1);
+        }
+      } else {
+        persistedRows.splice(0, persistedRows.length);
+      }
+      return { count: before - persistedRows.length };
+    });
+    prismaMock.fwaClanMemberCurrent.upsert.mockImplementation(async (args: any) => {
+      const playerTag = args.where.clanTag_playerTag.playerTag;
+      const existing = persistedRows.find((row) => row.playerTag === playerTag);
+      if (existing) Object.assign(existing, args.update);
+      else persistedRows.push({ ...args.create });
+      return {};
+    });
+    prismaMock.fwaPlayerCatalog.upsert.mockResolvedValue({});
+    prismaMock.playerLink.findMany.mockResolvedValue([]);
+    prismaMock.playerActivity.findMany.mockResolvedValue([]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    vi.spyOn(InactiveWarService.prototype, "listInactiveWarPlayers").mockResolvedValue({ results: [] } as any);
+
+    const fwaRows = [{
+      clanTag: "#AAA111",
+      playerTag: "#PYLQ0289",
+      playerName: "FWA Name",
+      role: "member",
+      level: 10,
+      donated: 1,
+      received: 2,
+      rank: 1,
+      trophies: 1000,
+      league: "Gold",
+      townHall: 14,
+      weight: 145000,
+      inWar: true,
+    }];
+    const fwaService = new FwaClanMembersSyncService({
+      fetchClanMembers: vi.fn().mockResolvedValue(fwaRows),
+    } as any);
+    const fwaResult = await fwaService.syncTrackedClan("#AAA111", { force: true, now });
+    expect(fwaResult.status).toBe("SUCCESS");
+
+    const cocResult = await fwaService.refreshCurrentClanMembersForClanTags(["#AAA111"], {
+      now: new Date(Date.now() - 3_000),
+      cocService: {
+        getClan: vi.fn().mockResolvedValue({
+          tag: "#AAA111",
+          memberListPresent: true,
+          declaredMemberCountPresent: false,
+          declaredMemberCountValid: true,
+          declaredMemberCount: null,
+          members: [{
+            tag: "#PYLQ0289",
+            name: "CoC Name",
+            role: "member",
+            expLevel: 10,
+            donations: 3,
+            donationsReceived: 4,
+            clanRank: 1,
+            trophies: 1100,
+            league: { name: "Gold" },
+            townHallLevel: 15,
+          }],
+        }),
+      } as any,
+    });
+    expect(cocResult.failedClans).toEqual([]);
+    expect(syncState).toMatchObject({ lastStatus: "SUCCESS", lastSuccessAt: expect.any(Date) });
+    expect(persistedRows[0]).toMatchObject({
+      playerName: "CoC Name",
+      weight: 145000,
+      inWar: true,
+    });
+    expect(syncState.lastContentHash).toBe(hashCurrentRows(persistedRows));
+
+    const context = await loadCompoActualStateContext("guild-1");
+    expect(context.clans[0]?.base).toMatchObject({
+      rosterCoverage: "complete",
+      memberCount: 1,
+      memberCountEvidence: "observed",
+    });
+    expect(context.clans[0]?.members[0]).toMatchObject({
+      playerName: "CoC Name",
+      resolvedWeight: 145000,
+      resolvedWeightSource: "member",
+    });
+
+    const placement = await new CompoPlaceService().readPlace(145000, "TH15", "guild-1");
+    expect(placement.eligibleClanTags).toEqual(["#AAA111"]);
+    expect(placement.embeds[0]?.toJSON().fields?.some((field) =>
+      field.name === "Factual observations" && String(field.value).includes("observed 1 TH15"),
+    )).toBe(true);
+
+    const replacement = await new CompoReplacementService().resolveReplacementCandidates({
+      guildId: "guild-1",
+      weight: 145000,
+      bucket: "TH15",
+      context,
+    });
+    expect(replacement.evaluation.eligibleClanTags).toEqual(["#AAA111"]);
+    expect(replacement.evaluation.status).not.toBe("unavailable");
+
+    const fill = await new CompoFillService().readFill("guild-1");
+    expect(fill.trackedClanTags).toEqual(["#AAA111"]);
+    expect(fill.content).not.toContain("Reference validation is unavailable");
+  });
+
+  it.each([
+    {
+      name: "missing",
+      state: [],
+      expectedCoverage: "unavailable",
+    },
+    {
+      name: "partial row count",
+      state: [{ lastRowCount: null, lastStatus: "SUCCESS" }],
+      expectedCoverage: "partial",
+    },
+    {
+      name: "contradictory row count",
+      state: [{ lastRowCount: 99, lastStatus: "SUCCESS" }],
+      expectedCoverage: "contradictory",
+    },
+    {
+      name: "stale success",
+      state: [{ lastRowCount: 1, lastStatus: "SUCCESS", lastSuccessAt: new Date("2026-01-01T00:00:00.000Z") }],
+      expectedCoverage: "stale",
+    },
+  ])("fails closed for $name CLAN_MEMBERS evidence", async ({ state, expectedCoverage }) => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({
+      weightMinInclusive: 0,
+      weightMaxInclusive: 1_000_000,
+    })]);
+    const now = new Date();
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue(state.map((row) => ({
+      scopeKey: "#AAA111",
+      lastAttemptAt: (row as { lastSuccessAt?: Date }).lastSuccessAt ?? now,
+      lastSuccessAt: (row as { lastSuccessAt?: Date }).lastSuccessAt ?? now,
+      lastStatus: row.lastStatus,
+      lastRowCount: row.lastRowCount,
+      lastChangedRowCount: 1,
+      lastContentHash:
+        row.lastRowCount === 1
+          ? hashCurrentRows([makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 })])
+          : null,
+    })));
+
+    const context = await loadCompoActualStateContext("guild-1");
+    expect(context.clans[0]?.base.rosterCoverage).toBe(expectedCoverage);
+    expect(context.clans[0]?.base.memberCountEvidence).toBe("unknown");
+  });
+
+  it("accepts a fresh current-row-count NOOP as authoritative roster coverage", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({
+      weightMinInclusive: 0,
+      weightMaxInclusive: 1_000_000,
+    })]);
+    const now = new Date();
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValue([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: now,
+      lastSuccessAt: new Date(now.getTime() - 60_000),
+      lastStatus: "NOOP",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+      lastContentHash: hashCurrentRows([
+        makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 }),
+      ]),
+    }]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    expect(context.clans[0]?.base.rosterCoverage).toBe("complete");
+    expect(context.clans[0]?.base.memberCountEvidence).toBe("observed");
+    expect(context.clans[0]?.base.rosterEvidenceReason).toBe("sync_noop_current");
+  });
+
+  it("rejects future, non-authoritative, and same-cardinality snapshot evidence", async () => {
+    const member = makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 145000 });
+    prismaMock.trackedClan.findMany.mockResolvedValue([makeTrackedClan("#AAA111", "Alpha Clan")]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([member]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 })]);
+
+    const hash = hashCurrentRows([member]);
+    const futureTimestamp = new Date(Date.now() + 60_000);
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: futureTimestamp,
+      lastSuccessAt: futureTimestamp,
+      lastStatus: "SUCCESS",
+      lastRowCount: 1,
+      lastChangedRowCount: 1,
+      lastContentHash: hash,
+    }]);
+    const future = await loadCompoActualStateContext("guild-1");
+    expect(future.clans[0]?.base.rosterCoverage).toBe("contradictory");
+
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: new Date("2026-05-20T11:00:00.000Z"),
+      lastSuccessAt: new Date("2026-05-20T10:00:00.000Z"),
+      lastStatus: "SKIPPED",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+      lastContentHash: hash,
+    }]);
+    const skipped = await loadCompoActualStateContext("guild-1");
+    expect(skipped.clans[0]?.base.rosterCoverage).toBe("unavailable");
+
+    prismaMock.fwaFeedSyncState.findMany.mockResolvedValueOnce([{
+      scopeKey: "#AAA111",
+      lastAttemptAt: new Date("2026-05-20T11:00:00.000Z"),
+      lastSuccessAt: new Date("2026-05-20T10:00:00.000Z"),
+      lastStatus: "NOOP",
+      lastRowCount: 1,
+      lastChangedRowCount: 0,
+      lastContentHash: "different-same-cardinality-snapshot",
+    }]);
+    const changed = await loadCompoActualStateContext("guild-1");
+    expect(changed.clans[0]?.base.rosterCoverage).toBe("contradictory");
   });
 
   it("renders observed TH19 in ACTUAL state without target deltas", async () => {
@@ -235,6 +566,34 @@ describe("CompoActualStateService", () => {
       "1",
       "1",
       "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+  });
+
+  it("classifies a TH19 Town Hall by its resolved war-weight bucket", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 180000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", { view: "raw" });
+    expect(result.stateRows?.[1]).toEqual([
+      "Alpha Clan",
+      "180,000",
+      "0",
+      "0",
+      "1",
+      "1",
       "0",
       "0",
       "0",

@@ -114,4 +114,54 @@ describe("CoCService current war error wrapping", () => {
     });
   });
 
+  it("distinguishes absent declared counts from explicitly malformed counts", async () => {
+    const service = new CoCService();
+    const getClan = vi.fn()
+      .mockResolvedValueOnce({
+        data: { tag: "#ABC123", name: "Alpha", memberList: [] },
+      })
+      .mockResolvedValueOnce({
+        data: { tag: "#ABC123", name: "Alpha", members: -1, memberList: [] },
+      })
+      .mockResolvedValueOnce({
+        data: { tag: "#ABC123", name: "Alpha", members: 1.5, memberList: [] },
+      })
+      .mockResolvedValueOnce({
+        data: { tag: "#ABC123", name: "Alpha", members: "1", memberList: [] },
+      });
+    (service as any).clansApi = { getClan };
+
+    const absent = await runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      () => service.getClan("#ABC123"),
+    );
+    const negative = await runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      () => service.getClan("#ABC123"),
+    );
+    const fractional = await runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      () => service.getClan("#ABC123"),
+    );
+    const stringCount = await runWithCoCQueueContext(
+      { priority: "interactive", source: "test" },
+      () => service.getClan("#ABC123"),
+    );
+
+    expect(absent).toMatchObject({
+      memberListPresent: true,
+      declaredMemberCountPresent: false,
+      declaredMemberCountValid: true,
+      declaredMemberCount: null,
+    });
+    for (const result of [negative, fractional, stringCount]) {
+      expect(result).toMatchObject({
+        memberListPresent: true,
+        declaredMemberCountPresent: true,
+        declaredMemberCountValid: false,
+        declaredMemberCount: null,
+      });
+    }
+  });
+
 });

@@ -27,6 +27,7 @@ type FetchRowsParams = {
 type FetchRowsResult = {
   rows: unknown[];
   durationMs: number;
+  arrayPayload: boolean;
 };
 
 /** Purpose: centralize all fwastats JSON-feed HTTP calls, parsing, retries, and telemetry. */
@@ -61,14 +62,24 @@ export class FwaStatsClient {
     const normalizedTag = normalizeFwaTag(clanTag);
     const bare = normalizeFwaTagBare(clanTag);
     if (!normalizedTag || !bare) return [];
-    const { rows } = await this.fetchRows({
+    const { rows, arrayPayload } = await this.fetchRows({
       operation: "clan_members_json",
       url: `https://fwastats.com/Clan/${bare}/Members.json`,
       scope: normalizedTag,
     });
-    return rows
-      .map((row) => this.parseClanMembersRow(normalizedTag, row))
-      .filter((row): row is FwaClanMemberFeedRow => Boolean(row));
+    if (!arrayPayload) {
+      throw new Error("Members.json returned a non-array payload");
+    }
+    const parsed = rows.map((row) => this.parseClanMembersRow(normalizedTag, row));
+    if (parsed.some((row) => row === null)) {
+      throw new Error("Members.json contained malformed or unparseable member rows");
+    }
+    const normalizedRows = parsed.filter((row): row is FwaClanMemberFeedRow => Boolean(row));
+    const tags = normalizedRows.map((row) => row.playerTag);
+    if (new Set(tags).size !== tags.length || normalizedRows.length > 50) {
+      throw new Error("Members.json contained duplicate tags or exceeded clan capacity");
+    }
+    return normalizedRows;
   }
 
   /** Purpose: fetch and parse one clan active-war roster rows from `WarMembers.json?warNo=1`. */
@@ -123,7 +134,7 @@ export class FwaStatsClient {
             durationMs,
             status: "success",
           });
-          return { rows, durationMs };
+          return { rows, durationMs, arrayPayload: Array.isArray(response.data) };
         }
         lastError = new Error(`HTTP_${response.status}`);
         if (response.status < 500 || attempt >= maxAttempts) {

@@ -150,6 +150,26 @@ describe("FwaStatsClient parsing", () => {
     });
   });
 
+  it("rejects malformed Members.json rows instead of silently dropping them", async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: [
+        { tag: "abc123", name: "Player One" },
+        { tag: "", name: "Unparseable" },
+      ],
+    } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    await expect(client.fetchClanMembers("#2QG2C08UP")).rejects.toThrow("malformed");
+  });
+
+  it("rejects a non-array Members.json payload", async () => {
+    mockedAxios.get.mockResolvedValueOnce({ status: 200, data: { members: [] } } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    await expect(client.fetchClanMembers("#2QG2C08UP")).rejects.toThrow("non-array");
+  });
+
   it("parses Wars.json rows and skips invalid rows", async () => {
     mockedAxios.get.mockResolvedValueOnce({
       status: 200,

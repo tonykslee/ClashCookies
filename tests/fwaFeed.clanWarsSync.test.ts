@@ -176,7 +176,7 @@ describe("FwaClanWarsSyncService", () => {
 
     const service = new FwaClanWarsSyncService(client);
     const successResult = await service.syncClan("#aaa111", { force: true });
-    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValueOnce({
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({
       lastContentHash: successResult.contentHash,
     });
     const noopResult = await service.syncClan("#aaa111", { force: true });

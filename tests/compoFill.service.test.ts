@@ -446,6 +446,9 @@ describe("/compo fill service", () => {
           clanName: "Alpha",
           shortName: "A",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 123456,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -471,6 +474,9 @@ describe("/compo fill service", () => {
           clanName: "Bravo",
           shortName: "B",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 120000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -645,6 +651,9 @@ describe("/compo fill service", () => {
           clanName: "Alpha",
           shortName: "A",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 123456,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -826,6 +835,9 @@ describe("/compo fill service", () => {
           clanName: "Destination",
           shortName: "D",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 49 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -854,6 +866,9 @@ describe("/compo fill service", () => {
           clanName: "Source",
           shortName: "S",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 51 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -948,6 +963,9 @@ describe("/compo fill service", () => {
           clanName: "Destination",
           shortName: "D",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 48 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -976,6 +994,9 @@ describe("/compo fill service", () => {
           clanName: "Source",
           shortName: "S",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 51 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1104,6 +1125,9 @@ describe("/compo fill service", () => {
           clanName: "Valid Target",
           shortName: "V",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 6_615_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1132,6 +1156,9 @@ describe("/compo fill service", () => {
           clanName: "Unknown Target",
           shortName: "U",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 7_500_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1214,6 +1241,9 @@ describe("/compo fill service", () => {
           clanName: "Incomplete Destination",
           shortName: "D",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 48 * 135_000,
             unresolvedWeightCount: 1,
             deferredWeightCount: 0,
@@ -1318,6 +1348,9 @@ describe("/compo fill service", () => {
           clanName: "Inconsistent Destination",
           shortName: "D",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 49 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1412,6 +1445,9 @@ describe("/compo fill service", () => {
           clanName: "Alpha",
           shortName: "A",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 123456,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1564,6 +1600,9 @@ describe("/compo fill service", () => {
           clanName: "Alpha",
           shortName: "A",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 7_000_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,
@@ -1640,6 +1679,9 @@ describe("/compo fill service", () => {
           clanName: "Alpha",
           shortName: "A",
           base: {
+            memberCountEvidence: "observed",
+            rosterCoverage: "complete",
+            rosterSourceStatus: "SUCCESS",
             resolvedTotalWeight: 49 * 135_000,
             unresolvedWeightCount: 0,
             deferredWeightCount: 0,

@@ -1,6 +1,5 @@
 import type { FwaFeedType } from "@prisma/client";
 import { prisma } from "../../prisma";
-import { computeFeedContentHash } from "./hash";
 import { normalizeFwaTag } from "./normalize";
 import { CoCService } from "../CoCService";
 import { FwaStatsClient } from "./FwaStatsClient";
@@ -8,6 +7,61 @@ import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
 import { normalizePersistedPlayerName, normalizePlayerTag } from "../PlayerLinkService";
 import type { FwaSyncResult } from "./types";
+import {
+  computeClanMembersSnapshotHash,
+  normalizeClanMembersOptionalInteger,
+  normalizeClanMembersOptionalText,
+  toPersistedClanMembersSnapshotRow,
+  toClanMembersSnapshotRow,
+} from "./clanMembersSnapshot";
+
+const CLAN_MEMBER_SNAPSHOT_SELECT = {
+  clanTag: true,
+  playerTag: true,
+  playerName: true,
+  role: true,
+  level: true,
+  donated: true,
+  received: true,
+  rank: true,
+  trophies: true,
+  league: true,
+  townHall: true,
+  weight: true,
+  inWar: true,
+} as const;
+
+class SupersededClanMembersSyncError extends Error {
+  constructor() {
+    super("CLAN_MEMBERS sync was superseded by a newer attempt");
+    this.name = "SupersededClanMembersSyncError";
+  }
+}
+
+function isSameSyncAttempt(value: unknown, expected: Date): boolean {
+  return value instanceof Date && Number.isFinite(value.getTime()) && value.getTime() === expected.getTime();
+}
+
+function normalizeCoCMemberRow(clanTag: string, row: Record<string, unknown>) {
+  const playerTag = normalizePlayerTag(String(row.tag ?? ""));
+  const playerName = normalizePersistedPlayerName(String(row.name ?? "")) ?? "";
+  const townHallValue = row.townHallLevel ?? row.townhallLevel ?? row.townHall;
+  return {
+    clanTag,
+    playerTag: playerTag ?? "",
+    playerName,
+    role: normalizeClanMembersOptionalText(row.role),
+    level: normalizeClanMembersOptionalInteger(row.expLevel),
+    donated: normalizeClanMembersOptionalInteger(row.donations),
+    received: normalizeClanMembersOptionalInteger(row.donationsReceived),
+    rank: normalizeClanMembersOptionalInteger(row.clanRank),
+    trophies: normalizeClanMembersOptionalInteger(row.trophies),
+    league: normalizeClanMembersOptionalText((row.league as { name?: unknown } | null)?.name),
+    townHall: normalizeClanMembersOptionalInteger(townHallValue),
+    weight: null,
+    inWar: null,
+  };
+}
 
 type SyncOptions = {
   force?: boolean;
@@ -19,6 +73,7 @@ type SyncOptions = {
 export class FwaClanMembersSyncService {
   private static readonly FEED_TYPE: FwaFeedType = "CLAN_MEMBERS";
   private readonly syncState = new FwaFeedSyncStateService();
+  private readonly inFlightByClanTag = new Map<string, Promise<unknown>>();
 
   /** Purpose: initialize members-sync dependencies. */
   constructor(private readonly client = new FwaStatsClient()) {}
@@ -41,63 +96,68 @@ export class FwaClanMembersSyncService {
       `[fwa-feed] cwl_overview_current_members_refresh requested clan_count=${normalizedClanTags.length}`,
     );
     const results = await mapWithConcurrency(normalizedClanTags, concurrency, async (clanTag) => {
+      const scope = {
+        feedType: FwaClanMembersSyncService.FEED_TYPE,
+        scopeType: "CLAN_TAG" as const,
+        scopeKey: clanTag,
+      };
       try {
+        const attemptAccepted = await this.syncState.recordAttempt(
+          scope,
+          undefined,
+          now,
+        );
+        if (!attemptAccepted) {
+          return { clanTag, failed: false, rowCount: 0, changedRowCount: 0 };
+        }
         const clan = await cocService.getClan(clanTag);
-        const members = Array.isArray(clan?.members) ? clan.members : [];
+        if (clan?.memberListPresent !== true || !Array.isArray(clan?.members)) {
+          throw new Error("CLAN_MEMBERS response did not include an authoritative member list");
+        }
+        if (normalizeFwaTag(clan?.tag) !== clanTag) {
+          throw new Error("CLAN_MEMBERS response clan identity did not match the requested tag");
+        }
+        if (
+          clan?.declaredMemberCountPresent === true &&
+          (clan?.declaredMemberCountValid !== true ||
+          clan?.declaredMemberCount === null ||
+          !Number.isInteger(clan.declaredMemberCount) ||
+            clan.declaredMemberCount < 0 ||
+            clan.declaredMemberCount > 50 ||
+            clan.declaredMemberCount !== clan.members.length)
+        ) {
+          throw new Error("CLAN_MEMBERS response declared member count was incomplete or contradictory");
+        }
+        if (clan.members.length > 50) {
+          throw new Error("CLAN_MEMBERS response exceeded clan capacity");
+        }
+        const members = clan.members as Array<Record<string, unknown>>;
+        const normalizedMembers = members.map((row) => normalizeCoCMemberRow(clanTag, row));
+        const playerTags: Array<string | null> = normalizedMembers.map((row) =>
+          row.playerTag || null,
+        );
+        if (
+          playerTags.some((tag) => !tag) ||
+          new Set(playerTags).size !== playerTags.length ||
+          normalizedMembers.some((row) => !row.playerName)
+        ) {
+          throw new Error("CLAN_MEMBERS response contained malformed, missing, or duplicate member data");
+        }
+        const validPlayerTags = playerTags.filter((tag): tag is string => Boolean(tag));
         const result = await prisma.$transaction(async (tx) => {
-          const playerTags = members
-            .map((row: any) => normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? "")))
-            .filter(Boolean);
+          await this.syncState.lockScope(scope, tx);
+          const currentState = await this.syncState.getState(scope, tx);
+          if (!currentState || !isSameSyncAttempt(currentState.lastAttemptAt, now)) {
+            throw new SupersededClanMembersSyncError();
+          }
           const staleDelete = await tx.fwaClanMemberCurrent.deleteMany({
             where: {
               clanTag,
-              ...(playerTags.length > 0 ? { playerTag: { notIn: playerTags } } : {}),
+              ...(validPlayerTags.length > 0 ? { playerTag: { notIn: validPlayerTags } } : {}),
             },
           });
-          for (const row of members) {
-            const playerTag = normalizePlayerTag(String((row as { tag?: unknown })?.tag ?? ""));
-            if (!playerTag) continue;
-            const playerName =
-              normalizePersistedPlayerName(String((row as { name?: unknown })?.name ?? "")) ??
-              playerTag;
-            const role = String((row as { role?: unknown })?.role ?? "").trim() || null;
-            const level = Number.isFinite(Number((row as { expLevel?: unknown })?.expLevel))
-              ? Math.trunc(Number((row as { expLevel?: unknown })?.expLevel))
-              : null;
-            const townHall = Number.isFinite(
-              Number(
-                (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHallLevel ??
-                  (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townhallLevel ??
-                  (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHall ??
-                  null,
-              ),
-            )
-              ? Math.trunc(
-                  Number(
-                    (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHallLevel ??
-                      (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townhallLevel ??
-                      (row as { townHallLevel?: unknown; townhallLevel?: unknown; townHall?: unknown })?.townHall ??
-                      null,
-                  ),
-                )
-              : null;
-            const donated = Number.isFinite(Number((row as { donations?: unknown })?.donations))
-              ? Math.trunc(Number((row as { donations?: unknown })?.donations))
-              : null;
-            const received = Number.isFinite(
-              Number((row as { donationsReceived?: unknown })?.donationsReceived),
-            )
-              ? Math.trunc(Number((row as { donationsReceived?: unknown })?.donationsReceived))
-              : null;
-            const rank = Number.isFinite(Number((row as { clanRank?: unknown })?.clanRank))
-              ? Math.trunc(Number((row as { clanRank?: unknown })?.clanRank))
-              : null;
-            const trophies = Number.isFinite(Number((row as { trophies?: unknown })?.trophies))
-              ? Math.trunc(Number((row as { trophies?: unknown })?.trophies))
-              : null;
-            const leagueName = String(
-              ((row as { league?: { name?: unknown } | null })?.league?.name ?? "") as string,
-            ).trim();
+          for (const row of normalizedMembers) {
+            const playerTag = row.playerTag;
             await tx.fwaClanMemberCurrent.upsert({
               where: {
                 clanTag_playerTag: {
@@ -106,36 +166,58 @@ export class FwaClanMembersSyncService {
                 },
               },
               update: {
-                playerName,
-                role,
-                level,
-                donated,
-                received,
-                rank,
-                trophies,
-                league: leagueName || null,
-                townHall,
+                playerName: row.playerName,
+                role: row.role,
+                level: row.level,
+                donated: row.donated,
+                received: row.received,
+                rank: row.rank,
+                trophies: row.trophies,
+                league: row.league,
+                townHall: row.townHall,
                 sourceSyncedAt: now,
               },
               create: {
                 clanTag,
                 playerTag,
-                playerName,
-                role,
-                level,
-                donated,
-                received,
-                rank,
-                trophies,
-                league: leagueName || null,
-                townHall,
+                playerName: row.playerName,
+                role: row.role,
+                level: row.level,
+                donated: row.donated,
+                received: row.received,
+                rank: row.rank,
+                trophies: row.trophies,
+                league: row.league,
+                townHall: row.townHall,
                 sourceSyncedAt: now,
               },
             });
           }
+          const persistedRows = await tx.fwaClanMemberCurrent.findMany({
+            where: { clanTag },
+            select: CLAN_MEMBER_SNAPSHOT_SELECT,
+            orderBy: { playerTag: "asc" },
+          });
+          const contentHash = computeClanMembersSnapshotHash(
+            persistedRows.map((row) => toPersistedClanMembersSnapshotRow(row)),
+          );
+          const result = {
+            rowCount: persistedRows.length,
+            changedRowCount: staleDelete.count + normalizedMembers.length,
+            contentHash,
+            status: "SUCCESS" as const,
+          };
+          const recorded = await this.syncState.recordSuccess(
+            { ...scope, ...result, nextEligibleAt: currentState.nextEligibleAt ?? null },
+            now,
+            tx,
+            now,
+          );
+          if (!recorded) {
+            throw new SupersededClanMembersSyncError();
+          }
           return {
-            rowCount: members.length,
-            changedRowCount: staleDelete.count + members.length,
+            ...result,
           };
         });
         console.info(
@@ -143,6 +225,25 @@ export class FwaClanMembersSyncService {
         );
         return { clanTag, failed: false, ...result };
       } catch (error) {
+        if (error instanceof SupersededClanMembersSyncError) {
+          return { clanTag, failed: false, rowCount: 0, changedRowCount: 0 };
+        }
+        try {
+          await this.syncState.recordFailure(
+            {
+              ...scope,
+              errorCode: "COC_REFRESH_FAILED",
+              errorSummary: String(
+                (error as { message?: unknown })?.message ?? error,
+              ).slice(0, 200),
+              nextEligibleAt: undefined,
+            },
+            now,
+            now,
+          );
+        } catch {
+          // Preserve the bounded per-clan failure result if diagnostics cannot persist.
+        }
         console.warn(
           `[fwa-feed] cwl_overview_current_members_refresh clan=${clanTag} status=FAILURE error=${String(
             (error as { message?: unknown })?.message ?? error,
@@ -217,6 +318,25 @@ export class FwaClanMembersSyncService {
     if (!normalizedClanTag) {
       return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
     }
+    const previous = this.inFlightByClanTag.get(normalizedClanTag) ?? Promise.resolve();
+    const queued = previous
+      .catch(() => undefined)
+      .then(() => this.syncTrackedClanUnlocked(normalizedClanTag, options));
+    this.inFlightByClanTag.set(normalizedClanTag, queued);
+    try {
+      return await queued;
+    } finally {
+      if (this.inFlightByClanTag.get(normalizedClanTag) === queued) {
+        this.inFlightByClanTag.delete(normalizedClanTag);
+      }
+    }
+  }
+
+  private async syncTrackedClanUnlocked(clanTag: string, options?: SyncOptions): Promise<FwaSyncResult> {
+    const normalizedClanTag = normalizeFwaTag(clanTag);
+    if (!normalizedClanTag) {
+      return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
+    }
     const now = options?.now ?? new Date();
     const minimumIntervalMs = Math.max(0, Math.trunc(options?.minimumIntervalMs ?? 0));
     const scope = {
@@ -226,34 +346,56 @@ export class FwaClanMembersSyncService {
     };
     const nextEligibleAt =
       minimumIntervalMs > 0 ? new Date(now.getTime() + minimumIntervalMs) : null;
-    if (!options?.force && minimumIntervalMs > 0) {
-      const eligible = await this.syncState.isEligible(scope, minimumIntervalMs, now);
-      if (!eligible) {
-        return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
-      }
+    const attemptAccepted = await this.syncState.recordAttempt(
+      scope,
+      nextEligibleAt,
+      now,
+      !options?.force && minimumIntervalMs > 0 ? { minimumIntervalMs } : undefined,
+    );
+    if (!attemptAccepted) {
+      return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
     }
-
-    await this.syncState.recordAttempt(scope, nextEligibleAt, now);
     try {
       const rows = await this.client.fetchClanMembers(normalizedClanTag);
-      const sortedRows = [...rows].sort((a, b) => a.playerTag.localeCompare(b.playerTag));
-      const contentHash = computeFeedContentHash(sortedRows);
-      const previousState = await this.syncState.getState(scope);
-      if (previousState?.lastContentHash === contentHash) {
-        const result: FwaSyncResult = {
-          rowCount: rows.length,
-          changedRowCount: 0,
-          contentHash,
-          status: "NOOP",
-        };
-        await this.syncState.recordSuccess(
-          { ...scope, ...result, nextEligibleAt },
-          now,
-        );
-        return result;
-      }
+      const contentHash = computeClanMembersSnapshotHash(rows.map(toClanMembersSnapshotRow));
+      return await prisma.$transaction(async (tx) => {
+        await this.syncState.lockScope(scope, tx);
+        const currentState = await this.syncState.getState(scope, tx);
+        if (!currentState || !isSameSyncAttempt(currentState.lastAttemptAt, now)) {
+          throw new SupersededClanMembersSyncError();
+        }
 
-      const changedRowCount = await prisma.$transaction(async (tx) => {
+        const persistedBefore = await tx.fwaClanMemberCurrent.findMany({
+          where: { clanTag: normalizedClanTag },
+          select: CLAN_MEMBER_SNAPSHOT_SELECT,
+          orderBy: { playerTag: "asc" },
+        });
+        const persistedBeforeHash = computeClanMembersSnapshotHash(
+          persistedBefore.map((row) => toPersistedClanMembersSnapshotRow(row)),
+        );
+        if (
+          currentState.lastContentHash === contentHash &&
+          persistedBefore.length === rows.length &&
+          persistedBeforeHash === contentHash
+        ) {
+          const result: FwaSyncResult = {
+            rowCount: rows.length,
+            changedRowCount: 0,
+            contentHash: persistedBeforeHash,
+            status: "NOOP",
+          };
+          const recorded = await this.syncState.recordSuccess(
+            { ...scope, ...result, nextEligibleAt },
+            now,
+            tx,
+            now,
+          );
+          if (!recorded) {
+            throw new SupersededClanMembersSyncError();
+          }
+          return result;
+        }
+
         const playerTags = rows.map((row) => row.playerTag);
         const linkedPlayerRows =
           playerTags.length > 0
@@ -349,21 +491,38 @@ export class FwaClanMembersSyncService {
             }
           }
         }
-        return staleDelete.count + rows.length;
+        const persistedAfter = await tx.fwaClanMemberCurrent.findMany({
+          where: { clanTag: normalizedClanTag },
+          select: CLAN_MEMBER_SNAPSHOT_SELECT,
+          orderBy: { playerTag: "asc" },
+        });
+        const persistedAfterHash = computeClanMembersSnapshotHash(
+          persistedAfter.map((row) => toPersistedClanMembersSnapshotRow(row)),
+        );
+        if (persistedAfter.length !== rows.length || persistedAfterHash !== contentHash) {
+          throw new Error("CLAN_MEMBERS persisted snapshot did not match the authoritative feed");
+        }
+        const result: FwaSyncResult = {
+          rowCount: rows.length,
+          changedRowCount: staleDelete.count + rows.length,
+          contentHash: persistedAfterHash,
+          status: "SUCCESS",
+        };
+        const recorded = await this.syncState.recordSuccess(
+          { ...scope, ...result, nextEligibleAt },
+          now,
+          tx,
+          now,
+        );
+        if (!recorded) {
+          throw new SupersededClanMembersSyncError();
+        }
+        return result;
       });
-
-      const result: FwaSyncResult = {
-        rowCount: rows.length,
-        changedRowCount,
-        contentHash,
-        status: "SUCCESS",
-      };
-      await this.syncState.recordSuccess(
-        { ...scope, ...result, nextEligibleAt },
-        now,
-      );
-      return result;
     } catch (error) {
+      if (error instanceof SupersededClanMembersSyncError) {
+        return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
+      }
       const errorSummary = String((error as { message?: string })?.message ?? "unknown error").slice(
         0,
         200,
@@ -375,6 +534,7 @@ export class FwaClanMembersSyncService {
           errorSummary,
           nextEligibleAt,
         },
+        now,
         now,
       );
       throw error;

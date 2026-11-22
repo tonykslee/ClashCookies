@@ -8,6 +8,7 @@ import { InactiveWarService } from "./InactiveWarService";
 import { normalizePlayerTag } from "./PlayerLinkService";
 import { projectCompoActualStateView } from "../helper/compoActualStateView";
 import { WarPlanViolationHistoryService } from "./WarPlanViolationHistoryService";
+import { assessCompoActualRosterEvidence } from "../helper/compoActualRosterEvidence";
 
 export type CompoReplacementTypeFilter =
   | "filler"
@@ -55,6 +56,18 @@ export type CompoReplacementClanSummary = {
   inactiveCount: number;
   unlinkedCount: number;
   surplusCount: number;
+  evaluationStatus?: "evaluated" | "unavailable";
+};
+
+export type CompoReplacementEvaluation = {
+  status:
+    | "evaluated_with_candidates"
+    | "evaluated_no_candidates"
+    | "unavailable"
+    | "partial";
+  reasonCode: string | null;
+  eligibleClanTags: string[];
+  unavailableClanTags: string[];
 };
 
 export type CompoReplacementResolution = {
@@ -62,6 +75,7 @@ export type CompoReplacementResolution = {
   bucket: CompoWarDisplayBucket | null;
   summaryByClan: CompoReplacementClanSummary[];
   candidates: CompoReplacementCandidate[];
+  evaluation: CompoReplacementEvaluation;
 };
 
 export type CompoReplacementFilterResult = {
@@ -265,54 +279,86 @@ export class CompoReplacementService {
     includeViolationCounts?: boolean;
   }): Promise<CompoReplacementResolution> {
     const bucket = input.bucket ?? getCompoWarDisplayBucket(input.weight);
-    if (!bucket) {
-      return {
-        inputWeight: input.weight,
-        bucket: null,
-        summaryByClan: [],
-        candidates: [],
-      };
-    }
-    if (bucket === "TH19") {
-      return {
-        inputWeight: input.weight,
-        bucket,
-        summaryByClan: [],
-        candidates: [],
-      };
-    }
-
     const context =
       input.context ?? (await loadCompoActualStateContext(input.guildId ?? null));
-    if (context.clans.length === 0) {
-      return {
-        inputWeight: input.weight,
-        bucket,
-        summaryByClan: [],
-        candidates: [],
-      };
-    }
-    if (
-      context.referenceAvailability &&
-      context.referenceAvailability.status !== "validated"
-    ) {
-      return {
-        inputWeight: input.weight,
-        bucket,
-        summaryByClan: [],
-        candidates: [],
-      };
-    }
-
     const clanOrder = new Map(
       context.clans.map((clan, index) => [clan.clanTag, index] as const),
     );
+    const buildUnavailable = (
+      reasonCode: string,
+      unavailableClanTags = context.clans.map((clan) => clan.clanTag),
+    ): CompoReplacementResolution => ({
+      inputWeight: input.weight,
+      bucket,
+      summaryByClan: context.clans
+        .map((clan) => ({
+          clanTag: clan.clanTag,
+          clanName: clan.clanName,
+          uniqueCandidateCount: 0,
+          fillerCount: 0,
+          inactiveCount: 0,
+          unlinkedCount: 0,
+          surplusCount: 0,
+          evaluationStatus: unavailableClanTags.includes(clan.clanTag)
+            ? "unavailable" as const
+            : "evaluated" as const,
+        }))
+        .sort((left, right) => (clanOrder.get(left.clanTag) ?? 0) - (clanOrder.get(right.clanTag) ?? 0)),
+      candidates: [],
+      evaluation: {
+        status: unavailableClanTags.length === context.clans.length
+          ? "unavailable"
+          : "partial",
+        reasonCode,
+        eligibleClanTags: context.clans
+          .map((clan) => clan.clanTag)
+          .filter((tag) => !unavailableClanTags.includes(tag)),
+        unavailableClanTags,
+      },
+    });
+    if (!bucket) {
+      return buildUnavailable("invalid_weight_bucket");
+    }
+    if (bucket === "TH19") {
+      return buildUnavailable("th19_target_unavailable");
+    }
+    if (context.clans.length === 0) {
+      return buildUnavailable("roster_context_empty", []);
+    }
+    if (context.referenceAvailability?.status !== "validated") {
+      return buildUnavailable("reference_unavailable");
+    }
+
+    const eligibleClanTags: string[] = [];
+    const unavailableClanTags: string[] = [];
+    for (const clan of context.clans) {
+      const evidence = assessCompoActualRosterEvidence({ clan });
+      const projection = projectCompoActualStateView({
+        view: "auto",
+        base: clan.base,
+        heatMapRefs: context.heatMapRefs,
+      });
+      if (
+        evidence === "complete" &&
+        (clan.base.bucketCounts.TH19 ?? 0) === 0 &&
+        projection.selectedHeatMapRef !== null
+      ) {
+        eligibleClanTags.push(clan.clanTag);
+      } else {
+        unavailableClanTags.push(clan.clanTag);
+      }
+    }
+    if (eligibleClanTags.length === 0) {
+      return buildUnavailable("actual_roster_evidence_unavailable", unavailableClanTags);
+    }
     const memberSeeds: Array<ReplacementCandidateSeed & { key: string }> = [];
 
     const allPlayerTags = [...new Set(
-      context.clans.flatMap((clan) =>
+      context.clans
+        .filter((clan) => eligibleClanTags.includes(clan.clanTag))
+        .flatMap((clan) =>
         clan.members.map((member) => normalizeTagLike(member.playerTag)).filter(Boolean),
-      ),
+        ),
     )];
 
     const fillerRows = input.guildId
@@ -401,7 +447,7 @@ export class CompoReplacementService {
     }
 
     for (const clan of context.clans) {
-      if ((clan.base.bucketCounts.TH19 ?? 0) > 0) {
+      if (!eligibleClanTags.includes(clan.clanTag)) {
         continue;
       }
       const projection = projectCompoActualStateView({
@@ -521,11 +567,41 @@ export class CompoReplacementService {
         reasons: seed.reasons,
       }));
 
+    const candidateSummaryByClan = summarizeCandidatesByClan(candidates, clanOrder);
+    const summaryByClan = context.clans.map((clan) => {
+      const existing = candidateSummaryByClan.find((summary) => summary.clanTag === clan.clanTag);
+      if (existing) return existing;
+      return {
+        clanTag: clan.clanTag,
+        clanName: clan.clanName,
+        uniqueCandidateCount: 0,
+        fillerCount: 0,
+        inactiveCount: 0,
+        unlinkedCount: 0,
+        surplusCount: 0,
+        ...(unavailableClanTags.includes(clan.clanTag)
+          ? { evaluationStatus: "unavailable" as const }
+          : {}),
+      };
+    });
+
     return {
       inputWeight: input.weight,
       bucket,
-      summaryByClan: summarizeCandidatesByClan(candidates, clanOrder),
+      summaryByClan,
       candidates,
+      evaluation: {
+        status: unavailableClanTags.length === 0
+          ? candidates.length > 0
+            ? "evaluated_with_candidates"
+            : "evaluated_no_candidates"
+          : eligibleClanTags.length === 0
+            ? "unavailable"
+            : "partial",
+        reasonCode: unavailableClanTags.length > 0 ? "partial_clan_eligibility" : null,
+        eligibleClanTags,
+        unavailableClanTags,
+      },
     };
   }
 }

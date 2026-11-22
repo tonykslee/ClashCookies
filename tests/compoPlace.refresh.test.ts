@@ -1,4 +1,5 @@
 ﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EmbedBuilder } from "discord.js";
 import {
   buildCompoRefreshCustomIdForTest,
   handleCompoRefreshButton,
@@ -124,5 +125,26 @@ describe("compo place refresh button behavior", () => {
       ),
     ).toBe("Refresh Data");
     expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it("paginates placement pages without running a refresh or exposing multiple embeds", async () => {
+    const refreshPlaceSpy = vi.spyOn(CompoPlaceService.prototype, "refreshPlace");
+    vi.spyOn(CompoPlaceService.prototype, "readPlace").mockResolvedValue({
+      content: "paged",
+      embeds: [new EmbedBuilder().setTitle("Page 1"), new EmbedBuilder().setTitle("Page 2")],
+      trackedClanTags: ["#AAA111"],
+      eligibleClanTags: ["#AAA111"],
+      candidateCount: 1,
+      recommendedCount: 0,
+      vacancyCount: 0,
+      compositionCount: 1,
+    });
+    const interaction = makeInteraction("compo-refresh:place:user-1:145000:p:0:next");
+
+    await handleCompoRefreshButton(interaction as any, {} as any);
+
+    expect(refreshPlaceSpy).not.toHaveBeenCalled();
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(payload?.embeds).toHaveLength(1);
   });
 });

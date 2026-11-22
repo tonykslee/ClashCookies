@@ -2,6 +2,7 @@ import type {
   HeatMapRef,
   FwaClanMemberCurrent,
   FwaTrackedClanWarRosterMemberCurrent,
+  FwaFeedSyncStatus,
   TrackedClan,
 } from "@prisma/client";
 import {
@@ -16,6 +17,8 @@ import {
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
   type CompoActualStateView,
+  type CompoActualRosterCoverage,
+  type CompoActualRosterSourceStatus,
 } from "../helper/compoActualStateView";
 import { findHeatMapRefForWeight, getHeatMapRefBandKey } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
@@ -38,14 +41,44 @@ import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import {
+  getConfiguredClanMembersCadenceMinutes,
+  getHomeRosterCoverage,
+} from "./HomeRosterService";
+import {
+  computeClanMembersSnapshotHash,
+  toPersistedClanMembersSnapshotRow,
+} from "./fwa-feeds/clanMembersSnapshot";
 
 type TrackedClanRow = Pick<TrackedClan, "tag" | "name"> & {
   shortName?: string | null;
 };
 type CurrentMemberRow = Pick<
   FwaClanMemberCurrent,
-  "clanTag" | "playerTag" | "playerName" | "townHall" | "weight" | "sourceSyncedAt"
+  | "clanTag"
+  | "playerTag"
+  | "playerName"
+  | "role"
+  | "level"
+  | "donated"
+  | "received"
+  | "rank"
+  | "trophies"
+  | "league"
+  | "townHall"
+  | "weight"
+  | "inWar"
+  | "sourceSyncedAt"
 >;
+type ClanMembersSyncStateRow = {
+  scopeKey: string;
+  lastAttemptAt: Date | null;
+  lastSuccessAt: Date | null;
+  lastStatus: FwaFeedSyncStatus;
+  lastRowCount: number | null;
+  lastChangedRowCount: number | null;
+  lastContentHash: string | null;
+};
 type WarFallbackRow = Pick<
   FwaTrackedClanWarRosterMemberCurrent,
   "clanTag" | "playerTag" | "effectiveWeight" | "updatedAt"
@@ -375,6 +408,106 @@ export function maybeLogCompoActualDiagnostics(input: {
 
 export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
 
+function assessPersistedClanMembersCoverage(input: {
+  syncState: ClanMembersSyncStateRow | null;
+  memberCount: number;
+  now: Date;
+  snapshotHash: string;
+}): {
+  coverage: CompoActualRosterCoverage;
+  memberCountEvidence: "observed" | "unknown";
+  observedAt: Date | null;
+  sourceStatus: CompoActualRosterSourceStatus | null;
+  reason: string;
+} {
+  const state = input.syncState;
+  const isValidDate = (value: unknown): value is Date =>
+    value instanceof Date && Number.isFinite(value.getTime());
+  const observedAt = isValidDate(state?.lastSuccessAt) ? state.lastSuccessAt : null;
+  const sourceStatus = state?.lastStatus ?? null;
+  if (!state || !observedAt) {
+    return {
+      coverage: "unavailable",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_missing_success",
+    };
+  }
+  if (
+    !isValidDate(state.lastAttemptAt) ||
+    state.lastAttemptAt.getTime() < observedAt.getTime() ||
+    observedAt.getTime() > input.now.getTime() ||
+    state.lastAttemptAt.getTime() > input.now.getTime()
+  ) {
+    return {
+      coverage: "contradictory",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_timestamp_order_invalid",
+    };
+  }
+  if (state.lastStatus !== "SUCCESS" && state.lastStatus !== "NOOP") {
+    return {
+      coverage: state.lastStatus === "FAILURE" ? "stale" : "unavailable",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_status_not_authoritative",
+    };
+  }
+  if (state.lastRowCount === null || state.lastRowCount === undefined) {
+    return {
+      coverage: "partial",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_row_count_missing",
+    };
+  }
+  if (!Number.isInteger(state.lastRowCount) || state.lastRowCount < 0 || state.lastRowCount !== input.memberCount) {
+    return {
+      coverage: "contradictory",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_row_count_mismatch",
+    };
+  }
+  if (!state.lastContentHash || state.lastContentHash !== input.snapshotHash) {
+    return {
+      coverage: state.lastContentHash ? "contradictory" : "partial",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: state.lastContentHash ? "sync_snapshot_hash_mismatch" : "sync_snapshot_hash_missing",
+    };
+  }
+
+  const freshness = getHomeRosterCoverage({
+    lastSuccessAt: observedAt,
+    now: input.now,
+    cadenceMinutes: getConfiguredClanMembersCadenceMinutes(),
+  });
+  if (freshness.coverage !== "CURRENT") {
+    return {
+      coverage: "stale",
+      memberCountEvidence: "unknown",
+      observedAt,
+      sourceStatus,
+      reason: "sync_state_stale",
+    };
+  }
+  return {
+    coverage: "complete",
+    memberCountEvidence: "observed",
+    observedAt,
+    sourceStatus,
+    reason: state.lastStatus === "NOOP" ? "sync_noop_current" : "sync_success_current",
+  };
+}
+
 async function loadCompoActualStateContextFromTrackedClans(input: {
   guildId?: string | null;
   trackedClans: readonly (
@@ -401,25 +534,56 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
   }
 
-  const [members, reference] = await Promise.all([
+  const [members, reference, feedStates] = await Promise.all([
     prisma.fwaClanMemberCurrent.findMany({
       where: { clanTag: { in: trackedClanTags } },
       select: {
         clanTag: true,
         playerTag: true,
         playerName: true,
+        role: true,
+        level: true,
+        donated: true,
+        received: true,
+        rank: true,
+        trophies: true,
+        league: true,
         townHall: true,
         weight: true,
+        inWar: true,
         sourceSyncedAt: true,
       },
       orderBy: [{ clanTag: "asc" }, { sourceSyncedAt: "desc" }, { playerTag: "asc" }],
     }),
     resolveHeatMapRefReference({ guildId: input.guildId }),
+    prisma.fwaFeedSyncState.findMany({
+      where: {
+        feedType: "CLAN_MEMBERS",
+        scopeType: "CLAN_TAG",
+        scopeKey: { in: trackedClanTags },
+      },
+      select: {
+        scopeKey: true,
+        lastAttemptAt: true,
+        lastSuccessAt: true,
+        lastStatus: true,
+        lastRowCount: true,
+        lastChangedRowCount: true,
+        lastContentHash: true,
+      },
+    }),
   ]);
   const heatMapRefs = reference.heatMapRefs;
   const referenceAvailability = reference.availability;
   const availableHeatMapRefs =
     referenceAvailability.status === "validated" ? heatMapRefs : [];
+
+  const syncStateByClanTag = new Map<string, ClanMembersSyncStateRow>();
+  for (const row of feedStates ?? []) {
+    const clanTag = normalizeTag(row.scopeKey);
+    if (clanTag) syncStateByClanTag.set(clanTag, row);
+  }
+  const now = new Date();
 
   const membersByClanTag = new Map<string, CurrentMemberRow[]>();
   const allPlayerTags = new Set<string>();
@@ -556,6 +720,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
     let totalResolvedWeight = 0;
     let unresolvedWeightCount = 0;
+    let unclassifiedWeightCount = 0;
     let deferredWeightCount = 0;
     const members: CompoActualStateMemberContext[] = [];
 
@@ -599,6 +764,9 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         resolvedWeightSource,
       });
       if (resolvedWeight === null || !bucket) {
+        if (resolvedWeight !== null && !bucket) {
+          unclassifiedWeightCount += 1;
+        }
         if (isMissing) {
           unresolvedWeightCount += 1;
         }
@@ -611,6 +779,15 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       }
     }
 
+    const snapshotHash = computeClanMembersSnapshotHash(
+      clanMembers.map((member) => toPersistedClanMembersSnapshotRow(member)),
+    );
+    const rosterEvidence = assessPersistedClanMembersCoverage({
+      syncState: syncStateByClanTag.get(clanTag) ?? null,
+      memberCount: clanMembers.length,
+      now,
+      snapshotHash,
+    });
     clans.push({
       clanTag,
       clanName: clan.name?.trim() || clan.tag,
@@ -619,8 +796,14 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
+        unclassifiedWeightCount,
         deferredWeightCount,
         memberCount: clanMembers.length,
+        memberCountEvidence: rosterEvidence.memberCountEvidence,
+        rosterCoverage: rosterEvidence.coverage,
+        rosterObservedAt: rosterEvidence.observedAt ?? clanSourceSyncedAt,
+        rosterSourceStatus: rosterEvidence.sourceStatus,
+        rosterEvidenceReason: rosterEvidence.reason,
         bucketCounts,
       },
       members,
@@ -641,10 +824,10 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
 export async function loadCompoActualStateContext(
   guildId?: string | null,
 ): Promise<CompoActualStateContext> {
-  const tracked = await prisma.trackedClan.findMany({
+  const tracked = (await prisma.trackedClan.findMany({
     orderBy: { createdAt: "asc" },
     select: { tag: true, name: true, shortName: true },
-  });
+  })) ?? [];
   return loadCompoActualStateContextFromTrackedClans({
     guildId,
     trackedClans: tracked,

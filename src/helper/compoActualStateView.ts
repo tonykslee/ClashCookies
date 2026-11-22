@@ -28,6 +28,20 @@ export const COMPO_ACTUAL_STATE_VIEW_LABELS: Record<
 
 export const COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD = 10;
 
+export type CompoActualRosterCoverage =
+  | "complete"
+  | "stale"
+  | "partial"
+  | "contradictory"
+  | "unavailable";
+
+export type CompoActualRosterSourceStatus =
+  | "IDLE"
+  | "SUCCESS"
+  | "FAILURE"
+  | "NOOP"
+  | "SKIPPED";
+
 export function isCompoActualStateProjectionComplete(input: {
   unresolvedWeightCount: number;
 }): boolean {
@@ -37,8 +51,19 @@ export function isCompoActualStateProjectionComplete(input: {
 export type CompoActualStateBaseMetrics = {
   resolvedTotalWeight: number;
   unresolvedWeightCount: number;
+  unclassifiedWeightCount?: number;
   deferredWeightCount?: number;
   memberCount: number;
+  /** Whether the persisted current-member rows establish an observed count. */
+  memberCountEvidence?: "observed" | "unknown";
+  /** Whether the persisted row set is authoritative enough for current-roster claims. */
+  rosterCoverage?: CompoActualRosterCoverage;
+  /** The CLAN_MEMBERS sync-state timestamp that establishes this row set. */
+  rosterObservedAt?: Date | null;
+  /** The most recent CLAN_MEMBERS sync status for this clan. */
+  rosterSourceStatus?: CompoActualRosterSourceStatus | null;
+  /** Bounded diagnostic explaining why current-roster claims are unavailable. */
+  rosterEvidenceReason?: string | null;
   bucketCounts: CompoWarBucketCounts;
 };
 
