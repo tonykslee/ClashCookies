@@ -1,4 +1,5 @@
 import type { FwaFeedScopeType, FwaFeedSyncStatus, FwaFeedType } from "@prisma/client";
+import type { FwaWarMembersSourceEvidence } from "./FwaWarMembersSourceEvidence";
 
 export type FwaClansFeedRow = {
   clanTag: string;
@@ -105,6 +106,8 @@ export type FwaSyncResult = {
   changedRowCount: number;
   contentHash: string | null;
   status: FwaFeedSyncStatus;
+  /** Diagnostic-only raw source evidence; never persisted as native authority. */
+  sourceEvidence?: FwaWarMembersSourceEvidence;
 };
 
 export type FwaTrackedWarsWatchDecision = {

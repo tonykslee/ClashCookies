@@ -63,6 +63,19 @@ export type NativeReferenceSourceMember = {
 
 export type NativeReferenceSourceBindingStatus = "VERIFIED" | "UNAVAILABLE" | "CONFLICTING";
 export type NativeReferenceSourceCompletenessStatus = "VERIFIED" | "UNAVAILABLE" | "CONFLICTING";
+export type NativeReferenceAuthorityStatus = "VERIFIED" | "UNAVAILABLE" | "CONFLICTING";
+
+/** Purpose: keep diagnostic candidate eligibility separate from publication authority. */
+export type NativeReferenceSourceAuthorityDecision = {
+  identityStatus: NativeReferenceAuthorityStatus;
+  completenessStatus: NativeReferenceAuthorityStatus;
+  weightProvenanceStatus: NativeReferenceAuthorityStatus;
+  sourceGenerationStatus: NativeReferenceAuthorityStatus;
+  replayStatus: NativeReferenceAuthorityStatus;
+  candidateEligibilityStatus: NativeReferenceAuthorityStatus;
+  referencePublicationStatus: NativeReferenceAuthorityStatus;
+  reasonCodes: readonly string[];
+};
 
 export type NativeReferenceSourceRoster = {
   clanTag: string;
@@ -162,6 +175,7 @@ export type NativeReferenceCandidateArtifact = {
   exclusionCounts: Readonly<Record<string, number>>;
   diagnostics: readonly NativeReferenceBandDiagnostic[];
   sourceEvidenceFingerprint: string;
+  sourceAuthority: NativeReferenceSourceAuthorityDecision;
   contentFingerprint: string;
   unknownReason: string | null;
   unattributedExclusionCount: number;
@@ -362,6 +376,36 @@ function sourceCategoryFor(input: NativeCandidateConfig): { category: string; tr
   return {
     category: input.sourceCategory ?? NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY,
     trust: input.evidenceTrust ?? NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST,
+  };
+}
+
+function sourceAuthorityFor(input: NativeCandidateConfig): NativeReferenceSourceAuthorityDecision {
+  if (input.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY) {
+    return {
+      identityStatus: "UNAVAILABLE",
+      completenessStatus: "UNAVAILABLE",
+      weightProvenanceStatus: "UNAVAILABLE",
+      sourceGenerationStatus: "UNAVAILABLE",
+      replayStatus: "UNAVAILABLE",
+      candidateEligibilityStatus: "UNAVAILABLE",
+      referencePublicationStatus: "UNAVAILABLE",
+      reasonCodes: [
+        "exact_war_binding_unavailable",
+        "source_completeness_proof_unavailable",
+        "source_generation_unbound",
+        "persisted_current_state_is_latest_only",
+      ],
+    };
+  }
+  return {
+    identityStatus: "UNAVAILABLE",
+    completenessStatus: "UNAVAILABLE",
+    weightProvenanceStatus: "UNAVAILABLE",
+    sourceGenerationStatus: "UNAVAILABLE",
+    replayStatus: "UNAVAILABLE",
+    candidateEligibilityStatus: "UNAVAILABLE",
+    referencePublicationStatus: "UNAVAILABLE",
+    reasonCodes: ["synthetic_fixture_non_authoritative"],
   };
 }
 
@@ -812,6 +856,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
   const sourceObservationBounds = boundsFromDates(rawSourceObservationDates(input.sourceRosters));
   const qualifyingSourceObservationBounds = boundsFromDates(qualified.flatMap((row) => row.sourceObservationTimes));
   const source = sourceCategoryFor(input);
+  const sourceAuthority = sourceAuthorityFor(input);
   const sourceEvidenceFingerprint = sha256({
     sourceCategory: source.category,
     evidenceTrust: source.trust,
@@ -843,6 +888,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     unattributedExclusionCount: canonicalExclusions.filter((exclusion) => exclusion.bandAttribution === "UNATTRIBUTABLE").length,
     diagnostics: bandDiagnostics,
     sourceEvidenceFingerprint,
+    sourceAuthority,
     unknownReason: supportedBandCount === 0
       ? input.sourceRosters.length === 0 ? "no_source_evidence" : qualified.length === 0 ? "rejected_source_evidence" : "insufficient_source_support"
       : null,
@@ -913,7 +959,35 @@ function validateNativeReferenceCandidateArtifactInternal(
     new Date(candidate.evaluationAtIso).getTime() < new Date(candidate.eraPolicy.eraStartIso).getTime() ||
     new Date(candidate.evaluationAtIso).getTime() > new Date(candidate.eraPolicy.eraEndIso as string).getTime() ||
     !isBoundsRecord(candidate.sourceObservationBounds) ||
-    !isBoundsRecord(candidate.qualifyingSourceObservationBounds)
+    !isBoundsRecord(candidate.qualifyingSourceObservationBounds) ||
+    !isRecordValue(candidate.sourceAuthority)
+  ) return false;
+  const sourceAuthority = candidate.sourceAuthority;
+  const authorityStatuses = [
+    "identityStatus",
+    "completenessStatus",
+    "weightProvenanceStatus",
+    "sourceGenerationStatus",
+    "replayStatus",
+    "candidateEligibilityStatus",
+    "referencePublicationStatus",
+  ] as const;
+  if (
+    authorityStatuses.some((key) => !["VERIFIED", "UNAVAILABLE", "CONFLICTING"].includes(String(sourceAuthority[key]))) ||
+    !Array.isArray(sourceAuthority.reasonCodes) ||
+    sourceAuthority.reasonCodes.some((reason) => typeof reason !== "string" || !reason.trim())
+  ) return false;
+  const expectedAuthorityReasons = candidate.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY
+    ? [
+        "exact_war_binding_unavailable",
+        "source_completeness_proof_unavailable",
+        "source_generation_unbound",
+        "persisted_current_state_is_latest_only",
+      ]
+    : ["synthetic_fixture_non_authoritative"];
+  if (
+    authorityStatuses.some((key) => sourceAuthority[key] !== "UNAVAILABLE") ||
+    canonicalSortKey(sourceAuthority.reasonCodes) !== canonicalSortKey(expectedAuthorityReasons)
   ) return false;
   const rawBounds = candidate.sourceObservationBounds;
   const qualifyingBounds = candidate.qualifyingSourceObservationBounds;
