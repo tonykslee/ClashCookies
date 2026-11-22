@@ -54,6 +54,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   $transaction: vi.fn(),
+  $executeRaw: vi.fn(),
   weightInputDeferment: {
     findMany: vi.fn(),
   },
@@ -228,6 +229,7 @@ describe("CompoActualStateService", () => {
     prismaMock.fillerAccount.findMany.mockReset();
     prismaMock.externalPlayerWeightCurrent.findMany.mockReset();
     prismaMock.$transaction.mockReset();
+    prismaMock.$executeRaw.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockReset();
@@ -241,6 +243,7 @@ describe("CompoActualStateService", () => {
     prismaMock.fillerAccount.findMany.mockResolvedValue([]);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValue([]);
     prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof prismaMock) => Promise<unknown>) => callback(prismaMock));
+    prismaMock.$executeRaw.mockResolvedValue(0);
     prismaMock.$queryRaw.mockImplementation(async () => {
       const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
       const refs = last?.type === "return" ? await last.value : [];

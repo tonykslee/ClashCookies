@@ -19,6 +19,7 @@ const txMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     upsert: vi.fn(),
   },
+  $executeRaw: vi.fn(),
 }));
 
 const prismaMock = vi.hoisted(() => ({
@@ -29,6 +30,7 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     upsert: vi.fn(),
   },
+  $executeRaw: vi.fn(),
   $transaction: vi.fn(async (callback: (tx: typeof txMock) => Promise<unknown>) => callback(txMock)),
 }));
 
@@ -115,7 +117,7 @@ describe("FwaClanMembersSyncService", () => {
       },
     ]);
     const now = new Date("2026-11-21T22:00:00.000Z");
-    txMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+    txMock.fwaFeedSyncState.findUnique.mockResolvedValueOnce(null).mockResolvedValue({
       lastAttemptAt: now,
       lastSuccessAt: null,
       lastStatus: "IDLE",
@@ -222,7 +224,7 @@ describe("FwaClanMembersSyncService", () => {
 
     const service = new FwaClanMembersSyncService(client);
     const now = new Date("2026-11-21T22:00:00.000Z");
-    txMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+    txMock.fwaFeedSyncState.findUnique.mockResolvedValueOnce(null).mockResolvedValue({
       lastAttemptAt: now,
       lastSuccessAt: null,
       lastStatus: "IDLE",
@@ -340,7 +342,7 @@ describe("FwaClanMembersSyncService", () => {
 
     const service = new FwaClanMembersSyncService(client);
     const now = new Date("2026-11-21T22:01:00.000Z");
-    txMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+    txMock.fwaFeedSyncState.findUnique.mockResolvedValueOnce(null).mockResolvedValue({
       lastAttemptAt: now,
       lastSuccessAt: null,
       lastStatus: "IDLE",
@@ -384,7 +386,7 @@ describe("FwaClanMembersSyncService", () => {
     prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({ lastContentHash: hash });
     txMock.fwaClanMemberCurrent.findMany.mockResolvedValue(rows);
     const now = new Date("2026-11-21T22:02:00.000Z");
-    txMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+    txMock.fwaFeedSyncState.findUnique.mockResolvedValueOnce(null).mockResolvedValue({
       lastAttemptAt: now,
       lastSuccessAt: now,
       lastStatus: "SUCCESS",
@@ -399,7 +401,7 @@ describe("FwaClanMembersSyncService", () => {
 
     expect(result.status).toBe("NOOP");
     expect(result.changedRowCount).toBe(0);
-    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
   });
 
   it("repairs divergent persisted rows and publishes coherent add/remove/empty snapshots", async () => {
@@ -554,6 +556,105 @@ describe("FwaClanMembersSyncService", () => {
     expect(older.status).toBe("SKIPPED");
     expect(persistedRows[0]?.playerTag).toBe("#NEW");
     expect(state.lastContentHash).toBe(computeClanMembersSnapshotHash(newerRows.map(toClanMembersSnapshotRow)));
+  });
+
+  it("fences an older transaction from overwriting a newer publication after its fence read", async () => {
+    let persistedRows: any[] = [];
+    const state: any = {
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastStatus: "IDLE",
+      lastErrorCode: null,
+      lastErrorSummary: null,
+      lastRowCount: null,
+      lastChangedRowCount: null,
+      lastContentHash: null,
+      nextEligibleAt: null,
+    };
+    let resolveOldFenceRead!: () => void;
+    const oldFenceRead = new Promise<void>((resolve) => { resolveOldFenceRead = resolve; });
+    let releaseOldTransaction!: () => void;
+    const oldTransactionRelease = new Promise<void>((resolve) => { releaseOldTransaction = resolve; });
+    let transactionFenceReads = 0;
+    const applyStateUpsert = (args: any) => {
+      Object.assign(state, args.update ?? args.create ?? {});
+      return undefined;
+    };
+    let transactionQueue = Promise.resolve();
+    prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+      const previous = transactionQueue;
+      let release!: () => void;
+      transactionQueue = new Promise<void>((resolve) => { release = resolve; });
+      await previous;
+      try {
+        return await callback(txMock);
+      } finally {
+        release();
+      }
+    });
+    const rowFor = (playerTag: string, playerName: string) => ({
+      clanTag: "#AAA111", playerTag, playerName, role: null, level: 10,
+      donated: 0, received: 0, rank: 1, trophies: 1000, league: null, townHall: 14,
+      weight: 120000, inWar: true,
+    });
+    const applyMemberUpsert = async (args: any) => {
+      const row = { ...args.create, ...args.update };
+      const index = persistedRows.findIndex((candidate) => candidate.playerTag === row.playerTag);
+      if (index >= 0) persistedRows[index] = row;
+      else persistedRows.push(row);
+      return {};
+    };
+    prismaMock.fwaFeedSyncState.findUnique.mockImplementation(async () => ({ ...state }));
+    prismaMock.fwaFeedSyncState.upsert.mockImplementation(applyStateUpsert);
+    txMock.fwaFeedSyncState.findUnique.mockImplementation(async () => {
+      const snapshot = { ...state };
+      transactionFenceReads += 1;
+      if (transactionFenceReads === 2) {
+        resolveOldFenceRead();
+        await oldTransactionRelease;
+      }
+      return snapshot;
+    });
+    txMock.fwaFeedSyncState.upsert.mockImplementation(applyStateUpsert);
+    txMock.fwaClanMemberCurrent.findMany.mockImplementation(async () => persistedRows.map((row) => ({ ...row })));
+    txMock.fwaClanMemberCurrent.deleteMany.mockImplementation(async (args: any) => {
+      const before = persistedRows.length;
+      const notIn = args.where.playerTag?.notIn as string[] | undefined;
+      persistedRows = notIn
+        ? persistedRows.filter((row) => notIn.includes(row.playerTag))
+        : [];
+      return { count: before - persistedRows.length };
+    });
+    txMock.fwaClanMemberCurrent.upsert.mockImplementation(applyMemberUpsert);
+    txMock.fwaPlayerCatalog.upsert.mockResolvedValue({});
+    txMock.playerLink.findMany.mockResolvedValue([]);
+
+    const olderRows = [rowFor("#OLD", "Older")];
+    const newerRows = [rowFor("#NEW", "Newer")];
+    const olderService = new FwaClanMembersSyncService({
+      fetchClanMembers: vi.fn().mockResolvedValue(olderRows),
+    } as any);
+    const newerService = new FwaClanMembersSyncService({
+      fetchClanMembers: vi.fn().mockResolvedValue(newerRows),
+    } as any);
+    const olderPromise = olderService.syncTrackedClan("#AAA111", {
+      force: true,
+      now: new Date("2026-11-21T22:30:00.000Z"),
+    });
+    await oldFenceRead;
+
+    const newerPromise = newerService.syncTrackedClan("#AAA111", {
+      force: true,
+      now: new Date("2026-11-21T22:31:00.000Z"),
+    });
+    releaseOldTransaction();
+    const older = await olderPromise;
+    const newer = await newerPromise;
+
+    expect(newer.status).toBe("SUCCESS");
+    expect(older.status).toBe("SUCCESS");
+    expect(persistedRows[0]?.playerTag).toBe("#NEW");
+    expect(state.lastAttemptAt).toEqual(new Date("2026-11-21T22:31:00.000Z"));
   });
 
   it("builds all-tracked sync targets from TrackedClan", async () => {

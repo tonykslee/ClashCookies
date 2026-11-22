@@ -103,7 +103,14 @@ export class FwaClanMembersSyncService {
       };
       try {
         const previousState = await this.syncState.getState(scope);
-        await this.syncState.recordAttempt(scope, previousState?.nextEligibleAt ?? null, now);
+        const attemptAccepted = await this.syncState.recordAttempt(
+          scope,
+          previousState?.nextEligibleAt ?? null,
+          now,
+        );
+        if (!attemptAccepted) {
+          return { clanTag, failed: false, rowCount: 0, changedRowCount: 0 };
+        }
         const clan = await cocService.getClan(clanTag);
         if (clan?.memberListPresent !== true || !Array.isArray(clan?.members)) {
           throw new Error("CLAN_MEMBERS response did not include an authoritative member list");
@@ -139,6 +146,7 @@ export class FwaClanMembersSyncService {
         }
         const validPlayerTags = playerTags.filter((tag): tag is string => Boolean(tag));
         const result = await prisma.$transaction(async (tx) => {
+          await this.syncState.lockScope(scope, tx);
           const currentState = await this.syncState.getState(scope, tx);
           if (!currentState || !isSameSyncAttempt(currentState.lastAttemptAt, now)) {
             throw new SupersededClanMembersSyncError();
@@ -200,11 +208,15 @@ export class FwaClanMembersSyncService {
             contentHash,
             status: "SUCCESS" as const,
           };
-          await this.syncState.recordSuccess(
+          const recorded = await this.syncState.recordSuccess(
             { ...scope, ...result, nextEligibleAt: currentState.nextEligibleAt ?? null },
             now,
             tx,
+            now,
           );
+          if (!recorded) {
+            throw new SupersededClanMembersSyncError();
+          }
           return {
             ...result,
           };
@@ -219,19 +231,18 @@ export class FwaClanMembersSyncService {
         }
         try {
           const currentState = await this.syncState.getState(scope).catch(() => null);
-          if (isSameSyncAttempt(currentState?.lastAttemptAt, now)) {
-            await this.syncState.recordFailure(
-              {
-                ...scope,
-                errorCode: "COC_REFRESH_FAILED",
-                errorSummary: String(
-                  (error as { message?: unknown })?.message ?? error,
-                ).slice(0, 200),
-                nextEligibleAt: currentState?.nextEligibleAt ?? null,
-              },
-              now,
-            );
-          }
+          await this.syncState.recordFailure(
+            {
+              ...scope,
+              errorCode: "COC_REFRESH_FAILED",
+              errorSummary: String(
+                (error as { message?: unknown })?.message ?? error,
+              ).slice(0, 200),
+              nextEligibleAt: currentState?.nextEligibleAt ?? null,
+            },
+            now,
+            now,
+          );
         } catch {
           // Preserve the bounded per-clan failure result if diagnostics cannot persist.
         }
@@ -344,11 +355,15 @@ export class FwaClanMembersSyncService {
       }
     }
 
-    await this.syncState.recordAttempt(scope, nextEligibleAt, now);
+    const attemptAccepted = await this.syncState.recordAttempt(scope, nextEligibleAt, now);
+    if (!attemptAccepted) {
+      return { rowCount: 0, changedRowCount: 0, contentHash: null, status: "SKIPPED" };
+    }
     try {
       const rows = await this.client.fetchClanMembers(normalizedClanTag);
       const contentHash = computeClanMembersSnapshotHash(rows.map(toClanMembersSnapshotRow));
       return await prisma.$transaction(async (tx) => {
+        await this.syncState.lockScope(scope, tx);
         const currentState = await this.syncState.getState(scope, tx);
         if (!currentState || !isSameSyncAttempt(currentState.lastAttemptAt, now)) {
           throw new SupersededClanMembersSyncError();
@@ -493,11 +508,15 @@ export class FwaClanMembersSyncService {
           contentHash: persistedAfterHash,
           status: "SUCCESS",
         };
-        await this.syncState.recordSuccess(
+        const recorded = await this.syncState.recordSuccess(
           { ...scope, ...result, nextEligibleAt },
           now,
           tx,
+          now,
         );
+        if (!recorded) {
+          throw new SupersededClanMembersSyncError();
+        }
         return result;
       });
     } catch (error) {
@@ -508,18 +527,16 @@ export class FwaClanMembersSyncService {
         0,
         200,
       );
-      const currentState = await this.syncState.getState(scope).catch(() => null);
-      if (isSameSyncAttempt(currentState?.lastAttemptAt, now)) {
-        await this.syncState.recordFailure(
-          {
-            ...scope,
-            errorCode: "SYNC_FAILED",
-            errorSummary,
-            nextEligibleAt,
-          },
-          now,
-        );
-      }
+      await this.syncState.recordFailure(
+        {
+          ...scope,
+          errorCode: "SYNC_FAILED",
+          errorSummary,
+          nextEligibleAt,
+        },
+        now,
+        now,
+      );
       throw error;
     }
   }
