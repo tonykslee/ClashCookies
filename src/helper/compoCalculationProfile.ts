@@ -107,13 +107,31 @@ function isValidCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isUsableProfile(profile: CompoCalculationProfile): boolean {
-  return Boolean(
-    profile &&
-      typeof profile === "object" &&
-      Object.isFrozen(profile) &&
-      validateCompoCalculationProfile(profile) === null,
+function isSafeArithmeticNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+}
+
+function isDeeplyFrozen(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (value === null || typeof value !== "object") return true;
+  if (seen.has(value)) return true;
+  if (!Object.isFrozen(value)) return false;
+  seen.add(value);
+  return Object.values(value as Record<string, unknown>).every((child) =>
+    isDeeplyFrozen(child, seen),
   );
+}
+
+function isUsableProfile(profile: CompoCalculationProfile): boolean {
+  try {
+    return Boolean(
+      profile &&
+        typeof profile === "object" &&
+        isDeeplyFrozen(profile) &&
+        validateCompoCalculationProfile(profile) === null,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function readReferenceCountSafely<TReference>(
@@ -129,7 +147,7 @@ function readReferenceCountSafely<TReference>(
 }
 
 /** Validate profile structure before it can be used by a calculation path. */
-export function validateCompoCalculationProfile(
+function validateCompoCalculationProfileInternal(
   profile: CompoCalculationProfile,
 ): string | null {
   if (!profile || typeof profile !== "object") return "profile is required";
@@ -200,13 +218,13 @@ export function validateCompoCalculationProfile(
       return `missing representative policy (${bucket.id})`;
     }
     if (representative.kind === "fixed") {
-      if (!isFiniteNonnegative(representative.value)) {
+      if (!isSafeArithmeticNumber(representative.value) || representative.value < 0) {
         return `invalid representative weight (${bucket.id})`;
       }
     } else if (representative.kind === "weighted-reference-midpoint") {
       if (
         !Array.isArray(representative.components) ||
-        !isFiniteNonnegative(representative.fallback) ||
+        !isSafeArithmeticNumber(representative.fallback) ||
         representative.components.length === 0
       ) {
         return `invalid representative fallback (${bucket.id})`;
@@ -218,7 +236,7 @@ export function validateCompoCalculationProfile(
           typeof component.referenceBucketId !== "string" ||
           !component.referenceBucketId.trim() ||
           componentIds.has(component.referenceBucketId) ||
-          !isFiniteNonnegative(component.midpoint)
+          !isSafeArithmeticNumber(component.midpoint)
         ) {
           return `invalid representative component (${bucket.id})`;
         }
@@ -277,7 +295,7 @@ export function validateCompoCalculationProfile(
       !bucketIds.has(mapping.calculationBucketId) ||
       targetMappingByBucket.has(mapping.calculationBucketId)
     ) {
-      return `ambiguous target mapping (${mapping.calculationBucketId})`;
+      return `ambiguous target mapping (${mapping?.calculationBucketId ?? ""})`;
     }
     if (mapping.referenceBucketIds.length === 0) {
       return `target mapping has no reference buckets (${mapping.calculationBucketId})`;
@@ -349,6 +367,9 @@ export function validateCompoCalculationProfile(
         maximumBucket.representativeWeight.fallback,
         ...maximumBucket.representativeWeight.components.map((component: { midpoint: number }) => component.midpoint),
       );
+  if (!isSafeArithmeticNumber(maximumWeight)) {
+    return "maximum estimated-weight bound is invalid";
+  }
   for (const bucket of profile.buckets) {
     const representative = bucket.representativeWeight;
     if (representative.kind === "fixed" && representative.value > maximumWeight) {
@@ -365,10 +386,22 @@ export function validateCompoCalculationProfile(
   return null;
 }
 
+export function validateCompoCalculationProfile(
+  profile: CompoCalculationProfile,
+): string | null {
+  try {
+    return validateCompoCalculationProfileInternal(profile);
+  } catch {
+    return "malformed profile definition";
+  }
+}
+
 /** Create a validated, immutable profile with no shared mutable policy state. */
 export function createCompoCalculationProfile(
   profile: CompoCalculationProfile,
 ): CompoCalculationProfile {
+  const initialError = validateCompoCalculationProfile(profile);
+  if (initialError) throw new Error(`Invalid composition calculation profile: ${initialError}`);
   const normalized = {
     ...profile,
     buckets: profile.buckets.map((bucket) => ({
@@ -597,19 +630,28 @@ export function getCompoProfileRepresentativeWeight<TReference = HeatMapRef>(
   if (!isUsableProfile(profile)) return null;
   const bucket = profile.buckets.find((candidate) => candidate.id === calculationBucketId);
   if (!bucket) return null;
-  if (bucket.representativeWeight.kind === "fixed") return bucket.representativeWeight.value;
-  if (!reference) return bucket.representativeWeight.fallback;
+  if (bucket.representativeWeight.kind === "fixed") {
+    return isSafeArithmeticNumber(bucket.representativeWeight.value)
+      ? bucket.representativeWeight.value
+      : null;
+  }
+  if (!reference) return isSafeArithmeticNumber(bucket.representativeWeight.fallback)
+    ? bucket.representativeWeight.fallback
+    : null;
   let total = 0;
   let count = 0;
   for (const component of bucket.representativeWeight.components) {
     const componentCount = readReferenceCountSafely(readCount, reference, component.referenceBucketId);
     if (!isValidCount(componentCount)) return null;
     if (componentCount > 0 && component.midpoint > Number.MAX_SAFE_INTEGER / componentCount) return null;
-    total += componentCount * component.midpoint;
+    const contribution = componentCount * component.midpoint;
+    if (!isSafeArithmeticNumber(contribution) || !isSafeArithmeticNumber(total + contribution)) return null;
+    total += contribution;
     count += componentCount;
     if (!Number.isSafeInteger(total) || !Number.isSafeInteger(count)) return null;
   }
-  return count > 0 ? Math.round(total / count) : bucket.representativeWeight.fallback;
+  const representative = count > 0 ? Math.round(total / count) : bucket.representativeWeight.fallback;
+  return isSafeArithmeticNumber(representative) ? representative : null;
 }
 
 export function getCompoProfileMaximumRepresentativeWeight<TReference = HeatMapRef>(
@@ -633,19 +675,26 @@ export function getCompoProfileMaximumEstimatedWeightBound(
     (candidate) => candidate.id === profile.maximumEstimatedWeightBucketId,
   );
   if (!bucket) return null;
-  return bucket.representativeWeight.kind === "fixed"
+  const bound = bucket.representativeWeight.kind === "fixed"
     ? bucket.representativeWeight.value
     : Math.max(
         bucket.representativeWeight.fallback,
         ...bucket.representativeWeight.components.map((component: { midpoint: number }) => component.midpoint),
       );
+  return isSafeArithmeticNumber(bound) ? bound : null;
 }
 
 export function calculateProfileDeviationScore(input: { profile: CompoCalculationProfile; observedCounts: Readonly<Record<string, number>>; targetCounts: Readonly<Record<string, number>> | null }): number | null {
   if (!isUsableProfile(input.profile)) return null;
   const validation = validateProfileCountEvidence(input);
   if (validation.status !== "supported" || !validation.targetCounts) return null;
-  return input.profile.buckets.reduce((sum, bucket) => sum + Math.abs(validation.observedCounts[bucket.id]! - validation.targetCounts![bucket.id]!) * bucket.deviationPenalty, 0);
+  let score = 0;
+  for (const bucket of input.profile.buckets) {
+    const contribution = Math.abs(validation.observedCounts[bucket.id]! - validation.targetCounts![bucket.id]!) * bucket.deviationPenalty;
+    if (!isSafeArithmeticNumber(contribution) || !isSafeArithmeticNumber(score + contribution)) return null;
+    score += contribution;
+  }
+  return score;
 }
 
 /** Project missing slots once using the selected profile's ordered policy. */
@@ -663,7 +712,11 @@ export function projectCompoProfileCounts<TReference = HeatMapRef>(input: { prof
     if (remaining <= 0) break;
     const deficit = Math.max(0, validation.targetCounts![bucket.id]! - counts[bucket.id]!);
     const fill = Math.min(remaining, deficit);
-    counts[bucket.id] += fill;
+    const nextCount = counts[bucket.id]! + fill;
+    if (!isValidCount(nextCount)) {
+      return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `projected count overflow (${bucket.id})` };
+    }
+    counts[bucket.id] = nextCount;
     remaining -= fill;
   }
   const reverseBuckets = [...input.profile.buckets].reverse();
@@ -673,7 +726,11 @@ export function projectCompoProfileCounts<TReference = HeatMapRef>(input: { prof
       const candidateDistance = Math.abs(counts[bucket.id]! - validation.targetCounts![bucket.id]!);
       return candidateDistance < bestDistance ? bucket : best;
     }, reverseBuckets[0]!);
-    counts[next.id] += 1;
+    const nextCount = counts[next.id]! + 1;
+    if (!isValidCount(nextCount)) {
+      return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `projected count overflow (${next.id})` };
+    }
+    counts[next.id] = nextCount;
     remaining -= 1;
   }
   let addedWeight = 0;
@@ -685,9 +742,21 @@ export function projectCompoProfileCounts<TReference = HeatMapRef>(input: { prof
       input.readReferenceCount,
     );
     if (representative === null) return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `representative weight is unavailable (${bucket.id})` };
-    addedWeight += Math.max(0, counts[bucket.id]! - validation.observedCounts[bucket.id]!) * representative;
+    const fill = Math.max(0, counts[bucket.id]! - validation.observedCounts[bucket.id]!);
+    if (fill > 0 && representative > Number.MAX_SAFE_INTEGER / fill) {
+      return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `projected weight overflow (${bucket.id})` };
+    }
+    const added = fill * representative;
+    if (!isSafeArithmeticNumber(added) || !isSafeArithmeticNumber(addedWeight + added)) {
+      return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: `projected weight overflow (${bucket.id})` };
+    }
+    addedWeight += added;
   }
-  return { status: "supported", counts, addedWeight, deviationScore: calculateProfileDeviationScore({ profile: input.profile, observedCounts: counts, targetCounts: validation.targetCounts }), reason: null };
+  const deviationScore = calculateProfileDeviationScore({ profile: input.profile, observedCounts: counts, targetCounts: validation.targetCounts });
+  if (deviationScore === null || !isSafeArithmeticNumber(deviationScore)) {
+    return { status: "unavailable", counts, addedWeight: 0, deviationScore: null, reason: "projected deviation is unavailable" };
+  }
+  return { status: "supported", counts, addedWeight, deviationScore, reason: null };
 }
 
 /** Generate only actions for buckets with complete, explicit profile targets. */

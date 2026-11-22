@@ -71,18 +71,18 @@ function syntheticReferenceContractProfile() {
     profileId: "test-only-reference-contract",
     policyVersion: "test-only-reference-contract-1",
     buckets: [
-      { id: "alpha", order: 0, sourceBucketIds: ["a"], displayLabel: "Alpha", deviationPenalty: 2, actionPriority: 0, representativeWeight: { kind: "fixed", value: 300 } },
-      { id: "beta", order: 1, sourceBucketIds: ["b"], displayLabel: "Beta", deviationPenalty: 1, actionPriority: 1, representativeWeight: { kind: "weighted-reference-midpoint", components: [{ referenceBucketId: "future-member", midpoint: 100 }], fallback: 80 } },
+      { id: "alpha", order: 0, sourceBucketIds: ["TH18"], displayLabel: "Alpha", deviationPenalty: 2, actionPriority: 0, representativeWeight: { kind: "fixed", value: 300 } },
+      { id: "beta", order: 1, sourceBucketIds: ["TH17"], displayLabel: "Beta", deviationPenalty: 1, actionPriority: 1, representativeWeight: { kind: "weighted-reference-midpoint", components: [{ referenceBucketId: "future-member", midpoint: 100 }], fallback: 80 } },
     ],
     unsupportedFactualBucketIds: [],
-    factualToCalculationBucket: { a: "alpha", b: "beta" },
+    factualToCalculationBucket: { TH18: "alpha", TH17: "beta" },
     targetMappings: [
       { calculationBucketId: "alpha", referenceBucketIds: ["future-max"] },
       { calculationBucketId: "beta", referenceBucketIds: ["future-member"] },
     ],
     compatibility: {
-      plannerBucketByCalculationBucket: { alpha: "a", beta: "b" },
-      displayBucketByCalculationBucket: { alpha: "alpha", beta: "beta" },
+      plannerBucketByCalculationBucket: { alpha: "TH18", beta: "TH17" },
+      displayBucketByCalculationBucket: { alpha: "TH18", beta: "TH17" },
     },
     maximumEstimatedWeightBucketId: "alpha",
   });
@@ -256,6 +256,81 @@ describe("composition calculation profiles", () => {
     expect(getCompoProfileRepresentativeWeight(profile, "beta", reference, readCount)).toBe(100);
   });
 
+  it("threads genuinely new reference IDs through Raw, Auto, Best, Custom, and ranked advice", () => {
+    const profile = syntheticReferenceContractProfile();
+    const reference = {
+      weightMinInclusive: 0,
+      weightMaxInclusive: 10_000_000,
+      counts: { "future-max": 1, "future-member": 49 },
+    } as unknown as import("@prisma/client").HeatMapRef;
+    const readCount = (value: import("@prisma/client").HeatMapRef, id: string) =>
+      (value as unknown as { counts: Record<string, number> }).counts[id];
+    const base = {
+      resolvedTotalWeight: 5_000,
+      unresolvedWeightCount: 0,
+      memberCount: 50,
+      bucketCounts: makeRuntimeCounts({ TH17: 50 }),
+      profileReferenceCountReader: readCount,
+    };
+
+    for (const view of ["raw", "auto", "best", "custom"] as const) {
+      const summary = evaluateCompoAdvice({
+        mode: "actual",
+        view,
+        customBandIndex: 0,
+        base,
+        heatMapRefs: [reference],
+        profile,
+      });
+      expect(summary.currentProjection.targetStatus).toBe("supported");
+      expect(summary.currentScore).toBe(3);
+      expect(summary.recommendationText).toBe("Replace one TH17 with one TH18");
+      expect(summary.resultingScore).toBe(0);
+      expect(summary.alternateTexts).toEqual([]);
+    }
+  });
+
+  it("derives grouped Custom deltas and synthetic Best Fit display counts from calculation space", () => {
+    const profile = syntheticRuntimeProfile();
+    const customReference = makeRuntimeRef({ min: 0, max: 9_999_999, future: 2, upper: 0, lower: 48 });
+    const custom = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+      base: {
+        resolvedTotalWeight: 2 * 160000 + 48 * 120000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeRuntimeCounts({ TH17: 2, TH13: 48 }),
+      },
+      heatMapRefs: [customReference],
+      profile,
+    });
+    expect(custom.targetDeltaByBucket.TH18).toBe(2);
+    expect(custom.currentProjection.calculationCounts).toEqual({ future: 0, upper: 2, lower: 48 });
+    expect(custom.currentProjection.displayCounts.TH17).toBe(2);
+    expect(custom.currentScore).toBe(22);
+
+    const bestReference = makeRuntimeRef({ min: 0, max: 9_999_999, future: 1, upper: 49, lower: 0 });
+    const best = projectCompoActualStateView({
+      view: "best",
+      base: {
+        resolvedTotalWeight: 49 * 160000,
+        unresolvedWeightCount: 0,
+        memberCount: 49,
+        bucketCounts: makeRuntimeCounts({ TH17: 49 }),
+      },
+      heatMapRefs: [bestReference],
+      profile,
+    });
+    expect(best.targetStatus).toBe("supported");
+    expect(best.calculationCounts).toEqual({ future: 1, upper: 49, lower: 0 });
+    expect(best.displayCounts.TH19).toBe(1);
+    expect(best.totalWeight).toBe(49 * 160000 + 190000);
+    expect(best.deltaByBucket.TH19).toBe(0);
+    expect(best.deviationScore).toBe(0);
+  });
+
   it("simulates a grouped synthetic swap from a non-representative populated source", () => {
     const profile = syntheticRuntimeProfile();
     const summary = evaluateCompoAdvice({
@@ -408,5 +483,106 @@ describe("composition calculation profiles", () => {
       reference: { counts: { "future-max": 1, "future-member": 0.5 } },
       readCount: (value, id) => value.counts[id],
     }).status).toBe("invalid");
+  });
+
+  it("fails closed for shallow-frozen profiles, malformed elements, and unsafe arithmetic", () => {
+    const profile = syntheticProfile();
+    const shallow = Object.freeze({
+      ...profile,
+      buckets: profile.buckets.map((bucket) => ({
+        ...bucket,
+        sourceBucketIds: [...bucket.sourceBucketIds],
+        representativeWeight: { ...bucket.representativeWeight },
+      })),
+      unsupportedFactualBucketIds: [...profile.unsupportedFactualBucketIds],
+      factualToCalculationBucket: { ...profile.factualToCalculationBucket },
+      targetMappings: profile.targetMappings.map((mapping) => ({
+        ...mapping,
+        referenceBucketIds: [...mapping.referenceBucketIds],
+      })),
+      compatibility: {
+        plannerBucketByCalculationBucket: { ...profile.compatibility.plannerBucketByCalculationBucket },
+        displayBucketByCalculationBucket: { ...profile.compatibility.displayBucketByCalculationBucket },
+      },
+    });
+    expect(calculateProfileDeviationScore({
+      profile: shallow,
+      observedCounts: { alpha: 0, beta: 0, gamma: 0 },
+      targetCounts: { alpha: 0, beta: 0, gamma: 0 },
+    })).toBeNull();
+    expect(validateCompoCalculationProfile({
+      ...profile,
+      targetMappings: [null as never, ...profile.targetMappings],
+    })).toContain("ambiguous target mapping");
+
+    const overflowProjection = projectCompoProfileCounts({
+      profile,
+      observedCounts: { alpha: Number.MAX_SAFE_INTEGER, beta: Number.MAX_SAFE_INTEGER, gamma: Number.MAX_SAFE_INTEGER },
+      targetCounts: { alpha: Number.MAX_SAFE_INTEGER, beta: Number.MAX_SAFE_INTEGER, gamma: Number.MAX_SAFE_INTEGER },
+      missingCount: 1,
+      reference: null,
+    });
+    expect(overflowProjection.status).toBe("unavailable");
+    expect(projectCompoProfileCounts({
+      profile,
+      observedCounts: { alpha: 0, beta: 0, gamma: 0 },
+      targetCounts: { alpha: 0, beta: 0, gamma: 0 },
+      missingCount: Number.MAX_SAFE_INTEGER + 1,
+      reference: null,
+    }).status).toBe("unavailable");
+
+    const nonfiniteScoreProfile = createCompoCalculationProfile({
+      ...profile,
+      buckets: profile.buckets.map((bucket, index) => index === 0
+        ? { ...bucket, deviationPenalty: Number.MAX_VALUE }
+        : bucket),
+    });
+    expect(calculateProfileDeviationScore({
+      profile: nonfiniteScoreProfile,
+      observedCounts: { alpha: 1, beta: 0, gamma: 0 },
+      targetCounts: { alpha: 0, beta: 0, gamma: 0 },
+    })).toBeNull();
+
+    const unsafeWeightProfile = createCompoCalculationProfile({
+      ...profile,
+      buckets: profile.buckets.map((bucket) => ({
+        ...bucket,
+        representativeWeight: { kind: "fixed" as const, value: 4_000_000_000_000_000 },
+      })),
+    });
+    expect(projectCompoProfileCounts({
+      profile: unsafeWeightProfile,
+      observedCounts: { alpha: 0, beta: 0, gamma: 0 },
+      targetCounts: { alpha: 0, beta: 0, gamma: 0 },
+      missingCount: 3,
+      reference: null,
+    }).status).toBe("unavailable");
+
+    const overflowFactualProfile = createCompoCalculationProfile({
+      ...profile,
+      buckets: [
+        { ...profile.buckets[0]!, sourceBucketIds: ["TH18", "TH17"] },
+        { ...profile.buckets[1]!, sourceBucketIds: ["TH16"] },
+        { ...profile.buckets[2]!, sourceBucketIds: ["TH15"] },
+      ],
+      factualToCalculationBucket: {
+        TH18: "alpha", TH17: "alpha", TH16: "beta", TH15: "gamma", future: null,
+      },
+      compatibility: {
+        plannerBucketByCalculationBucket: { alpha: "TH18", beta: "TH16", gamma: "TH15" },
+        displayBucketByCalculationBucket: { alpha: "TH18", beta: "TH16", gamma: "TH15" },
+      },
+    });
+    expect(projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 0,
+        unresolvedWeightCount: 0,
+        memberCount: 2,
+        bucketCounts: makeRuntimeCounts({ TH18: Number.MAX_SAFE_INTEGER, TH17: 1 }),
+      },
+      heatMapRefs: [],
+      profile: overflowFactualProfile,
+    }).targetStatus).toBe("unavailable");
   });
 });

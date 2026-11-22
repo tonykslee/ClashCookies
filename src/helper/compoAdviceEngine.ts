@@ -466,6 +466,7 @@ function buildCustomProjection(input: {
     selection.selectedHeatMapRef,
     input.profile,
     input.base.profileReferenceCountReader,
+    rawProjection.calculationCounts,
   );
   const targetResolution = resolveCompoProfileTargets({
     profile: input.profile,
@@ -484,6 +485,7 @@ function buildCustomProjection(input: {
         heatMapRef: selection.selectedHeatMapRef,
         profile: input.profile,
         calculationCounts: rawProjection.calculationCounts,
+        profileReferenceCountReader: input.base.profileReferenceCountReader,
       }),
       targetStatus: targetResolution.status,
       targetCalculationCounts:
@@ -531,7 +533,10 @@ function applyAdviceActionToBase(input: {
   if (incomingRepresentative === null || outgoingRepresentative === null) return null;
 
   if (input.action.kind === "add") {
-    bucketCounts[incomingGranularBucket as keyof CompoWarBucketCounts] = (bucketCounts[incomingGranularBucket as keyof CompoWarBucketCounts] ?? 0) + 1;
+    const incomingKey = incomingGranularBucket as keyof CompoWarBucketCounts;
+    const nextCount = (bucketCounts[incomingKey] ?? 0) + 1;
+    if (!Number.isSafeInteger(nextCount) || nextCount < 0) return null;
+    bucketCounts[incomingKey] = nextCount;
     resolvedTotalWeight += incomingRepresentative;
     memberCount += 1;
   } else {
@@ -541,15 +546,25 @@ function applyAdviceActionToBase(input: {
     const incomingKey = incomingGranularBucket as keyof CompoWarBucketCounts;
     if (!outgoingKey || (bucketCounts[outgoingKey] ?? 0) <= 0) return null;
     bucketCounts[outgoingKey] -= 1;
-    bucketCounts[incomingKey] = (bucketCounts[incomingKey] ?? 0) + 1;
+    const nextIncomingCount = (bucketCounts[incomingKey] ?? 0) + 1;
+    if (!Number.isSafeInteger(nextIncomingCount) || nextIncomingCount < 0) return null;
+    bucketCounts[incomingKey] = nextIncomingCount;
     resolvedTotalWeight += incomingRepresentative - outgoingRepresentative;
   }
+
+  if (
+    !Number.isSafeInteger(memberCount) ||
+    memberCount < 0 ||
+    !Number.isFinite(resolvedTotalWeight) ||
+    Math.abs(resolvedTotalWeight) > Number.MAX_SAFE_INTEGER
+  ) return null;
 
   return {
     resolvedTotalWeight,
     unresolvedWeightCount: input.base.unresolvedWeightCount,
     memberCount,
     bucketCounts,
+    profileReferenceCountReader: input.base.profileReferenceCountReader,
   };
 }
 
@@ -639,6 +654,13 @@ function evaluateAdviceAction(input: {
     customBandIndex: undefined,
   }).targetProjection;
   const resultingScore = afterProjection.deviationScore;
+  if (
+    afterProjection.targetStatus !== "supported" ||
+    resultingScore === null ||
+    !Number.isFinite(resultingScore)
+  ) {
+    return null;
+  }
   const scoreImprovement =
     input.currentScore !== null && resultingScore !== null
       ? input.currentScore - resultingScore

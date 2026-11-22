@@ -189,10 +189,15 @@ function deriveCalculationCounts(input: {
   );
   const counts: Record<string, number> = {};
   for (const bucket of input.profile.buckets) {
-    counts[bucket.id] = bucket.sourceBucketIds.reduce((sum, sourceBucketId) => {
-      const value = input.base.bucketCounts[sourceBucketId as keyof CompoWarBucketCounts];
-      return sum + (value ?? 0);
-    }, 0);
+    let total = 0;
+    for (const sourceBucketId of bucket.sourceBucketIds) {
+      const value = input.base.bucketCounts[sourceBucketId as keyof CompoWarBucketCounts] ?? 0;
+      if (total > Number.MAX_SAFE_INTEGER - value) {
+        return { counts, status: "unavailable", reason: `factual count overflow (${bucket.id})` };
+      }
+      total += value;
+    }
+    counts[bucket.id] = total;
   }
   if (factualValidation.status !== "supported") {
     return { counts, status: "unavailable", reason: factualValidation.reason };
@@ -258,9 +263,19 @@ export function getCompoActualStateDeltaByBucket(
   heatMapRef: HeatMapRef | null,
   profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
   profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>,
+  calculationCounts?: Readonly<Record<string, number>>,
 ): Record<CompoWarDisplayBucket, number | null> {
   const result: Record<string, number | null> = {};
   const target = heatMapRef ? buildTargetCounts(heatMapRef, profile, profileReferenceCountReader) : null;
+  if (calculationCounts) {
+    const calculationValidation = validateCompoProfileCalculationCounts(profile, calculationCounts);
+    return buildCalculationDeltaByDisplay({
+      profile,
+      observedCounts: calculationValidation.status === "supported" ? calculationCounts : {},
+      targetCounts: calculationValidation.status === "supported" ? target?.calculationCounts ?? null : null,
+      displayCounts: counts,
+    });
+  }
   for (const displayBucket of getProfileDisplayBucketIds(profile)) result[displayBucket] = null;
   const malformedCounts = Object.values(counts).some(
     (value) => !Number.isSafeInteger(value) || value < 0,
@@ -359,8 +374,11 @@ function addDisplayCounts(
         (fillCounts[bucket as keyof CompoWarDisplayBucketCounts] ?? 0),
     ]),
   ) as CompoWarDisplayBucketCounts;
-  const th19 = (base.TH19 ?? 0) + (fillCounts.TH19 ?? 0);
-  if (th19 > 0 || getProfileDisplayBucketIds(profile).includes("TH19")) result.TH19 = th19;
+  for (const displayBucket of getProfileDisplayBucketIds(profile)) {
+    const baseValue = (base as Record<string, number | undefined>)[displayBucket] ?? 0;
+    const fillValue = (fillCounts as Record<string, number | undefined>)[displayBucket] ?? 0;
+    (result as Record<string, number>)[displayBucket] = baseValue + fillValue;
+  }
   return result;
 }
 
@@ -407,6 +425,11 @@ function buildFillPlan(input: {
   profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>;
 }): FillPlan {
   const fillCounts = buildEmptyDisplayCounts();
+  for (const displayBucket of getProfileDisplayBucketIds(input.profile)) {
+    if (!(displayBucket in fillCounts)) {
+      (fillCounts as Record<string, number>)[displayBucket] = 0;
+    }
+  }
   const target = getProfileTargetResolution(
     input.profile,
     input.heatMapRef,
@@ -489,6 +512,15 @@ function buildEstimatedProjectionForBand(input: {
     fillPlan.fillCounts,
     input.profile,
   );
+  if (Object.values(estimatedDisplayCounts).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    return buildUnavailableProjection({
+      view: input.view,
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: fillPlan.calculationCounts,
+      profile: input.profile,
+    });
+  }
   const deltaByBucket = buildCalculationDeltaByDisplay({
     profile: input.profile,
     observedCounts: fillPlan.calculationCounts,
@@ -500,10 +532,32 @@ function buildEstimatedProjectionForBand(input: {
     observedCounts: fillPlan.calculationCounts,
     targetCounts: fillPlan.targetCalculationCounts,
   });
+  if (deviationScore === null) {
+    return buildUnavailableProjection({
+      view: input.view,
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: fillPlan.calculationCounts,
+      profile: input.profile,
+    });
+  }
+  const totalWeight = input.base.resolvedTotalWeight + fillPlan.addedWeight;
+  if (
+    !Number.isFinite(totalWeight) ||
+    Math.abs(totalWeight) > Number.MAX_SAFE_INTEGER
+  ) {
+    return buildUnavailableProjection({
+      view: input.view,
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: fillPlan.calculationCounts,
+      profile: input.profile,
+    });
+  }
 
   return {
     view: input.view,
-    totalWeight: input.base.resolvedTotalWeight + fillPlan.addedWeight,
+    totalWeight,
     resolvedRosterWeight: input.base.resolvedTotalWeight,
     missingWeights: nMissing,
     memberCount: input.base.memberCount,
