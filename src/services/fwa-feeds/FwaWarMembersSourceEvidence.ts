@@ -333,10 +333,10 @@ export function evaluateFwaWarMembersSourceEvidence(input: FwaWarMembersSourceEv
     normalizedWeight: entry.row?.weight ?? null,
   }));
 
-  const structuralConflict = !input.rawPayloadIsArray || parserRejectedRowCount > 0 || evidenceIneligibleRowIndexes.length > 0 || reasonSet.has("accepted_rows_mismatch");
-  const positionConflict = reasonSet.has("roster_size_mismatch") || reasonSet.has("position_coverage_incomplete") || parserRejectedRowCount > 0;
-  const weightConflict = reasonSet.has("invalid_weight") || reasonSet.has("duplicate_player_identity") || reasonSet.has("duplicate_position") || reasonSet.has("total_weight_mismatch") || reasonSet.has("row_correspondence_inconsistent");
-  const completenessStatus: FwaWarMembersEvidenceStatus = positionConflict ? "CONFLICTING" : reasonSet.has("missing_declared_roster_size") ? "UNAVAILABLE" : "VERIFIED";
+  const structuralConflict = !input.rawPayloadIsArray || parserRejectedRowCount > 0 || evidenceIneligibleRowIndexes.length > 0 || reasonSet.has("accepted_rows_mismatch") || reasonSet.has("row_correspondence_inconsistent") || reasonSet.has("source_timestamp_invalid") || reasonSet.has("source_timestamp_inconsistent");
+  const positionConflict = reasonSet.has("roster_size_mismatch") || reasonSet.has("position_coverage_incomplete") || reasonSet.has("duplicate_player_identity") || reasonSet.has("duplicate_position") || parserRejectedRowCount > 0;
+  const weightConflict = reasonSet.has("invalid_weight") || reasonSet.has("duplicate_player_identity") || reasonSet.has("duplicate_position") || reasonSet.has("total_weight_mismatch") || reasonSet.has("row_correspondence_inconsistent") || parserRejectedRowCount > 0;
+  const completenessStatus: FwaWarMembersEvidenceStatus = structuralConflict || positionConflict ? "CONFLICTING" : reasonSet.has("missing_declared_roster_size") ? "UNAVAILABLE" : "VERIFIED";
   const weightStatus: FwaWarMembersEvidenceStatus = weightConflict ? "CONFLICTING" : reasonSet.has("missing_declared_total_weight") ? "UNAVAILABLE" : "VERIFIED";
   const exactWarBindingStatus: FwaWarMembersEvidenceStatus = "UNAVAILABLE";
   const sourceGenerationStatus: FwaWarMembersEvidenceStatus = "UNAVAILABLE";
@@ -420,14 +420,19 @@ export function validateFwaWarMembersSourceEvidence(evidence: unknown): evidence
   if (declaredRosterSize !== null && (!isNonnegativeInteger(declaredRosterSize) || declaredRosterSize <= 0)) return false;
   if (declaredTotalWeight !== null && (!isNonnegativeInteger(declaredTotalWeight) || declaredTotalWeight <= 0)) return false;
   if (candidate.completenessStatus === "VERIFIED" && (
+    candidate.structuralStatus !== "VERIFIED" ||
     declaredRosterSize === null ||
     candidate.parserRejectedRowCount > 0 ||
     acceptedEvaluations.length !== declaredRosterSize ||
     acceptedEvaluations.some((row) => row.normalizedPosition === null || row.normalizedPosition < 1 || row.normalizedPosition > declaredRosterSize) ||
-    new Set(acceptedEvaluations.map((row) => row.normalizedPosition)).size !== declaredRosterSize
+    new Set(acceptedEvaluations.map((row) => row.normalizedPosition)).size !== declaredRosterSize ||
+    acceptedEvaluations.some((row) => row.normalizedPlayerTag === null) ||
+    new Set(acceptedEvaluations.map((row) => row.normalizedPlayerTag)).size !== acceptedEvaluations.length
   )) return false;
   if (candidate.weightStatus === "VERIFIED" && (
+    candidate.structuralStatus !== "VERIFIED" ||
     declaredTotalWeight === null ||
+    candidate.parserRejectedRowCount > 0 ||
     acceptedEvaluations.some((row) => row.normalizedWeight === null || row.normalizedWeight <= 0) ||
     acceptedEvaluations.reduce((sum, row) => sum + (row.normalizedWeight ?? 0), 0) !== declaredTotalWeight
   )) return false;
@@ -436,6 +441,16 @@ export function validateFwaWarMembersSourceEvidence(evidence: unknown): evidence
   if (!statusKeys.every((key) => isStatus(candidate[key]))) return false;
   if (candidate.exactWarBindingStatus !== "UNAVAILABLE" || candidate.sourceGenerationStatus !== "UNAVAILABLE" || candidate.candidateEligibilityStatus === "VERIFIED") return false;
   if (!Array.isArray(candidate.reasonCodes) || candidate.reasonCodes.some((reason) => typeof reason !== "string" || !ALL_REASON_CODES.has(reason as FwaWarMembersEvidenceReasonCode)) || candidate.reasonCodes.some((reason, index, reasons) => index > 0 && reasons[index - 1]! >= reason)) return false;
+  const reasonSet = new Set(candidate.reasonCodes);
+  const rowReasonSet = new Set(candidate.rowEvaluations.flatMap((row) => [...row.parserReasonCodes, ...row.evidenceReasonCodes]));
+  if (!reasonSet.has("exact_war_binding_unavailable") || !reasonSet.has("source_generation_unbound")) return false;
+  if (candidate.parserRejectedRowCount > 0 && (!reasonSet.has("parser_rejected") || !reasonSet.has("discarded_row") || !reasonSet.has("evidence_ineligible") || !rowReasonSet.has("parser_rejected"))) return false;
+  if (candidate.evidenceIneligibleRowCount > 0 && !reasonSet.has("evidence_ineligible")) return false;
+  if (candidate.structuralStatus === "VERIFIED" && (!candidate.rawPayloadIsArray || candidate.parserRejectedRowCount > 0 || candidate.evidenceIneligibleRowCount > 0 || reasonSet.has("accepted_rows_mismatch") || reasonSet.has("row_correspondence_inconsistent") || reasonSet.has("source_timestamp_invalid") || reasonSet.has("source_timestamp_inconsistent"))) return false;
+  if (candidate.completenessStatus === "VERIFIED" && (reasonSet.has("duplicate_player_identity") || reasonSet.has("duplicate_position") || reasonSet.has("roster_size_mismatch") || reasonSet.has("position_coverage_incomplete") || candidate.parserRejectedRowCount > 0)) return false;
+  if (candidate.weightStatus === "VERIFIED" && (reasonSet.has("invalid_weight") || reasonSet.has("duplicate_player_identity") || reasonSet.has("duplicate_position") || reasonSet.has("total_weight_mismatch") || candidate.parserRejectedRowCount > 0)) return false;
+  const contradictory = candidate.structuralStatus === "CONFLICTING" || candidate.completenessStatus === "CONFLICTING" || candidate.weightStatus === "CONFLICTING" || reasonSet.has("accepted_rows_mismatch") || reasonSet.has("row_correspondence_inconsistent") || reasonSet.has("source_timestamp_invalid") || reasonSet.has("source_timestamp_inconsistent");
+  if ((contradictory && candidate.candidateEligibilityStatus !== "CONFLICTING") || (!contradictory && candidate.candidateEligibilityStatus !== "UNAVAILABLE")) return false;
   if (typeof candidate.rawPayloadFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.rawPayloadFingerprint) || typeof candidate.acceptedRowsFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.acceptedRowsFingerprint) || typeof candidate.contentFingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(candidate.contentFingerprint)) return false;
   const expectedRawFingerprint = canonicalFingerprintList(candidate.rowEvaluations.map((row) => row.rawRowFingerprint));
   const expectedAcceptedFingerprint = canonicalFingerprintList(candidate.rowEvaluations.filter((row) => row.parserStatus === "ACCEPTED").map((row) => row.normalizedRowFingerprint as string));

@@ -56,6 +56,23 @@ describe("FWA WarMembers source evidence", () => {
     expect(validateFwaWarMembersSourceEvidence(evidence)).toBe(true);
   });
 
+  it("rejects a non-array payload forged into VERIFIED structure with a recomputed hash", () => {
+    const evidence = evaluateFwaWarMembersSourceEvidence(input({ rawPayloadIsArray: false, rawRows: [], acceptedRows: undefined, declaredRosterSize: null, declaredTotalWeight: null }));
+    const { contentFingerprint: _old, ...payload } = evidence;
+    const forgedPayload = { ...payload, structuralStatus: "VERIFIED" as const };
+    const forged = { ...forgedPayload, contentFingerprint: computeFwaWarMembersSourceEvidenceContentFingerprint(forgedPayload) };
+    expect(validateFwaWarMembersSourceEvidence(forged)).toBe(false);
+  });
+
+  it("invalidates whole-source weight proof when a parser-rejected row is omitted from the declared total", () => {
+    const base = input();
+    const rawRows = [...base.rawRows, { tag: "", name: "Discarded", position: 51, weight: 181000 }];
+    const evidence = evaluateFwaWarMembersSourceEvidence({ ...base, rawRows, acceptedRows: undefined, declaredTotalWeight: base.declaredTotalWeight });
+    expect(evidence.parserRejectedRowCount).toBe(1);
+    expect(evidence.weightStatus).toBe("CONFLICTING");
+    expect(evidence.reasonCodes).toContain("parser_rejected");
+  });
+
   it("rejects same-size accepted projections with different identities or positions", () => {
     const base = input();
     const fabricatedAcceptedRows = base.acceptedRows.map((member, index) => index === 0 ? { ...member, playerTag: "#OTHER", position: 50 } : member);
@@ -113,12 +130,39 @@ describe("FWA WarMembers source evidence", () => {
     expect(evidence.candidateEligibilityStatus).toBe("CONFLICTING");
   });
 
+  it("does not verify completeness when all positions exist but a player identity is duplicated", () => {
+    const base = input();
+    const rawRows = [...base.rawRows];
+    rawRows[1] = { ...rawRows[1]!, tag: rawRows[0]!.tag };
+    const evidence = evaluateFwaWarMembersSourceEvidence({ ...base, rawRows, acceptedRows: undefined });
+    expect(evidence.reasonCodes).toContain("duplicate_player_identity");
+    expect(evidence.completenessStatus).toBe("CONFLICTING");
+  });
+
   it("rejects forged VERIFIED authority even when its checksum is recomputed", () => {
     const evidence = evaluateFwaWarMembersSourceEvidence(input());
     const { contentFingerprint: _old, ...payload } = evidence;
     const forgedPayload = { ...payload, exactWarBindingStatus: "VERIFIED" as const };
     const forged = { ...forgedPayload, contentFingerprint: computeFwaWarMembersSourceEvidenceContentFingerprint(forgedPayload) };
     expect(validateFwaWarMembersSourceEvidence(forged)).toBe(false);
+  });
+
+  it("rejects forged VERIFIED completeness and weight statuses after rehashing", () => {
+    const missing = evaluateFwaWarMembersSourceEvidence(input({ declaredRosterSize: null, declaredTotalWeight: null }));
+    const { contentFingerprint: _missingOld, ...missingPayload } = missing;
+    const forgedCompletenessPayload = { ...missingPayload, completenessStatus: "VERIFIED" as const };
+    expect(validateFwaWarMembersSourceEvidence({
+      ...forgedCompletenessPayload,
+      contentFingerprint: computeFwaWarMembersSourceEvidenceContentFingerprint(forgedCompletenessPayload),
+    })).toBe(false);
+
+    const conflicting = evaluateFwaWarMembersSourceEvidence(input({ declaredTotalWeight: 1 }));
+    const { contentFingerprint: _conflictingOld, ...conflictingPayload } = conflicting;
+    const forgedWeightPayload = { ...conflictingPayload, weightStatus: "VERIFIED" as const };
+    expect(validateFwaWarMembersSourceEvidence({
+      ...forgedWeightPayload,
+      contentFingerprint: computeFwaWarMembersSourceEvidenceContentFingerprint(forgedWeightPayload),
+    })).toBe(false);
   });
 
   it("keeps equivalent source content fingerprints order-independent", () => {
