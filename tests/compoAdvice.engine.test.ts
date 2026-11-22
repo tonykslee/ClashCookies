@@ -10,7 +10,9 @@ import {
   resolveAdviceTargetBandMidpointForTest,
   stepCompoAdviceCustomBandIndexByCount,
   type CompoAdviceEvaluation,
+  applyAdviceActionToBaseForTest,
 } from "../src/helper/compoAdviceEngine";
+import { LEGACY_COMPO_CALCULATION_PROFILE } from "../src/helper/compoCalculationProfile";
 import type { CompoWarBucketCounts } from "../src/helper/compoWarBucketCounts";
 
 function makeBucketCounts(
@@ -256,6 +258,62 @@ describe("CompoAdviceEngine", () => {
     expect(first.currentScore).not.toBeNull();
     expect(first.targetDeltaByBucket).not.toEqual(second.targetDeltaByBucket);
     expect(first.currentProjection.deltaByBucket).toEqual(second.currentProjection.deltaByBucket);
+  });
+
+  it("uses a populated granular lower source for legacy aggregate swaps", () => {
+    const result = applyAdviceActionToBaseForTest({
+      base: {
+        resolvedTotalWeight: 50 * 115000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({ TH12: 50 }),
+      },
+      action: { kind: "swap", outgoingBucket: "<=TH13", incomingBucket: "TH18" },
+      referenceHeatMapRef: makeHeatMapRef({ th18Count: 1, th12Count: 49 }),
+      profile: LEGACY_COMPO_CALCULATION_PROFILE,
+    });
+
+    expect(result?.memberCount).toBe(50);
+    expect(result?.bucketCounts.TH12).toBe(49);
+    expect(result?.bucketCounts.TH18).toBe(1);
+  });
+
+  it("keeps a valid Custom target selectable when resolved weight is outside every band", () => {
+    const summary = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+      base: {
+        resolvedTotalWeight: 900000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({ TH18: 2, TH13: 48 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 500000, th18Count: 2, th13Count: 48 })],
+    });
+
+    expect(summary.currentProjection.selectedHeatMapRef).toBeNull();
+    expect(summary.targetHeatMapRef).not.toBeNull();
+    expect(summary.targetDeltaByBucket.TH18).not.toBeNull();
+  });
+
+  it("does not restore a stale Custom target after factual validation fails", () => {
+    const summary = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: 0,
+        memberCount: 1,
+        bucketCounts: makeBucketCounts({ TH13: -1, TH12: 2 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 1 })],
+    });
+
+    expect(summary.currentProjection.targetStatus).toBe("unavailable");
+    expect(summary.targetHeatMapRef).toBeNull();
+    expect(summary.recommendationText).toBe("No improvement found.");
   });
 
   it("computes midpoint advice using middle-band arithmetic and end-band offsets", () => {

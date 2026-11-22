@@ -5,6 +5,15 @@ import {
   getCompoWarWeightBucket,
   type CompoWarWeightBucket,
 } from "../helper/compoWarWeightBuckets";
+import {
+  getCompoCalculationBucket,
+  getCompoProfileSourceBucketIds,
+  LEGACY_COMPO_CALCULATION_PROFILE,
+  type CompoCalculationProfile,
+  validateCompoCalculationProfile,
+  validateCompoProfileFactualCounts,
+  validateCompoProfilePlannerCounts,
+} from "../helper/compoCalculationProfile";
 
 export type CompoFillTrackedClanState = {
   clanTag: string;
@@ -21,7 +30,7 @@ export type CompoFillTrackedClanState = {
     | "th19_integrity"
     | "actual_roster_incomplete"
     | "actual_roster_inconsistent";
-  /** Legacy HeatMapRef rows do not contain a supported TH19 target profile. */
+  /** Deprecated v1 compatibility input; target support is profile-derived. */
   targetSupportsTh19?: boolean;
   /** When supplied, this is the authoritative per-account ACTUAL evidence for source removal. */
   memberEvidence?: readonly CompoFillMemberEvidence[];
@@ -50,6 +59,7 @@ export type CompoFillReasonCode =
   | "source_bucket_deficit"
   | "source_context_unavailable"
   | "source_target_evidence_unavailable"
+  | "source_current_evidence_unavailable"
   | "source_bucket_evidence_mismatch"
   | "self_transfer"
   | "source_membership_unknown"
@@ -146,7 +156,7 @@ type MutableClanState = {
   currentBucketCounts: CompoWarBucketCounts;
   targetBucketCounts: CompoWarBucketCounts;
   targetEvidence: "validated" | "unavailable";
-  targetSupportsTh19: boolean;
+  currentEvidence: "validated" | "unavailable";
   memberEvidenceByTag: Map<string, CompoFillMemberEvidence> | null;
   targetMemberCount: number;
 };
@@ -161,20 +171,9 @@ type NormalizedCandidate = {
   clanState: "known" | "no_clan" | "unknown";
 };
 
-const COMPO_FILL_BUCKET_ORDER: CompoWarWeightBucket[] = [
-  "TH19",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11",
-  "TH10",
-  "TH9",
-  "TH8_OR_LOWER",
-];
+function getCompoFillBucketOrder(profile: CompoCalculationProfile): CompoWarWeightBucket[] {
+  return getCompoProfileSourceBucketIds(profile) as CompoWarWeightBucket[];
+}
 
 function normalizeInteger(value: number | null | undefined): number {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -209,15 +208,16 @@ function cloneBucketCounts(
   return result;
 }
 
-function sumBucketCounts(counts: CompoWarBucketCounts): number {
-  return COMPO_FILL_BUCKET_ORDER.reduce((sum, bucket) => sum + (counts[bucket] ?? 0), 0);
+function sumBucketCounts(counts: CompoWarBucketCounts, bucketOrder: readonly CompoWarWeightBucket[]): number {
+  return bucketOrder.reduce((sum, bucket) => sum + (counts[bucket] ?? 0), 0);
 }
 
 function compareBucketsByPriority(
   left: CompoWarWeightBucket,
   right: CompoWarWeightBucket,
+  bucketOrder: readonly CompoWarWeightBucket[],
 ): number {
-  return COMPO_FILL_BUCKET_ORDER.indexOf(left) - COMPO_FILL_BUCKET_ORDER.indexOf(right);
+  return bucketOrder.indexOf(left) - bucketOrder.indexOf(right);
 }
 
 function compareStrings(left: string, right: string): number {
@@ -227,9 +227,10 @@ function compareStrings(left: string, right: string): number {
 function getLargestBucketDeficit(
   current: CompoWarBucketCounts,
   target: CompoWarBucketCounts,
+  bucketOrder: readonly CompoWarWeightBucket[],
 ): { bucket: CompoWarWeightBucket; deficit: number } | null {
   let best: { bucket: CompoWarWeightBucket; deficit: number } | null = null;
-  for (const bucket of COMPO_FILL_BUCKET_ORDER) {
+  for (const bucket of bucketOrder) {
     const deficit = (target[bucket] ?? 0) - (current[bucket] ?? 0);
     if (deficit <= 0) {
       continue;
@@ -242,7 +243,7 @@ function getLargestBucketDeficit(
       best = { bucket, deficit };
       continue;
     }
-    if (deficit === best.deficit && compareBucketsByPriority(bucket, best.bucket) < 0) {
+    if (deficit === best.deficit && compareBucketsByPriority(bucket, best.bucket, bucketOrder) < 0) {
       best = { bucket, deficit };
     }
   }
@@ -278,6 +279,25 @@ function safeCount(value: number | null | undefined): number {
     : 0;
 }
 
+function validateCurrentClanEvidence(
+  profile: CompoCalculationProfile,
+  clan: CompoFillTrackedClanState,
+): { status: "supported" | "unavailable"; reason: string | null } {
+  if (!Number.isSafeInteger(clan.memberCount) || clan.memberCount < 0) {
+    return { status: "unavailable", reason: "invalid current member count" };
+  }
+  const validation = validateCompoProfileFactualCounts(profile, clan.currentBucketCounts);
+  if (validation.status !== "supported") return validation;
+  const classifiedTotal = getCompoProfileSourceBucketIds(profile).reduce(
+    (sum, sourceBucketId) => sum + (clan.currentBucketCounts[sourceBucketId as CompoWarWeightBucket] ?? 0),
+    0,
+  );
+  if (classifiedTotal !== clan.memberCount) {
+    return { status: "unavailable", reason: "current member count disagrees with classified buckets" };
+  }
+  return { status: "supported", reason: null };
+}
+
 function setBucketCount(
   counts: CompoWarBucketCounts,
   bucket: CompoWarWeightBucket,
@@ -295,6 +315,7 @@ function isCandidateAvailableNow(
   sourceStateByTag: Map<string, MutableClanState>,
   knownTrackedClanTags?: ReadonlySet<string>,
   destinationClanTag?: string,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
 ): {
   available: boolean;
   sourceClanTag: string | null;
@@ -354,7 +375,10 @@ function isCandidateAvailableNow(
   if (sourceClan.targetEvidence !== "validated") {
     reasonCodes.push("source_target_evidence_unavailable");
   }
-  if (candidate.resolvedWeightBucket === "TH19" && !sourceClan.targetSupportsTh19) {
+  if (sourceClan.currentEvidence !== "validated") {
+    reasonCodes.push("source_current_evidence_unavailable");
+  }
+  if (!getCompoCalculationBucket(profile, candidate.resolvedWeightBucket)) {
     if (!reasonCodes.includes("source_target_evidence_unavailable")) {
       reasonCodes.push("source_target_evidence_unavailable");
     }
@@ -396,6 +420,7 @@ function selectBestCandidateForDestination(input: {
   sourceStateByTag: Map<string, MutableClanState>;
   knownTrackedClanTags: ReadonlySet<string>;
   usedPlayerTags: Set<string>;
+  profile: CompoCalculationProfile;
 }): {
   candidate: NormalizedCandidate;
   sourceClanTag: string | null;
@@ -403,11 +428,12 @@ function selectBestCandidateForDestination(input: {
   sourceKind: CompoFillSourceKind;
   matchedBucket: CompoWarWeightBucket | null;
 } | null {
+  const bucketOrder = getCompoFillBucketOrder(input.profile);
   const availableCandidates = input.candidates.filter((candidate) => {
     if (input.usedPlayerTags.has(normalizeIdentity(candidate.playerTag))) {
       return false;
     }
-    if (candidate.resolvedWeightBucket === "TH19" && !input.destination.targetSupportsTh19) {
+    if (!getCompoCalculationBucket(input.profile, candidate.resolvedWeightBucket)) {
       return false;
     }
     return isCandidateAvailableNow(
@@ -415,6 +441,7 @@ function selectBestCandidateForDestination(input: {
       input.sourceStateByTag,
       input.knownTrackedClanTags,
       input.destination.clanTag,
+      input.profile,
     ).available;
   });
 
@@ -422,7 +449,7 @@ function selectBestCandidateForDestination(input: {
     return null;
   }
 
-  const bucketDeficits = COMPO_FILL_BUCKET_ORDER
+  const bucketDeficits = bucketOrder
     .map((bucket) => ({
       bucket,
       deficit:
@@ -434,7 +461,7 @@ function selectBestCandidateForDestination(input: {
       if (left.deficit !== right.deficit) {
         return right.deficit - left.deficit;
       }
-      return compareBucketsByPriority(left.bucket, right.bucket);
+      return compareBucketsByPriority(left.bucket, right.bucket, bucketOrder);
     });
 
   const evaluatePool = (
@@ -447,12 +474,14 @@ function selectBestCandidateForDestination(input: {
         input.sourceStateByTag,
         input.knownTrackedClanTags,
         input.destination.clanTag,
+        input.profile,
       );
       const rightSource = isCandidateAvailableNow(
         right,
         input.sourceStateByTag,
         input.knownTrackedClanTags,
         input.destination.clanTag,
+        input.profile,
       );
       if (leftSource.sourceKind !== rightSource.sourceKind) {
         return leftSource.sourceKind === "untracked" ? -1 : 1;
@@ -480,6 +509,7 @@ function selectBestCandidateForDestination(input: {
       input.sourceStateByTag,
       input.knownTrackedClanTags,
       input.destination.clanTag,
+      input.profile,
     );
     return {
       candidate: selected,
@@ -586,9 +616,19 @@ export function buildCompoFillPlan(input: {
   trackedClans: readonly CompoFillTrackedClanState[];
   fillers: readonly CompoFillCandidate[];
   trackedClanTags?: readonly string[];
+  profile?: CompoCalculationProfile;
 }): CompoFillPlanResult {
+  const profile = input.profile ?? LEGACY_COMPO_CALCULATION_PROFILE;
+  const profileError = validateCompoCalculationProfile(profile);
+  if (profileError) throw new Error(`Invalid composition calculation profile: ${profileError}`);
+  const bucketOrder = getCompoFillBucketOrder(profile);
   const trackedStates: MutableClanState[] = input.trackedClans.map((clan) => {
+    const currentCountsValidation = validateCurrentClanEvidence(profile, clan);
     const currentBucketCounts = cloneBucketCounts(clan.currentBucketCounts);
+    const targetCountsValidation = clan.targetEvidence === "validated"
+      ? validateCompoProfilePlannerCounts(profile, clan.targetBucketCounts)
+      : { status: "unavailable" as const, reason: "target evidence is unavailable" };
+    const targetEvidence = targetCountsValidation.status === "supported" ? "validated" : "unavailable";
     const targetBucketCounts = cloneBucketCounts(clan.targetBucketCounts);
     const memberEvidenceByTag = clan.memberEvidence
       ? new Map(
@@ -603,14 +643,12 @@ export function buildCompoFillPlan(input: {
       shortName: trimToNull(clan.shortName),
       memberCount: normalizeInteger(clan.memberCount),
       currentBucketCounts,
+      currentEvidence: currentCountsValidation.status === "supported" ? "validated" : "unavailable",
       targetBucketCounts,
-      targetEvidence: clan.targetEvidence,
-      targetSupportsTh19:
-        clan.targetSupportsTh19 ??
-        Object.prototype.hasOwnProperty.call(clan.targetBucketCounts ?? {}, "TH19"),
+      targetEvidence,
       memberEvidenceByTag,
       targetMemberCount:
-        clan.targetEvidence === "validated" ? sumBucketCounts(targetBucketCounts) : 0,
+        targetEvidence === "validated" ? sumBucketCounts(targetBucketCounts, bucketOrder) : 0,
     };
   });
   const knownTrackedClanTags = new Set(
@@ -624,7 +662,11 @@ export function buildCompoFillPlan(input: {
       memberCount: clan.memberCount,
       targetMemberCount: clan.targetMemberCount,
     });
-    if (clan.targetEvidence !== "validated" || remainingSlots <= 0) {
+    if (
+      clan.targetEvidence !== "validated" ||
+      clan.currentEvidence !== "validated" ||
+      remainingSlots <= 0
+    ) {
       continue;
     }
     const plan: CompoFillDestinationPlan = {
@@ -651,10 +693,12 @@ export function buildCompoFillPlan(input: {
     const leftBucket = getLargestBucketDeficit(
       cloneBucketCounts(left.initialBucketCounts),
       cloneBucketCounts(left.targetBucketCounts),
+      bucketOrder,
     );
     const rightBucket = getLargestBucketDeficit(
       cloneBucketCounts(right.initialBucketCounts),
       cloneBucketCounts(right.targetBucketCounts),
+      bucketOrder,
     );
     const leftBucketDeficit = leftBucket?.deficit ?? 0;
     const rightBucketDeficit = rightBucket?.deficit ?? 0;
@@ -753,6 +797,7 @@ export function buildCompoFillPlan(input: {
         sourceStateByTag,
         knownTrackedClanTags,
         usedPlayerTags,
+        profile,
       });
       if (!selection) {
         continue;
@@ -842,6 +887,8 @@ export function buildCompoFillPlan(input: {
       candidate,
       sourceStateByTag,
       knownTrackedClanTags,
+      undefined,
+      profile,
     );
     if (availability.available) {
       unusedAvailableFillers.push(buildAvailableFiller(candidate, availability));
@@ -868,7 +915,7 @@ export function buildCompoFillPlan(input: {
         targetMemberCount: plan.targetMemberCount,
       })),
     ...trackedStates
-      .filter((clan) => clan.targetEvidence !== "validated")
+      .filter((clan) => clan.targetEvidence !== "validated" || clan.currentEvidence !== "validated")
       .map((clan) => ({
         clanTag: clan.clanTag,
         clanName: clan.clanName,

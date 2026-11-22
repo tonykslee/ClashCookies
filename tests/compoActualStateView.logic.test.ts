@@ -441,4 +441,118 @@ describe("projectCompoActualStateView", () => {
     expect(result.totalWeight).toBe(145000);
     expect(result.deviationScore).toBe(0);
   });
+
+  it.each(["raw", "auto", "best"] as const)(
+    "withholds all target-derived values when %s receives invalid factual evidence",
+    (view) => {
+      const invalidCounts = makeBucketCounts({ TH13: -1, TH12: 2 }) as Record<string, number>;
+      const result = projectCompoActualStateView({
+        view,
+        base: {
+          resolvedTotalWeight: 300000,
+          unresolvedWeightCount: 0,
+          memberCount: 1,
+          bucketCounts: invalidCounts as CompoWarBucketCounts,
+        },
+        heatMapRefs: [makeHeatMapRef({ th18Count: 1 })],
+      });
+
+      expect(result.displayCounts["<=TH13"]).toBe(1);
+      expect(result.selectedHeatMapRef).toBeNull();
+      expect(result.targetStatus).toBe("unavailable");
+      expect(result.deviationScore).toBeNull();
+      expect(Object.values(result.deltaByBucket).every((value) => value === null)).toBe(true);
+    },
+  );
+
+  it("rejects contradictory calculation overrides and positive unknown factual buckets", () => {
+    const counts = makeBucketCounts({ TH18: 2, TH13: 48 }) as Record<string, number>;
+    const contradictory = projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 400000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: counts as CompoWarBucketCounts,
+        calculationCounts: { TH18: 1, TH17: 0, TH16: 0, TH15: 0, TH14: 0, "<=TH13": 49 },
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 2, th13Count: 48 })],
+    });
+    const extra = { ...counts, FUTURE_BUCKET: 1 } as CompoWarBucketCounts;
+    const extraProjection = projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 400000,
+        unresolvedWeightCount: 0,
+        memberCount: 51,
+        bucketCounts: extra,
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 2, th13Count: 48 })],
+    });
+
+    expect(contradictory.targetStatus).toBe("unavailable");
+    expect(contradictory.selectedHeatMapRef).toBeNull();
+    expect(extraProjection.targetStatus).toBe("unavailable");
+    expect(extraProjection.displayCounts["<=TH13"]).toBe(48);
+  });
+
+  it("keeps valid Custom selection available when no current weight band matches", () => {
+    const result = projectCompoActualStateView({
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 900000,
+        unresolvedWeightCount: 0,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({ TH18: 2, TH13: 48 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 500000, th18Count: 2, th13Count: 48 })],
+    });
+    expect(result.selectedHeatMapRef).toBeNull();
+    expect(result.targetStatus).toBe("missing");
+  });
+
+  it("fills a supported Best Fit bucket that was absent from the initial observation map", () => {
+    const result = projectCompoActualStateView({
+      view: "best",
+      base: {
+        resolvedTotalWeight: 49 * 165000,
+        unresolvedWeightCount: 0,
+        memberCount: 49,
+        bucketCounts: makeBucketCounts({ TH17: 49 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 9999999, th18Count: 1, th17Count: 49 })],
+    });
+    expect(result.targetStatus).toBe("supported");
+    expect(result.displayCounts.TH18).toBe(1);
+    expect(result.calculationCounts?.TH18).toBe(1);
+    expect(result.totalWeight).toBe(49 * 165000 + 175000);
+  });
+
+  it("withholds projections when member or unresolved metadata is outside the 50-member contract", () => {
+    const invalidMember = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: 0,
+        memberCount: Number.MAX_SAFE_INTEGER,
+        bucketCounts: makeBucketCounts({ TH18: 1 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 1 })],
+    });
+    const invalidUnresolved = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: Number.MAX_SAFE_INTEGER,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({ TH18: 50 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 50 })],
+    });
+
+    expect(invalidMember.targetStatus).toBe("unavailable");
+    expect(invalidMember.selectedHeatMapRef).toBeNull();
+    expect(invalidUnresolved.targetStatus).toBe("unavailable");
+    expect(invalidUnresolved.selectedHeatMapRef).toBeNull();
+  });
 });

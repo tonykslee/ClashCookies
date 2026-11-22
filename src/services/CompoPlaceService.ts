@@ -19,8 +19,10 @@ import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
 import {
   projectCompoActualStateView,
+  getCompoActualStateDeltaByBucket,
   type CompoActualStateProjection,
 } from "../helper/compoActualStateView";
+import { LEGACY_COMPO_CALCULATION_PROFILE } from "../helper/compoCalculationProfile";
 import {
   CompoReplacementService,
   type CompoReplacementClanSummary,
@@ -336,18 +338,14 @@ function buildBucketDeltaByHeader(
   heatMapRef: HeatMapRef,
   counts: ReturnType<typeof collapseCompoWarBucketCountsForDisplay>,
 ): Record<string, number> {
+  const deltas = getCompoActualStateDeltaByBucket(counts, heatMapRef);
   return {
-    "th18-delta": counts.TH18 - heatMapRef.th18Count,
-    "th17-delta": counts.TH17 - heatMapRef.th17Count,
-    "th16-delta": counts.TH16 - heatMapRef.th16Count,
-    "th15-delta": counts.TH15 - heatMapRef.th15Count,
-    "th14-delta": counts.TH14 - heatMapRef.th14Count,
-    "<=th13-delta":
-      counts["<=TH13"] -
-      (heatMapRef.th13Count +
-        heatMapRef.th12Count +
-        heatMapRef.th11Count +
-        heatMapRef.th10OrLowerCount),
+    "th18-delta": deltas.TH18 ?? 0,
+    "th17-delta": deltas.TH17 ?? 0,
+    "th16-delta": deltas.TH16 ?? 0,
+    "th15-delta": deltas.TH15 ?? 0,
+    "th14-delta": deltas.TH14 ?? 0,
+    "<=th13-delta": deltas["<=TH13"] ?? 0,
   };
 }
 
@@ -453,7 +451,12 @@ function buildPlacementCandidates(input: {
     if (assessCompoActualRosterEvidence({ clan }) !== "complete") {
       continue;
     }
-    if (clan.base.resolvedTotalWeight <= 0 || (clan.base.bucketCounts.TH19 ?? 0) > 0) {
+    if (
+      clan.base.resolvedTotalWeight <= 0 ||
+      LEGACY_COMPO_CALCULATION_PROFILE.unsupportedFactualBucketIds.some(
+        (bucket) => (clan.base.bucketCounts[bucket as keyof typeof clan.base.bucketCounts] ?? 0) > 0,
+      )
+    ) {
       continue;
     }
     const projection = projectCompoActualStateView({

@@ -8,8 +8,10 @@ import { findHeatMapRefForWeight } from "../helper/compoHeatMap";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
 import {
   buildCompoWarBucketCounts,
+  collapseCompoWarBucketCountsForDisplay,
   type CompoWarBucketCounts,
 } from "../helper/compoWarBucketCounts";
+import { getCompoActualStateDeltaByBucket } from "../helper/compoActualStateView";
 import {
   getCompoWarWeightBucket,
 } from "../helper/compoWarWeightBuckets";
@@ -86,27 +88,10 @@ function buildCollapsedStateRow(input: {
   bucketCounts: BucketCounts;
   heatMapRef: HeatMapRef | null;
 }): CollapsedStateRow {
-  const hasUnsupportedTh19 = (input.bucketCounts.TH19 ?? 0) > 0;
-  const deltas = {
-    TH18: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH18 - input.heatMapRef.th18Count,
-    TH17: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH17 - input.heatMapRef.th17Count,
-    TH16: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH16 - input.heatMapRef.th16Count,
-    TH15: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH15 - input.heatMapRef.th15Count,
-    TH14: hasUnsupportedTh19 || !input.heatMapRef ? null : input.bucketCounts.TH14 - input.heatMapRef.th14Count,
-    TH13_OR_LOWER:
-      hasUnsupportedTh19 || !input.heatMapRef
-        ? null
-        : input.bucketCounts.TH13 +
-          input.bucketCounts.TH12 +
-          input.bucketCounts.TH11 +
-          input.bucketCounts.TH10 +
-          input.bucketCounts.TH9 +
-          input.bucketCounts.TH8_OR_LOWER -
-          (input.heatMapRef.th13Count +
-            input.heatMapRef.th12Count +
-            input.heatMapRef.th11Count +
-            input.heatMapRef.th10OrLowerCount),
-  };
+  const deltas = getCompoActualStateDeltaByBucket(
+    collapseCompoWarBucketCountsForDisplay(input.bucketCounts),
+    input.heatMapRef,
+  );
 
   return {
     clanName: normalizeWarStateClanDisplayName(input.clanName),
@@ -121,7 +106,7 @@ function buildCollapsedStateRow(input: {
     th16Delta: deltas.TH16 === null ? "?" : `${deltas.TH16}`,
     th15Delta: deltas.TH15 === null ? "?" : `${deltas.TH15}`,
     th14Delta: deltas.TH14 === null ? "?" : `${deltas.TH14}`,
-    th13OrLowerDelta: deltas.TH13_OR_LOWER === null ? "?" : `${deltas.TH13_OR_LOWER}`,
+    th13OrLowerDelta: deltas["<=TH13"] === null ? "?" : `${deltas["<=TH13"]}`,
   };
 }
 
