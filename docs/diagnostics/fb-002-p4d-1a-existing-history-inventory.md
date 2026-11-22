@@ -1,9 +1,10 @@
 # FB-002 P4d-1a — Existing war history and source-authority inventory
 
 Status: repository inventory complete; production inventory not performed.
-This document is a read-only diagnostic and does not implement a collector,
-archive, schema change, migration, native publication, activation, or TH19
-target.
+This document records Codex's pre-publication repository work and is now
+included in published PR #2142. It remains a read-only diagnostic and does not
+implement a collector, archive, schema change, migration, native publication,
+activation, or TH19 target.
 
 Decision: **NO-GO for P4d-1b authority implementation.** The repository has
 durable Dusk-owned ended-war history, but it does not have a durable FWAStats
@@ -16,19 +17,20 @@ upstream contract cannot supply the missing identity and contradiction facts.
 
 ## 1. Scope, baseline, and authorization
 
-This inventory continues the existing owner-created work without creating a
-branch or PR. The checked-out branch is
+This inventory was prepared during Codex's pre-publication work for PR #2142;
+PR #2142 is now published. The checked-out branch is
 `feature/p4d-1-source-authority-feasibility`, at local SHA
 `660f3689193b21bedb543ff0cb53a1ab7e82194d7`, which matches local
 `origin/dev` and the supplied starting development baseline. The repository is
-clean before this document is added. No application code, Prisma schema or
+clean at the verified baseline. No application code, Prisma schema or
 migration, runtime configuration, production process, external service, or
 backup was changed.
 
-The GitHub file API did not resolve the supplied SHA (`404 No commit found for
-the ref`). The inventory therefore uses the checked-out repository as the
-verified source and records the GitHub-ref limitation rather than substituting
-an unverified remote revision.
+An earlier GitHub file-API lookup failed with `404 No commit found for the
+ref`; that was an access/tooling result during the earlier inspection, not
+evidence that the commit was absent. GitHub independently verified that the
+starting dev SHA is `660f3689193b21bedb543ff0cb53a1ab7e82194d`. The local
+checkout and that independent verification agree on the baseline.
 
 The production-data inspection authorization basis is **none for this task**.
 No SSH session, database connection, tunnel, VM, secrets, environment file,
@@ -268,8 +270,13 @@ without separate authorization. No counts below are observed counts.
 ### 7.2 Bounded operator requirements
 
 If separately authorized later, an operator should run the packet using the
-existing SELECT-only diagnostic role, in UTC, inside a read-only transaction,
-with a bounded statement timeout. The operator should return aggregate rows
+existing SELECT-only diagnostic role, with the session timezone set to UTC,
+inside a read-only transaction, and with a bounded statement timeout. The
+statement timeout is an execution-time bound, not a row-count or date-range
+bound: the full-history aggregates below have no date predicate and may scan
+large tables before timing out. A reviewed UTC date range or row limit would be
+a separate operator choice and must be stated in the result; it must not be
+silently inferred from the timeout. The operator should return aggregate rows
 only: no player names, Discord IDs, raw JSON, credentials, URLs containing
 secrets, or full clan/member/tag dumps. The packet must not run `EXPLAIN
 ANALYZE`, write temporary tables, alter session roles, or access the live
@@ -281,11 +288,20 @@ The operator must separately report the sanitized production process settings
 configuration is not available from SQL and must not be inferred from table
 rows.
 
+The canonical-war coverage query counts distinct `playerTag` values within
+each Dusk `ClanWarHistory.warId`, avoiding double-counting guild-scoped
+participation rows. Even that deduplicated participation count does not itself
+prove authoritative roster completeness: it is only a count of persisted rows
+available for that canonical war and must remain separate from the source
+authority decision.
+
 ### 7.3 Proposed read-only SQL
 
-The following is a proposed query packet, not an execution record. It uses
-only aggregate counts and bounded timestamp ranges. If a table or column is
-missing on the target database, stop and report the mismatch rather than
+The following is a proposed query packet, not an execution record; every
+statement remains proposed and unexecuted. It uses aggregate counts only, but
+the full-history aggregates are not row- or date-bounded. If a table or column
+is missing on the target database, or if any required table lacks SELECT
+permission, stop and report the mismatch rather than requesting a grant or
 editing the query into a write or migration.
 
 ```sql
@@ -293,29 +309,44 @@ BEGIN;
 SET TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '10s';
 SET LOCAL lock_timeout = '1s';
+SET LOCAL TIME ZONE 'UTC';
 
 SELECT current_database() AS database_name,
        current_setting('transaction_read_only') AS transaction_read_only,
-       now() AT TIME ZONE 'UTC' AS observed_at_utc;
+       current_setting('TimeZone') AS reporting_timezone,
+       now() AS observed_at_utc;
 
--- Existence and aggregate row counts; no row values are returned.
-SELECT table_name,
-       to_regclass(format('%I.%I', table_schema, table_name)) IS NOT NULL AS exists
-FROM (VALUES
-  ('public','CurrentWar'),
-  ('public','WarAttacks'),
-  ('public','ClanWarHistory'),
-  ('public','WarLookup'),
-  ('public','WarEvent'),
-  ('public','ClanWarParticipation'),
-  ('public','FwaClanWarLogCurrent'),
-  ('public','FwaWarMemberCurrent'),
-  ('public','FwaTrackedClanWarRosterCurrent'),
-  ('public','FwaTrackedClanWarRosterMemberCurrent'),
-  ('public','FwaFeedSyncState'),
-  ('public','FwaFeedCursor'),
-  ('public','FwaClanWarsWatchState')
-) AS required(table_schema, table_name);
+-- Non-mutating permission preflight. Stop before the data queries unless every
+-- required row reports exists=true and select_granted=true. Do not request
+-- additional grants from this packet.
+WITH required(table_schema, table_name) AS (
+  VALUES
+    ('public','CurrentWar'),
+    ('public','WarAttacks'),
+    ('public','ClanWarHistory'),
+    ('public','WarLookup'),
+    ('public','WarEvent'),
+    ('public','ClanWarParticipation'),
+    ('public','FwaClanWarLogCurrent'),
+    ('public','FwaWarMemberCurrent'),
+    ('public','FwaTrackedClanWarRosterCurrent'),
+    ('public','FwaTrackedClanWarRosterMemberCurrent'),
+    ('public','FwaFeedSyncState'),
+    ('public','FwaFeedCursor'),
+    ('public','FwaClanWarsWatchState')
+)
+SELECT table_schema,
+       table_name,
+       to_regclass(format('%I.%I', table_schema, table_name)) IS NOT NULL AS exists,
+       CASE
+         WHEN to_regclass(format('%I.%I', table_schema, table_name)) IS NULL THEN false
+         ELSE has_table_privilege(
+           current_user,
+           format('%I.%I', table_schema, table_name),
+           'SELECT'
+         )
+       END AS select_granted
+FROM required;
 
 SELECT 'CurrentWar' AS owner, count(*)::bigint AS row_count,
        count(DISTINCT "clanTag")::bigint AS clan_count,
@@ -355,7 +386,10 @@ UNION ALL
 SELECT 'FwaClanWarsWatchState', count(*)::bigint, count(DISTINCT "clanTag"),
        min("updatedAt"), max("updatedAt") FROM "FwaClanWarsWatchState";
 
--- Dusk classification and canonical roster coverage.
+-- Dusk classification and canonical roster coverage. The per-war count uses
+-- distinct playerTag values so guild-scoped duplicate participation rows do
+-- not inflate the canonical-war identity count. This count is diagnostic only:
+-- participation rows do not themselves prove authoritative completeness.
 SELECT "matchType", count(*)::bigint AS history_rows,
        count(DISTINCT "clanTag")::bigint AS clans,
        min("warStartTime") AS min_start, max("warStartTime") AS max_start
@@ -364,12 +398,13 @@ GROUP BY "matchType"
 ORDER BY "matchType" NULLS FIRST;
 
 SELECT count(*)::bigint AS ended_wars,
-       count(*) FILTER (WHERE participation_count > 0)::bigint AS wars_with_participation,
-       count(*) FILTER (WHERE participation_count = 0)::bigint AS wars_without_participation,
-       min(participation_count)::bigint AS min_participants,
-       max(participation_count)::bigint AS max_participants
+       count(*) FILTER (WHERE distinct_participants > 0)::bigint AS wars_with_participation,
+       count(*) FILTER (WHERE distinct_participants = 0)::bigint AS wars_without_participation,
+       min(distinct_participants)::bigint AS min_distinct_participants,
+       max(distinct_participants)::bigint AS max_distinct_participants
 FROM (
-  SELECT h."warId", count(p.*)::bigint AS participation_count
+  SELECT h."warId",
+         count(DISTINCT p."playerTag")::bigint AS distinct_participants
   FROM "ClanWarHistory" h
   LEFT JOIN "ClanWarParticipation" p ON p."warId" = h."warId"::text
   GROUP BY h."warId"
@@ -496,15 +531,13 @@ authorized by this diagnostic.
 
 ## 10. Validation boundary
 
-This document is the only intended worktree file change. Because it is a new
-untracked document, the final validation must include both the normal tracked
-diff check and a no-index check for the new file, followed by `git status` and
-the exact changed-path list. No application test suite is required for this
-docs-only inventory. The required validation is:
+This document is the only intended worktree file change. The final validation
+must include the normal tracked diff check, exact changed-path review, and
+`git status`. No application test suite is required for this docs-only
+inventory. The required validation is:
 
 ```text
 git diff --check
-git diff --no-index --check -- NUL docs/diagnostics/fb-002-p4d-1a-existing-history-inventory.md
 git status --short --untracked-files=all
 git diff --name-only
 ```
