@@ -344,6 +344,13 @@ describe("native HeatMapRef candidate generation", () => {
       sourceCategory: "persisted_fwa_snapshot",
       evidenceTrust: "persisted_unverified_source_binding",
     }))).toBe(false);
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      sourceAuthority: {
+        ...artifact.sourceAuthority,
+        referencePublicationStatus: "VERIFIED",
+      },
+    }))).toBe(false);
 
     const supportedDiagnostic = artifact.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED");
     expect(supportedDiagnostic).toBeDefined();

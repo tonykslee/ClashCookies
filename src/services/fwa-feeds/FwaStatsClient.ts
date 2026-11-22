@@ -15,6 +15,10 @@ import type {
   FwaClansFeedRow,
   FwaWarMemberFeedRow,
 } from "./types";
+import {
+  evaluateFwaWarMembersSourceEvidence,
+  type FwaWarMembersSourceEvidence,
+} from "./FwaWarMembersSourceEvidence";
 
 type FeedOperation = "clans_json" | "clan_members_json" | "war_members_json" | "clan_wars_json";
 
@@ -84,17 +88,52 @@ export class FwaStatsClient {
 
   /** Purpose: fetch and parse one clan active-war roster rows from `WarMembers.json?warNo=1`. */
   async fetchWarMembers(clanTag: string): Promise<FwaWarMemberFeedRow[]> {
+    const evidence = await this.fetchWarMembersEvidence(clanTag);
+    return evidence.rows;
+  }
+
+  /**
+   * Purpose: fetch WarMembers facts together with raw-payload diagnostics.
+   * Existing consumers may continue using the normalized rows, while native
+   * source eligibility can inspect discarded rows and unavailable proof facts.
+   */
+  async fetchWarMembersEvidence(clanTag: string): Promise<FwaWarMembersSourceEvidence & { rows: FwaWarMemberFeedRow[] }> {
     const normalizedTag = normalizeFwaTag(clanTag);
     const bare = normalizeFwaTagBare(clanTag);
-    if (!normalizedTag || !bare) return [];
-    const { rows } = await this.fetchRows({
+    if (!normalizedTag || !bare) {
+      const evidence = evaluateFwaWarMembersSourceEvidence({
+        clanTag,
+        sourceUrl: "",
+        sourceWarNo: 1,
+        rawPayloadIsArray: false,
+        rawRows: [],
+        acceptedRows: [],
+        observedAt: new Date(0),
+        ingestedAt: new Date(0),
+      });
+      return { ...evidence, rows: [] };
+    }
+    const sourceUrl = `https://fwastats.com/Clan/${bare}/WarMembers.json?warNo=1`;
+    const observedAt = new Date();
+    const { rows, arrayPayload } = await this.fetchRows({
       operation: "war_members_json",
-      url: `https://fwastats.com/Clan/${bare}/WarMembers.json?warNo=1`,
+      url: sourceUrl,
       scope: normalizedTag,
     });
-    return rows
+    const parsedRows = rows
       .map((row) => this.parseWarMembersRow(normalizedTag, row))
       .filter((row): row is FwaWarMemberFeedRow => Boolean(row));
+    const evidence = evaluateFwaWarMembersSourceEvidence({
+      clanTag: normalizedTag,
+      sourceUrl,
+      sourceWarNo: 1,
+      rawPayloadIsArray: arrayPayload,
+      rawRows: rows,
+      acceptedRows: parsedRows,
+      observedAt,
+      ingestedAt: new Date(),
+    });
+    return { ...evidence, rows: parsedRows };
   }
 
   /** Purpose: fetch and parse one clan recent war summary rows from `Wars.json`. */
