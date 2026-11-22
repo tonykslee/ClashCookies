@@ -254,6 +254,17 @@ observation rather than mutating one. `SUPERSEDED` may be a reader
 classification for a valid older observation, but must not delete or rewrite
 its evidence.
 
+An append-only contradiction against a previously eligible natural key
+(`sourceSystem`, `clanTag`, `exactUpstreamWarId`,
+`sourceGenerationId`) changes the authority result for that key to
+`CONFLICTING`. The original eligible observation and every generation that
+used it remain immutable, but the conflict index is itself authoritative for
+future eligibility: no new generation may cite the conflicted key, and any
+existing native head or generation whose lineage cites it is unavailable for
+target reads and rollback selection until an explicit, independently verified
+conflict-resolution policy exists. Historical `ELIGIBLE_VERIFIED` status
+cannot override a newly retained contradiction.
+
 ## 5. Isolated native reference generation model
 
 The following model is proposed for P4d. It intentionally does not reuse the
@@ -298,6 +309,15 @@ identity, FWA classification, completeness, direct weights, authenticity,
 generation, and replay rules. Any missing or conflicting dimension produces an
 UNKNOWN generation/target result, regardless of hashes or sample size.
 
+Conflict status is evaluated against the complete append-only observation
+history, not only the generation's original snapshot. A later
+`FwaNativeSourceObservationConflict` for any lineage natural key invalidates
+that key's eligibility. A generation that cites the key remains historically
+verifiable as an immutable artifact, but its native head is cleared or marked
+unavailable and its targets/rollback eligibility fail closed. A historical
+generation hash or `VERIFIED` state is never sufficient to override the
+newer conflict.
+
 Publication may retain an auditable generation containing `UNKNOWN` targets,
 but a target consumer may use only a `SUPPORTED` target from a verified
 generation. A generation with no supported targets is diagnostic/unavailable,
@@ -316,16 +336,24 @@ The proposed P4d-2 writer must:
 3. Lock the native head row (`FOR UPDATE`) and compare the caller's expected
    head generation and fence token. If either is stale, reject the writer and
    retain a rejected publication event; do not alter the head.
-4. Insert the immutable generation, bands, buckets, targets, and lineage under
+4. Re-read the complete conflict index and source-generation head rows inside
+   this same transaction. If any lineage natural key is now conflicted,
+   reject the candidate as stale/conflicting; do not insert or publish a
+   generation from it. This is publication-time conflict revalidation, not a
+   claim that the earlier source snapshot remains current.
+5. Insert the immutable generation, bands, buckets, targets, and lineage under
    unique constraints. A deterministic request key/content hash makes an exact
    retry a no-op; a reused request key with different content is a conflict.
-5. Recompute/verify all hashes and constraints in the transaction. Require
+6. Recompute/verify all hashes and constraints in the transaction. Require
    complete target coverage; `UNKNOWN` must be explicit, never a fabricated
    zero.
-6. Advance the generation to `VERIFIED`, update the native head with a new
+7. Advance the generation to `VERIFIED`, update the native head with a new
    fence token, and append the publication event in the same transaction.
-7. Commit once. A reader must never observe a head pointing to a partially
-   inserted generation.
+8. Commit once. A reader must never observe a head pointing to a partially
+   inserted generation. If a source conflict is committed concurrently, the
+   source-conflict writer and publication writer must use the same per-source
+   fencing/lock order, or publication must retry from a fresh transaction and
+   fail closed when the conflict wins.
 
 For a writer that starts from an older snapshot, a newer writer may publish
 first. The older writer's final transaction must fail the expected-head/fence
@@ -335,19 +363,33 @@ history as `REJECTED_STALE`, but it must not become the current head.
 ### 5.4 Consistent reader snapshots
 
 Native readers must use one bounded database transaction at `REPEATABLE READ`
-(or an equivalent single-snapshot read) and:
+(or an equivalent single-snapshot read) as the baseline and:
 
 1. read the native head token;
 2. read the pointed generation, all ordered definitions, all targets, and all
    lineage rows;
-3. verify generation state, foreign-key coverage, authority status, and the
-   canonical content hash; and
-4. re-read the head token before returning and retry or return UNKNOWN if it
-   changed.
+3. read the conflict index for every lineage natural key visible in that
+   snapshot; and
+4. verify generation state, foreign-key coverage, authority status, absence of
+   a source conflict, and the canonical content hash.
 
-Readers must not query the head in one transaction and targets in another, mix
-two generations, or treat a missing child as zero. Legacy readers continue to
-resolve only the legacy-v1 tables and provenance.
+This baseline is snapshot-consistent: all of the head, generation, children,
+lineage, and conflict reads describe one PostgreSQL snapshot. A
+`REPEATABLE READ` transaction cannot observe a head update committed after
+its snapshot was established, so re-reading the head inside that same
+transaction cannot detect that later commit. It must not be described as a
+freshness or race-free-latest check.
+
+If a caller requires current-head freshness in addition to snapshot
+consistency, perform a separate fresh-snapshot verification after the baseline
+read: commit the baseline transaction, begin a new transaction, read the head
+token and conflict index again, and accept the generation only if the token,
+generation ID, lineage conflict results, and content hash still agree. Bound
+this to a small retry count; after a head change, conflict, timeout, or
+exhausted retry, return UNKNOWN rather than promising an impossible
+race-free-latest result. Readers must never mix generations or silently treat
+missing children as zero. Legacy readers continue to resolve only the
+legacy-v1 tables and provenance.
 
 ### 5.5 Idempotency, crash recovery, and fencing
 
@@ -367,9 +409,13 @@ resolve only the legacy-v1 tables and provenance.
   PostgreSQL instance. The head fence/expected-generation compare is still
   required for stale-writer rejection and must be tested with two real
   processes/connections.
+- A source conflict discovered after a generation was published does not mutate
+  that generation. It makes the conflicted lineage ineligible, so a fresh
+  target read or rollback-selection transaction must return UNKNOWN/reject
+  rather than trusting the historical `VERIFIED` state.
 - Database retry after serialization/deadlock failure is safe only when the
   request key and deterministic content are reused. A retry must re-read the
-  head and rerun the stale-fence check.
+  head, conflict index, and rerun the stale-fence check.
 
 ## 6. Concurrency and replay failure matrix
 
@@ -384,9 +430,10 @@ resolve only the legacy-v1 tables and provenance.
 | Source omits declared count/total | P4c reports `UNAVAILABLE`. | Store the observation as UNKNOWN; do not infer completeness or total from normalized rows. |
 | CurrentWar points to another war | Current derived roster can still carry selected CurrentWar metadata. | No FK means no source-member relation; source authority remains UNKNOWN. |
 | Child target insert fails | Legacy transaction tests model rollback; real DB evidence is not yet verified. | One native transaction rolls back generation/head/event; no partially publishable generation. |
-| Reader races publication | Legacy readers can read parent/child separately. | One snapshot plus head-token recheck; return one complete generation or UNKNOWN. |
+| Reader races publication | Legacy readers can read parent/child separately. | Baseline `REPEATABLE READ` returns one snapshot-consistent generation. A separate fresh-snapshot verification with bounded retries is required only when current-head freshness is requested; never mix generations or treat missing children as zero. |
+| Source conflict races publication/read | Current state has no append-only conflict owner, so a late contradiction is lost or overwritten. | Publication revalidates conflicts/fences inside its transaction. Readers and rollback selection recheck the conflict index in a fresh transaction when required; a generation citing a newly conflicted key fails closed even if its historical status was `VERIFIED`. |
 | Mirror overwrite | Mirror allowlist overwrites legacy tables and locks the legacy key; it does not copy BotSetting. | Native data is not mirrored by default; any future mirror path needs its own allowlist, integrity, and active/mirror ownership gate. |
-| Source is later reclassified | Current rows do not preserve prior classification. | Append a new observation/conflict; never rewrite the historical evidence or generation lineage. |
+| Source is later reclassified | Current rows do not preserve prior classification. | Append a new observation/conflict; never rewrite the historical evidence or generation lineage. The conflicted key invalidates future publication and any head/rollback selection that cites it. |
 
 ## 7. Rollback and partial-failure scenarios
 
@@ -394,7 +441,9 @@ Rollback is a native head operation, not a down-migration and not a mutation of
 historical evidence.
 
 1. Select a previously `VERIFIED` native generation whose source lineage,
-   definitions, targets, authority result, and content hash still validate.
+   definitions, targets, authority result, content hash, and current
+   conflict-index status still validate. A lineage conflict makes the
+   generation ineligible even when its historical status is `VERIFIED`.
 2. Acquire the native profile lock and lock the native head.
 3. Compare the expected current head/fence. If stale, reject the rollback
    request rather than undoing a newer decision.
@@ -409,6 +458,9 @@ Partial failures must produce these outcomes:
 
 - source observation insert failure: no member rows or eligible head update;
 - conflict insert failure: preserve the original observation and fail closed;
+- late source conflict: preserve both immutable observations and all published
+  generations, but clear/withhold any native head or rollback candidate that
+  cites the conflicted natural key;
 - generation child/lineage failure: transaction rollback, no native head;
 - head/event failure: transaction rollback, no generation becomes published;
 - reader hash/coverage failure: return UNKNOWN and keep the head unchanged;
@@ -460,8 +512,9 @@ P4d-1 is complete only when:
    strict keys/checks/FKs/indexes, and retention/audit policy. No historical
    latest-only rows are backfilled as authoritative.
 3. Ingestion is transactionally idempotent, retains conflicting repeats,
-   validates raw-to-member correspondence, and rejects stale source-generation
-   updates with durable fencing.
+   validates raw-to-member correspondence, rejects stale source-generation
+   updates with durable fencing, and makes an append-only contradiction against
+   a previously eligible natural key invalidate that key for publication.
 4. Tests cover duplicate, conflict, stale, replay, missing-proof, partial-row,
    exact retry, restart, and source-to-member relation cases. At least one test
    uses two real PostgreSQL connections/processes, not only mocked Prisma.
@@ -481,15 +534,18 @@ P4d-2 is complete only when:
    with immutable content, profile/policy versions, ordered definitions,
    integrity hashes, explicit target states, and no legacy ownership changes.
 2. The publication transaction enforces complete target coverage, exact
-   lineage, source authority, advisory-lock fencing, stale-generation
-   rejection, and atomic head/event publication.
-3. Readers consume one consistent generation snapshot, verify the content hash,
-   and return UNKNOWN on missing, mixed, stale, malformed, or unavailable
-   evidence.
+   lineage, publication-time conflict revalidation, source authority,
+   advisory-lock fencing, stale-generation rejection, and atomic head/event
+   publication.
+3. Readers consume one snapshot-consistent generation, verify the content hash
+   and current conflict index, and return UNKNOWN on missing, mixed, stale,
+   conflicted, malformed, or unavailable evidence. Any optional current-head
+   freshness check uses a separate fresh snapshot with bounded retries and
+   never promises a race-free latest result.
 4. Tests prove exact retry idempotency, two-writer contention, stale writer
-   rejection, child failure rollback, crash/retry recovery, reader races, and
-   safe rollback to an older verified native generation using real PostgreSQL
-   where required.
+   rejection, late source-conflict invalidation, child failure rollback,
+   crash/retry recovery, reader publication/conflict races, and safe rollback
+   to an older verified native generation using real PostgreSQL where required.
 5. The rollout is backward-compatible: native tables are additive, no current
    rows are promoted, no legacy table is rewritten, and no native target is
    visible to active consumers without P4e activation.
