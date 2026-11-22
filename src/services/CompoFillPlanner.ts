@@ -7,8 +7,11 @@ import {
 } from "../helper/compoWarWeightBuckets";
 import {
   getCompoCalculationBucket,
+  getCompoProfileSourceBucketIds,
   LEGACY_COMPO_CALCULATION_PROFILE,
   type CompoCalculationProfile,
+  validateCompoCalculationProfile,
+  validateCompoProfileFactualCounts,
 } from "../helper/compoCalculationProfile";
 
 export type CompoFillTrackedClanState = {
@@ -165,9 +168,9 @@ type NormalizedCandidate = {
   clanState: "known" | "no_clan" | "unknown";
 };
 
-const COMPO_FILL_BUCKET_ORDER: CompoWarWeightBucket[] = LEGACY_COMPO_CALCULATION_PROFILE.buckets.flatMap(
-  (bucket) => bucket.sourceBucketIds,
-) as CompoWarWeightBucket[];
+function getCompoFillBucketOrder(profile: CompoCalculationProfile): CompoWarWeightBucket[] {
+  return getCompoProfileSourceBucketIds(profile) as CompoWarWeightBucket[];
+}
 
 function normalizeInteger(value: number | null | undefined): number {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -202,15 +205,16 @@ function cloneBucketCounts(
   return result;
 }
 
-function sumBucketCounts(counts: CompoWarBucketCounts): number {
-  return COMPO_FILL_BUCKET_ORDER.reduce((sum, bucket) => sum + (counts[bucket] ?? 0), 0);
+function sumBucketCounts(counts: CompoWarBucketCounts, bucketOrder: readonly CompoWarWeightBucket[]): number {
+  return bucketOrder.reduce((sum, bucket) => sum + (counts[bucket] ?? 0), 0);
 }
 
 function compareBucketsByPriority(
   left: CompoWarWeightBucket,
   right: CompoWarWeightBucket,
+  bucketOrder: readonly CompoWarWeightBucket[],
 ): number {
-  return COMPO_FILL_BUCKET_ORDER.indexOf(left) - COMPO_FILL_BUCKET_ORDER.indexOf(right);
+  return bucketOrder.indexOf(left) - bucketOrder.indexOf(right);
 }
 
 function compareStrings(left: string, right: string): number {
@@ -220,9 +224,10 @@ function compareStrings(left: string, right: string): number {
 function getLargestBucketDeficit(
   current: CompoWarBucketCounts,
   target: CompoWarBucketCounts,
+  bucketOrder: readonly CompoWarWeightBucket[],
 ): { bucket: CompoWarWeightBucket; deficit: number } | null {
   let best: { bucket: CompoWarWeightBucket; deficit: number } | null = null;
-  for (const bucket of COMPO_FILL_BUCKET_ORDER) {
+  for (const bucket of bucketOrder) {
     const deficit = (target[bucket] ?? 0) - (current[bucket] ?? 0);
     if (deficit <= 0) {
       continue;
@@ -235,7 +240,7 @@ function getLargestBucketDeficit(
       best = { bucket, deficit };
       continue;
     }
-    if (deficit === best.deficit && compareBucketsByPriority(bucket, best.bucket) < 0) {
+    if (deficit === best.deficit && compareBucketsByPriority(bucket, best.bucket, bucketOrder) < 0) {
       best = { bucket, deficit };
     }
   }
@@ -398,6 +403,7 @@ function selectBestCandidateForDestination(input: {
   sourceKind: CompoFillSourceKind;
   matchedBucket: CompoWarWeightBucket | null;
 } | null {
+  const bucketOrder = getCompoFillBucketOrder(input.profile);
   const availableCandidates = input.candidates.filter((candidate) => {
     if (input.usedPlayerTags.has(normalizeIdentity(candidate.playerTag))) {
       return false;
@@ -418,7 +424,7 @@ function selectBestCandidateForDestination(input: {
     return null;
   }
 
-  const bucketDeficits = COMPO_FILL_BUCKET_ORDER
+  const bucketDeficits = bucketOrder
     .map((bucket) => ({
       bucket,
       deficit:
@@ -430,7 +436,7 @@ function selectBestCandidateForDestination(input: {
       if (left.deficit !== right.deficit) {
         return right.deficit - left.deficit;
       }
-      return compareBucketsByPriority(left.bucket, right.bucket);
+      return compareBucketsByPriority(left.bucket, right.bucket, bucketOrder);
     });
 
   const evaluatePool = (
@@ -588,8 +594,15 @@ export function buildCompoFillPlan(input: {
   profile?: CompoCalculationProfile;
 }): CompoFillPlanResult {
   const profile = input.profile ?? LEGACY_COMPO_CALCULATION_PROFILE;
+  const profileError = validateCompoCalculationProfile(profile);
+  if (profileError) throw new Error(`Invalid composition calculation profile: ${profileError}`);
+  const bucketOrder = getCompoFillBucketOrder(profile);
   const trackedStates: MutableClanState[] = input.trackedClans.map((clan) => {
     const currentBucketCounts = cloneBucketCounts(clan.currentBucketCounts);
+    const targetCountsValidation = clan.targetEvidence === "validated"
+      ? validateCompoProfileFactualCounts(profile, clan.targetBucketCounts)
+      : { status: "unavailable" as const, reason: "target evidence is unavailable" };
+    const targetEvidence = targetCountsValidation.status === "supported" ? "validated" : "unavailable";
     const targetBucketCounts = cloneBucketCounts(clan.targetBucketCounts);
     const memberEvidenceByTag = clan.memberEvidence
       ? new Map(
@@ -605,10 +618,10 @@ export function buildCompoFillPlan(input: {
       memberCount: normalizeInteger(clan.memberCount),
       currentBucketCounts,
       targetBucketCounts,
-      targetEvidence: clan.targetEvidence,
+      targetEvidence,
       memberEvidenceByTag,
       targetMemberCount:
-        clan.targetEvidence === "validated" ? sumBucketCounts(targetBucketCounts) : 0,
+        targetEvidence === "validated" ? sumBucketCounts(targetBucketCounts, bucketOrder) : 0,
     };
   });
   const knownTrackedClanTags = new Set(
@@ -649,10 +662,12 @@ export function buildCompoFillPlan(input: {
     const leftBucket = getLargestBucketDeficit(
       cloneBucketCounts(left.initialBucketCounts),
       cloneBucketCounts(left.targetBucketCounts),
+      bucketOrder,
     );
     const rightBucket = getLargestBucketDeficit(
       cloneBucketCounts(right.initialBucketCounts),
       cloneBucketCounts(right.targetBucketCounts),
+      bucketOrder,
     );
     const leftBucketDeficit = leftBucket?.deficit ?? 0;
     const rightBucketDeficit = rightBucket?.deficit ?? 0;

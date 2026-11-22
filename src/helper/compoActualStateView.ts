@@ -8,11 +8,16 @@ import {
 } from "./compoWarBucketCounts";
 import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
 import {
+  getCompoLegacyReferenceBucketCount,
   calculateProfileDeviationScore,
   getCompoProfileMaximumRepresentativeWeight,
   getCompoProfileRepresentativeWeight,
   LEGACY_COMPO_CALCULATION_PROFILE,
+  projectCompoProfileCounts,
+  resolveCompoProfileTargets,
   resolveLegacyProfileTargets,
+  type CompoCalculationProfile,
+  type CompoCalculationTargetStatus,
 } from "./compoCalculationProfile";
 import {
   findHeatMapRefForWeight,
@@ -72,6 +77,8 @@ export type CompoActualStateBaseMetrics = {
   /** Bounded diagnostic explaining why current-roster claims are unavailable. */
   rosterEvidenceReason?: string | null;
   bucketCounts: CompoWarBucketCounts;
+  /** Optional profile-space counts used by synthetic/profile-aware callers. */
+  calculationCounts?: Readonly<Record<string, number>>;
 };
 
 export type CompoActualStateProjection = {
@@ -88,21 +95,19 @@ export type CompoActualStateProjection = {
   selectedHeatMapRef: HeatMapRef | null;
   deltaByBucket: Record<CompoWarDisplayBucket, number | null>;
   deviationScore: number | null;
+  /** Target evidence is independent from factual observations and never inferred from selection alone. */
+  targetStatus?: CompoCalculationTargetStatus;
+  calculationCounts?: Readonly<Record<string, number>>;
+  targetCalculationCounts?: Readonly<Record<string, number>> | null;
 };
-
-type SupportedCompoWarDisplayBucket = Exclude<CompoWarDisplayBucket, "TH19">;
-
-// The legacy adapter owns the public v1 display type; ordering and policy come
-// from the immutable profile so generic calculation code has no TH-specific list.
-const DISPLAY_BUCKETS_ASC = LEGACY_COMPO_CALCULATION_PROFILE.buckets.map(
-  (bucket) => bucket.id as SupportedCompoWarDisplayBucket,
-);
-const DISPLAY_BUCKETS_DESC = [...DISPLAY_BUCKETS_ASC].reverse();
-const AUTO_DETECT_ITERATION_CAP = 12;
 
 type FillPlan = {
   fillCounts: CompoWarDisplayBucketCounts;
   addedWeight: number;
+  status: "supported" | "unavailable";
+  calculationCounts: Readonly<Record<string, number>>;
+  targetCalculationCounts: Readonly<Record<string, number>> | null;
+  reason: string | null;
 };
 
 /** Purpose: identify observed TH19 composition that cannot be compared with historical HeatMapRef targets. */
@@ -118,42 +123,117 @@ function buildEmptyDisplayCounts(): CompoWarDisplayBucketCounts {
   };
 }
 
-function buildTargetCounts(heatMapRef: HeatMapRef): CompoWarDisplayBucketCounts {
-  const resolved = resolveLegacyProfileTargets(heatMapRef);
-  return {
-    TH18: resolved.counts.TH18 ?? 0,
-    TH17: resolved.counts.TH17 ?? 0,
-    TH16: resolved.counts.TH16 ?? 0,
-    TH15: resolved.counts.TH15 ?? 0,
-    TH14: resolved.counts.TH14 ?? 0,
-    "<=TH13": resolved.counts["<=TH13"] ?? 0,
-  };
+function getProfileDisplayBucketIds(profile: CompoCalculationProfile): string[] {
+  return [...new Set(profile.buckets.map((bucket) => profile.compatibility.displayBucketByCalculationBucket[bucket.id]))];
+}
+
+function buildCalculationDeltaByDisplay(input: {
+  profile: CompoCalculationProfile;
+  observedCounts: Readonly<Record<string, number>>;
+  targetCounts: Readonly<Record<string, number>> | null;
+  displayCounts: CompoWarDisplayBucketCounts;
+}): Record<CompoWarDisplayBucket, number | null> {
+  const result: Record<string, number | null> = {};
+  for (const displayBucket of getProfileDisplayBucketIds(input.profile)) result[displayBucket] = null;
+  if (!input.targetCounts) {
+    if ((input.displayCounts.TH19 ?? 0) > 0) result.TH19 = null;
+    return result as Record<CompoWarDisplayBucket, number | null>;
+  }
+  for (const bucket of input.profile.buckets) {
+    const displayBucket = input.profile.compatibility.displayBucketByCalculationBucket[bucket.id];
+    const delta = input.observedCounts[bucket.id]! - input.targetCounts[bucket.id]!;
+    result[displayBucket] = (result[displayBucket] ?? 0) + delta;
+  }
+  return result as Record<CompoWarDisplayBucket, number | null>;
+}
+
+function getProfileTargetResolution(
+  profile: CompoCalculationProfile,
+  heatMapRef: HeatMapRef | null,
+) {
+  if (profile === LEGACY_COMPO_CALCULATION_PROFILE) {
+    return resolveLegacyProfileTargets(heatMapRef);
+  }
+  return resolveCompoProfileTargets({
+    profile,
+    reference: heatMapRef,
+    readCount: getCompoLegacyReferenceBucketCount,
+  });
+}
+
+export function getSupportedCompoCalculationHeatMapRefs(
+  heatMapRefs: readonly HeatMapRef[],
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
+): HeatMapRef[] {
+  return heatMapRefs.filter(
+    (ref) => getProfileTargetResolution(profile, ref).status === "supported",
+  );
+}
+
+function deriveCalculationCounts(input: {
+  profile: CompoCalculationProfile;
+  base: CompoActualStateBaseMetrics;
+}): { counts: Record<string, number>; unsupportedPositive: boolean } {
+  if (input.base.calculationCounts) {
+    return {
+      counts: { ...input.base.calculationCounts },
+      unsupportedPositive: Object.entries(input.base.bucketCounts).some(
+        ([factualBucket, count]) =>
+          count > 0 && input.profile.factualToCalculationBucket[factualBucket] == null,
+      ),
+    };
+  }
+  const counts: Record<string, number> = {};
+  for (const bucket of input.profile.buckets) {
+    counts[bucket.id] = bucket.sourceBucketIds.reduce(
+      (sum, sourceBucketId) => sum + (input.base.bucketCounts[sourceBucketId as keyof CompoWarBucketCounts] ?? 0),
+      0,
+    );
+  }
+  const unsupportedPositive = Object.entries(input.base.bucketCounts).some(
+    ([factualBucket, count]) =>
+      count > 0 && input.profile.factualToCalculationBucket[factualBucket] === null,
+  );
+  return { counts, unsupportedPositive };
+}
+
+function buildTargetCounts(
+  heatMapRef: HeatMapRef,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
+): { displayCounts: CompoWarDisplayBucketCounts; calculationCounts: Readonly<Record<string, number>> } | null {
+  const resolved = getProfileTargetResolution(profile, heatMapRef);
+  if (resolved.status !== "supported") return null;
+  const displayCounts: CompoWarDisplayBucketCounts = { ...EMPTY_COMPO_WAR_DISPLAY_BUCKET_COUNTS };
+  for (const bucket of profile.buckets) {
+    const displayBucket = profile.compatibility.displayBucketByCalculationBucket[bucket.id] as CompoWarDisplayBucket;
+    displayCounts[displayBucket] = (displayCounts[displayBucket] ?? 0) + (resolved.counts[bucket.id] ?? 0);
+  }
+  return { displayCounts, calculationCounts: resolved.counts };
 }
 
 /** Purpose: expose the exact target display counts implied by one HeatMapRef. */
 export function getCompoActualStateTargetDisplayCounts(
   heatMapRef: HeatMapRef | null,
-): CompoWarDisplayBucketCounts {
-  return heatMapRef ? buildTargetCounts(heatMapRef) : buildEmptyDisplayCounts();
+): CompoWarDisplayBucketCounts | null {
+  return heatMapRef ? buildTargetCounts(heatMapRef)?.displayCounts ?? null : null;
 }
 
 /** Purpose: expose planner-friendly target bucket counts for one HeatMapRef, collapsing the low display band into TH13. */
 export function getCompoActualStateTargetBucketCounts(
   heatMapRef: HeatMapRef | null,
-): CompoWarBucketCounts {
+): CompoWarBucketCounts | null {
   if (!heatMapRef) {
-    return {
-      ...EMPTY_COMPO_WAR_BUCKET_COUNTS,
-    };
+    return null;
   }
 
   const resolved = resolveLegacyProfileTargets(heatMapRef);
+  if (resolved.status !== "supported") return null;
   const counts: CompoWarBucketCounts = { ...EMPTY_COMPO_WAR_BUCKET_COUNTS };
   for (const bucket of LEGACY_COMPO_CALCULATION_PROFILE.buckets) {
     const plannerBucket = bucket.id === "<=TH13"
       ? "TH13"
       : bucket.id;
-    counts[plannerBucket as keyof CompoWarBucketCounts] = resolved.counts[bucket.id] ?? 0;
+    counts[plannerBucket as keyof CompoWarBucketCounts] = resolved.counts[bucket.id]!;
   }
   return counts;
 }
@@ -161,37 +241,26 @@ export function getCompoActualStateTargetBucketCounts(
 export function getCompoActualStateDeltaByBucket(
   counts: CompoWarDisplayBucketCounts,
   heatMapRef: HeatMapRef | null,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
 ): Record<CompoWarDisplayBucket, number | null> {
-  const unsupportedTh19 = hasUnsupportedCompoTh19Target(counts);
-  if (!heatMapRef || unsupportedTh19) {
-    const result = {
-      TH18: null,
-      TH17: null,
-      TH16: null,
-      TH15: null,
-      TH14: null,
-      "<=TH13": null,
-    };
-    if (unsupportedTh19) {
-      (result as Record<CompoWarDisplayBucket, number | null>).TH19 = null;
-    }
+  const result: Record<string, number | null> = {};
+  const target = heatMapRef ? buildTargetCounts(heatMapRef, profile) : null;
+  for (const displayBucket of getProfileDisplayBucketIds(profile)) result[displayBucket] = null;
+  const malformedCounts = Object.values(counts).some(
+    (value) => !Number.isSafeInteger(value) || value < 0,
+  );
+  const unsupportedObserved =
+    (counts.TH19 ?? 0) > 0 && profile.factualToCalculationBucket.TH19 == null;
+  if (!target || malformedCounts || unsupportedObserved) {
+    if ((counts.TH19 ?? 0) > 0) result.TH19 = null;
     return result as Record<CompoWarDisplayBucket, number | null>;
   }
-  const resolved = resolveLegacyProfileTargets(heatMapRef);
-  if (resolved.status !== "supported") {
-    return {
-      TH18: null,
-      TH17: null,
-      TH16: null,
-      TH15: null,
-      TH14: null,
-      "<=TH13": null,
-    } as Record<CompoWarDisplayBucket, number | null>;
+  for (const bucket of profile.buckets) {
+    const displayBucket = profile.compatibility.displayBucketByCalculationBucket[bucket.id];
+    const observed = counts[displayBucket as keyof CompoWarDisplayBucketCounts] ?? 0;
+    const delta = observed - target.displayCounts[displayBucket as keyof CompoWarDisplayBucketCounts]!;
+    result[displayBucket] = (result[displayBucket] ?? 0) + delta;
   }
-  const targetCounts = buildTargetCounts(heatMapRef);
-  const result = Object.fromEntries(
-    DISPLAY_BUCKETS_ASC.map((bucket) => [bucket, counts[bucket] - targetCounts[bucket]]),
-  ) as Record<SupportedCompoWarDisplayBucket, number>;
   return result as Record<CompoWarDisplayBucket, number | null>;
 }
 
@@ -199,23 +268,30 @@ export function getCompoActualStateDeltaByBucket(
 export function calculateCompoDeviationScore(input: {
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRef: HeatMapRef | null;
+  profile?: CompoCalculationProfile;
+  calculationCounts?: Readonly<Record<string, number>>;
 }): number | null {
-  if (!input.heatMapRef || hasUnsupportedCompoTh19Target(input.displayCounts)) {
+  const profile = input.profile ?? LEGACY_COMPO_CALCULATION_PROFILE;
+  const unsupportedObserved =
+    (input.displayCounts.TH19 ?? 0) > 0 && profile.factualToCalculationBucket.TH19 == null;
+  if (!input.heatMapRef || unsupportedObserved) {
     return null;
   }
 
-  const resolved = resolveLegacyProfileTargets(input.heatMapRef);
-  if (resolved.status !== "supported") {
+  const target = buildTargetCounts(input.heatMapRef, profile);
+  if (!target) {
     return null;
   }
-  const targetCounts = buildTargetCounts(input.heatMapRef);
-  const observedCounts = Object.fromEntries(
-    DISPLAY_BUCKETS_ASC.map((bucket) => [bucket, input.displayCounts[bucket]]),
+  const observedCounts = input.calculationCounts ?? Object.fromEntries(
+    profile.buckets.map((bucket) => {
+      const displayBucket = profile.compatibility.displayBucketByCalculationBucket[bucket.id] as keyof CompoWarDisplayBucketCounts;
+      return [bucket.id, input.displayCounts[displayBucket] ?? 0];
+    }),
   );
   return calculateProfileDeviationScore({
-    profile: LEGACY_COMPO_CALCULATION_PROFILE,
+    profile,
     observedCounts,
-    targetCounts,
+    targetCounts: target.calculationCounts,
   });
 }
 
@@ -234,34 +310,40 @@ export function isCompoActualStateDeviationHealthy(
 function getRepresentativeWeight(
   bucket: CompoWarDisplayBucket,
   heatMapRef: HeatMapRef | null,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
 ): number {
-  if (bucket === "TH19") {
-    throw new Error("TH19 target representative weight is unavailable");
-  }
-  return getCompoProfileRepresentativeWeight(
-    LEGACY_COMPO_CALCULATION_PROFILE,
-    bucket,
-    heatMapRef,
-  ) ?? 0;
+  const calculationBucket = profile.buckets.find(
+    (candidate) => profile.compatibility.displayBucketByCalculationBucket[candidate.id] === bucket,
+  )?.id;
+  if (!calculationBucket) throw new Error(`${bucket} representative weight is unavailable`);
+  const representative = getCompoProfileRepresentativeWeight(profile, calculationBucket, heatMapRef);
+  if (representative === null) throw new Error(`${bucket} representative weight is unavailable`);
+  return representative;
 }
 
 /** Purpose: estimate one representative total-weight delta for a displayed ACTUAL/WAR bucket. */
 export function getCompoDisplayBucketRepresentativeWeight(
   bucket: CompoWarDisplayBucket,
   heatMapRef: HeatMapRef | null,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
 ): number {
-  return getRepresentativeWeight(bucket, heatMapRef);
+  return getRepresentativeWeight(bucket, heatMapRef, profile);
 }
 
 function addDisplayCounts(
   base: CompoWarDisplayBucketCounts,
   fillCounts: CompoWarDisplayBucketCounts,
+  profile: CompoCalculationProfile = LEGACY_COMPO_CALCULATION_PROFILE,
 ): CompoWarDisplayBucketCounts {
   const result = Object.fromEntries(
-    DISPLAY_BUCKETS_ASC.map((bucket) => [bucket, base[bucket] + fillCounts[bucket]]),
+    Object.keys(EMPTY_COMPO_WAR_DISPLAY_BUCKET_COUNTS).map((bucket) => [
+      bucket,
+      (base[bucket as keyof CompoWarDisplayBucketCounts] ?? 0) +
+        (fillCounts[bucket as keyof CompoWarDisplayBucketCounts] ?? 0),
+    ]),
   ) as CompoWarDisplayBucketCounts;
   const th19 = (base.TH19 ?? 0) + (fillCounts.TH19 ?? 0);
-  if (th19 > 0) result.TH19 = th19;
+  if (th19 > 0 || getProfileDisplayBucketIds(profile).includes("TH19")) result.TH19 = th19;
   return result;
 }
 
@@ -269,71 +351,50 @@ function buildFillPlan(input: {
   displayCounts: CompoWarDisplayBucketCounts;
   nMissing: number;
   heatMapRef: HeatMapRef | null;
+  calculationCounts: Readonly<Record<string, number>>;
+  profile: CompoCalculationProfile;
 }): FillPlan {
   const fillCounts = buildEmptyDisplayCounts();
-  if (!input.heatMapRef || input.nMissing <= 0) {
+  const target = getProfileTargetResolution(input.profile, input.heatMapRef);
+  if (!input.heatMapRef || target.status !== "supported") {
     return {
       fillCounts,
       addedWeight: 0,
+      status: "unavailable",
+      calculationCounts: input.calculationCounts,
+      targetCalculationCounts: target.status === "supported" ? target.counts : null,
+      reason: target.reason ?? "target evidence is unavailable",
     };
   }
-
-  const deltas = getCompoActualStateDeltaByBucket(
-    input.displayCounts,
-    input.heatMapRef,
-  );
-  let remaining = input.nMissing;
-
-  for (const bucket of DISPLAY_BUCKETS_ASC) {
-    const delta = deltas[bucket];
-    const deficitSlots =
-      typeof delta === "number" && delta < 0
-        ? Math.min(remaining, Math.abs(delta))
-        : 0;
-    if (deficitSlots <= 0) continue;
-    fillCounts[bucket] += deficitSlots;
-    remaining -= deficitSlots;
-    if (remaining <= 0) {
-      break;
-    }
+  const projected = projectCompoProfileCounts({
+    profile: input.profile,
+    observedCounts: input.calculationCounts,
+    targetCounts: target.counts,
+    missingCount: input.nMissing,
+    reference: input.heatMapRef,
+  });
+  if (projected.status !== "supported") {
+    return {
+      fillCounts,
+      addedWeight: 0,
+      status: "unavailable",
+      calculationCounts: input.calculationCounts,
+      targetCalculationCounts: target.counts,
+      reason: projected.reason,
+    };
   }
-
-  // When all sheet deficits are already filled, keep overflow deterministic by
-  // choosing the display bucket with the smallest non-negative post-fill delta,
-  // breaking ties toward the lower Town Hall buckets first.
-  while (remaining > 0) {
-    const nextBucket = DISPLAY_BUCKETS_DESC.reduce<SupportedCompoWarDisplayBucket>(
-      (best, bucket) => {
-        const bestDistance = Math.abs(
-          (deltas[best] ?? 0) + (fillCounts[best] ?? 0),
-        );
-        const candidateDistance = Math.abs(
-          (deltas[bucket] ?? 0) + (fillCounts[bucket] ?? 0),
-        );
-        if (candidateDistance !== bestDistance) {
-          return candidateDistance < bestDistance ? bucket : best;
-        }
-        return DISPLAY_BUCKETS_DESC.indexOf(bucket) <
-          DISPLAY_BUCKETS_DESC.indexOf(best)
-          ? bucket
-          : best;
-      },
-      DISPLAY_BUCKETS_DESC[0],
-    );
-    fillCounts[nextBucket] += 1;
-    remaining -= 1;
+  for (const bucket of input.profile.buckets) {
+    const displayBucket = input.profile.compatibility.displayBucketByCalculationBucket[bucket.id] as keyof CompoWarDisplayBucketCounts;
+    const fill = Math.max(0, projected.counts[bucket.id]! - input.calculationCounts[bucket.id]!);
+    if (displayBucket in fillCounts) fillCounts[displayBucket] = (fillCounts[displayBucket] ?? 0) + fill;
   }
-
-  const addedWeight = DISPLAY_BUCKETS_ASC.reduce(
-    (sum, bucket) =>
-      sum +
-      (fillCounts[bucket] ?? 0) * getRepresentativeWeight(bucket, input.heatMapRef),
-    0,
-  );
-
   return {
     fillCounts,
-    addedWeight,
+    addedWeight: projected.addedWeight,
+    status: "supported",
+    calculationCounts: projected.counts,
+    targetCalculationCounts: target.counts,
+    reason: null,
   };
 }
 
@@ -342,6 +403,8 @@ function buildEstimatedProjectionForBand(input: {
   base: CompoActualStateBaseMetrics;
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRef: HeatMapRef;
+  profile: CompoCalculationProfile;
+  calculationCounts: Readonly<Record<string, number>>;
 }): CompoActualStateProjection {
   const missingTo50Count = Math.max(0, 50 - input.base.memberCount);
   const nMissing = missingTo50Count + input.base.unresolvedWeightCount;
@@ -350,15 +413,44 @@ function buildEstimatedProjectionForBand(input: {
     displayCounts: input.displayCounts,
     nMissing,
     heatMapRef: input.heatMapRef,
+    calculationCounts: input.calculationCounts,
+    profile: input.profile,
   });
+  if (fillPlan.status !== "supported") {
+    return {
+      view: input.view,
+      totalWeight: input.base.resolvedTotalWeight,
+      resolvedRosterWeight: input.base.resolvedTotalWeight,
+      missingWeights: nMissing,
+      memberCount: input.base.memberCount,
+      missingTo50Count,
+      unresolvedWeightCount: input.base.unresolvedWeightCount,
+      deferredWeightCount,
+      nMissing,
+      displayCounts: input.displayCounts,
+      selectedHeatMapRef: null,
+      deltaByBucket: buildCalculationDeltaByDisplay({ profile: input.profile, observedCounts: input.calculationCounts, targetCounts: null, displayCounts: input.displayCounts }),
+      deviationScore: null,
+      targetStatus: "unavailable",
+      calculationCounts: input.calculationCounts,
+      targetCalculationCounts: null,
+    };
+  }
   const estimatedDisplayCounts = addDisplayCounts(
     input.displayCounts,
     fillPlan.fillCounts,
+    input.profile,
   );
-  const deltaByBucket = getCompoActualStateDeltaByBucket(input.displayCounts, input.heatMapRef);
-  const deviationScore = calculateCompoDeviationScore({
+  const deltaByBucket = buildCalculationDeltaByDisplay({
+    profile: input.profile,
+    observedCounts: fillPlan.calculationCounts,
+    targetCounts: fillPlan.targetCalculationCounts,
     displayCounts: estimatedDisplayCounts,
-    heatMapRef: input.heatMapRef,
+  });
+  const deviationScore = calculateProfileDeviationScore({
+    profile: input.profile,
+    observedCounts: fillPlan.calculationCounts,
+    targetCounts: fillPlan.targetCalculationCounts,
   });
 
   return {
@@ -375,6 +467,9 @@ function buildEstimatedProjectionForBand(input: {
     selectedHeatMapRef: input.heatMapRef,
     deltaByBucket,
     deviationScore,
+    targetStatus: "supported",
+    calculationCounts: fillPlan.calculationCounts,
+    targetCalculationCounts: fillPlan.targetCalculationCounts,
   };
 }
 
@@ -384,15 +479,21 @@ function compareHeatMapRefResolvedFit(
   input: {
     displayCounts: CompoWarDisplayBucketCounts;
     resolvedTotalWeight: number;
+    profile: CompoCalculationProfile;
+    calculationCounts: Readonly<Record<string, number>>;
   },
 ): number {
   const leftScore = calculateCompoDeviationScore({
     displayCounts: input.displayCounts,
     heatMapRef: left,
+    profile: input.profile,
+    calculationCounts: input.calculationCounts,
   });
   const rightScore = calculateCompoDeviationScore({
     displayCounts: input.displayCounts,
     heatMapRef: right,
+    profile: input.profile,
+    calculationCounts: input.calculationCounts,
   });
   const leftNormalizedScore = leftScore ?? Number.POSITIVE_INFINITY;
   const rightNormalizedScore = rightScore ?? Number.POSITIVE_INFINITY;
@@ -433,6 +534,8 @@ function selectBestFitHeatMapRefForResolvedCounts(input: {
   heatMapRefs: readonly HeatMapRef[];
   displayCounts: CompoWarDisplayBucketCounts;
   resolvedTotalWeight: number;
+  profile: CompoCalculationProfile;
+  calculationCounts: Readonly<Record<string, number>>;
 }): HeatMapRef | null {
   if (input.heatMapRefs.length === 0) {
     return null;
@@ -467,14 +570,18 @@ function buildRawProjection(input: {
   base: CompoActualStateBaseMetrics;
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRefs: readonly HeatMapRef[];
+  profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
+  const calculationState = deriveCalculationCounts({ profile: input.profile, base: input.base });
+  const validRefs = getSupportedCompoCalculationHeatMapRefs(input.heatMapRefs, input.profile);
   const matchedHeatMapRef = findHeatMapRefForWeight(
-    input.heatMapRefs,
+    validRefs,
     input.base.resolvedTotalWeight,
   );
-  const heatMapRef = hasUnsupportedCompoTh19Target(input.displayCounts)
+  const heatMapRef = calculationState.unsupportedPositive
     ? null
     : matchedHeatMapRef;
+  const target = getProfileTargetResolution(input.profile, heatMapRef);
   const deferredWeightCount = input.base.deferredWeightCount ?? 0;
   return {
     view: "raw",
@@ -489,8 +596,21 @@ function buildRawProjection(input: {
       Math.max(0, 50 - input.base.memberCount) + input.base.unresolvedWeightCount,
     displayCounts: input.displayCounts,
     selectedHeatMapRef: heatMapRef,
-    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, heatMapRef),
+    deltaByBucket: buildCalculationDeltaByDisplay({
+      profile: input.profile,
+      observedCounts: calculationState.counts,
+      targetCounts: target.status === "supported" ? target.counts : null,
+      displayCounts: input.displayCounts,
+    }),
     deviationScore: null,
+    targetStatus:
+      calculationState.unsupportedPositive
+        ? "unavailable"
+        : target.status === "missing" && validRefs.length === 0 && input.heatMapRefs.length > 0
+          ? "invalid"
+          : target.status,
+    calculationCounts: calculationState.counts,
+    targetCalculationCounts: target.status === "supported" ? target.counts : null,
   };
 }
 
@@ -498,6 +618,7 @@ function buildAutoProjection(input: {
   base: CompoActualStateBaseMetrics;
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRefs: readonly HeatMapRef[];
+  profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
   const rawProjection = buildRawProjection(input);
   if (!rawProjection.selectedHeatMapRef) {
@@ -516,6 +637,8 @@ function buildAutoProjection(input: {
       deviationScore: calculateCompoDeviationScore({
         displayCounts: rawProjection.displayCounts,
         heatMapRef: rawProjection.selectedHeatMapRef,
+        profile: input.profile,
+        calculationCounts: rawProjection.calculationCounts,
       }),
     };
   }
@@ -525,11 +648,24 @@ function buildAutoProjection(input: {
       heatMapRefs: input.heatMapRefs,
       displayCounts: input.displayCounts,
       resolvedTotalWeight: rawProjection.totalWeight,
+      profile: input.profile,
+      calculationCounts: rawProjection.calculationCounts ?? {},
     }) ?? rawProjection.selectedHeatMapRef;
   const fillPlan = buildFillPlan({
     displayCounts: input.displayCounts,
     nMissing: rawProjection.nMissing,
     heatMapRef: selectedHeatMapRef,
+    calculationCounts: rawProjection.calculationCounts ?? {},
+    profile: input.profile,
+  });
+  if (fillPlan.status !== "supported") {
+    return { ...rawProjection, view: "auto", selectedHeatMapRef: null, targetStatus: "unavailable", targetCalculationCounts: null };
+  }
+  const targetDelta = buildCalculationDeltaByDisplay({
+    profile: input.profile,
+    observedCounts: rawProjection.calculationCounts ?? {},
+    targetCounts: fillPlan.targetCalculationCounts,
+    displayCounts: input.displayCounts,
   });
 
   return {
@@ -544,11 +680,16 @@ function buildAutoProjection(input: {
     nMissing: rawProjection.nMissing,
     displayCounts: input.displayCounts,
     selectedHeatMapRef,
-    deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, selectedHeatMapRef),
+    deltaByBucket: targetDelta,
     deviationScore: calculateCompoDeviationScore({
       displayCounts: input.displayCounts,
       heatMapRef: selectedHeatMapRef,
+      profile: input.profile,
+      calculationCounts: rawProjection.calculationCounts,
     }),
+    targetStatus: "supported",
+    calculationCounts: rawProjection.calculationCounts,
+    targetCalculationCounts: fillPlan.targetCalculationCounts,
   };
 }
 
@@ -556,6 +697,7 @@ function buildBestFitProjection(input: {
   base: CompoActualStateBaseMetrics;
   displayCounts: CompoWarDisplayBucketCounts;
   heatMapRefs: readonly HeatMapRef[];
+  profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
   const rawProjection = buildRawProjection(input);
   if (!rawProjection.selectedHeatMapRef) {
@@ -567,7 +709,7 @@ function buildBestFitProjection(input: {
   }
 
   const maximumRepresentativeWeight = getCompoProfileMaximumRepresentativeWeight(
-    LEGACY_COMPO_CALCULATION_PROFILE,
+    input.profile,
     rawProjection.selectedHeatMapRef,
   );
   if (maximumRepresentativeWeight === null) {
@@ -576,13 +718,15 @@ function buildBestFitProjection(input: {
       view: "best",
       missingWeights: rawProjection.nMissing,
       selectedHeatMapRef: null,
-      deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, null),
+      deltaByBucket: getCompoActualStateDeltaByBucket(input.displayCounts, null, input.profile),
+      targetStatus: "unavailable",
     };
   }
   const maxEstimatedTotal =
     input.base.resolvedTotalWeight + rawProjection.nMissing * maximumRepresentativeWeight;
+  const validRefs = getSupportedCompoCalculationHeatMapRefs(input.heatMapRefs, input.profile);
   const candidates = listHeatMapRefsIntersectingWeightWindow(
-    input.heatMapRefs,
+    validRefs,
     input.base.resolvedTotalWeight,
     maxEstimatedTotal,
   );
@@ -595,6 +739,8 @@ function buildBestFitProjection(input: {
         base: input.base,
         displayCounts: input.displayCounts,
         heatMapRef,
+        profile: input.profile,
+        calculationCounts: rawProjection.calculationCounts ?? {},
       }),
     )
     .sort((left, right) => {
@@ -620,7 +766,9 @@ export function projectCompoActualStateView(input: {
   view: CompoActualStateView;
   base: CompoActualStateBaseMetrics;
   heatMapRefs: readonly HeatMapRef[];
+  profile?: CompoCalculationProfile;
 }): CompoActualStateProjection {
+  const profile = input.profile ?? LEGACY_COMPO_CALCULATION_PROFILE;
   const displayCounts = collapseCompoWarBucketCountsForDisplay(input.base.bucketCounts);
 
   if (input.view === "raw") {
@@ -628,6 +776,7 @@ export function projectCompoActualStateView(input: {
       base: input.base,
       displayCounts,
       heatMapRefs: input.heatMapRefs,
+      profile,
     });
   }
   if (input.view === "auto") {
@@ -635,12 +784,14 @@ export function projectCompoActualStateView(input: {
       base: input.base,
       displayCounts,
       heatMapRefs: input.heatMapRefs,
+      profile,
     });
   }
   return buildBestFitProjection({
     base: input.base,
     displayCounts,
     heatMapRefs: input.heatMapRefs,
+    profile,
   });
 }
 
