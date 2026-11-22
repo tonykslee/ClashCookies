@@ -14,9 +14,10 @@ a separate owner-approved milestone.
 ## 1. Scope and verified baseline
 
 This investigation was performed on the existing owner-created branch
-`feature/native-publication-prerequisites`. Its initial and current `HEAD`
-are both `77d111ebe75c25dad304a84e4fc055ed622bbffe`, exactly `origin/dev` at
-the start of the work. No second branch was created.
+`feature/native-publication-prerequisites`, created from
+`77d111ebe75c25dad304a84e4fc055ed622bbffe`, the exact `origin/dev` HEAD
+at the start of the work. Subsequent docs-only commits advanced the feature
+branch; no second branch was created.
 
 The current `dev` project instructions and canonical workflow were retrieved
 from that `dev` revision, together with the issue and the relevant repository
