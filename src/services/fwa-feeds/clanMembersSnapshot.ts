@@ -18,6 +18,21 @@ export type ClanMembersSnapshotRow = {
   inWar: boolean | null;
 };
 
+/** Purpose: normalize optional numeric fields identically before hashing or persistence. */
+export function normalizeClanMembersOptionalInteger(value: unknown): number | null {
+  if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
+}
+
+/** Purpose: normalize optional text fields identically before hashing or persistence. */
+export function normalizeClanMembersOptionalText(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
 /** Purpose: normalize a source row into the persisted snapshot identity. */
 export function toClanMembersSnapshotRow(row: FwaClanMemberFeedRow): ClanMembersSnapshotRow {
   return {

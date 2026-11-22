@@ -1,4 +1,9 @@
-import type { FwaFeedScopeType, FwaFeedSyncStatus, FwaFeedType } from "@prisma/client";
+import type {
+  FwaFeedScopeType,
+  FwaFeedSyncStatus,
+  FwaFeedType,
+  Prisma,
+} from "@prisma/client";
 import { prisma } from "../../prisma";
 import { resolveFwaFeedScopeKey } from "./scopeKey";
 
@@ -22,10 +27,12 @@ type RecordFailureParams = SyncScope & {
   nextEligibleAt: Date | null;
 };
 
+type SyncStateClient = typeof prisma | Prisma.TransactionClient;
+
 /** Purpose: own persistent sync-state metadata updates for all fwa feed scopes. */
 export class FwaFeedSyncStateService {
-  private getDelegate() {
-    return prisma.fwaFeedSyncState as any;
+  private getDelegate(client: SyncStateClient = prisma) {
+    return client.fwaFeedSyncState as any;
   }
 
   private resolveScope(scope: SyncScope): SyncScope & { scopeKey: string } {
@@ -47,8 +54,8 @@ export class FwaFeedSyncStateService {
   }
 
   /** Purpose: load current sync-state metadata row for one feed/scope identity. */
-  async getState(scope: SyncScope) {
-    const delegate = this.getDelegate();
+  async getState(scope: SyncScope, client: SyncStateClient = prisma) {
+    const delegate = this.getDelegate(client);
     const resolved = this.resolveScope(scope);
     if (typeof delegate.findFirst === "function") {
       return delegate.findFirst({
@@ -65,12 +72,17 @@ export class FwaFeedSyncStateService {
   }
 
   /** Purpose: enforce minimum interval / next-eligible guard for one feed scope. */
-  async isEligible(scope: SyncScope, minimumIntervalMs: number, now: Date = new Date()): Promise<boolean> {
+  async isEligible(
+    scope: SyncScope,
+    minimumIntervalMs: number,
+    now: Date = new Date(),
+  ): Promise<boolean> {
     const state = await this.getState(scope);
     if (!state) return true;
     const nowMs = now.getTime();
     const nextEligibleMs =
-      state.nextEligibleAt instanceof Date && Number.isFinite(state.nextEligibleAt.getTime())
+      state.nextEligibleAt instanceof Date &&
+      Number.isFinite(state.nextEligibleAt.getTime())
         ? state.nextEligibleAt.getTime()
         : null;
     if (nextEligibleMs !== null && nextEligibleMs > nowMs) return false;
@@ -80,9 +92,21 @@ export class FwaFeedSyncStateService {
   }
 
   /** Purpose: persist sync-attempt timestamps before fetch/parse work starts. */
-  async recordAttempt(scope: SyncScope, nextEligibleAt: Date | null, now: Date = new Date()): Promise<void> {
+  async recordAttempt(
+    scope: SyncScope,
+    nextEligibleAt: Date | null,
+    now: Date = new Date(),
+  ): Promise<void> {
     const delegate = this.getDelegate();
     const resolved = this.resolveScope(scope);
+    const existing = await this.getState(resolved);
+    if (
+      existing?.lastAttemptAt instanceof Date &&
+      Number.isFinite(existing.lastAttemptAt.getTime()) &&
+      existing.lastAttemptAt.getTime() > now.getTime()
+    ) {
+      return;
+    }
     await delegate.upsert({
       where: this.buildCompoundScopeWhere(resolved),
       create: {
@@ -100,8 +124,12 @@ export class FwaFeedSyncStateService {
   }
 
   /** Purpose: persist successful sync metadata including content hash and row counts. */
-  async recordSuccess(params: RecordSuccessParams, now: Date = new Date()): Promise<void> {
-    const delegate = this.getDelegate();
+  async recordSuccess(
+    params: RecordSuccessParams,
+    now: Date = new Date(),
+    client: SyncStateClient = prisma,
+  ): Promise<void> {
+    const delegate = this.getDelegate(client);
     const resolved = this.resolveScope(params);
     await delegate.upsert({
       where: this.buildCompoundScopeWhere(resolved),
@@ -134,7 +162,10 @@ export class FwaFeedSyncStateService {
   }
 
   /** Purpose: persist failed sync metadata and concise error diagnostics for one scope. */
-  async recordFailure(params: RecordFailureParams, now: Date = new Date()): Promise<void> {
+  async recordFailure(
+    params: RecordFailureParams,
+    now: Date = new Date(),
+  ): Promise<void> {
     const delegate = this.getDelegate();
     const resolved = this.resolveScope(params);
     await delegate.upsert({
