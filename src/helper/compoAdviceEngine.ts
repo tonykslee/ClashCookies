@@ -1,6 +1,7 @@
 import type { HeatMapRef } from "@prisma/client";
 import {
   calculateCompoDeviationScore,
+  buildUnavailableProjection,
   getCompoActualStateDeltaByBucket,
   getSupportedCompoCalculationHeatMapRefs,
   projectCompoActualStateView,
@@ -473,6 +474,27 @@ function buildCustomProjection(input: {
     reference: selection.selectedHeatMapRef,
     readCount: input.base.profileReferenceCountReader ?? getCompoLegacyReferenceBucketCount,
   });
+  const targetDeviationScore = calculateCompoDeviationScore({
+    displayCounts: rawProjection.displayCounts,
+    heatMapRef: selection.selectedHeatMapRef,
+    profile: input.profile,
+    calculationCounts: rawProjection.calculationCounts,
+    profileReferenceCountReader: input.base.profileReferenceCountReader,
+  });
+  if (targetDeviationScore === null) {
+    return {
+      currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
+      targetProjection: buildUnavailableProjection({
+        view: "raw",
+        base: input.base,
+        displayCounts: rawProjection.displayCounts,
+        calculationCounts: rawProjection.calculationCounts ?? {},
+        profile: input.profile,
+      }),
+      selectedCustomBandIndex: null,
+      heatMapRefs: selection.heatMapRefs,
+    };
+  }
 
   return {
     currentProjection: scoreProjectionIfNeeded(rawProjection, input.profile, input.base.profileReferenceCountReader),
@@ -480,13 +502,7 @@ function buildCustomProjection(input: {
       ...rawProjection,
       selectedHeatMapRef: selection.selectedHeatMapRef,
       deltaByBucket,
-      deviationScore: calculateCompoDeviationScore({
-        displayCounts: rawProjection.displayCounts,
-        heatMapRef: selection.selectedHeatMapRef,
-        profile: input.profile,
-        calculationCounts: rawProjection.calculationCounts,
-        profileReferenceCountReader: input.base.profileReferenceCountReader,
-      }),
+      deviationScore: targetDeviationScore,
       targetStatus: targetResolution.status,
       targetCalculationCounts:
         targetResolution.status === "supported" ? targetResolution.counts : null,

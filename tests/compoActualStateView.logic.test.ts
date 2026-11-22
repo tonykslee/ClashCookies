@@ -527,4 +527,32 @@ describe("projectCompoActualStateView", () => {
     expect(result.calculationCounts?.TH18).toBe(1);
     expect(result.totalWeight).toBe(49 * 165000 + 175000);
   });
+
+  it("withholds projections when member or unresolved metadata is outside the 50-member contract", () => {
+    const invalidMember = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: 0,
+        memberCount: Number.MAX_SAFE_INTEGER,
+        bucketCounts: makeBucketCounts({ TH18: 1 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 1 })],
+    });
+    const invalidUnresolved = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 300000,
+        unresolvedWeightCount: Number.MAX_SAFE_INTEGER,
+        memberCount: 50,
+        bucketCounts: makeBucketCounts({ TH18: 50 }),
+      },
+      heatMapRefs: [makeHeatMapRef({ th18Count: 50 })],
+    });
+
+    expect(invalidMember.targetStatus).toBe("unavailable");
+    expect(invalidMember.selectedHeatMapRef).toBeNull();
+    expect(invalidUnresolved.targetStatus).toBe("unavailable");
+    expect(invalidUnresolved.selectedHeatMapRef).toBeNull();
+  });
 });

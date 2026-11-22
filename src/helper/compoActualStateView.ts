@@ -10,6 +10,7 @@ import type { CompoWarDisplayBucket } from "./compoWarWeightBuckets";
 import {
   getCompoLegacyReferenceBucketCount,
   calculateProfileDeviationScore,
+  COMPO_PROFILE_MAX_MISSING_SLOTS,
   getCompoProfileMaximumEstimatedWeightBound,
   getCompoProfileRepresentativeWeight,
   LEGACY_COMPO_CALCULATION_PROFILE,
@@ -42,6 +43,8 @@ export const COMPO_ACTUAL_STATE_VIEW_LABELS: Record<
 };
 
 export const COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD = 10;
+export const COMPO_MAX_MEMBER_COUNT = 50;
+export const COMPO_MAX_MISSING_SLOTS = COMPO_PROFILE_MAX_MISSING_SLOTS;
 
 export type CompoActualRosterCoverage =
   | "complete"
@@ -126,6 +129,46 @@ function buildEmptyDisplayCounts(): CompoWarDisplayBucketCounts {
   return {
     ...EMPTY_COMPO_WAR_DISPLAY_BUCKET_COUNTS,
   };
+}
+
+type ValidatedProjectionMetadata = {
+  memberCount: number;
+  unresolvedWeightCount: number;
+  deferredWeightCount: number;
+  missingTo50Count: number;
+  nMissing: number;
+};
+
+function getValidatedProjectionMetadata(
+  base: CompoActualStateBaseMetrics,
+): ValidatedProjectionMetadata | null {
+  const deferredWeightCount = base.deferredWeightCount ?? 0;
+  if (
+    !Number.isSafeInteger(base.memberCount) ||
+    base.memberCount < 0 ||
+    base.memberCount > COMPO_MAX_MEMBER_COUNT + COMPO_MAX_MISSING_SLOTS ||
+    !Number.isSafeInteger(base.unresolvedWeightCount) ||
+    base.unresolvedWeightCount < 0 ||
+    base.unresolvedWeightCount > base.memberCount ||
+    !Number.isSafeInteger(deferredWeightCount) ||
+    deferredWeightCount < 0 ||
+    deferredWeightCount > base.memberCount ||
+    !Number.isFinite(base.resolvedTotalWeight) ||
+    Math.abs(base.resolvedTotalWeight) > Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+  const missingTo50Count = Math.max(0, COMPO_MAX_MEMBER_COUNT - base.memberCount);
+  const nMissing = missingTo50Count + base.unresolvedWeightCount;
+  return nMissing <= COMPO_MAX_MISSING_SLOTS
+    ? {
+        memberCount: base.memberCount,
+        unresolvedWeightCount: base.unresolvedWeightCount,
+        deferredWeightCount,
+        missingTo50Count,
+        nMissing,
+      }
+    : null;
 }
 
 function getProfileDisplayBucketIds(profile: CompoCalculationProfile): string[] {
@@ -382,25 +425,29 @@ function addDisplayCounts(
   return result;
 }
 
-function buildUnavailableProjection(input: {
+export function buildUnavailableProjection(input: {
   view: CompoActualStateView;
   base: CompoActualStateBaseMetrics;
   displayCounts: CompoWarDisplayBucketCounts;
   calculationCounts: Readonly<Record<string, number>>;
   profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
-  const missingTo50Count = Math.max(0, 50 - input.base.memberCount);
-  const deferredWeightCount = input.base.deferredWeightCount ?? 0;
+  const metadata = getValidatedProjectionMetadata(input.base);
+  const memberCount = metadata?.memberCount ?? 0;
+  const missingTo50Count = metadata?.missingTo50Count ?? 0;
+  const unresolvedWeightCount = metadata?.unresolvedWeightCount ?? 0;
+  const deferredWeightCount = metadata?.deferredWeightCount ?? 0;
+  const nMissing = metadata?.nMissing ?? 0;
   return {
     view: input.view,
     totalWeight: input.base.resolvedTotalWeight,
     resolvedRosterWeight: input.base.resolvedTotalWeight,
-    missingWeights: input.base.unresolvedWeightCount,
-    memberCount: input.base.memberCount,
+    missingWeights: unresolvedWeightCount,
+    memberCount,
     missingTo50Count,
-    unresolvedWeightCount: input.base.unresolvedWeightCount,
+    unresolvedWeightCount,
     deferredWeightCount,
-    nMissing: missingTo50Count + input.base.unresolvedWeightCount,
+    nMissing,
     displayCounts: input.displayCounts,
     selectedHeatMapRef: null,
     deltaByBucket: buildCalculationDeltaByDisplay({
@@ -487,9 +534,17 @@ function buildEstimatedProjectionForBand(input: {
   calculationCounts: Readonly<Record<string, number>>;
   profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>;
 }): CompoActualStateProjection {
-  const missingTo50Count = Math.max(0, 50 - input.base.memberCount);
-  const nMissing = missingTo50Count + input.base.unresolvedWeightCount;
-  const deferredWeightCount = input.base.deferredWeightCount ?? 0;
+  const metadata = getValidatedProjectionMetadata(input.base);
+  if (!metadata) {
+    return buildUnavailableProjection({
+      view: input.view,
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: input.calculationCounts,
+      profile: input.profile,
+    });
+  }
+  const { missingTo50Count, nMissing, deferredWeightCount } = metadata;
   const fillPlan = buildFillPlan({
     displayCounts: input.displayCounts,
     nMissing,
@@ -749,17 +804,27 @@ function buildAutoProjection(input: {
   }
 
   if (rawProjection.nMissing <= 0) {
+    const deviationScore = calculateCompoDeviationScore({
+      displayCounts: rawProjection.displayCounts,
+      heatMapRef: rawProjection.selectedHeatMapRef,
+      profile: input.profile,
+      calculationCounts: rawProjection.calculationCounts,
+      profileReferenceCountReader: input.base.profileReferenceCountReader,
+    });
+    if (deviationScore === null) {
+      return buildUnavailableProjection({
+        view: "auto",
+        base: input.base,
+        displayCounts: input.displayCounts,
+        calculationCounts: rawProjection.calculationCounts ?? {},
+        profile: input.profile,
+      });
+    }
     return {
       ...rawProjection,
       view: "auto",
       missingWeights: rawProjection.nMissing,
-      deviationScore: calculateCompoDeviationScore({
-        displayCounts: rawProjection.displayCounts,
-        heatMapRef: rawProjection.selectedHeatMapRef,
-        profile: input.profile,
-        calculationCounts: rawProjection.calculationCounts,
-        profileReferenceCountReader: input.base.profileReferenceCountReader,
-      }),
+      deviationScore,
     };
   }
 
@@ -801,9 +866,31 @@ function buildAutoProjection(input: {
     displayCounts: input.displayCounts,
   });
 
+  const deviationScore = calculateCompoDeviationScore({
+    displayCounts: input.displayCounts,
+    heatMapRef: selectedHeatMapRef,
+    profile: input.profile,
+    calculationCounts: rawProjection.calculationCounts,
+    profileReferenceCountReader: input.base.profileReferenceCountReader,
+  });
+  const totalWeight = rawProjection.totalWeight + fillPlan.addedWeight;
+  if (
+    deviationScore === null ||
+    !Number.isFinite(totalWeight) ||
+    Math.abs(totalWeight) > Number.MAX_SAFE_INTEGER
+  ) {
+    return buildUnavailableProjection({
+      view: "auto",
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: rawProjection.calculationCounts ?? {},
+      profile: input.profile,
+    });
+  }
+
   return {
     view: "auto",
-    totalWeight: rawProjection.totalWeight + fillPlan.addedWeight,
+    totalWeight,
     resolvedRosterWeight: rawProjection.resolvedRosterWeight,
     missingWeights: rawProjection.nMissing,
     memberCount: rawProjection.memberCount,
@@ -814,13 +901,7 @@ function buildAutoProjection(input: {
     displayCounts: input.displayCounts,
     selectedHeatMapRef,
     deltaByBucket: targetDelta,
-    deviationScore: calculateCompoDeviationScore({
-      displayCounts: input.displayCounts,
-      heatMapRef: selectedHeatMapRef,
-      profile: input.profile,
-      calculationCounts: rawProjection.calculationCounts,
-        profileReferenceCountReader: input.base.profileReferenceCountReader,
-    }),
+    deviationScore,
     targetStatus: "supported",
     calculationCounts: rawProjection.calculationCounts,
     targetCalculationCounts: fillPlan.targetCalculationCounts,
@@ -854,6 +935,18 @@ function buildBestFitProjection(input: {
   }
   const maxEstimatedTotal =
     input.base.resolvedTotalWeight + rawProjection.nMissing * maximumRepresentativeWeight;
+  if (
+    !Number.isFinite(maxEstimatedTotal) ||
+    Math.abs(maxEstimatedTotal) > Number.MAX_SAFE_INTEGER
+  ) {
+    return buildUnavailableProjection({
+      view: "best",
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: rawProjection.calculationCounts ?? {},
+      profile: input.profile,
+    });
+  }
   const validRefs = getSupportedCompoCalculationHeatMapRefs(
     input.heatMapRefs,
     input.profile,
@@ -905,6 +998,15 @@ export function projectCompoActualStateView(input: {
 }): CompoActualStateProjection {
   const profile = input.profile ?? LEGACY_COMPO_CALCULATION_PROFILE;
   const displayCounts = collapseCompoWarBucketCountsForDisplay(input.base.bucketCounts);
+  if (!getValidatedProjectionMetadata(input.base)) {
+    return buildUnavailableProjection({
+      view: input.view,
+      base: input.base,
+      displayCounts,
+      calculationCounts: {},
+      profile,
+    });
+  }
 
   if (input.view === "raw") {
     return buildRawProjection({

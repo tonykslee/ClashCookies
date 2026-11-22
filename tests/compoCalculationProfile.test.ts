@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateProfileDeviationScore,
+  COMPO_PROFILE_MAX_MISSING_SLOTS,
   createCompoCalculationProfile,
   generateProfileAdviceActions,
   getCompoProfileMaximumRepresentativeWeight,
@@ -331,6 +332,69 @@ describe("composition calculation profiles", () => {
     expect(best.deviationScore).toBe(0);
   });
 
+  it("fails closed for unsafe Auto totals and Custom deviation arithmetic while Raw stays legacy-null", () => {
+    const runtime = syntheticRuntimeProfile();
+    const arithmeticProfile = createCompoCalculationProfile({
+      ...runtime,
+      buckets: runtime.buckets.map((bucket, index) => index === 0
+        ? { ...bucket, deviationPenalty: Number.MAX_VALUE }
+        : bucket),
+    });
+    const arithmeticRef = makeRuntimeRef({ min: 0, max: 9_999_999, future: 1, upper: 49, lower: 0 });
+    const fullBase = {
+      resolvedTotalWeight: 5_000,
+      unresolvedWeightCount: 0,
+      memberCount: 50,
+      bucketCounts: makeRuntimeCounts({ TH17: 50 }),
+    };
+    const raw = projectCompoActualStateView({
+      view: "raw",
+      base: fullBase,
+      heatMapRefs: [arithmeticRef],
+      profile: arithmeticProfile,
+    });
+    expect(raw.targetStatus).toBe("supported");
+    expect(raw.selectedHeatMapRef).not.toBeNull();
+    expect(raw.deviationScore).toBeNull();
+
+    const auto = projectCompoActualStateView({
+      view: "auto",
+      base: fullBase,
+      heatMapRefs: [arithmeticRef],
+      profile: arithmeticProfile,
+    });
+    expect(auto.targetStatus).toBe("unavailable");
+    expect(auto.selectedHeatMapRef).toBeNull();
+    expect(Object.values(auto.deltaByBucket).every((value) => value === null)).toBe(true);
+
+    const custom = evaluateCompoAdvice({
+      mode: "actual",
+      view: "custom",
+      customBandIndex: 0,
+      base: fullBase,
+      heatMapRefs: [arithmeticRef],
+      profile: arithmeticProfile,
+    });
+    expect(custom.currentProjection.targetStatus).toBe("supported");
+    expect(custom.targetHeatMapRef).toBeNull();
+    expect(custom.targetDeltaByBucket.TH18).toBeNull();
+    expect(custom.recommendationText).toBe("No improvement found.");
+
+    const overflowAuto = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: Number.MAX_SAFE_INTEGER - 100,
+        unresolvedWeightCount: 0,
+        memberCount: 49,
+        bucketCounts: makeRuntimeCounts({ TH17: 49 }),
+      },
+      heatMapRefs: [makeRuntimeRef({ min: 0, max: Number.MAX_SAFE_INTEGER, future: 1, upper: 49, lower: 0 })],
+      profile: runtime,
+    });
+    expect(overflowAuto.targetStatus).toBe("unavailable");
+    expect(overflowAuto.selectedHeatMapRef).toBeNull();
+  });
+
   it("simulates a grouped synthetic swap from a non-representative populated source", () => {
     const profile = syntheticRuntimeProfile();
     const summary = evaluateCompoAdvice({
@@ -530,6 +594,14 @@ describe("composition calculation profiles", () => {
       missingCount: Number.MAX_SAFE_INTEGER + 1,
       reference: null,
     }).status).toBe("unavailable");
+    expect(projectCompoProfileCounts({
+      profile,
+      observedCounts: { alpha: 0, beta: 0, gamma: 0 },
+      targetCounts: { alpha: 0, beta: 0, gamma: 0 },
+      missingCount: Number.MAX_SAFE_INTEGER,
+      reference: null,
+    }).status).toBe("unavailable");
+    expect(COMPO_PROFILE_MAX_MISSING_SLOTS).toBe(50);
 
     const nonfiniteScoreProfile = createCompoCalculationProfile({
       ...profile,

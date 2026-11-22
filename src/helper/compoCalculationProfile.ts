@@ -47,6 +47,9 @@ export type CompoProfileReferenceCountReader<TReference> = (
   referenceBucketId: string,
 ) => unknown;
 
+/** Missing-slot projections are bounded by the 50-member clan roster contract. */
+export const COMPO_PROFILE_MAX_MISSING_SLOTS = 50;
+
 export type CompoCalculationTargetStatus =
   | "supported"
   | "missing"
@@ -703,7 +706,12 @@ export function projectCompoProfileCounts<TReference = HeatMapRef>(input: { prof
     return { status: "unavailable", counts: { ...input.observedCounts }, addedWeight: 0, deviationScore: null, reason: "profile is not validated and immutable" };
   }
   const validation = validateProfileCountEvidence(input);
-  if (validation.status !== "supported" || !Number.isSafeInteger(input.missingCount) || input.missingCount < 0) {
+  if (
+    validation.status !== "supported" ||
+    !Number.isSafeInteger(input.missingCount) ||
+    input.missingCount < 0 ||
+    input.missingCount > COMPO_PROFILE_MAX_MISSING_SLOTS
+  ) {
     return { status: "unavailable", counts: { ...input.observedCounts }, addedWeight: 0, deviationScore: null, reason: validation.reason ?? "missing or invalid missing-slot evidence" };
   }
   const counts: Record<string, number> = { ...validation.observedCounts };
