@@ -283,6 +283,8 @@ P4c adds a read-only raw WarMembers evidence evaluator and keeps source facts se
 
 The native candidate artifact now carries a separate source-authority decision. Persisted latest-only rows remain `UNKNOWN`; synthetic fixture counts remain non-authoritative. No schema migration, source-history backfill, native target activation, HeatMapRef replacement, scheduler change, or live external verification is included. An owner-approved immutable observation/history schema and upstream exact-war proof contract remain prerequisites for replay/contradiction durability and any future authority decision. See `docs/diagnostics/fb-002-p4c-native-source-evidence.md`.
 
+The corrected P4c evaluator uses one shared WarMembers parser for every raw row and records parser-accepted, parser-rejected/discarded, evidence-eligible, and evidence-ineligible outcomes separately. Caller-supplied accepted rows are checked only for correspondence and cannot establish verified facts. Missing source-declared roster size/total remains `UNAVAILABLE`; actual declared mismatches, malformed rows, invalid direct values, duplicate identity/position evidence, contradictory opponents, or raw/normalized correspondence defects are `CONFLICTING`. Full evidence validation checks structural counts, row indexes, statuses, reasons, fingerprints, and the invariant that exact-war/source-generation authority remains unavailable; hashes are consistency checks, not authenticity.
+
 # If Architectural Conflict Appears
 
 Stop and explain the conflict.

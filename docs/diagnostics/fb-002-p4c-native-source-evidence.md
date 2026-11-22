@@ -10,9 +10,12 @@ Synthetic fixtures may still exercise the candidate algorithm. Their artifact no
 
 ## Implemented contract
 
-`FwaStatsClient.fetchWarMembersEvidence` evaluates the raw `WarMembers.json?warNo=1` payload alongside the existing normalized rows. It records:
+`FwaStatsClient.fetchWarMembersEvidence` evaluates the raw `WarMembers.json?warNo=1` payload through the same shared parser used by factual WarMembers consumers. It records one row evaluation for every raw row, so ordinary parser acceptance, parser rejection, and native-evidence eligibility cannot drift. Any caller-supplied accepted-row projection is only a compatibility assertion; it can produce `accepted_rows_mismatch`, but it cannot establish evidence.
 
-- raw, accepted, and discarded row counts and indexes;
+It records:
+
+- raw, parser-accepted, parser-rejected/discarded, evidence-eligible, and evidence-ineligible row counts and indexes;
+- per-row raw/normalized fingerprints, parser status/reasons, evidence status/reasons, and normalized identity/position/weight;
 - structural validity, duplicate player/position checks, exact position coverage when a declared roster size exists;
 - direct positive-integer weight checks and declared total comparison when a source total exists;
 - normalized opponent identity observations and conflicts;
@@ -20,7 +23,7 @@ Synthetic fixtures may still exercise the candidate algorithm. Their artifact no
 - explicit `VERIFIED`, `UNAVAILABLE`, or `CONFLICTING` status for structural, completeness, weight, exact-war binding, source-generation, and candidate-eligibility dimensions;
 - deterministic reason codes.
 
-The live FWAStats payload currently does not declare roster size or total weight, does not provide a documented exact upstream war identifier for `warNo=1`, and does not bind a durable source generation across concurrent writers or restarts. Consequently, even a structurally clean payload reports exact-war binding and source generation as `UNAVAILABLE`, and cannot authorize native evidence.
+The live FWAStats payload currently does not declare roster size or total weight, does not provide a documented exact upstream war identifier for `warNo=1`, and does not bind a durable source generation across concurrent writers or restarts. Missing declared size/total is therefore `UNAVAILABLE`, not a contradiction. An actual declared-size/total mismatch, malformed parser row, invalid direct weight/position, duplicate identity/position, contradictory opponent, or raw-to-normalized correspondence mismatch is `CONFLICTING`. Consequently, even a structurally clean payload reports exact-war binding and source generation as `UNAVAILABLE`, and cannot authorize native evidence.
 
 The existing normalized row consumers remain available. Invalid or partial rows are not silently treated as qualifying native source evidence. The sync diagnostic log reports the bounded evidence statuses/reasons without changing scheduler cadence or feed ownership.
 
@@ -49,4 +52,4 @@ Until that migration and the upstream proof contract are approved, a transaction
 
 ## Validation boundary
 
-The diagnostic CLI remains read-only. P3 threshold `10` remains an engineering diagnostic threshold, not a production confidence policy. TH19 targets remain inactive, the legacy-v1 profile remains active, and no HeatMapRef rows or provenance are replaced.
+The diagnostic CLI remains read-only. P3 threshold `10` remains an engineering diagnostic threshold, not a production confidence policy. `validateFwaWarMembersSourceEvidence` checks the full count/index/row/status/fingerprint schema and requires exact-war binding and source generation to remain `UNAVAILABLE`; a recomputed SHA-256 is only an internal consistency check, never authenticity. TH19 targets remain inactive, the legacy-v1 profile remains active, and no HeatMapRef rows or provenance are replaced.

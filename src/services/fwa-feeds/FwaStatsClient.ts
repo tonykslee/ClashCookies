@@ -17,6 +17,7 @@ import type {
 } from "./types";
 import {
   evaluateFwaWarMembersSourceEvidence,
+  parseFwaWarMembersRow,
   type FwaWarMembersSourceEvidence,
 } from "./FwaWarMembersSourceEvidence";
 
@@ -121,7 +122,7 @@ export class FwaStatsClient {
       scope: normalizedTag,
     });
     const parsedRows = rows
-      .map((row) => this.parseWarMembersRow(normalizedTag, row))
+      .map((row) => parseFwaWarMembersRow(row, normalizedTag).row)
       .filter((row): row is FwaWarMemberFeedRow => Boolean(row));
     const evidence = evaluateFwaWarMembersSourceEvidence({
       clanTag: normalizedTag,
@@ -265,44 +266,6 @@ export class FwaStatsClient {
       townHall: toIntOrNull(row.townHall),
       weight: toIntOrNull(row.weight),
       inWar: toBoolOrNull(row.inWar),
-    };
-  }
-
-  /** Purpose: map one `WarMembers.json` row into normalized war-roster shape. */
-  private parseWarMembersRow(clanTag: string, input: unknown): FwaWarMemberFeedRow | null {
-    const row = this.asRecord(input);
-    if (!row) return null;
-    const playerTag = normalizeFwaTag(String(row.tag ?? ""));
-    const playerName = normalizeText(row.name);
-    if (!playerTag || !playerName) return null;
-    return {
-      clanTag,
-      playerTag,
-      playerName,
-      position: toIntOrNull(row.position),
-      townHall: toIntOrNull(row.townHall),
-      weight: toIntOrNull(row.weight),
-      opponentTag: normalizeText(row.opponentTag)
-        ? normalizeFwaTag(String(row.opponentTag))
-        : null,
-      opponentName: normalizeText(row.opponentName),
-      attacks: toIntOrNull(row.attacks),
-      defender1Tag: normalizeText(row.defender1Tag)
-        ? normalizeFwaTag(String(row.defender1Tag))
-        : null,
-      defender1Name: normalizeText(row.defender1Name),
-      defender1TownHall: toIntOrNull(row.defender1TownHall),
-      defender1Position: toIntOrNull(row.defender1Position),
-      stars1: toIntOrNull(row.stars1),
-      destructionPercentage1: toFloatOrNull(row.destructionPercentage1),
-      defender2Tag: normalizeText(row.defender2Tag)
-        ? normalizeFwaTag(String(row.defender2Tag))
-        : null,
-      defender2Name: normalizeText(row.defender2Name),
-      defender2TownHall: toIntOrNull(row.defender2TownHall),
-      defender2Position: toIntOrNull(row.defender2Position),
-      stars2: toIntOrNull(row.stars2),
-      destructionPercentage2: toFloatOrNull(row.destructionPercentage2),
     };
   }
 
