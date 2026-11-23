@@ -6,7 +6,7 @@ export type ActiveWarIdentityPatch = {
   state: "preparation" | "inWar";
   prepStartTime: Date;
   startTime: Date;
-  endTime: Date;
+  endTime: Date | null;
   opponentTag: string;
   opponentName: string;
   clanName: string;
@@ -114,8 +114,9 @@ export function resolveActiveWarIdentityPatch(
   const parsedEndTime = parseLiveDate(input.liveWar?.endTime ?? null);
   const prepStartTime =
     parsedPrepStartTime ?? new Date(liveStartTime.getTime() - 24 * 60 * 60 * 1000);
-  const endTime =
-    parsedEndTime ?? new Date(liveStartTime.getTime() + 24 * 60 * 60 * 1000);
+  // A scheduled duration is not an observed end-time authority. Preserve only
+  // the direct CoC observation; archival resolution corroborates it separately.
+  const endTime = parsedEndTime ?? input.currentWar?.endTime ?? null;
 
   const currentWarId =
     input.currentWar?.warId !== null &&
@@ -188,7 +189,7 @@ export async function reconcileActiveWarIdentity(input: {
     !currentWar ||
     currentWar.state !== identity.patch.state ||
     (currentWar.prepStartTime?.getTime?.() ?? null) !== identity.patch.prepStartTime.getTime() ||
-    (currentWar.endTime?.getTime?.() ?? null) !== identity.patch.endTime.getTime() ||
+    (currentWar.endTime?.getTime?.() ?? null) !== (identity.patch.endTime?.getTime() ?? null) ||
     sanitizeClanName(String(currentWar.opponentName ?? "")) !== identity.patch.opponentName ||
     sanitizeClanName(String(currentWar.clanName ?? "")) !== identity.patch.clanName ||
     !compareActiveWarIdentities({ persisted: currentIdentity, active: nextIdentity }).sameWar;

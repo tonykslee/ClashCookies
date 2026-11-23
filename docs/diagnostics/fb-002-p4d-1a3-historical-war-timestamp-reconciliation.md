@@ -53,20 +53,38 @@ Those observations do not authorize this new per-war extraction. No
 ClashPerk-vs-Dusk comparison result is claimed until the owner separately
 authorizes both stages below.
 
-## Dusk timestamp paths
+## Dusk timestamp paths and the canonical archive contract
 
-The repository implementation has two relevant paths:
+The archive path now resolves one timestamp decision before the history,
+lookup, payload, and participation writes:
 
-- `getWarEndResultSnapshot` reads the matched clan-war-log `endTime` and
-  returns it as the final result timestamp. The archive transition falls back
-  to `WarAttacks.warEndTime` when that result timestamp is unavailable.
-- `persistWarParticipationSnapshot` receives
-  `currentSnapshot.endTime ?? warEndTime`, where `warEndTime` is the resolved
-  history path. It then persists that value on every participation row.
+1. An exact `CurrentWar` row is eligible only when normalized clan, opponent,
+   start time, guild scope, and compatible persisted war ID evidence agree.
+   Its direct end-time observation is preferred only when an exact
+   `WarAttacks.warEndTime` observation from the same war corroborates it.
+2. Exact `WarAttacks` rows are the fallback direct API evidence. Rows with
+   missing or conflicting identity/timestamp evidence fail closed rather than
+   selecting an arbitrary candidate.
+3. The clan-war log is not a timestamp authority. Its entries do not carry
+   the exact Dusk war start or persisted ID, so the old `log[0]` fallback is
+   removed. Log result fields are used only when a verified end timestamp and
+   a unique matching log timestamp provide bounded contextual corroboration;
+   otherwise the event payload/current snapshot fallbacks remain in use.
+4. No source and no derived `startTime + 24 hours` estimate produce a null,
+   UNKNOWN timestamp rather than fabricated evidence.
 
-The two fields can therefore differ without proving that either source is
-authoritative. Agreement with ClashPerk would be corroboration only; Dusk and
-ClashPerk may both ultimately derive from Supercell API data.
+The selected value is passed consistently to `ClanWarHistory.warEndTime`,
+`WarLookup.endTime`, newly constructed `warMeta.endTime`,
+`compliance.canonical.warEndTime`, and `ClanWarParticipation.warEndTime`.
+Existing history and lookup timestamps are preserved on conflict/replay, and
+an existing lookup payload is preserved when no live attack rows remain.
+Participation is not independently allowed to substitute `CurrentWar.endTime`.
+
+This contract establishes Dusk's internal timestamp consistency only. It does
+not establish FWAStats or ClashPerk upstream identity, source authenticity,
+source generation, or direct historical weight provenance. Agreement with
+ClashPerk remains corroboration only; Dusk and ClashPerk may both ultimately
+derive from Supercell API data.
 
 ## SQL stages and approval gates
 

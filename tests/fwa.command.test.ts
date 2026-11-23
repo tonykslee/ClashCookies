@@ -1227,7 +1227,7 @@ describe("/fwa match response normalization", () => {
       },
       expected: [
         "Home: 101 (Estimated)",
-        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
+        "Opponent: 98 (Last known, stored CurrentWar)",
       ],
     },
     {
@@ -1239,7 +1239,7 @@ describe("/fwa match response normalization", () => {
         opponentBalance: 99,
       },
       expected: [
-        "Home: 100 (Last known, stored ClanPointsSync, sync #102)",
+        "Home: 100 (Last known, stored CurrentWar)",
         "Opponent: 99 (Estimated)",
       ],
     },
@@ -1283,7 +1283,7 @@ describe("/fwa match response normalization", () => {
       },
       expected: [
         "Home: 101 (Last known, history incomplete, anchor sync #102)",
-        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
+        "Opponent: 98 (Last known, stored CurrentWar)",
       ],
     },
     {
@@ -1377,10 +1377,10 @@ describe("/fwa match response normalization", () => {
     const singleValue = JSON.stringify(singleView.embed.toJSON().fields ?? []);
     for (const value of [allianceValue, singleValue]) {
       expect(value).toContain(
-        "Home: 100 (Last known, stored ClanPointsSync, sync #102)",
+        "Home: 100 (Last known, stored CurrentWar)",
       );
       expect(value).toContain(
-        "Opponent: 98 (Last known, stored ClanPointsSync, sync #102)",
+        "Opponent: 98 (Last known, stored CurrentWar)",
       );
     }
     expect(singleView.projectedFwaOutcome).toBeNull();
