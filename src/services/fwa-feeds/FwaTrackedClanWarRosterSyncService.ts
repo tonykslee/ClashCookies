@@ -3,6 +3,7 @@ import type {
   FwaWarMemberCurrent,
 } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { resolveFwaWeightRows } from "../../helper/fwaWeightResolution";
 import { normalizeFwaTag } from "./normalize";
 
 type SourceRosterRow = Pick<
@@ -117,52 +118,16 @@ function normalizeTrackedClanWarRosterRows(
 }
 
 /** Purpose: persist the agreed zero-block fill rules as a reusable roster derivation helper. */
-function applyEffectiveWeightRules(
-  rows: readonly NormalizedRosterRow[],
-): DerivedRosterMemberRow[] {
-  const derived: DerivedRosterMemberRow[] = [];
-  let index = 0;
-  while (index < rows.length) {
-    const current = rows[index];
-    if (current.rawWeight > 0) {
-      derived.push({
-        ...current,
-        effectiveWeight: current.rawWeight,
-        effectiveWeightStatus: "RAW",
-      });
-      index += 1;
-      continue;
-    }
-
-    let zeroBlockEndExclusive = index + 1;
-    while (zeroBlockEndExclusive < rows.length && rows[zeroBlockEndExclusive].rawWeight <= 0) {
-      zeroBlockEndExclusive += 1;
-    }
-    const fillSource = rows[zeroBlockEndExclusive];
-    const lowestResolvedWeightAbove = derived.reduce<number | null>((lowest, row) => {
-      if (row.effectiveWeight === null || row.effectiveWeight <= 0) {
-        return lowest;
-      }
-      if (lowest === null || row.effectiveWeight < lowest) {
-        return row.effectiveWeight;
-      }
-      return lowest;
-    }, null);
-    const fillWeight =
-      fillSource?.rawWeight && fillSource.rawWeight > 0
-        ? fillSource.rawWeight
-        : lowestResolvedWeightAbove;
-    for (let zeroIndex = index; zeroIndex < zeroBlockEndExclusive; zeroIndex += 1) {
-      const row = rows[zeroIndex];
-      derived.push({
-        ...row,
-        effectiveWeight: fillWeight,
-        effectiveWeightStatus: fillWeight === null ? "UNRESOLVED_TRAILING_ZERO" : "FILLED_FROM_LOWER_BLOCK",
-      });
-    }
-    index = zeroBlockEndExclusive;
-  }
-  return derived;
+function applyEffectiveWeightRules(rows: readonly NormalizedRosterRow[]): DerivedRosterMemberRow[] {
+  return resolveFwaWeightRows(rows).map((row) => ({
+    ...row,
+    effectiveWeightStatus:
+      row.effectiveWeightStatus === "RAW"
+        ? "RAW"
+        : row.effectiveWeightStatus === "UNRESOLVED"
+          ? "UNRESOLVED_TRAILING_ZERO"
+          : "FILLED_FROM_LOWER_BLOCK",
+  }));
 }
 
 /** Purpose: build one latest-only tracked-clan roster snapshot from persisted WarMembers state. */

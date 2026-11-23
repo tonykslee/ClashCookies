@@ -15,9 +15,11 @@ type CliOptions = {
   eraStart: string;
   eraEnd: string;
   threshold: number | undefined;
+  deferGuildId: string | null;
+  deferClanTag: string | null;
 };
 
-const valueOptions = new Set(["--fixture", "--evaluation-at", "--era-start", "--era-end", "--threshold"]);
+const valueOptions = new Set(["--fixture", "--evaluation-at", "--era-start", "--era-end", "--threshold", "--defer-guild-id", "--defer-clan-tag"]);
 const flagOptions = new Set(["--db"]);
 
 function isIso(value: string): boolean {
@@ -26,7 +28,7 @@ function isIso(value: string): boolean {
 }
 
 function parseOptions(argv: readonly string[]): CliOptions {
-  const values: Partial<CliOptions> = { fixturePath: null, useDb: false, threshold: undefined };
+  const values: Partial<CliOptions> = { fixturePath: null, useDb: false, threshold: undefined, deferGuildId: null, deferClanTag: null };
   const seen = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -39,7 +41,7 @@ function parseOptions(argv: readonly string[]): CliOptions {
     }
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${argument}`);
-    const key = argument === "--fixture" ? "fixturePath" : argument === "--evaluation-at" ? "evaluationAt" : argument === "--era-start" ? "eraStart" : argument === "--era-end" ? "eraEnd" : "threshold";
+    const key = argument === "--fixture" ? "fixturePath" : argument === "--evaluation-at" ? "evaluationAt" : argument === "--era-start" ? "eraStart" : argument === "--era-end" ? "eraEnd" : argument === "--threshold" ? "threshold" : argument === "--defer-guild-id" ? "deferGuildId" : "deferClanTag";
     (values as Record<string, unknown>)[key] = argument === "--threshold" ? Number(value) : value;
     index += 1;
   }
@@ -47,12 +49,13 @@ function parseOptions(argv: readonly string[]): CliOptions {
   if (!isIso(values.evaluationAt) || !isIso(values.eraStart) || !isIso(values.eraEnd)) throw new Error("timestamps must be canonical ISO values");
   if (new Date(values.eraStart).getTime() > new Date(values.eraEnd).getTime()) throw new Error("era start must not be after era end");
   if (values.threshold !== undefined && (!Number.isInteger(values.threshold) || values.threshold <= 0)) throw new Error("threshold must be a positive integer");
+  if (Boolean(values.deferGuildId) !== Boolean(values.deferClanTag)) throw new Error("--defer-guild-id and --defer-clan-tag must be supplied together");
   if (values.fixturePath && values.useDb || !values.fixturePath && !values.useDb) throw new Error("exactly one of --fixture or --db is required");
   return values as CliOptions;
 }
 
 function printUsage(): void {
-  console.error("Usage: npm run diagnose:heatmap-ref-native -- --evaluation-at ISO --era-start ISO --era-end ISO (--fixture path.json | --db) [--threshold 10]");
+  console.error("Usage: npm run diagnose:heatmap-ref-native -- --evaluation-at ISO --era-start ISO --era-end ISO (--fixture path.json | --db) [--threshold 10] [--defer-guild-id ID --defer-clan-tag #CLAN]");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -68,9 +71,9 @@ function isNullableTimestamp(value: unknown): value is string | null {
 }
 
 function validateFixtureRoster(value: unknown): NativeReferenceSourceRoster {
-  if (!isRecord(value) || typeof value.clanTag !== "string" || !Number.isInteger(value.rosterSize) || !isNullableNumber(value.totalRawWeight) || !isNullableNumber(value.totalEffectiveWeight) || !isNullableTimestamp(value.observedAt) || !isNullableTimestamp(value.sourceUpdatedAt) || (value.sourceWarId !== null && !Number.isInteger(value.sourceWarId)) || !isNullableTimestamp(value.sourceWarStartTime) || !isNullableTimestamp(value.sourceWarEndTime) || (value.sourceWarState !== null && typeof value.sourceWarState !== "string") || !isNullableTimestamp(value.sourceCurrentWarUpdatedAt) || value.sourceIdentityStatus !== "VERIFIED" || value.sourceMatchType !== "FWA" || value.sourceMemberCompletenessStatus !== "VERIFIED" || !Array.isArray(value.members)) throw new Error("fixture contains an invalid roster contract");
+  if (!isRecord(value) || typeof value.clanTag !== "string" || !Number.isInteger(value.rosterSize) || !isNullableNumber(value.totalRawWeight) || !isNullableNumber(value.totalEffectiveWeight) || !isNullableTimestamp(value.observedAt) || !isNullableTimestamp(value.sourceUpdatedAt) || (value.sourceWarId !== null && !Number.isInteger(value.sourceWarId)) || !isNullableTimestamp(value.sourceWarStartTime) || !isNullableTimestamp(value.sourceWarEndTime) || (value.sourceWarState !== null && typeof value.sourceWarState !== "string") || !isNullableTimestamp(value.sourceCurrentWarUpdatedAt) || !Array.isArray(value.members)) throw new Error("fixture contains an invalid roster contract");
   const members = value.members.map((member) => {
-    if (!isRecord(member) || typeof member.clanTag !== "string" || typeof member.playerTag !== "string" || (member.position !== null && !Number.isInteger(member.position)) || (member.townHall !== null && !Number.isInteger(member.townHall)) || !isNullableNumber(member.rawWeight) || !isNullableNumber(member.effectiveWeight) || typeof member.effectiveWeightStatus !== "string" || !isNullableTimestamp(member.sourceSyncedAt ?? null)) throw new Error("fixture contains an invalid member contract");
+    if (!isRecord(member) || typeof member.clanTag !== "string" || typeof member.playerTag !== "string" || (member.position !== null && !Number.isInteger(member.position)) || (member.townHall !== null && !Number.isInteger(member.townHall)) || !isNullableNumber(member.rawWeight) || !isNullableNumber(member.effectiveWeight) || (member.deferredWeight !== undefined && !isNullableNumber(member.deferredWeight)) || typeof member.effectiveWeightStatus !== "string" || !isNullableTimestamp(member.sourceSyncedAt ?? null)) throw new Error("fixture contains an invalid member contract");
     return member;
   });
   return { ...value, members } as unknown as NativeReferenceSourceRoster;
@@ -93,7 +96,15 @@ async function main(): Promise<void> {
       ? generateNativeHeatMapRefCandidate({ sourceRosters: await loadFixture(options.fixturePath), bandDefinitions, eraPolicy, evaluationAt: options.evaluationAt, sampleThreshold: options.threshold, sourceCategory: NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY, evidenceTrust: NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST })
       : await (async () => {
           const { NativeHeatMapRefCandidateService } = await import("../services/NativeHeatMapRefCandidateService");
-          return new NativeHeatMapRefCandidateService().generate({ evaluationAt: options.evaluationAt, eraPolicy, sampleThreshold: options.threshold, bandDefinitions });
+          return new NativeHeatMapRefCandidateService().generate({
+            evaluationAt: options.evaluationAt,
+            eraPolicy,
+            sampleThreshold: options.threshold,
+            bandDefinitions,
+            defermentScope: options.deferGuildId && options.deferClanTag
+              ? { guildId: options.deferGuildId, clanTag: options.deferClanTag }
+              : undefined,
+          });
         })();
     console.log(JSON.stringify(artifact, null, 2));
   } catch {
