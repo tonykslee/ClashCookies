@@ -13,6 +13,7 @@ import {
   validateNativeReferenceCandidateArtifact,
   type NativeReferenceSourceRoster,
 } from "../src/helper/nativeHeatMapRefCandidate";
+import { resolveFwaWeightRows } from "../src/helper/fwaWeightResolution";
 import { NativeHeatMapRefCandidateService } from "../src/services/NativeHeatMapRefCandidateService";
 import { getCompoWarWeightBucket } from "../src/helper/compoWarWeightBuckets";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
@@ -80,6 +81,32 @@ function generate(rosters: readonly NativeReferenceSourceRoster[], threshold = 1
   });
 }
 
+function makeRosterFromRawWeights(input: {
+  clanTag: string;
+  rawWeights: number[];
+  deferredWeights?: Record<number, number>;
+}): NativeReferenceSourceRoster {
+  const base = makeRoster({ clanTag: input.clanTag, weightForPosition: () => 181_000 });
+  const members = base.members.map((member, index) => ({
+    ...member,
+    rawWeight: input.rawWeights[index] ?? 0,
+    deferredWeight: input.deferredWeights?.[index + 1] ?? null,
+  }));
+  const resolved = resolveFwaWeightRows(members);
+  return {
+    ...base,
+    totalRawWeight: members.reduce((sum, member) => sum + (member.rawWeight > 0 ? member.rawWeight : 0), 0),
+    totalEffectiveWeight: resolved.every((member) => member.effectiveWeight !== null)
+      ? resolved.reduce((sum, member) => sum + (member.effectiveWeight ?? 0), 0)
+      : null,
+    members: resolved.map((member) => ({
+      ...member,
+      effectiveWeight: member.effectiveWeight,
+      effectiveWeightStatus: member.effectiveWeightStatus,
+    })),
+  };
+}
+
 function roundTripArtifact(artifact: unknown) {
   return JSON.parse(JSON.stringify(artifact)) as unknown;
 }
@@ -133,10 +160,10 @@ describe("native HeatMapRef candidate generation", () => {
 
   it("requires independently verified FWA identity and rejects stale, future, mixed, or unsupported source evidence", () => {
     const unavailable = makeRoster({ clanTag: "#UNAVAILABLE", weightForPosition: () => 181_000 });
-    expect(generate([{ ...unavailable, sourceIdentityStatus: "UNAVAILABLE" }]).unknownReason).toBe("rejected_source_evidence");
+    expect(generate([{ ...unavailable, sourceIdentityStatus: "UNAVAILABLE" }]).unknownReason).toBe("insufficient_source_support");
 
     const nonFwa = makeRoster({ clanTag: "#BLMM", weightForPosition: () => 181_000 });
-    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).unknownReason).toBe("insufficient_source_support");
 
     const future = makeRoster({ clanTag: "#FUTURETIME", weightForPosition: () => 181_000 });
     future.sourceUpdatedAt = "2026-11-21T01:00:00.000Z";
@@ -159,8 +186,8 @@ describe("native HeatMapRef candidate generation", () => {
     const rejected = makeRoster({ clanTag: "#REJECTED", weightForPosition: () => 181_000 });
     rejected.sourceIdentityStatus = "UNAVAILABLE";
     const rejectedArtifact = generate([rejected]);
-    expect(rejectedArtifact.unknownReason).toBe("rejected_source_evidence");
-    expect(rejectedArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)?.reasonCode).toBe("invalid_evidence");
+    expect(rejectedArtifact.unknownReason).toBe("insufficient_source_support");
+    expect(rejectedArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)?.reasonCode).toBe("insufficient_source");
     expect(generate([makeRoster({ clanTag: "#SHORT", weightForPosition: () => 181_000 })]).unknownReason).toBe("insufficient_source_support");
   });
 
@@ -171,13 +198,60 @@ describe("native HeatMapRef candidate generation", () => {
     expect(() => generate(rosters, 0)).toThrowError(NativeReferenceCandidateConfigurationError);
   });
 
+  it("qualifies one-zero, middle-zero, trailing-zero, and leading-zero rosters using shared inference", () => {
+    const rawWeights = Array.from({ length: 50 }, () => 181_000);
+    rawWeights[0] = 0;
+    rawWeights[9] = 0;
+    rawWeights[10] = 0;
+    rawWeights[11] = 0;
+    rawWeights[48] = 0;
+    rawWeights[49] = 0;
+    const artifact = generate([makeRosterFromRawWeights({ clanTag: "#ZEROBLOCKS", rawWeights })], 1);
+    const diagnostic = artifact.diagnostics.find((candidate) => candidate.status === "SUPPORTED");
+    expect(diagnostic?.resolvedWeightCounts).toEqual({ RAW: 44, DEFERRED: 0, ESTIMATED: 6, UNRESOLVED: 0 });
+    expect(diagnostic?.qualifyingRosterCount).toBe(1);
+  });
+
+  it("uses RAW before defer, then defer before rank inference, and exposes provenance counts", () => {
+    const rawWeights = Array.from({ length: 50 }, () => 181_000);
+    rawWeights[0] = 0;
+    rawWeights[1] = 0;
+    const artifact = generate([makeRosterFromRawWeights({
+      clanTag: "#MIXEDPROVENANCE",
+      rawWeights,
+      deferredWeights: { 1: 190_000, 2: 170_000 },
+    })], 1);
+    const diagnostic = artifact.diagnostics.find((candidate) => candidate.status === "SUPPORTED");
+    expect(diagnostic?.resolvedWeightCounts).toEqual({ RAW: 48, DEFERRED: 2, ESTIMATED: 0, UNRESOLVED: 0 });
+
+    const rawWins = makeRosterFromRawWeights({
+      clanTag: "#RAWWINS",
+      rawWeights: Array.from({ length: 50 }, () => 181_000),
+      deferredWeights: { 1: 170_000 },
+    });
+    expect(generate([rawWins], 1).diagnostics.find((candidate) => candidate.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 50, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 });
+  });
+
+  it("excludes all-zero/unresolvable and unsupported effective rosters with truthful reasons", () => {
+    const unresolved = makeRosterFromRawWeights({ clanTag: "#ALLZERO", rawWeights: Array.from({ length: 50 }, () => 0) });
+    const unresolvedArtifact = generate([unresolved], 1);
+    expect(unresolvedArtifact.exclusionCounts.unresolved_weight).toBe(1);
+
+    const unsupportedWeights = Array.from({ length: 50 }, () => 181_000);
+    unsupportedWeights[49] = 999_999;
+    const unsupported = makeRosterFromRawWeights({ clanTag: "#UNSUPPORTED", rawWeights: unsupportedWeights });
+    expect(generate([unsupported], 1).exclusionCounts.unsupported_weight).toBe(1);
+  });
+
   it("rejects imputation, malformed weights, duplicate identities, and duplicate positions", () => {
     const imputed = generate([makeRoster({
       clanTag: "#IMPUTED",
       weightForPosition: () => 181_000,
       effectiveWeightStatus: "FILLED_FROM_LOWER_BLOCK",
     })]);
-    expect(imputed.exclusionCounts.imputed_weight).toBe(1);
+    expect(imputed.diagnostics.find((diagnostic) => diagnostic.qualifyingRosterCount === 1)?.resolvedWeightCounts)
+      .toEqual({ RAW: 50, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 });
 
     const fractional = makeRoster({ clanTag: "#FRACTION", weightForPosition: () => 181_000 });
     (fractional.members[0] as { rawWeight: number }).rawWeight = 181_000.5;
@@ -326,7 +400,7 @@ describe("native HeatMapRef candidate generation", () => {
     const report = await service.generate({ evaluationAt, eraPolicy });
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(report.overallStatus).toBe("UNKNOWN");
-    expect(Object.keys(service)).toEqual(["db"]);
+    expect(Object.keys(service)).toEqual(["db", "readDeferredWeights"]);
   });
 
   it("rejects rehashed semantic contradictions and persisted-unverified support", () => {
@@ -440,13 +514,13 @@ describe("native HeatMapRef candidate generation", () => {
       expect(validateNativeReferenceCandidateArtifact(roundTripArtifact(artifact))).toBe(true);
     }
     expect(artifacts[0]?.unknownReason).toBe("no_source_evidence");
-    expect(artifacts[1]?.unknownReason).toBe("rejected_source_evidence");
+    expect(artifacts[1]?.unknownReason).toBe("insufficient_source_support");
     expect(artifacts[2]?.unknownReason).toBe("rejected_source_evidence");
     expect(artifacts[3]?.unknownReason).toBe("rejected_source_evidence");
     expect(artifacts[4]?.unknownReason).toBe("insufficient_source_support");
     expect(artifacts[5]?.overallStatus).toBe("PARTIAL");
     expect(artifacts[6]?.overallStatus).toBe("PARTIAL");
-    expect(artifacts[7]?.overallStatus).toBe("UNKNOWN");
+    expect(artifacts[7]?.overallStatus).toBe("PARTIAL");
   });
 
   it("rejects rehashed accounting and derived-reason contradictions", () => {
@@ -495,7 +569,7 @@ describe("native HeatMapRef candidate generation", () => {
     expect(generate([activeWithEnd]).exclusionCounts.source_metadata).toBe(1);
     const missingCurrentWarTimestamp = makeRoster({ clanTag: "#MISSINGCURRENT", weightForPosition: () => 181_000 });
     missingCurrentWarTimestamp.sourceCurrentWarUpdatedAt = null;
-    expect(generate([missingCurrentWarTimestamp]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([missingCurrentWarTimestamp]).unknownReason).toBe("insufficient_source_support");
     const partialMemberTiming = makeRoster({ clanTag: "#PARTIALMEMBERTIME", weightForPosition: () => 181_000 });
     partialMemberTiming.members = partialMemberTiming.members.map((member, index) => index === 0
       ? { ...member, sourceSyncedAt: "2026-11-20T23:00:00.000Z" }
@@ -516,21 +590,64 @@ describe("native HeatMapRef candidate generation", () => {
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(report.sourceCategory).toBe("persisted_fwa_snapshot");
     expect(report.evidenceTrust).toBe("persisted_unverified_source_binding");
-    expect(report.overallStatus).toBe("UNKNOWN");
-    expect(report.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
-    expect(report.unknownReason).toBe("rejected_source_evidence");
+    expect(report.overallStatus).toBe("PARTIAL");
+    expect(report.diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    expect(report.sourceAuthority.referencePublicationStatus).toBe("UNAVAILABLE");
+  });
+
+  it("applies only scoped open defer fallback to an existing persisted roster player", async () => {
+    const row = makeRoster({ clanTag: "#DEFERCLAN", weightForPosition: () => 181_000 });
+    const firstMember = row.members[0] as { rawWeight: number; effectiveWeight: number; effectiveWeightStatus: string };
+    firstMember.rawWeight = 0;
+    row.totalRawWeight = (row.totalRawWeight ?? 0) - 181_000;
+    const findMany = vi.fn().mockResolvedValue([row]);
+    const readDeferredWeights = vi.fn().mockResolvedValue(new Map([
+      ["#DEFERCLAN", new Map([["#PLAYER1", { deferredWeight: 190_000, createdAt: new Date(evaluationAt) }]])],
+    ]));
+    const service = new NativeHeatMapRefCandidateService(
+      { fwaTrackedClanWarRosterCurrent: { findMany } } as never,
+      readDeferredWeights,
+    );
+    const report = await service.generate({
+      evaluationAt,
+      eraPolicy,
+      sampleThreshold: 1,
+      defermentScope: { guildId: "guild-1", clanTag: "#DEFERCLAN" },
+    });
+    expect(readDeferredWeights).toHaveBeenCalledWith(expect.objectContaining({
+      guildId: "guild-1",
+      clanPlayerTags: [{ clanTag: "#DEFERCLAN", playerTags: expect.arrayContaining(["#PLAYER1"]) }],
+    }));
+    expect(report.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 49, DEFERRED: 1, ESTIMATED: 0, UNRESOLVED: 0 });
+
+    const noScopeReport = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(noScopeReport.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 49, DEFERRED: 0, ESTIMATED: 1, UNRESOLVED: 0 });
+    expect(readDeferredWeights).toHaveBeenCalledTimes(1);
   });
 
   it("runs the fixture diagnostic CLI without touching the database", () => {
     const directory = mkdtempSync(join(tmpdir(), "native-ref-cli-"));
     const fixturePath = join(directory, "empty.json");
+    const representativeFixturePath = join(directory, "representative.json");
     writeFileSync(fixturePath, JSON.stringify({ rosters: [] }), "utf8");
+    const representative = makeRosterFromRawWeights({
+      clanTag: "#CLIREPRESENTATIVE",
+      rawWeights: [0, ...Array.from({ length: 49 }, () => 181_000)],
+    });
+    writeFileSync(representativeFixturePath, JSON.stringify({ rosters: Array.from({ length: 10 }, (_, index) => ({ ...representative, clanTag: `#CLIREPRESENTATIVE${index}`, members: representative.members.map((member) => ({ ...member, clanTag: `#CLIREPRESENTATIVE${index}` })) })) }), "utf8");
     const scriptPath = join(process.cwd(), "src", "scripts", "diagnoseNativeHeatMapRef.ts");
     try {
       const valid = spawnSync(process.execPath, ["-r", require.resolve("ts-node/register"), scriptPath, "--fixture", fixturePath, "--evaluation-at", evaluationAt, "--era-start", eraPolicy.eraStartIso, "--era-end", eraPolicy.eraEndIso], { encoding: "utf8" });
       expect(valid.status, `${valid.stdout}\n${valid.stderr}`).toBe(0);
       expect(valid.stdout).toContain('"sourceCategory": "synthetic_fixture"');
       expect(valid.stdout).toContain('"evidenceTrust": "synthetic_untrusted"');
+
+      const representativeRun = spawnSync(process.execPath, ["-r", require.resolve("ts-node/register"), scriptPath, "--fixture", representativeFixturePath, "--evaluation-at", evaluationAt, "--era-start", eraPolicy.eraStartIso, "--era-end", eraPolicy.eraEndIso, "--threshold", "10"], { encoding: "utf8" });
+      expect(representativeRun.status, `${representativeRun.stdout}\n${representativeRun.stderr}`).toBe(0);
+      expect(representativeRun.stdout).toContain('"resolvedWeightCounts"');
+      expect(representativeRun.stdout).toContain('"ESTIMATED": 10');
 
       const strict = spawnSync(process.execPath, ["-r", require.resolve("ts-node/register"), scriptPath, "--fixture", fixturePath, "--evaluation-at", evaluationAt, "--era-start", eraPolicy.eraStartIso, "--era-end", eraPolicy.eraEndIso, "--not-an-option"], { encoding: "utf8" });
       expect(strict.status).not.toBe(0);
