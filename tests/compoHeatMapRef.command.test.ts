@@ -5,6 +5,7 @@ import {
   buildCompoHeatMapRefCopyCustomIdForTest,
   buildCompoHeatMapRefCopyTextForTest,
   buildCompoHeatMapRefRowsForTest,
+  renderStatePngForTest,
   toGlyphSafeTextForTest,
 } from "../src/commands/Compo";
 import { GoogleSheetsService } from "../src/services/GoogleSheetsService";
@@ -344,5 +345,26 @@ describe("/compo heatmapref command", () => {
     expect(toGlyphSafeTextForTest("Match%")).toBe("MATCH%");
     expect(toGlyphSafeTextForTest("0%")).toBe("0%");
     expect(toGlyphSafeTextForTest("83.42%")).toBe("83.42%");
+  });
+
+  it("adds a readable notice area to state PNGs without changing table rows", () => {
+    const { PNG } = require("pngjs");
+    const rows = [["Clan", "TH18"], ["Alpha", "?"]];
+    const withoutNotice = renderStatePngForTest("ALLIANCE STATE", rows);
+    const withNotice = renderStatePngForTest(
+      "ALLIANCE STATE",
+      rows,
+      "TH comparisons unavailable - HeatMapRef not validated",
+    );
+
+    expect(withNotice.readUInt32BE(20)).toBe(withoutNotice.readUInt32BE(20) + 39);
+    const image = PNG.sync.read(withNotice);
+    const noticePixelOffset = (image.width * 69 + 20) * 4;
+    expect(Array.from(image.data.slice(noticePixelOffset, noticePixelOffset + 4))).toEqual([
+      255,
+      207,
+      138,
+      255,
+    ]);
   });
 });

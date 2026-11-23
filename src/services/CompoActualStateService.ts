@@ -14,6 +14,7 @@ import {
   isCompoActualStateDeviationHealthy,
   isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
+  hasUnsupportedCompoTh19Target,
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
   type CompoActualStateView,
@@ -114,6 +115,8 @@ export type CompoActualStateMemberContext = {
 export type CompoActualStateContext = {
   trackedClanTags: string[];
   renderableClanTags: string[];
+  /** Factual parent-band coverage, retained separately from authorized comparison refs. */
+  heatMapRefParents: HeatMapRef[];
   latestSourceSyncedAt: Date | null;
   heatMapRefs: HeatMapRef[];
   referenceAvailability: HeatMapRefReferenceAvailability;
@@ -161,6 +164,7 @@ export type CompoActualStateExternalClanComposition = {
 export type CompoActualStateReadResult = {
   stateRows: string[][] | null;
   contentLines: string[];
+  imageNotice?: string | null;
   trackedClanTags: string[];
   renderableClanTags: string[];
   view: CompoActualStateView;
@@ -247,6 +251,9 @@ function buildActualViewSummaryLines(
   missingHeatMapBands: string[],
   missingTo50Count: number,
   includeTh19: boolean,
+  referenceAvailability: HeatMapRefReferenceAvailability,
+  heatMapRefParentCount: number,
+  unsupportedTh19Comparisons: string[],
 ): string[] {
   const contentLines = [
     `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(latestSourceSyncedAt)}`,
@@ -265,7 +272,53 @@ function buildActualViewSummaryLines(
       `Missing HeatMapRef band for displayed ACTUAL totals: ${missingHeatMapBands.join("; ")}`,
     );
   }
+  if (
+    view !== "raw" &&
+    heatMapRefParentCount > 0 &&
+    referenceAvailability.status !== "validated"
+  ) {
+    contentLines.push(
+      "HeatMapRef parent bands are present, but target comparisons remain UNKNOWN until reference validation is available.",
+    );
+  }
+  if (view !== "raw" && unsupportedTh19Comparisons.length > 0) {
+    contentLines.push(
+      `TH19 comparison unavailable for: ${unsupportedTh19Comparisons.join(
+        "; ",
+      )} (legacy HeatMapRef targets do not support observed TH19).`,
+    );
+  }
   return contentLines;
+}
+
+function buildHeatMapRefUnknownNotice(
+  availability: HeatMapRefReferenceAvailability,
+  view: CompoActualStateView,
+  unsupportedTh19ComparisonCount: number,
+): string | null {
+  if (view === "raw") {
+    return null;
+  }
+  if (
+    availability.status === "validated" &&
+    unsupportedTh19ComparisonCount > 0
+  ) {
+    return "TH comparisons unavailable - observed TH19 unsupported by legacy HeatMapRef";
+  }
+  if (availability.status === "validated") {
+    return null;
+  }
+  const warning = availability.warning?.toLowerCase() ?? "";
+  if (warning.includes("normalized target")) {
+    return "TH comparisons unavailable - normalized HeatMapRef targets unavailable";
+  }
+  if (availability.status === "retained_unverified") {
+    return "TH comparisons unavailable - HeatMapRef validation blocked";
+  }
+  if (warning.includes("in progress")) {
+    return "TH comparisons unavailable - HeatMapRef validation pending";
+  }
+  return "TH comparisons unavailable - HeatMapRef not validated";
 }
 
 function getDebugTaggedClanTags(): Set<string> {
@@ -522,6 +575,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     return {
       trackedClanTags: [],
       renderableClanTags: [],
+      heatMapRefParents: [],
       latestSourceSyncedAt: null,
       heatMapRefs: [],
       referenceAvailability: {
@@ -813,6 +867,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
   return {
     trackedClanTags,
     renderableClanTags: clans.map((clan) => clan.clanTag),
+    heatMapRefParents: heatMapRefs,
     latestSourceSyncedAt,
     heatMapRefs: availableHeatMapRefs,
     referenceAvailability,
@@ -1054,6 +1109,7 @@ export class CompoActualStateService {
     if (context.trackedClanTags.length === 0) {
       return {
         stateRows: null,
+        imageNotice: null,
         trackedClanTags: [],
         renderableClanTags: [],
         view,
@@ -1066,6 +1122,7 @@ export class CompoActualStateService {
 
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
+    const unsupportedTh19Comparisons: string[] = [];
     const includeTh19 = context.clans.some(
       (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
     );
@@ -1086,8 +1143,23 @@ export class CompoActualStateService {
         name: clan.clanName,
       });
       if (!projection.selectedHeatMapRef) {
-        missingHeatMapBands.push(
-          `${normalizeActualStateClanDisplayName(displayName)} (${projection.totalWeight.toLocaleString("en-US")})`,
+        const parentHeatMapRef = findHeatMapRefForWeight(
+          context.heatMapRefParents,
+          projection.totalWeight,
+        );
+        if (!parentHeatMapRef) {
+          missingHeatMapBands.push(
+            `${normalizeActualStateClanDisplayName(displayName)} (${projection.totalWeight.toLocaleString("en-US")})`,
+          );
+        }
+      }
+      if (
+        context.referenceAvailability.status === "validated" &&
+        hasUnsupportedCompoTh19Target(clan.base.bucketCounts) &&
+        projection.targetStatus === "unavailable"
+      ) {
+        unsupportedTh19Comparisons.push(
+          normalizeActualStateClanDisplayName(displayName),
         );
       }
 
@@ -1117,10 +1189,19 @@ export class CompoActualStateService {
       missingHeatMapBands,
       totalMissingTo50Count,
       includeTh19,
+      context.referenceAvailability,
+      context.heatMapRefParents.length,
+      unsupportedTh19Comparisons,
     );
     if (context.referenceAvailability.warning) {
       contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
     }
+
+    const imageNotice = buildHeatMapRefUnknownNotice(
+      context.referenceAvailability,
+      view,
+      unsupportedTh19Comparisons.length,
+    );
 
     return {
       stateRows: [
@@ -1157,6 +1238,7 @@ export class CompoActualStateService {
         ...rows,
       ],
       contentLines,
+      imageNotice,
       trackedClanTags: context.trackedClanTags,
       renderableClanTags,
       view,

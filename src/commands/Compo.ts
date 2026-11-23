@@ -1775,6 +1775,7 @@ function buildCompoStatePayloadFromRows(input: {
   mode: GoogleSheetMode;
   stateRows: string[][];
   contentLines: string[];
+  imageNotice?: string | null;
   titleLabel?: string;
 }): CompoRenderPayload {
   const title = input.titleLabel
@@ -1784,7 +1785,7 @@ function buildCompoStatePayloadFromRows(input: {
     content: input.contentLines.join("\n"),
     files: [
       {
-        attachment: renderStatePng(title, input.stateRows),
+        attachment: renderStatePng(title, input.stateRows, input.imageNotice),
         name: `compo-state-${input.mode}.png`,
       },
     ],
@@ -2290,7 +2291,11 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-function renderStatePng(titleText: string, rows: string[][]): Buffer {
+function renderStatePng(
+  titleText: string,
+  rows: string[][],
+  noticeText?: string | null,
+): Buffer {
   const { PNG } = require("pngjs");
   const tableRows = rows.length > 0 ? rows : [["(NO DATA)"]];
   const colCount = Math.max(...tableRows.map((row) => row.length), 1);
@@ -2309,12 +2314,16 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
   const cellPadX = 12;
   const rowHeight = glyphH + 18;
   const titleHeight = glyphH + 26;
+  const notice = noticeText ? toGlyphSafeText(noticeText) : "";
+  const noticeHeight = notice ? glyphH + 18 : 0;
   const margin = 20;
 
   const colPixelWidths = widths.map((w) => w * charPx + cellPadX * 2);
   const tableWidth = colPixelWidths.reduce((a, b) => a + b, 0);
-  const width = margin * 2 + tableWidth;
-  const height = margin * 2 + titleHeight + tableRows.length * rowHeight;
+  const noticeWidth = notice.length * charPx + margin * 2;
+  const width = Math.max(margin * 2 + tableWidth, noticeWidth);
+  const height =
+    margin * 2 + titleHeight + noticeHeight + tableRows.length * rowHeight;
   const png = new PNG({ width, height });
 
   const setPixel = (x: number, y: number, rgb: [number, number, number]) => {
@@ -2370,8 +2379,14 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
   const grid = hexToRgb("#2a3558");
   const text = hexToRgb("#f0f4ff");
   const title = hexToRgb("#9ec2ff");
+  const noticeColor = hexToRgb("#ffcf8a");
   fillRect(0, 0, width, height, bg);
   drawText(margin, margin + 2, titleText, title);
+  if (notice) {
+    drawText(margin, margin + titleHeight + 2, notice, noticeColor);
+  }
+
+  const tableTop = margin + titleHeight + noticeHeight;
 
   const xStarts: number[] = [];
   let x = margin;
@@ -2380,7 +2395,7 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
     x += w;
   }
   for (let r = 0; r < tableRows.length; r += 1) {
-    const y = margin + titleHeight + r * rowHeight;
+    const y = tableTop + r * rowHeight;
     fillRect(margin, y, tableWidth, rowHeight, r % 2 === 0 ? rowA : rowB);
     for (let c = 0; c < colCount; c += 1) {
       const cell = (tableRows[r][c] ?? "").slice(0, widths[c]);
@@ -2391,14 +2406,14 @@ function renderStatePng(titleText: string, rows: string[][]): Buffer {
     const lineX = i === colCount ? margin + tableWidth : xStarts[i];
     fillRect(
       lineX,
-      margin + titleHeight,
+      tableTop,
       1,
       tableRows.length * rowHeight,
       grid,
     );
   }
   for (let i = 0; i <= tableRows.length; i += 1) {
-    const lineY = margin + titleHeight + i * rowHeight;
+    const lineY = tableTop + i * rowHeight;
     fillRect(margin, lineY, tableWidth, 1, grid);
   }
 
@@ -2950,6 +2965,7 @@ export async function handleCompoRefreshButton(
               mode: "actual",
               stateRows: actualState.stateRows,
               contentLines: actualState.contentLines,
+              imageNotice: actualState.imageNotice,
               titleLabel: getCompoActualStateViewLabel(
                 actualState.view ?? "auto",
               ).toUpperCase(),
@@ -3018,6 +3034,7 @@ export async function handleCompoRefreshButton(
               mode: "actual",
               stateRows: actualState.stateRows,
               contentLines: actualState.contentLines,
+              imageNotice: actualState.imageNotice,
               titleLabel: getCompoActualStateViewLabel(
                 actualState.view ?? "auto",
               ).toUpperCase(),
@@ -3896,6 +3913,7 @@ export const Compo: Command = {
                       mode: "actual",
                       stateRows: actualState.stateRows,
                       contentLines: actualState.contentLines,
+                      imageNotice: actualState.imageNotice,
                       titleLabel: getCompoActualStateViewLabel(
                         actualState.view ?? "auto",
                       ).toUpperCase(),
@@ -4308,6 +4326,7 @@ export const buildCompoHeatMapRefCopyTextForTest = buildCompoHeatMapRefCopyText;
 export const buildCompoHeatMapRefCopyCustomIdForTest = buildCompoHeatMapRefCopyCustomId;
 export const isCompoHeatMapRefCopyButtonCustomIdForTest = isCompoHeatMapRefCopyButtonCustomId;
 export const toGlyphSafeTextForTest = toGlyphSafeText;
+export const renderStatePngForTest = renderStatePng;
 export const getModeRowsForTest = getModeRows;
 export const getAbsoluteSheetRowNumberForTest = getAbsoluteSheetRowNumber;
 export const mapCompoSheetErrorToMessageForTest = mapCompoSheetErrorToMessage;
