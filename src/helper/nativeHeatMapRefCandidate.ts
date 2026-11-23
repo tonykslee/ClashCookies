@@ -8,7 +8,10 @@ import { resolveFwaWeightRows, type FwaResolvedWeightStatus } from "./fwaWeightR
 
 export const NATIVE_REFERENCE_PROFILE_ID = "fwa-native-composition-reference";
 export const NATIVE_REFERENCE_PROFILE_VERSION = "native-reference-v2";
-export const NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION = "resolved-weight-quality-v1";
+export const NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION = "resolved-weight-quality-v2";
+export const NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION = "anchor-sufficiency-v1";
+/** Diagnostic proposal only: two direct anchors are the minimum for inferred reference evidence. */
+export const NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS = 2;
 export const NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION = "compo-war-buckets-v1";
 export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
 export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
@@ -116,6 +119,8 @@ export type NativeReferenceExclusionReasonCode =
   | "unsupported_weight"
   | "imputed_weight"
   | "unresolved_weight"
+  | "insufficient_weight_support"
+  | "non_fwa_source"
   | "source_metadata"
   | "era_policy"
   | "observation_timestamp"
@@ -149,6 +154,8 @@ export type NativeReferenceBandDiagnostic = {
   observedCandidateCount: number;
   /** Source rosters that passed every eligibility check. */
   qualifyingRosterCount: number;
+  /** Fully resolved current-roster samples, including lower-confidence quality exclusions. */
+  usableRosterCount: number;
   distinctQualifyingClanCount: number;
   excludedRosterCount: number;
   exclusionCounts: Readonly<Record<string, number>>;
@@ -172,6 +179,12 @@ export type NativeReferenceCandidateArtifact = {
   evidenceTrust: string;
   sampleThreshold: number;
   uncertaintyPolicyVersion: string;
+  sampleQualityPolicyVersion: string;
+  sampleQualityPolicy: {
+    minimumDirectWeightAnchors: number;
+    deferredWeightsCountAsDirectAnchors: boolean;
+    lowerConfidenceSamplesRemainDiagnostic: boolean;
+  };
   eraPolicy: NativeReferenceEraPolicy;
   evaluationAtIso: string;
   /** Bounds over every parseable source timestamp supplied to the generator, including rejected evidence. */
@@ -461,8 +474,7 @@ function inferIndependentlySupportableBand(
     !Number.isInteger(roster.totalRawWeight) ||
     !Number.isInteger(roster.totalEffectiveWeight) ||
     roster.totalRawWeight !== totalRaw ||
-    roster.totalEffectiveWeight !== totalEffective ||
-    totalRaw !== totalEffective
+    roster.totalEffectiveWeight !== totalEffective
   ) return null;
   return findBand(totalEffective, bands);
 }
@@ -531,6 +543,16 @@ function countReasons(rows: readonly NativeReferenceExclusion[]): Record<string,
   }, {});
 }
 
+function hasSufficientReferenceWeightAnchors(input: {
+  raw: number;
+  deferred: number;
+  estimated: number;
+}): boolean {
+  const estimatedCount = input.estimated;
+  const directAnchorCount = input.raw + input.deferred;
+  return estimatedCount === 0 || directAnchorCount >= NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS;
+}
+
 function qualifyRoster(input: {
   roster: NativeReferenceSourceRoster;
   normalizedClanTag: string;
@@ -576,55 +598,36 @@ function qualifyRoster(input: {
     return exclusion("duplicate_position", "roster positions are duplicated");
   }
 
+  if (roster.sourceMatchType && roster.sourceMatchType !== "FWA") {
+    return exclusion("non_fwa_source", "source explicitly identifies a non-FWA roster");
+  }
+
   const observedAt = parseDate(roster.observedAt);
   const sourceUpdatedAt = parseDate(roster.sourceUpdatedAt);
-  const sourceWarStartTime = parseDate(roster.sourceWarStartTime);
-  const sourceWarEndTime = parseDate(roster.sourceWarEndTime);
-  const sourceCurrentWarUpdatedAt = parseDate(roster.sourceCurrentWarUpdatedAt);
   const eraStart = new Date(input.policy.eraStartIso).getTime();
   const eraEnd = new Date(input.policy.eraEndIso).getTime();
-  const normalizedState = roster.sourceWarState?.trim().toLowerCase().replace(/[_-]/g, "") ?? "";
-  const allowedStates = new Set(["preparation", "inwar", "warended"]);
   const hasInvalidSuppliedTimestamp = [
     [roster.observedAt, observedAt],
     [roster.sourceUpdatedAt, sourceUpdatedAt],
-    [roster.sourceWarStartTime, sourceWarStartTime],
-    [roster.sourceWarEndTime, sourceWarEndTime],
-    [roster.sourceCurrentWarUpdatedAt, sourceCurrentWarUpdatedAt],
   ].some(([supplied, parsed]) => supplied !== null && supplied !== undefined && !parsed);
   if (
     !observedAt ||
     hasInvalidSuppliedTimestamp ||
-    (normalizedState && !allowedStates.has(normalizedState)) ||
-    [observedAt, sourceUpdatedAt, sourceWarStartTime, sourceCurrentWarUpdatedAt, sourceWarEndTime]
+    [observedAt, sourceUpdatedAt]
       .filter((date): date is Date => Boolean(date))
       .some((date) => date.getTime() > eraEnd || date.getTime() > input.evaluationAt.getTime()) ||
-    (sourceWarStartTime && sourceWarStartTime.getTime() > observedAt.getTime()) ||
-    (sourceWarStartTime && sourceUpdatedAt && sourceWarStartTime.getTime() > sourceUpdatedAt.getTime()) ||
-    (sourceCurrentWarUpdatedAt && sourceWarStartTime && sourceCurrentWarUpdatedAt.getTime() < sourceWarStartTime.getTime()) ||
-    (sourceCurrentWarUpdatedAt && sourceCurrentWarUpdatedAt.getTime() > observedAt.getTime()) ||
-    (sourceUpdatedAt && observedAt.getTime() < sourceUpdatedAt.getTime()) ||
-    (sourceWarEndTime && sourceWarStartTime && sourceWarEndTime.getTime() < sourceWarStartTime.getTime())
+    (sourceUpdatedAt && observedAt.getTime() < sourceUpdatedAt.getTime())
   ) {
-    return exclusion("source_metadata", "current-roster source metadata is malformed or contradictory");
-  }
-  if (normalizedState === "warended" && !sourceWarEndTime) {
-    return exclusion("source_metadata", "ended source war is missing its end timestamp");
-  }
-  if (normalizedState === "warended" && sourceWarEndTime && sourceWarEndTime.getTime() > observedAt.getTime()) {
-    return exclusion("source_metadata", "ended source war ends after the observation timestamp");
-  }
-  if (normalizedState !== "warended" && sourceWarEndTime) {
-    return exclusion("source_metadata", "active source war contains an ended-war timestamp");
+    return exclusion("source_metadata", "WarMembers observation metadata is malformed or contradictory");
   }
   if (
-    [observedAt, sourceUpdatedAt, sourceWarStartTime, sourceCurrentWarUpdatedAt, sourceWarEndTime]
+    [observedAt, sourceUpdatedAt]
       .filter((date): date is Date => Boolean(date))
       .some((date) => date.getTime() < eraStart)
   ) {
     return exclusion("era_policy", "source observation is outside the explicit era window");
   }
-  const sourceObservationTimes = [observedAt, sourceUpdatedAt, sourceWarStartTime, sourceWarEndTime, sourceCurrentWarUpdatedAt].filter(
+  const sourceObservationTimes = [observedAt, sourceUpdatedAt].filter(
     (date): date is Date => Boolean(date),
   );
   const memberSourceValues = members.map((member) => member.sourceSyncedAt);
@@ -671,6 +674,16 @@ function qualifyRoster(input: {
     effectiveWeights.push(member.effectiveWeight as number);
     resolvedWeightCounts[resolvedStatus(member.effectiveWeightStatus)] += 1;
     bucketCounts[nativeBucket.id] += 1;
+  }
+  if (!hasSufficientReferenceWeightAnchors({
+    raw: resolvedWeightCounts.RAW,
+    deferred: resolvedWeightCounts.DEFERRED,
+    estimated: resolvedWeightCounts.ESTIMATED,
+  })) {
+    return exclusion(
+      "insufficient_weight_support",
+      `resolved roster has only ${resolvedWeightCounts.RAW + resolvedWeightCounts.DEFERRED} direct weight anchors for ${resolvedWeightCounts.ESTIMATED} estimated members`,
+    );
   }
   const totalEffectiveWeight = effectiveWeights.reduce((sum, value) => sum + value, 0);
   const totalRawWeight = rawWeights.reduce((sum, value) => sum + value, 0);
@@ -873,6 +886,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       reasonCode,
       observedCandidateCount,
       qualifyingRosterCount,
+      usableRosterCount: observedCandidateCount,
       distinctQualifyingClanCount,
       excludedRosterCount: bandExclusions.length,
       exclusionCounts: countReasons(bandExclusions),
@@ -908,6 +922,12 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     evidenceTrust: source.trust,
     sampleThreshold: threshold,
     uncertaintyPolicyVersion: NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION,
+    sampleQualityPolicyVersion: NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION,
+    sampleQualityPolicy: {
+      minimumDirectWeightAnchors: NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
+      deferredWeightsCountAsDirectAnchors: true,
+      lowerConfidenceSamplesRemainDiagnostic: true,
+    },
     eraPolicy: policyResult.policy,
     evaluationAtIso: policyResult.evaluationAt.toISOString(),
     sourceObservationBounds,
@@ -982,6 +1002,16 @@ function validateNativeReferenceCandidateArtifactInternal(
     !Number.isInteger(candidate.sampleThreshold) ||
     (candidate.sampleThreshold as number) <= 0 ||
     candidate.uncertaintyPolicyVersion !== NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION ||
+    candidate.sampleQualityPolicyVersion !== NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION ||
+    !isRecordValue(candidate.sampleQualityPolicy) ||
+    !hasExactKeys(candidate.sampleQualityPolicy, [
+      "minimumDirectWeightAnchors",
+      "deferredWeightsCountAsDirectAnchors",
+      "lowerConfidenceSamplesRemainDiagnostic",
+    ]) ||
+    candidate.sampleQualityPolicy.minimumDirectWeightAnchors !== NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS ||
+    candidate.sampleQualityPolicy.deferredWeightsCountAsDirectAnchors !== true ||
+    candidate.sampleQualityPolicy.lowerConfidenceSamplesRemainDiagnostic !== true ||
     !isIso(candidate.evaluationAtIso) ||
     !isRecordValue(candidate.eraPolicy) ||
     typeof candidate.eraPolicy.policyId !== "string" ||
@@ -1059,7 +1089,7 @@ function validateNativeReferenceCandidateArtifactInternal(
   if (canonicalSortKey(bands) !== canonicalSortKey(sortedBands(bands))) return false;
   const exclusionReasonCodes = new Set<NativeReferenceExclusionReasonCode>([
     "invalid_clan_identity", "duplicate_clan_observation", "roster_size", "duplicate_player_identity",
-    "missing_or_invalid_position", "duplicate_position", "invalid_weight", "unsupported_weight", "imputed_weight", "unresolved_weight",
+    "missing_or_invalid_position", "duplicate_position", "invalid_weight", "unsupported_weight", "imputed_weight", "unresolved_weight", "insufficient_weight_support", "non_fwa_source",
     "source_metadata", "era_policy", "observation_timestamp", "member_roster_mismatch", "total_weight_mismatch", "no_reference_band",
   ]);
   const exclusionRows = candidate.exclusions as unknown[];
@@ -1096,6 +1126,9 @@ function validateNativeReferenceCandidateArtifactInternal(
       diagnostic.qualifyingRosterCount > diagnostic.observedCandidateCount ||
       diagnostic.distinctQualifyingClanCount > diagnostic.qualifyingRosterCount ||
       diagnostic.th19ContainingRosterCount > diagnostic.qualifyingRosterCount ||
+      !isNonnegativeInteger(diagnostic.usableRosterCount) ||
+      diagnostic.usableRosterCount !== diagnostic.observedCandidateCount ||
+      diagnostic.qualifyingRosterCount > diagnostic.usableRosterCount ||
       !isRecordValue(diagnostic.observedBucketTotals) ||
       !isRecordValue(diagnostic.averageBucketCounts) ||
       !isRecordValue(diagnostic.resolvedWeightCounts) ||
@@ -1110,6 +1143,7 @@ function validateNativeReferenceCandidateArtifactInternal(
       provenanceKeys.some((key) => !isNonnegativeInteger(diagnostic.resolvedWeightCounts[key])) ||
       Object.values(diagnostic.resolvedWeightCounts).reduce((sum, count) => sum + count, 0) !== diagnostic.qualifyingRosterCount * NATIVE_REFERENCE_TARGET_TOTAL
     ) return false;
+    if (diagnostic.resolvedWeightCounts.UNRESOLVED !== 0) return false;
     const observedTotal = registry.reduce((sum, bucket) => {
       const value = diagnostic.observedBucketTotals[bucket.id];
       return Number.isInteger(value) && (value as number) >= 0 ? sum + (value as number) : Number.NaN;

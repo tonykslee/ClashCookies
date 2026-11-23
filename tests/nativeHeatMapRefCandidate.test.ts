@@ -158,12 +158,12 @@ describe("native HeatMapRef candidate generation", () => {
       .every((target) => target.targetCount === null)).toBe(true);
   });
 
-  it("requires independently verified FWA identity and rejects stale, future, mixed, or unsupported source evidence", () => {
+  it("accepts absent source attestation but rejects explicit non-FWA and malformed WarMembers evidence", () => {
     const unavailable = makeRoster({ clanTag: "#UNAVAILABLE", weightForPosition: () => 181_000 });
     expect(generate([{ ...unavailable, sourceIdentityStatus: "UNAVAILABLE" }]).unknownReason).toBe("insufficient_source_support");
 
     const nonFwa = makeRoster({ clanTag: "#BLMM", weightForPosition: () => 181_000 });
-    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).unknownReason).toBe("insufficient_source_support");
+    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).exclusionCounts.non_fwa_source).toBe(1);
 
     const future = makeRoster({ clanTag: "#FUTURETIME", weightForPosition: () => 181_000 });
     future.sourceUpdatedAt = "2026-11-21T01:00:00.000Z";
@@ -171,7 +171,7 @@ describe("native HeatMapRef candidate generation", () => {
 
     const unsupportedState = makeRoster({ clanTag: "#UNSUPPORTEDSTATE", weightForPosition: () => 181_000 });
     unsupportedState.sourceWarState = "cancelled";
-    expect(generate([unsupportedState]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([unsupportedState], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
 
     const mixed = makeRoster({ clanTag: "#MIXEDTIME", weightForPosition: () => 181_000 });
     mixed.members = mixed.members.map((member, index) => ({
@@ -210,6 +210,25 @@ describe("native HeatMapRef candidate generation", () => {
     const diagnostic = artifact.diagnostics.find((candidate) => candidate.status === "SUPPORTED");
     expect(diagnostic?.resolvedWeightCounts).toEqual({ RAW: 44, DEFERRED: 0, ESTIMATED: 6, UNRESOLVED: 0 });
     expect(diagnostic?.qualifyingRosterCount).toBe(1);
+  });
+
+  it("keeps one-anchor/49-estimated evidence diagnostic-only and accepts the two-anchor boundary", () => {
+    const oneAnchor = makeRosterFromRawWeights({
+      clanTag: "#ONEANCHOR",
+      rawWeights: [181_000, ...Array.from({ length: 49 }, () => 0)],
+    });
+    const rejected = generate([oneAnchor], 1);
+    expect(rejected.exclusionCounts.insufficient_weight_support).toBe(1);
+    const rejectedDiagnostic = rejected.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0);
+    expect(rejectedDiagnostic).toMatchObject({ usableRosterCount: 1, qualifyingRosterCount: 0, excludedRosterCount: 1 });
+
+    const twoAnchors = makeRosterFromRawWeights({
+      clanTag: "#TWOANCHORS",
+      rawWeights: [181_000, ...Array.from({ length: 48 }, () => 0), 171_000],
+    });
+    const accepted = generate([twoAnchors], 1);
+    expect(accepted.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 2, DEFERRED: 0, ESTIMATED: 48, UNRESOLVED: 0 });
   });
 
   it("uses RAW before defer, then defer before rank inference, and exposes provenance counts", () => {
@@ -273,7 +292,7 @@ describe("native HeatMapRef candidate generation", () => {
     expect(duplicatePosition.exclusionCounts.duplicate_position).toBe(1);
   });
 
-  it("rejects incomplete, contradictory, stale, and repeated source evidence", () => {
+  it("rejects incomplete, contradictory WarMembers evidence and repeated observations", () => {
     const incomplete = makeRoster({ clanTag: "#INCOMPLETE", weightForPosition: () => 181_000 });
     (incomplete as { members: NativeReferenceSourceRoster["members"] }).members = incomplete.members.slice(0, 49);
     expect(generate([incomplete]).exclusionCounts.roster_size).toBe(1);
@@ -285,8 +304,8 @@ describe("native HeatMapRef candidate generation", () => {
     const stale = makeRoster({
       clanTag: "#STALE",
       weightForPosition: () => 181_000,
-      sourceWarStartTime: "2026-10-20T00:00:00.000Z",
     });
+    stale.sourceUpdatedAt = "2026-10-20T00:00:00.000Z";
     expect(generate([stale]).exclusionCounts.era_policy).toBe(1);
 
     const repeated = makeRoster({ clanTag: "#REPEATED", weightForPosition: () => 181_000 });
@@ -434,6 +453,19 @@ describe("native HeatMapRef candidate generation", () => {
         ? { ...diagnostic, qualifyingRosterCount: 0, distinctQualifyingClanCount: 0 }
         : diagnostic),
     }))).toBe(false);
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...artifact,
+      diagnostics: artifact.diagnostics.map((diagnostic) => diagnostic === supportedDiagnostic
+        ? {
+            ...diagnostic,
+            resolvedWeightCounts: {
+              ...diagnostic.resolvedWeightCounts,
+              RAW: diagnostic.resolvedWeightCounts.RAW - 1,
+              UNRESOLVED: diagnostic.resolvedWeightCounts.UNRESOLVED + 1,
+            },
+          }
+        : diagnostic),
+    }))).toBe(false);
 
     const contradictoryTargets = artifact.diagnostics.map((diagnostic) => {
       if (diagnostic.status !== "SUPPORTED") return diagnostic;
@@ -515,7 +547,7 @@ describe("native HeatMapRef candidate generation", () => {
     }
     expect(artifacts[0]?.unknownReason).toBe("no_source_evidence");
     expect(artifacts[1]?.unknownReason).toBe("insufficient_source_support");
-    expect(artifacts[2]?.unknownReason).toBe("rejected_source_evidence");
+    expect(artifacts[2]?.unknownReason).toBe("insufficient_source_support");
     expect(artifacts[3]?.unknownReason).toBe("rejected_source_evidence");
     expect(artifacts[4]?.unknownReason).toBe("insufficient_source_support");
     expect(artifacts[5]?.overallStatus).toBe("PARTIAL");
@@ -560,16 +592,19 @@ describe("native HeatMapRef candidate generation", () => {
     expect(left.exclusions).toEqual(right.exclusions);
   });
 
-  it("enforces state-specific chronology and complete member timing", () => {
+  it("ignores unrelated CurrentWar metadata but checks WarMembers observation timing", () => {
     const notInWar = makeRoster({ clanTag: "#NOTINWAR", weightForPosition: () => 181_000 });
     notInWar.sourceWarState = "notInWar";
-    expect(generate([notInWar]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([notInWar], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
     const activeWithEnd = makeRoster({ clanTag: "#ACTIVEEND", weightForPosition: () => 181_000 });
     activeWithEnd.sourceWarState = "inWar";
-    expect(generate([activeWithEnd]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([activeWithEnd], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    activeWithEnd.sourceWarEndTime = "2026-11-21T01:00:00.000Z";
+    expect(generate([activeWithEnd], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
     const missingCurrentWarTimestamp = makeRoster({ clanTag: "#MISSINGCURRENT", weightForPosition: () => 181_000 });
     missingCurrentWarTimestamp.sourceCurrentWarUpdatedAt = null;
-    expect(generate([missingCurrentWarTimestamp]).unknownReason).toBe("insufficient_source_support");
+    missingCurrentWarTimestamp.sourceWarStartTime = "2025-01-01T00:00:00.000Z";
+    expect(generate([missingCurrentWarTimestamp], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
     const partialMemberTiming = makeRoster({ clanTag: "#PARTIALMEMBERTIME", weightForPosition: () => 181_000 });
     partialMemberTiming.members = partialMemberTiming.members.map((member, index) => index === 0
       ? { ...member, sourceSyncedAt: "2026-11-20T23:00:00.000Z" }
@@ -577,7 +612,10 @@ describe("native HeatMapRef candidate generation", () => {
     expect(generate([partialMemberTiming]).exclusionCounts.source_metadata).toBe(1);
     const futureEnd = makeRoster({ clanTag: "#FUTUREEND", weightForPosition: () => 181_000 });
     futureEnd.sourceWarEndTime = "2026-11-22T00:00:00.000Z";
-    expect(generate([futureEnd]).exclusionCounts.source_metadata).toBe(1);
+    expect(generate([futureEnd], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    const nonFwa = makeRoster({ clanTag: "#NONFWA", weightForPosition: () => 181_000 });
+    nonFwa.sourceMatchType = "CLAN_WAR_LEAGUE";
+    expect(generate([nonFwa]).exclusionCounts.non_fwa_source).toBe(1);
   });
 
   it("keeps persisted candidates fail-closed without CurrentWar or WarMembers reads", async () => {
