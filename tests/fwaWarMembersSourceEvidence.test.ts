@@ -93,7 +93,7 @@ describe("FWA WarMembers source evidence", () => {
     expect(evidence.parserAcceptedRowCount).toBe(50);
     expect(evidence.parserRejectedRowCount).toBe(0);
     expect(evidence.discardedRowCount).toBe(0);
-    expect(evidence.evidenceIneligibleRowCount).toBe(3);
+    expect(evidence.evidenceIneligibleRowCount).toBe(2);
     expect(evidence.reasonCodes).toEqual(expect.arrayContaining(["invalid_weight", "evidence_ineligible"]));
     expect(evidence.weightStatus).toBe("CONFLICTING");
     expect(evidence.candidateEligibilityStatus).toBe("CONFLICTING");
