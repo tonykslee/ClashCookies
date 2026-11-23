@@ -9,11 +9,13 @@ import type { FwaWarMemberFeedRow } from "./types";
 
 /** Purpose: version the additive persisted observation envelope independently from the source contract. */
 export const FWA_WAR_MEMBERS_OBSERVATION_SCHEMA_VERSION = "war-members-observation-v1";
+/** Purpose: version immutable source-quality revision identity independently from roster identity. */
+export const FWA_WAR_MEMBERS_EVIDENCE_SCHEMA_VERSION = "war-members-quality-v1";
 export const FWA_WAR_MEMBERS_UNKNOWN_SOURCE_AUTHORITY = "UNKNOWN_UNVERIFIED";
 
 type ObservationDbClient = Pick<
   Prisma.TransactionClient,
-  "fwaWarMembersObservation" | "fwaWarMembersObservationMember"
+  "fwaWarMembersObservation" | "fwaWarMembersObservationEvidence" | "fwaWarMembersObservationMember"
 >;
 
 type SemanticMember = {
@@ -28,6 +30,7 @@ export type FwaWarMembersObservationCaptureResult = {
   clanTag: string;
   rosterFingerprint: string;
   canonicalSourceFingerprint: string;
+  sourceQualityFingerprint: string;
   memberRowCount: number;
   rosterCompletenessStatus: "COMPLETE" | "INCOMPLETE" | "CONFLICTING";
   weightQualityStatus: "DIRECT_PRESENT" | "MISSING_DIRECT" | "CONFLICTING";
@@ -59,6 +62,47 @@ function canonicalSortKey(value: SemanticMember): string {
 
 function compareCanonicalKeys(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Purpose: identify source-quality evidence without splitting attack-only payload changes into samples. */
+export function computeFwaWarMembersSourceQualityFingerprint(
+  evidence: FwaWarMembersSourceEvidence,
+): string {
+  const qualityRows = evidence.rowEvaluations
+    .map((row) => ({
+      parserStatus: row.parserStatus,
+      parserReasonCodes: [...row.parserReasonCodes].sort(),
+      evidenceStatus: row.evidenceStatus,
+      evidenceReasonCodes: [...row.evidenceReasonCodes].sort(),
+      normalizedPlayerTag: row.normalizedPlayerTag,
+      normalizedPosition: row.normalizedPosition,
+      normalizedWeight: row.normalizedWeight,
+    }))
+    .sort((left, right) => compareCanonicalKeys(JSON.stringify(left), JSON.stringify(right)));
+
+  return sha256({
+    evidenceSchemaVersion: FWA_WAR_MEMBERS_EVIDENCE_SCHEMA_VERSION,
+    contractVersion: evidence.contractVersion,
+    rawPayloadIsArray: evidence.rawPayloadIsArray,
+    rawRowCount: evidence.rawRowCount,
+    parserAcceptedRowCount: evidence.parserAcceptedRowCount,
+    parserRejectedRowCount: evidence.parserRejectedRowCount,
+    acceptedRowCount: evidence.acceptedRowCount,
+    discardedRowCount: evidence.discardedRowCount,
+    evidenceEligibleRowCount: evidence.evidenceEligibleRowCount,
+    evidenceIneligibleRowCount: evidence.evidenceIneligibleRowCount,
+    declaredRosterSize: evidence.declaredRosterSize,
+    declaredTotalWeight: evidence.declaredTotalWeight,
+    observedOpponentTags: [...evidence.observedOpponentTags].sort(),
+    structuralStatus: evidence.structuralStatus,
+    completenessStatus: evidence.completenessStatus,
+    weightStatus: evidence.weightStatus,
+    exactWarBindingStatus: evidence.exactWarBindingStatus,
+    sourceGenerationStatus: evidence.sourceGenerationStatus,
+    candidateEligibilityStatus: evidence.candidateEligibilityStatus,
+    reasonCodes: [...evidence.reasonCodes].sort(),
+    qualityRows,
+  });
 }
 
 /** Purpose: compute the order-independent semantic fingerprint used for observation deduplication. */
@@ -138,6 +182,7 @@ export async function captureFwaWarMembersObservation(
     row.evidenceReasonCodes.includes("invalid_weight"),
   ).length;
   const completeness = rosterCompletenessStatus(input.evidence, input.rows);
+  const sourceQualityFingerprint = computeFwaWarMembersSourceQualityFingerprint(input.evidence);
   const weightQualityStatus: FwaWarMembersObservationCaptureResult["weightQualityStatus"] =
     input.evidence.weightStatus === "CONFLICTING" || rawWeightInvalidCount > 0
       ? "CONFLICTING"
@@ -179,6 +224,43 @@ export async function captureFwaWarMembersObservation(
     },
   });
 
+  await db.fwaWarMembersObservationEvidence.upsert({
+    where: {
+      observationId_sourceQualityFingerprint: {
+        observationId: observation.id,
+        sourceQualityFingerprint,
+      },
+    },
+    update: {},
+    create: {
+      observationId: observation.id,
+      evidenceSchemaVersion: FWA_WAR_MEMBERS_EVIDENCE_SCHEMA_VERSION,
+      sourceContractVersion: input.evidence.contractVersion,
+      sourceUrl: input.evidence.sourceUrl,
+      sourceWarNo: input.evidence.sourceWarNo,
+      firstObservedAt: new Date(input.evidence.observedAt),
+      observedAt: new Date(input.evidence.observedAt),
+      ingestedAt: new Date(input.evidence.ingestedAt),
+      rawRowCount: input.evidence.rawRowCount,
+      acceptedRowCount: input.evidence.acceptedRowCount,
+      discardedRowCount: input.evidence.discardedRowCount,
+      parserAcceptedRowCount: input.evidence.parserAcceptedRowCount,
+      parserRejectedRowCount: input.evidence.parserRejectedRowCount,
+      evidenceEligibleRowCount: input.evidence.evidenceEligibleRowCount,
+      evidenceIneligibleRowCount: input.evidence.evidenceIneligibleRowCount,
+      rawWeightPresentCount,
+      rawWeightMissingCount,
+      rawWeightInvalidCount,
+      canonicalSourceFingerprint: input.evidence.rawPayloadFingerprint,
+      sourceQualityFingerprint,
+      structuralStatus: input.evidence.structuralStatus,
+      rosterCompletenessStatus: completeness,
+      weightStatus: weightQualityStatus,
+      sourceAuthorityStatus: FWA_WAR_MEMBERS_UNKNOWN_SOURCE_AUTHORITY,
+      sourceQualityReasonCodes: reasonCodes,
+    },
+  });
+
   if (sortedMemberRows.length > 0) {
     await db.fwaWarMembersObservationMember.createMany({
       data: sortedMemberRows.map(({ member, memberFingerprint }) => ({
@@ -198,6 +280,7 @@ export async function captureFwaWarMembersObservation(
     clanTag,
     rosterFingerprint,
     canonicalSourceFingerprint: input.evidence.rawPayloadFingerprint,
+    sourceQualityFingerprint,
     memberRowCount: sortedMemberRows.length,
     rosterCompletenessStatus: completeness,
     weightQualityStatus,

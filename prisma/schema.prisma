@@ -2313,12 +2313,48 @@ model FwaWarMembersObservation {
   weightStatus               String
   sourceAuthorityStatus      String
   sourceQualityReasonCodes   Json
+  qualityEvidence            FwaWarMembersObservationEvidence[]
   members                    FwaWarMembersObservationMember[]
 
   @@unique([clanTag, rosterFingerprint])
   @@index([clanTag, firstObservedAt])
   @@index([canonicalSourceFingerprint])
   @@index([rosterFingerprint])
+}
+
+/// Immutable source-quality revisions for one semantic roster observation.
+model FwaWarMembersObservationEvidence {
+  id                         String                 @id @default(cuid())
+  observationId              String
+  evidenceSchemaVersion      String
+  sourceContractVersion      String
+  sourceUrl                  String
+  sourceWarNo                Int
+  firstObservedAt            DateTime
+  observedAt                 DateTime
+  ingestedAt                 DateTime
+  rawRowCount                Int
+  acceptedRowCount           Int
+  discardedRowCount          Int
+  parserAcceptedRowCount     Int
+  parserRejectedRowCount     Int
+  evidenceEligibleRowCount   Int
+  evidenceIneligibleRowCount Int
+  rawWeightPresentCount      Int
+  rawWeightMissingCount      Int
+  rawWeightInvalidCount      Int
+  canonicalSourceFingerprint String
+  sourceQualityFingerprint   String
+  structuralStatus           String
+  rosterCompletenessStatus   String
+  weightStatus               String
+  sourceAuthorityStatus      String
+  sourceQualityReasonCodes   Json
+  observation                FwaWarMembersObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@unique([observationId, sourceQualityFingerprint])
+  @@index([observationId, firstObservedAt])
+  @@index([sourceQualityFingerprint])
 }
 
 /// Immutable normalized member rows belonging to one WarMembers observation.

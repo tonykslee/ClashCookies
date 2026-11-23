@@ -54,12 +54,32 @@ async function main(): Promise<void> {
         rosterFingerprint: true,
         sourceQualityReasonCodes: true,
         sourceAuthorityStatus: true,
+        qualityEvidence: {
+          orderBy: [{ firstObservedAt: "asc" }, { id: "asc" }],
+          take: 20,
+          select: {
+            evidenceSchemaVersion: true,
+            firstObservedAt: true,
+            rawRowCount: true,
+            parserRejectedRowCount: true,
+            evidenceIneligibleRowCount: true,
+            rawWeightInvalidCount: true,
+            canonicalSourceFingerprint: true,
+            sourceQualityFingerprint: true,
+            structuralStatus: true,
+            rosterCompletenessStatus: true,
+            weightStatus: true,
+            sourceAuthorityStatus: true,
+            sourceQualityReasonCodes: true,
+          },
+        },
       },
     }),
   ]);
 
   console.log(JSON.stringify({
     observationSchema: "war-members-observation-v1",
+    evidenceSchema: "war-members-quality-v1",
     filter: { clanTag: options.clanTag },
     retainedObservationCount,
     returnedObservationCount: observations.length,
