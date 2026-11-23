@@ -57,6 +57,7 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
       {} as any,
       warPlanViolations,
     );
+    let participationInput: any;
     vi.spyOn(service as any, "getWarEndResultSnapshot").mockResolvedValue({
       clanStars: 100,
       opponentStars: 99,
@@ -66,16 +67,17 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
       resultLabel: "WIN",
     });
     vi.spyOn(service as any, "persistWarParticipationSnapshot").mockImplementation(
-      async () => {
+      async (input: unknown) => {
+        participationInput = input;
         order.push("participation_snapshot");
       },
     );
-    return { service, pointsSync, warPlanViolations };
+    return { service, pointsSync, warPlanViolations, getParticipationInput: () => participationInput };
   }
 
   it("keeps history persistence and enrollment inside one transaction before downstream writes", async () => {
     const order: string[] = [];
-    const { service } = buildService(order);
+    const { service, getParticipationInput } = buildService(order);
     let lookupSqlArg: unknown;
 
     prismaMock.warAttacks.findFirst.mockResolvedValue({
@@ -83,6 +85,11 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     });
     prismaMock.warAttacks.findMany.mockResolvedValue([
       {
+        warId: 99,
+        clanTag: "#AAA111",
+        opponentClanTag: "#OPP",
+        warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-30T01:00:00.000Z"),
         playerTag: "#P1",
         playerName: "Alpha",
         playerPosition: 1,
@@ -115,7 +122,7 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     const tx = {
       $queryRaw: vi.fn(async () => {
         order.push("history_upsert");
-        return [{ warId: 99 }];
+        return [{ warId: 99, warEndTime: new Date("2026-03-30T01:00:00.000Z") }];
       }),
       $executeRaw: vi.fn(async (arg: unknown) => {
         lookupSqlArg = arg;
@@ -188,6 +195,10 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     ]);
     expect(JSON.stringify(lookupSqlArg)).toContain("teamSize");
     expect(JSON.stringify(lookupSqlArg)).toContain("war_event_snapshot");
+    expect(getParticipationInput()?.warEndTime).toEqual(
+      new Date("2026-03-30T01:00:00.000Z"),
+    );
+    expect(JSON.stringify(lookupSqlArg)).toContain("2026-03-30T01:00:00.000Z");
   });
 
   it("archives every canonical war member, including zero-attack members", async () => {
@@ -359,7 +370,7 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
       warId: 99,
     });
     expect((service as any).persistWarParticipationSnapshot).not.toHaveBeenCalled();
-    expect(prismaMock.warAttacks.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.warAttacks.findMany).toHaveBeenCalledTimes(2);
     expect(prismaMock.warAttacks.deleteMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.currentWar.updateMany).toHaveBeenCalledTimes(1);
   });
@@ -459,6 +470,11 @@ describe("WarEventHistoryService.persistWarEndHistory", () => {
     });
     prismaMock.warAttacks.findMany.mockResolvedValue([
       {
+        warId: 99,
+        clanTag: "#AAA111",
+        opponentClanTag: "#OPP",
+        warStartTime: new Date("2026-03-30T00:00:00.000Z"),
+        warEndTime: new Date("2026-03-30T01:00:00.000Z"),
         playerTag: "#P1",
         playerName: "Alpha",
         playerPosition: 1,

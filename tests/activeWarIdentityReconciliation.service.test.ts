@@ -6,7 +6,10 @@ const prismaMock = vi.hoisted(() => ({
 
 vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
 
-import { reconcileActiveWarIdentity } from "../src/services/ActiveWarIdentityReconciliationService";
+import {
+  reconcileActiveWarIdentity,
+  resolveActiveWarIdentityPatch,
+} from "../src/services/ActiveWarIdentityReconciliationService";
 
 const liveWar = {
   state: "inWar",
@@ -108,5 +111,72 @@ describe("reconcileActiveWarIdentity", () => {
         },
       }),
     ).rejects.toThrow("database unavailable");
+  });
+});
+
+describe("resolveActiveWarIdentityPatch end-time authority", () => {
+  it("prefers a valid live end time over an older persisted same-war end time", () => {
+    const result = resolveActiveWarIdentityPatch({
+      guildId: "guild-1",
+      clanTag: "#ALPHA",
+      liveWar,
+      currentWar: {
+        warId: 5001,
+        startTime: new Date("2026-09-09T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        endTime: new Date("2026-09-09T23:00:00.000Z"),
+      },
+    });
+
+    expect(result?.sameWar).toBe(true);
+    expect(result?.patch.endTime).toEqual(new Date("2026-09-10T18:00:00.000Z"));
+  });
+
+  it("preserves a valid persisted end time when live end time is missing for the same war", () => {
+    const result = resolveActiveWarIdentityPatch({
+      guildId: "guild-1",
+      clanTag: "#ALPHA",
+      liveWar: { ...liveWar, endTime: null },
+      currentWar: {
+        warId: 5001,
+        startTime: new Date("2026-09-09T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        endTime: new Date("2026-09-10T18:00:00.000Z"),
+      },
+    });
+
+    expect(result?.sameWar).toBe(true);
+    expect(result?.patch.endTime).toEqual(new Date("2026-09-10T18:00:00.000Z"));
+  });
+
+  it.each([
+    {
+      name: "different opponent",
+      currentWar: {
+        warId: 5001,
+        startTime: new Date("2026-09-09T18:00:00.000Z"),
+        opponentTag: "#OLDOPP",
+        endTime: new Date("2026-09-10T18:00:00.000Z"),
+      },
+    },
+    {
+      name: "different war start time",
+      currentWar: {
+        warId: 5001,
+        startTime: new Date("2026-09-08T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        endTime: new Date("2026-09-10T18:00:00.000Z"),
+      },
+    },
+  ])("clears a persisted end time for a new war: $name", ({ currentWar }) => {
+    const result = resolveActiveWarIdentityPatch({
+      guildId: "guild-1",
+      clanTag: "#ALPHA",
+      liveWar: { ...liveWar, endTime: null },
+      currentWar,
+    });
+
+    expect(result?.sameWar).toBe(false);
+    expect(result?.patch.endTime).toBeNull();
   });
 });
