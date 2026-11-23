@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   evaluateNativeReferenceCohort,
-  generateNativeHeatMapRefCandidate,
+  evaluateNativeReferenceCohortDiagnostic,
+  validateNativeReferenceCandidateArtifact,
   NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
   NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
   NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
@@ -43,7 +44,8 @@ export type NativeCohortAuditBand = {
     ESTIMATED: number;
     UNRESOLVED: number;
   }>;
-  evidenceQualityDistribution: Readonly<Record<string, number>>;
+  calculationOutcomeDistribution: Readonly<Record<string, number>>;
+  retainedEvidenceQualityDistribution: Readonly<Record<string, number>>;
   uncertaintyAndCoverageGaps: readonly string[];
 };
 
@@ -69,9 +71,17 @@ export type NativeCohortQualificationAudit = {
   eraPolicy: NativeReferenceEraPolicy;
   evaluationAtIso: string;
   readLimit: number;
+  boundedReadRowCount: number;
+  readLimited: boolean;
+  eligibleSemanticLineageCount: number;
+  malformedAvailableObservationCount: number;
   coverageStatus: "VERIFIED" | "TRUNCATED" | "AMBIGUOUS";
   globalAmbiguityStatus: "NONE" | "AMBIGUOUS";
   aggregate: {
+    boundedReadRowCount: number;
+    readLimited: boolean;
+    eligibleSemanticLineageCount: number;
+    malformedAvailableObservationCount: number;
     observedSemanticSampleCount: number;
     selectedIndependentClanCount: number;
     supersededSemanticSampleCount: number;
@@ -93,10 +103,12 @@ export type NativeCohortQualificationAudit = {
   policyProposals: {
     minimumDirectWeightAnchors: number;
     minimumDistinctClansPerBand: number;
+    effectiveSampleThreshold: number;
     alternativesAreDiagnosticOnly: true;
   };
   authorityLimitations: readonly string[];
   sourceEvidenceFingerprint: string;
+  candidateContentFingerprint: string;
   contentFingerprint: string;
 };
 
@@ -161,22 +173,20 @@ function evaluateScenario(input: {
       })),
     };
   }
-  const artifact = generateNativeHeatMapRefCandidate({
+  const diagnostic = evaluateNativeReferenceCohortDiagnostic({
     sourceRosters: input.context.sourceRosters,
     bandDefinitions: input.bandDefinitions,
     eraPolicy: input.eraPolicy,
     evaluationAt: input.evaluationAt,
-    sampleThreshold: input.minimumDistinctClansPerBand,
     minimumDirectWeightAnchors: input.minimumDirectWeightAnchors,
-    sourceCategory: NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY,
-    evidenceTrust: NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
+    sampleThreshold: input.minimumDistinctClansPerBand,
   });
   return {
     minimumDirectWeightAnchors: input.minimumDirectWeightAnchors,
     minimumDistinctClansPerBand: input.minimumDistinctClansPerBand,
-    overallStatus: artifact.overallStatus,
-    supportedBandCount: artifact.diagnostics.filter((band) => band.status === "SUPPORTED").length,
-    bands: artifact.diagnostics.map((diagnostic) => ({
+    overallStatus: diagnostic.overallStatus,
+    supportedBandCount: diagnostic.diagnostics.filter((band) => band.status === "SUPPORTED").length,
+    bands: diagnostic.diagnostics.map((diagnostic) => ({
       band: diagnostic.band,
       status: diagnostic.status,
       reasonCode: diagnostic.reasonCode,
@@ -197,10 +207,20 @@ function buildBandAudit(input: {
     const diagnostic = input.artifact.diagnostics.find((value) => bandKey(value.band) === key)!;
     const qualified = input.cohort.qualified.filter((value) => bandKey(value.band) === key);
     const exclusions = input.cohort.exclusions.filter((value) => value.bandAttribution === "INDEPENDENT" && value.bandKey === key);
-    const evidenceQualityDistribution: Record<string, number> = { QUALIFYING: qualified.length };
+    const calculationOutcomeDistribution: Record<string, number> = { CALCULATION_QUALIFIED: qualified.length };
     for (const exclusion of exclusions) {
       const label = `CALCULATION_EXCLUDED:${exclusion.reasonCode}`;
-      evidenceQualityDistribution[label] = (evidenceQualityDistribution[label] ?? 0) + 1;
+      calculationOutcomeDistribution[label] = (calculationOutcomeDistribution[label] ?? 0) + 1;
+    }
+    const selectedByClan = new Map(
+      (input.artifact.observationAggregation?.selectedObservations ?? []).map((row) => [row.clanTag, row]),
+    );
+    const retainedEvidenceQualityDistribution: Record<string, number> = {};
+    for (const roster of qualified) {
+      const selected = selectedByClan.get(roster.clanTag);
+      if (selected?.status === "QUALIFYING" && selected.qualityEvidenceId) {
+        retainedEvidenceQualityDistribution.QUALITY_ELIGIBLE = (retainedEvidenceQualityDistribution.QUALITY_ELIGIBLE ?? 0) + 1;
+      }
     }
     const gaps = [...input.authorityLimitations];
     if (input.selectionExclusionCount > 0) gaps.push("selection_stage_exclusions_not_band_attributable");
@@ -213,7 +233,8 @@ function buildBandAudit(input: {
       excludedCount: diagnostic.excludedRosterCount,
       excludedReasonCounts: diagnostic.exclusionCounts,
       resolvedWeightCounts: diagnostic.resolvedWeightCounts,
-      evidenceQualityDistribution,
+      calculationOutcomeDistribution,
+      retainedEvidenceQualityDistribution,
       uncertaintyAndCoverageGaps: [...new Set(gaps)].sort(),
     };
   });
@@ -237,6 +258,9 @@ export class NativeHeatMapRefCohortAuditService {
       sampleThreshold: input.sampleThreshold ?? NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
       bandDefinitions,
     });
+    if (!validateNativeReferenceCandidateArtifact(context.artifact)) {
+      throw new Error("retained candidate artifact failed validation");
+    }
     const aggregation = context.artifact.observationAggregation!;
     const selectedRows = aggregation.selectedObservations;
     const selectionExclusions = selectedRows.filter((row) => row.status === "EXCLUDED");
@@ -280,9 +304,17 @@ export class NativeHeatMapRefCohortAuditService {
       eraPolicy: input.eraPolicy,
       evaluationAtIso: new Date(input.evaluationAt).toISOString(),
       readLimit: NATIVE_OBSERVATION_READ_LIMIT,
+      boundedReadRowCount: context.readRowCount,
+      readLimited: context.readLimited,
+      eligibleSemanticLineageCount: context.eligibleSemanticLineageCount,
+      malformedAvailableObservationCount: context.malformedAvailableObservationCount,
       coverageStatus: aggregation.coverageStatus,
       globalAmbiguityStatus: aggregation.coverageStatus === "AMBIGUOUS" ? "AMBIGUOUS" as const : "NONE" as const,
       aggregate: {
+        boundedReadRowCount: context.readRowCount,
+        readLimited: context.readLimited,
+        eligibleSemanticLineageCount: context.eligibleSemanticLineageCount,
+        malformedAvailableObservationCount: context.malformedAvailableObservationCount,
         observedSemanticSampleCount: aggregation.lineage.length,
         selectedIndependentClanCount: selectedRows.length,
         supersededSemanticSampleCount: aggregation.supersededObservationCount,
@@ -304,10 +336,12 @@ export class NativeHeatMapRefCohortAuditService {
       policyProposals: {
         minimumDirectWeightAnchors: NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
         minimumDistinctClansPerBand: NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
+        effectiveSampleThreshold: input.sampleThreshold ?? NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
         alternativesAreDiagnosticOnly: true as const,
       },
       authorityLimitations: [...new Set(authorityLimitations)].sort(),
       sourceEvidenceFingerprint: context.artifact.sourceEvidenceFingerprint,
+      candidateContentFingerprint: context.artifact.contentFingerprint,
     };
     return {
       ...withoutFingerprint,

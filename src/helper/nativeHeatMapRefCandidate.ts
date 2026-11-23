@@ -261,7 +261,6 @@ type NativeCandidateConfig = {
   sourceCategory?: string;
   evidenceTrust?: string;
   bucketRegistry?: readonly NativeReferenceBucketDefinition[];
-  minimumDirectWeightAnchors?: number;
 };
 
 export type NativeReferenceQualifiedRoster = {
@@ -286,6 +285,11 @@ export type NativeReferenceCohortEvaluationInput = {
   evaluationAt: Date | string;
   minimumDirectWeightAnchors?: number;
   bucketRegistry?: readonly NativeReferenceBucketDefinition[];
+};
+
+export type NativeReferenceCohortDiagnosticEvaluation = NativeReferenceCohortEvaluation & {
+  diagnostics: readonly NativeReferenceBandDiagnostic[];
+  overallStatus: NativeReferenceCandidateArtifact["overallStatus"];
 };
 
 type ParsedDate = Date | null;
@@ -871,6 +875,98 @@ export function evaluateNativeReferenceCohort(
   };
 }
 
+/**
+ * Purpose: evaluate a cohort under an explicit diagnostic what-if policy.
+ * This shares qualification and band aggregation with ordinary candidates but
+ * deliberately does not produce a candidate artifact or publication-shaped
+ * policy metadata.
+ */
+export function evaluateNativeReferenceCohortDiagnostic(
+  input: NativeReferenceCohortEvaluationInput & { sampleThreshold: number },
+): NativeReferenceCohortDiagnosticEvaluation {
+  if (!Number.isInteger(input.sampleThreshold) || input.sampleThreshold <= 0) {
+    throw new NativeReferenceCandidateConfigurationError(
+      "invalid_sample_threshold",
+      "diagnostic sample threshold must be a positive integer",
+    );
+  }
+  const registry = input.bucketRegistry ?? NATIVE_REFERENCE_BUCKET_REGISTRY;
+  const cohort = evaluateNativeReferenceCohort(input);
+  const bandDiagnostics = sortedBands(input.bandDefinitions).map((band) => {
+    const rows = cohort.qualified.filter((roster) => bandKey(roster.band) === bandKey(band));
+    const observedCandidateCount = input.sourceRosters.filter(
+      (roster) => bandKey(inferIndependentlySupportableBand(roster, input.bandDefinitions) ?? { weightMinInclusive: -1, weightMaxInclusive: -1 }) === bandKey(band),
+    ).length;
+    const observedBucketTotals = emptyCounts(registry);
+    const resolvedWeightCounts = { RAW: 0, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 };
+    for (const row of rows) {
+      for (const bucket of registry) observedBucketTotals[bucket.id] += row.bucketCounts[bucket.id] ?? 0;
+      for (const status of Object.keys(resolvedWeightCounts) as Array<keyof typeof resolvedWeightCounts>) {
+        resolvedWeightCounts[status] += row.resolvedWeightCounts[status];
+      }
+    }
+    const averages = Object.fromEntries(
+      registry.map((bucket) => [bucket.id, rows.length > 0 ? observedBucketTotals[bucket.id]! / rows.length : 0]),
+    );
+    const normalized = rows.length > 0
+      ? normalizeAverageCounts({ averages, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL })
+      : { counts: {}, invalidReason: null };
+    const bandExclusions = cohort.exclusions.filter(
+      (exclusion) => exclusion.bandKey === bandKey(band) && exclusion.bandAttribution === "INDEPENDENT",
+    );
+    const qualifyingRosterCount = rows.length;
+    const distinctQualifyingClanCount = new Set(rows.map((row) => row.clanTag)).size;
+    const qualityOnlyExclusionCount = bandExclusions.filter(
+      (exclusion) => exclusion.reasonCode === "insufficient_weight_support",
+    ).length;
+    const supported = qualifyingRosterCount >= input.sampleThreshold && distinctQualifyingClanCount >= input.sampleThreshold && !normalized.invalidReason;
+    const reasonCode: NativeReferenceBandDiagnostic["reasonCode"] = qualifyingRosterCount === 0
+      ? observedCandidateCount === 0 && bandExclusions.length === 0 ? "no_source" : "invalid_evidence"
+      : normalized.invalidReason
+        ? "invalid_evidence"
+        : qualifyingRosterCount < input.sampleThreshold || distinctQualifyingClanCount < input.sampleThreshold
+          ? "insufficient_source"
+          : "supported";
+    const targets = supported
+      ? registry.map((bucket) => ({
+          bucketId: bucket.id,
+          status: "SUPPORTED" as const,
+          countStatus: (observedBucketTotals[bucket.id] ?? 0) === 0
+            ? "EXPLICIT_ZERO" as const
+            : normalized.counts[bucket.id] === 0
+              ? "ROUNDED_ZERO" as const
+              : "POSITIVE" as const,
+          observedTotal: observedBucketTotals[bucket.id] ?? 0,
+          observedAverage: averages[bucket.id] ?? 0,
+          targetCount: normalized.counts[bucket.id]!,
+          reasonCode: null,
+        }))
+      : buildUnknownTargets(registry, reasonCode);
+    return {
+      band,
+      status: supported ? "SUPPORTED" as const : "UNKNOWN" as const,
+      reasonCode,
+      observedCandidateCount,
+      qualifyingRosterCount,
+      usableRosterCount: qualifyingRosterCount + qualityOnlyExclusionCount,
+      distinctQualifyingClanCount,
+      excludedRosterCount: bandExclusions.length,
+      exclusionCounts: countReasons(bandExclusions),
+      th19ContainingRosterCount: rows.filter((row) => row.th19Count > 0).length,
+      observedBucketTotals,
+      averageBucketCounts: averages,
+      resolvedWeightCounts,
+      normalizedTargets: targets,
+    };
+  });
+  const supportedBandCount = bandDiagnostics.filter((band) => band.status === "SUPPORTED").length;
+  return {
+    ...cohort,
+    diagnostics: bandDiagnostics,
+    overallStatus: supportedBandCount === 0 ? "UNKNOWN" : supportedBandCount === bandDiagnostics.length ? "SUPPORTED" : "PARTIAL",
+  };
+}
+
 function buildUnknownTargets(
   registry: readonly NativeReferenceBucketDefinition[],
   reasonCode: string,
@@ -953,84 +1049,18 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     );
   }
 
-  const cohort = evaluateNativeReferenceCohort({
+  const diagnostic = evaluateNativeReferenceCohortDiagnostic({
     sourceRosters: input.sourceRosters,
     bandDefinitions: input.bandDefinitions,
     eraPolicy: policyResult.policy,
     evaluationAt: policyResult.evaluationAt,
-    minimumDirectWeightAnchors: input.minimumDirectWeightAnchors,
+    minimumDirectWeightAnchors: NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
     bucketRegistry: registry,
+    sampleThreshold: threshold,
   });
-  const exclusions = [...cohort.exclusions];
-  const qualified = [...cohort.qualified];
-
-  const bandDiagnostics = sortedBands(input.bandDefinitions).map((band) => {
-    const rows = qualified.filter((roster) => bandKey(roster.band) === bandKey(band));
-    const observedCandidateCount = input.sourceRosters.filter(
-      (roster) => bandKey(inferIndependentlySupportableBand(roster, input.bandDefinitions) ?? { weightMinInclusive: -1, weightMaxInclusive: -1 }) === bandKey(band),
-    ).length;
-    const observedBucketTotals = emptyCounts(registry);
-    const resolvedWeightCounts = { RAW: 0, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 };
-    for (const row of rows) {
-      for (const bucket of registry) observedBucketTotals[bucket.id] += row.bucketCounts[bucket.id] ?? 0;
-      for (const status of Object.keys(resolvedWeightCounts) as Array<keyof typeof resolvedWeightCounts>) {
-        resolvedWeightCounts[status] += row.resolvedWeightCounts[status];
-      }
-    }
-    const averages = Object.fromEntries(
-      registry.map((bucket) => [bucket.id, rows.length > 0 ? observedBucketTotals[bucket.id]! / rows.length : 0]),
-    );
-    const normalized = rows.length > 0
-      ? normalizeAverageCounts({ averages, registry, targetTotal: NATIVE_REFERENCE_TARGET_TOTAL })
-      : { counts: {}, invalidReason: null };
-    const bandExclusions = exclusions.filter(
-      (exclusion) => exclusion.bandKey === bandKey(band) && exclusion.bandAttribution === "INDEPENDENT",
-    );
-    const qualifyingRosterCount = rows.length;
-    const distinctQualifyingClanCount = new Set(rows.map((row) => row.clanTag)).size;
-    const qualityOnlyExclusionCount = bandExclusions.filter(
-      (exclusion) => exclusion.reasonCode === "insufficient_weight_support",
-    ).length;
-    const supported = qualifyingRosterCount >= threshold && distinctQualifyingClanCount >= threshold && !normalized.invalidReason;
-    const reasonCode: NativeReferenceBandDiagnostic["reasonCode"] = qualifyingRosterCount === 0
-      ? observedCandidateCount === 0 && bandExclusions.length === 0 ? "no_source" : "invalid_evidence"
-      : normalized.invalidReason
-        ? "invalid_evidence"
-        : qualifyingRosterCount < threshold || distinctQualifyingClanCount < threshold
-          ? "insufficient_source"
-          : "supported";
-    const targets = supported
-      ? registry.map((bucket) => ({
-          bucketId: bucket.id,
-          status: "SUPPORTED" as const,
-          countStatus: (observedBucketTotals[bucket.id] ?? 0) === 0
-            ? "EXPLICIT_ZERO" as const
-            : normalized.counts[bucket.id] === 0
-              ? "ROUNDED_ZERO" as const
-              : "POSITIVE" as const,
-          observedTotal: observedBucketTotals[bucket.id] ?? 0,
-          observedAverage: averages[bucket.id] ?? 0,
-          targetCount: normalized.counts[bucket.id]!,
-          reasonCode: null,
-        }))
-      : buildUnknownTargets(registry, reasonCode);
-    return {
-      band,
-      status: supported ? "SUPPORTED" as const : "UNKNOWN" as const,
-      reasonCode,
-      observedCandidateCount,
-      qualifyingRosterCount,
-      usableRosterCount: qualifyingRosterCount + qualityOnlyExclusionCount,
-      distinctQualifyingClanCount,
-      excludedRosterCount: bandExclusions.length,
-      exclusionCounts: countReasons(bandExclusions),
-      th19ContainingRosterCount: rows.filter((row) => row.th19Count > 0).length,
-      observedBucketTotals,
-      averageBucketCounts: averages,
-      resolvedWeightCounts,
-      normalizedTargets: targets,
-    };
-  });
+  const exclusions = [...diagnostic.exclusions];
+  const qualified = [...diagnostic.qualified];
+  const bandDiagnostics = [...diagnostic.diagnostics];
 
   const sourceEvidence = canonicalizeSourceEvidence(input.sourceRosters);
   const sourceObservationBounds = boundsFromDates(rawSourceObservationDates(input.sourceRosters));
@@ -1058,7 +1088,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     uncertaintyPolicyVersion: NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION,
     sampleQualityPolicyVersion: NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION,
     sampleQualityPolicy: {
-      minimumDirectWeightAnchors: input.minimumDirectWeightAnchors ?? NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
+      minimumDirectWeightAnchors: NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
       deferredWeightsCountAsDirectAnchors: true,
       lowerConfidenceSamplesRemainDiagnostic: true,
     },

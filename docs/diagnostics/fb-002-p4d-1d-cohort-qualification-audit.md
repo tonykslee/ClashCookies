@@ -17,8 +17,10 @@ The default CLI mode and the existing `--fixture`, `--db`, and
 `--retained-observations` artifact contracts are unchanged. The audit's
 schema is `native-cohort-qualification-audit-v1` and its proposed policy
 version is `proposed-cohort-policy-v1`. Its content fingerprint covers the
-aggregate report, band summaries, sensitivity scenarios, policy labels, and
-source evidence fingerprint.
+aggregate report, band summaries, sensitivity scenarios, policy labels, the
+validated P4d-1c candidate content fingerprint, and source evidence
+fingerprint. Different retained quality-evidence lineage therefore cannot
+reuse the same audit fingerprint when roster data and counts match.
 
 ## Implemented diagnostic contract
 
@@ -27,23 +29,33 @@ lineage, member validation, scoped deferment lookup, and the shared
 `RAW > DEFERRED > ESTIMATED > UNRESOLVED` resolver. Repeated semantic polls
 and quality revisions are retained as lineage, not counted as independent
 clans. Only evidence ingested by the evaluation cutoff contributes to the
-as-of report. A malformed observation available by that cutoff prevents
-misleading fallback to an older observation for the same clan.
+as-of report. Future-ingested revisions are excluded from the as-of lineage
+and fingerprint but remain retained evidence for a later evaluation. A
+malformed observation available by that cutoff prevents misleading fallback
+to an older observation for the same clan.
 
 The aggregate report includes:
 
 - observed semantic samples, selected independent clans, superseded samples,
   quality revisions, selection-stage exclusions, fully resolved rosters,
   inference-dependent rosters, and unresolved rosters;
+- bounded read-row count (including the sentinel row when the read is
+  limited), a separate `readLimited` flag, eligible semantic-lineage count,
+  and malformed available-observation count;
 - selection exclusion reason counts, including quality and structural
   failures that occur before the native calculator;
 - global `VERIFIED`, `TRUNCATED`, or `AMBIGUOUS` coverage and explicit
   ambiguity status;
 - per-band qualifying distinct-clan count, excluded count and reason
-  breakdown, resolved-weight provenance counts, evidence-quality distribution,
-  coverage gaps, and diagnostic `SUPPORTED` versus `UNKNOWN` status; and
+  breakdown, resolved-weight provenance counts, calculation-outcome
+  distribution, and retained `QUALITY_ELIGIBLE` evidence distribution only
+  where band attribution is established. Unattributable quality exclusions
+  remain explicit globally rather than being assigned to a band; and
 - a deterministic sensitivity matrix using direct-anchor thresholds 1, 2,
-  and 3 crossed with distinct-clan thresholds 1, 5, 10, and 15.
+  and 3 crossed with distinct-clan thresholds 1, 5, 10, and 15. The report
+  records the effective ordinary sample threshold separately from the
+  proposed default. Alternative anchor thresholds use a diagnostic evaluator
+  only and never produce ordinary candidate artifacts.
 
 Rejected rosters receive an independent band only when their 50-position
 structure and all effective weights establish that band without relying on
@@ -81,6 +93,15 @@ The smallest policy that can be reviewed is versioned and explicit:
 
 These are proposed modeling rules, not active native-calculator defaults or
 production gates. The current legacy-v1 profile remains authoritative.
+
+The parent P4d-1c observation identifies one distinct semantic roster. Its
+quality fields are first-seen historical facts, not automatically the latest
+eligibility decision. Future candidate evaluation must consider retained
+immutable quality revisions: later clean evidence does not erase earlier
+contradictions, and an earlier contradiction does not permanently disqualify
+a roster when later valid evidence exists. Repeated unchanged polls are not
+independent composition samples and cannot prove latest live-roster recency
+after intervening changes. Source authority remains `UNKNOWN_UNVERIFIED`.
 
 ## Evidence and blockers
 

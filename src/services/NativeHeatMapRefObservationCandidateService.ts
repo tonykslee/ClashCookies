@@ -77,6 +77,8 @@ type RetainedObservation = {
 type RetainedReadResult = {
   rows: RetainedObservation[];
   coverageStatus: "VERIFIED" | "TRUNCATED";
+  readRowCount: number;
+  readLimited: boolean;
 };
 
 type CandidateInput = {
@@ -90,6 +92,10 @@ type CandidateInput = {
 export type NativeHeatMapRefObservationCandidateContext = {
   artifact: NativeReferenceCandidateArtifact;
   sourceRosters: readonly NativeReferenceSourceRoster[];
+  readRowCount: number;
+  readLimited: boolean;
+  eligibleSemanticLineageCount: number;
+  malformedAvailableObservationCount: number;
 };
 
 type Selection = {
@@ -232,6 +238,8 @@ export class NativeHeatMapRefObservationCandidateService {
     return {
       rows: rows as unknown as RetainedObservation[],
       coverageStatus: rows.length > NATIVE_OBSERVATION_READ_LIMIT ? "TRUNCATED" : "VERIFIED",
+      readRowCount: rows.length,
+      readLimited: rows.length > NATIVE_OBSERVATION_READ_LIMIT,
     };
   }
 
@@ -279,21 +287,26 @@ export class NativeHeatMapRefObservationCandidateService {
     const read = await this.readRetainedObservations({ evaluationAt, eraStart, eraEnd });
     const byClan = new Map<string, RetainedObservation[]>();
     const malformedAvailableClans = new Set<string>();
+    let malformedAvailableObservationCount = 0;
     for (const row of read.rows) {
       const clanTag = normalizeFwaTag(row.clanTag);
       const firstObservedAt = parseDate(row.firstObservedAt);
       const observedAt = parseDate(row.observedAt);
       const ingestedAt = parseDate(row.ingestedAt);
       if (!clanTag) continue;
-      if (!ingestedAt || ingestedAt <= evaluationAt && (
+      const availableAsOf = !ingestedAt || ingestedAt <= evaluationAt;
+      const malformed = (
         !firstObservedAt ||
         !observedAt ||
+        !ingestedAt ||
         firstObservedAt > observedAt ||
         observedAt > ingestedAt ||
         firstObservedAt < eraStart ||
         observedAt > evaluationAt
-      )) {
-        if (!ingestedAt || ingestedAt <= evaluationAt) malformedAvailableClans.add(clanTag);
+      );
+      if (availableAsOf && malformed) {
+        malformedAvailableObservationCount += 1;
+        malformedAvailableClans.add(clanTag);
         continue;
       }
       if (ingestedAt > evaluationAt) continue;
@@ -460,6 +473,13 @@ export class NativeHeatMapRefObservationCandidateService {
       ...withMetadata,
       contentFingerprint: computeNativeReferenceCandidateContentFingerprint(withMetadata),
     };
-    return { artifact, sourceRosters };
+    return {
+      artifact,
+      sourceRosters,
+      readRowCount: read.readRowCount,
+      readLimited: read.readLimited,
+      eligibleSemanticLineageCount: lineage.length,
+      malformedAvailableObservationCount,
+    };
   }
 }

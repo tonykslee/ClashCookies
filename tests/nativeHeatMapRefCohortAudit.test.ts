@@ -80,7 +80,7 @@ function makeObservation(
     ingestedAt: new Date(observedAt),
     rosterFingerprint: options.rosterFingerprint ?? `${clanTag}-roster-${observedAt}`,
     members: makeMembers(clanTag, rawWeight, options.missingCount),
-    qualityEvidence: options.evidence ?? [makeEvidence(clanTag, observedAt, `${clanTag}-quality`)],
+    qualityEvidence: options.evidence ?? [makeEvidence(clanTag, observedAt, `${clanTag}-${options.id ?? "observation"}-quality-${observedAt}`)],
     ...options.overrides,
   };
 }
@@ -123,7 +123,8 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     expect(audit.selectionStageExclusions.reasonCounts).toEqual({ quality_conflict: 1 });
     expect(audit.bands).toHaveLength(2);
     expect(audit.bands[1]?.resolvedWeightCounts.DEFERRED).toBeGreaterThan(0);
-    expect(audit.bands[1]?.evidenceQualityDistribution).toMatchObject({ QUALIFYING: 2, "CALCULATION_EXCLUDED:insufficient_weight_support": 1 });
+    expect(audit.bands[1]?.calculationOutcomeDistribution).toMatchObject({ CALCULATION_QUALIFIED: 2, "CALCULATION_EXCLUDED:insufficient_weight_support": 1 });
+    expect(audit.bands[1]?.retainedEvidenceQualityDistribution).toEqual({ QUALITY_ELIGIBLE: 2 });
     expect(JSON.stringify(audit)).not.toContain("PLAYER1");
   });
 
@@ -148,7 +149,9 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     const relaxed = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 1 && scenario.minimumDistinctClansPerBand === 1);
     expect(proposed?.bands[0]?.status).toBe("UNKNOWN");
     expect(relaxed?.bands[0]?.status).toBe("SUPPORTED");
-    expect(audit.policyProposals).toEqual({ minimumDirectWeightAnchors: 2, minimumDistinctClansPerBand: 10, alternativesAreDiagnosticOnly: true });
+    expect(audit.policyProposals).toEqual({ minimumDirectWeightAnchors: 2, minimumDistinctClansPerBand: 10, effectiveSampleThreshold: 10, alternativesAreDiagnosticOnly: true });
+    const customThreshold = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands, sampleThreshold: 5 });
+    expect(customThreshold.policyProposals.effectiveSampleThreshold).toBe(5);
   });
 
   it("preserves as-of correction differences, deduplicates repeats, and is deterministic without writes", async () => {
@@ -181,5 +184,39 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     const truncated = await makeAudit(rows).service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
     expect(truncated.coverageStatus).toBe("TRUNCATED");
     expect(truncated.bands.every((band) => band.status === "UNKNOWN")).toBe(true);
+    expect(truncated.aggregate.boundedReadRowCount).toBe(NATIVE_OBSERVATION_READ_LIMIT + 1);
+    expect(truncated.aggregate.readLimited).toBe(true);
+  });
+
+  it("separates malformed available observations from eligible semantic lineage", async () => {
+    const valid = makeObservation("#VALID", "2026-11-19T01:00:00.000Z");
+    const malformed = makeObservation("#MALFORMED", "2026-11-19T02:00:00.000Z", 181_000, {
+      overrides: {
+        observedAt: new Date("2026-11-19T03:00:00.000Z"),
+        ingestedAt: new Date("2026-11-19T02:30:00.000Z"),
+      },
+    });
+    const audit = await makeAudit([valid, malformed]).service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
+    expect(audit.aggregate.boundedReadRowCount).toBe(2);
+    expect(audit.aggregate.readLimited).toBe(false);
+    expect(audit.aggregate.eligibleSemanticLineageCount).toBe(1);
+    expect(audit.aggregate.malformedAvailableObservationCount).toBe(1);
+    expect(audit.coverageStatus).toBe("AMBIGUOUS");
+    expect(audit.bands.every((band) => band.status === "UNKNOWN")).toBe(true);
+  });
+
+  it("binds the aggregate fingerprint to retained quality lineage", async () => {
+    const first = makeObservation("#LINEAGE", "2026-11-19T01:00:00.000Z", 181_000, {
+      evidence: [makeEvidence("#LINEAGE", "2026-11-19T01:00:00.000Z", "quality-a")],
+    });
+    const second = makeObservation("#LINEAGE", "2026-11-19T01:00:00.000Z", 181_000, {
+      evidence: [makeEvidence("#LINEAGE", "2026-11-19T01:00:00.000Z", "quality-b")],
+    });
+    const left = await makeAudit([first]).service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
+    const right = await makeAudit([second]).service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
+    expect(left.aggregate.observedSemanticSampleCount).toBe(right.aggregate.observedSemanticSampleCount);
+    expect(left.aggregate.selectedIndependentClanCount).toBe(right.aggregate.selectedIndependentClanCount);
+    expect(left.candidateContentFingerprint).not.toBe(right.candidateContentFingerprint);
+    expect(left.contentFingerprint).not.toBe(right.contentFingerprint);
   });
 });

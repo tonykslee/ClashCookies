@@ -55,7 +55,7 @@ function parseOptions(argv: readonly string[]): CliOptions {
   if (values.threshold !== undefined && (!Number.isInteger(values.threshold) || values.threshold <= 0)) throw new Error("threshold must be a positive integer");
   if (Boolean(values.deferGuildId) !== Boolean(values.deferClanTag)) throw new Error("--defer-guild-id and --defer-clan-tag must be supplied together");
   const sourceModes = [Boolean(values.fixturePath), Boolean(values.useDb), Boolean(values.useRetainedObservations), Boolean(values.useCohortAudit)].filter(Boolean).length;
-  if (sourceModes !== 1) throw new Error("exactly one of --fixture, --db, or --retained-observations is required");
+  if (sourceModes !== 1) throw new Error("exactly one of --fixture, --db, --retained-observations, or --cohort-audit is required");
   return values as CliOptions;
 }
 
