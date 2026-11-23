@@ -2285,7 +2285,8 @@ model FwaWarMemberCurrent {
   @@index([sourceSyncedAt])
 }
 
-/// Immutable WarMembers observation envelopes retained from the active feed sync path.
+/// Immutable semantic WarMembers envelopes retained from the active feed sync path.
+/// Quality/completeness fields are first-seen historical facts; qualityEvidence is the revision history for future eligibility readers.
 model FwaWarMembersObservation {
   id                         String   @id @default(cuid())
   clanTag                    String
@@ -2322,7 +2323,7 @@ model FwaWarMembersObservation {
   @@index([rosterFingerprint])
 }
 
-/// Immutable source-quality revisions for one semantic roster observation.
+/// Immutable source-quality revisions for one semantic roster observation. Later clean evidence supplements, but never erases, earlier contradictions.
 model FwaWarMembersObservationEvidence {
   id                         String                 @id @default(cuid())
   observationId              String

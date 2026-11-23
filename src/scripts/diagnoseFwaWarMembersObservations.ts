@@ -6,6 +6,20 @@ type Options = {
   limit: number;
 };
 
+export const FWA_WAR_MEMBERS_OBSERVATION_EVIDENCE_LIMIT = 20;
+
+/** Purpose: keep the bounded diagnostic deterministic while preferring the newest evidence revisions. */
+export function selectNewestQualityEvidence<T extends { firstObservedAt: Date; id: string }>(
+  evidence: readonly T[],
+): T[] {
+  return [...evidence]
+    .sort((left, right) => {
+      const observedAtDelta = right.firstObservedAt.getTime() - left.firstObservedAt.getTime();
+      return observedAtDelta !== 0 ? observedAtDelta : right.id.localeCompare(left.id);
+    })
+    .slice(0, FWA_WAR_MEMBERS_OBSERVATION_EVIDENCE_LIMIT);
+}
+
 function parseOptions(argv: readonly string[]): Options {
   let clanTag: string | null = null;
   let limit = 20;
@@ -55,9 +69,10 @@ async function main(): Promise<void> {
         sourceQualityReasonCodes: true,
         sourceAuthorityStatus: true,
         qualityEvidence: {
-          orderBy: [{ firstObservedAt: "asc" }, { id: "asc" }],
-          take: 20,
+          orderBy: [{ firstObservedAt: "desc" }, { id: "desc" }],
+          take: FWA_WAR_MEMBERS_OBSERVATION_EVIDENCE_LIMIT,
           select: {
+            id: true,
             evidenceSchemaVersion: true,
             firstObservedAt: true,
             rawRowCount: true,
@@ -77,17 +92,24 @@ async function main(): Promise<void> {
     }),
   ]);
 
+  const boundedObservations = observations.map((observation) => ({
+    ...observation,
+    qualityEvidence: selectNewestQualityEvidence(observation.qualityEvidence),
+  }));
+
   console.log(JSON.stringify({
     observationSchema: "war-members-observation-v1",
     evidenceSchema: "war-members-quality-v1",
     filter: { clanTag: options.clanTag },
     retainedObservationCount,
     returnedObservationCount: observations.length,
-    observations,
+    observations: boundedObservations,
   }, null, 2));
 }
 
-void main().catch((error: unknown) => {
-  console.error(`FWA WarMembers observation diagnosis failed: ${String(error)}`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch((error: unknown) => {
+    console.error(`FWA WarMembers observation diagnosis failed: ${String(error)}`);
+    process.exitCode = 1;
+  });
+}

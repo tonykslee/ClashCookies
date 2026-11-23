@@ -190,6 +190,9 @@ describe("FWA WarMembers observations", () => {
     expect(first.rosterFingerprint).toBe(second.rosterFingerprint);
     expect(first.sourceQualityFingerprint).not.toBe(second.sourceQualityFingerprint);
     expect(parentUpsert).toHaveBeenCalledTimes(2);
+    expect(parentUpsert.mock.calls.every((call) => call[0].update)).toBe(true);
+    expect(parentUpsert.mock.calls[0][0].create.weightStatus).toBe("CONFLICTING");
+    expect(parentUpsert.mock.calls[1][0].create.weightStatus).toBe("DIRECT_PRESENT");
     expect(evidenceUpsert).toHaveBeenCalledTimes(2);
     expect(evidenceUpsert.mock.calls[0][0].create.rawWeightInvalidCount).toBe(1);
     expect(evidenceUpsert.mock.calls[1][0].create.rawWeightInvalidCount).toBe(0);
