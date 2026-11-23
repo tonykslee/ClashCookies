@@ -348,6 +348,7 @@ describe("/compo heatmapref command", () => {
   });
 
   it("adds a readable notice area to state PNGs without changing table rows", () => {
+    const { PNG } = require("pngjs");
     const rows = [["Clan", "TH18"], ["Alpha", "?"]];
     const withoutNotice = renderStatePngForTest("ALLIANCE STATE", rows);
     const withNotice = renderStatePngForTest(
@@ -357,5 +358,13 @@ describe("/compo heatmapref command", () => {
     );
 
     expect(withNotice.readUInt32BE(20)).toBe(withoutNotice.readUInt32BE(20) + 39);
+    const image = PNG.sync.read(withNotice);
+    const noticePixelOffset = (image.width * 69 + 20) * 4;
+    expect(Array.from(image.data.slice(noticePixelOffset, noticePixelOffset + 4))).toEqual([
+      255,
+      207,
+      138,
+      255,
+    ]);
   });
 });

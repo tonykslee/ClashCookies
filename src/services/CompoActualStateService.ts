@@ -14,6 +14,7 @@ import {
   isCompoActualStateDeviationHealthy,
   isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
+  hasUnsupportedCompoTh19Target,
   type CompoActualStateBaseMetrics,
   type CompoActualStateProjection,
   type CompoActualStateView,
@@ -252,6 +253,7 @@ function buildActualViewSummaryLines(
   includeTh19: boolean,
   referenceAvailability: HeatMapRefReferenceAvailability,
   heatMapRefParentCount: number,
+  unsupportedTh19Comparisons: string[],
 ): string[] {
   const contentLines = [
     `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(latestSourceSyncedAt)}`,
@@ -279,14 +281,31 @@ function buildActualViewSummaryLines(
       "HeatMapRef parent bands are present, but target comparisons remain UNKNOWN until reference validation is available.",
     );
   }
+  if (view !== "raw" && unsupportedTh19Comparisons.length > 0) {
+    contentLines.push(
+      `TH19 comparison unavailable for: ${unsupportedTh19Comparisons.join(
+        "; ",
+      )} (legacy HeatMapRef targets do not support observed TH19).`,
+    );
+  }
   return contentLines;
 }
 
 function buildHeatMapRefUnknownNotice(
   availability: HeatMapRefReferenceAvailability,
   view: CompoActualStateView,
+  unsupportedTh19ComparisonCount: number,
 ): string | null {
-  if (view === "raw" || availability.status === "validated") {
+  if (view === "raw") {
+    return null;
+  }
+  if (
+    availability.status === "validated" &&
+    unsupportedTh19ComparisonCount > 0
+  ) {
+    return "TH comparisons unavailable - observed TH19 unsupported by legacy HeatMapRef";
+  }
+  if (availability.status === "validated") {
     return null;
   }
   const warning = availability.warning?.toLowerCase() ?? "";
@@ -1103,6 +1122,7 @@ export class CompoActualStateService {
 
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
+    const unsupportedTh19Comparisons: string[] = [];
     const includeTh19 = context.clans.some(
       (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
     );
@@ -1133,6 +1153,15 @@ export class CompoActualStateService {
           );
         }
       }
+      if (
+        context.referenceAvailability.status === "validated" &&
+        hasUnsupportedCompoTh19Target(clan.base.bucketCounts) &&
+        projection.targetStatus === "unavailable"
+      ) {
+        unsupportedTh19Comparisons.push(
+          normalizeActualStateClanDisplayName(displayName),
+        );
+      }
 
       const row = buildActualStateRow({
         clanName: displayName,
@@ -1162,6 +1191,7 @@ export class CompoActualStateService {
       includeTh19,
       context.referenceAvailability,
       context.heatMapRefParents.length,
+      unsupportedTh19Comparisons,
     );
     if (context.referenceAvailability.warning) {
       contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
@@ -1170,6 +1200,7 @@ export class CompoActualStateService {
     const imageNotice = buildHeatMapRefUnknownNotice(
       context.referenceAvailability,
       view,
+      unsupportedTh19Comparisons.length,
     );
 
     return {
