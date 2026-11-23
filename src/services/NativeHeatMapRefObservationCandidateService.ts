@@ -87,6 +87,11 @@ type CandidateInput = {
   defermentScope?: { guildId: string; clanTag: string };
 };
 
+export type NativeHeatMapRefObservationCandidateContext = {
+  artifact: NativeReferenceCandidateArtifact;
+  sourceRosters: readonly NativeReferenceSourceRoster[];
+};
+
 type Selection = {
   clanTag: string;
   observation: RetainedObservation;
@@ -259,6 +264,11 @@ export class NativeHeatMapRefObservationCandidateService {
   }
 
   async generate(input: CandidateInput): Promise<NativeReferenceCandidateArtifact> {
+    return (await this.generateWithContext(input)).artifact;
+  }
+
+  /** Purpose: expose the already-selected, internally resolved rosters to a read-only cohort audit without changing the artifact contract. */
+  async generateWithContext(input: CandidateInput): Promise<NativeHeatMapRefObservationCandidateContext> {
     const evaluationAt = parseDate(input.evaluationAt);
     const eraStart = parseDate(input.eraPolicy.eraStartIso);
     const eraEnd = parseDate(input.eraPolicy.eraEndIso);
@@ -446,9 +456,10 @@ export class NativeHeatMapRefObservationCandidateService {
     });
     const { contentFingerprint: _contentFingerprint, ...withoutFingerprint } = base;
     const withMetadata = { ...withoutFingerprint, observationAggregation: metadata };
-    return {
+    const artifact = {
       ...withMetadata,
       contentFingerprint: computeNativeReferenceCandidateContentFingerprint(withMetadata),
     };
+    return { artifact, sourceRosters };
   }
 }

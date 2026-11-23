@@ -261,9 +261,10 @@ type NativeCandidateConfig = {
   sourceCategory?: string;
   evidenceTrust?: string;
   bucketRegistry?: readonly NativeReferenceBucketDefinition[];
+  minimumDirectWeightAnchors?: number;
 };
 
-type QualifiedRoster = {
+export type NativeReferenceQualifiedRoster = {
   clanTag: string;
   band: NativeReferenceBandDefinition;
   bucketCounts: Record<string, number>;
@@ -271,6 +272,20 @@ type QualifiedRoster = {
   th19Count: number;
   resolvedWeightCounts: { RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number };
   sourceObservationTimes: Date[];
+};
+
+export type NativeReferenceCohortEvaluation = {
+  qualified: readonly NativeReferenceQualifiedRoster[];
+  exclusions: readonly NativeReferenceExclusion[];
+};
+
+export type NativeReferenceCohortEvaluationInput = {
+  sourceRosters: readonly NativeReferenceSourceRoster[];
+  bandDefinitions: readonly NativeReferenceBandDefinition[];
+  eraPolicy: NativeReferenceEraPolicy;
+  evaluationAt: Date | string;
+  minimumDirectWeightAnchors?: number;
+  bucketRegistry?: readonly NativeReferenceBucketDefinition[];
 };
 
 type ParsedDate = Date | null;
@@ -617,10 +632,11 @@ function hasSufficientReferenceWeightAnchors(input: {
   raw: number;
   deferred: number;
   estimated: number;
+  minimumDirectWeightAnchors: number;
 }): boolean {
   const estimatedCount = input.estimated;
   const directAnchorCount = input.raw + input.deferred;
-  return estimatedCount === 0 || directAnchorCount >= NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS;
+  return estimatedCount === 0 || directAnchorCount >= input.minimumDirectWeightAnchors;
 }
 
 function qualifyRoster(input: {
@@ -631,7 +647,8 @@ function qualifyRoster(input: {
   evaluationAt: Date;
   bands: readonly NativeReferenceBandDefinition[];
   registry: readonly NativeReferenceBucketDefinition[];
-}): { qualified: QualifiedRoster | null; exclusion: NativeReferenceExclusion | null } {
+  minimumDirectWeightAnchors: number;
+}): { qualified: NativeReferenceQualifiedRoster | null; exclusion: NativeReferenceExclusion | null } {
   const { roster } = input;
   const members = Array.isArray(roster.members)
     ? [...roster.members].sort((left, right) =>
@@ -749,6 +766,7 @@ function qualifyRoster(input: {
     raw: resolvedWeightCounts.RAW,
     deferred: resolvedWeightCounts.DEFERRED,
     estimated: resolvedWeightCounts.ESTIMATED,
+    minimumDirectWeightAnchors: input.minimumDirectWeightAnchors,
   })) {
     return exclusion(
       "insufficient_weight_support",
@@ -778,6 +796,78 @@ function qualifyRoster(input: {
       sourceObservationTimes,
     },
     exclusion: null,
+  };
+}
+
+/** Purpose: evaluate retained source rosters with the shared native qualification rules for diagnostics and sensitivity analysis. */
+export function evaluateNativeReferenceCohort(
+  input: NativeReferenceCohortEvaluationInput,
+): NativeReferenceCohortEvaluation {
+  const registry = input.bucketRegistry ?? NATIVE_REFERENCE_BUCKET_REGISTRY;
+  const evaluationAt = parseDate(input.evaluationAt);
+  const eraStart = parseDate(input.eraPolicy.eraStartIso);
+  const eraEnd = parseDate(input.eraPolicy.eraEndIso);
+  const minimumDirectWeightAnchors = input.minimumDirectWeightAnchors ?? NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS;
+  if (
+    !evaluationAt ||
+    !eraStart ||
+    !eraEnd ||
+    input.eraPolicy.policyVersion !== NATIVE_REFERENCE_ERA_POLICY_VERSION ||
+    eraStart.getTime() > eraEnd.getTime() ||
+    evaluationAt.getTime() < eraStart.getTime() ||
+    evaluationAt.getTime() > eraEnd.getTime() ||
+    !Number.isInteger(minimumDirectWeightAnchors) ||
+    minimumDirectWeightAnchors < 0
+  ) {
+    throw new NativeReferenceCandidateConfigurationError(
+      "invalid_cohort_evaluation",
+      "cohort evaluation policy or direct-anchor threshold is invalid",
+    );
+  }
+  const normalizedRosters = input.sourceRosters.map((roster) => ({
+    roster,
+    normalizedClanTag: normalizeIdentity(roster.clanTag),
+  }));
+  const clanCounts = normalizedRosters.reduce<Map<string, number>>((counts, row) => {
+    if (row.normalizedClanTag) counts.set(row.normalizedClanTag, (counts.get(row.normalizedClanTag) ?? 0) + 1);
+    return counts;
+  }, new Map());
+  const exclusions: NativeReferenceExclusion[] = [];
+  const qualified: NativeReferenceQualifiedRoster[] = [];
+  for (const row of normalizedRosters) {
+    if (!row.normalizedClanTag) {
+      exclusions.push({
+        clanTag: null,
+        bandKey: null,
+        bandAttribution: "UNATTRIBUTABLE",
+        reasonCode: "invalid_clan_identity",
+        reason: "clan identity is missing or invalid",
+      });
+      continue;
+    }
+    const result = qualifyRoster({
+      roster: row.roster,
+      normalizedClanTag: row.normalizedClanTag,
+      duplicateClan: (clanCounts.get(row.normalizedClanTag) ?? 0) > 1,
+      policy: input.eraPolicy,
+      evaluationAt,
+      bands: input.bandDefinitions,
+      registry,
+      minimumDirectWeightAnchors,
+    });
+    if (result.qualified) qualified.push(result.qualified);
+    if (result.exclusion) {
+      const attributableBand = inferIndependentlySupportableBand(row.roster, input.bandDefinitions);
+      exclusions.push({
+        ...result.exclusion,
+        bandKey: attributableBand ? bandKey(attributableBand) : null,
+        bandAttribution: attributableBand ? "INDEPENDENT" : "UNATTRIBUTABLE",
+      });
+    }
+  }
+  return {
+    qualified,
+    exclusions: [...exclusions].sort(compareCanonical),
   };
 }
 
@@ -863,46 +953,16 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     );
   }
 
-  const normalizedRosters = input.sourceRosters.map((roster) => ({
-    roster,
-    normalizedClanTag: normalizeIdentity(roster.clanTag),
-  }));
-  const clanCounts = normalizedRosters.reduce<Map<string, number>>((counts, row) => {
-    if (row.normalizedClanTag) counts.set(row.normalizedClanTag, (counts.get(row.normalizedClanTag) ?? 0) + 1);
-    return counts;
-  }, new Map());
-  const exclusions: NativeReferenceExclusion[] = [];
-  const qualified: QualifiedRoster[] = [];
-  for (const row of normalizedRosters) {
-    if (!row.normalizedClanTag) {
-      exclusions.push({
-        clanTag: null,
-        bandKey: null,
-        bandAttribution: "UNATTRIBUTABLE",
-        reasonCode: "invalid_clan_identity",
-        reason: "clan identity is missing or invalid",
-      });
-      continue;
-    }
-    const result = qualifyRoster({
-      roster: row.roster,
-      normalizedClanTag: row.normalizedClanTag,
-      duplicateClan: (clanCounts.get(row.normalizedClanTag) ?? 0) > 1,
-      policy: policyResult.policy,
-      evaluationAt: policyResult.evaluationAt,
-      bands: input.bandDefinitions,
-      registry,
-    });
-    if (result.qualified) qualified.push(result.qualified);
-    if (result.exclusion) {
-      const attributableBand = inferIndependentlySupportableBand(row.roster, input.bandDefinitions);
-      exclusions.push({
-        ...result.exclusion,
-        bandKey: attributableBand ? bandKey(attributableBand) : null,
-        bandAttribution: attributableBand ? "INDEPENDENT" : "UNATTRIBUTABLE",
-      });
-    }
-  }
+  const cohort = evaluateNativeReferenceCohort({
+    sourceRosters: input.sourceRosters,
+    bandDefinitions: input.bandDefinitions,
+    eraPolicy: policyResult.policy,
+    evaluationAt: policyResult.evaluationAt,
+    minimumDirectWeightAnchors: input.minimumDirectWeightAnchors,
+    bucketRegistry: registry,
+  });
+  const exclusions = [...cohort.exclusions];
+  const qualified = [...cohort.qualified];
 
   const bandDiagnostics = sortedBands(input.bandDefinitions).map((band) => {
     const rows = qualified.filter((roster) => bandKey(roster.band) === bandKey(band));
@@ -998,7 +1058,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     uncertaintyPolicyVersion: NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION,
     sampleQualityPolicyVersion: NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION,
     sampleQualityPolicy: {
-      minimumDirectWeightAnchors: NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
+      minimumDirectWeightAnchors: input.minimumDirectWeightAnchors ?? NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS,
       deferredWeightsCountAsDirectAnchors: true,
       lowerConfidenceSamplesRemainDiagnostic: true,
     },
