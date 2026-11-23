@@ -634,9 +634,14 @@ describe("CompoActualStateService", () => {
 
     expect(context.referenceAvailability.status).toBe("retained_unverified");
     expect(context.clans[0]?.base.bucketCounts.TH18).toBe(1);
+    expect(context.heatMapRefParents).toHaveLength(1);
     expect(context.heatMapRefs).toEqual([]);
     expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
-    expect(result.contentLines.join(" ")).toContain("retained historical data");
+    const content = result.contentLines.join(" ");
+    expect(content).toContain("HeatMapRef parent bands are present");
+    expect(content).toContain("retained historical data");
+    expect(content).not.toContain("Missing HeatMapRef band for displayed ACTUAL totals");
+    expect(result.imageNotice).toBe("TH comparisons unavailable - HeatMapRef validation blocked");
   });
 
   it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {
