@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FwaTrackedClanWarRosterSyncService } from "../src/services/fwa-feeds/FwaTrackedClanWarRosterSyncService";
 import { FwaWarMembersSyncService } from "../src/services/fwa-feeds/FwaWarMembersSyncService";
+import { evaluateFwaWarMembersSourceEvidence } from "../src/services/fwa-feeds/FwaWarMembersSourceEvidence";
 import { computeFeedContentHash } from "../src/services/fwa-feeds/hash";
 
 const txMock = vi.hoisted(() => ({
@@ -14,6 +15,15 @@ const txMock = vi.hoisted(() => ({
   playerLink: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
+  },
+  fwaWarMembersObservation: {
+    upsert: vi.fn(),
+  },
+  fwaWarMembersObservationEvidence: {
+    upsert: vi.fn(),
+  },
+  fwaWarMembersObservationMember: {
+    createMany: vi.fn(),
   },
 }));
 
@@ -62,6 +72,28 @@ function makeWarRow(input: {
     stars2: null,
     destructionPercentage2: null,
   };
+}
+
+function makeSourceEvidence(rows: readonly ReturnType<typeof makeWarRow>[]) {
+  return evaluateFwaWarMembersSourceEvidence({
+    clanTag: "#AAA111",
+    sourceUrl: "https://fwastats.com/Clan/AAA111/WarMembers.json?warNo=1",
+    sourceWarNo: 1,
+    rawPayloadIsArray: true,
+    rawRows: rows.map((row) => ({
+      tag: row.playerTag,
+      name: row.playerName,
+      position: row.position,
+      townHall: row.townHall,
+      weight: row.weight,
+      opponentTag: row.opponentTag,
+      opponentName: row.opponentName,
+      attacks: row.attacks,
+    })),
+    acceptedRows: rows,
+    observedAt: new Date("2026-03-26T00:00:00.000Z"),
+    ingestedAt: new Date("2026-03-26T00:00:01.000Z"),
+  });
 }
 
 describe("FwaWarMembersSyncService", () => {
@@ -195,5 +227,67 @@ describe("FwaWarMembersSyncService", () => {
     expect(result.changedRowCount).toBe(0);
     expect(prismaMock.$transaction).not.toHaveBeenCalled();
     expect(trackedRosterSyncSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures a source-backed NOOP without touching current-state rows", async () => {
+    const rows = [makeWarRow({ clanTag: "#AAA111", playerTag: "#P1", playerName: "One", position: 1, attacks: 0 })];
+    const evidence = makeSourceEvidence(rows);
+    const hash = computeFeedContentHash(rows);
+    const client = {
+      fetchWarMembersEvidence: vi.fn().mockResolvedValue({ rows, ...evidence }),
+    } as any;
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({ lastContentHash: hash });
+    prismaMock.trackedClan.findUnique.mockResolvedValue({ tag: "#AAA111" });
+    txMock.fwaWarMembersObservation.upsert.mockResolvedValue({ id: "observation-noop" });
+    txMock.fwaWarMembersObservationEvidence.upsert.mockResolvedValue({ id: "evidence-noop" });
+    txMock.fwaWarMembersObservationMember.createMany.mockResolvedValue({ count: 1 });
+    vi.spyOn(FwaTrackedClanWarRosterSyncService.prototype, "syncClan").mockResolvedValue({
+      clanTag: "#AAA111",
+      rowCount: 1,
+      memberRowCount: 1,
+      hasSnapshot: true,
+      hasUnresolvedWeights: false,
+      totalEffectiveWeight: 120000,
+      sourceWarId: 1001,
+      sourceWarStartTime: new Date("2026-03-26T00:00:00.000Z"),
+      sourceWarEndTime: new Date("2026-03-26T01:00:00.000Z"),
+      sourceWarState: "inWar",
+      sourceCurrentWarUpdatedAt: new Date("2026-03-26T00:00:00.000Z"),
+    });
+
+    const result = await new FwaWarMembersSyncService(client).syncClan("#AAA111", { force: true });
+
+    expect(result.status).toBe("NOOP");
+    expect(result.changedRowCount).toBe(0);
+    expect(client.fetchWarMembersEvidence).toHaveBeenCalledWith("#AAA111");
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(txMock.fwaWarMembersObservation.upsert).toHaveBeenCalledTimes(1);
+    expect(txMock.fwaWarMembersObservationEvidence.upsert).toHaveBeenCalledTimes(1);
+    expect(txMock.fwaWarMembersObservationMember.createMany).toHaveBeenCalledTimes(1);
+    expect(txMock.fwaWarMemberCurrent.upsert).not.toHaveBeenCalled();
+    expect(txMock.fwaWarMemberCurrent.deleteMany).not.toHaveBeenCalled();
+    expect(txMock.fwaPlayerCatalog.upsert).not.toHaveBeenCalled();
+  });
+
+  it("propagates source-backed NOOP capture failure and leaves current state untouched", async () => {
+    const rows = [makeWarRow({ clanTag: "#AAA111", playerTag: "#P1", playerName: "One", position: 1, attacks: 0 })];
+    const evidence = makeSourceEvidence(rows);
+    const hash = computeFeedContentHash(rows);
+    const client = {
+      fetchWarMembersEvidence: vi.fn().mockResolvedValue({ rows, ...evidence }),
+    } as any;
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({ lastContentHash: hash });
+    prismaMock.trackedClan.findUnique.mockResolvedValue(null);
+    txMock.fwaWarMembersObservation.upsert.mockResolvedValue({ id: "observation-noop-failure" });
+    txMock.fwaWarMembersObservationEvidence.upsert.mockRejectedValue(new Error("quality evidence write failed"));
+
+    await expect(new FwaWarMembersSyncService(client).syncClan("#AAA111", { force: true })).rejects.toThrow(
+      "quality evidence write failed",
+    );
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(txMock.fwaWarMemberCurrent.upsert).not.toHaveBeenCalled();
+    expect(txMock.fwaWarMemberCurrent.deleteMany).not.toHaveBeenCalled();
+    expect(txMock.fwaPlayerCatalog.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.fwaFeedSyncState.upsert).toHaveBeenCalled();
   });
 });

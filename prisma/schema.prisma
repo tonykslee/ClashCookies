@@ -2285,6 +2285,96 @@ model FwaWarMemberCurrent {
   @@index([sourceSyncedAt])
 }
 
+/// Immutable semantic WarMembers envelopes retained from the active feed sync path.
+/// Quality/completeness fields are first-seen historical facts; qualityEvidence is the revision history for future eligibility readers.
+model FwaWarMembersObservation {
+  id                         String   @id @default(cuid())
+  clanTag                    String
+  sourceContractVersion      String
+  observationSchemaVersion   String
+  sourceUrl                  String
+  sourceWarNo                Int
+  firstObservedAt            DateTime
+  observedAt                 DateTime
+  ingestedAt                 DateTime
+  rawRowCount                Int
+  acceptedRowCount           Int
+  discardedRowCount          Int
+  parserAcceptedRowCount     Int
+  parserRejectedRowCount     Int
+  evidenceEligibleRowCount   Int
+  evidenceIneligibleRowCount Int
+  rawWeightPresentCount      Int
+  rawWeightMissingCount      Int
+  rawWeightInvalidCount      Int
+  canonicalSourceFingerprint String
+  rosterFingerprint          String
+  structuralStatus           String
+  rosterCompletenessStatus   String
+  weightStatus               String
+  sourceAuthorityStatus      String
+  sourceQualityReasonCodes   Json
+  qualityEvidence            FwaWarMembersObservationEvidence[]
+  members                    FwaWarMembersObservationMember[]
+
+  @@unique([clanTag, rosterFingerprint])
+  @@index([clanTag, firstObservedAt])
+  @@index([canonicalSourceFingerprint])
+  @@index([rosterFingerprint])
+}
+
+/// Immutable source-quality revisions for one semantic roster observation. Later clean evidence supplements, but never erases, earlier contradictions.
+model FwaWarMembersObservationEvidence {
+  id                         String                 @id @default(cuid())
+  observationId              String
+  evidenceSchemaVersion      String
+  sourceContractVersion      String
+  sourceUrl                  String
+  sourceWarNo                Int
+  firstObservedAt            DateTime
+  observedAt                 DateTime
+  ingestedAt                 DateTime
+  rawRowCount                Int
+  acceptedRowCount           Int
+  discardedRowCount          Int
+  parserAcceptedRowCount     Int
+  parserRejectedRowCount     Int
+  evidenceEligibleRowCount   Int
+  evidenceIneligibleRowCount Int
+  rawWeightPresentCount      Int
+  rawWeightMissingCount      Int
+  rawWeightInvalidCount      Int
+  canonicalSourceFingerprint String
+  sourceQualityFingerprint   String
+  structuralStatus           String
+  rosterCompletenessStatus   String
+  weightStatus               String
+  sourceAuthorityStatus      String
+  sourceQualityReasonCodes   Json
+  observation                FwaWarMembersObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@unique([observationId, sourceQualityFingerprint])
+  @@index([observationId, firstObservedAt])
+  @@index([sourceQualityFingerprint])
+}
+
+/// Immutable normalized member rows belonging to one WarMembers observation.
+model FwaWarMembersObservationMember {
+  id                String                   @id @default(cuid())
+  observationId     String
+  memberFingerprint String
+  playerTag         String
+  playerName        String
+  position          Int?
+  townHall          Int?
+  rawWeight         Int?
+  observation       FwaWarMembersObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+
+  @@unique([observationId, memberFingerprint])
+  @@index([observationId, position])
+  @@index([observationId, playerTag])
+}
+
 model FwaTrackedClanWarRosterCurrent {
   clanTag                   String                                 @id
   clanName                  String?
