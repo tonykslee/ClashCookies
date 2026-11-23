@@ -35,6 +35,12 @@ export type HistoricalTimestampComparisonOutcome =
   | "INCONSISTENT_PARTICIPATION"
   | "MISSING_EVIDENCE";
 
+export type HistoricalTimestampAmbiguityReason =
+  | "MULTIPLE_DUSK_CANDIDATES"
+  | "DUPLICATE_EXTERNAL_IDENTITY"
+  | "REUSED_DUSK_IDENTITY"
+  | null;
+
 export type HistoricalTimestampComparisonRow = {
   sourceId: string;
   clanTag: string | null;
@@ -42,6 +48,8 @@ export type HistoricalTimestampComparisonRow = {
   clashPerkTimestamp: string | null;
   candidateMatchCount: number;
   outcome: HistoricalTimestampComparisonOutcome;
+  ambiguousReason: HistoricalTimestampAmbiguityReason;
+  duplicateExternalIdentity: boolean;
   duskWarId: string | null;
   duskOpponentTag: string | null;
   warStartTime: string | null;
@@ -86,6 +94,8 @@ export type HistoricalTimestampComparisonReport = {
     matchedRecordCount: number;
     candidateCountZero: number;
     candidateCountMultiple: number;
+    duplicateExternalIdentityCount: number;
+    reusedDuskIdentityCount: number;
     outcomeCounts: Record<HistoricalTimestampComparisonOutcome, number>;
     exactHistoryMatchCount: number;
     exactParticipationMatchCount: number;
@@ -108,14 +118,17 @@ export type HistoricalTimestampComparisonReport = {
     smallOffsetSourceIds: string[];
     contradictoryParticipationSourceIds: string[];
     unmatchedOrAmbiguousSourceIds: string[];
+    duplicateExternalSourceIds: string[];
+    reusedDuskSourceIds: string[];
     sourceAgreement: {
       historyCloser: number;
       participationCloser: number;
       equalDistance: number;
     };
     dualSourceInterpretation: {
-      supportingMatchedRows: number;
-      contradictingMatchedRows: number;
+      discrepantTimestampPathRows: number;
+      equalTimestampPathRows: number;
+      unresolvedOrConflictingRows: number;
       statement: string;
     };
   };
@@ -157,6 +170,7 @@ function iso(milliseconds: number | null): string | null {
 }
 
 function count(value: unknown): number | null {
+  if (value === null || value === undefined || text(value) === "") return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
@@ -213,16 +227,17 @@ function rowsFromInput(value: unknown): unknown[] {
   throw new Error("Input must be an array or an object containing a rows array.");
 }
 
-function normalizeClashPerk(value: unknown): ClashPerkRecord {
+export function normalizeClashPerk(value: unknown): ClashPerkRecord {
   const row = value as Record<string, unknown>;
   const sourceId = text(row.sourceId ?? row.clashPerkId ?? row["War ID"]);
   const clanTag = normalizeTag(row.clanTag ?? row["Clan Tag"]);
   const opponentTag = normalizeTag(row.opponentTag ?? row["Opponent Tag"]);
   const timestampValue = text(row.timestamp ?? row.clashPerkTimestamp ?? row.Date);
-  if (!sourceId || !clanTag || !opponentTag || timestamp(timestampValue) === null) {
+  const parsedTimestamp = timestamp(timestampValue);
+  if (!sourceId || !clanTag || !opponentTag || parsedTimestamp === null) {
     throw new Error(`Invalid ClashPerk fixture row: ${JSON.stringify(row)}`);
   }
-  return { sourceId, clanTag, opponentTag, timestamp: new Date(timestampValue).toISOString() };
+  return { sourceId, clanTag, opponentTag, timestamp: iso(parsedTimestamp) as string };
 }
 
 function normalizeDusk(value: unknown): DuskPerWarRecord {
@@ -308,6 +323,8 @@ function baseRow(external: ClashPerkRecord, candidateMatchCount: number): Histor
     clashPerkTimestamp: external.timestamp,
     candidateMatchCount,
     outcome: candidateMatchCount === 0 ? "UNMATCHED" : "AMBIGUOUS",
+    ambiguousReason: candidateMatchCount > 1 ? "MULTIPLE_DUSK_CANDIDATES" : null,
+    duplicateExternalIdentity: false,
     duskWarId: null,
     duskOpponentTag: null,
     warStartTime: null,
@@ -343,14 +360,10 @@ export function compareHistoricalWarTimestamps(
   }
   const external = input.clashPerk.map(normalizeClashPerk);
   const dusk = input.dusk.map(normalizeDusk);
-  const rows = external.map((externalRow) => {
+  const candidateLists = external.map((externalRow) => {
     const externalTime = timestamp(externalRow.timestamp);
-    if (externalTime === null || externalTime < windowStart || externalTime >= windowEnd) {
-      const outOfWindow = baseRow(externalRow, 0);
-      outOfWindow.outcome = "MISSING_EVIDENCE";
-      return outOfWindow;
-    }
-    const candidates = dusk.filter((duskRow) => {
+    if (externalTime === null || externalTime < windowStart || externalTime >= windowEnd) return [];
+    return dusk.filter((duskRow) => {
       const historyEnd = timestamp(duskRow.historyEndTime);
       return (
         duskRow.clanTag === externalRow.clanTag &&
@@ -360,15 +373,61 @@ export function compareHistoricalWarTimestamps(
         historyEnd < windowEnd
       );
     });
+  });
+  const externalIdentityCounts = new Map<string, number>();
+  const externalSourceIdCounts = new Map<string, number>();
+  external.forEach((externalRow) => {
+    const identityKey = `${externalRow.clanTag}|${externalRow.opponentTag}|${externalRow.timestamp}`;
+    externalIdentityCounts.set(identityKey, (externalIdentityCounts.get(identityKey) ?? 0) + 1);
+    externalSourceIdCounts.set(externalRow.sourceId, (externalSourceIdCounts.get(externalRow.sourceId) ?? 0) + 1);
+  });
+  const externalIdentityDuplicate = external.map((externalRow) => {
+    const identityKey = `${externalRow.clanTag}|${externalRow.opponentTag}|${externalRow.timestamp}`;
+    return (externalIdentityCounts.get(identityKey) ?? 0) > 1 ||
+      (externalSourceIdCounts.get(externalRow.sourceId) ?? 0) > 1;
+  });
+  const candidateUseCounts = new Map<string, number>();
+  candidateLists.forEach((candidates) => {
+    if (candidates.length !== 1) return;
+    const candidate = candidates[0];
+    const identityKey = `${candidate.clanTag}|${normalizeTag(candidate.opponentTag)}|${text(candidate.duskWarId)}`;
+    candidateUseCounts.set(identityKey, (candidateUseCounts.get(identityKey) ?? 0) + 1);
+  });
+  const reusedDuskIdentity = candidateLists.map((candidates) => {
+    if (candidates.length !== 1) return false;
+    const candidate = candidates[0];
+    const identityKey = `${candidate.clanTag}|${normalizeTag(candidate.opponentTag)}|${text(candidate.duskWarId)}`;
+    return (candidateUseCounts.get(identityKey) ?? 0) > 1;
+  });
+  const rows = external.map((externalRow, index) => {
+    const externalTime = timestamp(externalRow.timestamp);
+    const candidates = candidateLists[index];
+    const result = baseRow(externalRow, candidates.length);
+    result.duplicateExternalIdentity = externalIdentityDuplicate[index];
+    if (externalTime === null || externalTime < windowStart || externalTime >= windowEnd) {
+      result.outcome = "MISSING_EVIDENCE";
+      return result;
+    }
     if (candidates.length !== 1) {
-      return baseRow(externalRow, candidates.length);
+      result.outcome = candidates.length > 1 ? "AMBIGUOUS" : "UNMATCHED";
+      result.ambiguousReason = candidates.length > 1 ? "MULTIPLE_DUSK_CANDIDATES" : null;
+      return result;
+    }
+    if (externalIdentityDuplicate[index]) {
+      result.outcome = "AMBIGUOUS";
+      result.ambiguousReason = "DUPLICATE_EXTERNAL_IDENTITY";
+      return result;
+    }
+    if (reusedDuskIdentity[index]) {
+      result.outcome = "AMBIGUOUS";
+      result.ambiguousReason = "REUSED_DUSK_IDENTITY";
+      return result;
     }
 
     const candidate = candidates[0];
     const historyEnd = timestamp(candidate.historyEndTime);
     const participationEnd = timestamp(candidate.minParticipationEndTime);
     const participationIsConsistent = consistentParticipation(candidate);
-    const result = baseRow(externalRow, candidates.length);
     result.duskWarId = text(candidate.duskWarId);
     result.duskOpponentTag = normalizeTag(candidate.opponentTag);
     result.warStartTime = iso(timestamp(candidate.warStartTime));
@@ -445,10 +504,13 @@ export function compareHistoricalWarTimestamps(
       (row.clashPerkMinusParticipationSeconds !== null &&
         Math.abs(row.clashPerkMinusParticipationSeconds) <= smallOffsetThreshold),
   );
-  const supporting = rows.filter(
-    (row) => row.outcome === "CLOSER_TO_HISTORY" || row.outcome === "CLOSER_TO_PARTICIPATION" || row.outcome === "EQUAL_DISTANCE",
+  const discrepantTimestampPathRows = rows.filter(
+    (row) => row.historyMinusParticipationSeconds !== null && row.historyMinusParticipationSeconds !== 0,
   ).length;
-  const contradicting = rows.filter(
+  const equalTimestampPathRows = rows.filter(
+    (row) => row.historyMinusParticipationSeconds === 0,
+  ).length;
+  const unresolvedOrConflictingRows = rows.filter(
     (row) => row.outcome === "UNMATCHED" || row.outcome === "AMBIGUOUS" || row.outcome === "INCONSISTENT_PARTICIPATION" || row.outcome === "MISSING_EVIDENCE",
   ).length;
   return {
@@ -464,6 +526,8 @@ export function compareHistoricalWarTimestamps(
       matchedRecordCount: rows.filter((row) => row.duskWarId !== null).length,
       candidateCountZero: rows.filter((row) => row.candidateMatchCount === 0).length,
       candidateCountMultiple: rows.filter((row) => row.candidateMatchCount > 1).length,
+      duplicateExternalIdentityCount: rows.filter((row) => row.duplicateExternalIdentity).length,
+      reusedDuskIdentityCount: rows.filter((row) => row.ambiguousReason === "REUSED_DUSK_IDENTITY").length,
       outcomeCounts,
       exactHistoryMatchCount: rows.filter((row) => row.historyMatchesExactly === true).length,
       exactParticipationMatchCount: rows.filter((row) => row.participationMatchesExactly === true).length,
@@ -498,16 +562,23 @@ export function compareHistoricalWarTimestamps(
       unmatchedOrAmbiguousSourceIds: rows
         .filter((row) => row.outcome === "UNMATCHED" || row.outcome === "AMBIGUOUS")
         .map((row) => row.sourceId),
+      duplicateExternalSourceIds: rows
+        .filter((row) => row.duplicateExternalIdentity)
+        .map((row) => row.sourceId),
+      reusedDuskSourceIds: rows
+        .filter((row) => row.ambiguousReason === "REUSED_DUSK_IDENTITY")
+        .map((row) => row.sourceId),
       sourceAgreement: {
         historyCloser: outcomeCounts.CLOSER_TO_HISTORY,
         participationCloser: outcomeCounts.CLOSER_TO_PARTICIPATION,
         equalDistance: outcomeCounts.EQUAL_DISTANCE,
       },
       dualSourceInterpretation: {
-        supportingMatchedRows: supporting,
-        contradictingMatchedRows: contradicting,
+        discrepantTimestampPathRows,
+        equalTimestampPathRows,
+        unresolvedOrConflictingRows,
         statement:
-          "Timestamp proximity is corroboration only. It does not establish source authenticity, authority, or which Dusk path is historically correct.",
+          "Only rows where the two Dusk timestamps differ are relevant to testing the dual-source discrepancy. Timestamp proximity remains corroboration only; it does not establish source authenticity, authority, or which Dusk path is historically correct.",
       },
     },
     rows: sortedRows,

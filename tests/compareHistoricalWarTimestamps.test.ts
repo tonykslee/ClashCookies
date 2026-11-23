@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   compareHistoricalWarTimestamps,
+  normalizeClashPerk,
   type ClashPerkRecord,
   type DuskPerWarRecord,
 } from "../scripts/compareHistoricalWarTimestamps";
@@ -122,6 +124,63 @@ describe("FB-002 P4d-1a.3 historical timestamp comparator", () => {
     expect(report.rows[0].outcome).toBe("EQUAL_DISTANCE");
     expect(report.rows[0].crossGuildDuplicateIdentityCount).toBe(1);
     expect(report.rows[0].crossGuildDuplicateCopyCount).toBe(1);
+  });
+
+  it("uses deterministic UTC normalization for PostgreSQL and explicit-offset timestamps", () => {
+    expect(normalizeClashPerk({ sourceId: "pg", clanTag, opponentTag: "#X", timestamp: "2026-10-01 00:00:00" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+    expect(normalizeClashPerk({ sourceId: "z", clanTag, opponentTag: "#X", timestamp: "2026-10-01T00:00:00Z" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+    expect(normalizeClashPerk({ sourceId: "offset", clanTag, opponentTag: "#X", timestamp: "2026-10-01 02:00:00+02:00" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-r",
+        "ts-node/register/transpile-only",
+        "-e",
+        `const { normalizeClashPerk } = require("./scripts/compareHistoricalWarTimestamps"); process.stdout.write(normalizeClashPerk({ sourceId: "non-utc", clanTag: "${clanTag}", opponentTag: "#X", timestamp: "2026-10-01 00:00:00" }).timestamp);`,
+      ],
+      { cwd: process.cwd(), env: { ...process.env, TZ: "America/Los_Angeles" }, encoding: "utf8" },
+    );
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe("2026-10-01T00:00:00.000Z");
+  });
+
+  it("fails closed for duplicate external identities and reused Dusk identities", () => {
+    const duplicateExternal = compare([external("same"), external("same")], [dusk()]);
+    expect(duplicateExternal.rows.map((row) => row.outcome)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
+    expect(duplicateExternal.rows.every((row) => row.ambiguousReason === "DUPLICATE_EXTERNAL_IDENTITY")).toBe(true);
+    expect(duplicateExternal.summary.duplicateExternalIdentityCount).toBe(2);
+
+    const reusedDusk = compare(
+      [external("first", "#OPPONENT", "2026-10-01T00:00:00.000Z"), external("second", "#OPPONENT", "2026-10-01T00:00:01.000Z")],
+      [dusk()],
+    );
+    expect(reusedDusk.rows.map((row) => row.outcome)).toEqual(["AMBIGUOUS", "AMBIGUOUS"]);
+    expect(reusedDusk.rows.every((row) => row.ambiguousReason === "REUSED_DUSK_IDENTITY")).toBe(true);
+    expect(reusedDusk.summary.reusedDuskIdentityCount).toBe(2);
+  });
+
+  it("preserves unavailable aggregate fields instead of treating them as zero", () => {
+    const report = compare(
+      [external()],
+      [dusk({ participationRowCount: "", distinctParticipationIdentityCount: undefined as unknown as number })],
+    );
+    expect(report.rows[0].participationRowCount).toBeNull();
+    expect(report.rows[0].distinctParticipationIdentityCount).toBeNull();
+    expect(report.rows[0].outcome).toBe("MISSING_EVIDENCE");
+  });
+
+  it("separates equal-timestamp controls from genuinely discrepant paths", () => {
+    const report = compare(
+      [external("control", "#CONTROL"), external("discrepant", "#DISCREPANT")],
+      [
+        dusk({ duskWarId: "1014", opponentTag: "#CONTROL" }),
+        dusk({ duskWarId: "1015", opponentTag: "#DISCREPANT", minParticipationEndTime: "2026-10-01T00:00:10.000Z", maxParticipationEndTime: "2026-10-01T00:00:10.000Z" }),
+      ],
+    );
+    expect(report.analysis.dualSourceInterpretation.equalTimestampPathRows).toBe(1);
+    expect(report.analysis.dualSourceInterpretation.discrepantTimestampPathRows).toBe(1);
+    expect(report.analysis.dualSourceInterpretation.unresolvedOrConflictingRows).toBe(0);
   });
 
   it("orders results deterministically and keeps the approved SQL bounded and read-only", () => {

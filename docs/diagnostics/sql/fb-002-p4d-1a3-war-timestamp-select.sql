@@ -5,6 +5,10 @@
 \set clan_tag '#2YUYLJCGV'
 \set window_start '2026-09-23 00:00:00+00'
 \set window_end '2026-11-22 00:00:00+00'
+\if :{?capture_final}
+\else
+\set capture_final off
+\endif
 
 BEGIN READ ONLY;
 SET LOCAL statement_timeout = '5s';
@@ -191,6 +195,8 @@ END
 $index_check$;
 
 SELECT btrim(:'clan_tag') = '#2YUYLJCGV'
+       AND TIMESTAMPTZ :'window_start' = TIMESTAMPTZ '2026-09-23 00:00:00+00'
+       AND TIMESTAMPTZ :'window_end' = TIMESTAMPTZ '2026-11-22 00:00:00+00'
        AND TIMESTAMPTZ :'window_end' > TIMESTAMPTZ :'window_start'
        AND TIMESTAMPTZ :'window_end' - TIMESTAMPTZ :'window_start' = interval '60 days'
        AS all_inputs_valid
@@ -204,6 +210,21 @@ SELECT btrim(:'clan_tag') = '#2YUYLJCGV'
     RAISE EXCEPTION 'STOP: scope or UTC interval was changed from the approved fixture';
   END
   $invalid_parameter$;
+\endif
+
+\if :capture_final
+  \if :{?final_output}
+    \pset format csv
+    \pset footer off
+    \o :final_output
+  \else
+    \echo 'STOP: final_output is required when capture_final is enabled'
+    DO $missing_output$
+    BEGIN
+      RAISE EXCEPTION 'STOP: final_output is required when capture_final is enabled';
+    END
+    $missing_output$;
+  \endif
 \endif
 
 WITH parameters AS (
@@ -329,5 +350,11 @@ SELECT dusk_war_id,
        END AS history_minus_participation_seconds
 FROM assembled
 ORDER BY history_end_time DESC, war_start_time DESC, dusk_war_id DESC;
+
+\if :capture_final
+  \o
+  \pset format aligned
+  \pset footer on
+\endif
 
 ROLLBACK;

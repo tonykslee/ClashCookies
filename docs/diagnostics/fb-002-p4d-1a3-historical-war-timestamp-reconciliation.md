@@ -22,6 +22,9 @@ selection:   latest 20 ended wars
 ordering:    warEndTime DESC, warStartTime DESC, warId DESC
 ```
 
+Both SQL files fail closed unless the psql variables equal the exact clan and
+both exact UTC boundaries above; a shifted 60-day interval is rejected.
+
 The ClashPerk fixture is stored at
 `scripts/fixtures/fb-002-p4d-1a3-clashperk-rising-dawn.json`. Its numeric
 ClashPerk IDs are trace identifiers only and are never joined to Dusk
@@ -127,6 +130,23 @@ headered CSV files. A future Dusk export must contain the final B1 result rows
 using the SQL column names; only that final result set should be supplied, not
 the preflight result sets.
 
+To capture only that final headered CSV without redirecting preflight output,
+run the B1 file with its optional psql output gate. Preflight results remain
+on the console; only the final SELECT is written locally:
+
+```cmd
+psql -X -v ON_ERROR_STOP=1 -v capture_final=on -v final_output="C:\Temp\fb002-p4d1a3-b1-final.csv" --host=<PRODUCTION_HOST> --port=<PORT> --username=clashcookies_dusk_readonly --dbname=clashcookies --file="%SQLDIR%\fb-002-p4d-1a3-war-timestamp-select.sql"
+if errorlevel 1 (
+  echo B1 capture failed. STOP.
+  exit /b 1
+)
+```
+
+The file's `\o` and CSV-format commands are active only around the final
+SELECT and are not SQL statements or database writes. Do not redirect the
+whole psql process, because that would mix preflight output with comparator
+input. The capture remains separately gated after B0 review.
+
 Matching is deterministic and fail-closed:
 
 1. normalize clan and opponent tags case-insensitively with a leading `#`;
@@ -138,6 +158,11 @@ The numeric ClashPerk ID is never used for matching. Zero candidates produce
 `UNMATCHED`; multiple candidates produce `AMBIGUOUS`. No tolerance is used to
 select an identity. For a unique candidate with complete, internally
 consistent participation evidence, the report preserves these raw offsets:
+
+Duplicate external identities, reused Dusk candidate identities, and multiple
+Dusk candidates are all reported as `AMBIGUOUS`; the comparator never assigns
+one Dusk war to two external observations and never selects by proximity or
+numeric external ID.
 
 ```text
 ClashPerk - Dusk history
