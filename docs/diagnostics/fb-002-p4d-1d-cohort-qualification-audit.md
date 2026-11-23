@@ -48,9 +48,11 @@ The aggregate report includes:
   ambiguity status;
 - per-band qualifying distinct-clan count, excluded count and reason
   breakdown, resolved-weight provenance counts, calculation-outcome
-  distribution, and retained `QUALITY_ELIGIBLE` evidence distribution only
-  where band attribution is established. Unattributable quality exclusions
-  remain explicit globally rather than being assigned to a band; and
+  distribution, and retained `QUALITY_ELIGIBLE` evidence distribution for
+  every selected quality-eligible roster whose band is independently
+  established, including calculation exclusions such as insufficient anchor
+  support. Unattributable quality exclusions remain explicit globally rather
+  than being assigned to a band; and
 - a deterministic sensitivity matrix using direct-anchor thresholds 1, 2,
   and 3 crossed with distinct-clan thresholds 1, 5, 10, and 15. The report
   records the effective ordinary sample threshold separately from the

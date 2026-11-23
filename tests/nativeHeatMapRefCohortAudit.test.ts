@@ -9,6 +9,7 @@ import {
   NativeHeatMapRefCohortAuditService,
   NATIVE_COHORT_AUDIT_OWNER_POLICY_STATUS,
 } from "../src/services/NativeHeatMapRefCohortAuditService";
+import { validateNativeReferenceCandidateArtifact } from "../src/helper/nativeHeatMapRefCandidate";
 import { NativeHeatMapRefObservationCandidateService, NATIVE_OBSERVATION_READ_LIMIT } from "../src/services/NativeHeatMapRefObservationCandidateService";
 
 const evaluationAt = new Date("2026-11-21T00:00:00.000Z");
@@ -124,7 +125,7 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     expect(audit.bands).toHaveLength(2);
     expect(audit.bands[1]?.resolvedWeightCounts.DEFERRED).toBeGreaterThan(0);
     expect(audit.bands[1]?.calculationOutcomeDistribution).toMatchObject({ CALCULATION_QUALIFIED: 2, "CALCULATION_EXCLUDED:insufficient_weight_support": 1 });
-    expect(audit.bands[1]?.retainedEvidenceQualityDistribution).toEqual({ QUALITY_ELIGIBLE: 2 });
+    expect(audit.bands[1]?.retainedEvidenceQualityDistribution).toEqual({ QUALITY_ELIGIBLE: 3 });
     expect(JSON.stringify(audit)).not.toContain("PLAYER1");
   });
 
@@ -152,6 +153,29 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     expect(audit.policyProposals).toEqual({ minimumDirectWeightAnchors: 2, minimumDistinctClansPerBand: 10, effectiveSampleThreshold: 10, alternativesAreDiagnosticOnly: true });
     const customThreshold = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands, sampleThreshold: 5 });
     expect(customThreshold.policyProposals.effectiveSampleThreshold).toBe(5);
+  });
+
+  it("keeps one-anchor sensitivity diagnostic while ordinary artifacts retain two-anchor validation", async () => {
+    const oneAnchor = makeObservation("#ONEANCHOR", "2026-11-19T01:00:00.000Z", 181_000, { missingCount: 49 });
+    const { service, findMany } = makeAudit([oneAnchor]);
+    const audit = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
+    const relaxed = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 1 && scenario.minimumDistinctClansPerBand === 1);
+    const twoAnchor = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 2 && scenario.minimumDistinctClansPerBand === 1);
+    const threeAnchor = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 3 && scenario.minimumDistinctClansPerBand === 1);
+    const relaxedClanCount = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 1 && scenario.minimumDistinctClansPerBand === 5);
+    const supportedBandIndex = relaxed?.bands.findIndex((band) => band.status === "SUPPORTED") ?? -1;
+    expect(supportedBandIndex).toBeGreaterThanOrEqual(0);
+    expect(twoAnchor?.bands[supportedBandIndex]?.status).toBe("UNKNOWN");
+    expect(threeAnchor?.bands[supportedBandIndex]?.status).toBe("UNKNOWN");
+    expect(relaxedClanCount?.bands[supportedBandIndex]?.status).toBe("UNKNOWN");
+
+    const ordinaryArtifact = await new NativeHeatMapRefObservationCandidateService({ fwaWarMembersObservation: { findMany } } as never).generate({
+      evaluationAt,
+      eraPolicy,
+      bandDefinitions: bands,
+    });
+    expect(ordinaryArtifact.sampleQualityPolicy.minimumDirectWeightAnchors).toBe(2);
+    expect(validateNativeReferenceCandidateArtifact(ordinaryArtifact)).toBe(true);
   });
 
   it("preserves as-of correction differences, deduplicates repeats, and is deterministic without writes", async () => {

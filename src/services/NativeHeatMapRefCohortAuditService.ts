@@ -215,9 +215,13 @@ function buildBandAudit(input: {
     const selectedByClan = new Map(
       (input.artifact.observationAggregation?.selectedObservations ?? []).map((row) => [row.clanTag, row]),
     );
+    const independentlyAttributableClanTags = new Set([
+      ...qualified.map((roster) => roster.clanTag),
+      ...exclusions.flatMap((exclusion) => exclusion.clanTag ? [exclusion.clanTag] : []),
+    ]);
     const retainedEvidenceQualityDistribution: Record<string, number> = {};
-    for (const roster of qualified) {
-      const selected = selectedByClan.get(roster.clanTag);
+    for (const clanTag of independentlyAttributableClanTags) {
+      const selected = selectedByClan.get(clanTag);
       if (selected?.status === "QUALIFYING" && selected.qualityEvidenceId) {
         retainedEvidenceQualityDistribution.QUALITY_ELIGIBLE = (retainedEvidenceQualityDistribution.QUALITY_ELIGIBLE ?? 0) + 1;
       }
