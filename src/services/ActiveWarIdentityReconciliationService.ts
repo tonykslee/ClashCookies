@@ -114,9 +114,7 @@ export function resolveActiveWarIdentityPatch(
   const parsedEndTime = parseLiveDate(input.liveWar?.endTime ?? null);
   const prepStartTime =
     parsedPrepStartTime ?? new Date(liveStartTime.getTime() - 24 * 60 * 60 * 1000);
-  // A scheduled duration is not an observed end-time authority. Preserve only
-  // the direct CoC observation; archival resolution corroborates it separately.
-  const endTime = parsedEndTime ?? input.currentWar?.endTime ?? null;
+  const persistedEndTime = parseLiveDate(input.currentWar?.endTime ?? null);
 
   const currentWarId =
     input.currentWar?.warId !== null &&
@@ -135,6 +133,11 @@ export function resolveActiveWarIdentityPatch(
       opponentTag: liveOpponentTag,
     },
   });
+  // A scheduled duration is not an observed end-time authority. Preserve a
+  // persisted end only for the exact same war; never carry it across identity
+  // changes. Archival resolution corroborates direct observations separately.
+  const endTime =
+    parsedEndTime ?? (comparison.sameWar ? persistedEndTime : null);
 
   return {
     sameWar: comparison.sameWar,
