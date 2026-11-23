@@ -1,0 +1,27 @@
+# FB-002 P4d-1c Native Observation Candidate Aggregation
+
+Status: diagnostic-only implementation. This slice does not publish a native reference, activate TH19, add a collector or scheduler, or change the legacy-v1 composition path.
+
+## Read contract
+
+`--retained-observations` is a separate source mode of `diagnose:heatmap-ref-native`. It reads immutable `FwaWarMembersObservation` rows with their member rows and `FwaWarMembersObservationEvidence` revisions. It never reads `Members.json`, calls FWAStats, writes the database, or uses the latest-only current roster as a fallback.
+
+The operator supplies an evaluation timestamp and inclusive era window. The bounded query reads at most 1,000 observations plus one sentinel row. Sentinel presence makes the report `TRUNCATED` and causes the aggregation to fail closed. One semantic observation is selected per normalized clan by newest `observedAt`; an equal-time tie is `AMBIGUOUS` and also fails closed. Older semantic observations remain in deterministic lineage diagnostics and are not silently reused when the selected observation is invalid.
+
+For the selected observation, the newest evidence revision with `observedAt` inside the era and at or before evaluation is selected. A same-time revision tie fails closed. The selected revision is the eligibility view for that cutoff; it does not mutate the parent’s first-seen quality fields. Earlier contradictory evidence remains in lineage, and a later clean revision can qualify the same semantic roster without creating another composition sample. If no applicable revision exists, the selected observation is excluded.
+
+Stored member rows are revalidated as one clan-owned 50-position roster with distinct normalized player identities and positions 1 through 50. Zero raw weights remain missing-weight evidence. Negative or fractional values, malformed rows, parser-rejected-row quality, and contradictory source-quality statuses are excluded. Positive raw weights win over scoped open deferments; eligible deferments win over rank inference; inference is used only where direct evidence is absent. Deferment rows are eligible only when the existing scoped `/defer` lookup selects them and their creation time is inside the era and cutoff. The report does not claim an immutable historical deferment snapshot.
+
+The selected rows are passed to the existing native calculation core and shared weight resolver. The output records versioned selection, quality, sample, bucket, source-category, trust, authority limitations, selected quality fingerprints, and observation lineage in the content fingerprint. Thresholds remain diagnostic engineering thresholds; `SUPPORTED` is not an approval or publication decision. Exact upstream-war identity and source-generation authority remain `UNKNOWN_UNVERIFIED`.
+
+## Recovery and compatibility
+
+P4d-1c adds no migration. The earlier P4d-1b migrations remain additive and forward-recoverable: if a migration has committed and deployment later fails, inspect migration status, correct the deployment cause, and rerun `prisma migrate deploy`. Rolling application code back does not reverse already-applied PostgreSQL migrations. Do not edit historical migrations, delete migration records, or perform automatic destructive rollback.
+
+The existing `--db` current-snapshot mode and `--fixture` mode retain their prior contracts. This diagnostic remains outside native publication, the legacy HeatMapRef owner, scheduler state, Discord, and all production/staging deployment paths.
+
+## Validation record
+
+Local validation used a disposable PostgreSQL 17.12 cluster on `127.0.0.1:55432` and database `clashcookies_p4d1c_schema_baseline`, owned by a temporary local-only role. No configured application, staging, or production credential was used. The baseline was created from the current Prisma schema with `prisma db push`, seeded with a sentinel `FwaTrackedClanWarRosterCurrent` row, and the three observation tables were removed before the two P4d-1b migration SQL files were applied through a temporary migration directory with an explicit baseline marker. Both migrations succeeded; repeating `prisma migrate deploy` reported no pending migrations. The sentinel row was unchanged. Primary keys, foreign keys, uniqueness constraints, and indexes were inspected. A failed parent/evidence/member transaction left no rows; concurrent independent inserts left one logical sample and the retry left one parent, one evidence revision, and one member row.
+
+The complete historical migration chain was attempted separately and is blocked by the pre-existing `20260305010000_currentwar_clantag_pk` migration because `CurrentWar_pkey` is absent. Historical migrations were not edited, bypassed in the repository, or repaired. The evidence therefore proves compatibility against the current Prisma-schema baseline and relevant current-roster data shape, but not a successful replay of the full historical chain. That remains a production/release risk to resolve through the normal owner-approved migration process.

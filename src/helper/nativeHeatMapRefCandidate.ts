@@ -17,8 +17,10 @@ export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
 export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
 export const NATIVE_REFERENCE_TARGET_TOTAL = 50;
 export const NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY = "persisted_fwa_snapshot";
+export const NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY = "retained_fwa_observations";
 export const NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY = "synthetic_fixture";
 export const NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST = "persisted_unverified_source_binding";
+export const NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST = "retained_observation_unverified_source_binding";
 export const NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST = "synthetic_untrusted";
 
 export class NativeReferenceCandidateConfigurationError extends Error {
@@ -205,6 +207,39 @@ export type NativeReferenceCandidateArtifact = {
   contentFingerprint: string;
   unknownReason: string | null;
   unattributedExclusionCount: number;
+  observationAggregation?: NativeReferenceObservationAggregationMetadata;
+};
+
+export type NativeReferenceObservationAggregationMetadata = {
+  contractVersion: string;
+  selectionPolicyVersion: string;
+  qualityPolicyVersion: string;
+  coverageStatus: "VERIFIED" | "TRUNCATED" | "AMBIGUOUS";
+  readLimit: number;
+  selectedObservationCount: number;
+  excludedObservationCount: number;
+  supersededObservationCount: number;
+  qualityEvidenceRevisionCount: number;
+  selectedObservations: readonly {
+    clanTag: string;
+    observationId: string;
+    rosterFingerprint: string;
+    observedAtIso: string;
+    qualityEvidenceId: string | null;
+    qualityFingerprint: string | null;
+    status: "QUALIFYING" | "EXCLUDED";
+    reasonCode: string | null;
+  }[];
+  lineage: readonly {
+    clanTag: string;
+    observationId: string;
+    rosterFingerprint: string;
+    observedAtIso: string;
+    selectionStatus: "SELECTED" | "SUPERSEDED" | "EXCLUDED";
+    qualityEvidenceIds: readonly string[];
+  }[];
+  defermentScope: { guildId: string; clanTag: string } | null;
+  authorityLimitations: readonly string[];
 };
 
 type NativeCandidateConfig = {
@@ -401,6 +436,12 @@ function sourceCategoryFor(input: NativeCandidateConfig): { category: string; tr
       trust: input.evidenceTrust ?? NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST,
     };
   }
+  if (input.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) {
+    return {
+      category: NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY,
+      trust: input.evidenceTrust ?? NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
+    };
+  }
   return {
     category: input.sourceCategory ?? NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY,
     trust: input.evidenceTrust ?? NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST,
@@ -422,6 +463,22 @@ function sourceAuthorityFor(input: NativeCandidateConfig): NativeReferenceSource
         "source_completeness_proof_unavailable",
         "source_generation_unbound",
         "persisted_current_state_is_latest_only",
+      ],
+    };
+  }
+  if (input.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) {
+    return {
+      identityStatus: "UNAVAILABLE",
+      completenessStatus: "UNAVAILABLE",
+      weightProvenanceStatus: "UNAVAILABLE",
+      sourceGenerationStatus: "UNAVAILABLE",
+      replayStatus: "UNAVAILABLE",
+      candidateEligibilityStatus: "UNAVAILABLE",
+      referencePublicationStatus: "UNAVAILABLE",
+      reasonCodes: [
+        "exact_war_binding_unavailable",
+        "source_generation_unbound",
+        "retained_quality_evidence_is_diagnostic_only",
       ],
     };
   }
@@ -1003,8 +1060,9 @@ function validateNativeReferenceCandidateArtifactInternal(
     candidate.profileId !== NATIVE_REFERENCE_PROFILE_ID ||
     candidate.profileVersion !== NATIVE_REFERENCE_PROFILE_VERSION ||
     !["SUPPORTED", "PARTIAL", "UNKNOWN"].includes(String(candidate.overallStatus)) ||
-    ![NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY, NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY].includes(String(candidate.sourceCategory)) ||
+    ![NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY, NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY, NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY].includes(String(candidate.sourceCategory)) ||
     (candidate.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST) ||
+    (candidate.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST) ||
     (candidate.sourceCategory === NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST) ||
     !Number.isInteger(candidate.sampleThreshold) ||
     (candidate.sampleThreshold as number) <= 0 ||
@@ -1055,6 +1113,12 @@ function validateNativeReferenceCandidateArtifactInternal(
         "source_generation_unbound",
         "persisted_current_state_is_latest_only",
       ]
+    : candidate.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY
+      ? [
+          "exact_war_binding_unavailable",
+          "source_generation_unbound",
+          "retained_quality_evidence_is_diagnostic_only",
+        ]
     : ["synthetic_fixture_non_authoritative"];
   if (
     authorityStatuses.some((key) => sourceAuthority[key] !== "UNAVAILABLE") ||

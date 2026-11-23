@@ -116,9 +116,11 @@ FB-002 P3 includes a read-only native candidate inspector. It requires explicit 
 npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z --fixture path/to/fixture.json
 # Or use the explicitly requested local persisted-source diagnostic:
 npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z --db
+# Or read immutable WarMembers observations and quality revisions as-of the cutoff:
+npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z --era-start 2026-11-01T00:00:00.000Z --era-end 2026-11-30T23:59:59.999Z --retained-observations
 ```
 
-The report is versioned and fail-closed. It does not publish references, alter settings or scheduler state, call feeds, contact Discord, or make composition recommendations. Fixture results carry an explicit synthetic marker and are not real-world support evidence. Persisted DB rows currently lack an authoritative binding between the tracked roster, its member rows, and an exact FWA `CurrentWar`; DB-derived candidates therefore remain UNKNOWN until that source identity and completeness can be independently verified. Native candidates remain separate from the active legacy HeatMapRef v1 contract.
+The report is versioned and fail-closed. The retained-observation mode selects one semantic roster per clan as-of the explicit cutoff, selects the newest applicable immutable quality revision, preserves superseded/conflicting lineage, and refuses truncated or same-time ambiguous coverage. It revalidates stored 50-position member rows and reuses the shared RAW/deferred/estimated inference precedence. It does not publish references, alter settings or scheduler state, call feeds, contact Discord, or make composition recommendations. Fixture results carry an explicit synthetic marker and are not real-world support evidence. Retained observations still lack exact upstream-war binding and source-generation proof; their authority therefore remains `UNKNOWN_UNVERIFIED` even when diagnostic bands are supported. Native candidates remain separate from the active legacy HeatMapRef v1 contract.
 
 ## Deployment Model
 Production and staging currently run on a droplet-based container deployment.
