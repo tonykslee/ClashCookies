@@ -6,6 +6,9 @@ import {
   NATIVE_REFERENCE_ERA_POLICY_VERSION,
   NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
   NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY,
+  NATIVE_REFERENCE_OBSERVATION_AGGREGATION_CONTRACT_VERSION,
+  NATIVE_REFERENCE_OBSERVATION_SELECTION_POLICY_VERSION,
+  NATIVE_REFERENCE_OBSERVATION_QUALITY_POLICY_VERSION,
   type NativeReferenceBandDefinition,
   type NativeReferenceCandidateArtifact,
   type NativeReferenceEraPolicy,
@@ -26,9 +29,9 @@ import {
 import { FWA_WAR_MEMBERS_SOURCE_CONTRACT_VERSION } from "./fwa-feeds/FwaWarMembersSourceEvidence";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
 
-export const NATIVE_OBSERVATION_AGGREGATION_CONTRACT_VERSION = "native-observation-aggregation-v1";
-export const NATIVE_OBSERVATION_SELECTION_POLICY_VERSION = "latest-semantic-observation-as-of-v1";
-export const NATIVE_OBSERVATION_QUALITY_POLICY_VERSION = "quality-evidence-as-of-v1";
+export const NATIVE_OBSERVATION_AGGREGATION_CONTRACT_VERSION = NATIVE_REFERENCE_OBSERVATION_AGGREGATION_CONTRACT_VERSION;
+export const NATIVE_OBSERVATION_SELECTION_POLICY_VERSION = NATIVE_REFERENCE_OBSERVATION_SELECTION_POLICY_VERSION;
+export const NATIVE_OBSERVATION_QUALITY_POLICY_VERSION = NATIVE_REFERENCE_OBSERVATION_QUALITY_POLICY_VERSION;
 export const NATIVE_OBSERVATION_READ_LIMIT = 1_000;
 
 type ObservationDb = Pick<PrismaClient, "fwaWarMembersObservation">;
@@ -46,9 +49,9 @@ type RetainedEvidence = {
   evidenceSchemaVersion: string;
   sourceContractVersion: string;
   sourceWarNo: number;
-  firstObservedAt: Date;
-  observedAt: Date;
-  ingestedAt: Date;
+  firstObservedAt: Date | string;
+  observedAt: Date | string;
+  ingestedAt: Date | string;
   sourceQualityFingerprint: string;
   structuralStatus: string;
   rosterCompletenessStatus: string;
@@ -63,8 +66,9 @@ type RetainedObservation = {
   sourceContractVersion: string;
   observationSchemaVersion: string;
   sourceWarNo: number;
-  firstObservedAt: Date;
-  observedAt: Date;
+  firstObservedAt: Date | string;
+  observedAt: Date | string;
+  ingestedAt: Date | string;
   rosterFingerprint: string;
   members: RetainedMember[];
   qualityEvidence: RetainedEvidence[];
@@ -192,8 +196,9 @@ export class NativeHeatMapRefObservationCandidateService {
       where: {
         sourceWarNo: 1,
         observedAt: { gte: input.eraStart, lte: input.evaluationAt },
+        ingestedAt: { lte: input.evaluationAt },
       },
-      orderBy: [{ observedAt: "asc" }, { id: "asc" }],
+      orderBy: [{ firstObservedAt: "asc" }, { id: "asc" }],
       take: NATIVE_OBSERVATION_READ_LIMIT + 1,
       include: {
         members: true,
@@ -220,6 +225,7 @@ export class NativeHeatMapRefObservationCandidateService {
     return this.readDeferredWeights({
       guildId: scope.guildId,
       clanPlayerTags: [{ clanTag: matching.roster.clanTag, playerTags: matching.roster.members.map((member) => member.playerTag) }],
+      createdAtWindow: { from: eraStart, through: evaluationAt },
     }).then((result) => {
       const clanRows = result.get(matching.roster!.clanTag) ?? result.get(normalizeFwaTag(matching.roster!.clanTag)) ?? new Map();
       const eligible = new Map<string, OpenWeightInputDefermentMatchRow>();
@@ -245,8 +251,20 @@ export class NativeHeatMapRefObservationCandidateService {
     const byClan = new Map<string, RetainedObservation[]>();
     for (const row of read.rows) {
       const clanTag = normalizeFwaTag(row.clanTag);
+      const firstObservedAt = parseDate(row.firstObservedAt);
       const observedAt = parseDate(row.observedAt);
-      if (!clanTag || !observedAt || observedAt < eraStart || observedAt > evaluationAt) continue;
+      const ingestedAt = parseDate(row.ingestedAt);
+      if (
+        !clanTag ||
+        !firstObservedAt ||
+        !observedAt ||
+        !ingestedAt ||
+        firstObservedAt > observedAt ||
+        observedAt > ingestedAt ||
+        firstObservedAt < eraStart ||
+        observedAt > evaluationAt ||
+        ingestedAt > evaluationAt
+      ) continue;
       const entries = byClan.get(clanTag) ?? [];
       entries.push(row);
       byClan.set(clanTag, entries);
@@ -256,31 +274,44 @@ export class NativeHeatMapRefObservationCandidateService {
     const lineage: Array<NativeReferenceObservationAggregationMetadata["lineage"][number]> = [];
     let ambiguous = false;
     for (const [clanTag, rows] of [...byClan.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-      const ordered = [...rows].sort((left, right) => compareDesc(left.observedAt, right.observedAt) || left.id.localeCompare(right.id));
+      const ordered = [...rows].sort((left, right) => compareDesc(parseDate(left.firstObservedAt)!, parseDate(right.firstObservedAt)!) || left.id.localeCompare(right.id));
       const newest = ordered[0];
       if (!newest) continue;
-      const newestTime = newest.observedAt.getTime();
-      const sameTime = ordered.filter((row) => row.observedAt.getTime() === newestTime);
+      const newestTime = parseDate(newest.firstObservedAt)!.getTime();
+      const sameTime = ordered.filter((row) => parseDate(row.firstObservedAt)!.getTime() === newestTime);
       if (sameTime.length > 1) ambiguous = true;
       for (const row of ordered) {
         lineage.push({
           clanTag,
           observationId: row.id,
           rosterFingerprint: row.rosterFingerprint,
-          observedAtIso: iso(row.observedAt),
-          selectionStatus: row === newest && sameTime.length === 1 ? "SELECTED" : "SUPERSEDED",
+          firstObservedAtIso: iso(parseDate(row.firstObservedAt)!),
+          observedAtIso: iso(parseDate(row.observedAt)!),
+          ingestedAtIso: iso(parseDate(row.ingestedAt)!),
+          selectionStatus: row === newest && sameTime.length === 1 ? "SELECTED" : sameTime.includes(row) ? "AMBIGUOUS" : "SUPERSEDED",
           qualityEvidenceIds: [...row.qualityEvidence].sort((left, right) => left.id.localeCompare(right.id)).map((evidence) => evidence.id),
         });
       }
       const evidenceCandidates = newest.qualityEvidence
         .filter((evidence) => {
+          const firstObservedAt = parseDate(evidence.firstObservedAt);
           const observedAt = parseDate(evidence.observedAt);
-          return Boolean(observedAt && observedAt >= eraStart && observedAt <= evaluationAt);
+          const ingestedAt = parseDate(evidence.ingestedAt);
+          return Boolean(
+            firstObservedAt &&
+            observedAt &&
+            ingestedAt &&
+            firstObservedAt <= observedAt &&
+            observedAt <= ingestedAt &&
+            firstObservedAt >= eraStart &&
+            observedAt <= evaluationAt &&
+            ingestedAt <= evaluationAt,
+          );
         })
-        .sort((left, right) => compareDesc(left.observedAt, right.observedAt) || left.id.localeCompare(right.id));
+        .sort((left, right) => compareDesc(parseDate(left.observedAt)!, parseDate(right.observedAt)!) || left.id.localeCompare(right.id));
       const newestEvidence = evidenceCandidates[0] ?? null;
       const sameEvidenceTime = newestEvidence
-        ? evidenceCandidates.filter((evidence) => evidence.observedAt.getTime() === newestEvidence.observedAt.getTime())
+        ? evidenceCandidates.filter((evidence) => parseDate(evidence.observedAt)!.getTime() === parseDate(newestEvidence.observedAt)!.getTime())
         : [];
       if (sameEvidenceTime.length > 1) ambiguous = true;
       const evidence = sameEvidenceTime.length === 1 ? newestEvidence : null;
@@ -309,8 +340,8 @@ export class NativeHeatMapRefObservationCandidateService {
               rosterSize: memberValidation.members.length,
               totalRawWeight: memberValidation.members.reduce((sum, member) => sum + (member.rawWeight && member.rawWeight > 0 ? member.rawWeight : 0), 0),
               totalEffectiveWeight: null,
-              observedAt: newest.observedAt,
-              sourceUpdatedAt: newest.observedAt,
+              observedAt: parseDate(newest.observedAt)!,
+              sourceUpdatedAt: parseDate(newest.observedAt)!,
               sourceWarId: null,
               sourceWarStartTime: null,
               sourceWarEndTime: null,
@@ -357,14 +388,19 @@ export class NativeHeatMapRefObservationCandidateService {
       selectedObservationCount: selections.length,
       excludedObservationCount: selections.filter((selection) => selection.status === "EXCLUDED").length,
       supersededObservationCount: lineage.filter((entry) => entry.selectionStatus === "SUPERSEDED").length,
-      qualityEvidenceRevisionCount: read.rows.reduce((sum, row) => sum + row.qualityEvidence.length, 0),
+      qualityEvidenceRevisionCount: lineage.reduce((sum, entry) => sum + entry.qualityEvidenceIds.length, 0),
       selectedObservations: selections.map((selection) => ({
         clanTag: selection.clanTag,
         observationId: selection.observation.id,
         rosterFingerprint: selection.observation.rosterFingerprint,
-        observedAtIso: iso(selection.observation.observedAt),
+        firstObservedAtIso: iso(parseDate(selection.observation.firstObservedAt)!),
+        observedAtIso: iso(parseDate(selection.observation.observedAt)!),
+        ingestedAtIso: iso(parseDate(selection.observation.ingestedAt)!),
         qualityEvidenceId: selection.evidence?.id ?? null,
         qualityFingerprint: selection.evidence?.sourceQualityFingerprint ?? null,
+        qualityFirstObservedAtIso: selection.evidence ? iso(parseDate(selection.evidence.firstObservedAt)!) : null,
+        qualityObservedAtIso: selection.evidence ? iso(parseDate(selection.evidence.observedAt)!) : null,
+        qualityIngestedAtIso: selection.evidence ? iso(parseDate(selection.evidence.ingestedAt)!) : null,
         status: selection.status,
         reasonCode: selection.reasonCode,
       })),

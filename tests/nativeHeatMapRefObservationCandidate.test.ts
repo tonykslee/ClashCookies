@@ -4,7 +4,10 @@ import {
   FWA_WAR_MEMBERS_OBSERVATION_SCHEMA_VERSION,
   FWA_WAR_MEMBERS_UNKNOWN_SOURCE_AUTHORITY,
 } from "../src/services/fwa-feeds/FwaWarMembersObservationService";
-import { validateNativeReferenceCandidateArtifact } from "../src/helper/nativeHeatMapRefCandidate";
+import {
+  computeNativeReferenceCandidateContentFingerprint,
+  validateNativeReferenceCandidateArtifact,
+} from "../src/helper/nativeHeatMapRefCandidate";
 import { FWA_WAR_MEMBERS_SOURCE_CONTRACT_VERSION } from "../src/services/fwa-feeds/FwaWarMembersSourceEvidence";
 import {
   NativeHeatMapRefObservationCandidateService,
@@ -65,7 +68,7 @@ function makeEvidence(clanTag: string, observedAt: string, fingerprint: string, 
   };
 }
 
-function makeObservation(clanTag: string, observedAt: string, rosterFingerprint = `${clanTag}-roster`, evidence = [makeEvidence(clanTag, observedAt, `${clanTag}-quality`)]) {
+function makeObservation(clanTag: string, observedAt: string, rosterFingerprint = `${clanTag}-roster`, evidence = [makeEvidence(clanTag, observedAt, `${clanTag}-quality`)], overrides: Record<string, unknown> = {}) {
   return {
     id: `${clanTag}-observation`,
     clanTag,
@@ -95,21 +98,24 @@ function makeObservation(clanTag: string, observedAt: string, rosterFingerprint 
     sourceQualityReasonCodes: [],
     members: makeMembers(clanTag),
     qualityEvidence: evidence,
+    ...overrides,
   };
 }
 
-function serviceWithRows(rows: unknown[]) {
+function serviceWithRows(rows: unknown[], readDeferredWeights = vi.fn().mockResolvedValue(new Map())) {
   const findMany = vi.fn().mockResolvedValue(rows);
   return {
     findMany,
-    service: new NativeHeatMapRefObservationCandidateService({ fwaWarMembersObservation: { findMany } } as never),
+    readDeferredWeights,
+    service: new NativeHeatMapRefObservationCandidateService({ fwaWarMembersObservation: { findMany } } as never, readDeferredWeights),
   };
 }
 
 describe("NativeHeatMapRefObservationCandidateService", () => {
   it("selects one semantic observation per clan and preserves superseded lineage", async () => {
     const first = makeObservation("#CLAN", "2026-11-19T01:00:00.000Z");
-    const second = makeObservation("#CLAN", "2026-11-20T01:00:00.000Z", "#CLAN-new-roster");
+    const secondEvidence = { ...makeEvidence("#CLAN", "2026-11-20T01:00:00.000Z", "#CLAN-quality-2"), id: "#CLAN-evidence-2", observationId: "#CLAN-observation-2" };
+    const second = { ...makeObservation("#CLAN", "2026-11-20T01:00:00.000Z", "#CLAN-new-roster", [secondEvidence]), id: "#CLAN-observation-2" };
     const { service } = serviceWithRows([first, second]);
     const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
     expect(artifact.observationAggregation).toMatchObject({
@@ -148,6 +154,71 @@ describe("NativeHeatMapRefObservationCandidateService", () => {
     expect(artifact.observationAggregation?.selectedObservationCount).toBe(1);
     expect(artifact.observationAggregation?.qualityEvidenceRevisionCount).toBe(2);
     expect(artifact.observationAggregation?.selectedObservations[0]?.qualityFingerprint).toBe("clean");
+  });
+
+  it("excludes parent observations ingested after the retrospective cutoff", async () => {
+    const late = makeObservation("#LATE", "2026-11-19T01:00:00.000Z", "#LATE-roster", undefined, {
+      ingestedAt: new Date("2026-11-22T01:00:00.000Z"),
+    });
+    const { service } = serviceWithRows([late]);
+    const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(artifact.observationAggregation?.selectedObservationCount).toBe(0);
+    expect(artifact.diagnostics.every((diagnostic) => diagnostic.observedCandidateCount === 0)).toBe(true);
+  });
+
+  it("excludes quality evidence ingested after the cutoff and fails closed on contradictory timestamps", async () => {
+    const lateEvidence = makeEvidence("#QUALITY-LATE", "2026-11-20T01:00:00.000Z", "late", {
+      ingestedAt: new Date("2026-11-22T01:00:00.000Z"),
+    });
+    const contradictoryEvidence = makeEvidence("#QUALITY-BAD", "2026-11-20T02:00:00.000Z", "contradictory", {
+      ingestedAt: new Date("2026-11-20T01:00:00.000Z"),
+    });
+    const lateArtifact = await serviceWithRows([makeObservation("#QUALITY-LATE", "2026-11-19T01:00:00.000Z", "late-roster", [lateEvidence])]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    const contradictoryArtifact = await serviceWithRows([makeObservation("#QUALITY-BAD", "2026-11-19T01:00:00.000Z", "bad-roster", [contradictoryEvidence])]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(lateArtifact.observationAggregation?.selectedObservations[0]?.reasonCode).toBe("quality_evidence_unavailable");
+    expect(contradictoryArtifact.observationAggregation?.selectedObservations[0]?.reasonCode).toBe("quality_evidence_unavailable");
+  });
+
+  it("aggregates multiple clans while retaining first-seen semantic identity and no latest-invalid fallback", async () => {
+    const cleanA = makeObservation("#CLAN-A", "2026-11-19T01:00:00.000Z");
+    const cleanB = makeObservation("#CLAN-B", "2026-11-19T02:00:00.000Z");
+    const invalidLatest = makeObservation("#CLAN-A", "2026-11-20T01:00:00.000Z", "#CLAN-A-new", [
+      makeEvidence("#CLAN-A", "2026-11-20T01:00:00.000Z", "invalid", { structuralStatus: "CONFLICTING", sourceQualityReasonCodes: ["parser_rejected"] }),
+    ]);
+    invalidLatest.id = "#CLAN-A-observation-2";
+    const { service } = serviceWithRows([cleanA, cleanB, invalidLatest]);
+    const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(artifact.observationAggregation?.selectedObservationCount).toBe(2);
+    expect(artifact.observationAggregation?.selectedObservations.find((row) => row.clanTag === "#CLAN-A")?.status).toBe("EXCLUDED");
+    expect(artifact.observationAggregation?.selectedObservations.find((row) => row.clanTag === "#CLAN-A")?.reasonCode).toBe("quality_conflict");
+    expect(artifact.observationAggregation?.selectedObservations.find((row) => row.clanTag === "#CLAN-B")?.status).toBe("QUALIFYING");
+  });
+
+  it("passes the retrospective deferment window before scope precedence", async () => {
+    const readDeferredWeights = vi.fn().mockResolvedValue(new Map([
+      ["#DEFER", new Map([["#PLAYER1", { deferredWeight: 181_000, createdAt: new Date("2026-11-20T01:00:00.000Z") }]])],
+    ]));
+    const { service } = serviceWithRows([makeObservation("#DEFER", "2026-11-19T01:00:00.000Z")], readDeferredWeights);
+    await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1, defermentScope: { guildId: "guild-1", clanTag: "#DEFER" } });
+    expect(readDeferredWeights).toHaveBeenCalledWith(expect.objectContaining({
+      createdAtWindow: { from: new Date(eraPolicy.eraStartIso), through: evaluationAt },
+    }));
+  });
+
+  it("rejects tampered retained aggregation metadata even after checksum recomputation", async () => {
+    const artifact = await serviceWithRows([makeObservation("#TAMPER", "2026-11-19T01:00:00.000Z")]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    const { contentFingerprint: _fingerprint, ...payload } = artifact;
+    const missingMetadata = { ...payload, observationAggregation: undefined };
+    expect(validateNativeReferenceCandidateArtifact({ ...missingMetadata, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(missingMetadata as never) })).toBe(false);
+    const malformedMetadata = {
+      ...artifact,
+      observationAggregation: {
+        ...artifact.observationAggregation!,
+        selectedObservationCount: 99,
+      },
+    };
+    const { contentFingerprint: _malformedFingerprint, ...malformedPayload } = malformedMetadata;
+    expect(validateNativeReferenceCandidateArtifact({ ...malformedPayload, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(malformedPayload as never) })).toBe(false);
   });
 
   it("accepts zero weights as missing evidence and uses shared inference", async () => {
