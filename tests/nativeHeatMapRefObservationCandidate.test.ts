@@ -144,6 +144,28 @@ describe("NativeHeatMapRefObservationCandidateService", () => {
     expect(afterCorrection.observationAggregation?.selectedObservations[0]?.qualityFingerprint).toBe("clean");
   });
 
+  it("validates equal-time quality ambiguity as fail-closed coverage", async () => {
+    const first = makeEvidence("#QUALITY-TIE", "2026-11-19T02:00:00.000Z", "tie-a");
+    const second = { ...makeEvidence("#QUALITY-TIE", "2026-11-19T02:00:00.000Z", "tie-b"), id: "#QUALITY-TIE-evidence-b" };
+    const artifact = await serviceWithRows([makeObservation("#QUALITY-TIE", "2026-11-19T01:00:00.000Z", "tie-roster", [first, second])]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(artifact.observationAggregation?.coverageStatus).toBe("AMBIGUOUS");
+    expect(artifact.observationAggregation?.selectedObservations[0]?.reasonCode).toBe("quality_evidence_ambiguous");
+    expect(artifact.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
+    expect(validateNativeReferenceCandidateArtifact(artifact)).toBe(true);
+  });
+
+  it("validates mixed semantic ambiguity across clans while keeping every band UNKNOWN", async () => {
+    const ambiguousA = makeObservation("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-a");
+    const ambiguousBEvidence = { ...makeEvidence("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-b-quality"), id: "#AMBIGUOUS-A-evidence-b", observationId: "#AMBIGUOUS-A-observation-b" };
+    const ambiguousB = { ...makeObservation("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-b", [ambiguousBEvidence]), id: "#AMBIGUOUS-A-observation-b" };
+    const unambiguous = makeObservation("#PYPY", "2026-11-19T02:00:00.000Z");
+    const artifact = await serviceWithRows([ambiguousA, ambiguousB, unambiguous]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(artifact.observationAggregation?.coverageStatus).toBe("AMBIGUOUS");
+    expect(artifact.observationAggregation?.selectedObservations.some((row) => row.clanTag === "#PYPY")).toBe(true);
+    expect(artifact.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
+    expect(validateNativeReferenceCandidateArtifact(artifact)).toBe(true);
+  });
+
   it("retains parser-rejected-row quality evidence without multiplying the semantic sample", async () => {
     const observation = makeObservation("#PARSER", "2026-11-19T01:00:00.000Z", "#PARSER-roster", [
       makeEvidence("#PARSER", "2026-11-19T02:00:00.000Z", "extra-row", { parserRejectedRowCount: 1, discardedRowCount: 1, structuralStatus: "CONFLICTING", rosterCompletenessStatus: "CONFLICTING", weightStatus: "CONFLICTING", sourceQualityReasonCodes: ["discarded_row", "parser_rejected"] }),
@@ -219,6 +241,43 @@ describe("NativeHeatMapRefObservationCandidateService", () => {
     };
     const { contentFingerprint: _malformedFingerprint, ...malformedPayload } = malformedMetadata;
     expect(validateNativeReferenceCandidateArtifact({ ...malformedPayload, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(malformedPayload as never) })).toBe(false);
+
+    const tamperedEvidence = { ...makeEvidence("#TAMPER-AMBIGUOUS", "2026-11-19T01:00:00.000Z", "b-quality"), id: "#TAMPER-AMBIGUOUS-evidence-b", observationId: "#TAMPER-AMBIGUOUS-observation-2" };
+    const ambiguous = await serviceWithRows([makeObservation("#TAMPER-AMBIGUOUS", "2026-11-19T01:00:00.000Z", "a"), { ...makeObservation("#TAMPER-AMBIGUOUS", "2026-11-19T01:00:00.000Z", "b", [tamperedEvidence]), id: "#TAMPER-AMBIGUOUS-observation-2" }]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    const tamperedAmbiguity = {
+      ...ambiguous,
+      observationAggregation: {
+        ...ambiguous.observationAggregation!,
+        coverageStatus: "VERIFIED" as const,
+      },
+    };
+    const { contentFingerprint: _tamperedAmbiguityFingerprint, ...tamperedAmbiguityPayload } = tamperedAmbiguity;
+    expect(validateNativeReferenceCandidateArtifact({ ...tamperedAmbiguityPayload, contentFingerprint: computeNativeReferenceCandidateContentFingerprint(tamperedAmbiguityPayload as never) })).toBe(false);
+  });
+
+  it("keeps future-ingested quality revisions out of earlier lineage and fingerprints", async () => {
+    const current = makeEvidence("#AS-OF", "2026-11-19T02:00:00.000Z", "current");
+    const future = { ...makeEvidence("#AS-OF", "2026-11-20T02:00:00.000Z", "future"), ingestedAt: new Date("2026-11-22T01:00:00.000Z"), id: "#AS-OF-evidence-future" };
+    const base = await serviceWithRows([makeObservation("#AS-OF", "2026-11-19T01:00:00.000Z", "as-of-roster", [current])]).service.generate({ evaluationAt: "2026-11-21T00:00:00.000Z", eraPolicy, sampleThreshold: 1 });
+    const withFuture = await serviceWithRows([makeObservation("#AS-OF", "2026-11-19T01:00:00.000Z", "as-of-roster", [current, future])]).service.generate({ evaluationAt: "2026-11-21T00:00:00.000Z", eraPolicy, sampleThreshold: 1 });
+    expect(withFuture).toEqual(base);
+  });
+
+  it("fails closed instead of falling back to an older roster behind an available malformed observation", async () => {
+    const older = makeObservation("#MALFORMED", "2026-11-19T01:00:00.000Z", "older");
+    const malformed = {
+      ...makeObservation("#MALFORMED", "2026-11-20T01:00:00.000Z", "newer-malformed"),
+      id: "#MALFORMED-observation-2",
+      firstObservedAt: new Date("2026-11-20T02:00:00.000Z"),
+      observedAt: new Date("2026-11-22T01:00:00.000Z"),
+      ingestedAt: new Date("2026-11-20T03:00:00.000Z"),
+    };
+    const artifact = await serviceWithRows([older, malformed]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+    expect(artifact.observationAggregation?.coverageStatus).toBe("AMBIGUOUS");
+    expect(artifact.observationAggregation?.selectedObservationCount).toBe(0);
+    expect(artifact.observationAggregation?.authorityLimitations).toContain("malformed_observation_available_as_of_cutoff");
+    expect(artifact.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
+    expect(validateNativeReferenceCandidateArtifact(artifact)).toBe(true);
   });
 
   it("accepts zero weights as missing evidence and uses shared inference", async () => {

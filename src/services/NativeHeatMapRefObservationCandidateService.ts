@@ -109,6 +109,22 @@ function compareDesc(left: Date, right: Date): number {
   return right.getTime() - left.getTime();
 }
 
+function evidenceAvailableAsOf(evidence: RetainedEvidence, eraStart: Date, evaluationAt: Date): boolean {
+  const firstObservedAt = parseDate(evidence.firstObservedAt);
+  const observedAt = parseDate(evidence.observedAt);
+  const ingestedAt = parseDate(evidence.ingestedAt);
+  return Boolean(
+    firstObservedAt &&
+    observedAt &&
+    ingestedAt &&
+    firstObservedAt <= observedAt &&
+    observedAt <= ingestedAt &&
+    firstObservedAt >= eraStart &&
+    observedAt <= evaluationAt &&
+    ingestedAt <= evaluationAt,
+  );
+}
+
 function reasonCodes(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((entry): entry is string => typeof entry === "string"))].sort()
@@ -195,8 +211,11 @@ export class NativeHeatMapRefObservationCandidateService {
     const rows = await this.db.fwaWarMembersObservation.findMany({
       where: {
         sourceWarNo: 1,
-        observedAt: { gte: input.eraStart, lte: input.evaluationAt },
         ingestedAt: { lte: input.evaluationAt },
+        OR: [
+          { observedAt: { gte: input.eraStart } },
+          { firstObservedAt: { gte: input.eraStart } },
+        ],
       },
       orderBy: [{ firstObservedAt: "asc" }, { id: "asc" }],
       take: NATIVE_OBSERVATION_READ_LIMIT + 1,
@@ -249,30 +268,37 @@ export class NativeHeatMapRefObservationCandidateService {
 
     const read = await this.readRetainedObservations({ evaluationAt, eraStart, eraEnd });
     const byClan = new Map<string, RetainedObservation[]>();
+    const malformedAvailableClans = new Set<string>();
     for (const row of read.rows) {
       const clanTag = normalizeFwaTag(row.clanTag);
       const firstObservedAt = parseDate(row.firstObservedAt);
       const observedAt = parseDate(row.observedAt);
       const ingestedAt = parseDate(row.ingestedAt);
-      if (
-        !clanTag ||
+      if (!clanTag) continue;
+      if (!ingestedAt || ingestedAt <= evaluationAt && (
         !firstObservedAt ||
         !observedAt ||
-        !ingestedAt ||
         firstObservedAt > observedAt ||
         observedAt > ingestedAt ||
         firstObservedAt < eraStart ||
-        observedAt > evaluationAt ||
-        ingestedAt > evaluationAt
+        observedAt > evaluationAt
+      )) {
+        if (!ingestedAt || ingestedAt <= evaluationAt) malformedAvailableClans.add(clanTag);
+        continue;
+      }
+      if (ingestedAt > evaluationAt) continue;
+      if (
+        !firstObservedAt || !observedAt
       ) continue;
       const entries = byClan.get(clanTag) ?? [];
       entries.push(row);
       byClan.set(clanTag, entries);
     }
+    for (const clanTag of malformedAvailableClans) byClan.delete(clanTag);
 
     const selections: Selection[] = [];
     const lineage: Array<NativeReferenceObservationAggregationMetadata["lineage"][number]> = [];
-    let ambiguous = false;
+    let ambiguous = malformedAvailableClans.size > 0;
     for (const [clanTag, rows] of [...byClan.entries()].sort(([left], [right]) => left.localeCompare(right))) {
       const ordered = [...rows].sort((left, right) => compareDesc(parseDate(left.firstObservedAt)!, parseDate(right.firstObservedAt)!) || left.id.localeCompare(right.id));
       const newest = ordered[0];
@@ -289,24 +315,15 @@ export class NativeHeatMapRefObservationCandidateService {
           observedAtIso: iso(parseDate(row.observedAt)!),
           ingestedAtIso: iso(parseDate(row.ingestedAt)!),
           selectionStatus: row === newest && sameTime.length === 1 ? "SELECTED" : sameTime.includes(row) ? "AMBIGUOUS" : "SUPERSEDED",
-          qualityEvidenceIds: [...row.qualityEvidence].sort((left, right) => left.id.localeCompare(right.id)).map((evidence) => evidence.id),
+          qualityEvidenceIds: row.qualityEvidence
+            .filter((evidence) => evidenceAvailableAsOf(evidence, eraStart, evaluationAt))
+            .sort((left, right) => left.id.localeCompare(right.id))
+            .map((evidence) => evidence.id),
         });
       }
       const evidenceCandidates = newest.qualityEvidence
         .filter((evidence) => {
-          const firstObservedAt = parseDate(evidence.firstObservedAt);
-          const observedAt = parseDate(evidence.observedAt);
-          const ingestedAt = parseDate(evidence.ingestedAt);
-          return Boolean(
-            firstObservedAt &&
-            observedAt &&
-            ingestedAt &&
-            firstObservedAt <= observedAt &&
-            observedAt <= ingestedAt &&
-            firstObservedAt >= eraStart &&
-            observedAt <= evaluationAt &&
-            ingestedAt <= evaluationAt,
-          );
+          return evidenceAvailableAsOf(evidence, eraStart, evaluationAt);
         })
         .sort((left, right) => compareDesc(parseDate(left.observedAt)!, parseDate(right.observedAt)!) || left.id.localeCompare(right.id));
       const newestEvidence = evidenceCandidates[0] ?? null;
@@ -411,6 +428,7 @@ export class NativeHeatMapRefObservationCandidateService {
         "source_generation_unbound",
         "quality_evidence_is_diagnostic_only",
         "authority_remains_unknown_unverified",
+        ...(malformedAvailableClans.size > 0 ? ["malformed_observation_available_as_of_cutoff"] : []),
       ],
     });
 

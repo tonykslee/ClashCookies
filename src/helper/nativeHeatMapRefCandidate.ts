@@ -1407,13 +1407,14 @@ function validateNativeReferenceCandidateArtifactInternal(
       aggregation.supersededObservationCount !== supersededCount ||
       aggregation.qualityEvidenceRevisionCount !== lineageQualityIds.size ||
       aggregation.coverageStatus === "VERIFIED" && ambiguousLineageCount > 0 ||
-      aggregation.coverageStatus === "AMBIGUOUS" && ambiguousLineageCount === 0 ||
-      aggregation.coverageStatus !== "AMBIGUOUS" && ambiguousLineageCount > 0 ||
+      aggregation.coverageStatus === "AMBIGUOUS" && ambiguousLineageCount === 0 && !selectedObservations.some((value) => isRecordValue(value) && value.reasonCode === "quality_evidence_ambiguous") && !aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff") ||
+      aggregation.coverageStatus !== "AMBIGUOUS" && (ambiguousLineageCount > 0 || selectedObservations.some((value) => isRecordValue(value) && value.reasonCode === "quality_evidence_ambiguous") || aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff")) ||
       aggregation.coverageStatus !== "VERIFIED" && candidate.overallStatus !== "UNKNOWN"
     ) return false;
+    if (aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff") && aggregation.coverageStatus !== "AMBIGUOUS") return false;
     for (const [observationId, selected] of selectedById) {
       const entry = lineage.find((value) => isRecordValue(value) && value.observationId === observationId) as Record<string, unknown> | undefined;
-      if (!entry || (aggregation.coverageStatus === "AMBIGUOUS" ? entry.selectionStatus !== "AMBIGUOUS" : entry.selectionStatus !== "SELECTED")) return false;
+      if (!entry || entry.selectionStatus === "SUPERSEDED" || aggregation.coverageStatus === "VERIFIED" && entry.selectionStatus !== "SELECTED") return false;
       if (entry.clanTag !== selected.clanTag || entry.rosterFingerprint !== selected.rosterFingerprint) return false;
     }
     if (aggregation.defermentScope !== null) {
