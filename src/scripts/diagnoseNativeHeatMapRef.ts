@@ -11,6 +11,7 @@ import { HEAT_MAP_REF_SEED_ROWS } from "../services/HeatMapRefSeedData";
 type CliOptions = {
   fixturePath: string | null;
   useDb: boolean;
+  useRetainedObservations: boolean;
   evaluationAt: string;
   eraStart: string;
   eraEnd: string;
@@ -20,7 +21,7 @@ type CliOptions = {
 };
 
 const valueOptions = new Set(["--fixture", "--evaluation-at", "--era-start", "--era-end", "--threshold", "--defer-guild-id", "--defer-clan-tag"]);
-const flagOptions = new Set(["--db"]);
+const flagOptions = new Set(["--db", "--retained-observations"]);
 
 function isIso(value: string): boolean {
   const date = new Date(value);
@@ -28,7 +29,7 @@ function isIso(value: string): boolean {
 }
 
 function parseOptions(argv: readonly string[]): CliOptions {
-  const values: Partial<CliOptions> = { fixturePath: null, useDb: false, threshold: undefined, deferGuildId: null, deferClanTag: null };
+  const values: Partial<CliOptions> = { fixturePath: null, useDb: false, useRetainedObservations: false, threshold: undefined, deferGuildId: null, deferClanTag: null };
   const seen = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -36,7 +37,8 @@ function parseOptions(argv: readonly string[]): CliOptions {
     if (seen.has(argument)) throw new Error(`duplicate option: ${argument}`);
     seen.add(argument);
     if (flagOptions.has(argument)) {
-      values.useDb = true;
+      if (argument === "--db") values.useDb = true;
+      else values.useRetainedObservations = true;
       continue;
     }
     const value = argv[index + 1];
@@ -50,12 +52,13 @@ function parseOptions(argv: readonly string[]): CliOptions {
   if (new Date(values.eraStart).getTime() > new Date(values.eraEnd).getTime()) throw new Error("era start must not be after era end");
   if (values.threshold !== undefined && (!Number.isInteger(values.threshold) || values.threshold <= 0)) throw new Error("threshold must be a positive integer");
   if (Boolean(values.deferGuildId) !== Boolean(values.deferClanTag)) throw new Error("--defer-guild-id and --defer-clan-tag must be supplied together");
-  if (values.fixturePath && values.useDb || !values.fixturePath && !values.useDb) throw new Error("exactly one of --fixture or --db is required");
+  const sourceModes = [Boolean(values.fixturePath), Boolean(values.useDb), Boolean(values.useRetainedObservations)].filter(Boolean).length;
+  if (sourceModes !== 1) throw new Error("exactly one of --fixture, --db, or --retained-observations is required");
   return values as CliOptions;
 }
 
 function printUsage(): void {
-  console.error("Usage: npm run diagnose:heatmap-ref-native -- --evaluation-at ISO --era-start ISO --era-end ISO (--fixture path.json | --db) [--threshold 10] [--defer-guild-id ID --defer-clan-tag #CLAN]");
+  console.error("Usage: npm run diagnose:heatmap-ref-native -- --evaluation-at ISO --era-start ISO --era-end ISO (--fixture path.json | --db | --retained-observations) [--threshold 10] [--defer-guild-id ID --defer-clan-tag #CLAN]");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,12 +92,25 @@ async function main(): Promise<void> {
   let dbMode = false;
   try {
     const options = parseOptions(process.argv.slice(2));
-    dbMode = options.useDb;
+    dbMode = options.useDb || options.useRetainedObservations;
     const eraPolicy = { policyId: "fwa-native-current-era", policyVersion: NATIVE_REFERENCE_ERA_POLICY_VERSION, eraStartIso: options.eraStart, eraEndIso: options.eraEnd };
     const bandDefinitions = HEAT_MAP_REF_SEED_ROWS.map((row) => ({ weightMinInclusive: row.weightMinInclusive, weightMaxInclusive: row.weightMaxInclusive }));
     const artifact = options.fixturePath
       ? generateNativeHeatMapRefCandidate({ sourceRosters: await loadFixture(options.fixturePath), bandDefinitions, eraPolicy, evaluationAt: options.evaluationAt, sampleThreshold: options.threshold, sourceCategory: NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY, evidenceTrust: NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST })
-      : await (async () => {
+      : options.useRetainedObservations
+        ? await (async () => {
+          const { NativeHeatMapRefObservationCandidateService } = await import("../services/NativeHeatMapRefObservationCandidateService");
+          return new NativeHeatMapRefObservationCandidateService().generate({
+            evaluationAt: options.evaluationAt,
+            eraPolicy,
+            sampleThreshold: options.threshold,
+            bandDefinitions,
+            defermentScope: options.deferGuildId && options.deferClanTag
+              ? { guildId: options.deferGuildId, clanTag: options.deferClanTag }
+              : undefined,
+          });
+        })()
+        : await (async () => {
           const { NativeHeatMapRefCandidateService } = await import("../services/NativeHeatMapRefCandidateService");
           return new NativeHeatMapRefCandidateService().generate({
             evaluationAt: options.evaluationAt,

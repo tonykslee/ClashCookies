@@ -78,6 +78,11 @@ export type OpenWeightInputDefermentMatchRow = {
   createdAt: Date;
 };
 
+export type OpenWeightInputDefermentCreatedAtWindow = {
+  from?: Date;
+  through?: Date;
+};
+
 export type OpenWeightInputDefermentListResult = {
   scope: DefermentScopeContext;
   rows: OpenWeightInputDefermentRow[];
@@ -827,6 +832,7 @@ export async function listOpenDeferredWeightRowsByClanAndPlayerTags(input: {
     clanTag: string | null;
     playerTags: string[];
   }>;
+  createdAtWindow?: OpenWeightInputDefermentCreatedAtWindow;
 }): Promise<Map<string, Map<string, OpenWeightInputDefermentMatchRow>>> {
   const guildId = String(input.guildId ?? "").trim();
   if (!guildId) return new Map<string, Map<string, OpenWeightInputDefermentMatchRow>>();
@@ -869,6 +875,14 @@ export async function listOpenDeferredWeightRowsByClanAndPlayerTags(input: {
       status: "open",
       scopeKey: { in: scopeKeys },
       playerTag: { in: allPlayerTags },
+      ...(input.createdAtWindow?.from || input.createdAtWindow?.through
+        ? {
+            createdAt: {
+              ...(input.createdAtWindow.from ? { gte: input.createdAtWindow.from } : {}),
+              ...(input.createdAtWindow.through ? { lte: input.createdAtWindow.through } : {}),
+            },
+          }
+        : {}),
     },
     select: {
       scopeKey: true,
@@ -907,6 +921,12 @@ export async function listOpenDeferredWeightRowsByClanAndPlayerTags(input: {
 
       for (const row of candidates) {
         if (row.scopeKey !== clanScopeKey && row.scopeKey !== guildScopeKey) {
+          continue;
+        }
+        if (
+          (input.createdAtWindow?.from && row.createdAt < input.createdAtWindow.from) ||
+          (input.createdAtWindow?.through && row.createdAt > input.createdAtWindow.through)
+        ) {
           continue;
         }
         const deferredWeight =

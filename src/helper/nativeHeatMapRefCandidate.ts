@@ -17,9 +17,14 @@ export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
 export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
 export const NATIVE_REFERENCE_TARGET_TOTAL = 50;
 export const NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY = "persisted_fwa_snapshot";
+export const NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY = "retained_fwa_observations";
 export const NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY = "synthetic_fixture";
 export const NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST = "persisted_unverified_source_binding";
+export const NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST = "retained_observation_unverified_source_binding";
 export const NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST = "synthetic_untrusted";
+export const NATIVE_REFERENCE_OBSERVATION_AGGREGATION_CONTRACT_VERSION = "native-observation-aggregation-v1";
+export const NATIVE_REFERENCE_OBSERVATION_SELECTION_POLICY_VERSION = "latest-semantic-observation-as-of-v1";
+export const NATIVE_REFERENCE_OBSERVATION_QUALITY_POLICY_VERSION = "quality-evidence-as-of-v1";
 
 export class NativeReferenceCandidateConfigurationError extends Error {
   readonly code: string;
@@ -205,6 +210,46 @@ export type NativeReferenceCandidateArtifact = {
   contentFingerprint: string;
   unknownReason: string | null;
   unattributedExclusionCount: number;
+  observationAggregation?: NativeReferenceObservationAggregationMetadata;
+};
+
+export type NativeReferenceObservationAggregationMetadata = {
+  contractVersion: string;
+  selectionPolicyVersion: string;
+  qualityPolicyVersion: string;
+  coverageStatus: "VERIFIED" | "TRUNCATED" | "AMBIGUOUS";
+  readLimit: number;
+  selectedObservationCount: number;
+  excludedObservationCount: number;
+  supersededObservationCount: number;
+  qualityEvidenceRevisionCount: number;
+  selectedObservations: readonly {
+    clanTag: string;
+    observationId: string;
+    rosterFingerprint: string;
+    firstObservedAtIso: string;
+    observedAtIso: string;
+    ingestedAtIso: string;
+    qualityEvidenceId: string | null;
+    qualityFingerprint: string | null;
+    qualityFirstObservedAtIso: string | null;
+    qualityObservedAtIso: string | null;
+    qualityIngestedAtIso: string | null;
+    status: "QUALIFYING" | "EXCLUDED";
+    reasonCode: string | null;
+  }[];
+  lineage: readonly {
+    clanTag: string;
+    observationId: string;
+    rosterFingerprint: string;
+    firstObservedAtIso: string;
+    observedAtIso: string;
+    ingestedAtIso: string;
+    selectionStatus: "SELECTED" | "SUPERSEDED" | "AMBIGUOUS";
+    qualityEvidenceIds: readonly string[];
+  }[];
+  defermentScope: { guildId: string; clanTag: string } | null;
+  authorityLimitations: readonly string[];
 };
 
 type NativeCandidateConfig = {
@@ -401,6 +446,12 @@ function sourceCategoryFor(input: NativeCandidateConfig): { category: string; tr
       trust: input.evidenceTrust ?? NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST,
     };
   }
+  if (input.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) {
+    return {
+      category: NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY,
+      trust: input.evidenceTrust ?? NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
+    };
+  }
   return {
     category: input.sourceCategory ?? NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY,
     trust: input.evidenceTrust ?? NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST,
@@ -422,6 +473,22 @@ function sourceAuthorityFor(input: NativeCandidateConfig): NativeReferenceSource
         "source_completeness_proof_unavailable",
         "source_generation_unbound",
         "persisted_current_state_is_latest_only",
+      ],
+    };
+  }
+  if (input.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) {
+    return {
+      identityStatus: "UNAVAILABLE",
+      completenessStatus: "UNAVAILABLE",
+      weightProvenanceStatus: "UNAVAILABLE",
+      sourceGenerationStatus: "UNAVAILABLE",
+      replayStatus: "UNAVAILABLE",
+      candidateEligibilityStatus: "UNAVAILABLE",
+      referencePublicationStatus: "UNAVAILABLE",
+      reasonCodes: [
+        "exact_war_binding_unavailable",
+        "source_generation_unbound",
+        "retained_quality_evidence_is_diagnostic_only",
       ],
     };
   }
@@ -1003,8 +1070,9 @@ function validateNativeReferenceCandidateArtifactInternal(
     candidate.profileId !== NATIVE_REFERENCE_PROFILE_ID ||
     candidate.profileVersion !== NATIVE_REFERENCE_PROFILE_VERSION ||
     !["SUPPORTED", "PARTIAL", "UNKNOWN"].includes(String(candidate.overallStatus)) ||
-    ![NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY, NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY].includes(String(candidate.sourceCategory)) ||
+    ![NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY, NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY, NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY].includes(String(candidate.sourceCategory)) ||
     (candidate.sourceCategory === NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_PERSISTED_EVIDENCE_TRUST) ||
+    (candidate.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST) ||
     (candidate.sourceCategory === NATIVE_REFERENCE_SYNTHETIC_SOURCE_CATEGORY && candidate.evidenceTrust !== NATIVE_REFERENCE_SYNTHETIC_EVIDENCE_TRUST) ||
     !Number.isInteger(candidate.sampleThreshold) ||
     (candidate.sampleThreshold as number) <= 0 ||
@@ -1033,6 +1101,8 @@ function validateNativeReferenceCandidateArtifactInternal(
     !isBoundsRecord(candidate.qualifyingSourceObservationBounds) ||
     !isRecordValue(candidate.sourceAuthority)
   ) return false;
+  const evaluationMs = new Date(candidate.evaluationAtIso as string).getTime();
+  const eraStartMs = new Date(candidate.eraPolicy.eraStartIso as string).getTime();
   const sourceAuthority = candidate.sourceAuthority;
   const authorityStatuses = [
     "identityStatus",
@@ -1055,6 +1125,12 @@ function validateNativeReferenceCandidateArtifactInternal(
         "source_generation_unbound",
         "persisted_current_state_is_latest_only",
       ]
+    : candidate.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY
+      ? [
+          "exact_war_binding_unavailable",
+          "source_generation_unbound",
+          "retained_quality_evidence_is_diagnostic_only",
+        ]
     : ["synthetic_fixture_non_authoritative"];
   if (
     authorityStatuses.some((key) => sourceAuthority[key] !== "UNAVAILABLE") ||
@@ -1229,6 +1305,123 @@ function validateNativeReferenceCandidateArtifactInternal(
         ? "rejected_source_evidence"
         : "no_source_evidence";
     if (candidate.unknownReason !== expectedUnknownReason) return false;
+  }
+  if (candidate.sourceCategory === NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) {
+    const aggregation = candidate.observationAggregation;
+    if (!isRecordValue(aggregation)) return false;
+    if (!hasExactKeys(aggregation, [
+      "contractVersion", "selectionPolicyVersion", "qualityPolicyVersion", "coverageStatus", "readLimit",
+      "selectedObservationCount", "excludedObservationCount", "supersededObservationCount", "qualityEvidenceRevisionCount",
+      "selectedObservations", "lineage", "defermentScope", "authorityLimitations",
+    ])) return false;
+    if (
+      aggregation.contractVersion !== NATIVE_REFERENCE_OBSERVATION_AGGREGATION_CONTRACT_VERSION ||
+      aggregation.selectionPolicyVersion !== NATIVE_REFERENCE_OBSERVATION_SELECTION_POLICY_VERSION ||
+      aggregation.qualityPolicyVersion !== NATIVE_REFERENCE_OBSERVATION_QUALITY_POLICY_VERSION ||
+      !["VERIFIED", "TRUNCATED", "AMBIGUOUS"].includes(String(aggregation.coverageStatus)) ||
+      ![aggregation.readLimit, aggregation.selectedObservationCount, aggregation.excludedObservationCount, aggregation.supersededObservationCount, aggregation.qualityEvidenceRevisionCount].every(isNonnegativeInteger) ||
+      (aggregation.readLimit as number) <= 0 ||
+      !Array.isArray(aggregation.selectedObservations) ||
+      !Array.isArray(aggregation.lineage) ||
+      !Array.isArray(aggregation.authorityLimitations) ||
+      aggregation.authorityLimitations.some((value) => typeof value !== "string" || !value.trim())
+    ) return false;
+    const selectedObservations = aggregation.selectedObservations as unknown[];
+    const lineage = aggregation.lineage as unknown[];
+    const selectedIds = new Set<string>();
+    const selectedClans = new Set<string>();
+    const selectedById = new Map<string, Record<string, unknown>>();
+    for (const value of selectedObservations) {
+      if (!isRecordValue(value) || !hasExactKeys(value, [
+        "clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso",
+        "qualityEvidenceId", "qualityFingerprint", "qualityFirstObservedAtIso", "qualityObservedAtIso", "qualityIngestedAtIso",
+        "status", "reasonCode",
+      ])) return false;
+      const clanTag = normalizeIdentity(value.clanTag);
+      if (
+        !clanTag || value.clanTag !== clanTag || typeof value.observationId !== "string" || !value.observationId.trim() ||
+        typeof value.rosterFingerprint !== "string" || !value.rosterFingerprint.trim() ||
+        !isIso(value.firstObservedAtIso) || !isIso(value.observedAtIso) || !isIso(value.ingestedAtIso) ||
+        new Date(value.firstObservedAtIso).getTime() > new Date(value.observedAtIso).getTime() ||
+        new Date(value.observedAtIso).getTime() > new Date(value.ingestedAtIso).getTime() ||
+        new Date(value.firstObservedAtIso).getTime() < eraStartMs ||
+        new Date(value.observedAtIso).getTime() > evaluationMs ||
+        new Date(value.ingestedAtIso).getTime() > evaluationMs ||
+        !["QUALIFYING", "EXCLUDED"].includes(String(value.status)) ||
+        (value.status === "QUALIFYING" && value.reasonCode !== null) ||
+        (value.status === "EXCLUDED" && (typeof value.reasonCode !== "string" || !value.reasonCode.trim())) ||
+        selectedIds.has(value.observationId) || selectedClans.has(clanTag)
+      ) return false;
+      const qualityFields = [value.qualityEvidenceId, value.qualityFingerprint, value.qualityFirstObservedAtIso, value.qualityObservedAtIso, value.qualityIngestedAtIso];
+      const allQualityNull = qualityFields.every((field) => field === null);
+      const allQualityPresent = qualityFields.every((field) => field !== null);
+      if (
+        (!allQualityNull && !allQualityPresent) ||
+        (allQualityPresent && (
+          typeof value.qualityEvidenceId !== "string" || !value.qualityEvidenceId.trim() ||
+          typeof value.qualityFingerprint !== "string" || !value.qualityFingerprint.trim() ||
+          !isIso(value.qualityFirstObservedAtIso) || !isIso(value.qualityObservedAtIso) || !isIso(value.qualityIngestedAtIso) ||
+          new Date(value.qualityFirstObservedAtIso).getTime() > new Date(value.qualityObservedAtIso).getTime() ||
+          new Date(value.qualityObservedAtIso).getTime() > new Date(value.qualityIngestedAtIso).getTime() ||
+          new Date(value.qualityFirstObservedAtIso).getTime() < eraStartMs ||
+          new Date(value.qualityIngestedAtIso).getTime() > evaluationMs
+        ))) return false;
+      if (value.status === "QUALIFYING" && !allQualityPresent) return false;
+      selectedIds.add(value.observationId);
+      selectedClans.add(clanTag);
+      selectedById.set(value.observationId, value);
+    }
+    if (aggregation.selectedObservationCount !== selectedObservations.length || aggregation.excludedObservationCount !== selectedObservations.filter((value) => isRecordValue(value) && value.status === "EXCLUDED").length) return false;
+    const lineageIds = new Set<string>();
+    const lineageQualityIds = new Set<string>();
+    let supersededCount = 0;
+    let ambiguousLineageCount = 0;
+    for (const value of lineage) {
+      if (!isRecordValue(value) || !hasExactKeys(value, ["clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso", "selectionStatus", "qualityEvidenceIds"])) return false;
+      const clanTag = normalizeIdentity(value.clanTag);
+      if (
+        !clanTag || value.clanTag !== clanTag || typeof value.observationId !== "string" || !value.observationId.trim() ||
+        typeof value.rosterFingerprint !== "string" || !value.rosterFingerprint.trim() || !isIso(value.firstObservedAtIso) ||
+        !isIso(value.observedAtIso) || !isIso(value.ingestedAtIso) ||
+        new Date(value.firstObservedAtIso).getTime() > new Date(value.observedAtIso).getTime() ||
+        new Date(value.observedAtIso).getTime() > new Date(value.ingestedAtIso).getTime() ||
+        new Date(value.firstObservedAtIso).getTime() < eraStartMs ||
+        new Date(value.observedAtIso).getTime() > evaluationMs ||
+        new Date(value.ingestedAtIso).getTime() > evaluationMs ||
+        !["SELECTED", "SUPERSEDED", "AMBIGUOUS"].includes(String(value.selectionStatus)) ||
+        !Array.isArray(value.qualityEvidenceIds) || value.qualityEvidenceIds.some((id) => typeof id !== "string" || !id.trim() || lineageQualityIds.has(id)) ||
+        lineageIds.has(value.observationId)
+      ) return false;
+      lineageIds.add(value.observationId);
+      for (const id of value.qualityEvidenceIds) lineageQualityIds.add(id as string);
+      if (value.selectionStatus === "SUPERSEDED") supersededCount += 1;
+      if (value.selectionStatus === "AMBIGUOUS") ambiguousLineageCount += 1;
+      if (value.selectionStatus === "SELECTED" && !selectedIds.has(value.observationId)) return false;
+      if (value.selectionStatus === "AMBIGUOUS" && !selectedIds.has(value.observationId)) {
+        const matchingClan = selectedObservations.some((selected) => isRecordValue(selected) && selected.clanTag === clanTag);
+        if (!matchingClan) return false;
+      }
+      if (value.selectionStatus === "SUPERSEDED" && selectedIds.has(value.observationId)) return false;
+    }
+    if (
+      aggregation.supersededObservationCount !== supersededCount ||
+      aggregation.qualityEvidenceRevisionCount !== lineageQualityIds.size ||
+      aggregation.coverageStatus === "VERIFIED" && ambiguousLineageCount > 0 ||
+      aggregation.coverageStatus === "AMBIGUOUS" && ambiguousLineageCount === 0 && !selectedObservations.some((value) => isRecordValue(value) && value.reasonCode === "quality_evidence_ambiguous") && !aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff") ||
+      aggregation.coverageStatus !== "AMBIGUOUS" && (ambiguousLineageCount > 0 || selectedObservations.some((value) => isRecordValue(value) && value.reasonCode === "quality_evidence_ambiguous") || aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff")) ||
+      aggregation.coverageStatus !== "VERIFIED" && candidate.overallStatus !== "UNKNOWN"
+    ) return false;
+    if (aggregation.authorityLimitations.includes("malformed_observation_available_as_of_cutoff") && aggregation.coverageStatus !== "AMBIGUOUS") return false;
+    for (const [observationId, selected] of selectedById) {
+      const entry = lineage.find((value) => isRecordValue(value) && value.observationId === observationId) as Record<string, unknown> | undefined;
+      if (!entry || entry.selectionStatus === "SUPERSEDED" || aggregation.coverageStatus === "VERIFIED" && entry.selectionStatus !== "SELECTED") return false;
+      if (entry.clanTag !== selected.clanTag || entry.rosterFingerprint !== selected.rosterFingerprint) return false;
+    }
+    if (aggregation.defermentScope !== null) {
+      if (!isRecordValue(aggregation.defermentScope) || !hasExactKeys(aggregation.defermentScope, ["guildId", "clanTag"]) || typeof aggregation.defermentScope.guildId !== "string" || !aggregation.defermentScope.guildId.trim() || normalizeIdentity(aggregation.defermentScope.clanTag) !== aggregation.defermentScope.clanTag) return false;
+    }
+  } else if (candidate.observationAggregation !== undefined) {
+    return false;
   }
   const { contentFingerprint, ...payload } = candidate;
   return sha256(payload) === contentFingerprint;
