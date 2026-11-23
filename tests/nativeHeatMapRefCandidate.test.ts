@@ -163,11 +163,40 @@ describe("native HeatMapRef candidate generation", () => {
     expect(generate([{ ...unavailable, sourceIdentityStatus: "UNAVAILABLE" }]).unknownReason).toBe("insufficient_source_support");
 
     const nonFwa = makeRoster({ clanTag: "#BLMM", weightForPosition: () => 181_000 });
-    expect(generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }]).exclusionCounts.non_fwa_source).toBe(1);
+    const nonFwaArtifact = generate([{ ...nonFwa, sourceMatchType: "CLAN_WAR_LEAGUE" }], 1);
+    expect(nonFwaArtifact.exclusionCounts.non_fwa_source).toBe(1);
+    expect(nonFwaArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)).toMatchObject({
+      observedCandidateCount: 1,
+      qualifyingRosterCount: 0,
+      usableRosterCount: 0,
+      excludedRosterCount: 1,
+    });
+    expect(validateNativeReferenceCandidateArtifact(nonFwaArtifact)).toBe(true);
 
     const future = makeRoster({ clanTag: "#FUTURETIME", weightForPosition: () => 181_000 });
     future.sourceUpdatedAt = "2026-11-21T01:00:00.000Z";
-    expect(generate([future]).exclusionCounts.source_metadata).toBe(1);
+    const staleArtifact = generate([future], 1);
+    expect(staleArtifact.exclusionCounts.source_metadata).toBe(1);
+    expect(staleArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)).toMatchObject({
+      observedCandidateCount: 1,
+      qualifyingRosterCount: 0,
+      usableRosterCount: 0,
+      excludedRosterCount: 1,
+    });
+    expect(validateNativeReferenceCandidateArtifact(staleArtifact)).toBe(true);
+
+    const outOfEra = makeRoster({ clanTag: "#STALEOBSERVATION", weightForPosition: () => 181_000 });
+    outOfEra.observedAt = "2026-10-20T00:00:00.000Z";
+    outOfEra.sourceUpdatedAt = "2026-10-19T23:00:00.000Z";
+    const outOfEraArtifact = generate([outOfEra], 1);
+    expect(outOfEraArtifact.exclusionCounts.era_policy).toBe(1);
+    expect(outOfEraArtifact.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0)).toMatchObject({
+      observedCandidateCount: 1,
+      qualifyingRosterCount: 0,
+      usableRosterCount: 0,
+      excludedRosterCount: 1,
+    });
+    expect(validateNativeReferenceCandidateArtifact(outOfEraArtifact)).toBe(true);
 
     const unsupportedState = makeRoster({ clanTag: "#UNSUPPORTEDSTATE", weightForPosition: () => 181_000 });
     unsupportedState.sourceWarState = "cancelled";
@@ -221,6 +250,7 @@ describe("native HeatMapRef candidate generation", () => {
     expect(rejected.exclusionCounts.insufficient_weight_support).toBe(1);
     const rejectedDiagnostic = rejected.diagnostics.find((diagnostic) => diagnostic.observedCandidateCount > 0);
     expect(rejectedDiagnostic).toMatchObject({ usableRosterCount: 1, qualifyingRosterCount: 0, excludedRosterCount: 1 });
+    expect(validateNativeReferenceCandidateArtifact(rejected)).toBe(true);
 
     const twoAnchors = makeRosterFromRawWeights({
       clanTag: "#TWOANCHORS",
@@ -466,6 +496,17 @@ describe("native HeatMapRef candidate generation", () => {
           }
         : diagnostic),
     }))).toBe(false);
+    const oneAnchorArtifact = generate([makeRosterFromRawWeights({
+      clanTag: "#SEMANTICONEANCHOR",
+      rawWeights: [181_000, ...Array.from({ length: 49 }, () => 0)],
+    })], 1);
+    expect(validateNativeReferenceCandidateArtifact(oneAnchorArtifact)).toBe(true);
+    expect(validateNativeReferenceCandidateArtifact(rehash({
+      ...oneAnchorArtifact,
+      diagnostics: oneAnchorArtifact.diagnostics.map((diagnostic) => diagnostic.usableRosterCount > 0
+        ? { ...diagnostic, usableRosterCount: 0 }
+        : diagnostic),
+    }))).toBe(false);
 
     const contradictoryTargets = artifact.diagnostics.map((diagnostic) => {
       if (diagnostic.status !== "SUPPORTED") return diagnostic;
@@ -595,7 +636,14 @@ describe("native HeatMapRef candidate generation", () => {
   it("ignores unrelated CurrentWar metadata but checks WarMembers observation timing", () => {
     const notInWar = makeRoster({ clanTag: "#NOTINWAR", weightForPosition: () => 181_000 });
     notInWar.sourceWarState = "notInWar";
-    expect(generate([notInWar], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    const fullyQualifying = generate([notInWar], 1);
+    expect(fullyQualifying.diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
+    expect(fullyQualifying.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")).toMatchObject({
+      observedCandidateCount: 1,
+      qualifyingRosterCount: 1,
+      usableRosterCount: 1,
+      excludedRosterCount: 0,
+    });
     const activeWithEnd = makeRoster({ clanTag: "#ACTIVEEND", weightForPosition: () => 181_000 });
     activeWithEnd.sourceWarState = "inWar";
     expect(generate([activeWithEnd], 1).diagnostics.some((diagnostic) => diagnostic.status === "SUPPORTED")).toBe(true);
@@ -658,11 +706,45 @@ describe("native HeatMapRef candidate generation", () => {
     }));
     expect(report.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
       .toEqual({ RAW: 49, DEFERRED: 1, ESTIMATED: 0, UNRESOLVED: 0 });
+    const boundaryFingerprint = report.sourceEvidenceFingerprint;
 
     const noScopeReport = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
     expect(noScopeReport.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
       .toEqual({ RAW: 49, DEFERRED: 0, ESTIMATED: 1, UNRESOLVED: 0 });
-    expect(readDeferredWeights).toHaveBeenCalledTimes(1);
+    expect(boundaryFingerprint).not.toBe(noScopeReport.sourceEvidenceFingerprint);
+
+    readDeferredWeights.mockResolvedValue(new Map([
+      ["#DEFERCLAN", new Map([[
+        "#PLAYER1",
+        { deferredWeight: 190_000, createdAt: new Date("2026-11-21T00:00:00.001Z") },
+      ]])],
+    ]));
+    const futureReport = await service.generate({
+      evaluationAt,
+      eraPolicy,
+      sampleThreshold: 1,
+      defermentScope: { guildId: "guild-1", clanTag: "#DEFERCLAN" },
+    });
+    expect(futureReport.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 49, DEFERRED: 0, ESTIMATED: 1, UNRESOLVED: 0 });
+    expect(futureReport.sourceEvidenceFingerprint).toBe(noScopeReport.sourceEvidenceFingerprint);
+
+    readDeferredWeights.mockResolvedValue(new Map([
+      ["#DEFERCLAN", new Map([[
+        "#PLAYER1",
+        { deferredWeight: 190_000, createdAt: new Date("2026-11-20T23:59:59.999Z") },
+      ]])],
+    ]));
+    const earlierEligibleReport = await service.generate({
+      evaluationAt,
+      eraPolicy,
+      sampleThreshold: 1,
+      defermentScope: { guildId: "guild-1", clanTag: "#DEFERCLAN" },
+    });
+    expect(earlierEligibleReport.diagnostics.find((diagnostic) => diagnostic.status === "SUPPORTED")?.resolvedWeightCounts)
+      .toEqual({ RAW: 49, DEFERRED: 1, ESTIMATED: 0, UNRESOLVED: 0 });
+    expect(earlierEligibleReport.sourceEvidenceFingerprint).not.toBe(boundaryFingerprint);
+    expect(readDeferredWeights).toHaveBeenCalledTimes(3);
   });
 
   it("runs the fixture diagnostic CLI without touching the database", () => {

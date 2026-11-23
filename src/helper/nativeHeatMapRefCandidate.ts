@@ -64,6 +64,8 @@ export type NativeReferenceSourceMember = {
   effectiveWeight: number | null;
   effectiveWeightStatus: string;
   deferredWeight?: number | null;
+  /** Existing /defer row creation time used for as-of eligibility and provenance. */
+  deferredCreatedAt?: Date | string | null;
   sourceSyncedAt?: Date | string | null;
 };
 
@@ -154,7 +156,7 @@ export type NativeReferenceBandDiagnostic = {
   observedCandidateCount: number;
   /** Source rosters that passed every eligibility check. */
   qualifyingRosterCount: number;
-  /** Fully resolved current-roster samples, including lower-confidence quality exclusions. */
+  /** Qualified rosters plus fully resolved lower-confidence quality-only exclusions. */
   usableRosterCount: number;
   distinctQualifyingClanCount: number;
   excludedRosterCount: number;
@@ -251,6 +253,7 @@ function rawSourceObservationDates(rosters: readonly NativeReferenceSourceRoster
     roster.sourceWarEndTime,
     roster.sourceCurrentWarUpdatedAt,
     ...roster.members.map((member) => member.sourceSyncedAt ?? null),
+    ...roster.members.map((member) => member.deferredCreatedAt ?? null),
   ]
     .map((value) => parseDate(value))
     .filter((value): value is Date => Boolean(value)));
@@ -759,6 +762,7 @@ function canonicalizeSourceEvidence(rosters: readonly NativeReferenceSourceRoste
           effectiveWeight: member.effectiveWeight,
           effectiveWeightStatus: member.effectiveWeightStatus,
           deferredWeight: member.deferredWeight ?? null,
+          deferredCreatedAt: parseDate(member.deferredCreatedAt)?.toISOString() ?? null,
           sourceSyncedAt: parseDate(member.sourceSyncedAt)?.toISOString() ?? null,
         }))
         .sort(compareCanonical),
@@ -857,6 +861,9 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
     );
     const qualifyingRosterCount = rows.length;
     const distinctQualifyingClanCount = new Set(rows.map((row) => row.clanTag)).size;
+    const qualityOnlyExclusionCount = bandExclusions.filter(
+      (exclusion) => exclusion.reasonCode === "insufficient_weight_support",
+    ).length;
     const supported = qualifyingRosterCount >= threshold && distinctQualifyingClanCount >= threshold && !normalized.invalidReason;
     const reasonCode: NativeReferenceBandDiagnostic["reasonCode"] = qualifyingRosterCount === 0
       ? observedCandidateCount === 0 && bandExclusions.length === 0 ? "no_source" : "invalid_evidence"
@@ -886,7 +893,7 @@ export function generateNativeHeatMapRefCandidate(input: NativeCandidateConfig):
       reasonCode,
       observedCandidateCount,
       qualifyingRosterCount,
-      usableRosterCount: observedCandidateCount,
+      usableRosterCount: qualifyingRosterCount + qualityOnlyExclusionCount,
       distinctQualifyingClanCount,
       excludedRosterCount: bandExclusions.length,
       exclusionCounts: countReasons(bandExclusions),
@@ -1127,7 +1134,7 @@ function validateNativeReferenceCandidateArtifactInternal(
       diagnostic.distinctQualifyingClanCount > diagnostic.qualifyingRosterCount ||
       diagnostic.th19ContainingRosterCount > diagnostic.qualifyingRosterCount ||
       !isNonnegativeInteger(diagnostic.usableRosterCount) ||
-      diagnostic.usableRosterCount !== diagnostic.observedCandidateCount ||
+      diagnostic.usableRosterCount > diagnostic.observedCandidateCount ||
       diagnostic.qualifyingRosterCount > diagnostic.usableRosterCount ||
       !isRecordValue(diagnostic.observedBucketTotals) ||
       !isRecordValue(diagnostic.averageBucketCounts) ||
@@ -1156,9 +1163,13 @@ function validateNativeReferenceCandidateArtifactInternal(
     }
     const expectedBandExclusionCounts = countReasons(exclusionRows.filter((row) => isRecordValue(row) && row.bandAttribution === "INDEPENDENT" && row.bandKey === key) as NativeReferenceExclusion[]);
     const expectedExcludedRosterCount = Object.values(expectedBandExclusionCounts).reduce((sum, count) => sum + count, 0);
+    const expectedQualityOnlyExclusionCount = (exclusionRows.filter(
+      (row) => isRecordValue(row) && row.bandAttribution === "INDEPENDENT" && row.bandKey === key && row.reasonCode === "insufficient_weight_support",
+    ) as NativeReferenceExclusion[]).length;
     if (
       canonicalSortKey(diagnostic.exclusionCounts) !== canonicalSortKey(expectedBandExclusionCounts) ||
       diagnostic.excludedRosterCount !== expectedExcludedRosterCount ||
+      diagnostic.usableRosterCount !== diagnostic.qualifyingRosterCount + expectedQualityOnlyExclusionCount ||
       diagnostic.observedCandidateCount !== diagnostic.qualifyingRosterCount + diagnostic.excludedRosterCount ||
       diagnostic.distinctQualifyingClanCount !== diagnostic.qualifyingRosterCount
     ) return false;
