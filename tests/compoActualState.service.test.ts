@@ -116,6 +116,16 @@ function makeHeatMapRef(input?: Partial<{
   };
 }
 
+function makeContinuousHeatMapRefs(): ReturnType<typeof makeHeatMapRef>[] {
+  return Array.from({ length: 14 }, (_, index) =>
+    makeHeatMapRef({
+      weightMinInclusive: index * 100_000,
+      weightMaxInclusive: index * 100_000 + 99_999,
+      th18Count: index === 1 ? 1 : 0,
+    }),
+  );
+}
+
 function makeMember(input: {
   clanTag: string;
   playerTag: string;
@@ -634,9 +644,132 @@ describe("CompoActualStateService", () => {
 
     expect(context.referenceAvailability.status).toBe("retained_unverified");
     expect(context.clans[0]?.base.bucketCounts.TH18).toBe(1);
+    expect(context.heatMapRefParents).toHaveLength(1);
     expect(context.heatMapRefs).toEqual([]);
     expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
-    expect(result.contentLines.join(" ")).toContain("retained historical data");
+    const content = result.contentLines.join(" ");
+    expect(content).toContain("HeatMapRef parent bands are present");
+    expect(content).toContain("retained historical data");
+    expect(content).not.toContain("Missing HeatMapRef band for displayed ACTUAL totals");
+    expect(result.imageNotice).toBe("TH comparisons unavailable - HeatMapRef validation blocked");
+  });
+
+  it("keeps Auto-Detect UNKNOWN for populated references when provenance is absent", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    const parents = makeContinuousHeatMapRefs();
+    prismaMock.heatMapRef.findMany.mockResolvedValue(parents);
+    prismaMock.$queryRaw.mockResolvedValue([]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(context.heatMapRefParents).toHaveLength(14);
+    expect(context.heatMapRefs).toEqual([]);
+    expect(context.referenceAvailability.status).toBe("unknown");
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    expect(result.stateRows?.[1]?.[1]).toBe("175,000");
+    const rawResult = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
+    expect(rawResult.stateRows?.[1]?.[5]).toBe("1");
+    const content = result.contentLines.join(" ");
+    expect(content).toContain("HeatMapRef parent bands are present");
+    expect(content).toContain("provenance is unavailable");
+    expect(content).not.toContain("Missing HeatMapRef band for displayed ACTUAL totals");
+    expect(result.imageNotice).toBe("TH comparisons unavailable - HeatMapRef not validated");
+  });
+
+  it("does not show an unavailable-reference notice for validated supported references", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 1_000_000 }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.imageNotice).toBeNull();
+    expect(result.contentLines.join(" ")).not.toContain("TH comparisons unavailable");
+  });
+
+  it("retains the missing-band message for a weight outside parent coverage", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({ weightMinInclusive: 0, weightMaxInclusive: 100_000 }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.contentLines.join(" ")).toContain(
+      "Missing HeatMapRef band for displayed ACTUAL totals: Alpha Clan (175,000)",
+    );
+    expect(result.imageNotice).toBeNull();
+  });
+
+  it("explains clan-specific TH19 unavailability when references are validated", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 50 }, (_, index) =>
+        makeMember({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: index === 0 ? 181000 : 175000,
+        }),
+      ),
+    );
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([
+      makeHeatMapRef({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 10_000_000,
+        th18Count: 49,
+      }),
+    ]);
+
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    const rawResult = await new CompoActualStateService().readState("guild-1", {
+      view: "raw",
+    });
+    expect(rawResult.stateRows?.[0]).toContain("TH19");
+    expect(rawResult.stateRows?.[1]?.[5]).toBe("1");
+    expect(result.contentLines.join(" ")).toContain(
+      "TH19 comparison unavailable for: Alpha Clan (legacy HeatMapRef targets do not support observed TH19)",
+    );
+    expect(result.contentLines.join(" ")).not.toContain(
+      "Missing HeatMapRef band for displayed ACTUAL totals",
+    );
+    expect(result.imageNotice).toBe(
+      "TH comparisons unavailable - observed TH19 unsupported by legacy HeatMapRef",
+    );
   });
 
   it("uses feed, catalog, player-current, deferred, and war fallbacks in order for ACTUAL state totals", async () => {
