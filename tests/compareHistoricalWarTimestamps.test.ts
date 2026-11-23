@@ -1,9 +1,12 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   compareHistoricalWarTimestamps,
   normalizeClashPerk,
+  runHistoricalTimestampComparator,
   type ClashPerkRecord,
   type DuskPerWarRecord,
 } from "../scripts/compareHistoricalWarTimestamps";
@@ -129,7 +132,13 @@ describe("FB-002 P4d-1a.3 historical timestamp comparator", () => {
   it("uses deterministic UTC normalization for PostgreSQL and explicit-offset timestamps", () => {
     expect(normalizeClashPerk({ sourceId: "pg", clanTag, opponentTag: "#X", timestamp: "2026-10-01 00:00:00" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
     expect(normalizeClashPerk({ sourceId: "z", clanTag, opponentTag: "#X", timestamp: "2026-10-01T00:00:00Z" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+    expect(normalizeClashPerk({ sourceId: "short-positive", clanTag, opponentTag: "#X", timestamp: "2026-10-01 02:00:00+02" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+    expect(normalizeClashPerk({ sourceId: "compact", clanTag, opponentTag: "#X", timestamp: "2026-10-01 02:00:00+0000" }).timestamp).toBe("2026-10-01T02:00:00.000Z");
     expect(normalizeClashPerk({ sourceId: "offset", clanTag, opponentTag: "#X", timestamp: "2026-10-01 02:00:00+02:00" }).timestamp).toBe("2026-10-01T00:00:00.000Z");
+
+    expect(() => normalizeClashPerk({ sourceId: "bad-hour", clanTag, opponentTag: "#X", timestamp: "2026-10-01 00:00:00+24" })).toThrow("Invalid ClashPerk fixture row");
+    expect(() => normalizeClashPerk({ sourceId: "bad-minute", clanTag, opponentTag: "#X", timestamp: "2026-10-01 00:00:00+02:60" })).toThrow("Invalid ClashPerk fixture row");
+    expect(() => normalizeClashPerk({ sourceId: "bad-shape", clanTag, opponentTag: "#X", timestamp: "2026-10-01 00:00:00+2" })).toThrow("Invalid ClashPerk fixture row");
 
     const child = spawnSync(
       process.execPath,
@@ -143,6 +152,55 @@ describe("FB-002 P4d-1a.3 historical timestamp comparator", () => {
     );
     expect(child.status).toBe(0);
     expect(child.stdout).toBe("2026-10-01T00:00:00.000Z");
+  });
+
+  it("ingests realistic headered psql CSV timestamps and preserves exact offsets and outcomes", () => {
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "fb002-p4d1a3-timestamp-csv-"));
+    const clashPerkPath = join(temporaryDirectory, "clashperk.csv");
+    const duskPath = join(temporaryDirectory, "dusk.csv");
+    const outputPath = join(temporaryDirectory, "report.json");
+    try {
+      writeFileSync(
+        clashPerkPath,
+        [
+          "sourceId,clanTag,opponentTag,timestamp",
+          "control,#2YUYLJCGV,#CONTROL,2026-11-20 02:30:52+00",
+          "participation-closer,#2YUYLJCGV,#PARTICIPATION,2026-10-01 02:30:52-08",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      writeFileSync(
+        duskPath,
+        [
+          "dusk_war_id,clan_tag,opponent_tag,war_start_time,history_end_time,participation_row_count,distinct_participation_identity_count,distinct_participation_end_timestamp_count,null_participation_end_time_count,min_participation_end_time,max_participation_end_time,start_time_mismatch_count,opponent_tag_mismatch_count,cross_guild_duplicate_identity_count,cross_guild_duplicate_copy_count,participation_end_time_internally_consistent",
+          "2001,#2YUYLJCGV,#CONTROL,2026-11-19 02:30:52+00,2026-11-20 02:30:52+00,50,50,1,0,2026-11-20 02:30:52+00,2026-11-20 02:30:52+00,0,0,0,0,true",
+          "2002,#2YUYLJCGV,#PARTICIPATION,2026-09-30 02:30:52+02,2026-10-01 10:30:42+00,50,50,1,0,2026-10-01 10:30:52+00,2026-10-01 10:30:52+00,0,0,0,0,true",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const report = runHistoricalTimestampComparator([
+        "--clashperk",
+        clashPerkPath,
+        "--dusk",
+        duskPath,
+        "--output",
+        outputPath,
+      ]);
+      const control = report.rows.find((row) => row.sourceId === "control");
+      const participationCloser = report.rows.find((row) => row.sourceId === "participation-closer");
+      expect(control?.outcome).toBe("EQUAL_DISTANCE");
+      expect(control?.clashPerkMinusDuskHistorySeconds).toBe(0);
+      expect(control?.clashPerkMinusParticipationSeconds).toBe(0);
+      expect(participationCloser?.outcome).toBe("CLOSER_TO_PARTICIPATION");
+      expect(participationCloser?.clashPerkMinusDuskHistorySeconds).toBe(10);
+      expect(participationCloser?.clashPerkMinusParticipationSeconds).toBe(0);
+      expect(JSON.parse(readFileSync(outputPath, "utf8")).summary.externalRecordCount).toBe(2);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   it("fails closed for duplicate external identities and reused Dusk identities", () => {

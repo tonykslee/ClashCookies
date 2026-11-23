@@ -158,9 +158,35 @@ export function normalizeTag(value: unknown): string | null {
 function timestamp(value: unknown): number | null {
   if (value === null || value === undefined || text(value) === "") return null;
   const raw = text(value);
-  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
-    ? raw
-    : `${raw.replace(" ", "T")}Z`;
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)?$/i.exec(raw);
+  if (!match) return null;
+
+  const [, datePart, timePart, fractionPart = "", zonePart] = match;
+  const localTimestamp = new Date(`${datePart}T${timePart}${fractionPart}Z`);
+  if (!Number.isFinite(localTimestamp.getTime())) return null;
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute, second] = timePart.split(":").map(Number);
+  if (
+    localTimestamp.getUTCFullYear() !== year ||
+    localTimestamp.getUTCMonth() + 1 !== month ||
+    localTimestamp.getUTCDate() !== day ||
+    localTimestamp.getUTCHours() !== hour ||
+    localTimestamp.getUTCMinutes() !== minute ||
+    localTimestamp.getUTCSeconds() !== second
+  ) return null;
+
+  let normalizedZone = "Z";
+  if (zonePart && zonePart.toUpperCase() !== "Z") {
+    const offsetMatch = /^([+-])(\d{2})(?::?(\d{2}))?$/.exec(zonePart);
+    if (!offsetMatch) return null;
+    const [, sign, offsetHoursText, offsetMinutesText] = offsetMatch;
+    const offsetHours = Number(offsetHoursText);
+    const offsetMinutes = offsetMinutesText === undefined ? 0 : Number(offsetMinutesText);
+    if (offsetHours > 23 || offsetMinutes > 59) return null;
+    normalizedZone = `${sign}${offsetHoursText}:${String(offsetMinutes).padStart(2, "0")}`;
+  }
+
+  const normalized = `${datePart}T${timePart}${fractionPart}${normalizedZone}`;
   const milliseconds = new Date(normalized).getTime();
   return Number.isFinite(milliseconds) ? milliseconds : null;
 }
