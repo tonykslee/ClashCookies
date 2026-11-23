@@ -263,6 +263,15 @@ function makeDefaultTableStore(): MirrorTableDataStore {
         th10OrLowerCount: 50,
       },
     ],
+    HeatMapRefBucketTarget: [
+      {
+        weightMinInclusive: 0,
+        weightMaxInclusive: 100000,
+        bucketId: "TH18",
+        targetCount: 0,
+        status: "SUPPORTED",
+      },
+    ],
   };
 }
 
@@ -423,6 +432,9 @@ function buildSourceClient(
     heatMapRef: {
       findMany: vi.fn(async () => cloneRows(store.HeatMapRef)),
     },
+    heatMapRefBucketTarget: {
+      findMany: vi.fn(async () => cloneRows(store.HeatMapRefBucketTarget)),
+    },
     externalPlayerWeightCurrent: {
       findMany: vi.fn(async () => cloneRows(store.ExternalPlayerWeightCurrent)),
     },
@@ -573,6 +585,10 @@ function buildTargetClient(
       createMany: createMany("CwlSeasonRosterState"),
     },
     heatMapRef: { deleteMany: deleteMany("HeatMapRef"), createMany: createMany("HeatMapRef") },
+    heatMapRefBucketTarget: {
+      deleteMany: deleteMany("HeatMapRefBucketTarget"),
+      createMany: createMany("HeatMapRefBucketTarget"),
+    },
     externalPlayerWeightCurrent: {
       deleteMany: deleteMany("ExternalPlayerWeightCurrent"),
       createMany: createMany("ExternalPlayerWeightCurrent"),
@@ -608,6 +624,11 @@ describe("MirrorSyncService", () => {
 
   it("does not mirror retired baseline tables", () => {
     expect(MIRRORED_RUNTIME_TABLES.some((table) => table.toLowerCase().includes("baseline"))).toBe(false);
+  });
+
+  it("does not mirror BotSetting provenance with HeatMapRef rows", () => {
+    expect(MIRRORED_RUNTIME_TABLES).toContain("HeatMapRef");
+    expect(MIRRORED_RUNTIME_TABLES as readonly string[]).not.toContain("BotSetting");
   });
 
   it("runs full-overwrite sync for only the allowlisted runtime tables", async () => {

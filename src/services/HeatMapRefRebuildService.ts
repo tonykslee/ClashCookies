@@ -1,4 +1,5 @@
 import type { Client } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../prisma";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { CommandPermissionService } from "./CommandPermissionService";
@@ -9,6 +10,7 @@ import { assertHeatMapRefContinuityOrThrow } from "../helper/heatMapRefContinuit
 import {
   buildHeatMapRefRebuildCycleKey,
   buildHeatMapRefRebuildRows,
+  computeHeatMapRefContentHash,
   computeHeatMapRefRebuildContentHash,
   computeHeatMapRefRebuildDueAt,
   type HeatMapRefBandDefinition,
@@ -22,23 +24,52 @@ import { normalizeFwaTag } from "./fwa-feeds/normalize";
 import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
 import { getAllHeatMapRefs } from "./HeatMapRefService";
 import {
+  buildLegacyHeatMapRefBucketTargets,
+  validateLegacyHeatMapRefTargets,
+} from "../helper/heatMapRefResolver";
+import {
   parseSyncTimeMetadata,
   trackedMessageService,
 } from "./TrackedMessageService";
 import { isMirrorPollingMode, type PollingMode } from "./PollingModeService";
+import {
+  HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+  HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX,
+  acquireHeatMapRefReferenceWriteLock,
+  buildHeatMapRefReferenceIntegrityRecord,
+  parseHeatMapRefReferenceIntegrityRecord,
+  parseHeatMapRefReferenceAvailability,
+  stringifyHeatMapRefReferenceIntegrity,
+  type HeatMapRefRebuildBlockReasonCode,
+} from "../helper/heatMapRefAvailability";
 
-const HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX = "heatmapref_rebuild_state";
+let heatMapRefRebuildLock: Promise<void> = Promise.resolve();
+
+async function withHeatMapRefRebuildLock<T>(work: () => Promise<T>): Promise<T> {
+  const previous = heatMapRefRebuildLock;
+  let release!: () => void;
+  heatMapRefRebuildLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
 
 type HeatMapRefRebuildCheckpoint = {
   cycleKey: string;
   anchoredSyncTimeIso: string;
   dueAtIso: string;
-  status: "scheduled" | "running" | "success" | "failed" | "no_op";
+  status: "scheduled" | "running" | "success" | "failed" | "no_op" | "blocked";
   lastAttemptAtIso: string | null;
   lastSuccessAtIso: string | null;
   failureReason: string | null;
   contentHash: string | null;
   roleId: string | null;
+  blockReasonCode: HeatMapRefRebuildBlockReasonCode | null;
 };
 
 export type HeatMapRefRebuildRunResult = {
@@ -55,6 +86,8 @@ export type HeatMapRefRebuildRunResult = {
   contentHash: string | null;
   alertSent: boolean;
   summaryLines: string[];
+  blockReasonCode?: HeatMapRefRebuildBlockReasonCode | null;
+  evaluationPerformed?: boolean;
 };
 
 type RebuildCycleContext = {
@@ -86,7 +119,8 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
           parsed.status === "running" ||
           parsed.status === "success" ||
           parsed.status === "failed" ||
-          parsed.status === "no_op") &&
+          parsed.status === "no_op" ||
+          parsed.status === "blocked") &&
         typeof parsed.anchoredSyncTimeIso === "string" &&
         typeof parsed.dueAtIso === "string"
       ) {
@@ -103,6 +137,12 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
             typeof parsed.failureReason === "string" ? parsed.failureReason : null,
           contentHash: typeof parsed.contentHash === "string" ? parsed.contentHash : null,
           roleId: typeof parsed.roleId === "string" ? parsed.roleId : null,
+          blockReasonCode:
+            parsed.blockReasonCode === "th19_integrity" ||
+            parsed.blockReasonCode === "no_source_evidence" ||
+            parsed.blockReasonCode === "no_qualifying_evidence"
+              ? parsed.blockReasonCode
+              : null,
         };
       }
 
@@ -122,6 +162,7 @@ function parseCheckpoint(raw: string | null): HeatMapRefRebuildCheckpoint | null
           failureReason: null,
           contentHash: typeof legacyParsed.contentHash === "string" ? legacyParsed.contentHash : null,
           roleId: null,
+          blockReasonCode: null,
         };
       }
     }
@@ -137,6 +178,7 @@ function stringifyCheckpoint(value: HeatMapRefRebuildCheckpoint): string {
 
 function buildCheckpointForCycle(input: {
   cycle: RebuildCycleContext;
+  previous?: HeatMapRefRebuildCheckpoint | null;
 }): HeatMapRefRebuildCheckpoint {
   return {
     cycleKey: input.cycle.cycleKey,
@@ -144,15 +186,16 @@ function buildCheckpointForCycle(input: {
     dueAtIso: input.cycle.dueAt.toISOString(),
     status: "scheduled",
     lastAttemptAtIso: null,
-    lastSuccessAtIso: null,
+    lastSuccessAtIso: input.previous?.lastSuccessAtIso ?? null,
     failureReason: null,
-    contentHash: null,
+    contentHash: input.previous?.contentHash ?? null,
     roleId: input.cycle.roleId,
+    blockReasonCode: null,
   };
 }
 
 function isTerminalCheckpointStatus(status: HeatMapRefRebuildCheckpoint["status"]): boolean {
-  return status === "success" || status === "failed" || status === "no_op";
+  return status === "success" || status === "failed" || status === "no_op" || status === "blocked";
 }
 
 function buildSeedBandDefinitions(): HeatMapRefBandDefinition[] {
@@ -226,7 +269,7 @@ function buildSummaryLines(input: {
   qualifyingRosters: HeatMapRefRebuildQualifiedRoster[];
   excludedRosters: HeatMapRefRebuildExcludedRoster[];
   rows: HeatMapRefRebuildRow[];
-  status: "success" | "noop" | "failed";
+  status: "success" | "noop" | "skipped" | "failed";
   reason: string | null;
 }): string[] {
   const lines = [
@@ -237,8 +280,29 @@ function buildSummaryLines(input: {
     `heatmap rows: ${input.rows.length}`,
     `result: ${input.status}`,
   ];
+  if (input.sourceRosterCount === 0) {
+    lines.push("evidence: unavailable");
+  } else if (input.excludedRosters.length > 0 && input.qualifyingRosters.length > 0) {
+    lines.push(`evidence: partial (${input.excludedRosters.length} roster(s) excluded)`);
+  } else if (input.excludedRosters.length > 0) {
+    lines.push("evidence: excluded (no safe roster evidence)");
+  } else {
+    lines.push("evidence: supported");
+  }
   if (input.reason) {
     lines.push(`reason: ${input.reason}`);
+  }
+  const exclusionCounts = new Map<string, number>();
+  for (const row of input.excludedRosters) {
+    exclusionCounts.set(row.reasonCode, (exclusionCounts.get(row.reasonCode) ?? 0) + 1);
+  }
+  if (exclusionCounts.size > 0) {
+    lines.push(
+      `excluded reasons: ${[...exclusionCounts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([reasonCode, count]) => `${reasonCode}=${count}`)
+        .join(", ")}`,
+    );
   }
   const excludedPreview = input.excludedRosters
     .slice(0, 3)
@@ -267,9 +331,14 @@ export class HeatMapRefRebuildService {
 
   /** Purpose: rebuild HeatMapRef directly from persisted source tables without any scheduling or alert side-effects. */
   async rebuildHeatMapRef(now: Date = new Date()): Promise<HeatMapRefRebuildRunResult> {
+    return withHeatMapRefRebuildLock(() => this.rebuildHeatMapRefUnlocked(now));
+  }
+
+  private async rebuildHeatMapRefUnlocked(now: Date): Promise<HeatMapRefRebuildRunResult> {
+    const evaluationGeneration = await this.beginReferenceIntegrityEvaluation(now);
     const fwaClanTags = await loadAllFwaClanTags();
     if (fwaClanTags.length === 0) {
-      return {
+      return this.finalizeReferenceIntegrity({
         status: "skipped",
         reason: "no persisted FWA clans are configured",
         cycleKey: null,
@@ -282,8 +351,9 @@ export class HeatMapRefRebuildService {
         changedRowCount: 0,
         contentHash: null,
         alertSent: false,
+        blockReasonCode: "no_source_evidence",
         summaryLines: ["No persisted FWA clans are configured."],
-      };
+      }, now, evaluationGeneration);
     }
 
     const members = await prisma.fwaWarMemberCurrent.findMany({
@@ -309,11 +379,12 @@ export class HeatMapRefRebuildService {
       now,
     });
     const rebuilt = rebuiltResult.rows;
+    const currentRows = await getAllHeatMapRefs();
     assertHeatMapRefContinuityOrThrow({
       operation: "rebuild",
       rows: rebuilt,
     });
-    const currentRows = await getAllHeatMapRefs();
+
     const currentComparableRows = currentRows.map((row) => ({
       weightMinInclusive: row.weightMinInclusive,
       weightMaxInclusive: row.weightMaxInclusive,
@@ -324,16 +395,62 @@ export class HeatMapRefRebuildService {
       th14Count: row.th14Count,
       th13Count: row.th13Count,
       th12Count: row.th12Count,
-      th11Count: row.th11Count,
       th10OrLowerCount: row.th10OrLowerCount,
+      th11Count: row.th11Count,
       contributingClanCount: row.contributingClanCount,
       sourceVersion: row.sourceVersion,
       refreshedAt: row.refreshedAt,
     }));
     const currentHash = computeHeatMapRefRebuildContentHash(currentComparableRows as HeatMapRefRebuildRow[]);
     const nextHash = computeHeatMapRefRebuildContentHash(rebuilt);
+
+    const hasTh19IntegrityBlock = rebuiltResult.excludedRosters.some(
+      (roster) => roster.reasonCode === "unsupported_th19",
+    );
+    const blockReasonCode: HeatMapRefRebuildBlockReasonCode | null =
+      sourceRosters.length === 0
+        ? "no_source_evidence"
+        : hasTh19IntegrityBlock
+          ? "th19_integrity"
+          : rebuiltResult.qualifyingRosters.length === 0
+            ? "no_qualifying_evidence"
+            : null;
+    if (blockReasonCode) {
+      const reason =
+        blockReasonCode === "no_source_evidence"
+          ? "no current FWA roster evidence; existing HeatMapRef rows were preserved and rebuild was blocked"
+          : blockReasonCode === "no_qualifying_evidence"
+            ? "no qualifying FWA rosters; existing HeatMapRef rows were preserved and rebuild was blocked"
+            : "TH19-containing roster evidence cannot be represented by the legacy HeatMapRef schema and prevents a safe replacement; existing HeatMapRef rows were preserved and rebuild was blocked";
+      const status: HeatMapRefRebuildRunResult["status"] = "skipped";
+      return this.finalizeReferenceIntegrity({
+        status,
+        reason,
+        cycleKey: null,
+        dueAt: null,
+        trackedClanCount: fwaClanTags.length,
+        sourceRosterCount: sourceRosters.length,
+        qualifyingRosterCount: rebuiltResult.qualifyingRosters.length,
+        excludedRosterCount: rebuiltResult.excludedRosters.length,
+        rowCount: currentRows.length,
+        changedRowCount: 0,
+        contentHash: null,
+        alertSent: false,
+        blockReasonCode,
+        summaryLines: buildSummaryLines({
+          trackedClanCount: fwaClanTags.length,
+          sourceRosterCount: sourceRosters.length,
+          qualifyingRosters: rebuiltResult.qualifyingRosters,
+          excludedRosters: rebuiltResult.excludedRosters,
+          rows: currentRows as HeatMapRefRebuildRow[],
+          status,
+          reason,
+        }),
+      }, now, evaluationGeneration);
+    }
+
     if (currentHash === nextHash) {
-      return {
+      return this.finalizeReferenceIntegrity({
         status: "noop",
         reason: "rebuilt content matched the stored HeatMapRef rows",
         cycleKey: null,
@@ -355,32 +472,8 @@ export class HeatMapRefRebuildService {
         status: "noop",
         reason: "rebuilt content matched the stored HeatMapRef rows",
       }),
-    };
+      }, now, evaluationGeneration);
     }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.heatMapRef.deleteMany({});
-      if (rebuilt.length > 0) {
-        await tx.heatMapRef.createMany({
-          data: rebuilt.map((row) => ({
-            weightMinInclusive: row.weightMinInclusive,
-            weightMaxInclusive: row.weightMaxInclusive,
-            th18Count: row.th18Count,
-            th17Count: row.th17Count,
-            th16Count: row.th16Count,
-            th15Count: row.th15Count,
-            th14Count: row.th14Count,
-            th13Count: row.th13Count,
-            th12Count: row.th12Count,
-            th11Count: row.th11Count,
-            th10OrLowerCount: row.th10OrLowerCount,
-            contributingClanCount: row.contributingClanCount,
-            sourceVersion: row.sourceVersion,
-            refreshedAt: row.refreshedAt,
-          })),
-        });
-      }
-    });
 
     const result = buildSummaryLines({
       trackedClanCount: fwaClanTags.length,
@@ -391,7 +484,7 @@ export class HeatMapRefRebuildService {
       status: "success",
       reason: null,
     });
-    return {
+    return this.finalizeReferenceIntegrity({
       status: "success",
       reason: null,
       cycleKey: null,
@@ -405,7 +498,134 @@ export class HeatMapRefRebuildService {
       contentHash: nextHash,
       alertSent: false,
       summaryLines: result,
-    };
+    }, now, evaluationGeneration, rebuilt);
+  }
+
+  private async beginReferenceIntegrityEvaluation(now: Date): Promise<string> {
+    return prisma.$transaction(async (tx) => {
+      if (typeof tx.$executeRaw === "function") {
+        await acquireHeatMapRefReferenceWriteLock(tx);
+      }
+      const evaluationGeneration = randomUUID();
+      const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
+      const availability = parseHeatMapRefReferenceAvailability(raw);
+      const pending = buildHeatMapRefReferenceIntegrityRecord({
+        status: "pending",
+        reason: "reference validation is in progress",
+        validatedAtIso: availability.lastSuccessAtIso,
+        updatedAtIso: now.toISOString(),
+        evaluationGeneration,
+      });
+      await this.settings.set(
+        HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+        stringifyHeatMapRefReferenceIntegrity(pending),
+        tx,
+      );
+      return evaluationGeneration;
+    });
+  }
+
+  private async finalizeReferenceIntegrity(
+    result: HeatMapRefRebuildRunResult,
+    now: Date,
+    evaluationGeneration: string,
+    publicationRows?: readonly HeatMapRefRebuildRow[],
+  ): Promise<HeatMapRefRebuildRunResult> {
+    return prisma.$transaction(async (tx) => {
+      if (typeof tx.$executeRaw === "function") {
+        await acquireHeatMapRefReferenceWriteLock(tx);
+      }
+      const raw = await this.settings.get(HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY, tx);
+      const currentIntegrity = parseHeatMapRefReferenceIntegrityRecord(raw);
+      if (currentIntegrity?.evaluationGeneration !== evaluationGeneration) {
+        throw new Error("HeatMapRef evaluation was superseded by a newer evaluation");
+      }
+      const previous = parseHeatMapRefReferenceAvailability(raw);
+      const validated = result.status === "success" || result.status === "noop";
+      if (validated && result.status === "noop") {
+        const currentRows = await tx.heatMapRef.findMany({
+          orderBy: [{ weightMinInclusive: "asc" }, { weightMaxInclusive: "asc" }],
+        });
+        const currentHash = computeHeatMapRefContentHash(currentRows);
+        if (currentHash !== result.contentHash) {
+          throw new Error("HeatMapRef rows changed before unchanged validation could be committed");
+        }
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.findMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target reader is unavailable: heatMapRefBucketTarget is required",
+          );
+        }
+        const bucketTargets = await bucketTargetDelegate.findMany({
+          orderBy: [
+            { weightMinInclusive: "asc" },
+            { weightMaxInclusive: "asc" },
+            { bucketId: "asc" },
+          ],
+        });
+        const normalized = validateLegacyHeatMapRefTargets(currentRows, bucketTargets as never);
+        if (!normalized.ok) {
+          throw new Error(`HeatMapRef normalized target validation failed: ${normalized.reason}`);
+        }
+      }
+      if (validated && result.status === "success") {
+        if (!publicationRows) {
+          throw new Error("validated HeatMapRef publication has no rows");
+        }
+        const bucketTargetDelegate = tx.heatMapRefBucketTarget;
+        if (
+          !bucketTargetDelegate ||
+          typeof bucketTargetDelegate.deleteMany !== "function" ||
+          typeof bucketTargetDelegate.createMany !== "function"
+        ) {
+          throw new Error(
+            "HeatMapRef normalized target writer is unavailable: heatMapRefBucketTarget is required",
+          );
+        }
+        await bucketTargetDelegate.deleteMany({});
+        await tx.heatMapRef.deleteMany({});
+        if (publicationRows.length > 0) {
+          const parentRows = publicationRows.map((row) => ({
+              weightMinInclusive: row.weightMinInclusive,
+              weightMaxInclusive: row.weightMaxInclusive,
+              th18Count: row.th18Count,
+              th17Count: row.th17Count,
+              th16Count: row.th16Count,
+              th15Count: row.th15Count,
+              th14Count: row.th14Count,
+              th13Count: row.th13Count,
+              th12Count: row.th12Count,
+              th11Count: row.th11Count,
+              th10OrLowerCount: row.th10OrLowerCount,
+              contributingClanCount: row.contributingClanCount,
+              sourceVersion: row.sourceVersion,
+              refreshedAt: row.refreshedAt,
+            }));
+          await tx.heatMapRef.createMany({ data: parentRows });
+          await bucketTargetDelegate.createMany({
+            data: buildLegacyHeatMapRefBucketTargets(parentRows),
+          });
+        }
+      }
+      const record = buildHeatMapRefReferenceIntegrityRecord({
+        status: validated ? "validated" : "blocked",
+        blockReasonCode: result.blockReasonCode ?? "no_source_evidence",
+        reason: result.reason,
+        validatedAtIso: validated ? now.toISOString() : previous.lastSuccessAtIso,
+        updatedAtIso: now.toISOString(),
+        contentHash: validated ? result.contentHash : null,
+        evaluationGeneration,
+      });
+      await this.settings.set(
+        HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY,
+        stringifyHeatMapRefReferenceIntegrity(record),
+        tx,
+      );
+      return result;
+    });
   }
 
   /** Purpose: run the rebuild once when a sync cycle is due and persist a single-cycle checkpoint. */
@@ -481,9 +701,13 @@ export class HeatMapRefRebuildService {
     }
 
     if (isTerminalCheckpointStatus(activeCheckpoint.status)) {
+      const terminalReason =
+        activeCheckpoint.status === "blocked" && activeCheckpoint.failureReason
+          ? `cycle ${activeCheckpoint.cycleKey} already handled with blocked: ${activeCheckpoint.failureReason}`
+          : `cycle ${activeCheckpoint.cycleKey} already handled with ${activeCheckpoint.status}`;
       return {
         status: "skipped",
-        reason: `cycle ${activeCheckpoint.cycleKey} already handled with ${activeCheckpoint.status}`,
+        reason: terminalReason,
         cycleKey: activeCheckpoint.cycleKey,
         dueAt: new Date(activeCheckpoint.dueAtIso),
         trackedClanCount: 0,
@@ -495,7 +719,7 @@ export class HeatMapRefRebuildService {
         contentHash: activeCheckpoint.contentHash,
         alertSent: false,
         summaryLines: [
-          `Cycle ${activeCheckpoint.cycleKey} already handled with status ${activeCheckpoint.status}.`,
+          `${terminalReason}.`,
         ],
       };
     }
@@ -547,20 +771,26 @@ export class HeatMapRefRebuildService {
 
     try {
       const result = await this.rebuildHeatMapRef(now);
-      const finalStatus =
-        result.status === "noop" || result.status === "skipped" ? "no_op" : "success";
+      const blocked = result.status === "skipped";
+      const finalStatus = blocked
+        ? "blocked"
+        : result.status === "noop"
+          ? "no_op"
+          : "success";
       await this.writeCheckpoint(input.guildId, {
         ...activeCheckpoint,
         status: finalStatus,
         lastAttemptAtIso: now.toISOString(),
-        lastSuccessAtIso: now.toISOString(),
-        failureReason: null,
-        contentHash: result.contentHash,
+        lastSuccessAtIso: blocked ? activeCheckpoint.lastSuccessAtIso : now.toISOString(),
+        failureReason: blocked ? result.reason : null,
+        contentHash: blocked ? activeCheckpoint.contentHash : result.contentHash,
+        blockReasonCode: blocked ? result.blockReasonCode ?? null : null,
       });
       return {
         ...result,
         cycleKey: activeCheckpoint.cycleKey,
         dueAt,
+        evaluationPerformed: true,
       };
     } catch (error) {
       const reason = formatError(error);
@@ -569,7 +799,8 @@ export class HeatMapRefRebuildService {
         status: "failed",
         lastAttemptAtIso: now.toISOString(),
         failureReason: reason,
-        contentHash: null,
+        contentHash: activeCheckpoint.contentHash,
+        blockReasonCode: null,
       });
       const alertSent = await this.sendFailureAlert({
         client: input.client,
@@ -594,6 +825,7 @@ export class HeatMapRefRebuildService {
           `Rebuild failed: ${reason}`,
           `Alert sent: ${alertSent ? "yes" : "no"}`,
         ],
+        evaluationPerformed: true,
       };
     }
   }
@@ -616,14 +848,20 @@ export class HeatMapRefRebuildService {
         await this.writeCheckpoint(input.guildId, {
           ...checkpoint,
           status:
-            result.status === "noop" || result.status === "skipped" ? "no_op" : "success",
+            result.status === "skipped"
+              ? "blocked"
+              : result.status === "noop"
+                ? "no_op"
+                : "success",
           lastAttemptAtIso: now.toISOString(),
-          lastSuccessAtIso: now.toISOString(),
-          failureReason: null,
-          contentHash: result.contentHash,
+          lastSuccessAtIso:
+            result.status === "skipped" ? checkpoint.lastSuccessAtIso : now.toISOString(),
+          failureReason: result.status === "skipped" ? result.reason : null,
+          contentHash: result.status === "skipped" ? checkpoint.contentHash : result.contentHash,
+          blockReasonCode: result.status === "skipped" ? result.blockReasonCode ?? null : null,
         });
       }
-      return result;
+      return { ...result, evaluationPerformed: true };
     } catch (error) {
       return {
         status: "failed",
@@ -639,6 +877,7 @@ export class HeatMapRefRebuildService {
         contentHash: null,
         alertSent: false,
         summaryLines: [`Rebuild failed: ${formatError(error)}`],
+        evaluationPerformed: true,
       };
     }
   }
@@ -682,6 +921,7 @@ export class HeatMapRefRebuildService {
 
     const nextCheckpoint = buildCheckpointForCycle({
       cycle: input.latestCycle,
+      previous: existing,
     });
     await this.writeCheckpoint(input.guildId, nextCheckpoint);
     return nextCheckpoint;

@@ -539,6 +539,7 @@ export class ClanHealthSnapshotService {
     const now = new Date();
     const composition = await this.compoActualStateService.readExternalClanCurrentComposition({
       clanTag: input.clanTag,
+      guildId: input.guildId,
       now,
     });
     if (!composition) {

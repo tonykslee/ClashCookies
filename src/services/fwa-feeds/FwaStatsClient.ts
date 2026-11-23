@@ -15,6 +15,11 @@ import type {
   FwaClansFeedRow,
   FwaWarMemberFeedRow,
 } from "./types";
+import {
+  evaluateFwaWarMembersSourceEvidence,
+  parseFwaWarMembersRow,
+  type FwaWarMembersSourceEvidence,
+} from "./FwaWarMembersSourceEvidence";
 
 type FeedOperation = "clans_json" | "clan_members_json" | "war_members_json" | "clan_wars_json";
 
@@ -27,6 +32,7 @@ type FetchRowsParams = {
 type FetchRowsResult = {
   rows: unknown[];
   durationMs: number;
+  arrayPayload: boolean;
 };
 
 /** Purpose: centralize all fwastats JSON-feed HTTP calls, parsing, retries, and telemetry. */
@@ -61,29 +67,74 @@ export class FwaStatsClient {
     const normalizedTag = normalizeFwaTag(clanTag);
     const bare = normalizeFwaTagBare(clanTag);
     if (!normalizedTag || !bare) return [];
-    const { rows } = await this.fetchRows({
+    const { rows, arrayPayload } = await this.fetchRows({
       operation: "clan_members_json",
       url: `https://fwastats.com/Clan/${bare}/Members.json`,
       scope: normalizedTag,
     });
-    return rows
-      .map((row) => this.parseClanMembersRow(normalizedTag, row))
-      .filter((row): row is FwaClanMemberFeedRow => Boolean(row));
+    if (!arrayPayload) {
+      throw new Error("Members.json returned a non-array payload");
+    }
+    const parsed = rows.map((row) => this.parseClanMembersRow(normalizedTag, row));
+    if (parsed.some((row) => row === null)) {
+      throw new Error("Members.json contained malformed or unparseable member rows");
+    }
+    const normalizedRows = parsed.filter((row): row is FwaClanMemberFeedRow => Boolean(row));
+    const tags = normalizedRows.map((row) => row.playerTag);
+    if (new Set(tags).size !== tags.length || normalizedRows.length > 50) {
+      throw new Error("Members.json contained duplicate tags or exceeded clan capacity");
+    }
+    return normalizedRows;
   }
 
   /** Purpose: fetch and parse one clan active-war roster rows from `WarMembers.json?warNo=1`. */
   async fetchWarMembers(clanTag: string): Promise<FwaWarMemberFeedRow[]> {
+    const evidence = await this.fetchWarMembersEvidence(clanTag);
+    return evidence.rows;
+  }
+
+  /**
+   * Purpose: fetch WarMembers facts together with raw-payload diagnostics.
+   * Existing consumers may continue using the normalized rows, while native
+   * source eligibility can inspect discarded rows and unavailable proof facts.
+   */
+  async fetchWarMembersEvidence(clanTag: string): Promise<FwaWarMembersSourceEvidence & { rows: FwaWarMemberFeedRow[] }> {
     const normalizedTag = normalizeFwaTag(clanTag);
     const bare = normalizeFwaTagBare(clanTag);
-    if (!normalizedTag || !bare) return [];
-    const { rows } = await this.fetchRows({
+    if (!normalizedTag || !bare) {
+      const evidence = evaluateFwaWarMembersSourceEvidence({
+        clanTag,
+        sourceUrl: "",
+        sourceWarNo: 1,
+        rawPayloadIsArray: false,
+        rawRows: [],
+        acceptedRows: [],
+        observedAt: new Date(0),
+        ingestedAt: new Date(0),
+      });
+      return { ...evidence, rows: [] };
+    }
+    const sourceUrl = `https://fwastats.com/Clan/${bare}/WarMembers.json?warNo=1`;
+    const observedAt = new Date();
+    const { rows, arrayPayload } = await this.fetchRows({
       operation: "war_members_json",
-      url: `https://fwastats.com/Clan/${bare}/WarMembers.json?warNo=1`,
+      url: sourceUrl,
       scope: normalizedTag,
     });
-    return rows
-      .map((row) => this.parseWarMembersRow(normalizedTag, row))
+    const parsedRows = rows
+      .map((row) => parseFwaWarMembersRow(row, normalizedTag).row)
       .filter((row): row is FwaWarMemberFeedRow => Boolean(row));
+    const evidence = evaluateFwaWarMembersSourceEvidence({
+      clanTag: normalizedTag,
+      sourceUrl,
+      sourceWarNo: 1,
+      rawPayloadIsArray: arrayPayload,
+      rawRows: rows,
+      acceptedRows: parsedRows,
+      observedAt,
+      ingestedAt: new Date(),
+    });
+    return { ...evidence, rows: parsedRows };
   }
 
   /** Purpose: fetch and parse one clan recent war summary rows from `Wars.json`. */
@@ -123,7 +174,7 @@ export class FwaStatsClient {
             durationMs,
             status: "success",
           });
-          return { rows, durationMs };
+          return { rows, durationMs, arrayPayload: Array.isArray(response.data) };
         }
         lastError = new Error(`HTTP_${response.status}`);
         if (response.status < 500 || attempt >= maxAttempts) {
@@ -215,44 +266,6 @@ export class FwaStatsClient {
       townHall: toIntOrNull(row.townHall),
       weight: toIntOrNull(row.weight),
       inWar: toBoolOrNull(row.inWar),
-    };
-  }
-
-  /** Purpose: map one `WarMembers.json` row into normalized war-roster shape. */
-  private parseWarMembersRow(clanTag: string, input: unknown): FwaWarMemberFeedRow | null {
-    const row = this.asRecord(input);
-    if (!row) return null;
-    const playerTag = normalizeFwaTag(String(row.tag ?? ""));
-    const playerName = normalizeText(row.name);
-    if (!playerTag || !playerName) return null;
-    return {
-      clanTag,
-      playerTag,
-      playerName,
-      position: toIntOrNull(row.position),
-      townHall: toIntOrNull(row.townHall),
-      weight: toIntOrNull(row.weight),
-      opponentTag: normalizeText(row.opponentTag)
-        ? normalizeFwaTag(String(row.opponentTag))
-        : null,
-      opponentName: normalizeText(row.opponentName),
-      attacks: toIntOrNull(row.attacks),
-      defender1Tag: normalizeText(row.defender1Tag)
-        ? normalizeFwaTag(String(row.defender1Tag))
-        : null,
-      defender1Name: normalizeText(row.defender1Name),
-      defender1TownHall: toIntOrNull(row.defender1TownHall),
-      defender1Position: toIntOrNull(row.defender1Position),
-      stars1: toIntOrNull(row.stars1),
-      destructionPercentage1: toFloatOrNull(row.destructionPercentage1),
-      defender2Tag: normalizeText(row.defender2Tag)
-        ? normalizeFwaTag(String(row.defender2Tag))
-        : null,
-      defender2Name: normalizeText(row.defender2Name),
-      defender2TownHall: toIntOrNull(row.defender2TownHall),
-      defender2Position: toIntOrNull(row.defender2Position),
-      stars2: toIntOrNull(row.stars2),
-      destructionPercentage2: toFloatOrNull(row.destructionPercentage2),
     };
   }
 

@@ -209,6 +209,50 @@ describe("WeightInputDefermentService list filtering", () => {
     expect(result.rows).toHaveLength(1);
   });
 
+  it("filters the diagnostic time window before clan-over-guild precedence", async () => {
+    const cutoff = new Date("2026-04-10T00:00:00.000Z");
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      {
+        scopeKey: buildDeferScopeKey("guild-1", "#AAA111"),
+        playerTag: "#PYLQ0289",
+        deferredWeight: 181000,
+        createdAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+      {
+        scopeKey: buildDeferScopeKey("guild-1", null),
+        playerTag: "#PYLQ0289",
+        deferredWeight: 180000,
+        createdAt: new Date("2026-04-09T00:00:00.000Z"),
+      },
+    ]);
+    const result = await listOpenDeferredWeightRowsByClanAndPlayerTags({
+      guildId: "guild-1",
+      clanPlayerTags: [{ clanTag: "#AAA111", playerTags: ["#PYLQ0289"] }],
+      createdAtWindow: { through: cutoff },
+    });
+    expect(result.get("#AAA111")?.get("#PYLQ0289")).toEqual({
+      deferredWeight: 180000,
+      createdAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    expect(prismaMock.weightInputDeferment.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ createdAt: { lte: cutoff } }),
+    }));
+  });
+
+  it("does not apply future-only, wrong-scope, or arbitrary guild rows", async () => {
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      { scopeKey: buildDeferScopeKey("guild-2", null), playerTag: "#PYLQ0289", deferredWeight: 181000, createdAt: new Date("2026-04-09T00:00:00.000Z") },
+      { scopeKey: buildDeferScopeKey("guild-1", null), playerTag: "#OTHER", deferredWeight: 182000, createdAt: new Date("2026-04-09T00:00:00.000Z") },
+      { scopeKey: buildDeferScopeKey("guild-1", "#BBB222"), playerTag: "#PYLQ0289", deferredWeight: 183000, createdAt: new Date("2026-04-09T00:00:00.000Z") },
+    ]);
+    const result = await listOpenDeferredWeightRowsByClanAndPlayerTags({
+      guildId: "guild-1",
+      clanPlayerTags: [{ clanTag: null, playerTags: ["#PYLQ0289"] }],
+      createdAtWindow: { through: new Date("2026-04-10T00:00:00.000Z") },
+    });
+    expect(result.get("")?.size ?? 0).toBe(0);
+  });
+
   it("filters open deferments by current clan membership and includes guild-scoped rows", async () => {
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
       {

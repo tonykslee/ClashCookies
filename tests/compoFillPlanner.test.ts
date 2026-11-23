@@ -4,6 +4,7 @@ import {
   type CompoWarBucketCounts,
 } from "../src/helper/compoWarBucketCounts";
 import type { CompoWarWeightBucket } from "../src/helper/compoWarWeightBuckets";
+import { createCompoCalculationProfile } from "../src/helper/compoCalculationProfile";
 import { buildCompoFillPlanForTest } from "../src/services/CompoFillPlanner";
 
 function makeCounts(
@@ -30,6 +31,8 @@ function makeClan(input: {
     memberCount: input.memberCount,
     currentBucketCounts: makeCounts(input.currentBucketCounts),
     targetBucketCounts: makeCounts(input.targetBucketCounts),
+    targetEvidence: "validated" as const,
+    targetSupportsTh19: false,
   };
 }
 
@@ -39,6 +42,7 @@ function makeFiller(input: {
   resolvedWeight: number | null;
   currentClanTag?: string | null;
   currentClanName?: string | null;
+  clanState?: "known" | "no_clan" | "unknown";
 }) {
   return {
     playerTag: input.playerTag,
@@ -46,7 +50,34 @@ function makeFiller(input: {
     resolvedWeight: input.resolvedWeight,
     currentClanTag: input.currentClanTag ?? null,
     currentClanName: input.currentClanName ?? null,
+    clanState: input.clanState ?? "no_clan",
   };
+}
+
+function makeSyntheticFillProfile() {
+  const factual = ["TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10", "TH9", "TH8_OR_LOWER"];
+  return createCompoCalculationProfile({
+    profileId: "test-only-fill-th19",
+    policyVersion: "test-only-fill-1",
+    buckets: [
+      { id: "future", order: 0, sourceBucketIds: ["TH19"], displayLabel: "Future", deviationPenalty: 2, actionPriority: 0, representativeWeight: { kind: "fixed", value: 190000 } },
+      { id: "legacy", order: 1, sourceBucketIds: factual, displayLabel: "Legacy", deviationPenalty: 1, actionPriority: 1, representativeWeight: { kind: "fixed", value: 150000 } },
+    ],
+    unsupportedFactualBucketIds: [],
+    factualToCalculationBucket: Object.fromEntries([
+      ["TH19", "future"],
+      ...factual.map((bucket) => [bucket, "legacy"]),
+    ]),
+    targetMappings: [
+      { calculationBucketId: "future", referenceBucketIds: ["TH18"] },
+      { calculationBucketId: "legacy", referenceBucketIds: ["TH17"] },
+    ],
+    compatibility: {
+      plannerBucketByCalculationBucket: { future: "TH19", legacy: "TH18" },
+      displayBucketByCalculationBucket: { future: "TH19", legacy: "TH18" },
+    },
+    maximumEstimatedWeightBucketId: "future",
+  });
 }
 
 describe("buildCompoFillPlan", () => {
@@ -291,5 +322,242 @@ describe("buildCompoFillPlan", () => {
       "#A",
       "#B",
     ]);
+  });
+
+  it("accounts for the actual bucket on a nonmatching fallback while preserving null metadata", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 49 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#FALLBACK",
+          playerName: "Fallback",
+          resolvedWeight: 135000,
+        }),
+      ],
+    });
+
+    const move = result.destinationPlans[0]?.plannedMoves[0];
+    expect(move?.matchedBucket).toBeNull();
+    expect(move?.destinationMemberCountBefore).toBe(49);
+    expect(move?.destinationMemberCountAfter).toBe(50);
+    expect(move?.destinationBucketCountsBefore.TH14).toBe(49);
+    expect(move?.destinationBucketCountsAfter.TH14).toBe(50);
+    expect(move?.destinationBucketCountsAfter.TH15).toBe(0);
+  });
+
+  it("conserves tracked-source bucket and member deltas for fallback moves", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 49 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+        makeClan({
+          clanTag: "#SRC",
+          clanName: "Source",
+          memberCount: 51,
+          currentBucketCounts: { TH15: 1, TH14: 50 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#TRACKED-FALLBACK",
+          playerName: "Tracked Fallback",
+          resolvedWeight: 135000,
+          currentClanTag: "#SRC",
+          currentClanName: "Source",
+        }),
+      ],
+    });
+
+    const move = result.destinationPlans[0]?.plannedMoves[0];
+    expect(move?.matchedBucket).toBeNull();
+    expect(move?.sourceMemberCountBefore).toBe(51);
+    expect(move?.sourceMemberCountAfter).toBe(50);
+    expect(move?.sourceBucketCountsBefore?.TH14).toBe(50);
+    expect(move?.sourceBucketCountsAfter?.TH14).toBe(49);
+    expect(move?.destinationBucketCountsAfter.TH14).toBe(50);
+  });
+
+  it("replays sequential matched and fallback snapshots without shared mutable state", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DST",
+          clanName: "Destination",
+          memberCount: 48,
+          currentBucketCounts: { TH14: 48 },
+          targetBucketCounts: { TH15: 1, TH14: 49 },
+        }),
+      ],
+      fillers: [
+        makeFiller({ playerTag: "#MATCH", playerName: "Match", resolvedWeight: 145000 }),
+        makeFiller({ playerTag: "#FALLBACK", playerName: "Fallback", resolvedWeight: 155000 }),
+      ],
+    });
+
+    const moves = result.destinationPlans[0]?.plannedMoves ?? [];
+    expect(moves).toHaveLength(2);
+    expect(moves[0]?.matchedBucket).toBe("TH15");
+    expect(moves[1]?.matchedBucket).toBeNull();
+    expect(moves[0]?.destinationBucketCountsAfter.TH15).toBe(1);
+    expect(moves[1]?.destinationBucketCountsBefore.TH15).toBe(1);
+    expect(moves[1]?.destinationBucketCountsAfter.TH16).toBe(1);
+    expect(moves[0]?.destinationBucketCountsAfter).not.toBe(
+      moves[1]?.destinationBucketCountsBefore,
+    );
+  });
+
+  it("withholds TH19 and malformed weights from legacy targets", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#LEGACY",
+          clanName: "Legacy",
+          memberCount: 49,
+          currentBucketCounts: { TH18: 49 },
+          targetBucketCounts: { TH18: 50 },
+        }),
+      ],
+      fillers: [
+        makeFiller({ playerTag: "#TH19", playerName: "TH19", resolvedWeight: 181000 }),
+        makeFiller({ playerTag: "#FRACTION", playerName: "Fraction", resolvedWeight: 181000.5 }),
+        makeFiller({ playerTag: "#GAP", playerName: "Gap", resolvedWeight: 180500 }),
+        makeFiller({ playerTag: "#HIGH", playerName: "High", resolvedWeight: 190001 }),
+      ],
+    });
+
+    expect(result.destinationPlans[0]?.plannedMoves).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots[0]?.remainingSlots).toBe(1);
+    expect(result.unusedAvailableFillers.map((filler) => filler.playerTag)).toEqual(["#TH19"]);
+    expect(result.excludedFillers.map((filler) => filler.playerTag)).toEqual([
+      "#FRACTION",
+      "#GAP",
+      "#HIGH",
+    ]);
+  });
+
+  it("fails closed for unavailable targets and omitted tracked source context", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClanTags: ["#MISSING-SOURCE", "#UNKNOWN-TARGET"],
+      trackedClans: [
+        {
+          ...makeClan({
+            clanTag: "#UNKNOWN-TARGET",
+            clanName: "Unknown Target",
+            memberCount: 49,
+            currentBucketCounts: { TH14: 49 },
+            targetBucketCounts: null as any,
+          }),
+          targetBucketCounts: null,
+          targetEvidence: "unavailable",
+        },
+      ],
+      fillers: [
+        makeFiller({
+          playerTag: "#TRACKED",
+          playerName: "Tracked",
+          resolvedWeight: 135000,
+          currentClanTag: "#MISSING-SOURCE",
+          currentClanName: "Missing Source",
+        }),
+      ],
+    });
+
+    expect(result.destinationPlans).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots).toMatchObject([
+      { clanTag: "#UNKNOWN-TARGET", remainingSlots: 1, targetMemberCount: 50 },
+    ]);
+    expect(result.unavailableFillers[0]).toMatchObject({
+      playerTag: "#TRACKED",
+      reasonCodes: ["source_context_unavailable"],
+    });
+  });
+
+  it("uses synthetic profile order and totals for supported TH19 filler planning", () => {
+    const profile = makeSyntheticFillProfile();
+    const result = buildCompoFillPlanForTest({
+      profile,
+      trackedClans: [{
+        clanTag: "#SYNTHETIC",
+        clanName: "Synthetic",
+        memberCount: 0,
+        currentBucketCounts: makeCounts({ TH19: 0 }),
+        targetBucketCounts: makeCounts({ TH19: 25, TH18: 25 }),
+        targetEvidence: "validated",
+      }],
+      fillers: [
+        makeFiller({ playerTag: "#TH19A", playerName: "Future A", resolvedWeight: 181000 }),
+        makeFiller({ playerTag: "#TH18A", playerName: "Legacy A", resolvedWeight: 171000 }),
+      ],
+    });
+    expect(result.destinationPlans[0]).toMatchObject({ targetMemberCount: 50, remainingSlots: 48 });
+    expect(result.destinationPlans[0]?.plannedMoves.map((move) => move.matchedBucket)).toEqual(["TH19", "TH18"]);
+    expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationMemberCountBefore).toBe(1);
+    expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationBucketCountsBefore.TH19).toBe(1);
+    expect(result.destinationPlans[0]?.plannedMoves[1]?.destinationBucketCountsAfter.TH19).toBe(1);
+  });
+
+  it.each([
+    { label: "negative", currentBucketCounts: { TH14: -1, TH13: 50 }, memberCount: 49 },
+    { label: "fractional", currentBucketCounts: { TH14: 0.5, TH13: 49.5 }, memberCount: 50 },
+    { label: "unsupported positive", currentBucketCounts: { TH19: 1, TH13: 49 }, memberCount: 50 },
+    { label: "inconsistent member total", currentBucketCounts: { TH14: 1, TH13: 48 }, memberCount: 50 },
+  ])("withholds destination moves for $label current evidence", (input) => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [makeClan({
+        clanTag: "#INVALID",
+        clanName: "Invalid",
+        memberCount: input.memberCount,
+        currentBucketCounts: input.currentBucketCounts,
+        targetBucketCounts: { TH14: 2, TH13: 48 },
+      })],
+      fillers: [makeFiller({ playerTag: "#FILL", playerName: "Fill", resolvedWeight: 135000 })],
+    });
+    expect(result.destinationPlans).toHaveLength(0);
+    expect(result.remainingUnfilledClanSlots[0]).toMatchObject({ clanTag: "#INVALID" });
+  });
+
+  it("withholds tracked-source surplus when the source current evidence is invalid", () => {
+    const result = buildCompoFillPlanForTest({
+      trackedClans: [
+        makeClan({
+          clanTag: "#DEST",
+          clanName: "Destination",
+          memberCount: 49,
+          currentBucketCounts: { TH14: 1, TH13: 48 },
+          targetBucketCounts: { TH14: 2, TH13: 48 },
+        }),
+        makeClan({
+          clanTag: "#SOURCE",
+          clanName: "Source",
+          memberCount: 50,
+          currentBucketCounts: { TH14: -1, TH13: 51 },
+          targetBucketCounts: { TH14: 0, TH13: 50 },
+        }),
+      ],
+      fillers: [makeFiller({
+        playerTag: "#TRACKED",
+        playerName: "Tracked",
+        resolvedWeight: 135000,
+        currentClanTag: "#SOURCE",
+        currentClanName: "Source",
+        clanState: "known",
+      })],
+    });
+    expect(result.destinationPlans[0]?.plannedMoves).toHaveLength(0);
+    expect(result.unavailableFillers[0]?.reasonCodes).toContain("source_current_evidence_unavailable");
   });
 });

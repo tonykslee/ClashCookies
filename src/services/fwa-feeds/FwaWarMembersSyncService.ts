@@ -7,9 +7,11 @@ import { FwaFeedCursorService } from "./FwaFeedCursorService";
 import { FwaFeedSyncStateService } from "./FwaFeedSyncStateService";
 import { mapWithConcurrency } from "./concurrency";
 import { selectDistributedSweepChunk } from "./sweep";
-import type { FwaSyncResult } from "./types";
+import type { FwaSyncResult, FwaWarMemberFeedRow } from "./types";
 import { normalizePersistedPlayerName } from "../PlayerLinkService";
 import { FwaTrackedClanWarRosterSyncService } from "./FwaTrackedClanWarRosterSyncService";
+import type { FwaWarMembersSourceEvidence } from "./FwaWarMembersSourceEvidence";
+import { captureFwaWarMembersObservation } from "./FwaWarMembersObservationService";
 
 type SyncOptions = {
   force?: boolean;
@@ -54,7 +56,21 @@ export class FwaWarMembersSyncService {
 
     await this.syncState.recordAttempt(scope, nextEligibleAt, now);
     try {
-      const rows = await this.client.fetchWarMembers(normalizedClanTag);
+      let rows: FwaWarMemberFeedRow[];
+      let sourceEvidence: FwaSyncResult["sourceEvidence"];
+      const clientWithEvidence = this.client as FwaStatsClient & {
+        fetchWarMembersEvidence?: (clanTag: string) => Promise<FwaWarMembersSourceEvidence & { rows: FwaWarMemberFeedRow[] }>;
+      };
+      if (typeof clientWithEvidence.fetchWarMembersEvidence === "function") {
+        const fetched = await clientWithEvidence.fetchWarMembersEvidence(normalizedClanTag);
+        rows = fetched.rows;
+        const { rows: _rows, ...evidence } = fetched;
+        sourceEvidence = evidence;
+      } else {
+        // Preserve compatibility with deterministic test doubles and older
+        // injected clients. They do not establish source evidence.
+        rows = await this.client.fetchWarMembers(normalizedClanTag);
+      }
       const sortedRows = [...rows].sort((a, b) => a.playerTag.localeCompare(b.playerTag));
       const contentHash = computeFeedContentHash(sortedRows);
       const previousState = await this.syncState.getState(scope);
@@ -63,9 +79,18 @@ export class FwaWarMembersSyncService {
         select: { tag: true },
       });
 
-      const changedRowCount = previousState?.lastContentHash === contentHash
+      const contentUnchanged = previousState?.lastContentHash === contentHash;
+      const changedRowCount = !sourceEvidence && contentUnchanged
         ? 0
         : await prisma.$transaction(async (tx) => {
+        if (sourceEvidence) {
+          await captureFwaWarMembersObservation(tx, {
+            clanTag: normalizedClanTag,
+            rows,
+            evidence: sourceEvidence,
+          });
+        }
+        if (contentUnchanged) return 0;
         const playerTags = rows.map((row) => row.playerTag);
         const linkedPlayerRows =
           playerTags.length > 0
@@ -185,7 +210,7 @@ export class FwaWarMembersSyncService {
       if (hasTrackedClan) {
         trackedRosterResult = await this.trackedRosterSync.syncClan(normalizedClanTag, { now });
         console.info(
-          `[fwa-feed] event=war_members_tracked_roster_refresh clan=${normalizedClanTag} raw_status=${previousState?.lastContentHash === contentHash ? "NOOP" : "SUCCESS"} raw_rows=${rows.length} raw_changed_rows=${changedRowCount} roster_has_snapshot=${trackedRosterResult.hasSnapshot} roster_member_rows=${trackedRosterResult.memberRowCount} roster_source_war_id=${trackedRosterResult.sourceWarId ?? "none"} roster_source_war_state=${trackedRosterResult.sourceWarState ?? "none"}`,
+          `[fwa-feed] event=war_members_tracked_roster_refresh clan=${normalizedClanTag} raw_status=${contentUnchanged ? "NOOP" : "SUCCESS"} raw_rows=${rows.length} raw_changed_rows=${changedRowCount} source_structural=${sourceEvidence?.structuralStatus ?? "UNAVAILABLE"} source_completeness=${sourceEvidence?.completenessStatus ?? "UNAVAILABLE"} source_weights=${sourceEvidence?.weightStatus ?? "UNAVAILABLE"} source_exact_war=${sourceEvidence?.exactWarBindingStatus ?? "UNAVAILABLE"} source_generation=${sourceEvidence?.sourceGenerationStatus ?? "UNAVAILABLE"} source_reasons=${sourceEvidence?.reasonCodes.join(",") ?? "none"} roster_has_snapshot=${trackedRosterResult.hasSnapshot} roster_member_rows=${trackedRosterResult.memberRowCount} roster_source_war_id=${trackedRosterResult.sourceWarId ?? "none"} roster_source_war_state=${trackedRosterResult.sourceWarState ?? "none"}`,
         );
       }
 
@@ -193,7 +218,8 @@ export class FwaWarMembersSyncService {
         rowCount: rows.length,
         changedRowCount,
         contentHash,
-        status: previousState?.lastContentHash === contentHash ? "NOOP" : "SUCCESS",
+        status: contentUnchanged ? "NOOP" : "SUCCESS",
+        ...(sourceEvidence ? { sourceEvidence } : {}),
       };
       const output = {
         ...result,

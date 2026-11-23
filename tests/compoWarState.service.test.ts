@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -13,6 +14,10 @@ const prismaMock = vi.hoisted(() => ({
   heatMapRef: {
     findMany: vi.fn(),
   },
+  heatMapRefBucketTarget: {
+    findMany: vi.fn(),
+  },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -24,6 +29,7 @@ import {
   getCompoWarWeightBucketForTest,
   findHeatMapRefForWeightForTest,
 } from "../src/services/CompoWarStateService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 
 function makeParent(input: {
   clanTag: string;
@@ -251,6 +257,20 @@ function makeHeatMapRef(input?: {
 describe("CompoWarStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   it("classifies effective-weight boundaries into the expected WAR compo buckets", () => {
@@ -335,6 +355,39 @@ describe("CompoWarStateService", () => {
     ]);
     expect(result.contentLines[0]).toContain("WAR · refreshed");
     expect(result.contentLines[1]).toContain("Columns: Total=effective weight");
+  });
+
+  it("keeps a TH18-only WAR roster factual while marking retained blocked targets unknown", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan-war" }]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan-war", totalEffectiveWeight: 8_100_000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([
+      ...makeWeightedMembers({
+        clanTag: "#AAA111",
+        counts: { th18: 19, th17: 11, th16: 7, th15: 6, th14: 4, th13: 2, th12: 1 },
+      }),
+    ]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          version: 1,
+          status: "blocked",
+          blockReasonCode: "th19_integrity",
+          reason: "TH19 evidence",
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+          updatedAtIso: "2026-04-12T01:00:00.000Z",
+          contentHash: null,
+        }),
+      },
+    ]);
+
+    const result = await new CompoWarStateService({ runTracked: vi.fn() } as any).readState("guild-1");
+
+    expect(result.renderableClanTags).toEqual(["#AAA111"]);
+    expect(result.stateRows?.[1]?.slice(-6)).toEqual(["?", "?", "?", "?", "?", "?"]);
+    expect(result.contentLines.join(" ")).toContain("retained historical data");
   });
 
   it("derives WAR deltas from effective-weight buckets instead of literal town halls", async () => {
@@ -551,5 +604,26 @@ describe("CompoWarStateService", () => {
       ["Clan", "Total", "Missing", "Players", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"],
       ["Alpha Clan", "8,100,000", "0", "50", "0", "0", "0", "0", "0", "0"],
     ]);
+  });
+
+  it("keeps WAR factual rows and warns when the normalized target query fails", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([{ tag: "#AAA111", name: "Alpha Clan" }]);
+    prismaMock.fwaTrackedClanWarRosterCurrent.findMany.mockResolvedValue([
+      makeParent({ clanTag: "#AAA111", clanName: "Alpha Clan" }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue(
+      makeWeightedMembers({ clanTag: "#AAA111", counts: { th14: 50 } }),
+    );
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.heatMapRefBucketTarget.findMany.mockRejectedValueOnce(
+      new Error("normalized child unavailable"),
+    );
+
+    const result = await new CompoWarStateService({ runTracked: vi.fn() } as any).readState();
+
+    expect(result.stateRows).not.toBeNull();
+    expect(result.stateRows?.[1]?.[0]).toBe("Alpha Clan");
+    expect(result.contentLines.join("\n")).toContain("normalized target evidence could not be read");
+    expect(result.contentLines.join("\n")).toContain("Reference warning:");
   });
 });

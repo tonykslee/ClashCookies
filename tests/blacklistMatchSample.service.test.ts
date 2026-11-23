@@ -362,4 +362,30 @@ describe("BlacklistMatchSampleService", () => {
     expect(result.skippedCandidateCount).toBe(2);
     expect(sampleRows).toHaveLength(0);
   });
+
+  it("skips blacklist samples whose effective roster contains TH19", async () => {
+    const th19Weights = [181_000, ...Array.from({ length: 49 }, () => 175_000)];
+    prismaMock.clanWarParticipation.findMany.mockResolvedValue(
+      makeRosterRows({
+        warId: "101",
+        clanTag: "#PYLQ0288",
+        weights: th19Weights,
+      }),
+    );
+    prismaMock.fwaPlayerCatalog.findMany.mockImplementation(async (args: any) => {
+      const tags = [...new Set<string>(args?.where?.playerTag?.in ?? [])];
+      return tags.map((playerTag) => ({
+        playerTag,
+        latestKnownWeight: playerTag === makeValidPlayerTag(1) ? 181_000 : 175_000,
+      }));
+    });
+
+    const result = await service.rebuildBlacklistMatchSamples({ now });
+
+    expect(result.status).toBe("noop");
+    expect(result.qualifyingSampleCount).toBe(0);
+    expect(result.skippedCandidateCount).toBe(1);
+    expect(result.summaryLines.join(" ")).toContain("unsupported_th19=1");
+    expect(sampleRows).toHaveLength(0);
+  });
 });

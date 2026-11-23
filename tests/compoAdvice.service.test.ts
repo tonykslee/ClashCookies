@@ -5,6 +5,9 @@ import {
   CompoAdviceService,
   countRushedCompoMembers,
 } from "../src/services/CompoAdviceService";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import { computeClanMembersSnapshotHash, toPersistedClanMembersSnapshotRow } from "../src/services/fwa-feeds/clanMembersSnapshot";
 
 const prismaMock = vi.hoisted(() => ({
   trackedClan: {
@@ -34,10 +37,17 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMatchStatsCurrent: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
   heatMapRef: {
     findMany: vi.fn(),
   },
+  heatMapRefBucketTarget: {
+    findMany: vi.fn(),
+  },
   weightInputDeferment: {
+    findMany: vi.fn(),
+  },
+  fwaFeedSyncState: {
     findMany: vi.fn(),
   },
 }));
@@ -190,12 +200,50 @@ describe("CompoAdviceService", () => {
     prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockReset();
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockReset();
     prismaMock.heatMapRef.findMany.mockReset();
+    prismaMock.heatMapRefBucketTarget.findMany.mockReset();
     prismaMock.weightInputDeferment.findMany.mockReset();
+    prismaMock.fwaFeedSyncState.findMany.mockReset();
+    prismaMock.$queryRaw.mockReset();
+    installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
     prismaMock.fwaWarMemberCurrent.findMany.mockResolvedValue([]);
     prismaMock.fwaClanMatchStatsCurrent.findMany.mockResolvedValue([]);
+    prismaMock.fwaFeedSyncState.findMany.mockImplementation(async (args: any) => {
+      const memberResult = prismaMock.fwaClanMemberCurrent.findMany.mock.results.at(-1);
+      const rows = memberResult?.type === "return" ? await memberResult.value : [];
+      const byClan = new Map<string, any[]>();
+      for (const row of rows as any[]) {
+        const list = byClan.get(row.clanTag) ?? [];
+        list.push(row);
+        byClan.set(row.clanTag, list);
+      }
+      return (args?.where?.scopeKey?.in ?? []).map((scopeKey: string) => ({
+        scopeKey,
+        lastAttemptAt: new Date(),
+        lastSuccessAt: new Date(),
+        lastStatus: "SUCCESS",
+        lastRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastChangedRowCount: byClan.get(scopeKey)?.length ?? 0,
+        lastContentHash: computeClanMembersSnapshotHash(
+          (byClan.get(scopeKey) ?? []).map((row) => toPersistedClanMembersSnapshotRow(row)),
+        ),
+      }));
+    });
+    prismaMock.$queryRaw.mockImplementation(async () => {
+      const last = prismaMock.heatMapRef.findMany.mock.results.at(-1);
+      const refs = last?.type === "return" ? await last.value : [];
+      return [{ value: JSON.stringify({
+        version: 1,
+        status: "validated",
+        blockReasonCode: null,
+        reason: null,
+        validatedAtIso: "2026-04-12T00:00:00.000Z",
+        updatedAtIso: "2026-04-12T00:00:00.000Z",
+        contentHash: computeHeatMapRefContentHash(refs as never),
+      }) }];
+    });
   });
 
   it("uses link-list fallback weights before deferred and war fallbacks in ACTUAL advice", async () => {

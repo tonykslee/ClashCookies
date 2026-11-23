@@ -10,6 +10,8 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     upsert: vi.fn(),
   },
+  $executeRaw: vi.fn(),
+  $transaction: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -19,6 +21,8 @@ vi.mock("../src/prisma", () => ({
 describe("FwaFeedSyncStateService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.$transaction.mockImplementation(async (callback: (tx: typeof prismaMock) => Promise<unknown>) => callback(prismaMock));
+    prismaMock.$executeRaw.mockResolvedValue(0);
   });
 
   it("treats missing scope state as eligible", async () => {
@@ -55,6 +59,40 @@ describe("FwaFeedSyncStateService", () => {
     expect(eligible).toBe(false);
   });
 
+  it("does not let a CoC attendance refresh delay an established FWA boundary", async () => {
+    const now = new Date("2026-03-19T10:00:00.000Z");
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+      nextEligibleAt: new Date("2026-03-19T09:50:00.000Z"),
+      lastAttemptAt: now,
+    });
+    const service = new FwaFeedSyncStateService();
+
+    await expect(
+      service.isEligible(
+        { feedType: "CLAN_MEMBERS", scopeType: "CLAN_TAG", scopeKey: "#AAA111" },
+        15 * 60 * 1000,
+        now,
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("preserves the original minimum-interval guard for unrelated feeds after an expired boundary", async () => {
+    const now = new Date("2026-03-19T10:00:00.000Z");
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+      nextEligibleAt: new Date("2026-03-19T09:50:00.000Z"),
+      lastAttemptAt: new Date("2026-03-19T09:55:00.000Z"),
+    });
+    const service = new FwaFeedSyncStateService();
+
+    await expect(
+      service.isEligible(
+        { feedType: "WAR_MEMBERS", scopeType: "GLOBAL", scopeKey: "SWEEP" },
+        15 * 60 * 1000,
+        now,
+      ),
+    ).resolves.toBe(false);
+  });
+
   it("persists success metadata with row counts and hash", async () => {
     prismaMock.fwaFeedSyncState.upsert.mockResolvedValue(undefined);
     const service = new FwaFeedSyncStateService();
@@ -88,6 +126,7 @@ describe("FwaFeedSyncStateService", () => {
   });
 
   it("TRACKED_CLANS upsert resolves to sentinel scopeKey", async () => {
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
     prismaMock.fwaFeedSyncState.upsert.mockResolvedValue(undefined);
     const service = new FwaFeedSyncStateService();
 
@@ -118,6 +157,7 @@ describe("FwaFeedSyncStateService", () => {
   });
 
   it("CLAN_TAG upsert resolves to normalized clan tag scopeKey", async () => {
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue(null);
     prismaMock.fwaFeedSyncState.upsert.mockResolvedValue(undefined);
     const service = new FwaFeedSyncStateService();
 
@@ -178,5 +218,109 @@ describe("FwaFeedSyncStateService", () => {
     const upsertArg = prismaMock.fwaFeedSyncState.upsert.mock.calls.at(-1)?.[0];
     expect(upsertArg.create.scopeKey).not.toBeNull();
     expect(upsertArg.where.feedType_scopeType_scopeKey.scopeKey).not.toBeNull();
+  });
+
+  it("rejects a competing CLAN_MEMBERS attempt in the same millisecond", async () => {
+    const state: any = { lastAttemptAt: null, nextEligibleAt: null };
+    prismaMock.fwaFeedSyncState.findUnique.mockImplementation(async () => ({ ...state }));
+    prismaMock.fwaFeedSyncState.upsert.mockImplementation(async (args: any) => {
+      Object.assign(state, args.update ?? args.create ?? {});
+    });
+    const service = new FwaFeedSyncStateService();
+    const now = new Date("2026-11-21T22:40:00.000Z");
+    const first = await service.recordAttempt(
+      { feedType: "CLAN_MEMBERS", scopeType: "CLAN_TAG", scopeKey: "#AAA111" },
+      null,
+      now,
+    );
+    const second = await service.recordAttempt(
+      { feedType: "CLAN_MEMBERS", scopeType: "CLAN_TAG", scopeKey: "#AAA111" },
+      null,
+      now,
+    );
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(prismaMock.fwaFeedSyncState.upsert).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
+
+    const staleFailure = await service.recordFailure(
+      {
+        feedType: "CLAN_MEMBERS",
+        scopeType: "CLAN_TAG",
+        scopeKey: "#AAA111",
+        errorCode: "STALE",
+        errorSummary: "stale failure",
+        nextEligibleAt: null,
+      },
+      new Date("2026-11-21T22:40:00.000Z"),
+      new Date("2026-11-21T22:39:59.999Z"),
+    );
+    expect(staleFailure).toBe(false);
+    expect(prismaMock.fwaFeedSyncState.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps same-timestamp attempts unchanged for unrelated feeds", async () => {
+    const now = new Date("2026-11-21T22:40:00.000Z");
+    const state: any = { lastAttemptAt: now, nextEligibleAt: null };
+    prismaMock.fwaFeedSyncState.findUnique.mockImplementation(async () => ({ ...state }));
+    prismaMock.fwaFeedSyncState.upsert.mockImplementation(async (args: any) => {
+      Object.assign(state, args.update ?? args.create ?? {});
+    });
+    const service = new FwaFeedSyncStateService();
+
+    await expect(
+      service.recordAttempt(
+        { feedType: "WAR_MEMBERS", scopeType: "GLOBAL", scopeKey: "SWEEP" },
+        null,
+        now,
+      ),
+    ).resolves.toBe(true);
+    expect(prismaMock.fwaFeedSyncState.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the locked CLAN_MEMBERS cadence when the caller has no boundary", async () => {
+    const now = new Date("2026-11-21T22:40:00.000Z");
+    const boundary = new Date("2026-11-21T22:55:00.000Z");
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+      lastAttemptAt: new Date("2026-11-21T22:30:00.000Z"),
+      nextEligibleAt: boundary,
+    });
+    prismaMock.fwaFeedSyncState.upsert.mockResolvedValue(undefined);
+    const service = new FwaFeedSyncStateService();
+
+    await service.recordAttempt(
+      { feedType: "CLAN_MEMBERS", scopeType: "CLAN_TAG", scopeKey: "#AAA111" },
+      undefined,
+      now,
+    );
+
+    expect(prismaMock.fwaFeedSyncState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ nextEligibleAt: boundary }),
+        update: expect.objectContaining({ nextEligibleAt: boundary }),
+      }),
+    );
+  });
+
+  it("checks scheduled CLAN_MEMBERS eligibility inside the registration fence", async () => {
+    const now = new Date("2026-11-21T22:40:00.000Z");
+    prismaMock.fwaFeedSyncState.findUnique.mockResolvedValue({
+      lastAttemptAt: new Date("2026-11-21T22:30:00.000Z"),
+      nextEligibleAt: new Date("2026-11-21T22:55:00.000Z"),
+    });
+    prismaMock.fwaFeedSyncState.upsert.mockResolvedValue(undefined);
+    const service = new FwaFeedSyncStateService();
+
+    await expect(
+      service.recordAttempt(
+        { feedType: "CLAN_MEMBERS", scopeType: "CLAN_TAG", scopeKey: "#AAA111" },
+        new Date("2026-11-21T22:55:00.000Z"),
+        now,
+        { minimumIntervalMs: 15 * 60 * 1000 },
+      ),
+    ).resolves.toBe(false);
+    expect(prismaMock.fwaFeedSyncState.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);
   });
 });

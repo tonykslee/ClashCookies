@@ -1,5 +1,9 @@
 import { prisma } from "../prisma";
-import { buildHeatMapRefRebuildRows, type HeatMapRefBandDefinition } from "../helper/heatMapRefRebuild";
+import {
+  buildHeatMapRefRebuildRows,
+  type HeatMapRefBandDefinition,
+  type HeatMapRefRebuildExclusionReasonCode,
+} from "../helper/heatMapRefRebuild";
 import { normalizeClanTag, normalizePlayerTag } from "./PlayerLinkService";
 import type { BlacklistClanRow } from "./BlacklistClanService";
 import { blacklistClanService } from "./BlacklistClanService";
@@ -65,6 +69,11 @@ type SampleCandidate = {
   confidence: BlacklistMatchSampleConfidence;
 };
 
+type SampleCandidateBuildResult = {
+  sample: SampleCandidate | null;
+  exclusionReasonCode: HeatMapRefRebuildExclusionReasonCode | null;
+};
+
 type InjectedBlacklistClanReader = {
   listBlacklistClans(input?: { active?: boolean }): Promise<BlacklistClanRow[]>;
 };
@@ -82,6 +91,7 @@ function buildSummaryLines(input: {
   skippedCandidateCount: number;
   addedCount: number;
   updatedCount: number;
+  skippedReasonCounts?: Readonly<Record<string, number>>;
   status: BlacklistMatchSampleRebuildResult["status"];
   reason: string | null;
 }): string[] {
@@ -97,6 +107,14 @@ function buildSummaryLines(input: {
   ];
   if (input.reason) {
     lines.push(`reason: ${input.reason}`);
+  }
+  if (input.skippedReasonCounts && Object.keys(input.skippedReasonCounts).length > 0) {
+    lines.push(
+      `skipped reasons: ${Object.entries(input.skippedReasonCounts)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([reasonCode, count]) => `${reasonCode}=${count}`)
+        .join(", ")}`,
+    );
   }
   return lines;
 }
@@ -181,16 +199,12 @@ function buildSampleCandidate(input: {
   sourceClanNameByTag: ReadonlyMap<string, string | null>;
   blacklistNameByTag: ReadonlyMap<string, string | null>;
   now: Date;
-}): SampleCandidate | null {
+}): SampleCandidateBuildResult {
   const rosters = buildSourceRostersFromParticipationRows({
     war: input.war,
     participationRows: input.participationRows,
     weightByPlayerTag: input.weightByPlayerTag,
   });
-  if (rosters[0]?.members.length !== 50) {
-    return null;
-  }
-
   const rebuildResult = buildHeatMapRefRebuildRows({
     sourceRosters: rosters,
     seedBands: [BLACKLIST_SAMPLE_BAND],
@@ -198,41 +212,49 @@ function buildSampleCandidate(input: {
     now: input.now,
   });
   const roster = rebuildResult.qualifyingRosters[0] ?? null;
-  if (!roster) return null;
+  if (!roster) {
+    return {
+      sample: null,
+      exclusionReasonCode: rebuildResult.excludedRosters[0]?.reasonCode ?? "roster_size",
+    };
+  }
 
   const counts = roster.bucketCounts;
   return {
-    sourceClanTag: normalizeClanTag(input.war.clanTag),
-    sourceClanName:
-      normalizeText(input.war.clanName) ??
-      input.sourceClanNameByTag.get(normalizeClanTag(input.war.clanTag)) ??
-      null,
-    opponentBlacklistTag: normalizeClanTag(String(input.war.opponentTag ?? "")),
-    opponentBlacklistName:
-      input.blacklistNameByTag.get(normalizeClanTag(String(input.war.opponentTag ?? ""))) ??
-      normalizeText(input.war.opponentName) ??
-      null,
-    warId: String(input.war.warId),
-    warStartTime: input.war.warStartTime,
-    warEndTime: input.war.warEndTime,
-    rosterSize: roster.rosterSize,
-    totalRosterWeight: roster.totalEffectiveWeight,
-    missingWeightCount: roster.missingWeightCount,
-    th18Count: counts.th18Count,
-    th17Count: counts.th17Count,
-    th16Count: counts.th16Count,
-    th15Count: counts.th15Count,
-    th14Count: counts.th14Count,
-    th13Count: counts.th13Count,
-    th12Count: counts.th12Count,
-    th11PlusCount: counts.th11Count + counts.th10OrLowerCount,
-    sampleQuality: roster.missingWeightCount === 0 ? "full" : "partial",
-    confidence:
-      roster.missingWeightCount === 0
-        ? "high"
-        : roster.missingWeightCount <= 5
-          ? "medium"
-          : "low",
+    sample: {
+      sourceClanTag: normalizeClanTag(input.war.clanTag),
+      sourceClanName:
+        normalizeText(input.war.clanName) ??
+        input.sourceClanNameByTag.get(normalizeClanTag(input.war.clanTag)) ??
+        null,
+      opponentBlacklistTag: normalizeClanTag(String(input.war.opponentTag ?? "")),
+      opponentBlacklistName:
+        input.blacklistNameByTag.get(normalizeClanTag(String(input.war.opponentTag ?? ""))) ??
+        normalizeText(input.war.opponentName) ??
+        null,
+      warId: String(input.war.warId),
+      warStartTime: input.war.warStartTime,
+      warEndTime: input.war.warEndTime,
+      rosterSize: roster.rosterSize,
+      totalRosterWeight: roster.totalEffectiveWeight,
+      missingWeightCount: roster.missingWeightCount,
+      th18Count: counts.th18Count,
+      th17Count: counts.th17Count,
+      th16Count: counts.th16Count,
+      th15Count: counts.th15Count,
+      th14Count: counts.th14Count,
+      th13Count: counts.th13Count,
+      th12Count: counts.th12Count,
+      th11PlusCount: counts.th11Count + counts.th10OrLowerCount,
+      sampleQuality: roster.missingWeightCount === 0 ? "full" : "partial",
+      confidence:
+        roster.missingWeightCount === 0
+          ? "high"
+          : roster.missingWeightCount <= 5
+            ? "medium"
+            : "low",
+    },
+    exclusionReasonCode: null,
   };
 }
 
@@ -431,13 +453,14 @@ export class BlacklistMatchSampleService {
     let skippedCandidateCount = 0;
     let addedCount = 0;
     let updatedCount = 0;
+    const skippedReasonCounts: Record<string, number> = {};
 
     for (const war of candidateWars) {
       const sourceClanTag = normalizeClanTag(war.clanTag);
       const opponentBlacklistTag = normalizeClanTag(String(war.opponentTag ?? ""));
       const warKey = `${sourceClanTag}|${String(war.warId)}`;
       const rosterRows = participationByWarKey.get(warKey) ?? [];
-      const sample = buildSampleCandidate({
+      const candidateResult = buildSampleCandidate({
         war: {
           warId: war.warId,
           clanTag: sourceClanTag,
@@ -454,8 +477,11 @@ export class BlacklistMatchSampleService {
         now,
       });
 
+      const sample = candidateResult.sample;
       if (!sample) {
         skippedCandidateCount += 1;
+        const reasonCode = candidateResult.exclusionReasonCode ?? "unresolved_effective_weights";
+        skippedReasonCounts[reasonCode] = (skippedReasonCounts[reasonCode] ?? 0) + 1;
         continue;
       }
 
@@ -545,6 +571,7 @@ export class BlacklistMatchSampleService {
         skippedCandidateCount,
         addedCount,
         updatedCount,
+        skippedReasonCounts,
         status,
         reason,
       }),

@@ -7,7 +7,6 @@ import {
   buildHeatMapRefRebuildRows,
   computeHeatMapRefRebuildContentHash,
   computeHeatMapRefRebuildDueAt,
-  getHeatMapRefBucketCountsForTest,
   isHeatMapRefRebuildDue,
   normalizeHeatMapRefRoundedBucketCountsForTest,
   type HeatMapRefBandDefinition,
@@ -116,6 +115,61 @@ describe("heatMapRefRebuild helpers", () => {
       "roster size 49/50",
     ]);
     expect(result.rows[0]?.contributingClanCount).toBe(1);
+  });
+
+  it.each([
+    {
+      name: "one TH19 member",
+      weights: [181_000, ...Array.from({ length: 49 }, () => 175_000)],
+    },
+    {
+      name: "multiple TH19 members",
+      weights: [181_000, 185_000, 190_000, ...Array.from({ length: 47 }, () => 175_000)],
+    },
+    {
+      name: "only TH19 members",
+      weights: Array.from({ length: 50 }, () => 185_000),
+    },
+    {
+      name: "imputed TH19 member",
+      weights: [null, ...Array.from({ length: 49 }, () => 181_000)],
+    },
+  ])("excludes $name before legacy bucket conversion", ({ weights }) => {
+    const band = makeBand(0, 9_999_999);
+    const result = buildHeatMapRefRebuildRows({
+      sourceRosters: [makeRoster({ clanTag: "#TH19", weights })],
+      seedBands: [band],
+      seedRowsByBandKey: new Map([[getHeatMapRefBandKey(band), makeCounts({ th18Count: 50 })]]),
+      now: new Date("2026-04-13T00:00:00.000Z"),
+    });
+
+    expect(result.qualifyingRosters).toEqual([]);
+    expect(result.excludedRosters).toMatchObject([
+      {
+        clanTag: "#TH19",
+        reasonCode: "unsupported_th19",
+      },
+    ]);
+    expect(result.excludedRosters[0]?.reason).toContain("TH19");
+  });
+
+  it("keeps supported rosters while explicitly excluding mixed unsupported evidence", () => {
+    const band = makeBand(0, 9_999_999);
+    const result = buildHeatMapRefRebuildRows({
+      sourceRosters: [
+        makeRoster({ clanTag: "#SUPPORTED", weights: Array.from({ length: 50 }, () => 175_000) }),
+        makeRoster({
+          clanTag: "#UNSUPPORTED",
+          weights: [181_000, ...Array.from({ length: 49 }, () => 175_000)],
+        }),
+      ],
+      seedBands: [band],
+      seedRowsByBandKey: new Map([[getHeatMapRefBandKey(band), makeCounts({ th18Count: 50 })]]),
+      now: new Date("2026-04-13T00:00:00.000Z"),
+    });
+
+    expect(result.qualifyingRosters.map((row) => row.clanTag)).toEqual(["#SUPPORTED"]);
+    expect(result.excludedRosters.map((row) => row.reasonCode)).toEqual(["unsupported_th19"]);
   });
 
   it("routes qualifying rosters into each of the four granular upper bands", () => {

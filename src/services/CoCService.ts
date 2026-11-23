@@ -195,10 +195,20 @@ export class CoCService {
       });
 
       // Preserve existing call sites that expect `clan.members`.
+      const declaredMemberCountPresent = Object.prototype.hasOwnProperty.call(data, "members");
+      const declaredMemberCountValid =
+        !declaredMemberCountPresent ||
+        (typeof data.members === "number" && Number.isInteger(data.members) && data.members >= 0);
       return {
         ...data,
         tag: data.tag ?? "",
         name: data.name ?? "Unknown Clan",
+        memberListPresent: Array.isArray(data.memberList),
+        declaredMemberCountPresent,
+        declaredMemberCountValid,
+        declaredMemberCount: declaredMemberCountValid && declaredMemberCountPresent
+          ? data.members
+          : null,
         members: data.memberList ?? [],
       };
     } catch (err) {

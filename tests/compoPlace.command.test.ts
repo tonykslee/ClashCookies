@@ -154,6 +154,49 @@ describe("/compo place command", () => {
     });
   });
 
+  it("delivers only one bounded placement page per Discord message and preserves page ownership", async () => {
+    vi.spyOn(CompoPlaceService.prototype, "readPlace").mockResolvedValue({
+      content: "",
+      embeds: [
+        new EmbedBuilder().setTitle("Page 1"),
+        new EmbedBuilder().setTitle("Page 2"),
+        new EmbedBuilder().setTitle("Page 3"),
+      ],
+      trackedClanTags: ["#AAA111"],
+      eligibleClanTags: ["#AAA111"],
+      candidateCount: 1,
+      recommendedCount: 0,
+      vacancyCount: 0,
+      compositionCount: 1,
+    });
+
+    const interaction = makeInteraction("145k");
+    await Compo.run({} as any, interaction as any, {} as any);
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(payload?.embeds).toHaveLength(1);
+    expect(JSON.stringify(payload?.embeds ?? []).length).toBeLessThanOrEqual(6000);
+    expect(getComponentCustomIds(payload)).toContain("compo-refresh:place:user-1:145000:p:0:next");
+
+    const pageInteraction: any = {
+      customId: "compo-refresh:place:user-1:145000:p:0:next",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      message: { id: "message-1", components: [] },
+      replied: false,
+      deferred: false,
+      update: vi.fn(async () => { pageInteraction.deferred = true; }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn().mockResolvedValue(undefined),
+    };
+    const { handleCompoRefreshButton } = await import("../src/commands/Compo");
+    await handleCompoRefreshButton(pageInteraction as any, {} as any);
+    const pagePayload = pageInteraction.editReply.mock.calls.at(-1)?.[0];
+    expect(pagePayload?.embeds).toHaveLength(1);
+    expect(JSON.stringify(pagePayload?.embeds ?? []).length).toBeLessThanOrEqual(6000);
+    expect(pagePayload?.embeds?.[0]?.toJSON?.().title).toBe("Page 2");
+  });
+
   it("maps lower persisted weight buckets into the stable <=TH13 place bucket", async () => {
     const readPlaceSpy = vi
       .spyOn(CompoPlaceService.prototype, "readPlace")
@@ -519,6 +562,156 @@ describe("/compo place command", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(String(payload?.content ?? "")).toBe("No replacement candidates found from current stored data.");
     expect(payload?.embeds ?? []).toEqual([]);
+  });
+
+  it("shows unavailable evaluation instead of claiming no candidates", async () => {
+    vi.spyOn(actualStateService, "loadCompoActualStateContext").mockResolvedValue({
+      guildId: "guild-1",
+      sourceSyncedAt: null,
+      latestSourceSyncedAt: null,
+      trackedClanTags: ["#RR"],
+      eligibleClanTags: [],
+      heatMapRefs: [],
+      referenceAvailability: { status: "blocked" },
+      clans: [],
+    } as any);
+    vi.spyOn(CompoReplacementService.prototype, "resolveReplacementCandidates").mockResolvedValue({
+      inputWeight: 181000,
+      bucket: "TH19",
+      summaryByClan: [],
+      candidates: [],
+      evaluation: {
+        status: "unavailable",
+        reasonCode: "th19_target_unavailable",
+        eligibleClanTags: [],
+        unavailableClanTags: ["#RR"],
+      },
+    } as any);
+
+    const interaction: any = {
+      customId: "compo-replacements:open:user-1:181000",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(async () => {
+        interaction.deferred = true;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { handleCompoReplacementButton } = await import("../src/commands/Compo");
+    await handleCompoReplacementButton(interaction as any);
+
+    const payload = interaction.editReply.mock.calls.at(-1)?.[0];
+    expect(String(payload?.content ?? "")).toContain("evaluation unavailable");
+    expect(String(payload?.content ?? "")).not.toContain("No replacement candidates found");
+  });
+
+  it("revalidates reference evidence between replacement interactions", async () => {
+    let referenceStatus: "validated" | "blocked" = "validated";
+    const loadContextSpy = vi.spyOn(actualStateService, "loadCompoActualStateContext").mockImplementation(async () => ({
+      guildId: "guild-1",
+      sourceSyncedAt: null,
+      latestSourceSyncedAt: null,
+      trackedClanTags: ["#RR"],
+      eligibleClanTags: ["#RR"],
+      heatMapRefs: [{}],
+      referenceAvailability: { status: referenceStatus },
+      clans: [{
+        clanTag: "#RR",
+        clanName: "Rocky Road",
+        shortName: "RR",
+        base: {
+          resolvedTotalWeight: 145000,
+          unresolvedWeightCount: 0,
+          memberCount: 1,
+          memberCountEvidence: "observed",
+          rosterCoverage: "complete",
+          bucketCounts: {
+            TH18: 0, TH17: 0, TH16: 0, TH15: 1, TH14: 0, TH13: 0,
+            TH12: 0, TH11: 0, TH10: 0, TH9: 0, TH8_OR_LOWER: 0,
+          },
+        },
+        members: [{
+          clanTag: "#RR",
+          playerTag: "#P1",
+          playerName: "Candidate",
+          townHall: 15,
+          resolvedWeight: 145000,
+          resolvedBucket: "TH15",
+          resolvedWeightSource: "member",
+        }],
+      }],
+    } as any));
+    const resolverSpy = vi.spyOn(CompoReplacementService.prototype, "resolveReplacementCandidates")
+      .mockImplementation(async () => referenceStatus === "validated"
+        ? {
+            inputWeight: 145000,
+            bucket: "TH15",
+            summaryByClan: [{
+              clanTag: "#RR", clanName: "Rocky Road", uniqueCandidateCount: 1,
+              fillerCount: 1, inactiveCount: 0, unlinkedCount: 0, surplusCount: 0,
+            }],
+            candidates: [{
+              clanTag: "#RR", clanName: "Rocky Road", playerTag: "#P1", playerName: "Candidate",
+              resolvedWeight: 145000, resolvedBucket: "TH15", discordUserId: "123",
+              discordMention: "<@123>", inactiveLabel: null, surplusDelta: null, violationCount30d: 0,
+              reasons: { filler: true, inactive: false, unlinked: false, surplus: false },
+            }],
+            evaluation: {
+              status: "evaluated_with_candidates", reasonCode: null,
+              eligibleClanTags: ["#RR"], unavailableClanTags: [],
+            },
+          }
+        : {
+            inputWeight: 145000,
+            bucket: "TH15",
+            summaryByClan: [{
+              clanTag: "#RR", clanName: "Rocky Road", uniqueCandidateCount: 0,
+              fillerCount: 0, inactiveCount: 0, unlinkedCount: 0, surplusCount: 0,
+              evaluationStatus: "unavailable",
+            }],
+            candidates: [],
+            evaluation: {
+              status: "unavailable", reasonCode: "reference_unavailable",
+              eligibleClanTags: [], unavailableClanTags: ["#RR"],
+            },
+          } as any);
+
+    const openInteraction: any = {
+      customId: "compo-replacements:open:user-1:145000",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(async () => { openInteraction.deferred = true; }),
+      deferUpdate: vi.fn(),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCompoReplacementButton(openInteraction as any);
+    expect(String(openInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toBe("");
+
+    referenceStatus = "blocked";
+    const resetInteraction: any = {
+      customId: "compo-replacements:rs:user-1:145000",
+      guildId: "guild-1",
+      user: { id: "user-1" },
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(),
+      deferUpdate: vi.fn(async () => { resetInteraction.deferred = true; }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+    };
+    await handleCompoReplacementButton(resetInteraction as any);
+
+    expect(loadContextSpy).toHaveBeenCalledTimes(2);
+    expect(resolverSpy).toHaveBeenCalledTimes(2);
+    expect(String(resetInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).toContain("evaluation unavailable");
+    expect(String(resetInteraction.editReply.mock.calls.at(-1)?.[0]?.content ?? "")).not.toContain("Candidate");
   });
 
   it("keeps explorer controls when filters remove every candidate", async () => {

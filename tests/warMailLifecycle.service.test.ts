@@ -1,5 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "discord.js";
+
+const prismaMock = vi.hoisted(() => ({
+  $transaction: vi.fn(),
+  warMailLifecycle: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    updateMany: vi.fn(),
+    update: vi.fn(),
+    create: vi.fn(),
+    upsert: vi.fn(),
+  },
+}));
+
+vi.mock("../src/prisma", () => ({ prisma: prismaMock }));
+
 import { prisma } from "../src/prisma";
 import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
 

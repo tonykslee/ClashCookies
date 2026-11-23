@@ -150,6 +150,49 @@ describe("FwaStatsClient parsing", () => {
     });
   });
 
+  it("returns raw-to-parser diagnostic evidence without treating invalid weights as parser rejection", async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: [
+        { tag: "abc123", name: "Player One", position: "1", townHall: "19", weight: "181000", opponentTag: "opp1" },
+        { tag: "def456", name: "Player Two", position: "2", townHall: "19", weight: "181000.5", opponentTag: "opp1" },
+        { tag: "", name: "Malformed", position: "3", townHall: "19", weight: "181000", opponentTag: "opp1" },
+      ],
+    } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    const evidence = await client.fetchWarMembersEvidence("2QG2C08UP");
+
+    expect(evidence.rows).toHaveLength(2);
+    expect(evidence.rawRowCount).toBe(3);
+    expect(evidence.parserAcceptedRowCount).toBe(2);
+    expect(evidence.parserRejectedRowCount).toBe(1);
+    expect(evidence.evidenceIneligibleRowCount).toBe(2);
+    expect(evidence.reasonCodes).toEqual(expect.arrayContaining(["invalid_weight", "parser_rejected", "missing_player_identity"]));
+    expect(evidence.exactWarBindingStatus).toBe("UNAVAILABLE");
+    expect(evidence.sourceGenerationStatus).toBe("UNAVAILABLE");
+  });
+
+  it("rejects malformed Members.json rows instead of silently dropping them", async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      status: 200,
+      data: [
+        { tag: "abc123", name: "Player One" },
+        { tag: "", name: "Unparseable" },
+      ],
+    } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    await expect(client.fetchClanMembers("#2QG2C08UP")).rejects.toThrow("malformed");
+  });
+
+  it("rejects a non-array Members.json payload", async () => {
+    mockedAxios.get.mockResolvedValueOnce({ status: 200, data: { members: [] } } as any);
+
+    const client = new FwaStatsClient({ retryCount: 0, timeoutMs: 1000 });
+    await expect(client.fetchClanMembers("#2QG2C08UP")).rejects.toThrow("non-array");
+  });
+
   it("parses Wars.json rows and skips invalid rows", async () => {
     mockedAxios.get.mockResolvedValueOnce({
       status: 200,
