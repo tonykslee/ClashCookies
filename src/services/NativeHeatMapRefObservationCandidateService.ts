@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
   computeNativeReferenceCandidateContentFingerprint,
@@ -36,13 +36,14 @@ export const NATIVE_OBSERVATION_READ_LIMIT = 1_000;
 
 type ObservationDb = Pick<PrismaClient, "fwaWarMembersObservation">;
 
-type RetainedMember = {
-  clanTag: string;
-  playerTag: string;
-  position: number | null;
-  townHall: number | null;
-  rawWeight: number | null;
-};
+type RetainedObservationQuery = Prisma.FwaWarMembersObservationGetPayload<{
+  include: { members: true; qualityEvidence: true };
+}>;
+
+type RetainedMember = Pick<
+  RetainedObservationQuery["members"][number],
+  "observationId" | "playerTag" | "position" | "townHall" | "rawWeight"
+>;
 
 type RetainedEvidence = {
   id: string;
@@ -73,6 +74,28 @@ type RetainedObservation = {
   members: RetainedMember[];
   qualityEvidence: RetainedEvidence[];
 };
+
+function mapRetainedObservation(row: RetainedObservationQuery): RetainedObservation {
+  return {
+    id: row.id,
+    clanTag: row.clanTag,
+    sourceContractVersion: row.sourceContractVersion,
+    observationSchemaVersion: row.observationSchemaVersion,
+    sourceWarNo: row.sourceWarNo,
+    firstObservedAt: row.firstObservedAt,
+    observedAt: row.observedAt,
+    ingestedAt: row.ingestedAt,
+    rosterFingerprint: row.rosterFingerprint,
+    members: row.members.map((member) => ({
+      observationId: member.observationId,
+      playerTag: member.playerTag,
+      position: member.position,
+      townHall: member.townHall,
+      rawWeight: member.rawWeight,
+    })),
+    qualityEvidence: row.qualityEvidence,
+  };
+}
 
 type RetainedReadResult = {
   rows: RetainedObservation[];
@@ -171,7 +194,8 @@ function sourceQualityIsEligible(evidence: RetainedEvidence): string | null {
 
 function validateMembers(observation: RetainedObservation): { members: RetainedMember[]; reasonCode: string | null } {
   const clanTag = normalizeFwaTag(observation.clanTag);
-  if (!clanTag || observation.members.length !== 50) return { members: [], reasonCode: "member_roster_mismatch" };
+  if (!clanTag) return { members: [], reasonCode: "member_roster_mismatch" };
+  if (observation.members.length !== 50) return { members: [], reasonCode: "member_count_mismatch" };
   const members = [...observation.members].sort((left, right) =>
     (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
     left.playerTag.localeCompare(right.playerTag),
@@ -181,7 +205,7 @@ function validateMembers(observation: RetainedObservation): { members: RetainedM
   for (const member of members) {
     const playerTag = normalizeFwaTag(member.playerTag);
     const position = member.position;
-    if (normalizeFwaTag(member.clanTag) !== clanTag) return { members: [], reasonCode: "member_roster_mismatch" };
+    if (member.observationId !== observation.id) return { members: [], reasonCode: "member_ownership_mismatch" };
     if (!playerTag || typeof position !== "number" || !Number.isInteger(position) || position < 1 || position > 50 || positions.has(position)) {
       return { members: [], reasonCode: "member_structure" };
     }
@@ -203,6 +227,10 @@ function stableMetadata(metadata: NativeReferenceObservationAggregationMetadata)
     selectedObservations: [...metadata.selectedObservations].sort((left, right) => left.clanTag.localeCompare(right.clanTag)),
     lineage: [...metadata.lineage].sort((left, right) => left.clanTag.localeCompare(right.clanTag) || left.observedAtIso.localeCompare(right.observedAtIso) || left.observationId.localeCompare(right.observationId)),
   };
+}
+
+function emptyWeightProvenance(): { RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number } {
+  return { RAW: 0, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 };
 }
 
 /** Purpose: read immutable WarMembers observations and quality revisions as-of an explicit policy cutoff. */
@@ -236,7 +264,7 @@ export class NativeHeatMapRefObservationCandidateService {
       },
     });
     return {
-      rows: rows as unknown as RetainedObservation[],
+      rows: rows.map(mapRetainedObservation),
       coverageStatus: rows.length > NATIVE_OBSERVATION_READ_LIMIT ? "TRUNCATED" : "VERIFIED",
       readRowCount: rows.length,
       readLimited: rows.length > NATIVE_OBSERVATION_READ_LIMIT,
@@ -342,6 +370,11 @@ export class NativeHeatMapRefObservationCandidateService {
             .filter((evidence) => evidenceAvailableAsOf(evidence, eraStart, evaluationAt))
             .sort((left, right) => left.id.localeCompare(right.id))
             .map((evidence) => evidence.id),
+          weightProvenance: row.members.reduce((counts, member) => {
+            if (member.rawWeight !== null && member.rawWeight > 0) counts.RAW += 1;
+            else counts.UNRESOLVED += 1;
+            return counts;
+          }, emptyWeightProvenance()),
         });
       }
       const evidenceCandidates = newest.qualityEvidence
@@ -391,7 +424,11 @@ export class NativeHeatMapRefObservationCandidateService {
               sourceMatchType: null,
               sourceMemberCompletenessStatus: "VERIFIED",
               members: memberValidation.members.map((member) => ({
-                ...member,
+                clanTag,
+                playerTag: member.playerTag,
+                position: member.position,
+                townHall: member.townHall,
+                rawWeight: member.rawWeight,
                 effectiveWeight: null,
                 effectiveWeightStatus: "UNRESOLVED" as const,
               })),
@@ -401,6 +438,7 @@ export class NativeHeatMapRefObservationCandidateService {
 
     const deferred = await this.resolveDeferredWeights(selections, input, evaluationAt, eraStart, eraEnd);
     const sourceRosters: NativeReferenceSourceRoster[] = [];
+    const weightProvenanceByObservation = new Map<string, { RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number }>();
     for (const selection of selections) {
       if (selection.status !== "QUALIFYING" || !selection.roster) continue;
       const deferredByPlayer = deferred.get(selection.roster.clanTag) ?? new Map<string, OpenWeightInputDefermentMatchRow>();
@@ -416,8 +454,17 @@ export class NativeHeatMapRefObservationCandidateService {
       const totalEffectiveWeight = resolved.every((member) => member.effectiveWeight !== null)
         ? resolved.reduce((sum, member) => sum + (member.effectiveWeight ?? 0), 0)
         : null;
+      weightProvenanceByObservation.set(selection.observation.id, resolved.reduce((counts, member) => {
+        counts[member.effectiveWeightStatus] += 1;
+        return counts;
+      }, emptyWeightProvenance()));
       sourceRosters.push({ ...selection.roster, totalEffectiveWeight, members: resolved });
     }
+
+    const lineageWithProvenance = lineage.map((entry) => ({
+      ...entry,
+      weightProvenance: weightProvenanceByObservation.get(entry.observationId) ?? entry.weightProvenance,
+    }));
 
     const metadata: NativeReferenceObservationAggregationMetadata = stableMetadata({
       contractVersion: NATIVE_OBSERVATION_AGGREGATION_CONTRACT_VERSION,
@@ -444,7 +491,7 @@ export class NativeHeatMapRefObservationCandidateService {
         status: selection.status,
         reasonCode: selection.reasonCode,
       })),
-      lineage,
+      lineage: lineageWithProvenance,
       defermentScope: input.defermentScope ?? null,
       authorityLimitations: [
         "exact_war_binding_unavailable",

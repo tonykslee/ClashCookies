@@ -39,6 +39,7 @@ import { formatError } from "../helper/formatError";
 import { getCompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import type { CompoWarDisplayBucket } from "../helper/compoWarWeightBuckets";
 import { normalizeCompoClanDisplayName } from "../helper/compoDisplay";
+import { DISCORD_CONTENT_LIMIT } from "../helper/discordContent";
 import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import { prisma } from "../prisma";
 import { safeReply } from "../helper/safeReply";
@@ -1714,6 +1715,15 @@ function buildCompoHeatMapRefCopyText(copyText: string): string {
   return ["```text", copyText, "```"].join("\n");
 }
 
+function buildCompoHeatMapRefCopyPayload(copyText: string): CompoRenderPayload {
+  const fenced = buildCompoHeatMapRefCopyText(copyText);
+  if (fenced.length <= DISCORD_CONTENT_LIMIT) return { content: fenced };
+  return {
+    content: "Full HeatMapRef Copy Table attached; no reference rows were truncated.",
+    files: [{ attachment: Buffer.from(copyText, "utf8"), name: "compo-heatmapref-copy.txt" }],
+  };
+}
+
 function buildCompoHeatMapRefCopyCustomId(
   userId: string,
   mode: CompoHeatMapRefMode = "fwa",
@@ -1781,14 +1791,29 @@ function buildCompoStatePayloadFromRows(input: {
   const title = input.titleLabel
     ? `ALLIANCE STATE (${input.mode} - ${input.titleLabel})`
     : `ALLIANCE STATE (${input.mode})`;
+  const content = input.contentLines.join("\n");
   return {
-    content: input.contentLines.join("\n"),
+    content: content.length <= DISCORD_CONTENT_LIMIT
+      ? content
+      : "Alliance state rendered in the table attachment; full state notes are attached.",
     files: [
       {
         attachment: renderStatePng(title, input.stateRows, input.imageNotice),
         name: `compo-state-${input.mode}.png`,
       },
+      ...(content.length > DISCORD_CONTENT_LIMIT
+        ? [{ attachment: Buffer.from(content, "utf8"), name: `compo-state-${input.mode}-notes.txt` }]
+        : []),
     ],
+  };
+}
+
+function buildCompoContentPayload(contentLines: readonly string[]): CompoRenderPayload {
+  const content = contentLines.join("\n");
+  if (content.length <= DISCORD_CONTENT_LIMIT) return { content };
+  return {
+    content: "Full response notes attached; no alliance rows were silently truncated.",
+    files: [{ attachment: Buffer.from(content, "utf8"), name: "compo-response.txt" }],
   };
 }
 
@@ -2953,7 +2978,7 @@ export async function handleCompoRefreshButton(
               contentLines: warState.contentLines,
             })
           : {
-              content: warState.contentLines.join("\n"),
+              ...buildCompoContentPayload(warState.contentLines),
             };
       } else {
         const actualState = await new CompoActualStateService().refreshState(
@@ -2973,7 +2998,7 @@ export async function handleCompoRefreshButton(
               ).toUpperCase(),
             })
           : {
-              content: actualState.contentLines.join("\n"),
+              ...buildCompoContentPayload(actualState.contentLines),
             };
       }
       await interaction.editReply({
@@ -3042,7 +3067,7 @@ export async function handleCompoRefreshButton(
               ).toUpperCase(),
             })
           : {
-              content: actualState.contentLines.join("\n"),
+              ...buildCompoContentPayload(actualState.contentLines),
             };
         await interaction.editReply({
           ...payload,
@@ -3275,10 +3300,7 @@ export async function handleCompoHeatMapRefCopyButton(
         : await new HeatMapRefDisplayService().readHeatMapRefDisplayTable({
             guildId: interaction.guildId ?? null,
           });
-    const copyText = buildCompoHeatMapRefCopyText(display.copyText);
-    await interaction.editReply({
-      content: copyText,
-    });
+    await interaction.editReply(buildCompoHeatMapRefCopyPayload(display.copyText));
   } catch (error) {
     console.error(`compo heatmapref copy button failed: ${formatError(error)}`);
     if (interaction.deferred || interaction.replied) {
@@ -3889,7 +3911,7 @@ export const Compo: Command = {
                       contentLines: warState.contentLines,
                     })
                   : {
-                      content: warState.contentLines.join("\n"),
+                      ...buildCompoContentPayload(warState.contentLines),
                     };
               })()
             : await (async () => {
@@ -3921,7 +3943,7 @@ export const Compo: Command = {
                       ).toUpperCase(),
                     })
                   : {
-                      content: actualState.contentLines.join("\n"),
+                      ...buildCompoContentPayload(actualState.contentLines),
                     };
               })();
         logCompoStage(interaction, "computation_complete", {
@@ -4331,6 +4353,8 @@ export const Compo: Command = {
 export const buildCompoStateRowsForTest = buildCompoStateRows;
 export const buildCompoHeatMapRefRowsForTest = buildCompoHeatMapRefRows;
 export const buildCompoHeatMapRefCopyTextForTest = buildCompoHeatMapRefCopyText;
+export const buildCompoHeatMapRefCopyPayloadForTest = buildCompoHeatMapRefCopyPayload;
+export const buildCompoContentPayloadForTest = buildCompoContentPayload;
 export const buildCompoHeatMapRefCopyCustomIdForTest = buildCompoHeatMapRefCopyCustomId;
 export const isCompoHeatMapRefCopyButtonCustomIdForTest = isCompoHeatMapRefCopyButtonCustomId;
 export const toGlyphSafeTextForTest = toGlyphSafeText;

@@ -10,11 +10,12 @@ export const NATIVE_REFERENCE_PROFILE_ID = "fwa-native-composition-reference";
 export const NATIVE_REFERENCE_PROFILE_VERSION = "native-reference-v2";
 export const NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION = "resolved-weight-quality-v2";
 export const NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION = "anchor-sufficiency-v1";
-/** Diagnostic proposal only: two direct anchors are the minimum for inferred reference evidence. */
+/** Provisional owner-approved policy: two direct anchors are the minimum for inferred reference evidence. */
 export const NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS = 2;
 export const NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION = "compo-war-buckets-v1";
 export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
-export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
+/** Owner-approved provisional native qualification threshold. Authoritative publication has a separate gate. */
+export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 5;
 export const NATIVE_REFERENCE_TARGET_TOTAL = 50;
 export const NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY = "persisted_fwa_snapshot";
 export const NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY = "retained_fwa_observations";
@@ -247,6 +248,7 @@ export type NativeReferenceObservationAggregationMetadata = {
     ingestedAtIso: string;
     selectionStatus: "SELECTED" | "SUPERSEDED" | "AMBIGUOUS";
     qualityEvidenceIds: readonly string[];
+    weightProvenance?: Readonly<{ RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number }>;
   }[];
   defermentScope: { guildId: string; clanTag: string } | null;
   authorityLimitations: readonly string[];
@@ -1467,7 +1469,8 @@ function validateNativeReferenceCandidateArtifactInternal(
     let supersededCount = 0;
     let ambiguousLineageCount = 0;
     for (const value of lineage) {
-      if (!isRecordValue(value) || !hasExactKeys(value, ["clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso", "selectionStatus", "qualityEvidenceIds"])) return false;
+      const lineageKeys = ["clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso", "selectionStatus", "qualityEvidenceIds"];
+      if (!isRecordValue(value) || (!hasExactKeys(value, lineageKeys) && !hasExactKeys(value, [...lineageKeys, "weightProvenance"]))) return false;
       const clanTag = normalizeIdentity(value.clanTag);
       if (
         !clanTag || value.clanTag !== clanTag || typeof value.observationId !== "string" || !value.observationId.trim() ||
@@ -1480,6 +1483,7 @@ function validateNativeReferenceCandidateArtifactInternal(
         new Date(value.ingestedAtIso).getTime() > evaluationMs ||
         !["SELECTED", "SUPERSEDED", "AMBIGUOUS"].includes(String(value.selectionStatus)) ||
         !Array.isArray(value.qualityEvidenceIds) || value.qualityEvidenceIds.some((id) => typeof id !== "string" || !id.trim() || lineageQualityIds.has(id)) ||
+        (value.weightProvenance !== undefined && (!isRecordValue(value.weightProvenance) || !hasExactKeys(value.weightProvenance, ["RAW", "DEFERRED", "ESTIMATED", "UNRESOLVED"]) || ![value.weightProvenance.RAW, value.weightProvenance.DEFERRED, value.weightProvenance.ESTIMATED, value.weightProvenance.UNRESOLVED].every(isNonnegativeInteger))) ||
         lineageIds.has(value.observationId)
       ) return false;
       lineageIds.add(value.observationId);

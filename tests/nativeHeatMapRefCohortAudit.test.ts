@@ -7,6 +7,7 @@ import {
 import { FWA_WAR_MEMBERS_SOURCE_CONTRACT_VERSION } from "../src/services/fwa-feeds/FwaWarMembersSourceEvidence";
 import {
   NativeHeatMapRefCohortAuditService,
+  NATIVE_COHORT_AUDIT_POLICY_VERSION,
   NATIVE_COHORT_AUDIT_OWNER_POLICY_STATUS,
 } from "../src/services/NativeHeatMapRefCohortAuditService";
 import { validateNativeReferenceCandidateArtifact } from "../src/helper/nativeHeatMapRefCandidate";
@@ -44,12 +45,11 @@ function makeEvidence(clanTag: string, observedAt: string, fingerprint: string, 
   };
 }
 
-function makeMembers(clanTag: string, rawWeight: number | null, missingCount = 0) {
+function makeMembers(clanTag: string, rawWeight: number | null, missingCount = 0, observationId = `${clanTag}-observation`) {
   return Array.from({ length: 50 }, (_, index) => ({
     id: `${clanTag}-member-${index + 1}`,
-    observationId: `${clanTag}-observation`,
+    observationId,
     memberFingerprint: `${clanTag}-member-${index + 1}`,
-    clanTag,
     playerTag: `#PLAYER${index + 1}`,
     playerName: `Player ${index + 1}`,
     position: index + 1,
@@ -70,8 +70,9 @@ function makeObservation(
     overrides?: Record<string, unknown>;
   } = {},
 ) {
+  const id = options.id ?? `${clanTag}-observation`;
   return {
-    id: options.id ?? `${clanTag}-observation`,
+    id,
     clanTag,
     sourceContractVersion: FWA_WAR_MEMBERS_SOURCE_CONTRACT_VERSION,
     observationSchemaVersion: FWA_WAR_MEMBERS_OBSERVATION_SCHEMA_VERSION,
@@ -80,8 +81,8 @@ function makeObservation(
     observedAt: new Date(observedAt),
     ingestedAt: new Date(observedAt),
     rosterFingerprint: options.rosterFingerprint ?? `${clanTag}-roster-${observedAt}`,
-    members: makeMembers(clanTag, rawWeight, options.missingCount),
-    qualityEvidence: options.evidence ?? [makeEvidence(clanTag, observedAt, `${clanTag}-${options.id ?? "observation"}-quality-${observedAt}`)],
+    members: makeMembers(clanTag, rawWeight, options.missingCount, id),
+    qualityEvidence: (options.evidence ?? [makeEvidence(clanTag, observedAt, `${clanTag}-${options.id ?? "observation"}-quality-${observedAt}`)]).map((evidence) => ({ ...evidence, observationId: id })),
     ...options.overrides,
   };
 }
@@ -113,6 +114,7 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     const audit = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands, defermentScope: { guildId: "guild-1", clanTag: "#DEFERRED" } });
 
     expect(audit.ownerPolicyStatus).toBe(NATIVE_COHORT_AUDIT_OWNER_POLICY_STATUS);
+    expect(audit.policyVersion).toBe(NATIVE_COHORT_AUDIT_POLICY_VERSION);
     expect(audit.aggregate.observedSemanticSampleCount).toBe(6);
     expect(audit.aggregate.selectedIndependentClanCount).toBe(5);
     expect(audit.aggregate.supersededSemanticSampleCount).toBe(1);
@@ -142,7 +144,7 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     expect(audit.bands.every((band) => band.excludedCount === 0)).toBe(true);
   });
 
-  it("keeps threshold sensitivity diagnostic and includes the proposed 2-anchor/10-clan scenario", async () => {
+  it("keeps threshold sensitivity diagnostic and applies the approved 2-anchor/5-clan policy", async () => {
     const rows = Array.from({ length: 3 }, (_, index) => makeObservation(`#CLAN${index + 1}`, `2026-11-19T0${index + 1}:00:00.000Z`, 140_000));
     const { service } = makeAudit(rows);
     const audit = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands });
@@ -150,7 +152,7 @@ describe("NativeHeatMapRefCohortAuditService", () => {
     const relaxed = audit.sensitivity.find((scenario) => scenario.minimumDirectWeightAnchors === 1 && scenario.minimumDistinctClansPerBand === 1);
     expect(proposed?.bands[0]?.status).toBe("UNKNOWN");
     expect(relaxed?.bands[0]?.status).toBe("SUPPORTED");
-    expect(audit.policyProposals).toEqual({ minimumDirectWeightAnchors: 2, minimumDistinctClansPerBand: 10, effectiveSampleThreshold: 10, alternativesAreDiagnosticOnly: true });
+    expect(audit.policyProposals).toEqual({ minimumDirectWeightAnchors: 2, minimumDistinctClansPerBand: 5, effectiveSampleThreshold: 5, alternativesAreDiagnosticOnly: true });
     const customThreshold = await service.generate({ evaluationAt, eraPolicy, bandDefinitions: bands, sampleThreshold: 5 });
     expect(customThreshold.policyProposals.effectiveSampleThreshold).toBe(5);
   });

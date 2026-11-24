@@ -32,38 +32,38 @@ model PlayerActivity {
 }
 
 model TrackedClan {
-  id                  Int              @id @default(autoincrement())
-  tag                 String           @unique
-  name                String?
-  loseStyle           LoseStyle        @default(TRIPLE_TOP_30)
-  mailChannelId       String?
-  logChannelId        String?
-  leaderChannelId     String?
-  chatChannelId       String?
-  clanRoleId          String?
-  leadRoleId          String?
-  clanBadge           String?
-  shortName           String?
-  mailConfig          Json?
-  notifyChannelId     String?
-  notifyRole          String?
-  notifyEnabled       Boolean          @default(false)
-  fwaPoliceDmEnabled  Boolean          @default(false)
-  fwaPoliceLogEnabled Boolean          @default(false)
-  createdAt           DateTime         @default(now())
-  repPlayerTags       TrackedClanRep[]
-  weightAlertConfig   FwaWeightAlertConfig?
+  id                    Int                      @id @default(autoincrement())
+  tag                   String                   @unique
+  name                  String?
+  loseStyle             LoseStyle                @default(TRIPLE_TOP_30)
+  mailChannelId         String?
+  logChannelId          String?
+  leaderChannelId       String?
+  chatChannelId         String?
+  clanRoleId            String?
+  leadRoleId            String?
+  clanBadge             String?
+  shortName             String?
+  mailConfig            Json?
+  notifyChannelId       String?
+  notifyRole            String?
+  notifyEnabled         Boolean                  @default(false)
+  fwaPoliceDmEnabled    Boolean                  @default(false)
+  fwaPoliceLogEnabled   Boolean                  @default(false)
+  createdAt             DateTime                 @default(now())
+  repPlayerTags         TrackedClanRep[]
+  weightAlertConfig     FwaWeightAlertConfig?
   weightAlertDeliveries FwaWeightAlertDelivery[]
 }
 
 model FwaWeightAlertConfig {
-  clanTag                 String      @id
-  clan                    TrackedClan @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
-  enabled                 Boolean     @default(false)
-  thresholdDays           Int         @default(7)
-  updatedByDiscordUserId  String?
-  createdAt               DateTime    @default(now())
-  updatedAt               DateTime    @updatedAt
+  clanTag                String      @id
+  clan                   TrackedClan @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
+  enabled                Boolean     @default(false)
+  thresholdDays          Int         @default(7)
+  updatedByDiscordUserId String?
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
 }
 
 enum FwaWeightAlertDeliveryStatus {
@@ -73,22 +73,22 @@ enum FwaWeightAlertDeliveryStatus {
 }
 
 model FwaWeightAlertDelivery {
-  id                 String                         @id @default(cuid())
-  clanTag            String
-  weightSubmitDate   DateTime
-  status             FwaWeightAlertDeliveryStatus @default(CLAIMED)
-  claimToken         String?
-  claimedAt          DateTime?
-  attemptCount       Int                            @default(0)
-  lastAttemptAt      DateTime?
-  sentAt             DateTime?
-  discordMessageId   String?
-  failureCode        String?
-  failureReason      String?
-  createdAt          DateTime                       @default(now())
-  updatedAt          DateTime                       @updatedAt
+  id               String                       @id @default(cuid())
+  clanTag          String
+  weightSubmitDate DateTime
+  status           FwaWeightAlertDeliveryStatus @default(CLAIMED)
+  claimToken       String?
+  claimedAt        DateTime?
+  attemptCount     Int                          @default(0)
+  lastAttemptAt    DateTime?
+  sentAt           DateTime?
+  discordMessageId String?
+  failureCode      String?
+  failureReason    String?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
 
-  clan               TrackedClan                    @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
+  clan TrackedClan @relation(fields: [clanTag], references: [tag], onDelete: Cascade)
 
   @@unique([clanTag, weightSubmitDate])
   @@index([status, claimedAt])
@@ -106,11 +106,11 @@ model TrackedClanRep {
 }
 
 model TrackedClanRepUserProfile {
-  discordUserId         String   @id
-  timeZone              String?  @db.VarChar(64)
+  discordUserId          String   @id
+  timeZone               String?  @db.VarChar(64)
   updatedByDiscordUserId String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 }
 
 model RaidTrackedClan {
@@ -891,16 +891,16 @@ enum ClanHomeTransferCandidateStatus {
 }
 
 model AllianceClanMembershipInterval {
-  id              String                               @id @default(cuid())
+  id              String                                   @id @default(cuid())
   guildId         String
-  playerTag       String                               @db.VarChar(16)
-  clanTag         String                               @db.VarChar(16)
+  playerTag       String                                   @db.VarChar(16)
+  clanTag         String                                   @db.VarChar(16)
   firstObservedAt DateTime
   lastObservedAt  DateTime
   endedAt         DateTime?
   endReason       AllianceClanMembershipIntervalEndReason?
-  createdAt       DateTime                             @default(now())
-  updatedAt       DateTime                             @updatedAt
+  createdAt       DateTime                                 @default(now())
+  updatedAt       DateTime                                 @updatedAt
 
   @@index([guildId, playerTag, firstObservedAt, endedAt])
   @@index([guildId, clanTag, firstObservedAt, endedAt])
@@ -908,18 +908,18 @@ model AllianceClanMembershipInterval {
 }
 
 model ClanHomeMembershipPeriod {
-  id                     String                              @id @default(cuid())
-  guildId                String
-  playerTag              String                              @db.VarChar(16)
-  clanTag                String                              @db.VarChar(16)
-  startedAtSyncTime      DateTime
-  qualifiedAtSyncTime    DateTime
-  endedAtSyncTime        DateTime?
-  establishmentSource    ClanHomeMembershipEstablishmentSource
-  endReason              ClanHomeMembershipEndReason?
-  createdAt              DateTime                            @default(now())
-  updatedAt              DateTime                            @updatedAt
-  alertDeliveryAccounts  HomeAwaySyncAlertDeliveryAccount[]
+  id                    String                                @id @default(cuid())
+  guildId               String
+  playerTag             String                                @db.VarChar(16)
+  clanTag               String                                @db.VarChar(16)
+  startedAtSyncTime     DateTime
+  qualifiedAtSyncTime   DateTime
+  endedAtSyncTime       DateTime?
+  establishmentSource   ClanHomeMembershipEstablishmentSource
+  endReason             ClanHomeMembershipEndReason?
+  createdAt             DateTime                              @default(now())
+  updatedAt             DateTime                              @updatedAt
+  alertDeliveryAccounts HomeAwaySyncAlertDeliveryAccount[]
 
   @@index([guildId, playerTag, endedAtSyncTime])
   @@index([guildId, clanTag, endedAtSyncTime])
@@ -928,19 +928,19 @@ model ClanHomeMembershipPeriod {
 }
 
 model ClanHomeTransferCandidate {
-  id                     String                           @id @default(cuid())
+  id                     String                          @id @default(cuid())
   guildId                String
-  playerTag              String                           @db.VarChar(16)
+  playerTag              String                          @db.VarChar(16)
   homeMembershipPeriodId String
-  fromClanTag            String                           @db.VarChar(16)
-  toClanTag              String                           @db.VarChar(16)
+  fromClanTag            String                          @db.VarChar(16)
+  toClanTag              String                          @db.VarChar(16)
   startedAtSyncTime      DateTime
   qualifiedAtSyncTime    DateTime
   status                 ClanHomeTransferCandidateStatus
   decidedAt              DateTime?
   decidedByDiscordUserId String?
-  createdAt              DateTime                         @default(now())
-  updatedAt              DateTime                         @updatedAt
+  createdAt              DateTime                        @default(now())
+  updatedAt              DateTime                        @updatedAt
 
   @@unique([homeMembershipPeriodId, toClanTag, startedAtSyncTime, qualifiedAtSyncTime])
   @@index([guildId, playerTag, status])
@@ -1384,21 +1384,21 @@ model HomeAwaySyncAlertSchedule {
 }
 
 model HomeAwaySyncAlertDelivery {
-  id              String                          @id @default(cuid())
+  id              String                             @id @default(cuid())
   alertScheduleId String
   guildId         String
   discordUserId   String
-  messageContent  String                          @db.Text
-  status          HomeAwaySyncAlertDeliveryStatus @default(PENDING)
+  messageContent  String                             @db.Text
+  status          HomeAwaySyncAlertDeliveryStatus    @default(PENDING)
   claimToken      String?
   claimedAt       DateTime?
-  attemptCount    Int                             @default(0)
+  attemptCount    Int                                @default(0)
   nextAttemptAt   DateTime?
   sentAt          DateTime?
   failureCode     String?
   failureReason   String?
-  createdAt       DateTime                        @default(now())
-  updatedAt       DateTime                        @updatedAt
+  createdAt       DateTime                           @default(now())
+  updatedAt       DateTime                           @updatedAt
   alertSchedule   HomeAwaySyncAlertSchedule          @relation(fields: [alertScheduleId], references: [id], onDelete: Cascade)
   accountMembers  HomeAwaySyncAlertDeliveryAccount[]
 
@@ -1440,12 +1440,12 @@ model SyncCycle {
 }
 
 model SyncClanReadinessSnapshot {
-  id                    String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   guildId               String
   syncTime              DateTime
   clanTag               String
   clanName              String?
-  capturedAt            DateTime @default(now())
+  capturedAt            DateTime  @default(now())
   memberCount           Int
   unresolvedWeightCount Int
   deviationScore        Float?
@@ -1453,10 +1453,10 @@ model SyncClanReadinessSnapshot {
   sourceSyncedAt        DateTime?
   algorithmVersion      String
   scheduledSyncPostId   String?
-  fillerCaptureComplete Boolean  @default(false)
-  fillerPlayerTags      String[] @default([])
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  fillerCaptureComplete Boolean   @default(false)
+  fillerPlayerTags      String[]  @default([])
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@unique([guildId, syncTime, clanTag])
   @@index([guildId, syncTime])
@@ -1508,9 +1508,9 @@ model TrackedMessageClaim {
 
 /// Immutable bot-observed sync reaction transitions; no TrackedMessage FK keeps history after current-state cleanup.
 model SyncReactionHistory {
-  id                String                    @id @default(cuid())
+  id                String                       @id @default(cuid())
   /// PostgreSQL sequence allocation order only; not commit or observation order.
-  eventOrder        Int                       @default(autoincrement()) @unique
+  eventOrder        Int                          @unique @default(autoincrement())
   guildId           String
   syncTime          DateTime
   syncRootTrackedId String
@@ -1518,11 +1518,11 @@ model SyncReactionHistory {
   trackedMessageId  String
   messageId         String
   discordUserId     String
-  clanTag           String                    @db.VarChar(16)
+  clanTag           String                       @db.VarChar(16)
   action            SyncReactionHistoryAction
   observationPhase  SyncReactionObservationPhase
   observedAt        DateTime
-  createdAt         DateTime                  @default(now())
+  createdAt         DateTime                     @default(now())
 
   @@index([guildId, syncTime, clanTag, eventOrder])
   @@index([syncRootTrackedId, observedAt])
@@ -1808,36 +1808,36 @@ model WarAttacks {
 }
 
 model CurrentWar {
-  guildId           String
-  clanTag           String
-  warId             Int?
-  syncNumber        Int?
-  syncNum           Int?
-  channelId         String
-  notify            Boolean       @default(true)
-  pingRole          Boolean       @default(true)
-  inferredMatchType Boolean       @default(true)
-  notifyRole        String?
-  fwaPoints         Int?
-  opponentFwaPoints Int?
-  outcome           String?
-  matchType         WarMatchType?
-  warStartFwaPoints Int?
-  warEndFwaPoints   Int?
-  clanStars         Int?
-  opponentStars     Int?
-  teamSize          Int?
-  pendingEventType  String?
+  guildId                 String
+  clanTag                 String
+  warId                   Int?
+  syncNumber              Int?
+  syncNum                 Int?
+  channelId               String
+  notify                  Boolean       @default(true)
+  pingRole                Boolean       @default(true)
+  inferredMatchType       Boolean       @default(true)
+  notifyRole              String?
+  fwaPoints               Int?
+  opponentFwaPoints       Int?
+  outcome                 String?
+  matchType               WarMatchType?
+  warStartFwaPoints       Int?
+  warEndFwaPoints         Int?
+  clanStars               Int?
+  opponentStars           Int?
+  teamSize                Int?
+  pendingEventType        String?
   pendingEventTargetState String?
-  state             String?
-  prepStartTime     DateTime?
-  startTime         DateTime?
-  endTime           DateTime?
-  opponentTag       String?
-  opponentName      String?
-  clanName          String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  state                   String?
+  prepStartTime           DateTime?
+  startTime               DateTime?
+  endTime                 DateTime?
+  opponentTag             String?
+  opponentName            String?
+  clanName                String?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
 
   @@id([clanTag, guildId])
   @@index([clanTag])
@@ -1887,31 +1887,31 @@ model ClanWarHistory {
 }
 
 model WarPlanComplianceEvaluation {
-  id                          String                            @id @default(cuid())
-  guildId                     String
-  warId                       Int
-  status                      WarPlanComplianceEvaluationStatus @default(PENDING)
-  claimToken                  String?
-  claimExpiresAt              DateTime?
-  engineVersion               String?
-  matchType                   WarMatchType?
-  expectedOutcome             String?
-  loseStyle                   LoseStyle?
-  nonMirrorTripleMinClanStars Int?
-  allBasesOpenHoursLeft       Int?
+  id                                String                            @id @default(cuid())
+  guildId                           String
+  warId                             Int
+  status                            WarPlanComplianceEvaluationStatus @default(PENDING)
+  claimToken                        String?
+  claimExpiresAt                    DateTime?
+  engineVersion                     String?
+  matchType                         WarMatchType?
+  expectedOutcome                   String?
+  loseStyle                         LoseStyle?
+  nonMirrorTripleMinClanStars       Int?
+  allBasesOpenHoursLeft             Int?
   traditionalRequireMirrorAfterOpen Boolean?
-  winRequireMirrorAfterOpen   Boolean?
-  rulesFingerprint            String?
-  attemptCount                Int                               @default(0)
-  lastAttemptAt               DateTime?
-  nextAttemptAt               DateTime?
-  completedAt                 DateTime?
-  failureCode                 String?
-  failureMessage              String?
-  createdAt                   DateTime                          @default(now())
-  updatedAt                   DateTime                          @updatedAt
-  warHistory                  ClanWarHistory                    @relation(fields: [warId], references: [warId], onDelete: Cascade)
-  violations                  WarPlanViolation[]
+  winRequireMirrorAfterOpen         Boolean?
+  rulesFingerprint                  String?
+  attemptCount                      Int                               @default(0)
+  lastAttemptAt                     DateTime?
+  nextAttemptAt                     DateTime?
+  completedAt                       DateTime?
+  failureCode                       String?
+  failureMessage                    String?
+  createdAt                         DateTime                          @default(now())
+  updatedAt                         DateTime                          @updatedAt
+  warHistory                        ClanWarHistory                    @relation(fields: [warId], references: [warId], onDelete: Cascade)
+  violations                        WarPlanViolation[]
 
   @@unique([guildId, warId])
   @@index([status, nextAttemptAt])
@@ -1987,23 +1987,23 @@ model ClanPostedMessage {
 }
 
 model WarMailLifecycle {
-  id           String                 @id @default(cuid())
-  guildId      String
-  clanTag      String
-  warId        Int?
-  warStartTime DateTime?
-  opponentTag  String?
-  status       WarMailLifecycleStatus @default(NOT_POSTED)
-  messageId    String?
-  channelId    String?
-  postedAt     DateTime?
-  deletedAt    DateTime?
-  sendClaimToken      String?
-  sendClaimKey        String?
-  sendClaimedAt       DateTime?
+  id                   String                 @id @default(cuid())
+  guildId              String
+  clanTag              String
+  warId                Int?
+  warStartTime         DateTime?
+  opponentTag          String?
+  status               WarMailLifecycleStatus @default(NOT_POSTED)
+  messageId            String?
+  channelId            String?
+  postedAt             DateTime?
+  deletedAt            DateTime?
+  sendClaimToken       String?
+  sendClaimKey         String?
+  sendClaimedAt        DateTime?
   lastCompletedSendKey String?
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
 
   @@unique([guildId, clanTag, warStartTime])
   @@index([guildId, clanTag, status])
@@ -2074,31 +2074,31 @@ model ClanWarParticipation {
 }
 
 model ClanWarPlan {
-  id                          String       @id @default(cuid())
-  guildId                     String
-  clanTag                     String
-  scope                       WarPlanScope @default(CUSTOM)
-  matchType                   WarMatchType
-  outcome                     String
-  loseStyle                   String       @default("ANY")
-  planText                    String
-  nonMirrorTripleMinClanStars Int?
-  allBasesOpenHoursLeft       Int?
+  id                                String       @id @default(cuid())
+  guildId                           String
+  clanTag                           String
+  scope                             WarPlanScope @default(CUSTOM)
+  matchType                         WarMatchType
+  outcome                           String
+  loseStyle                         String       @default("ANY")
+  planText                          String
+  nonMirrorTripleMinClanStars       Int?
+  allBasesOpenHoursLeft             Int?
   traditionalRequireMirrorAfterOpen Boolean?
-  winRequireMirrorAfterOpen    Boolean?
-  createdAt                   DateTime     @default(now())
-  updatedAt                   DateTime     @updatedAt
+  winRequireMirrorAfterOpen         Boolean?
+  createdAt                         DateTime     @default(now())
+  updatedAt                         DateTime     @updatedAt
 
   @@unique([guildId, scope, clanTag, matchType, outcome, loseStyle])
   @@index([guildId, scope, clanTag, matchType])
 }
 
 model FwaLayouts {
-  Townhall    Int
-  Type        FwaLayoutType
-  LayoutLink  String
-  ImageUrl    String?
-  LastUpdated DateTime      @updatedAt
+  Townhall     Int
+  Type         FwaLayoutType
+  LayoutLink   String
+  ImageUrl     String?
+  LastUpdated  DateTime      @updatedAt
   layoutId     String?
   layoutRecord LayoutRecord? @relation(fields: [layoutId], references: [id], onDelete: SetNull)
 
@@ -2108,8 +2108,8 @@ model FwaLayouts {
 }
 
 model LayoutRecord {
-  id                           String       @id @default(cuid())
-  layoutLink                   String       @unique
+  id                           String                @id @default(cuid())
+  layoutLink                   String                @unique
   title                        String?
   description                  String?
   imageUrl                     String?
@@ -2120,8 +2120,8 @@ model LayoutRecord {
   submittedAt                  DateTime?
   lastConfirmedAt              DateTime?
   lastConfirmedByDiscordUserId String?
-  createdAt                    DateTime     @default(now())
-  updatedAt                    DateTime     @updatedAt
+  createdAt                    DateTime              @default(now())
+  updatedAt                    DateTime              @updatedAt
   fwaLayouts                   FwaLayouts[]
   alertConfig                  LayoutAlertConfig?
   alertDeliveries              LayoutAlertDelivery[]
@@ -2137,28 +2137,28 @@ model LayoutAlertConfig {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
-  layout          LayoutRecord    @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  layout LayoutRecord @relation(fields: [layoutId], references: [id], onDelete: Cascade)
 }
 
 model LayoutAlertDelivery {
-  id                 String                    @id @default(cuid())
-  layoutId           String
-  freshnessAnchorAt  DateTime
-  target             LayoutAlertDeliveryTarget
-  status             LayoutAlertDeliveryStatus
-  claimToken         String?
-  claimedAt          DateTime?
-  lastAttemptAt      DateTime?
-  attemptCount       Int                       @default(0)
-  sentAt             DateTime?
-  destinationId      String?
-  discordMessageId   String?
-  failureCode        String?
-  failureReason      String?
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
+  id                String                    @id @default(cuid())
+  layoutId          String
+  freshnessAnchorAt DateTime
+  target            LayoutAlertDeliveryTarget
+  status            LayoutAlertDeliveryStatus
+  claimToken        String?
+  claimedAt         DateTime?
+  lastAttemptAt     DateTime?
+  attemptCount      Int                       @default(0)
+  sentAt            DateTime?
+  destinationId     String?
+  discordMessageId  String?
+  failureCode       String?
+  failureReason     String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
 
-  layout             LayoutRecord              @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+  layout LayoutRecord @relation(fields: [layoutId], references: [id], onDelete: Cascade)
 
   @@unique([layoutId, freshnessAnchorAt, target])
   @@index([status, claimedAt])
@@ -2166,7 +2166,7 @@ model LayoutAlertDelivery {
 }
 
 model FwaClanCatalog {
-  clanTag          String   @id
+  clanTag          String    @id
   name             String
   level            Int?
   points           Int?
@@ -2195,7 +2195,7 @@ model FwaClanCatalog {
   thLowCount       Int?
   estimatedWeight  Int?
   weightSubmitDate DateTime?
-  firstSeenAt      DateTime @default(now())
+  firstSeenAt      DateTime  @default(now())
   lastSeenAt       DateTime
   lastSyncedAt     DateTime
 
@@ -2288,7 +2288,7 @@ model FwaWarMemberCurrent {
 /// Immutable semantic WarMembers envelopes retained from the active feed sync path.
 /// Quality/completeness fields are first-seen historical facts; qualityEvidence is the revision history for future eligibility readers.
 model FwaWarMembersObservation {
-  id                         String   @id @default(cuid())
+  id                         String                             @id @default(cuid())
   clanTag                    String
   sourceContractVersion      String
   observationSchemaVersion   String
@@ -2316,6 +2316,7 @@ model FwaWarMembersObservation {
   sourceQualityReasonCodes   Json
   qualityEvidence            FwaWarMembersObservationEvidence[]
   members                    FwaWarMembersObservationMember[]
+  nativeReferenceLineage     NativeHeatMapReferenceLineage[]
 
   @@unique([clanTag, rosterFingerprint])
   @@index([clanTag, firstObservedAt])
@@ -2325,7 +2326,7 @@ model FwaWarMembersObservation {
 
 /// Immutable source-quality revisions for one semantic roster observation. Later clean evidence supplements, but never erases, earlier contradictions.
 model FwaWarMembersObservationEvidence {
-  id                         String                 @id @default(cuid())
+  id                         String                   @id @default(cuid())
   observationId              String
   evidenceSchemaVersion      String
   sourceContractVersion      String
@@ -2434,7 +2435,7 @@ model HeatMapRef {
   th12Count             Int
   th11Count             Int
   th10OrLowerCount      Int
-  contributingClanCount Int      @default(0)
+  contributingClanCount Int                      @default(0)
   sourceVersion         String?
   refreshedAt           DateTime
   bucketTargets         HeatMapRefBucketTarget[]
@@ -2457,7 +2458,7 @@ model HeatMapRefBucketTarget {
   bucketId           String
   targetCount        Int?
   status             HeatMapRefBucketTargetStatus
-  heatMapRef         HeatMapRef @relation(fields: [weightMinInclusive, weightMaxInclusive], references: [weightMinInclusive, weightMaxInclusive], onDelete: Cascade, onUpdate: Cascade)
+  heatMapRef         HeatMapRef                   @relation(fields: [weightMinInclusive, weightMaxInclusive], references: [weightMinInclusive, weightMaxInclusive], onDelete: Cascade, onUpdate: Cascade)
 
   @@id([weightMinInclusive, weightMaxInclusive, bucketId])
   @@index([bucketId])
@@ -2790,40 +2791,40 @@ enum DuskReversalResolutionType {
 /// One wallet per Discord identity. The balance is an atomic projection of DuskLedgerEntry.amount.
 model DuskWallet {
   discordUserId String            @id
-  balance       Int               @default(0)
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  entries       DuskLedgerEntry[]
+  balance           Int                          @default(0)
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+  entries           DuskLedgerEntry[]
   sourceEventClaims DuskLedgerSourceEventClaim[]
-  reversalRequests DuskLedgerReversalRequest[]
+  reversalRequests  DuskLedgerReversalRequest[]
 
   @@index([updatedAt])
 }
 
 /// Append-only signed accounting entries. Never use PlayerLink/playerTag as wallet ownership.
 model DuskLedgerEntry {
-  id                 String                    @id @default(cuid())
+  id                 String                     @id @default(cuid())
   walletId           String
   amount             Int
   transactionType    DuskLedgerTransactionType
   beneficiaryMode    DuskLedgerBeneficiaryMode?
-  beneficiaryKey     String?                   @db.VarChar(128)
-  sourceEventType    String                    @db.VarChar(64)
-  sourceEventId      String                    @db.VarChar(128)
-  idempotencyKey     String                    @db.VarChar(128)
+  beneficiaryKey     String?                    @db.VarChar(128)
+  sourceEventType    String                     @db.VarChar(64)
+  sourceEventId      String                     @db.VarChar(128)
+  idempotencyKey     String                     @db.VarChar(128)
   attribution        Json?
-  policyVersion      String?                   @db.VarChar(64)
-  reason             String                    @db.VarChar(500)
+  policyVersion      String?                    @db.VarChar(64)
+  reason             String                     @db.VarChar(500)
   actorDiscordUserId String?
   reversalOfId       String?
-  createdAt          DateTime                  @default(now())
+  createdAt          DateTime                   @default(now())
 
-  wallet     DuskWallet               @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
-  policy     DuskRewardPolicyVersion? @relation(fields: [policyVersion], references: [version], onDelete: Restrict)
-  reversalOf DuskLedgerEntry?         @relation("DuskLedgerEntryReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
-  reversals  DuskLedgerEntry[]        @relation("DuskLedgerEntryReversal")
-  sourceEventClaim DuskLedgerSourceEventClaim?
-  reversalRequests DuskLedgerReversalRequest[] @relation("DuskReversalRequestOriginal")
+  wallet             DuskWallet                    @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
+  policy             DuskRewardPolicyVersion?      @relation(fields: [policyVersion], references: [version], onDelete: Restrict)
+  reversalOf         DuskLedgerEntry?              @relation("DuskLedgerEntryReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals          DuskLedgerEntry[]             @relation("DuskLedgerEntryReversal")
+  sourceEventClaim   DuskLedgerSourceEventClaim?
+  reversalRequests   DuskLedgerReversalRequest[]   @relation("DuskReversalRequestOriginal")
   reversalResolution DuskLedgerReversalResolution? @relation("DuskReversalResolutionEntry")
 
   @@unique([walletId, idempotencyKey])
@@ -2836,12 +2837,12 @@ model DuskLedgerEntry {
 
 /// Canonical event identity and beneficiary semantics for future earning issuance.
 model DuskLedgerSourceEvent {
-  id                String                    @id @default(cuid())
-  sourceEventType   String                    @db.VarChar(64)
-  sourceEventId     String                    @db.VarChar(128)
-  beneficiaryMode   DuskLedgerBeneficiaryMode
-  createdAt         DateTime                  @default(now())
-  claims            DuskLedgerSourceEventClaim[]
+  id              String                       @id @default(cuid())
+  sourceEventType String                       @db.VarChar(64)
+  sourceEventId   String                       @db.VarChar(128)
+  beneficiaryMode DuskLedgerBeneficiaryMode
+  createdAt       DateTime                     @default(now())
+  claims          DuskLedgerSourceEventClaim[]
 
   @@unique([sourceEventType, sourceEventId])
   @@index([createdAt])
@@ -2849,12 +2850,12 @@ model DuskLedgerSourceEvent {
 
 /// One claim per canonical recipient identity; a null key is the single-recipient claim.
 model DuskLedgerSourceEventClaim {
-  id              String                 @id @default(cuid())
-  sourceEventId   String
-  beneficiaryKey  String?                @db.VarChar(128)
-  walletId        String
-  ledgerEntryId   String                 @unique
-  createdAt       DateTime               @default(now())
+  id             String   @id @default(cuid())
+  sourceEventId  String
+  beneficiaryKey String?  @db.VarChar(128)
+  walletId       String
+  ledgerEntryId  String   @unique
+  createdAt      DateTime @default(now())
 
   sourceEvent DuskLedgerSourceEvent @relation(fields: [sourceEventId], references: [id], onDelete: Restrict)
   wallet      DuskWallet            @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
@@ -2867,22 +2868,22 @@ model DuskLedgerSourceEventClaim {
 /// Immutable audit record for a reversal that could not be applied without overdrawing.
 /// The absence of a resolution row means it remains pending manual review.
 model DuskLedgerReversalRequest {
-  id                String   @id @default(cuid())
-  walletId          String
-  originalEntryId   String
-  requestedAmount   Int
-  sourceEventType   String   @db.VarChar(64)
-  sourceEventId     String   @db.VarChar(128)
-  idempotencyKey    String   @db.VarChar(128)
-  attribution       Json?
-  policyVersion     String?  @db.VarChar(64)
-  reason            String   @db.VarChar(500)
+  id                 String   @id @default(cuid())
+  walletId           String
+  originalEntryId    String
+  requestedAmount    Int
+  sourceEventType    String   @db.VarChar(64)
+  sourceEventId      String   @db.VarChar(128)
+  idempotencyKey     String   @db.VarChar(128)
+  attribution        Json?
+  policyVersion      String?  @db.VarChar(64)
+  reason             String   @db.VarChar(500)
   actorDiscordUserId String
   createdAt          DateTime @default(now())
 
-  wallet     DuskWallet                    @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
-  originalEntry DuskLedgerEntry            @relation("DuskReversalRequestOriginal", fields: [originalEntryId], references: [id], onDelete: Restrict)
-  resolution DuskLedgerReversalResolution?
+  wallet        DuskWallet                    @relation(fields: [walletId], references: [discordUserId], onDelete: Restrict)
+  originalEntry DuskLedgerEntry               @relation("DuskReversalRequestOriginal", fields: [originalEntryId], references: [id], onDelete: Restrict)
+  resolution    DuskLedgerReversalResolution?
 
   @@unique([walletId, idempotencyKey])
   @@unique([sourceEventType, sourceEventId])
@@ -2892,13 +2893,13 @@ model DuskLedgerReversalRequest {
 
 /// Immutable future M1b resolution record for a pending reversal request.
 model DuskLedgerReversalResolution {
-  id                 String                       @id @default(cuid())
-  reversalRequestId  String                       @unique
-  resolutionEntryId  String?                      @unique
+  id                 String                     @id @default(cuid())
+  reversalRequestId  String                     @unique
+  resolutionEntryId  String?                    @unique
   resolutionType     DuskReversalResolutionType
   actorDiscordUserId String
-  reason             String                       @db.VarChar(500)
-  createdAt          DateTime                     @default(now())
+  reason             String                     @db.VarChar(500)
+  createdAt          DateTime                   @default(now())
 
   reversalRequest DuskLedgerReversalRequest @relation(fields: [reversalRequestId], references: [id], onDelete: Restrict)
   resolutionEntry DuskLedgerEntry?          @relation("DuskReversalResolutionEntry", fields: [resolutionEntryId], references: [id], onDelete: Restrict)
@@ -2915,4 +2916,152 @@ model DuskRewardPolicyVersion {
 
   @@unique([policyKey, version])
   @@index([policyKey, createdAt])
+}
+
+enum NativeHeatMapReferenceGenerationStatus {
+  PREVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum NativeHeatMapReferenceTargetStatus {
+  SUPPORTED
+  UNKNOWN
+}
+
+enum NativeHeatMapReferencePublicationEventType {
+  PREVIEW
+  PUBLISHED
+  REJECTED_STALE
+  REJECTED_CONFLICT
+  REJECTED_INVALID
+  ROLLBACK
+}
+
+/// Additive native reference content. This is deliberately isolated from legacy HeatMapRef publication.
+model NativeHeatMapReferenceGeneration {
+  generationId                String                                   @id @default(cuid())
+  profileId                   String                                   @db.VarChar(128)
+  profileVersion              String                                   @db.VarChar(64)
+  policyId                    String                                   @db.VarChar(128)
+  policyVersion               String                                   @db.VarChar(64)
+  sampleThreshold             Int
+  minimumDirectWeightAnchors  Int
+  authorityStatus             String                                   @db.VarChar(64)
+  sourceCategory              String                                   @db.VarChar(128)
+  evidenceTrust               String                                   @db.VarChar(128)
+  coverageStatus              String                                   @db.VarChar(32)
+  evaluationAt                DateTime
+  eraPolicyId                 String                                   @db.VarChar(128)
+  eraPolicyVersion            String                                   @db.VarChar(64)
+  eraStart                    DateTime
+  eraEnd                      DateTime
+  status                      NativeHeatMapReferenceGenerationStatus
+  bucketDefinitionFingerprint String                                   @db.VarChar(128)
+  sourceLineageFingerprint    String                                   @db.VarChar(128)
+  contentFingerprint          String                                   @db.VarChar(128)
+  requestKey                  String                                   @db.VarChar(128)
+  candidateFingerprint        String?                                  @db.VarChar(128)
+  createdAt                   DateTime                                 @default(now())
+  verifiedAt                  DateTime?
+  bands                       NativeHeatMapReferenceGenerationBand[]
+  buckets                     NativeHeatMapReferenceGenerationBucket[]
+  targets                     NativeHeatMapReferenceTarget[]           @relation("NativeReferenceTargetGeneration")
+  lineage                     NativeHeatMapReferenceLineage[]
+
+  @@unique([profileId, policyVersion, requestKey])
+  @@unique([generationId, profileId, policyVersion])
+  @@index([profileId, policyVersion, createdAt])
+  @@index([status, profileId, policyVersion])
+}
+
+model NativeHeatMapReferenceGenerationBand {
+  generationId       String
+  ordinal            Int
+  weightMinInclusive Int
+  weightMaxInclusive Int
+  generation         NativeHeatMapReferenceGeneration @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+  targets            NativeHeatMapReferenceTarget[]   @relation("NativeReferenceTargetBand")
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, weightMinInclusive, weightMaxInclusive])
+}
+
+model NativeHeatMapReferenceGenerationBucket {
+  generationId    String
+  ordinal         Int
+  bucketId        String                           @db.VarChar(64)
+  sourceBucketIds Json
+  generation      NativeHeatMapReferenceGeneration @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, bucketId])
+}
+
+model NativeHeatMapReferenceTarget {
+  generationId        String
+  bandOrdinal         Int
+  bucketId            String                               @db.VarChar(64)
+  status              NativeHeatMapReferenceTargetStatus
+  targetCount         Int?
+  qualifyingClanCount Int
+  sampleCount         Int
+  reasonCode          String?
+  generation          NativeHeatMapReferenceGeneration     @relation("NativeReferenceTargetGeneration", fields: [generationId], references: [generationId], onDelete: Cascade)
+  band                NativeHeatMapReferenceGenerationBand @relation("NativeReferenceTargetBand", fields: [generationId, bandOrdinal], references: [generationId, ordinal], onDelete: Cascade)
+
+  @@id([generationId, bandOrdinal, bucketId])
+  @@index([generationId, status])
+}
+
+model NativeHeatMapReferenceLineage {
+  generationId                  String                           @db.VarChar(128)
+  ordinal                       Int
+  observationId                 String                           @db.VarChar(128)
+  observationContentFingerprint String                           @db.VarChar(128)
+  role                          String                           @db.VarChar(64)
+  inputDigest                   String                           @db.VarChar(128)
+  qualityEvidenceIds            Json
+  weightProvenance              Json
+  generation                    NativeHeatMapReferenceGeneration @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+  observation                   FwaWarMembersObservation         @relation(fields: [observationId], references: [id], onDelete: Restrict)
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, observationId])
+}
+
+/// One mutable pointer per native profile/policy. It never changes legacy references.
+model NativeHeatMapReferenceHead {
+  profileId               String   @db.VarChar(128)
+  policyVersion           String   @db.VarChar(64)
+  generationId            String?  @db.VarChar(128)
+  generationProfileId     String?  @db.VarChar(128)
+  generationPolicyVersion String?  @db.VarChar(64)
+  fenceToken              BigInt   @default(0)
+  lastPublicationEventId  String?  @db.VarChar(128)
+  updatedAt               DateTime @updatedAt
+
+  @@id([profileId, policyVersion])
+  @@index([generationId])
+  @@index([generationProfileId, generationPolicyVersion])
+}
+
+model NativeHeatMapReferencePublicationEvent {
+  eventId              String                                     @id @default(cuid())
+  profileId            String                                     @db.VarChar(128)
+  policyVersion        String                                     @db.VarChar(64)
+  generationId         String?                                    @db.VarChar(128)
+  eventType            NativeHeatMapReferencePublicationEventType
+  previousGenerationId String?                                    @db.VarChar(128)
+  newGenerationId      String?                                    @db.VarChar(128)
+  previousFenceToken   BigInt?
+  newFenceToken        BigInt?
+  actorDiscordUserId   String?                                    @db.VarChar(128)
+  requestKey           String?                                    @db.VarChar(128)
+  reasonCode           String?                                    @db.VarChar(128)
+  contentFingerprint   String?                                    @db.VarChar(128)
+  createdAt            DateTime                                   @default(now())
+
+  @@index([profileId, policyVersion, createdAt])
+  @@index([generationId])
 }

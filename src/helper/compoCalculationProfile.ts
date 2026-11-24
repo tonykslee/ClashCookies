@@ -532,6 +532,47 @@ export const LEGACY_COMPO_CALCULATION_PROFILE = createCompoCalculationProfile({
   maximumEstimatedWeightBucketId: "TH18",
 });
 
+/** Immutable informational profile for provisional native references; it is never used by operational recommendation gates. */
+export const NATIVE_PROVISIONAL_COMPOSITION_PROFILE = createCompoCalculationProfile({
+  profileId: "native-provisional-v1",
+  policyVersion: "native-provisional-v1-calculation-1",
+  buckets: [
+    { id: "TH19", order: 0, sourceBucketIds: ["TH19"], displayLabel: "TH19", deviationPenalty: 6, actionPriority: 0, representativeWeight: { kind: "fixed", value: 185000 } },
+    { id: "TH18", order: 1, sourceBucketIds: ["TH18"], displayLabel: "TH18", deviationPenalty: 5, actionPriority: 1, representativeWeight: { kind: "fixed", value: 175000 } },
+    { id: "TH17", order: 2, sourceBucketIds: ["TH17"], displayLabel: "TH17", deviationPenalty: 4, actionPriority: 2, representativeWeight: { kind: "fixed", value: 165000 } },
+    { id: "TH16", order: 3, sourceBucketIds: ["TH16"], displayLabel: "TH16", deviationPenalty: 3, actionPriority: 3, representativeWeight: { kind: "fixed", value: 155000 } },
+    { id: "TH15", order: 4, sourceBucketIds: ["TH15"], displayLabel: "TH15", deviationPenalty: 2, actionPriority: 4, representativeWeight: { kind: "fixed", value: 145000 } },
+    { id: "TH14", order: 5, sourceBucketIds: ["TH14"], displayLabel: "TH14", deviationPenalty: 1.5, actionPriority: 5, representativeWeight: { kind: "fixed", value: 135000 } },
+    { id: "TH13", order: 6, sourceBucketIds: ["TH13"], displayLabel: "TH13", deviationPenalty: 1, actionPriority: 6, representativeWeight: { kind: "fixed", value: 125000 } },
+    { id: "TH12", order: 7, sourceBucketIds: ["TH12"], displayLabel: "TH12", deviationPenalty: 0.8, actionPriority: 7, representativeWeight: { kind: "fixed", value: 115000 } },
+    { id: "TH11", order: 8, sourceBucketIds: ["TH11"], displayLabel: "TH11", deviationPenalty: 0.6, actionPriority: 8, representativeWeight: { kind: "fixed", value: 100500 } },
+    { id: "TH10_OR_LOWER", order: 9, sourceBucketIds: ["TH10", "TH9", "TH8_OR_LOWER"], displayLabel: "TH10 or lower", deviationPenalty: 0.5, actionPriority: 9, representativeWeight: { kind: "fixed", value: 57000 } },
+  ],
+  unsupportedFactualBucketIds: [],
+  factualToCalculationBucket: { TH19: "TH19", TH18: "TH18", TH17: "TH17", TH16: "TH16", TH15: "TH15", TH14: "TH14", TH13: "TH13", TH12: "TH12", TH11: "TH11", TH10: "TH10_OR_LOWER", TH9: "TH10_OR_LOWER", TH8_OR_LOWER: "TH10_OR_LOWER" },
+  targetMappings: [
+    ...["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11"].map((id) => ({ calculationBucketId: id, referenceBucketIds: [id] })),
+    { calculationBucketId: "TH10_OR_LOWER", referenceBucketIds: ["TH10_OR_LOWER"] },
+  ],
+  referenceDisplayColumns: [
+    { id: "TH19", label: "TH19", referenceBucketIds: ["TH19"], status: "supported" },
+    { id: "TH18", label: "TH18", referenceBucketIds: ["TH18"], status: "supported" },
+    { id: "TH17", label: "TH17", referenceBucketIds: ["TH17"], status: "supported" },
+    { id: "TH16", label: "TH16", referenceBucketIds: ["TH16"], status: "supported" },
+    { id: "TH15", label: "TH15", referenceBucketIds: ["TH15"], status: "supported" },
+    { id: "TH14", label: "TH14", referenceBucketIds: ["TH14"], status: "supported" },
+    { id: "TH13", label: "TH13", referenceBucketIds: ["TH13"], status: "supported" },
+    { id: "TH12", label: "TH12", referenceBucketIds: ["TH12"], status: "supported" },
+    { id: "TH11", label: "TH11", referenceBucketIds: ["TH11"], status: "supported" },
+    { id: "TH10_OR_LOWER", label: "TH10 or lower", referenceBucketIds: ["TH10_OR_LOWER"], status: "supported" },
+  ],
+  compatibility: {
+    plannerBucketByCalculationBucket: { TH19: "TH19", TH18: "TH18", TH17: "TH17", TH16: "TH16", TH15: "TH15", TH14: "TH14", TH13: "TH13", TH12: "TH12", TH11: "TH11", TH10_OR_LOWER: "TH10" },
+    displayBucketByCalculationBucket: { TH19: "TH19", TH18: "TH18", TH17: "TH17", TH16: "TH16", TH15: "TH15", TH14: "TH14", TH13: "TH13", TH12: "TH12", TH11: "TH11", TH10_OR_LOWER: "TH10_OR_LOWER" },
+  },
+  maximumEstimatedWeightBucketId: "TH19",
+});
+
 export function getCompoLegacyReferenceBucketCount(ref: HeatMapRef, bucketId: string): number | null {
   const values: Record<string, unknown> = {
     TH18: ref.th18Count, TH17: ref.th17Count, TH16: ref.th16Count, TH15: ref.th15Count,

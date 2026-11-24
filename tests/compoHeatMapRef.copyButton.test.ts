@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCompoHeatMapRefCopyCustomIdForTest,
+  buildCompoHeatMapRefCopyPayloadForTest,
+  buildCompoContentPayloadForTest,
   buildCompoHeatMapRefCopyTextForTest,
   handleCompoHeatMapRefCopyButton,
 } from "../src/commands/Compo";
@@ -117,5 +119,22 @@ describe("compo heatmapref copy button", () => {
       ephemeral: true,
       content: "Only the command requester can use this copy button.",
     });
+  });
+
+  it("attaches the complete copy table when Discord content would exceed 2000 characters", () => {
+    const copyText = "WeightMin,WeightMax,TH19\n" + "0,100,5\n".repeat(500);
+    const payload = buildCompoHeatMapRefCopyPayloadForTest(copyText);
+    expect(payload.content).toContain("attached");
+    expect(payload.content?.length).toBeLessThanOrEqual(2000);
+    expect(payload.files?.[0]?.name).toBe("compo-heatmapref-copy.txt");
+    expect(payload.files?.[0]?.attachment.toString("utf8")).toBe(copyText);
+  });
+
+  it("keeps large alliance state notes within Discord limits without truncation", () => {
+    const notes = Array.from({ length: 400 }, (_, index) => `Clan ${index} native table row`);
+    const payload = buildCompoContentPayloadForTest(notes);
+    expect(payload.content?.length).toBeLessThanOrEqual(2000);
+    expect(payload.files?.[0]?.name).toBe("compo-response.txt");
+    expect(payload.files?.[0]?.attachment.toString("utf8")).toBe(notes.join("\n"));
   });
 });

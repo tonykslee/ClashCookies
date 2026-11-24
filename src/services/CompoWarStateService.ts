@@ -20,6 +20,12 @@ import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
 import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
+import {
+  calculateNativeCompoComparison,
+  NATIVE_COMPO_COMPARISON_BUCKETS,
+  type NativeCompoComparison,
+} from "../helper/nativeCompoComparison";
 
 type CollapsedStateRow = {
   clanName: string;
@@ -77,6 +83,54 @@ function normalizeWarStateClanDisplayName(value: string): string {
 function toRefreshLine(value: Date | null): string {
   if (!value) return "refreshed (not available)";
   return `refreshed <t:${Math.floor(value.getTime() / 1000)}:F>`;
+}
+
+type NativeWarComparisonState = {
+  summaryLine: string;
+  byClanTag: ReadonlyMap<string, NativeCompoComparison>;
+};
+
+function readNativeComparison(input: {
+  native: Awaited<ReturnType<NativeHeatMapReferencePublicationService["readCurrent"]>>;
+  clans: readonly CompoWarStateClanContext[];
+}): NativeWarComparisonState | null {
+  if (input.native.status !== "CURRENT") return null;
+  let supported = 0;
+  let unknown = 0;
+  const scores: number[] = [];
+  const byClanTag = new Map<string, NativeCompoComparison>();
+  for (const clan of input.clans) {
+    const comparison = calculateNativeCompoComparison({
+      native: input.native,
+      totalWeight: clan.totalEffectiveWeight,
+      sourceCounts: clan.bucketCounts,
+    });
+    byClanTag.set(clan.clanTag, comparison);
+    if (comparison.status === "UNKNOWN") {
+      unknown += 1;
+    } else {
+      supported += 1;
+      if (comparison.score !== null) scores.push(comparison.score);
+    }
+  }
+  const scoreText = scores.length > 0 ? ` · profile score avg ${ (scores.reduce((sum, score) => sum + score, 0) / scores.length).toFixed(1) }` : "";
+  return {
+    summaryLine: `Provisional native targets (informational only; no recommendations): ${supported} supported / ${unknown} UNKNOWN clans · ${input.native.profileVersion} · ${input.native.policyVersion} · generation ${input.native.generationId ?? "unknown"}${scoreText}`,
+    byClanTag,
+  };
+}
+
+function appendNativeWarColumns(row: string[], comparison: NativeCompoComparison | undefined): string[] {
+  if (!comparison) return row;
+  return [
+    ...row,
+    comparison.status === "SUPPORTED" ? "PROVISIONAL" : "UNKNOWN",
+    ...NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => {
+      const delta = comparison.deltaByBucket[bucketId];
+      return delta === null || delta === undefined ? "UNKNOWN" : `${delta}`;
+    }),
+    comparison.score === null ? "UNKNOWN" : comparison.score.toFixed(1),
+  ];
 }
 
 /** Purpose: derive the legacy display delta columns while preserving granular internal TH counts. */
@@ -267,6 +321,15 @@ export class CompoWarStateService {
   /** Purpose: load alliance-wide tracked-clan war state rows from persisted feed-owned tables only. */
   async readState(guildId?: string | null): Promise<CompoWarStateReadResult> {
     const context = await loadCompoWarStateContext(guildId);
+    let nativeComparison: NativeWarComparisonState | null = null;
+    try {
+      const nativeDb = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
+      if (nativeDb.nativeHeatMapReferenceHead) {
+        nativeComparison = readNativeComparison({ native: await new NativeHeatMapReferencePublicationService(prisma).readCurrent(), clans: context.clans });
+      }
+    } catch {
+      nativeComparison = null;
+    }
 
     if (context.trackedClanTags.length === 0) {
       return {
@@ -277,6 +340,7 @@ export class CompoWarStateService {
         contentLines: [
           "WAR · refreshed (not available)",
           "No tracked clans are configured for DB-backed WAR state.",
+        ...(nativeComparison ? [nativeComparison.summaryLine] : []),
         ],
       };
     }
@@ -293,7 +357,7 @@ export class CompoWarStateService {
         bucketCounts: clan.bucketCounts,
         heatMapRef: clan.heatMapRef,
       });
-      renderableRows.push([
+      renderableRows.push(appendNativeWarColumns([
         collapsed.clanName,
         collapsed.totalWeight,
         collapsed.missingWeights,
@@ -305,7 +369,7 @@ export class CompoWarStateService {
         collapsed.th15Delta,
         collapsed.th14Delta,
         collapsed.th13OrLowerDelta,
-      ]);
+      ], nativeComparison?.byClanTag.get(clan.clanTag)));
     }
 
     const contentLines = [
@@ -319,6 +383,7 @@ export class CompoWarStateService {
     if (context.referenceAvailability.warning) {
       contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
     }
+    if (nativeComparison) contentLines.push(nativeComparison.summaryLine);
 
     if (renderableRows.length === 0) {
       contentLines.push("No DB-backed WAR roster snapshots are currently renderable.");
@@ -345,6 +410,9 @@ export class CompoWarStateService {
           "TH15",
           "TH14",
           "<=TH13",
+          ...(nativeComparison ? ["Native"] : []),
+          ...(nativeComparison ? NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => `Native Δ ${bucketId}`) : []),
+          ...(nativeComparison ? ["Native score"] : []),
         ],
         ...renderableRows,
       ],

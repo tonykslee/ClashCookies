@@ -22,12 +22,11 @@ const eraPolicy = {
   eraEndIso: "2026-11-22T00:00:00.000Z",
 };
 
-function makeMembers(clanTag: string, rawWeight = 181_000) {
+function makeMembers(clanTag: string, rawWeight = 181_000, observationId = `${clanTag}-observation`) {
   return Array.from({ length: 50 }, (_, index) => ({
     id: `${clanTag}-${index + 1}`,
-    observationId: `${clanTag}-observation`,
+    observationId,
     memberFingerprint: `${clanTag}-member-${index + 1}`,
-    clanTag,
     playerTag: `#PLAYER${index + 1}`,
     playerName: `Player ${index + 1}`,
     position: index + 1,
@@ -69,8 +68,9 @@ function makeEvidence(clanTag: string, observedAt: string, fingerprint: string, 
 }
 
 function makeObservation(clanTag: string, observedAt: string, rosterFingerprint = `${clanTag}-roster`, evidence = [makeEvidence(clanTag, observedAt, `${clanTag}-quality`)], overrides: Record<string, unknown> = {}) {
+  const id = typeof overrides.id === "string" ? overrides.id : `${clanTag}-observation`;
   return {
-    id: `${clanTag}-observation`,
+    id,
     clanTag,
     sourceContractVersion: FWA_WAR_MEMBERS_SOURCE_CONTRACT_VERSION,
     observationSchemaVersion: FWA_WAR_MEMBERS_OBSERVATION_SCHEMA_VERSION,
@@ -96,8 +96,8 @@ function makeObservation(clanTag: string, observedAt: string, rosterFingerprint 
     weightStatus: "DIRECT_PRESENT",
     sourceAuthorityStatus: FWA_WAR_MEMBERS_UNKNOWN_SOURCE_AUTHORITY,
     sourceQualityReasonCodes: [],
-    members: makeMembers(clanTag),
-    qualityEvidence: evidence,
+    members: makeMembers(clanTag, 181_000, typeof overrides.id === "string" ? overrides.id : `${clanTag}-observation`),
+    qualityEvidence: evidence.map((row) => ({ ...row, observationId: id })),
     ...overrides,
   };
 }
@@ -112,10 +112,46 @@ function serviceWithRows(rows: unknown[], readDeferredWeights = vi.fn().mockReso
 }
 
 describe("NativeHeatMapRefObservationCandidateService", () => {
+  it("maps the exact Prisma member shape and qualifies a valid TH19 roster", async () => {
+    const observation = makeObservation("#PRISMA-SHAPE", "2026-11-19T01:00:00.000Z");
+    observation.members[0]!.townHall = 19;
+    const { service } = serviceWithRows([observation]);
+
+    const context = await service.generateWithContext({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+
+    expect(context.sourceRosters).toHaveLength(1);
+    expect(context.sourceRosters[0]?.clanTag).toBe("#PRISMA-SHAPE");
+    expect(context.sourceRosters[0]?.members[0]?.clanTag).toBe("#PRISMA-SHAPE");
+    expect(context.sourceRosters[0]?.members[0]?.townHall).toBe(19);
+    expect(context.artifact.diagnostics.some((diagnostic) => diagnostic.th19ContainingRosterCount === 1)).toBe(true);
+  });
+
+  it("rejects a member whose observationId does not belong to the parent observation", async () => {
+    const observation = makeObservation("#OWNERSHIP", "2026-11-19T01:00:00.000Z");
+    observation.members[0]!.observationId = "#OTHER-observation";
+    const { service } = serviceWithRows([observation]);
+
+    const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+
+    expect(artifact.observationAggregation?.selectedObservations[0]?.reasonCode).toBe("member_ownership_mismatch");
+    expect(artifact.diagnostics.every((diagnostic) => diagnostic.status === "UNKNOWN")).toBe(true);
+  });
+
+  it("distinguishes an incorrect member count from ownership mismatch", async () => {
+    const observation = makeObservation("#COUNT", "2026-11-19T01:00:00.000Z");
+    observation.members = observation.members.slice(0, 49);
+    const { service } = serviceWithRows([observation]);
+
+    const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
+
+    expect(artifact.observationAggregation?.selectedObservations[0]?.reasonCode).toBe("member_count_mismatch");
+  });
+
   it("selects one semantic observation per clan and preserves superseded lineage", async () => {
     const first = makeObservation("#CLAN", "2026-11-19T01:00:00.000Z");
     const secondEvidence = { ...makeEvidence("#CLAN", "2026-11-20T01:00:00.000Z", "#CLAN-quality-2"), id: "#CLAN-evidence-2", observationId: "#CLAN-observation-2" };
     const second = { ...makeObservation("#CLAN", "2026-11-20T01:00:00.000Z", "#CLAN-new-roster", [secondEvidence]), id: "#CLAN-observation-2" };
+    second.members = second.members.map((member) => ({ ...member, observationId: second.id }));
     const { service } = serviceWithRows([first, second]);
     const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
     expect(artifact.observationAggregation).toMatchObject({
@@ -158,6 +194,7 @@ describe("NativeHeatMapRefObservationCandidateService", () => {
     const ambiguousA = makeObservation("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-a");
     const ambiguousBEvidence = { ...makeEvidence("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-b-quality"), id: "#AMBIGUOUS-A-evidence-b", observationId: "#AMBIGUOUS-A-observation-b" };
     const ambiguousB = { ...makeObservation("#AMBIGUOUS-A", "2026-11-19T01:00:00.000Z", "ambiguous-b", [ambiguousBEvidence]), id: "#AMBIGUOUS-A-observation-b" };
+    ambiguousB.members = ambiguousB.members.map((member) => ({ ...member, observationId: ambiguousB.id }));
     const unambiguous = makeObservation("#PYPY", "2026-11-19T02:00:00.000Z");
     const artifact = await serviceWithRows([ambiguousA, ambiguousB, unambiguous]).service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
     expect(artifact.observationAggregation?.coverageStatus).toBe("AMBIGUOUS");
@@ -208,6 +245,7 @@ describe("NativeHeatMapRefObservationCandidateService", () => {
       makeEvidence("#CLAN-A", "2026-11-20T01:00:00.000Z", "invalid", { structuralStatus: "CONFLICTING", sourceQualityReasonCodes: ["parser_rejected"] }),
     ]);
     invalidLatest.id = "#CLAN-A-observation-2";
+    invalidLatest.members = invalidLatest.members.map((member) => ({ ...member, observationId: invalidLatest.id }));
     const { service } = serviceWithRows([cleanA, cleanB, invalidLatest]);
     const artifact = await service.generate({ evaluationAt, eraPolicy, sampleThreshold: 1 });
     expect(artifact.observationAggregation?.selectedObservationCount).toBe(2);
