@@ -1606,7 +1606,7 @@ describe("CompoActualStateService", () => {
       "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13",
     ]);
     expect(result.stateRows?.[1]).toEqual([
-      "Akatsuki", "7,319,000", "7,433,000", "8", "1", "49", "0", "0", "0", "0", "0", "0", "-2",
+      "Akatsuki", "7,319,000", "7,433,000", "8", "1", "49", "0", "0", "0", "0", "0", "0", "0",
     ]);
     expect(result.contentLines.join("\n")).toContain("provisional native targets");
     expect(result.contentLines.join("\n")).not.toContain("Reference warning:");

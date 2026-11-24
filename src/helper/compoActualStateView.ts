@@ -547,6 +547,72 @@ function isProjectedTotalWithinBand(
   );
 }
 
+function compareProjectedBandCandidates(
+  left: CompoActualStateProjection,
+  right: CompoActualStateProjection,
+  resolvedTotalWeight: number,
+): number {
+  const leftScore = left.deviationScore ?? Number.POSITIVE_INFINITY;
+  const rightScore = right.deviationScore ?? Number.POSITIVE_INFINITY;
+  if (leftScore !== rightScore) return leftScore - rightScore;
+  const totalDistance =
+    Math.abs(left.totalWeight - resolvedTotalWeight) -
+    Math.abs(right.totalWeight - resolvedTotalWeight);
+  if (totalDistance !== 0) return totalDistance;
+  return (
+    (right.selectedHeatMapRef?.weightMaxInclusive ?? -1) -
+    (left.selectedHeatMapRef?.weightMaxInclusive ?? -1)
+  );
+}
+
+function buildPlausibleNativeBandProjections(input: {
+  view: "auto" | "best";
+  base: CompoActualStateBaseMetrics;
+  displayCounts: CompoWarDisplayBucketCounts;
+  heatMapRefs: readonly HeatMapRef[];
+  profile: CompoCalculationProfile;
+  rawProjection: CompoActualStateProjection;
+}): CompoActualStateProjection[] {
+  const maximumRepresentativeWeight = getCompoProfileMaximumEstimatedWeightBound(input.profile);
+  if (maximumRepresentativeWeight === null) return [];
+  const maxEstimatedTotal =
+    input.base.resolvedTotalWeight + input.rawProjection.nMissing * maximumRepresentativeWeight;
+  if (!Number.isFinite(maxEstimatedTotal) || Math.abs(maxEstimatedTotal) > Number.MAX_SAFE_INTEGER) {
+    return [];
+  }
+  const validRefs = getSupportedCompoCalculationHeatMapRefs(
+    input.heatMapRefs,
+    input.profile,
+    input.base.profileReferenceCountReader,
+  );
+  const candidateRefs = listHeatMapRefsIntersectingWeightWindow(
+    validRefs,
+    input.base.resolvedTotalWeight,
+    maxEstimatedTotal,
+  );
+  const projections = candidateRefs
+    .map((heatMapRef) =>
+      buildEstimatedProjectionForBand({
+        view: input.view,
+        base: input.base,
+        displayCounts: input.displayCounts,
+        heatMapRef,
+        profile: input.profile,
+        calculationCounts: input.rawProjection.calculationCounts ?? {},
+        profileReferenceCountReader: input.base.profileReferenceCountReader,
+      }),
+    );
+  return projections
+    .filter(
+      (projection) =>
+        projection.targetStatus === "supported" &&
+        isProjectedTotalWithinBand(projection.totalWeight, projection.selectedHeatMapRef),
+    )
+    .sort((left, right) =>
+      compareProjectedBandCandidates(left, right, input.base.resolvedTotalWeight),
+    );
+}
+
 function buildEstimatedProjectionForBand(input: {
   view: "auto" | "best";
   base: CompoActualStateBaseMetrics;
@@ -816,6 +882,28 @@ function buildAutoProjection(input: {
   profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
   const rawProjection = buildRawProjection(input);
+  if (input.profile === NATIVE_PROVISIONAL_COMPOSITION_PROFILE) {
+    const plausibleProjections = buildPlausibleNativeBandProjections({
+      view: "auto",
+      base: input.base,
+      displayCounts: input.displayCounts,
+      heatMapRefs: input.heatMapRefs,
+      profile: input.profile,
+      rawProjection,
+    });
+    const selectedProjection = plausibleProjections[0];
+    return selectedProjection
+      ? {
+          ...selectedProjection,
+          view: "auto",
+          missingWeights: rawProjection.missingTo50Count + rawProjection.unresolvedWeightCount,
+        }
+      : {
+          ...rawProjection,
+          view: "auto",
+          missingWeights: rawProjection.missingTo50Count + rawProjection.unresolvedWeightCount,
+        };
+  }
   if (!rawProjection.selectedHeatMapRef) {
     if (
       rawProjection.targetStatus === "unavailable" ||
@@ -1037,6 +1125,21 @@ function buildBestFitProjection(input: {
   profile: CompoCalculationProfile;
 }): CompoActualStateProjection {
   const rawProjection = buildRawProjection(input);
+  if (input.profile === NATIVE_PROVISIONAL_COMPOSITION_PROFILE) {
+    const plausibleProjections = buildPlausibleNativeBandProjections({
+      view: "best",
+      base: input.base,
+      displayCounts: input.displayCounts,
+      heatMapRefs: input.heatMapRefs,
+      profile: input.profile,
+      rawProjection,
+    });
+    return plausibleProjections[0] ?? {
+      ...rawProjection,
+      view: "best",
+      missingWeights: rawProjection.nMissing,
+    };
+  }
   if (!rawProjection.selectedHeatMapRef) {
     return {
       ...rawProjection,

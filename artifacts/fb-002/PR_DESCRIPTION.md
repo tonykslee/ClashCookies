@@ -7,21 +7,22 @@
 - Keep native metadata and provisional status outside table cells, preserve blacklist/copy behavior, and suppress misleading legacy comparison warnings when native rendering succeeds.
 - Aggregate lower native target bands consistently for collapsed display; unsupported native bands remain `UNKNOWN`.
 - Track unresolved weight slots separately from fallback-resolved WAR weights so incomplete rosters do not double-count fallback weights during Auto-Detect projection.
+- Evaluate plausible native projections across supported bands and reject out-of-band candidates, including the unsupported raw-band Native Best Fit path.
 
 ## Regression coverage
 
-The Akatsuki-shaped fixture covers 49 members, seven missing/fallback provenance cases, one vacant slot, one deferred weight, resolved total `7,319,000`, partial native coverage, Auto-Detect selection, and projection missing-slot accounting.
+The Akatsuki-shaped fixture covers 49 members, six WAR-fallback weights, one unresolved weight, one vacant slot, one deferred weight, resolved total `7,319,000`, partial native coverage, Auto-Detect selection, and projection missing-slot accounting. The roster is simulated production-shaped evidence; the native targets and 11/3 supported/unknown band distribution are loaded from `%TEMP%\\native-heatmap-candidate-fresh.json`.
 
 Additional coverage includes supported and unsupported native bands, TH19, ACTUAL raw semantics, WAR, Copy Table, legacy fallback, blacklist mode, and lower-bucket aggregation.
 
 ## Validation
 
-- Targeted Vitest: 7 files, 99 tests passed.
+- Targeted Vitest: 9 files, 140 tests passed.
 - TypeScript: `npx tsc --noEmit --pretty false` passed.
 - Targeted ESLint: passed; one pre-existing warning remains in `compoActualStateView.ts`.
-- Full `npm test -- --reporter=dot`: 387 files and 6,039 tests passed.
+- Full `npm test -- --reporter=dot`: 387 files and 6,041 tests passed.
 - Full output: `artifacts/fb-002/full-validation.log`.
-- Rendered and visually inspected PNG fixtures:
+- Rendered through the actual command payload builders and visually inspected PNG fixtures:
   - `compo-heatmapref-provisional.png`
   - `compo-state-actual-provisional.png`
   - `compo-state-war-provisional.png`

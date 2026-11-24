@@ -1,6 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { renderStatePngForTest } from "../src/commands/Compo";
+import {
+  buildCompoHeatMapRefPayloadFromRowsForTest,
+  buildCompoStatePayloadFromRowsForTest,
+} from "../src/commands/Compo";
 import { prisma } from "../src/prisma";
 import { buildDeferScopeKey } from "../src/services/WeightInputDefermentService";
 import { CompoActualStateService } from "../src/services/CompoActualStateService";
@@ -10,10 +13,10 @@ import {
   NativeHeatMapReferencePublicationService,
   type NativeHeatMapReferenceRead,
 } from "../src/services/NativeHeatMapReferencePublicationService";
-import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 const outputDir = join(process.cwd(), "artifacts", "fb-002");
 mkdirSync(outputDir, { recursive: true });
+const candidatePath = join(process.env.TEMP ?? process.env.TMP ?? process.cwd(), "native-heatmap-candidate-fresh.json");
 
 const clanTag = "#2RVV0L0VP";
 const sourceSyncedAt = new Date("2026-11-23T18:00:00.000Z");
@@ -111,36 +114,52 @@ const warMembers = [
   },
 ];
 
-const nativeTargetCountsByBand = HEAT_MAP_REF_SEED_ROWS.map((_, bandOrdinal) =>
-  bandOrdinal === 3
-    ? { TH19: 0, TH18: 6, TH17: 0, TH16: 0, TH15: 41, TH14: 1, TH13: 0, TH12: 0, TH11: 0, TH10_OR_LOWER: 2 }
-    : { TH19: 0, TH18: 6, TH17: 8, TH16: 8, TH15: 9, TH14: 8, TH13: 5, TH12: 3, TH11: 2, TH10_OR_LOWER: 1 },
-);
+type FreshCandidate = {
+  overallStatus: string;
+  profileVersion: string;
+  sampleThreshold: number;
+  evaluationAtIso: string;
+  bandDefinitions: readonly { weightMinInclusive: number; weightMaxInclusive: number }[];
+  diagnostics: readonly {
+    status: "SUPPORTED" | "UNKNOWN";
+    observedCandidateCount: number;
+    distinctQualifyingClanCount: number;
+    reasonCode: string | null;
+    normalizedTargets: readonly {
+      bucketId: string;
+      status: "SUPPORTED" | "UNKNOWN";
+      targetCount: number | null;
+      reasonCode: string | null;
+    }[];
+  }[];
+};
+
+const freshCandidate = JSON.parse(readFileSync(candidatePath, "utf8")) as FreshCandidate;
 
 const nativeReference: NativeHeatMapReferenceRead = {
   status: "CURRENT",
   informationalOnly: true,
-  reason: null,
+  reason: `offline candidate artifact: ${freshCandidate.overallStatus}`,
   generationId: "cmwuba01p0001104anu6a4d6u",
   fenceToken: 1n,
-  profileVersion: "native-reference-v2",
+  profileVersion: freshCandidate.profileVersion,
   policyVersion: "native-provisional-v1",
-  sampleThreshold: 5,
-  evaluationAt: sourceSyncedAt,
-  createdAt: sourceSyncedAt,
-  bands: HEAT_MAP_REF_SEED_ROWS.map(({ weightMinInclusive, weightMaxInclusive }) => ({
+  sampleThreshold: freshCandidate.sampleThreshold,
+  evaluationAt: new Date(freshCandidate.evaluationAtIso),
+  createdAt: new Date(freshCandidate.evaluationAtIso),
+  bands: freshCandidate.bandDefinitions.map(({ weightMinInclusive, weightMaxInclusive }) => ({
     weightMinInclusive,
     weightMaxInclusive,
   })),
-  targets: HEAT_MAP_REF_SEED_ROWS.flatMap((_, bandOrdinal) =>
-    Object.entries(nativeTargetCountsByBand[bandOrdinal]!).map(([bucketId, targetCount]) => ({
+  targets: freshCandidate.diagnostics.flatMap((diagnostic, bandOrdinal) =>
+    diagnostic.normalizedTargets.map(({ bucketId, status, targetCount, reasonCode }) => ({
       bandOrdinal,
       bucketId,
-      status: bandOrdinal < 11 ? "SUPPORTED" as const : "UNKNOWN" as const,
-      targetCount: bandOrdinal < 11 ? targetCount : null,
-      qualifyingClanCount: bandOrdinal < 11 ? 5 : 0,
-      sampleCount: bandOrdinal < 11 ? 5 : 0,
-      reasonCode: bandOrdinal < 11 ? null : "partial_native_coverage",
+      status,
+      targetCount,
+      qualifyingClanCount: diagnostic.distinctQualifyingClanCount,
+      sampleCount: diagnostic.observedCandidateCount,
+      reasonCode,
     })),
   ),
 };
@@ -162,6 +181,12 @@ type MockPrisma = {
 
 function writePng(name: string, bytes: Buffer): void {
   writeFileSync(join(outputDir, name), bytes as unknown as Uint8Array);
+}
+
+function firstAttachment(payload: { files?: Array<{ attachment: Buffer }> }, name: string): Buffer {
+  const attachment = payload.files?.[0]?.attachment;
+  if (!attachment) throw new Error(`command payload did not include ${name}`);
+  return attachment;
 }
 
 async function main(): Promise<void> {
@@ -222,22 +247,60 @@ async function main(): Promise<void> {
     if (!actual.stateRows || !war.stateRows) {
       throw new Error("fixture services did not return renderable rows");
     }
+    const actualRow = actual.stateRows[1];
+    if (
+      actualRow?.[0] !== "Akatsuki" ||
+      actualRow?.[1] !== "7,319,000" ||
+      actualRow?.[3] !== "8" ||
+      actualRow?.[4] !== "1" ||
+      actualRow?.[5] !== "49" ||
+      actualRow.slice(6).some((value) => value === "?")
+    ) {
+      throw new Error(`candidate-backed Akatsuki ACTUAL row was not fully projected: ${JSON.stringify(actualRow)}`);
+    }
+    if (heatmap.rows.length !== freshCandidate.bandDefinitions.length + 1) {
+      throw new Error("candidate-backed heatmap display did not preserve the published band distribution");
+    }
+    if ((actual.imageNotice?.length ?? 0) > 240) {
+      throw new Error("ACTUAL PNG notice unexpectedly contains the full Discord content message");
+    }
+    const heatmapPayload = buildCompoHeatMapRefPayloadFromRowsForTest({
+      rows: heatmap.rows,
+      content: heatmap.referenceState.notice,
+      title: "HEATMAP REF - PROVISIONAL",
+      fileName: "compo-heatmapref-provisional.png",
+    });
+    const actualPayload = buildCompoStatePayloadFromRowsForTest({
+      mode: "actual",
+      stateRows: actual.stateRows,
+      contentLines: actual.contentLines,
+      imageNotice: actual.imageNotice,
+      titleLabel: "AUTO-DETECT BAND · PROVISIONAL NATIVE",
+    });
+    const warPayload = buildCompoStatePayloadFromRowsForTest({
+      mode: "war",
+      stateRows: war.stateRows,
+      contentLines: war.contentLines,
+      titleLabel: "PROVISIONAL NATIVE",
+    });
     writePng(
       "compo-heatmapref-provisional.png",
-      renderStatePngForTest("HEATMAP REF - PROVISIONAL", heatmap.rows, heatmap.referenceState.notice),
+      firstAttachment(heatmapPayload, "heatmap reference PNG"),
     );
     writePng(
       "compo-state-actual-provisional.png",
-      renderStatePngForTest("ALLIANCE STATE (ACTUAL - AUTO-DETECT BAND · PROVISIONAL NATIVE)", actual.stateRows, actual.contentLines.join("\n")),
+      firstAttachment(actualPayload, "actual state PNG"),
     );
     writePng(
       "compo-state-war-provisional.png",
-      renderStatePngForTest("ALLIANCE STATE (WAR - PROVISIONAL NATIVE)", war.stateRows, war.contentLines.join("\n")),
+      firstAttachment(warPayload, "war state PNG"),
     );
   } finally {
     NativeHeatMapReferencePublicationService.prototype.readCurrent = originalReadCurrent;
   }
   console.log(`Wrote service-generated FB-002 fixtures to ${outputDir}`);
+  console.log(`Candidate evidence: ${candidatePath} (${freshCandidate.overallStatus}; ${freshCandidate.bandDefinitions.length - freshCandidate.diagnostics.filter((diagnostic) => diagnostic.status === "UNKNOWN").length} supported / ${freshCandidate.diagnostics.filter((diagnostic) => diagnostic.status === "UNKNOWN").length} unknown bands)`);
+  console.log("Roster evidence: simulated production-shaped Akatsuki fixture; candidate targets are from the saved production artifact.");
 }
 
 void main();
