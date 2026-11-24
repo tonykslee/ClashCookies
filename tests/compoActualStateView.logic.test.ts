@@ -4,6 +4,12 @@ import {
   isCompoActualStateProjectionComplete,
   projectCompoActualStateView,
 } from "../src/helper/compoActualStateView";
+import { NATIVE_PROVISIONAL_COMPOSITION_PROFILE } from "../src/helper/compoCalculationProfile";
+import {
+  buildNativeCompoProjectionReferences,
+  NATIVE_COMPO_COMPARISON_BUCKETS,
+  readNativeCompoProjectionReferenceCount,
+} from "../src/helper/nativeCompoComparison";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 function makeBucketCounts(
@@ -54,6 +60,23 @@ function makeHeatMapRef(
     th10OrLowerCount: input.th10OrLowerCount ?? 0,
     sourceVersion: "test",
     refreshedAt: new Date("2026-04-12T00:00:00.000Z"),
+  };
+}
+
+function makeNativeReference(input: {
+  weightMinInclusive: number;
+  weightMaxInclusive: number;
+  counts: Partial<Record<(typeof NATIVE_COMPO_COMPARISON_BUCKETS)[number], number>>;
+}) {
+  return {
+    weightMinInclusive: input.weightMinInclusive,
+    weightMaxInclusive: input.weightMaxInclusive,
+    targets: NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => ({
+      bandOrdinal: 0,
+      bucketId,
+      status: "SUPPORTED" as const,
+      targetCount: input.counts[bucketId] ?? 0,
+    })),
   };
 }
 
@@ -266,6 +289,32 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket.TH15).toBe(1);
     expect(result.deltaByBucket.TH14).toBe(0);
     expect(result.deltaByBucket["<=TH13"]).toBe(1);
+  });
+
+  it("uses a supported adjacent band for a near-complete fallback-resolved roster without double-counting it", () => {
+    const result = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 7_319_000,
+        unresolvedWeightCount: 7,
+        unresolvedWeightSlotCount: 0,
+        memberCount: 49,
+        bucketCounts: makeBucketCounts({ TH18: 49 }),
+      },
+      heatMapRefs: [
+        makeHeatMapRef({
+          weightMinInclusive: 7_400_001,
+          weightMaxInclusive: 7_500_000,
+          th18Count: 50,
+        }),
+      ],
+    });
+
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_400_001);
+    expect(result.missingWeights).toBe(8);
+    expect(result.nMissing).toBe(1);
+    expect(result.totalWeight).toBe(7_494_000);
+    expect(result.deltaByBucket.TH18).toBe(-1);
   });
 
   it("projects ACTUAL deltas from a newly granular upper HeatMapRef band", () => {
@@ -526,6 +575,124 @@ describe("projectCompoActualStateView", () => {
     expect(result.displayCounts.TH18).toBe(1);
     expect(result.calculationCounts?.TH18).toBe(1);
     expect(result.totalWeight).toBe(49 * 165000 + 175000);
+  });
+
+  it("skips an out-of-band native candidate and selects the next plausible band", () => {
+    const native = {
+      status: "CURRENT" as const,
+      generationId: "native-test",
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      bands: [
+        { weightMinInclusive: 0, weightMaxInclusive: 300000 },
+        { weightMinInclusive: 300001, weightMaxInclusive: 500000 },
+      ],
+      targets: [
+        makeNativeReference({
+          weightMinInclusive: 0,
+          weightMaxInclusive: 300000,
+          counts: { TH19: 1, TH18: 2, TH15: 47 },
+        }).targets,
+        makeNativeReference({
+          weightMinInclusive: 300001,
+          weightMaxInclusive: 500000,
+          counts: { TH19: 2, TH18: 1, TH15: 47 },
+        }).targets.map((target) => ({ ...target, bandOrdinal: 1 })),
+      ].flat(),
+    };
+    const references = buildNativeCompoProjectionReferences(native);
+    const result = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 1000,
+        unresolvedWeightCount: 0,
+        memberCount: 48,
+        bucketCounts: makeBucketCounts({ TH19: 1, TH15: 47 }),
+        profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+      },
+      heatMapRefs: references,
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+
+    expect(result.targetStatus).toBe("supported");
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(300001);
+    expect(result.totalWeight).toBe(361000);
+  });
+
+  it("uses a plausible native Best Fit band when the raw total is in an unsupported band", () => {
+    const native = {
+      status: "CURRENT" as const,
+      generationId: "native-test",
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      bands: [
+        { weightMinInclusive: 0, weightMaxInclusive: 300000 },
+        { weightMinInclusive: 300001, weightMaxInclusive: 500000 },
+      ],
+      targets: [
+        makeNativeReference({ weightMinInclusive: 0, weightMaxInclusive: 300000, counts: { TH19: 1, TH18: 2, TH15: 47 } }).targets,
+        makeNativeReference({ weightMinInclusive: 300001, weightMaxInclusive: 500000, counts: { TH19: 2, TH18: 1, TH15: 47 } }).targets.map((target) => ({ ...target, bandOrdinal: 1 })),
+      ].flat(),
+    };
+    const result = projectCompoActualStateView({
+      view: "best",
+      base: {
+        resolvedTotalWeight: 1000,
+        unresolvedWeightCount: 0,
+        memberCount: 48,
+        bucketCounts: makeBucketCounts({ TH19: 1, TH15: 47 }),
+        profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+      },
+      heatMapRefs: buildNativeCompoProjectionReferences(native),
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+
+    expect(result.targetStatus).toBe("supported");
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(300001);
+    expect(result.totalWeight).toBe(361000);
+  });
+
+  it("uses resolved deltas for native Auto-Detect but projected deltas for Best Fit", () => {
+    const native = {
+      status: "CURRENT" as const,
+      generationId: "native-test",
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      bands: [{ weightMinInclusive: 0, weightMaxInclusive: 500000 }],
+      targets: makeNativeReference({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 500000,
+        counts: { TH19: 1, TH18: 2, TH15: 47 },
+      }).targets,
+    };
+    const base = {
+      resolvedTotalWeight: 1000,
+      unresolvedWeightCount: 0,
+      memberCount: 48,
+      bucketCounts: makeBucketCounts({ TH19: 1, TH15: 47 }),
+      profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+    };
+    const heatMapRefs = buildNativeCompoProjectionReferences(native);
+    const auto = projectCompoActualStateView({
+      view: "auto",
+      base,
+      heatMapRefs,
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+    const best = projectCompoActualStateView({
+      view: "best",
+      base,
+      heatMapRefs,
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+
+    expect(auto.totalWeight).toBe(351000);
+    expect(best.totalWeight).toBe(351000);
+    expect(auto.deltaByBucket.TH18).toBe(-2);
+    expect(best.deltaByBucket.TH18).toBe(0);
   });
 
   it("withholds projections when member or unresolved metadata is outside the 50-member contract", () => {

@@ -1808,6 +1808,10 @@ function buildCompoStatePayloadFromRows(input: {
   };
 }
 
+function hasProvisionalNativeReference(contentLines: readonly string[]): boolean {
+  return contentLines.some((line) => line.includes("Provisional native targets"));
+}
+
 function buildCompoContentPayload(contentLines: readonly string[]): CompoRenderPayload {
   const content = contentLines.join("\n");
   if (content.length <= DISCORD_CONTENT_LIMIT) return { content };
@@ -2976,6 +2980,7 @@ export async function handleCompoRefreshButton(
               mode: "war",
               stateRows: warState.stateRows,
               contentLines: warState.contentLines,
+              titleLabel: hasProvisionalNativeReference(warState.contentLines) ? "PROVISIONAL NATIVE" : undefined,
             })
           : {
               ...buildCompoContentPayload(warState.contentLines),
@@ -2995,7 +3000,7 @@ export async function handleCompoRefreshButton(
               imageNotice: actualState.imageNotice,
               titleLabel: getCompoActualStateViewLabel(
                 actualState.view ?? "auto",
-              ).toUpperCase(),
+              ).toUpperCase() + (hasProvisionalNativeReference(actualState.contentLines) ? " · PROVISIONAL NATIVE" : ""),
             })
           : {
               ...buildCompoContentPayload(actualState.contentLines),
@@ -3064,7 +3069,7 @@ export async function handleCompoRefreshButton(
               imageNotice: actualState.imageNotice,
               titleLabel: getCompoActualStateViewLabel(
                 actualState.view ?? "auto",
-              ).toUpperCase(),
+              ).toUpperCase() + (hasProvisionalNativeReference(actualState.contentLines) ? " · PROVISIONAL NATIVE" : ""),
             })
           : {
               ...buildCompoContentPayload(actualState.contentLines),
@@ -3909,6 +3914,7 @@ export const Compo: Command = {
                       mode: "war",
                       stateRows: warState.stateRows,
                       contentLines: warState.contentLines,
+                      titleLabel: hasProvisionalNativeReference(warState.contentLines) ? "PROVISIONAL NATIVE" : undefined,
                     })
                   : {
                       ...buildCompoContentPayload(warState.contentLines),
@@ -3940,7 +3946,7 @@ export const Compo: Command = {
                       imageNotice: actualState.imageNotice,
                       titleLabel: getCompoActualStateViewLabel(
                         actualState.view ?? "auto",
-                      ).toUpperCase(),
+                      ).toUpperCase() + (hasProvisionalNativeReference(actualState.contentLines) ? " · PROVISIONAL NATIVE" : ""),
                     })
                   : {
                       ...buildCompoContentPayload(actualState.contentLines),
@@ -4044,9 +4050,11 @@ export const Compo: Command = {
               display.referenceState?.notice ??
               display.availability?.warning ??
               undefined,
-            title: display.referenceState
-              ? `HEATMAP REF · ${display.referenceState.status.toUpperCase()}`
-              : "HEATMAP REF",
+            title: display.nativeReference?.status === "CURRENT"
+              ? "HEATMAP REF - PROVISIONAL"
+              : display.referenceState
+                ? `HEATMAP REF · ${display.referenceState.status.toUpperCase()}`
+                : "HEATMAP REF",
             components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id, heatMapRefMode)],
           }),
         });
@@ -4355,6 +4363,8 @@ export const buildCompoHeatMapRefRowsForTest = buildCompoHeatMapRefRows;
 export const buildCompoHeatMapRefCopyTextForTest = buildCompoHeatMapRefCopyText;
 export const buildCompoHeatMapRefCopyPayloadForTest = buildCompoHeatMapRefCopyPayload;
 export const buildCompoContentPayloadForTest = buildCompoContentPayload;
+export const buildCompoStatePayloadFromRowsForTest = buildCompoStatePayloadFromRows;
+export const buildCompoHeatMapRefPayloadFromRowsForTest = buildCompoHeatMapRefPayloadFromRows;
 export const buildCompoHeatMapRefCopyCustomIdForTest = buildCompoHeatMapRefCopyCustomId;
 export const isCompoHeatMapRefCopyButtonCustomIdForTest = isCompoHeatMapRefCopyButtonCustomId;
 export const toGlyphSafeTextForTest = toGlyphSafeText;

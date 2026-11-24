@@ -59,6 +59,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   $queryRaw: vi.fn(),
+  nativeHeatMapReferenceHead: undefined as unknown,
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -67,11 +68,14 @@ vi.mock("../src/prisma", () => ({
 
 import {
   CompoActualStateService,
+  buildActualStateRowForTest,
   loadCompoActualStateContext,
   readExternalClanCurrentComposition,
   readTrackedClanCurrentComposition,
 } from "../src/services/CompoActualStateService";
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
+import { projectCompoActualStateView } from "../src/helper/compoActualStateView";
+import { buildDeferScopeKey } from "../src/services/WeightInputDefermentService";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
@@ -79,6 +83,7 @@ import {
   computeClanMembersSnapshotHash,
   toPersistedClanMembersSnapshotRow,
 } from "../src/services/fwa-feeds/clanMembersSnapshot";
+import { NativeHeatMapReferencePublicationService } from "../src/services/NativeHeatMapReferencePublicationService";
 
 function makeTrackedClan(tag: string, name: string) {
   return {
@@ -244,6 +249,7 @@ describe("CompoActualStateService", () => {
     prismaMock.weightInputDeferment.findMany.mockReset();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockReset();
+    prismaMock.nativeHeatMapReferenceHead = undefined;
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValue([]);
     prismaMock.playerCurrent.findMany.mockResolvedValue([]);
     prismaMock.weightInputDeferment.findMany.mockResolvedValue([]);
@@ -1471,6 +1477,214 @@ describe("CompoActualStateService", () => {
     expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
       "deltaByBucketNull=true",
     );
+  });
+
+  it("keeps Akatsuki fallback provenance separate from unresolved slots in Auto-Detect projection", async () => {
+    const clanTag = "#2RVV0L0VP";
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan(clanTag, "Akatsuki-actual"),
+    ]);
+    const playerTags = Array.from({ length: 49 }, (_, index) => makeValidPlayerTag(index));
+    const members = [
+      ...Array.from({ length: 41 }, (_, index) => makeMember({
+        clanTag,
+        playerTag: playerTags[index]!,
+        weight: 150000,
+      })),
+      makeMember({ clanTag, playerTag: playerTags[41]!, weight: 0 }),
+      ...Array.from({ length: 6 }, (_, index) => makeMember({
+        clanTag,
+        playerTag: playerTags[42 + index]!,
+        weight: 0,
+      })),
+      makeMember({ clanTag, playerTag: playerTags[48]!, weight: 0 }),
+    ];
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue(members);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: buildDeferScopeKey("guild-1", clanTag),
+        playerTag: playerTags[41]!,
+        deferredWeight: 136000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 6 }, (_, index) => makeWarFallback({
+        clanTag,
+        playerTag: playerTags[42 + index]!,
+        effectiveWeight: index === 5 ? 173000 : 172000,
+      })),
+    );
+    prismaMock.heatMapRef.findMany.mockResolvedValue([]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const clan = context.clans[0]!;
+
+    expect(clan.base.resolvedTotalWeight).toBe(7_319_000);
+    expect(clan.base.memberCount).toBe(49);
+    expect(clan.base.unresolvedWeightCount).toBe(7);
+    expect(clan.base.unresolvedWeightSlotCount).toBe(1);
+    expect(clan.base.deferredWeightCount).toBe(1);
+    expect(clan.members.filter((member) => member.resolvedWeightSource === "war")).toHaveLength(6);
+    expect(clan.members.filter((member) => member.resolvedWeightSource === null)).toHaveLength(1);
+    expect(clan.members.filter((member) => member.resolvedWeightSource === "defer")).toHaveLength(1);
+
+    const projection = projectCompoActualStateView({
+      view: "auto",
+      base: clan.base,
+      heatMapRefs: [],
+    });
+    expect(projection.missingWeights).toBe(8);
+    expect(projection.nMissing).toBe(2);
+    expect(projection.totalWeight).toBe(7_319_000);
+  });
+
+  it("uses the published native profile for ACTUAL planning when legacy validation is blocked", async () => {
+    const clanTag = "#2RVV0L0VP";
+    prismaMock.nativeHeatMapReferenceHead = {};
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan(clanTag, "Akatsuki-actual"),
+    ]);
+    const playerTags = Array.from({ length: 49 }, (_, index) => makeValidPlayerTag(index));
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      ...Array.from({ length: 41 }, (_, index) => makeMember({
+        clanTag,
+        playerTag: playerTags[index]!,
+        weight: 150000,
+      })),
+      makeMember({ clanTag, playerTag: playerTags[41]!, weight: 0 }),
+      ...Array.from({ length: 6 }, (_, index) => makeMember({
+        clanTag,
+        playerTag: playerTags[42 + index]!,
+        weight: 0,
+      })),
+      makeMember({ clanTag, playerTag: playerTags[48]!, weight: 0 }),
+    ]);
+    prismaMock.weightInputDeferment.findMany.mockResolvedValue([
+      makeOpenDeferment({
+        scopeKey: buildDeferScopeKey("guild-1", clanTag),
+        playerTag: playerTags[41]!,
+        deferredWeight: 136000,
+      }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue(
+      Array.from({ length: 6 }, (_, index) => makeWarFallback({
+        clanTag,
+        playerTag: playerTags[42 + index]!,
+        effectiveWeight: index === 5 ? 173000 : 172000,
+      })),
+    );
+    prismaMock.heatMapRef.findMany.mockResolvedValue([]);
+    vi.spyOn(NativeHeatMapReferencePublicationService.prototype, "readCurrent").mockResolvedValue({
+      status: "CURRENT",
+      informationalOnly: true,
+      reason: null,
+      generationId: "cmwuba01p0001104anu6a4d6u",
+      fenceToken: 1n,
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      evaluationAt: new Date("2026-11-23T00:00:00.000Z"),
+      createdAt: new Date("2026-11-23T00:00:00.000Z"),
+      bands: [{ weightMinInclusive: 7_400_001, weightMaxInclusive: 7_500_000 }],
+      targets: [
+        ["TH19", 0], ["TH18", 6], ["TH17", 0], ["TH16", 0], ["TH15", 41],
+        ["TH14", 1], ["TH13", 0], ["TH12", 0], ["TH11", 0], ["TH10_OR_LOWER", 2],
+      ].map(([bucketId, targetCount]) => ({
+        bandOrdinal: 0,
+        bucketId: String(bucketId),
+        status: "SUPPORTED" as const,
+        targetCount: Number(targetCount),
+        qualifyingClanCount: 5,
+        sampleCount: 5,
+        reasonCode: null,
+      })),
+    });
+
+    const result = await new CompoActualStateService().readState("guild-1", { view: "auto" });
+    expect(result.stateRows?.[0]).toEqual([
+      "Clan", "Resolved Total", "Planning Total", "Missing", "DF", "Players",
+      "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13",
+    ]);
+    expect(result.stateRows?.[1]).toEqual([
+      "Akatsuki", "7,319,000", "7,433,000", "8", "1", "49", "0", "0", "0", "0", "0", "0", "-2",
+    ]);
+    expect(result.contentLines.join("\n")).toContain("provisional native targets");
+    expect(result.contentLines.join("\n")).not.toContain("Reference warning:");
+  });
+
+  it("renders native TH19 as a delta while RAW remains factual", () => {
+    const projection = {
+      view: "auto" as const,
+      totalWeight: 7_433_000,
+      resolvedRosterWeight: 7_319_000,
+      missingWeights: 8,
+      memberCount: 49,
+      missingTo50Count: 1,
+      unresolvedWeightCount: 7,
+      deferredWeightCount: 1,
+      nMissing: 2,
+      displayCounts: { TH19: 1, TH18: 6, TH17: 0, TH16: 0, TH15: 40, TH14: 1, "<=TH13": 1 },
+      selectedHeatMapRef: null,
+      deltaByBucket: {
+        TH19: -1,
+        TH18: 0,
+        TH17: 0,
+        TH16: 0,
+        TH15: 0,
+        TH14: 0,
+        TH13: 0,
+        TH12: 0,
+        TH11: 0,
+        TH10_OR_LOWER: 0,
+        "<=TH13": 0,
+      },
+      deviationScore: null,
+      targetStatus: "supported" as const,
+      calculationCounts: {},
+      targetCalculationCounts: {},
+    };
+    const row = buildActualStateRowForTest({
+      clanName: "Akatsuki",
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 7_319_000,
+        unresolvedWeightCount: 7,
+        unresolvedWeightSlotCount: 1,
+        memberCount: 49,
+        bucketCounts: {
+          TH19: 1,
+          TH18: 6,
+          TH17: 0,
+          TH16: 0,
+          TH15: 40,
+          TH14: 1,
+          TH13: 1,
+          TH12: 0,
+          TH11: 0,
+          TH10: 0,
+          TH9: 0,
+          TH8_OR_LOWER: 0,
+        },
+      },
+      projection,
+      includeTh19: true,
+      nativeProjection: projection,
+    });
+    expect(row).toEqual(["Akatsuki", "7,319,000", "7,433,000", "8", "1", "49", "-1", "0", "0", "0", "0", "0", "0"]);
+    expect(buildActualStateRowForTest({
+      clanName: "Akatsuki",
+      view: "raw",
+      base: {
+        resolvedTotalWeight: 7_319_000,
+        unresolvedWeightCount: 7,
+        unresolvedWeightSlotCount: 1,
+        deferredWeightCount: 1,
+        memberCount: 49,
+        bucketCounts: projection.displayCounts as never,
+      },
+      projection,
+      includeTh19: true,
+    })).toEqual(["Akatsuki", "7,319,000", "7", "1", "49", "1", "6", "0", "0", "40", "1", "1"]);
   });
 
   describe("tracked clan composition snapshot", () => {
