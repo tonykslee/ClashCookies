@@ -12,6 +12,7 @@ import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { BotLogChannelService } from "./BotLogChannelService";
 import { repWorkActivityService } from "./RepWorkActivityService";
+import { fwaAccountabilityNotificationService } from "./FwaAccountabilityNotificationService";
 import { buildSyncLeaderAccountsButtonComponents } from "./SyncLeaderAccountsViewService";
 import { isMirrorPollingMode } from "./PollingModeService";
 
@@ -227,6 +228,7 @@ export type FwaMatchChecklistRefreshOptions = {
   automatic?: boolean;
   autoRefreshClaimToken?: string | null;
   autoRefreshCompletedAtIso?: string | null;
+  client?: import("discord.js").Client;
 };
 
 type FwaMatchChecklistDiscordMessage = {
@@ -5710,6 +5712,29 @@ export class TrackedMessageService {
             const persisted = await persistBasesCheckedStateForRow(matchedRow, true);
             if (persisted) {
               completionStatusByTag.set(changedRowTag, true);
+              if (reactionChange.reactorUserId && options?.client) {
+                const resolvedWarIdentity = resolvedWarIdentityByClanTag.get(changedRowTag) ?? null;
+                await fwaAccountabilityNotificationService
+                  .notifyBasesChecked({
+                    client: options.client,
+                    guildId: tracked.guildId,
+                    clanTag: matchedRow.clanTag,
+                    actorUserId: reactionChange.reactorUserId,
+                    warId: resolvedWarIdentity?.warId ?? matchedRow.warId ?? null,
+                    warStartTime:
+                      resolvedWarIdentity?.warStartTime ??
+                      (matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null),
+                    opponentTag: resolvedWarIdentity?.opponentTag ?? matchedRow.opponentTag ?? null,
+                    syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
+                    checklistChannelId: tracked.channelId,
+                    checklistMessageId: tracked.messageId,
+                  })
+                  .catch((error) => {
+                    console.error(
+                      `[fwa-accountability] bases reaction notification failed guild=${tracked.guildId} clan=${matchedRow.clanTag} message=${message.id} error=${formatError(error)}`,
+                    );
+                  });
+              }
             }
             if (
               persisted &&
@@ -5959,6 +5984,10 @@ export class TrackedMessageService {
         .filter((clanTag): clanTag is string => Boolean(clanTag)),
     );
     const reactedTags = new Set<string>(persistedCheckedTags);
+    let manualMailConfirmation: {
+      actorUserId: string;
+      row: FwaMatchChecklistTrackedRow;
+    } | null = null;
     const changedRowTag = change
       ? findChecklistRowTagForReaction(effectiveRows, change.reaction)
       : null;
@@ -5971,6 +6000,12 @@ export class TrackedMessageService {
         `[fwa_checklist_reaction_matched] guildId=${tracked.guildId} messageId=${message.id} clanTag=${changedRowTag} matched=${Boolean(matchedRow)} reason=${matchedRow ? "matched_row" : "row_not_found"}`,
       );
       if (matchedRow && reactionChange.kind === "add" && reactionChange.reactorUserId) {
+        if (!persistedCheckedTags.has(changedRowTag) && !options?.automatic) {
+          manualMailConfirmation = {
+            actorUserId: reactionChange.reactorUserId,
+            row: matchedRow,
+          };
+        }
         const warStartTime =
           matchedRow.warStartTimeIso
             ? new Date(matchedRow.warStartTimeIso)
@@ -6111,6 +6146,27 @@ export class TrackedMessageService {
     });
     if (!persistedMetadata) {
       return false;
+    }
+    if (manualMailConfirmation && options?.client) {
+      const row = manualMailConfirmation.row;
+      await fwaAccountabilityNotificationService
+        .notifyMailConfirmed({
+          client: options.client,
+          guildId: tracked.guildId,
+          clanTag: row.clanTag,
+          actorUserId: manualMailConfirmation.actorUserId,
+          warId: row.warId ?? null,
+          warStartTime: row.warStartTimeIso ? new Date(row.warStartTimeIso) : null,
+          opponentTag: row.opponentTag ?? null,
+          syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
+          checklistChannelId: tracked.channelId,
+          checklistMessageId: tracked.messageId,
+        })
+        .catch((error) => {
+          console.error(
+            `[fwa-accountability] mail confirmation notification failed guild=${tracked.guildId} clan=${row.clanTag} message=${message.id} error=${formatError(error)}`,
+          );
+        });
     }
     await reconcileChecklistBadgeReactions({
       guildId: tracked.guildId,

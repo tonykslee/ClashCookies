@@ -2011,6 +2011,46 @@ model WarMailLifecycle {
   @@index([guildId, clanTag, warStartTime])
 }
 
+enum FwaAccountabilityNotificationEventType {
+  BASES_CHECKED
+  MAIL_POSTED
+  MAIL_CONFIRMED
+}
+
+enum FwaAccountabilityNotificationStatus {
+  CLAIMED
+  SENT
+  FAILED
+  UNKNOWN
+}
+
+/// Durable delivery state for FB-020 notifications. This is deliberately separate from checklist and mail domain state.
+model FwaAccountabilityNotification {
+  id            String                                  @id @default(cuid())
+  guildId       String
+  clanTag       String
+  eventType     FwaAccountabilityNotificationEventType
+  eventKey      String
+  actorUserId   String
+  status        FwaAccountabilityNotificationStatus     @default(CLAIMED)
+  claimToken    String?
+  claimedAt     DateTime?
+  attemptCount  Int                                     @default(0)
+  lastAttemptAt DateTime?
+  sentAt        DateTime?
+  channelId     String?
+  messageId     String?
+  messageUrl    String?
+  failureCode   String?
+  failureReason String?
+  createdAt     DateTime                                @default(now())
+  updatedAt     DateTime                                @updatedAt
+
+  @@unique([guildId, eventType, eventKey])
+  @@index([guildId, clanTag, eventType])
+  @@index([status, claimedAt])
+}
+
 model ClanPointsSync {
   id                             String    @id @default(cuid())
   guildId                        String

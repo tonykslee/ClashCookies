@@ -30,6 +30,9 @@ const BOT_LOGS_BAN_LOG_TYPE: RoutedBotLogChannelType = "ban-log";
 const BOT_LOGS_BAN_JOIN_ALERT_TYPE: RoutedBotLogChannelType = "ban-join-alert";
 const BOT_LOGS_CLAN_GOALS_TYPE: RoutedBotLogChannelType = "clan-goals";
 const BOT_LOGS_SYNC_RETROSPECTIVE_TYPE: RoutedBotLogChannelType = "sync-retrospective";
+const BOT_LOGS_BASES_CHECKED_TYPE: RoutedBotLogChannelType = "bases-checked";
+const BOT_LOGS_MAIL_POSTED_TYPE: RoutedBotLogChannelType = "mail-posted";
+const BOT_LOGS_MAIL_CONFIRMED_TYPE: RoutedBotLogChannelType = "mail-confirmed";
 const LEGACY_SYNC_POST_CHANNEL_SETTING_PREFIX = "guild_sync_post_channel";
 const BOT_LOGS_BASE_SWAP_ENABLE_CHOICES = [
   "clan-log channel",
@@ -78,7 +81,10 @@ function isRoutedBotLogType(
     type === BOT_LOGS_BAN_LOG_TYPE ||
     type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
     type === BOT_LOGS_CLAN_GOALS_TYPE ||
-    type === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE
+    type === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE ||
+    type === BOT_LOGS_BASES_CHECKED_TYPE ||
+    type === BOT_LOGS_MAIL_POSTED_TYPE ||
+    type === BOT_LOGS_MAIL_CONFIRMED_TYPE
   );
 }
 
@@ -86,6 +92,9 @@ function formatRoutedBotLogLabel(type: RoutedBotLogChannelType): string {
   if (type === BOT_LOGS_BAN_LOG_TYPE) return "Ban log";
   if (type === BOT_LOGS_BAN_JOIN_ALERT_TYPE) return "Ban join alert";
   if (type === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE) return "Sync retrospective";
+  if (type === BOT_LOGS_BASES_CHECKED_TYPE) return "Bases checked";
+  if (type === BOT_LOGS_MAIL_POSTED_TYPE) return "Mail posted";
+  if (type === BOT_LOGS_MAIL_CONFIRMED_TYPE) return "Mail confirmed";
   return "Clan goals";
 }
 
@@ -102,6 +111,15 @@ function formatRoutedBotLogModeLabel(mode: RoutedBotLogRoutingMode): string {
   return "disabled";
 }
 
+function usesDefaultClanLeadRouting(type: RoutedBotLogChannelType): boolean {
+  return (
+    type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
+    type === BOT_LOGS_BASES_CHECKED_TYPE ||
+    type === BOT_LOGS_MAIL_POSTED_TYPE ||
+    type === BOT_LOGS_MAIL_CONFIRMED_TYPE
+  );
+}
+
 function parseRoutedBotLogRoutingMode(
   type: RoutedBotLogChannelType,
   value: string | null,
@@ -111,7 +129,10 @@ function parseRoutedBotLogRoutingMode(
   if (value === "false") return "DISABLED";
   if (
     type === BOT_LOGS_BAN_JOIN_ALERT_TYPE ||
-    type === BOT_LOGS_CLAN_GOALS_TYPE
+    type === BOT_LOGS_CLAN_GOALS_TYPE ||
+    type === BOT_LOGS_BASES_CHECKED_TYPE ||
+    type === BOT_LOGS_MAIL_POSTED_TYPE ||
+    type === BOT_LOGS_MAIL_CONFIRMED_TYPE
   ) {
     if (value === "clan-log channel") return "CLAN_LOG";
     if (value === "clan-lead channel") return "CLAN_LEAD";
@@ -132,7 +153,7 @@ function formatRoutedBotLogSummary(
 ): string {
   const label = formatRoutedBotLogLabel(type);
   if (!config.configured) {
-    return type === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+    return usesDefaultClanLeadRouting(type) && config.routingMode === "CLAN_LEAD"
       ? `${label}: Default clan-lead channel`
       : `${label}: Disabled`;
   }
@@ -413,7 +434,7 @@ async function formatRoutedBotLogInspectResponse(
   );
 
   if (!routingConfig.configured) {
-    return type === BOT_LOGS_BAN_JOIN_ALERT_TYPE
+    return usesDefaultClanLeadRouting(type) && routingConfig.routingMode === "CLAN_LEAD"
       ? `${label} routing defaults to clan-lead channel.`
       : `${label} routing is disabled.`;
   }
@@ -531,6 +552,24 @@ async function renderBotLogConfigurationSummary(
       guildId,
       BOT_LOGS_SYNC_RETROSPECTIVE_TYPE,
     ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_BASES_CHECKED_TYPE,
+    ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_MAIL_POSTED_TYPE,
+    ),
+    await renderRoutedBotLogRow(
+      interaction,
+      botLogChannelService,
+      guildId,
+      BOT_LOGS_MAIL_CONFIRMED_TYPE,
+    ),
   ];
   return ["Bot-log configurations", ...rows].join("\n");
 }
@@ -627,7 +666,7 @@ export const BotLogs: Command = {
     if (enableRaw && !isRoutingConfigType) {
       await interaction.reply({
         ephemeral: true,
-        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, or `type:sync-retrospective`.",
+        content: "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, `type:sync-retrospective`, `type:bases-checked`, `type:mail-posted`, or `type:mail-confirmed`.",
       });
       return;
     }
@@ -643,12 +682,15 @@ export const BotLogs: Command = {
       requestedType !== BOT_LOGS_BAN_JOIN_ALERT_TYPE &&
       requestedType !== BOT_LOGS_CLAN_GOALS_TYPE &&
       requestedType !== BOT_LOGS_SYNC_RETROSPECTIVE_TYPE &&
+      requestedType !== BOT_LOGS_BASES_CHECKED_TYPE &&
+      requestedType !== BOT_LOGS_MAIL_POSTED_TYPE &&
+      requestedType !== BOT_LOGS_MAIL_CONFIRMED_TYPE &&
       requestedType !== null
     ) {
       await interaction.reply({
         ephemeral: true,
         content:
-          "`channel` is only supported for generic, maintenance, sync, checklist, layout-alerts, base-swap custom routing, or ban-log/ban-join-alert/clan-goals/sync-retrospective custom routing.",
+          "`channel` is only supported for generic, maintenance, sync, checklist, layout-alerts, base-swap custom routing, or routed bot-log custom routing.",
       });
       return;
     }
@@ -669,6 +711,10 @@ export const BotLogs: Command = {
                   ? "Invalid clan-goals routing mode. Use clan-log channel, clan-lead channel, clan-chat channel, bot-log channel, custom, or false."
                   : requestedType === BOT_LOGS_SYNC_RETROSPECTIVE_TYPE
                     ? "Invalid sync-retrospective routing mode. Use bot-log channel, custom, or false."
+                    : requestedType === BOT_LOGS_BASES_CHECKED_TYPE ||
+                        requestedType === BOT_LOGS_MAIL_POSTED_TYPE ||
+                        requestedType === BOT_LOGS_MAIL_CONFIRMED_TYPE
+                      ? `Invalid ${requestedType} routing mode. Use clan-log channel, clan-lead channel, bot-log channel, custom, or false.`
                 : "Invalid base-swap routing mode.",
         });
         return;

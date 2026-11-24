@@ -14,6 +14,9 @@ export const BOT_LOG_CHANNEL_TYPES = [
   "ban-join-alert",
   "clan-goals",
   "sync-retrospective",
+  "bases-checked",
+  "mail-posted",
+  "mail-confirmed",
 ] as const;
 export type BotLogChannelType = (typeof BOT_LOG_CHANNEL_TYPES)[number];
 export const SIMPLE_BOT_LOG_CHANNEL_TYPES = [
@@ -30,6 +33,9 @@ export const ROUTED_BOT_LOG_CHANNEL_TYPES = [
   "ban-join-alert",
   "clan-goals",
   "sync-retrospective",
+  "bases-checked",
+  "mail-posted",
+  "mail-confirmed",
 ] as const;
 export type RoutedBotLogChannelType =
   (typeof ROUTED_BOT_LOG_CHANNEL_TYPES)[number];
@@ -130,7 +136,12 @@ function getAllowedRoutingModes(
 function getDefaultRoutingMode(
   type: RoutedBotLogChannelType,
 ): RoutedBotLogRoutingMode {
-  return type === "ban-join-alert" ? "CLAN_LEAD" : "DISABLED";
+  return type === "ban-join-alert" ||
+    type === "bases-checked" ||
+    type === "mail-posted" ||
+    type === "mail-confirmed"
+    ? "CLAN_LEAD"
+    : "DISABLED";
 }
 
 function buildDefaultRoutedBotLogRoutingConfig(
