@@ -10,10 +10,16 @@ import {
   NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD,
   NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY,
   NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST,
+  NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION,
+  NATIVE_REFERENCE_ERA_POLICY_VERSION,
+  NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION,
+  NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION,
+  type NativeReferenceBandDefinition,
   validateNativeReferenceCandidateArtifact,
   type NativeReferenceCandidateArtifact,
   type NativeReferenceBandDiagnostic,
 } from "../helper/nativeHeatMapRefCandidate";
+import { HEAT_MAP_REF_SEED_ROWS } from "./HeatMapRefSeedData";
 
 export const NATIVE_REFERENCE_POLICY_ID = "native-provisional-five-clan";
 export const NATIVE_REFERENCE_POLICY_VERSION = "native-provisional-v1";
@@ -165,6 +171,41 @@ function diagnosticForBand(
   return diagnostic;
 }
 
+function canonicalPolicyReason(candidate: NativeReferenceCandidateArtifact): string | null {
+  if (!candidate || typeof candidate !== "object" || !Array.isArray(candidate.bucketRegistry) || !Array.isArray(candidate.bandDefinitions) || !candidate.sampleQualityPolicy || !candidate.sourceAuthority || !candidate.eraPolicy) return "publication_requires_validated_candidate";
+  const canonicalBands: NativeReferenceBandDefinition[] = HEAT_MAP_REF_SEED_ROWS.map((row) => ({
+    weightMinInclusive: row.weightMinInclusive,
+    weightMaxInclusive: row.weightMaxInclusive,
+  }));
+  const canonicalBuckets = NATIVE_REFERENCE_BUCKET_REGISTRY.map((bucket) => ({
+    id: bucket.id,
+    sourceBuckets: [...bucket.sourceBuckets],
+  }));
+  const candidateBuckets = candidate.bucketRegistry.map((bucket) => ({
+    id: bucket.id,
+    sourceBuckets: [...bucket.sourceBuckets],
+  }));
+  if (candidate.profileId !== NATIVE_REFERENCE_PROFILE_ID || candidate.profileVersion !== NATIVE_REFERENCE_PROFILE_VERSION) return "publication_requires_canonical_profile";
+  if (candidate.sampleThreshold !== NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD || candidate.sampleQualityPolicy.minimumDirectWeightAnchors !== NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS) return "publication_requires_canonical_sample_policy";
+  if (candidate.uncertaintyPolicyVersion !== NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION || candidate.sampleQualityPolicyVersion !== NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION) return "publication_requires_canonical_quality_policy";
+  if (candidate.bucketDefinitionVersion !== NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION) return "publication_requires_canonical_bucket_policy";
+  if (JSON.stringify(candidateBuckets) !== JSON.stringify(canonicalBuckets)) return "publication_requires_canonical_bucket_registry";
+  if (JSON.stringify(candidate.bandDefinitions) !== JSON.stringify(canonicalBands)) return "publication_requires_canonical_band_definitions";
+  if (candidate.eraPolicy.policyVersion !== NATIVE_REFERENCE_ERA_POLICY_VERSION) return "publication_requires_canonical_era_policy";
+  const authorityStatuses = [
+    candidate.sourceAuthority.identityStatus,
+    candidate.sourceAuthority.completenessStatus,
+    candidate.sourceAuthority.weightProvenanceStatus,
+    candidate.sourceAuthority.sourceGenerationStatus,
+    candidate.sourceAuthority.replayStatus,
+    candidate.sourceAuthority.candidateEligibilityStatus,
+    candidate.sourceAuthority.referencePublicationStatus,
+  ];
+  if (candidate.sourceAuthority.referencePublicationStatus === "VERIFIED") return "publication_authority_must_remain_unknown_unverified";
+  if (authorityStatuses.some((status) => status !== "UNAVAILABLE")) return "publication_requires_canonical_authority_state";
+  return null;
+}
+
 /** Purpose: convert the validated candidate artifact into immutable, publication-ready native rows. */
 export function buildNativeHeatMapReferencePreview(
   candidate: NativeReferenceCandidateArtifact,
@@ -194,6 +235,7 @@ export function buildNativeHeatMapReferencePreview(
       rosterFingerprint: row.rosterFingerprint,
       observedAtIso: row.observedAtIso,
       qualityEvidenceIds: row.qualityEvidenceIds,
+      defermentScope: aggregation?.defermentScope ?? null,
     }),
     qualityEvidenceIds: [...row.qualityEvidenceIds],
     weightProvenance: {
@@ -281,6 +323,24 @@ function sameExpected(actual: string | null, expected: string | null | undefined
   return expected === undefined || actual === expected;
 }
 
+export type NativePublicationRetryDecision = {
+  eventType: "PUBLISHED" | "REJECTED_STALE" | "REJECTED_CONFLICT";
+  reasonCode: "exact_retry" | "request_generation_superseded" | "request_original_parameters_mismatch" | "request_key_content_conflict";
+  idempotent: boolean;
+};
+
+/** Classify an existing request-key replay before any publication event is appended. */
+export function classifyNativePublicationRetry(input: {
+  contentMatches: boolean;
+  generationStillCurrent: boolean;
+  originalParametersMatch: boolean;
+}): NativePublicationRetryDecision {
+  if (!input.contentMatches) return { eventType: "REJECTED_CONFLICT", reasonCode: "request_key_content_conflict", idempotent: false };
+  if (!input.generationStillCurrent) return { eventType: "REJECTED_STALE", reasonCode: "request_generation_superseded", idempotent: false };
+  if (!input.originalParametersMatch) return { eventType: "REJECTED_STALE", reasonCode: "request_original_parameters_mismatch", idempotent: false };
+  return { eventType: "PUBLISHED", reasonCode: "exact_retry", idempotent: true };
+}
+
 function persistedContentFingerprint(generation: {
   profileId: string;
   profileVersion: string;
@@ -334,6 +394,8 @@ function persistedContentFingerprint(generation: {
 }
 
 export function validatePublishableCandidate(candidate: NativeReferenceCandidateArtifact): string | null {
+  const canonicalReason = canonicalPolicyReason(candidate);
+  if (canonicalReason) return canonicalReason;
   if (candidate.sourceCategory !== NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY) return "publication_requires_retained_observation_source";
   if (candidate.evidenceTrust !== NATIVE_REFERENCE_RETAINED_OBSERVATION_EVIDENCE_TRUST) return "publication_requires_retained_observation_trust";
   const aggregation = candidate.observationAggregation;
@@ -353,6 +415,7 @@ export class NativeHeatMapReferencePublicationService {
       eraPolicy: candidate.eraPolicy,
       sampleThreshold: candidate.sampleThreshold,
       bandDefinitions: candidate.bandDefinitions,
+      defermentScope: candidate.observationAggregation?.defermentScope ?? undefined,
     }),
   ) {}
 
@@ -397,6 +460,7 @@ export class NativeHeatMapReferencePublicationService {
   }): Promise<{ published: boolean; idempotent: boolean; generationId: string | null; fenceToken: bigint | null; reason?: string }> {
     if (!input.requestKey.trim()) throw new Error("native reference publication requires requestKey");
     if (input.expectedGenerationId === undefined || input.expectedFenceToken === undefined) throw new Error("native reference publication requires expectedGenerationId and expectedFenceToken");
+    const requestedFence = BigInt(input.expectedFenceToken);
     const candidateReason = validatePublishableCandidate(input.candidate);
     if (candidateReason) return this.recordRejectedPublication(input, candidateReason);
     let liveCandidate: NativeReferenceCandidateArtifact;
@@ -405,42 +469,58 @@ export class NativeHeatMapReferencePublicationService {
     } catch {
       return this.recordRejectedPublication(input, "retained_observation_revalidation_failed");
     }
-    if (liveCandidate.contentFingerprint !== input.candidate.contentFingerprint || buildNativeHeatMapReferencePreview(liveCandidate, { requestKey: input.requestKey }).contentFingerprint !== input.preview.contentFingerprint) {
+    const liveCandidateReason = validatePublishableCandidate(liveCandidate);
+    if (liveCandidateReason) return this.recordRejectedPublication(input, liveCandidateReason);
+    const livePreview = buildNativeHeatMapReferencePreview(liveCandidate, { requestKey: input.requestKey });
+    if (liveCandidate.contentFingerprint !== input.candidate.contentFingerprint || livePreview.contentFingerprint !== input.preview.contentFingerprint) {
       return this.recordRejectedPublication(input, "retained_observation_revalidation_mismatch");
     }
     return this.db.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey(input.preview.profileId, input.preview.policyVersion)}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey(livePreview.profileId, livePreview.policyVersion)}, 0))`;
       const head = await tx.nativeHeatMapReferenceHead.findUnique({
-        where: { profileId_policyVersion: { profileId: input.preview.profileId, policyVersion: input.preview.policyVersion } },
+        where: { profileId_policyVersion: { profileId: livePreview.profileId, policyVersion: livePreview.policyVersion } },
       });
       const existing = await tx.nativeHeatMapReferenceGeneration.findUnique({
-        where: { profileId_policyVersion_requestKey: { profileId: input.preview.profileId, policyVersion: input.preview.policyVersion, requestKey: input.requestKey } },
+        where: { profileId_policyVersion_requestKey: { profileId: livePreview.profileId, policyVersion: livePreview.policyVersion, requestKey: input.requestKey } },
       });
       if (existing) {
-        const eventType = existing.contentFingerprint === input.preview.contentFingerprint ? "PUBLISHED" : "REJECTED_CONFLICT";
+        const successfulEvent = await tx.nativeHeatMapReferencePublicationEvent.findFirst({
+          where: { profileId: livePreview.profileId, policyVersion: livePreview.policyVersion, requestKey: input.requestKey, generationId: existing.generationId, eventType: "PUBLISHED" },
+          orderBy: [{ createdAt: "asc" }, { eventId: "asc" }],
+        });
+        const contentMatches = existing.contentFingerprint === livePreview.contentFingerprint;
+        const originalParametersMatch = Boolean(
+          successfulEvent &&
+          successfulEvent.previousGenerationId === input.expectedGenerationId &&
+          successfulEvent.previousFenceToken === requestedFence,
+        );
+        const generationStillCurrent = head?.generationId === existing.generationId;
+        const retryDecision = classifyNativePublicationRetry({ contentMatches, generationStillCurrent, originalParametersMatch });
         await tx.nativeHeatMapReferencePublicationEvent.create({ data: {
-          profileId: input.preview.profileId,
-          policyVersion: input.preview.policyVersion,
+          profileId: livePreview.profileId,
+          policyVersion: livePreview.policyVersion,
           generationId: existing.generationId,
-          eventType,
+          eventType: retryDecision.eventType,
           requestKey: input.requestKey,
-          reasonCode: eventType === "PUBLISHED" && head?.generationId === existing.generationId && input.expectedGenerationId === existing.generationId && head.fenceToken === input.expectedFenceToken ? "exact_retry" : "request_key_content_conflict",
-          contentFingerprint: input.preview.contentFingerprint,
+          reasonCode: retryDecision.reasonCode,
+          contentFingerprint: livePreview.contentFingerprint,
+          previousGenerationId: head?.generationId ?? null,
+          previousFenceToken: head?.fenceToken ?? 0n,
         } });
-        return existing.contentFingerprint === input.preview.contentFingerprint && head?.generationId === existing.generationId && input.expectedGenerationId === existing.generationId && head.fenceToken === input.expectedFenceToken
+        return retryDecision.idempotent
           ? { published: true, idempotent: true, generationId: existing.generationId, fenceToken: head?.fenceToken ?? 0n }
-          : { published: false, idempotent: false, generationId: existing.generationId, fenceToken: head?.fenceToken ?? 0n, reason: existing.contentFingerprint === input.preview.contentFingerprint ? "request_generation_not_current" : "request_key_content_conflict" };
+          : { published: false, idempotent: false, generationId: existing.generationId, fenceToken: head?.fenceToken ?? 0n, reason: retryDecision.reasonCode };
       }
       const currentGenerationId = head?.generationId ?? null;
       const currentFence = head?.fenceToken ?? 0n;
-      if (!sameExpected(currentGenerationId, input.expectedGenerationId) || currentFence !== BigInt(input.expectedFenceToken)) {
+      if (!sameExpected(currentGenerationId, input.expectedGenerationId) || currentFence !== requestedFence) {
         await tx.nativeHeatMapReferencePublicationEvent.create({ data: {
-          profileId: input.preview.profileId,
-          policyVersion: input.preview.policyVersion,
+          profileId: livePreview.profileId,
+          policyVersion: livePreview.policyVersion,
           eventType: "REJECTED_STALE",
           requestKey: input.requestKey,
           reasonCode: "expected_head_or_fence_mismatch",
-          contentFingerprint: input.preview.contentFingerprint,
+          contentFingerprint: livePreview.contentFingerprint,
           previousGenerationId: currentGenerationId,
           previousFenceToken: currentFence,
         } });
@@ -449,55 +529,55 @@ export class NativeHeatMapReferencePublicationService {
       const currentGeneration = currentGenerationId
         ? await tx.nativeHeatMapReferenceGeneration.findUnique({ where: { generationId: currentGenerationId }, select: { evaluationAt: true } })
         : null;
-      if (currentGeneration && input.preview.evaluationAt.getTime() < currentGeneration.evaluationAt.getTime()) {
+      if (currentGeneration && livePreview.evaluationAt.getTime() < currentGeneration.evaluationAt.getTime()) {
         await tx.nativeHeatMapReferencePublicationEvent.create({ data: {
-          profileId: input.preview.profileId,
-          policyVersion: input.preview.policyVersion,
+          profileId: livePreview.profileId,
+          policyVersion: livePreview.policyVersion,
           eventType: "REJECTED_STALE",
           requestKey: input.requestKey,
           reasonCode: "evaluation_cutoff_older_than_head",
-          contentFingerprint: input.preview.contentFingerprint,
+          contentFingerprint: livePreview.contentFingerprint,
           previousGenerationId: currentGenerationId,
           previousFenceToken: currentFence,
         } });
         return { published: false, idempotent: false, generationId: null, fenceToken: currentFence, reason: "evaluation_cutoff_older_than_head" };
       }
       const generation = await tx.nativeHeatMapReferenceGeneration.create({ data: {
-        profileId: input.preview.profileId,
-        profileVersion: input.preview.profileVersion,
-        policyId: input.preview.policyId,
-        policyVersion: input.preview.policyVersion,
-        sampleThreshold: input.preview.sampleThreshold,
-        minimumDirectWeightAnchors: input.preview.minimumDirectWeightAnchors,
-        authorityStatus: input.preview.authorityStatus,
-        sourceCategory: input.preview.sourceCategory,
-        evidenceTrust: input.preview.evidenceTrust,
-        coverageStatus: input.preview.coverageStatus,
-        evaluationAt: input.preview.evaluationAt,
-        eraPolicyId: input.preview.eraPolicyId,
-        eraPolicyVersion: input.preview.eraPolicyVersion,
-        eraStart: input.preview.eraStart,
-        eraEnd: input.preview.eraEnd,
+        profileId: livePreview.profileId,
+        profileVersion: livePreview.profileVersion,
+        policyId: livePreview.policyId,
+        policyVersion: livePreview.policyVersion,
+        sampleThreshold: livePreview.sampleThreshold,
+        minimumDirectWeightAnchors: livePreview.minimumDirectWeightAnchors,
+        authorityStatus: livePreview.authorityStatus,
+        sourceCategory: livePreview.sourceCategory,
+        evidenceTrust: livePreview.evidenceTrust,
+        coverageStatus: livePreview.coverageStatus,
+        evaluationAt: livePreview.evaluationAt,
+        eraPolicyId: livePreview.eraPolicyId,
+        eraPolicyVersion: livePreview.eraPolicyVersion,
+        eraStart: livePreview.eraStart,
+        eraEnd: livePreview.eraEnd,
         status: "VERIFIED",
-        bucketDefinitionFingerprint: input.preview.bucketDefinitionFingerprint,
-        sourceLineageFingerprint: input.preview.sourceLineageFingerprint,
-        contentFingerprint: input.preview.contentFingerprint,
+        bucketDefinitionFingerprint: livePreview.bucketDefinitionFingerprint,
+        sourceLineageFingerprint: livePreview.sourceLineageFingerprint,
+        contentFingerprint: livePreview.contentFingerprint,
         requestKey: input.requestKey,
-        candidateFingerprint: input.preview.candidateFingerprint,
+        candidateFingerprint: livePreview.candidateFingerprint,
         verifiedAt: new Date(),
       } });
-      await tx.nativeHeatMapReferenceGenerationBand.createMany({ data: input.preview.bands.map((band, ordinal) => ({ generationId: generation.generationId, ordinal, ...band })) });
-      await tx.nativeHeatMapReferenceGenerationBucket.createMany({ data: input.preview.buckets.map((bucket, ordinal) => ({ generationId: generation.generationId, ordinal, bucketId: bucket.bucketId, sourceBucketIds: bucket.sourceBucketIds })) });
-      await tx.nativeHeatMapReferenceTarget.createMany({ data: input.preview.targets.map((target) => ({ generationId: generation.generationId, ...target })) });
-      await tx.nativeHeatMapReferenceLineage.createMany({ data: input.preview.lineage.map((row) => ({ generationId: generation.generationId, ...row, qualityEvidenceIds: row.qualityEvidenceIds, weightProvenance: row.weightProvenance })) });
+      await tx.nativeHeatMapReferenceGenerationBand.createMany({ data: livePreview.bands.map((band, ordinal) => ({ generationId: generation.generationId, ordinal, ...band })) });
+      await tx.nativeHeatMapReferenceGenerationBucket.createMany({ data: livePreview.buckets.map((bucket, ordinal) => ({ generationId: generation.generationId, ordinal, bucketId: bucket.bucketId, sourceBucketIds: bucket.sourceBucketIds })) });
+      await tx.nativeHeatMapReferenceTarget.createMany({ data: livePreview.targets.map((target) => ({ generationId: generation.generationId, ...target })) });
+      await tx.nativeHeatMapReferenceLineage.createMany({ data: livePreview.lineage.map((row) => ({ generationId: generation.generationId, ...row, qualityEvidenceIds: row.qualityEvidenceIds, weightProvenance: row.weightProvenance })) });
       const persisted = await tx.nativeHeatMapReferenceGeneration.findUnique({
         where: { generationId: generation.generationId },
         include: { bands: true, buckets: true, targets: true, lineage: true },
       });
-      if (!persisted || persisted.bands.length !== input.preview.bands.length || persisted.buckets.length !== input.preview.buckets.length || persisted.targets.length !== input.preview.targets.length || persisted.lineage.length !== input.preview.lineage.length || persistedContentFingerprint(persisted) !== input.preview.contentFingerprint) {
+      if (!persisted || persisted.bands.length !== livePreview.bands.length || persisted.buckets.length !== livePreview.buckets.length || persisted.targets.length !== livePreview.targets.length || persisted.lineage.length !== livePreview.lineage.length || persistedContentFingerprint(persisted) !== livePreview.contentFingerprint) {
         throw new Error("native reference persisted generation integrity verification failed");
       }
-      if (persisted.targets.some((target) => target.status === "UNKNOWN" ? target.targetCount !== null || !target.reasonCode : target.targetCount === null || !Number.isSafeInteger(target.targetCount) || target.targetCount < 0 || target.qualifyingClanCount < input.preview.sampleThreshold || target.sampleCount < input.preview.sampleThreshold)) {
+      if (persisted.targets.some((target) => target.status === "UNKNOWN" ? target.targetCount !== null || !target.reasonCode : target.targetCount === null || !Number.isSafeInteger(target.targetCount) || target.targetCount < 0 || target.qualifyingClanCount < livePreview.sampleThreshold || target.sampleCount < livePreview.sampleThreshold)) {
         throw new Error("native reference persisted target integrity verification failed");
       }
       if (persisted.bands.some((band) => persisted.targets.filter((target) => target.bandOrdinal === band.ordinal && target.status === "SUPPORTED").reduce((sum, target) => sum + (target.targetCount ?? 0), 0) !== 50 && persisted.targets.some((target) => target.bandOrdinal === band.ordinal && target.status === "SUPPORTED"))) {
@@ -505,8 +585,8 @@ export class NativeHeatMapReferencePublicationService {
       }
       const nextFence = currentFence + 1n;
       const event = await tx.nativeHeatMapReferencePublicationEvent.create({ data: {
-        profileId: input.preview.profileId,
-        policyVersion: input.preview.policyVersion,
+        profileId: livePreview.profileId,
+        policyVersion: livePreview.policyVersion,
         generationId: generation.generationId,
         eventType: "PUBLISHED",
         previousGenerationId: currentGenerationId,
@@ -515,11 +595,11 @@ export class NativeHeatMapReferencePublicationService {
         newFenceToken: nextFence,
         actorDiscordUserId: input.actorDiscordUserId ?? null,
         requestKey: input.requestKey,
-        contentFingerprint: input.preview.contentFingerprint,
+        contentFingerprint: livePreview.contentFingerprint,
       } });
       await tx.nativeHeatMapReferenceHead.upsert({
-        where: { profileId_policyVersion: { profileId: input.preview.profileId, policyVersion: input.preview.policyVersion } },
-        create: { profileId: input.preview.profileId, policyVersion: input.preview.policyVersion, generationId: generation.generationId, generationProfileId: generation.profileId, generationPolicyVersion: generation.policyVersion, fenceToken: nextFence, lastPublicationEventId: event.eventId },
+        where: { profileId_policyVersion: { profileId: livePreview.profileId, policyVersion: livePreview.policyVersion } },
+        create: { profileId: livePreview.profileId, policyVersion: livePreview.policyVersion, generationId: generation.generationId, generationProfileId: generation.profileId, generationPolicyVersion: generation.policyVersion, fenceToken: nextFence, lastPublicationEventId: event.eventId },
         update: { generationId: generation.generationId, generationProfileId: generation.profileId, generationPolicyVersion: generation.policyVersion, fenceToken: nextFence, lastPublicationEventId: event.eventId },
       });
       return { published: true, idempotent: false, generationId: generation.generationId, fenceToken: nextFence };

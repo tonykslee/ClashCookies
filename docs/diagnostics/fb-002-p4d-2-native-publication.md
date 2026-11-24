@@ -57,16 +57,19 @@ permissions, or activates operational recommendations.
 ## `/compo` behavior
 
 `/compo heatmapref` appends the current native generation as a clearly labeled
-informational section to both the PNG and Copy Table output. It includes the
-native profile/policy version, sample threshold, TH19, sample counts, and
-`UNKNOWN` for unsupported bands without substituting legacy or zero values.
+informational section to both the PNG and complete Copy Table output. It includes
+the native profile/policy version, sample threshold, TH19, sample counts, and
+`UNKNOWN` for unsupported bands without substituting legacy or zero values. The
+Copy Table button attaches the complete text file when the Discord 2,000-character
+content limit would be exceeded; it never silently truncates rows.
 
 `/compo state` retains its legacy delta columns and recommendation behavior. If
-the native head is readable, it adds labeled individual ACTUAL/WAR comparisons
-using the immutable TH19-inclusive native profile-aware calculation engine.
-Native data cannot
-change eligibility, bucket classification, placement, fill, replacement, or
-advice output.
+the native head is readable, it adds labeled per-clan ACTUAL/WAR comparisons as
+additional columns in the rendered state table, including TH19 and all native
+bucket deltas, using the immutable TH19-inclusive native profile-aware
+calculation engine. The Discord content is a bounded summary, so large alliances
+remain safe for both ACTUAL and WAR. Native data cannot change eligibility,
+bucket classification, placement, fill, replacement, or advice output.
 
 ## Migration rehearsal and blockers
 
@@ -83,11 +86,32 @@ production read-only evidence; no production rerun was needed or attempted.
 
 The review findings are addressed as follows: the CLI is strict, BigInt-safe,
 disconnecting, and nonzero on rejection; publication rejects synthetic or
-mutable previews and revalidates retained evidence; canonical content hashing
-is shared by preview and persisted reads; head/fence/cutoff checks and exact
-retry semantics are fenced; rollback follows the immutable publication chain;
-cross-profile heads and observation lineage are relationally constrained; and
-native state/display surfaces are informational, profile-owned, TH19-inclusive,
+mutable previews and revalidates retained evidence; canonical profile, policy,
+band, bucket, threshold, and authority metadata are enforced from checked-in
+constants; persisted rows come from regenerated validated content; exact retries
+use the original successful request generation/fence parameters without requiring
+the new fence, while superseded retries, stale writers, and request-key conflicts
+are recorded as rejection events; rollback follows the immutable publication
+chain; cross-profile heads and observation lineage are relationally constrained;
+and native state/display surfaces are informational, profile-owned, TH19-inclusive,
 and UNKNOWN-safe. Remaining blockers are independent authoritative source
 attestation, exact upstream-war binding, production migration approval, and
-owner approval before any future operational activation policy change.
+owner approval before any future operational recommendation activation policy
+change.
+
+### Repeatable disposable PostgreSQL rehearsal
+
+The rehearsal is intentionally operator-run and must use a disposable local
+database, never a production or staging URL. With PostgreSQL available, set a
+dedicated `DATABASE_URL`, apply the repository migrations with
+`npx prisma migrate deploy`, and run this bounded sequence against that database:
+`npm run native-reference -- verify`, preview a fixed candidate, publish with
+`--expected-generation-id none --expected-fence-token 0 --confirm`, repeat the
+same publish command with the original parameters, publish a second request from
+the observed head, retry the first request, then run `verify` and
+`rollback --confirm` with the observed generation/fence. Assert one generation
+on the exact retry, a stale rejection after the head advances, no `PUBLISHED`
+event for rejected requests, intact immutable lineage, and a monotonic fence
+after rollback. Drop the disposable database afterward. The 2026-11-23 run used
+PostgreSQL 18.1 on port 55433 and completed this sequence; no production or
+staging connection was used.

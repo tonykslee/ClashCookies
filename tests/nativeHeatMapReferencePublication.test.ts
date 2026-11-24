@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildNativeHeatMapReferencePreview,
+  classifyNativePublicationRetry,
   NATIVE_REFERENCE_POLICY_VERSION,
   validatePublishableCandidate,
 } from "../src/services/NativeHeatMapReferencePublicationService";
@@ -112,10 +113,32 @@ describe("native provisional publication boundary", () => {
     expect(Object.isFrozen(NATIVE_PROVISIONAL_COMPOSITION_PROFILE)).toBe(true);
   });
 
+  it("enforces canonical profile and band policy independently of candidate metadata", () => {
+    const candidate = generateNativeHeatMapRefCandidate({
+      sourceRosters: Array.from({ length: 5 }, (_, index) => roster(index + 1)),
+      eraPolicy,
+      evaluationAt: eraPolicy.eraEndIso,
+      bandDefinitions: HEAT_MAP_REF_SEED_ROWS.map((row) => ({ weightMinInclusive: row.weightMinInclusive, weightMaxInclusive: row.weightMaxInclusive })),
+      sampleThreshold: 5,
+      bucketRegistry: NATIVE_REFERENCE_BUCKET_REGISTRY,
+      sourceCategory: "synthetic_fixture",
+      evidenceTrust: "synthetic_untrusted",
+    });
+    expect(validatePublishableCandidate({ ...candidate, profileId: "caller-controlled-profile" })).toBe("publication_requires_canonical_profile");
+    expect(validatePublishableCandidate({ ...candidate, bandDefinitions: candidate.bandDefinitions.slice(1) })).toBe("publication_requires_canonical_band_definitions");
+  });
+
   it("rejects unknown CLI flags, duplicate flags, and valued confirmations", () => {
     expect(() => parseArgs(["verify", "--unexpected"])).toThrow(/unknown --unexpected/);
     expect(() => parseArgs(["preview", "--candidate", "a", "--candidate", "b"])).toThrow(/duplicate --candidate/);
     expect(() => parseArgs(["publish", "--confirm", "true"])).toThrow(/does not accept a value/);
     expect(parseArgs(["publish", "--candidate", "a", "--request-key", "r", "--expected-generation-id", "none", "--expected-fence-token", "0", "--confirm"]).args.confirm).toBe(true);
+  });
+
+  it("classifies original-parameter retries, superseded generations, stale writers, and conflicts", () => {
+    expect(classifyNativePublicationRetry({ contentMatches: true, generationStillCurrent: true, originalParametersMatch: true })).toEqual({ eventType: "PUBLISHED", reasonCode: "exact_retry", idempotent: true });
+    expect(classifyNativePublicationRetry({ contentMatches: true, generationStillCurrent: false, originalParametersMatch: true })).toMatchObject({ eventType: "REJECTED_STALE", reasonCode: "request_generation_superseded", idempotent: false });
+    expect(classifyNativePublicationRetry({ contentMatches: true, generationStillCurrent: true, originalParametersMatch: false })).toMatchObject({ eventType: "REJECTED_STALE", reasonCode: "request_original_parameters_mismatch", idempotent: false });
+    expect(classifyNativePublicationRetry({ contentMatches: false, generationStillCurrent: true, originalParametersMatch: true })).toMatchObject({ eventType: "REJECTED_CONFLICT", reasonCode: "request_key_content_conflict", idempotent: false });
   });
 });
