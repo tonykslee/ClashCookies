@@ -447,10 +447,7 @@ export class FwaAccountabilityNotificationService {
     const updated = await this.db.fwaAccountabilityNotification.updateMany({
       where: {
         id: row.id,
-        status: { in: [
-          FwaAccountabilityNotificationStatus.CLAIMED,
-          FwaAccountabilityNotificationStatus.FAILED,
-        ] },
+        status: FwaAccountabilityNotificationStatus.FAILED,
       },
       data: {
         status: FwaAccountabilityNotificationStatus.CLAIMED,

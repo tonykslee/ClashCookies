@@ -306,6 +306,18 @@ export type FwaMatchChecklistBasesCompletionSnapshot = {
   metadata: FwaMatchChecklistBasesCompletionMetadata;
 };
 
+export type FwaMatchChecklistBasesCompletionTransition = {
+  persisted: boolean;
+  messageId: string;
+  transition:
+    | "COMMITTED"
+    | "ALREADY_COMPLETED"
+    | "CLEARED"
+    | "ALREADY_CLEARED"
+    | "FAILED";
+  committedByUserId: string | null;
+};
+
 export type FwaBasesChecklistReminderMetadata = {
   kind: "bases_check_reminder";
   createdByUserId: string;
@@ -4354,7 +4366,7 @@ export class TrackedMessageService {
     completionActorUserId?: string | null;
     syncMessageId?: string | null;
     syncReferenceId?: string | null;
-  }): Promise<boolean> {
+  }): Promise<FwaMatchChecklistBasesCompletionTransition> {
     const messageId = buildFwaMatchChecklistBasesCompletionKey({
       guildId: params.guildId,
       clanTag: params.clanTag,
@@ -4364,7 +4376,14 @@ export class TrackedMessageService {
       syncMessageId: params.syncMessageId ?? null,
       syncReferenceId: params.syncReferenceId ?? null,
     });
-    if (!messageId) return false;
+    if (!messageId) {
+      return {
+        persisted: false,
+        messageId: "",
+        transition: "FAILED",
+        committedByUserId: null,
+      };
+    }
     const createdAtIso = new Date().toISOString();
     const normalizedClanTag = normalizeChecklistClanTag(params.clanTag);
     const syncIdentity = resolveTrackedMessageSyncIdentity({
@@ -4388,34 +4407,129 @@ export class TrackedMessageService {
       opponentTag: normalizeChecklistClanTag(String(params.opponentTag ?? "")) || null,
       warStartTimeIso: normalizeDateTimeIso(params.warStartTime ?? null),
     };
-    await prisma.trackedMessage.upsert({
-      where: { messageId },
-      update: {
-        guildId: params.guildId,
-        channelId: params.channelId,
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-        status: params.checked
-          ? TRACKED_MESSAGE_STATUS.ACTIVE
-          : TRACKED_MESSAGE_STATUS.REPLACED,
-        referenceId: syncIdentity,
-        clanTag: normalizedClanTag,
-        expiresAt: null,
-        metadata: metadata as any,
-      },
-      create: {
-        guildId: params.guildId,
-        channelId: params.channelId,
-        messageId,
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-        status: params.checked
-          ? TRACKED_MESSAGE_STATUS.ACTIVE
-          : TRACKED_MESSAGE_STATUS.REPLACED,
-        referenceId: syncIdentity,
-        clanTag: normalizedClanTag,
-        expiresAt: null,
-        metadata: metadata as any,
-      },
+    const baseData = {
+      guildId: params.guildId,
+      channelId: params.channelId,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+      referenceId: syncIdentity,
+      clanTag: normalizedClanTag,
+      expiresAt: null,
+      metadata: metadata as any,
+    };
+    const result = (
+      transition: FwaMatchChecklistBasesCompletionTransition["transition"],
+      committedByUserId: string | null,
+      persisted = true,
+    ): FwaMatchChecklistBasesCompletionTransition => ({
+      persisted,
+      messageId,
+      transition,
+      committedByUserId,
     });
+    const isUniqueViolation = (error: unknown): boolean =>
+      (error as { code?: unknown } | null | undefined)?.code === "P2002";
+    const readCurrent = () =>
+      prisma.trackedMessage.findUnique({ where: { messageId } });
+    const committedActor = (row: any): string | null => {
+      const currentMetadata = parseFwaMatchChecklistBasesCompletionMetadata(
+        row?.metadata,
+      );
+      return currentMetadata?.checkedByUserId ?? null;
+    };
+    const updateData = {
+      ...baseData,
+      status: params.checked
+        ? TRACKED_MESSAGE_STATUS.ACTIVE
+        : TRACKED_MESSAGE_STATUS.REPLACED,
+    };
+
+    let current = await readCurrent();
+    if (params.checked) {
+      if (
+        current?.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+        parseFwaMatchChecklistBasesCompletionMetadata(current.metadata)?.checked === true
+      ) {
+        return result("ALREADY_COMPLETED", committedActor(current));
+      }
+
+      if (current) {
+        const updated = await prisma.trackedMessage.updateMany({
+          where: {
+            messageId,
+            status: TRACKED_MESSAGE_STATUS.REPLACED,
+          },
+          data: updateData,
+        });
+        if (updated.count === 1) {
+          return result("COMMITTED", metadata.checkedByUserId ?? null);
+        }
+        current = await readCurrent();
+        if (
+          current?.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+          parseFwaMatchChecklistBasesCompletionMetadata(current.metadata)?.checked === true
+        ) {
+          return result("ALREADY_COMPLETED", committedActor(current));
+        }
+        return result("FAILED", null, false);
+      }
+
+      try {
+        await prisma.trackedMessage.create({
+          data: {
+            ...baseData,
+            messageId,
+            status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          },
+        });
+        return result("COMMITTED", metadata.checkedByUserId ?? null);
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        current = await readCurrent();
+        if (
+          current?.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+          parseFwaMatchChecklistBasesCompletionMetadata(current.metadata)?.checked === true
+        ) {
+          return result("ALREADY_COMPLETED", committedActor(current));
+        }
+        return result("FAILED", null, false);
+      }
+    }
+
+    if (current?.status === TRACKED_MESSAGE_STATUS.REPLACED) {
+      return result("ALREADY_CLEARED", committedActor(current));
+    }
+    if (current) {
+      const cleared = await prisma.trackedMessage.updateMany({
+        where: {
+          messageId,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        },
+        data: updateData,
+      });
+      if (cleared.count !== 1) {
+        current = await readCurrent();
+        return current?.status === TRACKED_MESSAGE_STATUS.REPLACED
+          ? result("ALREADY_CLEARED", committedActor(current))
+          : result("FAILED", null, false);
+      }
+    } else {
+      try {
+        await prisma.trackedMessage.create({
+          data: {
+            ...baseData,
+            messageId,
+            status: TRACKED_MESSAGE_STATUS.REPLACED,
+          },
+        });
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        current = await readCurrent();
+        if (current?.status !== TRACKED_MESSAGE_STATUS.REPLACED) {
+          return result("FAILED", null, false);
+        }
+        return result("ALREADY_CLEARED", committedActor(current));
+      }
+    }
     if (!params.checked && syncIdentity) {
       const syncScopedMessageId = buildFwaMatchChecklistBasesCompletionKey({
         guildId: params.guildId,
@@ -4437,7 +4551,7 @@ export class TrackedMessageService {
         });
       }
     }
-    return true;
+    return result("CLEARED", metadata.checkedByUserId ?? null);
   }
 
   async findLatestFwaMatchChecklistBasesCompletionForClan(params: {
@@ -5518,7 +5632,16 @@ export class TrackedMessageService {
           state: string | null;
         }
       >();
-      if (!syncReferenceId && sourceRows.length > 0) {
+      const needsCurrentWarEnrichment = sourceRows.some((row) => {
+        if (row.basesStatus === "skipped") return false;
+        const rowWarId = normalizeWarIdText(row.warId ?? null);
+        const rowWarStartTime = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
+        const validRowWarStartTime =
+          rowWarStartTime instanceof Date && Number.isFinite(rowWarStartTime.getTime());
+        const rowOpponentTag = normalizeChecklistClanTag(row.opponentTag ?? "");
+        return !(rowWarId && validRowWarStartTime && rowOpponentTag);
+      });
+      if (sourceRows.length > 0 && (!syncReferenceId || needsCurrentWarEnrichment)) {
         const clanTagVariants = [
           ...new Set(
             sourceRows.flatMap((row) => {
@@ -5610,7 +5733,7 @@ export class TrackedMessageService {
         if (persistenceFailureKeys.has(failureKey)) return;
         persistenceFailureKeys.add(failureKey);
         console.warn(
-          `[fwa_checklist_bases_persistence] guildId=${tracked.guildId} messageId=${message.id} clanTag=${normalizeChecklistClanTag(row.clanTag)} checked=${checked} reason=${reason} rowWarId=${normalizeWarIdText(row.warId ?? null) ?? "missing"} rowWarStartTimeIso=${row.warStartTimeIso ?? "missing"} rowOpponentTag=${normalizeChecklistClanTag(row.opponentTag ?? "") || "missing"} currentWarId=${normalizeWarIdText(currentWarByClanTag.get(normalizeChecklistClanTag(row.clanTag))?.warId ?? null) ?? "missing"} syncMessageId=${syncReferenceId ?? "missing"}`,
+          `[fwa_checklist_bases_persistence] guildId=${tracked.guildId} messageId=${message.id} clanTag=${normalizeChecklistClanTag(row.clanTag)} checked=${checked} reason=${reason} rowWarId=${normalizeWarIdText(row.warId ?? null) ?? "missing"} rowWarStartTimeIso=${row.warStartTimeIso ?? "missing"} rowOpponentTag=${normalizeChecklistClanTag(row.opponentTag ?? "") || "missing"} currentWarId=${normalizeWarIdText(currentWarByClanTag.get(normalizeChecklistClanTag(row.clanTag))?.warId ?? null) ?? "missing"} currentWarStartTime=${currentWarByClanTag.get(normalizeChecklistClanTag(row.clanTag))?.startTime?.toISOString() ?? "missing"} currentWarOpponent=${normalizeChecklistClanTag(currentWarByClanTag.get(normalizeChecklistClanTag(row.clanTag))?.opponentTag ?? "") || "missing"} syncMessageId=${syncReferenceId ?? "missing"}`,
         );
       };
 
@@ -5618,7 +5741,13 @@ export class TrackedMessageService {
         row: FwaMatchChecklistTrackedRow,
         checked: boolean,
         completionActorUserId?: string | null,
-      ): Promise<boolean> => {
+      ): Promise<FwaMatchChecklistBasesCompletionTransition> => {
+        const failedPersistence = (): FwaMatchChecklistBasesCompletionTransition => ({
+          persisted: false,
+          messageId: "",
+          transition: "FAILED",
+          committedByUserId: null,
+        });
         const clanTag = normalizeChecklistClanTag(row.clanTag);
         const rowWarId = normalizeWarIdText(row.warId ?? null);
         const parsedRowWarStartTime = row.warStartTimeIso ? new Date(row.warStartTimeIso) : null;
@@ -5627,7 +5756,7 @@ export class TrackedMessageService {
             ? parsedRowWarStartTime
             : null;
         const rowOpponentTag = normalizeChecklistClanTag(row.opponentTag ?? "") || null;
-        const rowHasSafeWarIdentity = Boolean(rowWarId || rowWarStartTime);
+        const rowHasSafeWarIdentity = Boolean(rowWarId && rowWarStartTime && rowOpponentTag);
         const currentWar = currentWarByClanTag.get(clanTag) ?? null;
         const currentWarId = normalizeWarIdText(currentWar?.warId ?? null);
         const currentWarStartTime =
@@ -5635,13 +5764,14 @@ export class TrackedMessageService {
             ? currentWar.startTime
             : null;
         const currentWarOpponentTag = normalizeChecklistClanTag(currentWar?.opponentTag ?? "") || null;
-        const currentWarHasSafeIdentity = Boolean(currentWarId || currentWarStartTime);
+        const currentWarHasSafeIdentity = Boolean(
+          currentWarId && currentWarStartTime && currentWarOpponentTag,
+        );
         const currentWarIsExplicitlyInactive = ["notinwar", "not_in_war", "not in war"].includes(
           String(currentWar?.state ?? "").trim().toLowerCase(),
         );
         const identityConflicts = Boolean(
-          !syncReferenceId &&
-            currentWar &&
+          currentWar &&
             (Boolean(rowWarId) && rowWarId !== currentWarId ||
               Boolean(rowWarStartTime) &&
                 (currentWarStartTime === null || rowWarStartTime?.getTime() !== currentWarStartTime.getTime()) ||
@@ -5649,12 +5779,12 @@ export class TrackedMessageService {
         );
         if (identityConflicts) {
           logPersistenceFailure(row, "current_war_identity_mismatch", checked);
-          return false;
+          return failedPersistence();
         }
 
-        if (!syncReferenceId && currentWar && currentWarIsExplicitlyInactive) {
+        if (currentWar && currentWarIsExplicitlyInactive) {
           logPersistenceFailure(row, "current_war_inactive", checked);
-          return false;
+          return failedPersistence();
         }
 
         const activeBaseSwap = await this.findLatestActiveFwaBaseSwapTrackedMessageForClan({
@@ -5678,11 +5808,11 @@ export class TrackedMessageService {
           );
           if (issueSummary.hasIssues) {
             logPersistenceFailure(row, "base_swap_issues", checked);
-            return false;
+            return failedPersistence();
           }
         }
         const resolvedWarIdentity =
-          !syncReferenceId && currentWarHasSafeIdentity && !currentWarIsExplicitlyInactive
+          currentWarHasSafeIdentity && !currentWarIsExplicitlyInactive
             ? {
                 warId: currentWar?.warId ?? null,
                 warStartTime: currentWarStartTime,
@@ -5700,11 +5830,11 @@ export class TrackedMessageService {
         }
         if (!resolvedWarIdentity && !syncReferenceId) {
           logPersistenceFailure(row, "no_safe_war_or_sync_identity", checked);
-          return false;
+          return failedPersistence();
         }
-        let persisted = false;
+        let persisted: FwaMatchChecklistBasesCompletionTransition;
         try {
-          persisted = await this.setFwaMatchChecklistBasesCompletion({
+          const persistedResult: any = await this.setFwaMatchChecklistBasesCompletion({
             guildId: tracked.guildId,
             channelId: tracked.channelId,
             createdByUserId: metadata.createdByUserId,
@@ -5722,14 +5852,25 @@ export class TrackedMessageService {
             checked,
             completionActorUserId: completionActorUserId ?? null,
           });
+          persisted =
+            typeof persistedResult === "boolean"
+              ? {
+                  persisted: persistedResult,
+                  messageId: "",
+                  transition: persistedResult ? "COMMITTED" : "FAILED",
+                  committedByUserId: persistedResult
+                    ? completionActorUserId ?? null
+                    : null,
+                }
+              : persistedResult;
         } catch (err) {
           logPersistenceFailure(row, "completion_write_error", checked);
           console.debug(
             `[fwa_checklist_bases_persistence] guildId=${tracked.guildId} messageId=${message.id} clanTag=${clanTag} reason=completion_write_error_detail error=${formatError(err)}`,
           );
-          return false;
+          return failedPersistence();
         }
-        if (!persisted) {
+        if (!persisted.persisted) {
           logPersistenceFailure(row, "completion_write_returned_false", checked);
         }
         return persisted;
@@ -5762,15 +5903,19 @@ export class TrackedMessageService {
             matchedRow,
           );
           if (reactionChange.kind === "add") {
-            const wasAlreadyChecked = matchedRow.basesStatus === "all_good";
             const persisted = await persistBasesCheckedStateForRow(
               matchedRow,
               true,
               reactionChange.reactorUserId ?? null,
             );
-            if (persisted) {
+            if (persisted.persisted) {
               completionStatusByTag.set(changedRowTag, true);
-              if (!wasAlreadyChecked && reactionChange.reactorUserId && options?.client) {
+              if (
+                persisted.transition === "COMMITTED" &&
+                persisted.committedByUserId === reactionChange.reactorUserId &&
+                reactionChange.reactorUserId &&
+                options?.client
+              ) {
                 const resolvedWarIdentity = resolvedWarIdentityByClanTag.get(changedRowTag) ?? null;
                 const accountabilityWarIdentity = buildAccountabilityWarIdentity({
                   warId: resolvedWarIdentity?.warId ?? matchedRow.warId ?? null,
@@ -5779,26 +5924,33 @@ export class TrackedMessageService {
                     (matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null),
                   opponentTag: resolvedWarIdentity?.opponentTag ?? matchedRow.opponentTag ?? null,
                 });
-                await fwaAccountabilityNotificationService
-                  .notifyBasesChecked({
-                    client: options.client,
-                    guildId: tracked.guildId,
-                    clanTag: matchedRow.clanTag,
-                    actorUserId: reactionChange.reactorUserId,
-                    ...accountabilityWarIdentity,
-                    syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
-                    checklistChannelId: tracked.channelId,
-                    checklistMessageId: tracked.messageId,
-                  })
-                  .catch((error) => {
-                    console.error(
-                      `[fwa-accountability] bases reaction notification failed guild=${tracked.guildId} clan=${matchedRow.clanTag} message=${message.id} error=${formatError(error)}`,
-                    );
-                  });
+                const committedActor = persisted.committedByUserId;
+                if (
+                  committedActor &&
+                  accountabilityWarIdentity.warId !== null &&
+                  accountabilityWarIdentity.warStartTime !== null &&
+                  accountabilityWarIdentity.opponentTag !== null
+                ) {
+                  await fwaAccountabilityNotificationService
+                    .notifyBasesChecked({
+                      client: options.client,
+                      guildId: tracked.guildId,
+                      clanTag: matchedRow.clanTag,
+                      actorUserId: committedActor,
+                      ...accountabilityWarIdentity,
+                      checklistChannelId: tracked.channelId,
+                      checklistMessageId: tracked.messageId,
+                    })
+                    .catch((error) => {
+                      console.error(
+                        `[fwa-accountability] bases reaction notification failed guild=${tracked.guildId} clan=${matchedRow.clanTag} message=${message.id} error=${formatError(error)}`,
+                      );
+                    });
+                }
               }
             }
             if (
-              persisted &&
+              persisted.persisted &&
               reactionChange.reactorUserId
             ) {
               const resolvedWarIdentity = resolvedWarIdentityByClanTag.get(changedRowTag) ?? null;
@@ -5852,7 +6004,7 @@ export class TrackedMessageService {
                   ? matchedReactionUserCount > matchedBaseline.userCount
                   : Math.trunc(Number(matchedReactionCount ?? 0)) > 1;
               const persisted = await persistBasesCheckedStateForRow(matchedRow, checked);
-              if (persisted) {
+              if (persisted.persisted) {
                 completionStatusByTag.set(changedRowTag, checked);
               }
             }
@@ -5929,7 +6081,7 @@ export class TrackedMessageService {
           : (reaction.count ?? 0) > 1;
         if (shouldPersist) {
           const persisted = await persistBasesCheckedStateForRow(row, true);
-          if (persisted) {
+          if (persisted.persisted) {
             completionStateChanged = true;
             completionStatusByTag.set(normalizeChecklistClanTag(row.clanTag), true);
           }
@@ -6221,22 +6373,27 @@ export class TrackedMessageService {
         warStartTime: row.warStartTimeIso ? new Date(row.warStartTimeIso) : null,
         opponentTag: row.opponentTag ?? null,
       });
-      await fwaAccountabilityNotificationService
-        .notifyMailConfirmed({
-          client: options.client,
-          guildId: tracked.guildId,
-          clanTag: row.clanTag,
-          actorUserId: manualMailConfirmation.actorUserId,
-          ...accountabilityWarIdentity,
-          syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
-          checklistChannelId: tracked.channelId,
-          checklistMessageId: tracked.messageId,
-        })
-        .catch((error) => {
-          console.error(
-            `[fwa-accountability] mail confirmation notification failed guild=${tracked.guildId} clan=${row.clanTag} message=${message.id} error=${formatError(error)}`,
-          );
-        });
+      if (
+        accountabilityWarIdentity.warId !== null &&
+        accountabilityWarIdentity.warStartTime !== null &&
+        accountabilityWarIdentity.opponentTag !== null
+      ) {
+        await fwaAccountabilityNotificationService
+          .notifyMailConfirmed({
+            client: options.client,
+            guildId: tracked.guildId,
+            clanTag: row.clanTag,
+            actorUserId: manualMailConfirmation.actorUserId,
+            ...accountabilityWarIdentity,
+            checklistChannelId: tracked.channelId,
+            checklistMessageId: tracked.messageId,
+          })
+          .catch((error) => {
+            console.error(
+              `[fwa-accountability] mail confirmation notification failed guild=${tracked.guildId} clan=${row.clanTag} message=${message.id} error=${formatError(error)}`,
+            );
+          });
+      }
     }
     await reconcileChecklistBadgeReactions({
       guildId: tracked.guildId,

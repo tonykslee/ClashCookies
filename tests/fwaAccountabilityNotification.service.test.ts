@@ -11,6 +11,8 @@ function createHarness(options: {
   send?: (payload: any) => Promise<any>;
   seedRows?: any[];
   finalizeError?: boolean;
+  beforeUpdateMany?: (args: any) => Promise<void>;
+  afterUpdateMany?: (args: any, result: { count: number }) => void;
 } = {}) {
   const rows = new Map<string, any>();
   for (const seed of options.seedRows ?? []) {
@@ -20,7 +22,7 @@ function createHarness(options: {
   const channel = {
     guildId: "1000",
     isTextBased: () => true,
-    send: options.send ?? (async (payload: any) => {
+    send: options.send ?? vi.fn(async (payload: any) => {
       sent.push(payload);
       return { id: String(900 + sent.length) };
     }),
@@ -44,6 +46,7 @@ function createHarness(options: {
         return created;
       }),
       updateMany: vi.fn(async ({ where, data }: any) => {
+        await options.beforeUpdateMany?.({ where, data });
         if (options.finalizeError && data.status === FwaAccountabilityNotificationStatus.SENT) {
           throw new Error("database finalization unavailable");
         }
@@ -71,7 +74,9 @@ function createHarness(options: {
               : {}),
           });
         }
-        return { count: matchesWhere ? 1 : 0 };
+        const result = { count: matchesWhere ? 1 : 0 };
+        options.afterUpdateMany?.({ where, data }, result);
+        return result;
       }),
     },
   };
@@ -291,6 +296,86 @@ describe("FWA accountability notifications", () => {
     }));
   });
 
+  it("atomically acquires one retry when callers both observe FAILED", async () => {
+    const eventKey = JSON.stringify({
+      version: 2,
+      clanTag: "#PYPY",
+      kind: "sync",
+      syncMessageId: "123456789012345683",
+    });
+    let observations = 0;
+    let releaseObservationBarrier!: () => void;
+    const observationBarrier = new Promise<void>((resolve) => {
+      releaseObservationBarrier = resolve;
+    });
+    const acquiredTokens: string[] = [];
+    const finalizedTokens: string[] = [];
+    const harness = createHarness({
+      seedRows: [{
+        id: "failed-retry-1",
+        eventType: "BASES_CHECKED",
+        eventKey: `bases:${eventKey}`,
+        actorUserId: "123456789012345678",
+        status: FwaAccountabilityNotificationStatus.FAILED,
+        claimToken: "old-failed-token",
+        claimedAt: null,
+        attemptCount: 1,
+      }],
+      beforeUpdateMany: async ({ where, data }) => {
+        const isRetryAcquisition =
+          data?.status === FwaAccountabilityNotificationStatus.CLAIMED &&
+          where?.status === FwaAccountabilityNotificationStatus.FAILED;
+        if (!isRetryAcquisition) return;
+        observations += 1;
+        if (observations === 2) releaseObservationBarrier();
+        await observationBarrier;
+      },
+      afterUpdateMany: ({ where, data }, result) => {
+        const isRetryAcquisition =
+          data?.status === FwaAccountabilityNotificationStatus.CLAIMED &&
+          where?.status === FwaAccountabilityNotificationStatus.FAILED;
+        if (isRetryAcquisition && result.count === 1) {
+          acquiredTokens.push(data.claimToken);
+        }
+        if (data?.status === FwaAccountabilityNotificationStatus.SENT) {
+          finalizedTokens.push(where.claimToken);
+        }
+      },
+    });
+
+    const first = harness.service.notifyBasesChecked({
+      client: harness.client,
+      guildId: "1000",
+      clanTag: "#PYPY",
+      actorUserId: "123456789012345679",
+      syncMessageId: "123456789012345683",
+    });
+    const second = harness.service.notifyBasesChecked({
+      client: harness.client,
+      guildId: "1000",
+      clanTag: "#PYPY",
+      actorUserId: "123456789012345680",
+      syncMessageId: "123456789012345683",
+    });
+
+    const results = await Promise.all([first, second]);
+    expect(observations).toBe(2);
+    expect(acquiredTokens).toHaveLength(1);
+    expect(harness.getRow().actorUserId).toBe("123456789012345678");
+    expect(harness.db.fwaAccountabilityNotification.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: FwaAccountabilityNotificationStatus.FAILED,
+        }),
+      }),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(harness.channel.send).toHaveBeenCalledTimes(1);
+    expect(finalizedTokens).toEqual(acquiredTokens);
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.getRow().status).toBe(FwaAccountabilityNotificationStatus.SENT);
+  });
+
   it("fails closed after a successful Discord send when finalization is unavailable", async () => {
     const harness = createHarness({ finalizeError: true });
     await expect(harness.service.notifyBasesChecked({
@@ -365,12 +450,19 @@ describe("FWA accountability notifications", () => {
       warId: 1001,
       syncMessageId: "123456789012345683",
     })).toBeNull();
-    expect(buildFwaAccountabilityWarSyncIdentityForTest({
+    const completeWarIdentity = buildFwaAccountabilityWarSyncIdentityForTest({
       clanTag: "#PYPY",
       warId: 1001,
       warStartTime: new Date("2026-11-24T10:00:00.000Z"),
       opponentTag: "#0PPY",
       syncMessageId: "sync-enrichment",
-    })).toContain('"kind":"war"');
+    });
+    expect(completeWarIdentity).toContain('"kind":"war"');
+    expect(completeWarIdentity).toBe(buildFwaAccountabilityWarSyncIdentityForTest({
+      clanTag: "#PYPY",
+      warId: 1001,
+      warStartTime: new Date("2026-11-24T10:00:00.000Z"),
+      opponentTag: "#0PPY",
+    }));
   });
 });

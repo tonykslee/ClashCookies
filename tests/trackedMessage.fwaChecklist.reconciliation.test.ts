@@ -1705,15 +1705,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
         reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
       }, { client: {} as any })).resolves.toBe(true);
       expect(currentTracked.metadata.checkedClanTags).toEqual(["RR"]);
-      expect(accountabilitySpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          clanTag: "#RR",
-          actorUserId: "user-rr",
-          warId: null,
-          opponentTag: null,
-          syncMessageId: "sync-a",
-        }),
-      );
+      expect(accountabilitySpy).not.toHaveBeenCalled();
 
       reactionCache.set("custom:222", {
         emoji: { id: "222", name: "bravo" }, count: 2, me: true,

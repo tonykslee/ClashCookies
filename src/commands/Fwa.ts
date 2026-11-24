@@ -19045,17 +19045,7 @@ export const Fwa: Command = {
             prepStartTime: currentWar.prepStartTime ?? null,
           })
           .catch(() => ({ syncMessageId: null }));
-        const priorBasesCompletion = await trackedMessageService
-          .findLatestFwaMatchChecklistBasesCompletionForClan({
-            guildId: interaction.guildId,
-            clanTag: resolvedClan.tag,
-            warId: currentWar.warId ?? null,
-            warStartTime: currentWar.startTime ?? null,
-            opponentTag: currentWar.opponentTag ?? null,
-            syncMessageId: syncIdentity.syncMessageId ?? null,
-          })
-          .catch(() => null);
-        const updated =
+        const updatedResult: any =
           await trackedMessageService.setFwaMatchChecklistBasesCompletion({
             guildId: interaction.guildId ?? "",
             channelId: interaction.channelId,
@@ -19072,11 +19062,23 @@ export const Fwa: Command = {
             completionActorUserId: interaction.user.id,
             syncMessageId: syncIdentity.syncMessageId ?? null,
           });
-        if (!updated) {
+        const updated =
+          typeof updatedResult === "boolean"
+            ? {
+                persisted: updatedResult,
+                transition: updatedResult ? "COMMITTED" : "FAILED",
+                committedByUserId: updatedResult ? interaction.user.id : null,
+              }
+            : updatedResult;
+        if (!updated?.persisted) {
           await editReplySafe("Unable to update bases completion state.");
           return;
         }
-        if (checklistCheckedOption && !priorBasesCompletion) {
+        if (
+          checklistCheckedOption &&
+          updated.transition === "COMMITTED" &&
+          updated.committedByUserId === interaction.user.id
+        ) {
           const completeWarIdentity =
             currentWar.warId !== null &&
             currentWar.warId !== undefined &&
@@ -19093,24 +19095,29 @@ export const Fwa: Command = {
                   warStartTime: null,
                   opponentTag: null,
                 };
-          await fwaAccountabilityNotificationService
-            .notifyBasesChecked({
-              client: interaction.client,
-              guildId: interaction.guildId,
-              clanTag: resolvedClan.tag,
-              clanName:
-                sanitizeClanName(resolvedClan.shortName) ??
-                sanitizeClanName(resolvedClan.name) ??
-                `#${normalizeTag(resolvedClan.tag)}`,
-              actorUserId: interaction.user.id,
-              ...completeWarIdentity,
-              syncMessageId: syncIdentity.syncMessageId ?? null,
-            })
-            .catch((error) => {
-              console.error(
-                `[fwa-accountability] bases notification failed guild=${interaction.guildId} clan=${resolvedClan.tag} error=${formatError(error)}`,
-              );
-            });
+          if (
+            completeWarIdentity.warId !== null &&
+            completeWarIdentity.warStartTime !== null &&
+            completeWarIdentity.opponentTag !== null
+          ) {
+            await fwaAccountabilityNotificationService
+              .notifyBasesChecked({
+                client: interaction.client,
+                guildId: interaction.guildId,
+                clanTag: resolvedClan.tag,
+                clanName:
+                  sanitizeClanName(resolvedClan.shortName) ??
+                  sanitizeClanName(resolvedClan.name) ??
+                  `#${normalizeTag(resolvedClan.tag)}`,
+                actorUserId: updated.committedByUserId,
+                ...completeWarIdentity,
+              })
+              .catch((error) => {
+                console.error(
+                  `[fwa-accountability] bases notification failed guild=${interaction.guildId} clan=${resolvedClan.tag} error=${formatError(error)}`,
+                );
+              });
+          }
         }
         const clanLabel =
           sanitizeClanName(resolvedClan.shortName) ??
