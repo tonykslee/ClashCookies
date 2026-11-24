@@ -46,10 +46,10 @@ import {
 } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 import {
-  calculateNativeCompoComparison,
-  getNativeCompoDisplayDeltas,
-  type NativeCompoComparison,
+  buildNativeCompoProjectionReferences,
+  readNativeCompoProjectionReferenceCount,
 } from "../helper/nativeCompoComparison";
+import { NATIVE_PROVISIONAL_COMPOSITION_PROFILE } from "../helper/compoCalculationProfile";
 import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
 import {
   getConfiguredClanMembersCadenceMinutes,
@@ -186,7 +186,7 @@ export type CompoActualStateReadResult = {
 
 type NativeActualComparisonState = {
   summaryLine: string;
-  byClanTag: ReadonlyMap<string, NativeCompoComparison>;
+  byClanTag: ReadonlyMap<string, CompoActualStateProjection>;
 };
 
 function buildRefreshTimestamp(latestSourceSyncedAt: Date | null): string {
@@ -204,7 +204,7 @@ function buildActualStateRow(input: {
   base: CompoActualStateBaseMetrics;
   projection: CompoActualStateProjection;
   includeTh19: boolean;
-  nativeComparison?: NativeCompoComparison;
+  nativeProjection?: CompoActualStateProjection;
 }): string[] {
   const row = [normalizeActualStateClanDisplayName(input.clanName)];
   if (input.view === "raw") {
@@ -230,35 +230,31 @@ function buildActualStateRow(input: {
     `${input.projection.missingWeights}`,
     `${input.projection.deferredWeightCount}`,
     `${input.projection.memberCount}`,
-    ...(input.includeTh19 ? [`${input.projection.displayCounts.TH19 ?? 0}`] : []),
-    input.projection.deltaByBucket.TH18 !== null
-      ? `${input.projection.deltaByBucket.TH18}`
-      : "?",
-    input.projection.deltaByBucket.TH17 !== null
-      ? `${input.projection.deltaByBucket.TH17}`
-      : "?",
-    input.projection.deltaByBucket.TH16 !== null
-      ? `${input.projection.deltaByBucket.TH16}`
-      : "?",
-    input.projection.deltaByBucket.TH15 !== null
-      ? `${input.projection.deltaByBucket.TH15}`
-      : "?",
-    input.projection.deltaByBucket.TH14 !== null
-      ? `${input.projection.deltaByBucket.TH14}`
-      : "?",
-    input.projection.deltaByBucket["<=TH13"] !== null
-      ? `${input.projection.deltaByBucket["<=TH13"]}`
-      : "?",
   );
-  if (input.nativeComparison) {
-    const nativeDeltas = getNativeCompoDisplayDeltas(input.nativeComparison);
-    return [
-      ...row.slice(0, -6),
-      ...(["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const).map((bucketId) => {
-        const delta = nativeDeltas[bucketId];
-        return delta === null ? "?" : `${delta}`;
-      }),
-    ];
+  const displayBuckets = input.nativeProjection
+    ? (["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const)
+    : (["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const);
+  if (!input.nativeProjection && input.includeTh19) {
+    row.push(`${input.projection.displayCounts.TH19 ?? 0}`);
+  }
+  if (input.nativeProjection && input.includeTh19) {
+    row.push(input.nativeProjection.deltaByBucket.TH19 === null ? "?" : `${input.nativeProjection.deltaByBucket.TH19}`);
+  }
+  for (const bucketId of displayBuckets) {
+    if (bucketId === "TH19") continue;
+    const nativeLowerBucketIds = ["TH13", "TH12", "TH11", "TH10_OR_LOWER"] as const;
+    const delta = input.nativeProjection && bucketId === "<=TH13"
+      ? nativeLowerBucketIds.every(
+          (lowerBucket) => input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] !== null &&
+            input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] !== undefined,
+        )
+        ? nativeLowerBucketIds.reduce(
+            (sum, lowerBucket) => sum + (input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] ?? 0),
+            0,
+          )
+        : null
+      : input.projection.deltaByBucket[bucketId];
+    row.push(delta === null ? "?" : `${delta}`);
   }
   return row;
 }
@@ -304,7 +300,7 @@ function buildActualViewSummaryLines(
           ? "verified historical legacy-v1 HeatMapRef baseline (informational only)"
           : "HeatMapRef";
     contentLines.push(
-      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=roster delta vs ${comparisonLabel}${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? nativeComparisonActive ? "TH19=delta; " : "TH19=observed count; " : ""}TH=roster delta vs ${comparisonLabel}${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
     );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {
@@ -517,33 +513,34 @@ async function readNativeInformationalComparison(
   input: {
     clans: readonly CompoActualStateClanContext[];
     view: CompoActualStateView;
-    heatMapRefs: readonly HeatMapRef[];
   },
 ): Promise<NativeActualComparisonState | null> {
-  if (input.clans.length === 0) return null;
+  if (input.clans.length === 0 || input.view === "raw") return null;
   try {
     const nativeDb = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
     if (!nativeDb.nativeHeatMapReferenceHead) return null;
     const native = await new NativeHeatMapReferencePublicationService(prisma).readCurrent();
     if (native.status !== "CURRENT") return null;
+    const nativeHeatMapRefs = buildNativeCompoProjectionReferences(native);
     let supported = 0;
     let unknown = 0;
-    const byClanTag = new Map<string, NativeCompoComparison>();
+    const byClanTag = new Map<string, CompoActualStateProjection>();
     for (const clan of input.clans) {
-      const projection = input.view === "raw"
-        ? null
-        : projectCompoActualStateView({
-            view: input.view,
-            base: clan.base,
-            heatMapRefs: input.heatMapRefs,
-          });
-      const comparison = calculateNativeCompoComparison({
-        native,
-        totalWeight: projection?.totalWeight ?? clan.base.resolvedTotalWeight,
-        sourceCounts: clan.base.bucketCounts,
+      const projection = projectCompoActualStateView({
+        view: input.view,
+        base: {
+          ...clan.base,
+          bucketCounts: {
+            ...clan.base.bucketCounts,
+            TH19: clan.base.bucketCounts.TH19 ?? 0,
+          },
+          profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+        },
+        heatMapRefs: nativeHeatMapRefs,
+        profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
       });
-      byClanTag.set(clan.clanTag, comparison);
-      if (comparison.status === "UNKNOWN") {
+      byClanTag.set(clan.clanTag, projection);
+      if (projection.targetStatus !== "supported" || !projection.selectedHeatMapRef) {
         unknown += 1;
       } else {
         supported += 1;
@@ -559,6 +556,7 @@ async function readNativeInformationalComparison(
 }
 
 export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
+export const buildActualStateRowForTest = buildActualStateRow;
 
 function assessPersistedClanMembersCoverage(input: {
   syncState: ClanMembersSyncStateRow | null;
@@ -1224,7 +1222,6 @@ export class CompoActualStateService {
     const nativeComparison = await readNativeInformationalComparison({
       clans: context.clans,
       view,
-      heatMapRefs: context.heatMapRefs,
     });
     const displayNativeComparison = view === "raw" ? null : nativeComparison;
 
@@ -1263,9 +1260,10 @@ export class CompoActualStateService {
         : referenceMode === "historical"
           ? context.historicalHeatMapRefs ?? []
           : [];
-    const includeTh19 = context.clans.some(
+    const observedTh19 = context.clans.some(
       (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
     );
+    const includeTh19 = observedTh19 || Boolean(displayNativeComparison);
     const rows: string[][] = [];
     const totalMissingTo50Count = context.clans.reduce(
       (sum, clan) => sum + Math.max(0, 50 - clan.base.memberCount),
@@ -1273,7 +1271,8 @@ export class CompoActualStateService {
     );
 
     for (const clan of context.clans) {
-      const projection = projectCompoActualStateView({
+      const nativeProjection = displayNativeComparison?.byClanTag.get(clan.clanTag);
+      const projection = nativeProjection ?? projectCompoActualStateView({
         view,
         base: clan.base,
         heatMapRefs: stateHeatMapRefs,
@@ -1282,7 +1281,7 @@ export class CompoActualStateService {
         tag: clan.clanTag,
         name: clan.clanName,
       });
-      if (!projection.selectedHeatMapRef) {
+      if (!displayNativeComparison && !projection.selectedHeatMapRef) {
         const parentHeatMapRef = findHeatMapRefForWeight(
           context.heatMapRefParents,
           projection.totalWeight,
@@ -1294,6 +1293,7 @@ export class CompoActualStateService {
         }
       }
       if (
+        !displayNativeComparison &&
         referenceMode !== "unavailable" &&
         hasUnsupportedCompoTh19Target(clan.base.bucketCounts) &&
         projection.targetStatus === "unavailable"
@@ -1309,7 +1309,7 @@ export class CompoActualStateService {
         base: clan.base,
         projection,
         includeTh19,
-        nativeComparison: displayNativeComparison?.byClanTag.get(clan.clanTag),
+        nativeProjection,
       });
       maybeLogCompoActualDiagnostics({
         surface: "state",

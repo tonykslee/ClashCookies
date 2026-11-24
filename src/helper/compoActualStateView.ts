@@ -14,6 +14,7 @@ import {
   getCompoProfileMaximumEstimatedWeightBound,
   getCompoProfileRepresentativeWeight,
   LEGACY_COMPO_CALCULATION_PROFILE,
+  NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
   projectCompoProfileCounts,
   resolveCompoProfileTargets,
   resolveLegacyProfileTargets,
@@ -535,6 +536,17 @@ function buildFillPlan(input: {
   };
 }
 
+function isProjectedTotalWithinBand(
+  totalWeight: number,
+  heatMapRef: HeatMapRef | null,
+): boolean {
+  return Boolean(
+    heatMapRef &&
+      totalWeight >= heatMapRef.weightMinInclusive &&
+      totalWeight <= heatMapRef.weightMaxInclusive,
+  );
+}
+
 function buildEstimatedProjectionForBand(input: {
   view: "auto" | "best";
   base: CompoActualStateBaseMetrics;
@@ -871,6 +883,17 @@ function buildAutoProjection(input: {
         missingWeights: rawProjection.missingTo50Count + rawProjection.unresolvedWeightCount,
       };
     }
+    const projectedTotalWeight = rawProjection.totalWeight + fillPlan.addedWeight;
+    if (
+      input.profile === NATIVE_PROVISIONAL_COMPOSITION_PROFILE &&
+      !isProjectedTotalWithinBand(projectedTotalWeight, selectedHeatMapRef)
+    ) {
+      return {
+        ...rawProjection,
+        view: "auto",
+        missingWeights: rawProjection.missingTo50Count + rawProjection.unresolvedWeightCount,
+      };
+    }
     const targetDelta = buildCalculationDeltaByDisplay({
       profile: input.profile,
       observedCounts: rawProjection.calculationCounts ?? {},
@@ -937,6 +960,19 @@ function buildAutoProjection(input: {
     profileReferenceCountReader: input.base.profileReferenceCountReader,
   });
   if (fillPlan.status !== "supported") {
+    return buildUnavailableProjection({
+      view: "auto",
+      base: input.base,
+      displayCounts: input.displayCounts,
+      calculationCounts: rawProjection.calculationCounts ?? {},
+      profile: input.profile,
+    });
+  }
+  const projectedTotalWeight = rawProjection.totalWeight + fillPlan.addedWeight;
+  if (
+    input.profile === NATIVE_PROVISIONAL_COMPOSITION_PROFILE &&
+    !isProjectedTotalWithinBand(projectedTotalWeight, selectedHeatMapRef)
+  ) {
     return buildUnavailableProjection({
       view: "auto",
       base: input.base,

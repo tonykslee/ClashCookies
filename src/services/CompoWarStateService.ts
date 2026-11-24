@@ -120,15 +120,22 @@ function readNativeComparison(input: {
   };
 }
 
-function appendNativeWarColumns(row: string[], comparison: NativeCompoComparison | undefined): string[] {
+function appendNativeWarColumns(
+  row: string[],
+  comparison: NativeCompoComparison | undefined,
+  includeTh19: boolean,
+): string[] {
   if (!comparison) return row;
   const nativeDeltas = getNativeCompoDisplayDeltas(comparison);
+  const nativeColumns = [
+    ...(includeTh19 ? [comparison.deltaByBucket.TH19] : []),
+    ...(["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const).map(
+      (bucketId) => nativeDeltas[bucketId],
+    ),
+  ];
   return [
-    ...row.slice(0, -6),
-    ...(["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const).map((bucketId) => {
-      const delta = nativeDeltas[bucketId];
-      return delta === null ? "?" : `${delta}`;
-    }),
+    ...row.slice(0, -(includeTh19 ? 7 : 6)),
+    ...nativeColumns.map((delta) => (delta === null || delta === undefined ? "?" : `${delta}`)),
   ];
 }
 
@@ -140,6 +147,7 @@ function buildCollapsedStateRow(input: {
   missingWeights: number;
   bucketCounts: BucketCounts;
   heatMapRef: HeatMapRef | null;
+  includeTh19?: boolean;
 }): CollapsedStateRow {
   const deltas = getCompoActualStateDeltaByBucket(
     collapseCompoWarBucketCountsForDisplay(input.bucketCounts),
@@ -151,8 +159,8 @@ function buildCollapsedStateRow(input: {
     totalWeight: input.totalEffectiveWeight.toLocaleString("en-US"),
     missingWeights: `${input.missingWeights}`,
     players: `${input.rosterSize}`,
-    ...((input.bucketCounts.TH19 ?? 0) > 0
-      ? { th19Count: `${input.bucketCounts.TH19}` }
+    ...((input.includeTh19 || (input.bucketCounts.TH19 ?? 0) > 0)
+      ? { th19Count: `${input.bucketCounts.TH19 ?? 0}` }
       : {}),
     th18Delta: deltas.TH18 === null ? "?" : `${deltas.TH18}`,
     th17Delta: deltas.TH17 === null ? "?" : `${deltas.TH17}`,
@@ -344,9 +352,10 @@ export class CompoWarStateService {
       };
     }
     const renderableRows: string[][] = [];
-    const includeTh19 = context.clans.some(
+    const observedTh19 = context.clans.some(
       (clan) => (clan.bucketCounts.TH19 ?? 0) > 0,
     );
+    const includeTh19 = observedTh19 || Boolean(nativeComparison);
     for (const clan of context.clans) {
       const collapsed = buildCollapsedStateRow({
         clanName: clan.clanName,
@@ -355,6 +364,7 @@ export class CompoWarStateService {
         missingWeights: clan.missingWeights,
         bucketCounts: clan.bucketCounts,
         heatMapRef: clan.heatMapRef,
+        includeTh19,
       });
       renderableRows.push(appendNativeWarColumns([
         collapsed.clanName,
@@ -368,12 +378,12 @@ export class CompoWarStateService {
         collapsed.th15Delta,
         collapsed.th14Delta,
         collapsed.th13OrLowerDelta,
-      ], nativeComparison?.byClanTag.get(clan.clanTag)));
+      ], nativeComparison?.byClanTag.get(clan.clanTag), includeTh19));
     }
 
     const contentLines = [
       `WAR · ${toRefreshLine(context.latestRefreshAt)}`,
-      `Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; ${includeTh19 ? "TH19=observed count; " : ""}TH columns=delta vs ${nativeComparison ? "provisional native targets (informational only)" : "HeatMapRef"}.`,
+      `Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; ${includeTh19 ? nativeComparison ? "TH19=delta; " : "TH19=observed count; " : ""}TH columns=delta vs ${nativeComparison ? "provisional native targets (informational only)" : "HeatMapRef"}.`,
     ];
 
     if (context.skipped.length > 0) {

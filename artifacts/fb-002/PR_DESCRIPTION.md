@@ -16,10 +16,11 @@ Additional coverage includes supported and unsupported native bands, TH19, ACTUA
 
 ## Validation
 
-- Targeted Vitest: 6 files, 89 tests passed.
+- Targeted Vitest: 7 files, 99 tests passed.
 - TypeScript: `npx tsc --noEmit --pretty false` passed.
 - Targeted ESLint: passed; one pre-existing warning remains in `compoActualStateView.ts`.
-- Full `npm test -- --reporter=dot`: 387 files and 6,036 tests passed.
+- Full `npm test -- --reporter=dot`: 387 files and 6,039 tests passed.
+- Full output: `artifacts/fb-002/full-validation.log`.
 - Rendered and visually inspected PNG fixtures:
   - `compo-heatmapref-provisional.png`
   - `compo-state-actual-provisional.png`

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildNativeCompoProjectionReferences,
   calculateNativeCompoComparison,
   getNativeCompoDisplayDeltas,
   NATIVE_COMPO_COMPARISON_BUCKETS,
+  readNativeCompoProjectionReferenceCount,
 } from "../src/helper/nativeCompoComparison";
 
 const native = {
@@ -64,5 +66,22 @@ describe("native provisional composition comparison", () => {
       deltaByBucket: { ...comparison.deltaByBucket, TH12: null },
     });
     expect(unknown["<=TH13"]).toBeNull();
+  });
+
+  it("adapts published targets for the shared profile-aware projection engine", () => {
+    const refs = buildNativeCompoProjectionReferences({
+      ...native,
+      targets: native.targets.map((target) =>
+        target.bucketId === "TH12"
+          ? { ...target, status: "UNKNOWN" as const, targetCount: null }
+          : target,
+      ),
+    });
+    expect(refs[0]).toMatchObject({
+      weightMinInclusive: 0,
+      weightMaxInclusive: 10_000_000,
+    });
+    expect(readNativeCompoProjectionReferenceCount(refs[0]!, "TH19")).toBe(5);
+    expect(readNativeCompoProjectionReferenceCount(refs[0]!, "TH12")).toBeNull();
   });
 });

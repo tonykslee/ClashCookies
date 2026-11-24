@@ -2,6 +2,7 @@ import {
   calculateProfileDeviationScore,
   NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
 } from "./compoCalculationProfile";
+import type { HeatMapRef } from "@prisma/client";
 
 type NativeReferenceRead = {
   status: "CURRENT" | "UNKNOWN";
@@ -9,6 +10,8 @@ type NativeReferenceRead = {
   profileVersion: string;
   policyVersion: string;
   sampleThreshold: number | null;
+  evaluationAt?: Date | null;
+  createdAt?: Date | null;
   bands: readonly { weightMinInclusive: number; weightMaxInclusive: number }[];
   targets: readonly {
     bandOrdinal: number;
@@ -18,6 +21,10 @@ type NativeReferenceRead = {
   }[];
 };
 
+type NativeProjectionReference = HeatMapRef & {
+  __nativeTargetCounts: Readonly<Record<string, number | null>>;
+};
+
 export type NativeCompoComparison = {
   status: "SUPPORTED" | "UNKNOWN";
   bandOrdinal: number | null;
@@ -25,6 +32,56 @@ export type NativeCompoComparison = {
   reason: string | null;
   deltaByBucket: Readonly<Record<string, number | null>>;
 };
+
+/** Adapt the published native head to the shared profile-aware projection engine. */
+export function buildNativeCompoProjectionReferences(
+  native: NativeReferenceRead,
+): HeatMapRef[] {
+  return native.bands.map((band, bandOrdinal) => {
+    const targetCounts = Object.fromEntries(
+      NATIVE_PROVISIONAL_COMPOSITION_PROFILE.buckets.map((bucket) => {
+        const target = native.targets.find(
+          (candidate) =>
+            candidate.bandOrdinal === bandOrdinal && candidate.bucketId === bucket.id,
+        );
+        return [
+          bucket.id,
+          target?.status === "SUPPORTED" && target.targetCount !== null
+            ? target.targetCount
+            : null,
+        ];
+      }),
+    );
+    return {
+      weightMinInclusive: band.weightMinInclusive,
+      weightMaxInclusive: band.weightMaxInclusive,
+      th18Count: 0,
+      th17Count: 0,
+      th16Count: 0,
+      th15Count: 0,
+      th14Count: 0,
+      th13Count: 0,
+      th12Count: 0,
+      th11Count: 0,
+      th10OrLowerCount: 0,
+      contributingClanCount: 0,
+      sourceVersion: native.profileVersion,
+      refreshedAt: native.evaluationAt ?? native.createdAt ?? new Date(0),
+      bucketTargets: [],
+      __nativeTargetCounts: targetCounts,
+    } as NativeProjectionReference;
+  });
+}
+
+/** Read a native target from an adapted reference without falling back to legacy columns. */
+export function readNativeCompoProjectionReferenceCount(
+  reference: HeatMapRef,
+  bucketId: string,
+): number | null {
+  const nativeReference = reference as NativeProjectionReference;
+  if (!nativeReference.__nativeTargetCounts) return null;
+  return nativeReference.__nativeTargetCounts[bucketId] ?? null;
+}
 
 /** The compact state-table columns shared by ACTUAL and WAR displays. */
 export const NATIVE_COMPO_DISPLAY_BUCKETS = [
