@@ -6,10 +6,11 @@ import {
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
-import { normalizeTag } from "./war-events/core";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
+  hasSameSyncTimeMetadataSnapshot,
+  loadValidatedSyncClaimAggregation,
   parseSyncTimeMetadata,
   type SyncTimeTrackedMetadata,
 } from "./TrackedMessageService";
@@ -55,6 +56,7 @@ type CanonicalSyncRoot = {
 type CompletionSnapshot = CanonicalSyncRoot & {
   participatingClanTags: Set<string>;
   claimedClanTags: Set<string>;
+  invalidChildIdentityCount: number;
 };
 
 export type SyncAllSpunEvaluation =
@@ -76,11 +78,6 @@ export type SyncAllSpunRecoverySummary = {
 
 function isValidDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
-}
-
-function normalizeClanTag(value: unknown): string | null {
-  const normalized = normalizeTag(String(value ?? ""));
-  return normalized || null;
 }
 
 function syncTimeFromMetadata(metadata: SyncTimeTrackedMetadata): Date | null {
@@ -131,6 +128,7 @@ function claimedPayload(root: CanonicalSyncRoot, snapshot: CompletionSnapshot) {
     rootMessageId: root.messageId,
     participatingClanCount: snapshot.participatingClanTags.size,
     claimedClanCount: snapshot.claimedClanTags.size,
+    invalidChildIdentityCount: snapshot.invalidChildIdentityCount,
   };
 }
 
@@ -154,6 +152,7 @@ export class SyncAllSpunAnnouncementService {
     private readonly botLogChannels: Pick<BotLogChannelService, "getChannelIdForType"> = botLogChannelService,
     private readonly db: SyncAllSpunDb = prisma as unknown as SyncAllSpunDb,
     private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   private runtimeAllowed(): boolean {
@@ -245,43 +244,23 @@ export class SyncAllSpunAnnouncementService {
     root: CanonicalSyncRoot,
     now: Date,
   ): Promise<CompletionSnapshot | null> {
-    const participatingClanTags = new Set(
-      root.metadata.clans
-        .map((clan) => normalizeClanTag(clan.clanTag))
-        .filter((tag): tag is string => Boolean(tag)),
-    );
-    if (participatingClanTags.size === 0) return null;
-
-    const trackedRows = await this.db.trackedMessage.findMany({
-      where: {
-        OR: [
-          { id: root.id },
-          {
-            guildId: root.guildId,
-            referenceId: root.messageId,
-            featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
-            status: TRACKED_MESSAGE_STATUS.ACTIVE,
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { gt: now } },
-            ],
-          },
-        ],
-      },
-      select: { claims: { select: { clanTag: true } } },
-    });
-    const claimedClanTags = new Set<string>();
-    for (const row of trackedRows) {
-      for (const claim of row.claims ?? []) {
-        const tag = normalizeClanTag(claim.clanTag);
-        if (tag && participatingClanTags.has(tag)) claimedClanTags.add(tag);
-      }
-    }
-
+    const aggregation = await loadValidatedSyncClaimAggregation(this.db, root.messageId, now);
+    if (
+      !aggregation ||
+      aggregation.root.id !== root.id ||
+      aggregation.root.guildId !== root.guildId ||
+      aggregation.root.messageId !== root.messageId ||
+      (aggregation.root.expiresAt?.getTime() ?? null) !== (root.expiresAt?.getTime() ?? null) ||
+      !hasSameSyncTimeMetadataSnapshot(aggregation.metadata, root.metadata) ||
+      aggregation.syncTime.getTime() !== root.syncTime.getTime()
+    ) return null;
     return {
       ...root,
-      participatingClanTags,
-      claimedClanTags,
+      metadata: aggregation.metadata,
+      syncTime: aggregation.syncTime,
+      participatingClanTags: aggregation.participatingClanTags,
+      claimedClanTags: aggregation.claimedClanTags,
+      invalidChildIdentityCount: aggregation.invalidChildIdentityCount,
     };
   }
 
@@ -343,13 +322,7 @@ export class SyncAllSpunAnnouncementService {
       const currentSnapshot = currentRoot
         ? await this.loadCompletionSnapshot(currentRoot, now)
         : null;
-      if (
-        !currentRoot ||
-        !currentSnapshot ||
-        currentRoot.messageId !== root.messageId ||
-        currentRoot.syncTime.getTime() !== root.syncTime.getTime() ||
-        currentSnapshot.claimedClanTags.size !== currentSnapshot.participatingClanTags.size
-      ) {
+      if (!this.isDeliverySnapshotStillValid(root, initialSnapshot, currentRoot, currentSnapshot)) {
         await releaseSyncEvent({ eventModel: this.db.syncEvent, identity, createdAt: claim.createdAt });
         dozzleLog.debug(
           `[sync-all-spun] event=delivery_revalidation_failed guild_id=${root.guildId} root_message_id=${root.messageId} reason=root_or_completion_changed`,
@@ -366,6 +339,23 @@ export class SyncAllSpunAnnouncementService {
         return { state: "failed", reason: "sync_destination_unavailable_after_claim" };
       }
 
+      const clockNow = this.clock();
+      const finalNow = clockNow.getTime() >= now.getTime() ? clockNow : now;
+      const finalRoot = await this.resolveCanonicalRoot(root.messageId, finalNow);
+      const finalSnapshot = finalRoot
+        ? await this.loadCompletionSnapshot(finalRoot, finalNow)
+        : null;
+      if (
+        !finalRoot ||
+        !this.isDeliverySnapshotStillValid(root, initialSnapshot, finalRoot, finalSnapshot)
+      ) {
+        await releaseSyncEvent({ eventModel: this.db.syncEvent, identity, createdAt: claim.createdAt });
+        dozzleLog.debug(
+          `[sync-all-spun] event=delivery_revalidation_failed guild_id=${root.guildId} root_message_id=${root.messageId} reason=root_or_completion_changed_before_send`,
+        );
+        return { state: "failed", reason: "root_or_completion_changed_before_send" };
+      }
+
       const sent = await currentDestination.channel.send(SYNC_ALL_SPUN_MESSAGE);
       const messageId = String(sent?.id ?? "").trim() || null;
       const marked = await markSyncEventDelivered({
@@ -373,8 +363,8 @@ export class SyncAllSpunAnnouncementService {
         identity,
         createdAt: claim.createdAt,
         deliveredPayload: deliveredPayload(
-          root,
-          currentSnapshot,
+          finalRoot,
+          finalSnapshot,
           currentDestination.channelId,
           messageId,
         ),
@@ -387,7 +377,7 @@ export class SyncAllSpunAnnouncementService {
         return { state: "failed", reason: "delivery_state_update_failed" };
       }
       dozzleLog.info(
-        `[sync-all-spun] event=delivered guild_id=${root.guildId} root_message_id=${root.messageId} sync_time=${root.syncTime.toISOString()} participating_clan_count=${currentSnapshot.participatingClanTags.size} channel_id=${currentDestination.channelId} message_id=${messageId ?? "none"}`,
+        `[sync-all-spun] event=delivered guild_id=${root.guildId} root_message_id=${root.messageId} sync_time=${root.syncTime.toISOString()} participating_clan_count=${finalSnapshot.participatingClanTags.size} channel_id=${currentDestination.channelId} message_id=${messageId ?? "none"}`,
       );
       return { state: "delivered", channelId: currentDestination.channelId, messageId };
     } catch (error) {
@@ -399,10 +389,35 @@ export class SyncAllSpunAnnouncementService {
     }
   }
 
+  /** Purpose: require one unchanged canonical participant snapshot through delivery preparation. */
+  private isDeliverySnapshotStillValid(
+    initialRoot: CanonicalSyncRoot,
+    initialSnapshot: CompletionSnapshot,
+    currentRoot: CanonicalSyncRoot | null,
+    currentSnapshot: CompletionSnapshot | null,
+  ): currentSnapshot is CompletionSnapshot {
+    if (
+      !currentRoot ||
+      !currentSnapshot ||
+      currentRoot.id !== initialRoot.id ||
+      currentRoot.guildId !== initialRoot.guildId ||
+      currentRoot.messageId !== initialRoot.messageId ||
+      (currentRoot.expiresAt?.getTime() ?? null) !== (initialRoot.expiresAt?.getTime() ?? null) ||
+      currentRoot.syncTime.getTime() !== initialRoot.syncTime.getTime() ||
+      !hasSameSyncTimeMetadataSnapshot(initialRoot.metadata, currentRoot.metadata) ||
+      !hasSameSyncTimeMetadataSnapshot(initialSnapshot.metadata, currentSnapshot.metadata) ||
+      currentSnapshot.claimedClanTags.size !== currentSnapshot.participatingClanTags.size ||
+      currentSnapshot.participatingClanTags.size !== initialSnapshot.participatingClanTags.size
+    ) return false;
+    return [...initialSnapshot.participatingClanTags].every((clanTag) =>
+      currentSnapshot.participatingClanTags.has(clanTag),
+    );
+  }
+
   async evaluateAfterAdd(
     client: Client,
     messageId: string,
-    now: Date = new Date(),
+    now: Date = this.clock(),
   ): Promise<SyncAllSpunEvaluation> {
     if (!this.runtimeAllowed()) {
       return { state: "skipped", reason: "non_production_runtime" };
@@ -424,7 +439,7 @@ export class SyncAllSpunAnnouncementService {
       }
       if (snapshot.claimedClanTags.size !== snapshot.participatingClanTags.size) {
         dozzleLog.debug(
-          `[sync-all-spun] event=evaluation_incomplete guild_id=${root.guildId} root_message_id=${root.messageId} claimed_count=${snapshot.claimedClanTags.size} participating_count=${snapshot.participatingClanTags.size}`,
+          `[sync-all-spun] event=evaluation_incomplete guild_id=${root.guildId} root_message_id=${root.messageId} claimed_count=${snapshot.claimedClanTags.size} participating_count=${snapshot.participatingClanTags.size} invalid_child_identity_count=${snapshot.invalidChildIdentityCount}`,
         );
         return {
           state: "incomplete",
@@ -478,7 +493,7 @@ export class SyncAllSpunAnnouncementService {
 
   async reconcileDue(
     client: Client,
-    now: Date = new Date(),
+    now: Date = this.clock(),
   ): Promise<SyncAllSpunRecoverySummary> {
     const summary: SyncAllSpunRecoverySummary = {
       scanned: 0,

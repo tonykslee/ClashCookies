@@ -42,7 +42,7 @@ vi.mock("../src/services/ClanLeadershipLookupService", () => ({
 function makeMetadata() {
   return {
     syncTimeIso: "2026-03-19T15:30:00.000Z",
-    syncEpochSeconds: 1742407800,
+    syncEpochSeconds: Math.floor(new Date("2026-03-19T15:30:00.000Z").getTime() / 1000),
     roleId: "456",
     reminderSentAt: null,
     clans: [
@@ -76,7 +76,7 @@ function makeTrackedRow(overrides: Partial<Record<string, unknown>> = {}) {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
     referenceId: null,
     remindAt: new Date("2026-03-19T15:25:00.000Z"),
-    expiresAt: new Date("2026-03-19T17:30:00.000Z"),
+    expiresAt: new Date("2027-03-19T17:30:00.000Z"),
     metadata: makeMetadata(),
     claims: [],
     ...overrides,
@@ -107,6 +107,9 @@ function makeClient(params?: {
 }
 
 function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>): void {
+  prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+    where?.messageId === trackedRow.messageId ? trackedRow : null,
+  );
   prismaMock.trackedMessage.update.mockImplementation(async ({ where, data }: any) => {
     if (where?.id === trackedRow.id && data?.metadata) {
       trackedRow.metadata = {
@@ -119,6 +122,12 @@ function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>
     }
     return trackedRow;
   });
+}
+
+function bindLatestRootLookup(existingStatus: { id: string } | null = null): void {
+  prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+    where?.referenceId === null ? { messageId: "sync-message-1" } : existingStatus,
+  );
 }
 
 function makeLeadershipEntry(input: {
@@ -149,7 +158,7 @@ describe("TrackedMessageService sync spin status", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
@@ -170,7 +179,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const otherUserSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({
@@ -205,7 +214,7 @@ describe("TrackedMessageService sync spin status", () => {
     await trackedMessageService.processDueSyncReminders(client);
 
     const content = getDmContent(userSend);
-    expect(content).toContain("<@111111111111111111> sync reminder for <t:1742407800:F> (<t:1742407800:R>).");
+    expect(content).toContain("<@111111111111111111> sync reminder for <t:1773934200:F> (<t:1773934200:R>).");
     expect(content).toContain("- Rocky Road (👑 Lead\\*One, Co \\<\\@everyone\\>)");
     expect(content).toContain("- TheWiseCowboys (Second Clan Co)");
     expect(content).not.toContain("#P1");
@@ -227,7 +236,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -248,7 +257,7 @@ describe("TrackedMessageService sync spin status", () => {
     const userId = "444444444444444444";
     const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockRejectedValueOnce(new Error("lookup unavailable"));
@@ -264,7 +273,7 @@ describe("TrackedMessageService sync spin status", () => {
     const userId = "555555555555555555";
     const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -313,7 +322,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -388,9 +397,9 @@ describe("TrackedMessageService sync spin status", () => {
     const payload = send.mock.calls[0]?.[0] as any;
     const embed = payload.embeds[0].toJSON() as any;
     expect(embed.title).toBe("Sync Spin Status");
-    expect(embed.description).toContain("Claimed: **0/2**");
-    expect(embed.description).toContain("- <:rr:111> **RR** (Rocky Road)");
-    expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
+    expect(embed.description).toContain("Claimed: **2/2**");
+    expect(embed.description).toContain("✅ <:rr:111> **RR** (Rocky Road)");
+    expect(embed.description).toContain("✅ <:twc:222> **TWC** (TheWiseCowboys)");
     expect(payload.components[0].components[0].data.label).toBe("My Leader Accounts");
     expect(payload.components[0].components[0].data.custom_id).toBe(
       "sync-leaders:v1:sync-message-1:0",
@@ -428,6 +437,32 @@ describe("TrackedMessageService sync spin status", () => {
         }),
       }),
     );
+  });
+
+  it("does not generate a status for a root replaced by a newer active sync", async () => {
+    const trackedRow = makeTrackedRow({
+      metadata: {
+        ...makeMetadata(),
+        reminderSentAt: "2026-03-19T15:25:00.000Z",
+      },
+      claims: [
+        { clanTag: "#PYLQ", userId: "user-1" },
+        { clanTag: "#PYLG", userId: "user-2" },
+      ],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+      where?.referenceId === null ? { messageId: "newer-root-message" } : null,
+    );
+
+    const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
+    const result = await trackedMessageService.processDueSyncReminders(
+      makeClient({ guildChannel: { send } }),
+    );
+
+    expect(result).toBe(0);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("posts the scheduled status embed to the typed sync channel when configured", async () => {
@@ -567,7 +602,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
@@ -598,7 +633,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
 
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
     const userSend = vi.fn().mockResolvedValue(undefined);
@@ -629,7 +664,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
@@ -661,9 +696,7 @@ describe("TrackedMessageService sync spin status", () => {
           claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
         }),
       })
-      .mockResolvedValueOnce({
-        channelId: "source-channel",
-      })
+      .mockResolvedValueOnce(makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel" }))
       .mockResolvedValueOnce({
         ...makeTrackedRow({
           messageId: "status-message-1",
@@ -672,9 +705,19 @@ describe("TrackedMessageService sync spin status", () => {
           claims: [],
         }),
       })
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel" }));
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: "sync-message-1" });
+    prismaMock.trackedMessage.findMany
+      .mockResolvedValueOnce([
+      makeTrackedRow({
+        messageId: "sync-message-1",
         channelId: "source-channel",
-      });
+        claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+      }),
+      ])
+      .mockResolvedValueOnce([
+        makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel", claims: [] }),
+      ]);
 
     const edit = vi.fn().mockResolvedValue(undefined);
     const message = {
@@ -712,5 +755,60 @@ describe("TrackedMessageService sync spin status", () => {
     expect((edit.mock.calls[0]?.[0] as any).components[0].components[0].data.label).toBe(
       "My Leader Accounts",
     );
+  });
+
+  it("refreshes every eligible status child from one root claim snapshot", async () => {
+    const root = makeTrackedRow({
+      claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+    });
+    const statusOne = makeTrackedRow({
+      id: "status-1",
+      messageId: "status-message-1",
+      channelId: "status-channel-1",
+      referenceId: root.messageId,
+      claims: [{ clanTag: "#PYLG", userId: "user-2" }],
+    });
+    const statusTwo = makeTrackedRow({
+      id: "status-2",
+      messageId: "status-message-2",
+      channelId: "status-channel-2",
+      referenceId: root.messageId,
+      claims: [],
+    });
+    const rows = [root, statusOne, statusTwo];
+    const edits = [vi.fn().mockResolvedValue(undefined), vi.fn().mockResolvedValue(undefined)];
+    prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+      rows.find((row) => row.messageId === where.messageId) ?? null,
+    );
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: root.messageId });
+    prismaMock.trackedMessage.findMany.mockResolvedValue(rows);
+
+    const client = {
+      guilds: {
+        fetch: vi.fn().mockResolvedValue({
+          channels: {
+            fetch: vi.fn(async (channelId: string) => ({
+              messages: {
+                fetch: vi.fn().mockResolvedValue({
+                  edit: channelId === "status-channel-1" ? edits[0] : edits[1],
+                }),
+              },
+            })),
+          },
+        }),
+      },
+    } as any;
+
+    await expect(
+      trackedMessageService.refreshSyncSpinStatusMessages(client, root.messageId),
+    ).resolves.toBe(2);
+    expect(edits[0]).toHaveBeenCalledTimes(1);
+    expect(edits[1]).toHaveBeenCalledTimes(1);
+    expect(
+      (edits[0].mock.calls[0]?.[0] as any).embeds[0].toJSON().description,
+    ).toContain("Claimed: **2/2**");
+    expect(
+      (edits[1].mock.calls[0]?.[0] as any).embeds[0].toJSON().description,
+    ).toContain("Claimed: **2/2**");
   });
 });

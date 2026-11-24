@@ -5,7 +5,6 @@ import { BotLogChannelService } from "../src/services/BotLogChannelService";
 import { SettingsService } from "../src/services/SettingsService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 import * as syncTimeFwaClanListViewService from "../src/services/SyncTimeFwaClanListViewService";
-import { SYNC_TIME_FWA_CLAN_LIST_REFRESH_BUTTON_CUSTOM_ID } from "../src/services/SyncTimeFwaClanListViewService";
 import { scheduledSyncPostService } from "../src/services/ScheduledSyncPostService";
 import {
   scheduledSyncReadinessPublisherService,
@@ -362,6 +361,14 @@ function makeStatusInteraction(input: {
   };
 }
 
+function bindSyncStatusCohort(): void {
+  prismaMock.trackedClan.findMany.mockResolvedValue([
+    { tag: "#PYLQ", name: "Rocky Road", clanBadge: "<:rr:111>", shortName: "RR" },
+    { tag: "#PYLG", name: "TheWiseCowboys", clanBadge: "<:twc:222>", shortName: "TWC" },
+    { tag: "#2QG2C08UP", name: "Gabbar", clanBadge: "<:gb:333>", shortName: "GB" },
+  ]);
+}
+
 describe("/sync time post command shape", () => {
   it("registers role and timezone but no destination channel on the post subcommand", () => {
     const timeGroup = Post.options?.find(
@@ -470,6 +477,7 @@ describe("/sync post status reaction scan", () => {
   });
 
   it("scans live reactions without tracked metadata and classifies claimed, unclaimed, and unavailable users", async () => {
+    bindSyncStatusCohort();
     const message = {
       id: "123456789012345678",
       channelId: "channel-1",
@@ -768,6 +776,7 @@ describe("/sync post status reaction scan", () => {
   });
 
   it("defaults /sync post status to the newest authoritative active sync announcement", async () => {
+    bindSyncStatusCohort();
     const syncMessage = {
       id: "sync-message-b",
       channelId: "channel-1",
@@ -796,7 +805,7 @@ describe("/sync post status reaction scan", () => {
       expiresAt: null,
       metadata: {
         syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
+        syncEpochSeconds: 1773934200,
         roleId: "456",
         clans: [
           {
@@ -823,7 +832,7 @@ describe("/sync post status reaction scan", () => {
       expiresAt: null,
       metadata: {
         syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
+        syncEpochSeconds: 1773934200,
         roleId: "456",
         clans: [
           {
@@ -878,7 +887,7 @@ describe("/sync post status reaction scan", () => {
       expiresAt: null,
       metadata: {
         syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
+        syncEpochSeconds: 1773934200,
         roleId: "456",
         clans: [
           {
@@ -907,7 +916,7 @@ describe("/sync post status reaction scan", () => {
       expiresAt: null,
       metadata: {
         syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
+        syncEpochSeconds: 1773934200,
         roleId: "456",
         clans: [
           {
@@ -922,11 +931,65 @@ describe("/sync post status reaction scan", () => {
       },
       claims: [],
     } as any);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "tracked-b",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+      metadata: {
+        syncTimeIso: "2026-03-19T15:30:00.000Z",
+        syncEpochSeconds: 1773934200,
+        roleId: "456",
+        clans: [
+          {
+            code: "RR",
+            clanTag: "#PYLQ",
+            clanName: "Rocky Road",
+            emojiId: "111",
+            emojiName: "rr",
+            emojiInline: "<:rr:111>",
+          },
+        ],
+      },
+    } as any);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: syncMessage.id });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      {
+        id: "tracked-b",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: syncMessage.id,
+        featureType: "SYNC_TIME_POST",
+        status: "ACTIVE",
+        referenceId: null,
+        expiresAt: null,
+        metadata: {
+          syncTimeIso: "2026-03-19T15:30:00.000Z",
+          syncEpochSeconds: 1773934200,
+          roleId: "456",
+          clans: [
+            {
+              code: "RR",
+              clanTag: "#PYLQ",
+              clanName: "Rocky Road",
+              emojiId: "111",
+              emojiName: "rr",
+              emojiInline: "<:rr:111>",
+            },
+          ],
+        },
+        claims: [],
+      },
+    ]);
 
     await Post.run({} as any, interaction as any, {} as any);
 
     expect(trackedMessageService.resolveLatestActiveSyncPost).toHaveBeenCalledWith("guild-1");
-    expect(fetchTrackedSpy).toHaveBeenCalledWith("sync-message-b");
+    expect(fetchTrackedSpy).not.toHaveBeenCalled();
     const payload = interaction.editReply.mock.calls
       .map((call) => call[0])
       .find((value) => value && typeof value === "object" && "embeds" in value) as any;
@@ -1170,6 +1233,7 @@ describe("/sync post status reaction scan", () => {
   });
 
   it("uses a valid saved pointer only when no active root exists", async () => {
+    bindSyncStatusCohort();
     const message = {
       id: "123456789012345678",
       channelId: "channel-1",
@@ -1299,7 +1363,7 @@ describe("/sync post status reaction scan", () => {
       expiresAt: new Date("2026-03-19T17:30:00.000Z"),
       metadata: {
         syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
+        syncEpochSeconds: 1773934200,
         roleId: "456",
         reminderSentAt: null,
         clans: [
@@ -1353,6 +1417,7 @@ describe("/sync post status reaction scan", () => {
     );
 
     prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.OR) return [root];
       if (
         where?.status === "ACTIVE" &&
         where?.referenceId === null &&
@@ -1363,7 +1428,10 @@ describe("/sync post status reaction scan", () => {
       }
       return [];
     });
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+      where?.referenceId === null ? { messageId: root.messageId } : null,
+    );
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(root);
     prismaMock.trackedMessage.update.mockImplementation(async ({ data }: any) => {
       root.metadata = { ...root.metadata, ...(data?.metadata ?? {}) };
       return root;
@@ -2777,6 +2845,45 @@ describe("/sync time post modal submit", () => {
       author: { bot: true },
       content: "# Sync time :gem: <t:1742407800:F> (<t:1742407800:R>)",
     };
+    const metadata = {
+      syncTimeIso: "2026-03-19T15:30:00.000Z",
+      syncEpochSeconds: 1773934200,
+      roleId: "456",
+      clans: [
+        {
+          code: "RR",
+          clanTag: "#PYLQ",
+          clanName: "Rocky Road",
+          emojiId: "111",
+          emojiName: "rr",
+          emojiInline: "<:rr:111>",
+        },
+        {
+          code: "TWC",
+          clanTag: "#PYLG",
+          clanName: "TheWiseCowboys",
+          emojiId: "222",
+          emojiName: "twc",
+          emojiInline: "<:twc:222>",
+        },
+      ],
+    };
+    const trackedRoot = {
+      id: "tracked-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncMessage.id,
+      featureType: "SYNC_TIME_POST",
+      status: "ACTIVE",
+      referenceId: null,
+      expiresAt: null,
+      metadata,
+    };
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(trackedRoot);
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: syncMessage.id });
+    prismaMock.trackedMessage.findMany.mockResolvedValue([
+      { ...trackedRoot, claims: [{ clanTag: "#PYLQ" }] },
+    ]);
     const channel = {
       isTextBased: () => true,
       messages: {
@@ -2786,43 +2893,6 @@ describe("/sync time post modal submit", () => {
     const channelCache = new Map([["channel-1", channel]]) as any;
     channelCache.filter = (fn: (value: any) => boolean) =>
       new Map([...channelCache.entries()].filter(([, value]) => fn(value)));
-
-    vi.mocked(trackedMessageService.fetchSyncTrackedMessageWithClaims).mockResolvedValue({
-      id: "tracked-1",
-      guildId: "guild-1",
-      channelId: "channel-1",
-      messageId: syncMessage.id,
-      featureType: "SYNC_TIME_POST",
-      status: "ACTIVE",
-      referenceId: null,
-      remindAt: null,
-      expiresAt: new Date("2026-04-10T02:00:00.000Z"),
-      metadata: {
-        syncTimeIso: "2026-03-19T15:30:00.000Z",
-        syncEpochSeconds: 1742407800,
-        roleId: "456",
-        reminderSentAt: null,
-        clans: [
-          {
-            code: "RR",
-            clanTag: "#PYLQ",
-            clanName: "Rocky Road",
-            emojiId: "111",
-            emojiName: "rr",
-            emojiInline: "<:rr:111>",
-          },
-          {
-            code: "TWC",
-            clanTag: "#PYLG",
-            clanName: "TheWiseCowboys",
-            emojiId: "222",
-            emojiName: "twc",
-            emojiInline: "<:twc:222>",
-          },
-        ],
-      },
-      claims: [{ clanTag: "#PYLQ" }],
-    } as any);
 
     const interaction = {
       inGuild: () => true,
