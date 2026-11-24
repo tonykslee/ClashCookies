@@ -12,6 +12,9 @@ CREATE TABLE "NativeHeatMapReferenceGeneration" (
     "sampleThreshold" INTEGER NOT NULL,
     "minimumDirectWeightAnchors" INTEGER NOT NULL,
     "authorityStatus" VARCHAR(64) NOT NULL,
+    "sourceCategory" VARCHAR(128) NOT NULL,
+    "evidenceTrust" VARCHAR(128) NOT NULL,
+    "coverageStatus" VARCHAR(32) NOT NULL,
     "evaluationAt" TIMESTAMP(3) NOT NULL,
     "eraPolicyId" VARCHAR(128) NOT NULL,
     "eraPolicyVersion" VARCHAR(64) NOT NULL,
@@ -30,6 +33,7 @@ CREATE TABLE "NativeHeatMapReferenceGeneration" (
 CREATE UNIQUE INDEX "NativeHeatMapReferenceGeneration_profileId_policyVersion_requestKey_key" ON "NativeHeatMapReferenceGeneration"("profileId", "policyVersion", "requestKey");
 CREATE INDEX "NativeHeatMapReferenceGeneration_profileId_policyVersion_createdAt_idx" ON "NativeHeatMapReferenceGeneration"("profileId", "policyVersion", "createdAt");
 CREATE INDEX "NativeHeatMapReferenceGeneration_status_profileId_policyVersion_idx" ON "NativeHeatMapReferenceGeneration"("status", "profileId", "policyVersion");
+CREATE UNIQUE INDEX "NativeHeatMapReferenceGeneration_generationId_profileId_policyVersion_key" ON "NativeHeatMapReferenceGeneration"("generationId", "profileId", "policyVersion");
 
 CREATE TABLE "NativeHeatMapReferenceGenerationBand" (
     "generationId" TEXT NOT NULL,
@@ -74,21 +78,35 @@ CREATE TABLE "NativeHeatMapReferenceLineage" (
     "observationContentFingerprint" VARCHAR(128) NOT NULL,
     "role" VARCHAR(64) NOT NULL,
     "inputDigest" VARCHAR(128) NOT NULL,
+    "qualityEvidenceIds" JSONB NOT NULL,
+    "weightProvenance" JSONB NOT NULL,
     CONSTRAINT "NativeHeatMapReferenceLineage_pkey" PRIMARY KEY ("generationId", "ordinal"),
     CONSTRAINT "NativeHeatMapReferenceLineage_generationId_fkey" FOREIGN KEY ("generationId") REFERENCES "NativeHeatMapReferenceGeneration"("generationId") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "NativeHeatMapReferenceLineage_generationId_observationId_key" UNIQUE ("generationId", "observationId")
 );
+ALTER TABLE "NativeHeatMapReferenceLineage"
+  ADD CONSTRAINT "NativeHeatMapReferenceLineage_observationId_fkey"
+  FOREIGN KEY ("observationId") REFERENCES "FwaWarMembersObservation"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
 
 CREATE TABLE "NativeHeatMapReferenceHead" (
     "profileId" VARCHAR(128) NOT NULL,
     "policyVersion" VARCHAR(64) NOT NULL,
     "generationId" VARCHAR(128),
+    "generationProfileId" VARCHAR(128),
+    "generationPolicyVersion" VARCHAR(64),
     "fenceToken" BIGINT NOT NULL DEFAULT 0,
     "lastPublicationEventId" VARCHAR(128),
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "NativeHeatMapReferenceHead_pkey" PRIMARY KEY ("profileId", "policyVersion")
 );
 CREATE INDEX "NativeHeatMapReferenceHead_generationId_idx" ON "NativeHeatMapReferenceHead"("generationId");
+CREATE INDEX "NativeHeatMapReferenceHead_generationProfileId_generationPolicyVersion_idx" ON "NativeHeatMapReferenceHead"("generationProfileId", "generationPolicyVersion");
+ALTER TABLE "NativeHeatMapReferenceHead"
+  ADD CONSTRAINT "NativeHeatMapReferenceHead_generation_profile_policy_fkey"
+  FOREIGN KEY ("generationId", "generationProfileId", "generationPolicyVersion")
+  REFERENCES "NativeHeatMapReferenceGeneration"("generationId", "profileId", "policyVersion")
+  ON DELETE SET NULL ON UPDATE CASCADE;
 
 CREATE TABLE "NativeHeatMapReferencePublicationEvent" (
     "eventId" TEXT NOT NULL,

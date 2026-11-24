@@ -45,7 +45,7 @@ path in this change.
 
 ```text
 npm run native-reference -- preview --candidate <candidate.json>
-npm run native-reference -- publish --candidate <candidate.json> --request-key <key> --expected-fence-token <n> [--expected-generation-id <id>] --confirm
+npm run native-reference -- publish --candidate <candidate.json> --request-key <key> --expected-generation-id <id|none> --expected-fence-token <n> --confirm
 npm run native-reference -- verify
 npm run native-reference -- rollback --expected-generation-id <id> --expected-fence-token <n> --confirm
 ```
@@ -62,18 +62,32 @@ native profile/policy version, sample threshold, TH19, sample counts, and
 `UNKNOWN` for unsupported bands without substituting legacy or zero values.
 
 `/compo state` retains its legacy delta columns and recommendation behavior. If
-the native head is readable, it adds a labeled informational comparison using
-the immutable `legacy-v1` profile-aware calculation engine. Native data cannot
+the native head is readable, it adds labeled individual ACTUAL/WAR comparisons
+using the immutable TH19-inclusive native profile-aware calculation engine.
+Native data cannot
 change eligibility, bucket classification, placement, fill, replacement, or
 advice output.
 
 ## Migration rehearsal and blockers
 
-`prisma validate`, Prisma client generation, migration static review, and the
-deterministic application tests pass locally. A real PostgreSQL migration,
-advisory-lock contention test, and production read-only rerun require the
-restricted database connection and are intentionally not run by Codex here.
-The owner-provided artifacts are the accepted read-only audit evidence for this
-implementation. Remaining blockers are independent authoritative source
-attestation, exact upstream-war binding, and owner approval before any future
-operational activation policy change.
+`prisma validate`, Prisma client generation, migration review, focused tests,
+TypeScript, ESLint, and the build path pass locally. A disposable PostgreSQL
+18.1 rehearsal ran on port 55433/database `clashcookies_native_rehearsal`:
+the existing-schema baseline was created, native tables were removed, the
+feature migration was applied, and first publication, snapshot read, exact
+retry, two-client stale-head rejection, rollback to validated history, and
+first-publication deactivation all completed. No production or staging
+connection was used. Docker smoke could not run because Docker is not installed
+on this workstation. The owner-provided corrected artifacts remain the
+production read-only evidence; no production rerun was needed or attempted.
+
+The review findings are addressed as follows: the CLI is strict, BigInt-safe,
+disconnecting, and nonzero on rejection; publication rejects synthetic or
+mutable previews and revalidates retained evidence; canonical content hashing
+is shared by preview and persisted reads; head/fence/cutoff checks and exact
+retry semantics are fenced; rollback follows the immutable publication chain;
+cross-profile heads and observation lineage are relationally constrained; and
+native state/display surfaces are informational, profile-owned, TH19-inclusive,
+and UNKNOWN-safe. Remaining blockers are independent authoritative source
+attestation, exact upstream-war binding, production migration approval, and
+owner approval before any future operational activation policy change.

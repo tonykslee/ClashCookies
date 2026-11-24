@@ -45,6 +45,8 @@ import {
   type HeatMapRefReferenceAvailability,
 } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import { calculateProfileDeviationScore, NATIVE_PROVISIONAL_COMPOSITION_PROFILE } from "../helper/compoCalculationProfile";
+import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
 import {
   getConfiguredClanMembersCadenceMinutes,
   getHomeRosterCoverage,
@@ -486,6 +488,46 @@ export function maybeLogCompoActualDiagnostics(input: {
   const line = buildCompoActualDiagnosticsLine(input);
   if (line) {
     console.log(line);
+  }
+}
+
+async function readNativeInformationalComparisonLines(clans: readonly CompoActualStateClanContext[]): Promise<string[]> {
+  if (clans.length === 0) return [];
+  try {
+    const nativeDb = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
+    if (!nativeDb.nativeHeatMapReferenceHead) return [];
+    const native = await new NativeHeatMapReferencePublicationService(prisma).readCurrent();
+    if (native.status !== "CURRENT") return [];
+    let supported = 0;
+    let unknown = 0;
+    const rows: string[] = [];
+    for (const clan of clans) {
+      const bandOrdinal = native.bands.findIndex((band) => clan.base.resolvedTotalWeight >= band.weightMinInclusive && clan.base.resolvedTotalWeight <= band.weightMaxInclusive);
+      const targets = bandOrdinal >= 0 ? native.targets.filter((target) => target.bandOrdinal === bandOrdinal) : [];
+      const byReferenceBucket = new Map(targets.map((target) => [target.bucketId, target]));
+      const observedCounts: Record<string, number> = {};
+      const targetCounts: Record<string, number> = {};
+      let known = bandOrdinal >= 0;
+      for (const bucket of NATIVE_PROVISIONAL_COMPOSITION_PROFILE.buckets) {
+        observedCounts[bucket.id] = bucket.sourceBucketIds.reduce((sum, sourceId) => sum + (clan.base.bucketCounts[sourceId as keyof CompoWarBucketCounts] ?? 0), 0);
+        const mapping = NATIVE_PROVISIONAL_COMPOSITION_PROFILE.targetMappings.find((candidate) => candidate.calculationBucketId === bucket.id);
+        const mapped = mapping?.referenceBucketIds.map((id) => byReferenceBucket.get(id));
+        if (!mapped?.length || mapped.some((target) => target?.status !== "SUPPORTED" || target.targetCount === null)) known = false;
+        else targetCounts[bucket.id] = mapped.reduce((sum, target) => sum + (target?.targetCount ?? 0), 0);
+      }
+      const score = known ? calculateProfileDeviationScore({ profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE, observedCounts, targetCounts }) : null;
+      const name = normalizeActualStateClanDisplayName(clan.clanName);
+      if (score === null) {
+        unknown += 1;
+        rows.push(`ACTUAL native comparison · ${name} · UNKNOWN`);
+      } else {
+        supported += 1;
+        rows.push(`ACTUAL native comparison · ${name} · score ${score.toFixed(1)} · band ${bandOrdinal + 1}`);
+      }
+    }
+    return [`Provisional native comparison (informational only; no recommendations): ${supported} supported / ${unknown} UNKNOWN clans · ${native.profileVersion} · ${native.policyVersion} · generation ${native.generationId ?? "unknown"}`, ...rows];
+  } catch {
+    return [];
   }
 }
 
@@ -1145,6 +1187,7 @@ export class CompoActualStateService {
   ): Promise<CompoActualStateReadResult> {
     const view = options?.view ?? "auto";
     const context = await loadCompoActualStateContext(guildId);
+    const nativeLines = await readNativeInformationalComparisonLines(context.clans);
 
     if (context.trackedClanTags.length === 0) {
       return {
@@ -1156,6 +1199,7 @@ export class CompoActualStateService {
         contentLines: [
           `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(null)}`,
           "No tracked clans are configured for DB-backed ACTUAL state.",
+          ...nativeLines,
         ],
       };
     }
@@ -1259,6 +1303,7 @@ export class CompoActualStateService {
           : `Reference warning: ${context.referenceAvailability.warning}`,
       );
     }
+    contentLines.push(...nativeLines);
     const imageNotice = buildHeatMapRefUnknownNotice(
       context.referenceAvailability,
       historicalReferenceAvailability,

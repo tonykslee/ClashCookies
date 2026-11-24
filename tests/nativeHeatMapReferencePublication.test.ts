@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildNativeHeatMapReferencePreview,
   NATIVE_REFERENCE_POLICY_VERSION,
+  validatePublishableCandidate,
 } from "../src/services/NativeHeatMapReferencePublicationService";
 import {
   generateNativeHeatMapRefCandidate,
@@ -10,6 +11,8 @@ import {
   type NativeReferenceSourceRoster,
 } from "../src/helper/nativeHeatMapRefCandidate";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
+import { NATIVE_PROVISIONAL_COMPOSITION_PROFILE } from "../src/helper/compoCalculationProfile";
+import { parseArgs } from "../src/scripts/nativeHeatMapReference";
 
 const eraPolicy = {
   policyId: "fwa-native-current-era",
@@ -91,5 +94,28 @@ describe("native provisional publication boundary", () => {
       evidenceTrust: "synthetic_untrusted",
     });
     expect(() => buildNativeHeatMapReferencePreview(candidate)).toThrow(/2-anchor\/5-clan/);
+  });
+
+  it("keeps synthetic previews non-publishable and owns TH19 in the native calculation profile", () => {
+    const candidate = generateNativeHeatMapRefCandidate({
+      sourceRosters: Array.from({ length: 5 }, (_, index) => roster(index + 1)),
+      eraPolicy,
+      evaluationAt: eraPolicy.eraEndIso,
+      bandDefinitions: HEAT_MAP_REF_SEED_ROWS.map((row) => ({ weightMinInclusive: row.weightMinInclusive, weightMaxInclusive: row.weightMaxInclusive })),
+      sampleThreshold: 5,
+      bucketRegistry: NATIVE_REFERENCE_BUCKET_REGISTRY,
+      sourceCategory: "synthetic_fixture",
+      evidenceTrust: "synthetic_untrusted",
+    });
+    expect(validatePublishableCandidate(candidate)).toBe("publication_requires_retained_observation_source");
+    expect(NATIVE_PROVISIONAL_COMPOSITION_PROFILE.buckets[0]?.id).toBe("TH19");
+    expect(Object.isFrozen(NATIVE_PROVISIONAL_COMPOSITION_PROFILE)).toBe(true);
+  });
+
+  it("rejects unknown CLI flags, duplicate flags, and valued confirmations", () => {
+    expect(() => parseArgs(["verify", "--unexpected"])).toThrow(/unknown --unexpected/);
+    expect(() => parseArgs(["preview", "--candidate", "a", "--candidate", "b"])).toThrow(/duplicate --candidate/);
+    expect(() => parseArgs(["publish", "--confirm", "true"])).toThrow(/does not accept a value/);
+    expect(parseArgs(["publish", "--candidate", "a", "--request-key", "r", "--expected-generation-id", "none", "--expected-fence-token", "0", "--confirm"]).args.confirm).toBe(true);
   });
 });

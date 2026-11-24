@@ -19,6 +19,7 @@ import {
 } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 import { NativeHeatMapReferencePublicationService, type NativeHeatMapReferenceRead } from "./NativeHeatMapReferencePublicationService";
+import { NATIVE_PROVISIONAL_COMPOSITION_PROFILE, getCompoProfileReferenceDisplayColumns } from "../helper/compoCalculationProfile";
 
 export type HeatMapRefDisplayReferenceStatus =
   | "validated"
@@ -40,11 +41,11 @@ function nativeReferenceRows(native: NativeHeatMapReferenceRead): string[][] {
     current.push(target);
     grouped.set(target.bandOrdinal, current);
   }
+  const columns = getCompoProfileReferenceDisplayColumns(NATIVE_PROVISIONAL_COMPOSITION_PROFILE);
   const rows: string[][] = [
-    ["PROVISIONAL NATIVE · INFORMATIONAL ONLY", `profile ${native.profileVersion}`, `policy ${native.policyVersion}`, `samples ≥${native.sampleThreshold ?? "?"}`],
-    ["Band", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10 or lower", "Qualifying clans"],
+    ["NATIVE PROVISIONAL · INFORMATIONAL ONLY", `profile ${native.profileVersion}`, `policy ${native.policyVersion}`, `generation ${native.generationId ?? "unknown"}`, `evaluated ${native.evaluationAt?.toISOString() ?? "unknown"}`, `samples ≥${native.sampleThreshold ?? "?"}`],
+    ["Band", ...columns.map((column) => column.label), "Qualifying clans"],
   ];
-  const bucketIds = ["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10_OR_LOWER"];
   for (const [bandOrdinal, targets] of [...grouped.entries()].sort(([left], [right]) => left - right)) {
     const byBucket = new Map(targets.map((target) => [target.bucketId, target]));
     const sampleCount = targets[0]?.sampleCount ?? 0;
@@ -52,9 +53,11 @@ function nativeReferenceRows(native: NativeHeatMapReferenceRead): string[][] {
       native.bands[bandOrdinal]
         ? `${native.bands[bandOrdinal]!.weightMinInclusive.toLocaleString("en-US")}–${native.bands[bandOrdinal]!.weightMaxInclusive.toLocaleString("en-US")}`
         : `band ${bandOrdinal + 1}`,
-      ...bucketIds.map((bucketId) => {
-        const target = byBucket.get(bucketId);
-        return target?.status === "SUPPORTED" && target.targetCount !== null ? `${target.targetCount}` : "UNKNOWN";
+      ...columns.map((column) => {
+        const targets = column.referenceBucketIds.map((bucketId) => byBucket.get(bucketId));
+        return targets.length > 0 && targets.every((target) => target?.status === "SUPPORTED" && target.targetCount !== null)
+          ? `${targets.reduce((sum, target) => sum + (target?.targetCount ?? 0), 0)}`
+          : "UNKNOWN";
       }),
       `${sampleCount}`,
     ]);
@@ -233,12 +236,12 @@ export class HeatMapRefDisplayService {
   private async readNativeReference(): Promise<NativeHeatMapReferenceRead> {
     const db = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
     if (!db.nativeHeatMapReferenceHead) {
-      return { status: "UNKNOWN", informationalOnly: true, reason: "native_publication_tables_unavailable", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, targets: [], bands: [] };
+      return { status: "UNKNOWN", informationalOnly: true, reason: "native_publication_tables_unavailable", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, evaluationAt: null, createdAt: null, targets: [], bands: [] };
     }
     try {
       return await new NativeHeatMapReferencePublicationService(prisma).readCurrent();
     } catch {
-      return { status: "UNKNOWN", informationalOnly: true, reason: "native_reference_read_failed", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, targets: [], bands: [] };
+      return { status: "UNKNOWN", informationalOnly: true, reason: "native_reference_read_failed", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, evaluationAt: null, createdAt: null, targets: [], bands: [] };
     }
   }
 

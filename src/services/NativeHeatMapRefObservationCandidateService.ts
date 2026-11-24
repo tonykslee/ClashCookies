@@ -229,6 +229,10 @@ function stableMetadata(metadata: NativeReferenceObservationAggregationMetadata)
   };
 }
 
+function emptyWeightProvenance(): { RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number } {
+  return { RAW: 0, DEFERRED: 0, ESTIMATED: 0, UNRESOLVED: 0 };
+}
+
 /** Purpose: read immutable WarMembers observations and quality revisions as-of an explicit policy cutoff. */
 export class NativeHeatMapRefObservationCandidateService {
   private readonly db: ObservationDb;
@@ -366,6 +370,11 @@ export class NativeHeatMapRefObservationCandidateService {
             .filter((evidence) => evidenceAvailableAsOf(evidence, eraStart, evaluationAt))
             .sort((left, right) => left.id.localeCompare(right.id))
             .map((evidence) => evidence.id),
+          weightProvenance: row.members.reduce((counts, member) => {
+            if (member.rawWeight !== null && member.rawWeight > 0) counts.RAW += 1;
+            else counts.UNRESOLVED += 1;
+            return counts;
+          }, emptyWeightProvenance()),
         });
       }
       const evidenceCandidates = newest.qualityEvidence
@@ -429,6 +438,7 @@ export class NativeHeatMapRefObservationCandidateService {
 
     const deferred = await this.resolveDeferredWeights(selections, input, evaluationAt, eraStart, eraEnd);
     const sourceRosters: NativeReferenceSourceRoster[] = [];
+    const weightProvenanceByObservation = new Map<string, { RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number }>();
     for (const selection of selections) {
       if (selection.status !== "QUALIFYING" || !selection.roster) continue;
       const deferredByPlayer = deferred.get(selection.roster.clanTag) ?? new Map<string, OpenWeightInputDefermentMatchRow>();
@@ -444,8 +454,17 @@ export class NativeHeatMapRefObservationCandidateService {
       const totalEffectiveWeight = resolved.every((member) => member.effectiveWeight !== null)
         ? resolved.reduce((sum, member) => sum + (member.effectiveWeight ?? 0), 0)
         : null;
+      weightProvenanceByObservation.set(selection.observation.id, resolved.reduce((counts, member) => {
+        counts[member.effectiveWeightStatus] += 1;
+        return counts;
+      }, emptyWeightProvenance()));
       sourceRosters.push({ ...selection.roster, totalEffectiveWeight, members: resolved });
     }
+
+    const lineageWithProvenance = lineage.map((entry) => ({
+      ...entry,
+      weightProvenance: weightProvenanceByObservation.get(entry.observationId) ?? entry.weightProvenance,
+    }));
 
     const metadata: NativeReferenceObservationAggregationMetadata = stableMetadata({
       contractVersion: NATIVE_OBSERVATION_AGGREGATION_CONTRACT_VERSION,
@@ -472,7 +491,7 @@ export class NativeHeatMapRefObservationCandidateService {
         status: selection.status,
         reasonCode: selection.reasonCode,
       })),
-      lineage,
+      lineage: lineageWithProvenance,
       defermentScope: input.defermentScope ?? null,
       authorityLimitations: [
         "exact_war_binding_unavailable",

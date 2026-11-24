@@ -248,6 +248,7 @@ export type NativeReferenceObservationAggregationMetadata = {
     ingestedAtIso: string;
     selectionStatus: "SELECTED" | "SUPERSEDED" | "AMBIGUOUS";
     qualityEvidenceIds: readonly string[];
+    weightProvenance?: Readonly<{ RAW: number; DEFERRED: number; ESTIMATED: number; UNRESOLVED: number }>;
   }[];
   defermentScope: { guildId: string; clanTag: string } | null;
   authorityLimitations: readonly string[];
@@ -1468,7 +1469,8 @@ function validateNativeReferenceCandidateArtifactInternal(
     let supersededCount = 0;
     let ambiguousLineageCount = 0;
     for (const value of lineage) {
-      if (!isRecordValue(value) || !hasExactKeys(value, ["clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso", "selectionStatus", "qualityEvidenceIds"])) return false;
+      const lineageKeys = ["clanTag", "observationId", "rosterFingerprint", "firstObservedAtIso", "observedAtIso", "ingestedAtIso", "selectionStatus", "qualityEvidenceIds"];
+      if (!isRecordValue(value) || (!hasExactKeys(value, lineageKeys) && !hasExactKeys(value, [...lineageKeys, "weightProvenance"]))) return false;
       const clanTag = normalizeIdentity(value.clanTag);
       if (
         !clanTag || value.clanTag !== clanTag || typeof value.observationId !== "string" || !value.observationId.trim() ||
@@ -1481,6 +1483,7 @@ function validateNativeReferenceCandidateArtifactInternal(
         new Date(value.ingestedAtIso).getTime() > evaluationMs ||
         !["SELECTED", "SUPERSEDED", "AMBIGUOUS"].includes(String(value.selectionStatus)) ||
         !Array.isArray(value.qualityEvidenceIds) || value.qualityEvidenceIds.some((id) => typeof id !== "string" || !id.trim() || lineageQualityIds.has(id)) ||
+        (value.weightProvenance !== undefined && (!isRecordValue(value.weightProvenance) || !hasExactKeys(value.weightProvenance, ["RAW", "DEFERRED", "ESTIMATED", "UNRESOLVED"]) || ![value.weightProvenance.RAW, value.weightProvenance.DEFERRED, value.weightProvenance.ESTIMATED, value.weightProvenance.UNRESOLVED].every(isNonnegativeInteger))) ||
         lineageIds.has(value.observationId)
       ) return false;
       lineageIds.add(value.observationId);
