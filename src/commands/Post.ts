@@ -1249,7 +1249,7 @@ function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   });
 
   const parts = formatter.formatToParts(date);
@@ -1279,6 +1279,8 @@ function toEpochSeconds(
   let result = utcGuess - firstOffset;
 
   // Re-apply using the first pass result to stabilize around DST boundaries.
+  // This preserves the existing deterministic choice for ambiguous fall-back
+  // times and the existing mapping for nonexistent spring-forward times.
   const secondOffset = getTimeZoneOffsetMs(new Date(result), timeZone);
   result = utcGuess - secondOffset;
 
@@ -1296,7 +1298,7 @@ function getDateTimeInTimeZone(
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   });
 
   const parts = formatter.formatToParts(date);

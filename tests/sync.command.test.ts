@@ -1507,6 +1507,20 @@ describe("/sync time post modal seed", () => {
     expect(modal.components[2].components[0].value).toBe("America/Chicago");
   });
 
+  it("formats a midnight modal default with 00-23 hour semantics", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-23T20:00:00.000Z"));
+    vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
+
+    const interaction = makeRunInteraction({ timezone: "America/Los_Angeles" });
+
+    await Post.run({} as any, interaction as any, {} as any);
+
+    const modal = interaction.showModal.mock.calls[0]?.[0].toJSON() as any;
+    expect(modal.components[0].components[0].value).toBe("2026-11-24");
+    expect(modal.components[1].components[0].value).toBe("00:00");
+  });
+
   it("does not read a destination channel option before opening the modal", async () => {
     vi.spyOn(SettingsService.prototype, "get").mockResolvedValue(null);
     const interaction = makeRunInteraction({ timezone: null });
@@ -2583,6 +2597,156 @@ describe("/sync time post modal submit", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.stringContaining("Configured sync bot-log channel <#222222222222222222> is unavailable"),
     );
+  });
+
+  it.each([
+    {
+      name: "the reported America/Los_Angeles 00:20 case",
+      timezone: "America/Los_Angeles",
+      date: "2026-11-24",
+      time: "00:20",
+      now: "2026-11-24T00:23:00.000Z",
+      expected: "2026-11-24T08:20:00.000Z",
+    },
+    {
+      name: "00:00",
+      timezone: "America/Los_Angeles",
+      date: "2026-11-24",
+      time: "00:00",
+      now: "2026-11-24T00:23:00.000Z",
+      expected: "2026-11-24T08:00:00.000Z",
+    },
+    {
+      name: "23:59 with next-day rollover",
+      timezone: "America/Los_Angeles",
+      date: "2026-11-24",
+      time: "23:59",
+      now: "2026-11-24T00:23:00.000Z",
+      expected: "2026-11-25T07:59:00.000Z",
+    },
+    {
+      name: "UTC midnight",
+      timezone: "UTC",
+      date: "2026-11-24",
+      time: "00:20",
+      now: "2026-11-23T16:23:00.000Z",
+      expected: "2026-11-24T00:20:00.000Z",
+    },
+    {
+      name: "month and year rollover",
+      timezone: "America/Los_Angeles",
+      date: "2026-12-31",
+      time: "23:59",
+      now: "2026-12-31T00:00:00.000Z",
+      expected: "2027-01-01T07:59:00.000Z",
+    },
+  ])("converts $name to the exact UTC instant", async ({ timezone, date, time, now, expected }) => {
+    vi.setSystemTime(new Date(now));
+
+    const interaction = makeSubmitInteraction({
+      timezone,
+      date,
+      time,
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledWith(
+      expect.objectContaining({ syncTime: new Date(expected) }),
+    );
+  });
+
+  it.each(["PT", "PST", "PDT"])("normalizes Pacific alias %s without changing midnight conversion", async (timezone) => {
+    vi.setSystemTime(new Date("2026-11-24T00:23:00.000Z"));
+
+    const interaction = makeSubmitInteraction({
+      timezone,
+      date: "2026-11-24",
+      time: "00:20",
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledWith(
+      expect.objectContaining({ syncTime: new Date("2026-11-24T08:20:00.000Z") }),
+    );
+    expect(scheduledSyncPostService.scheduleSyncTimePost).toHaveBeenCalledWith(
+      expect.objectContaining({ timezone: "America/Los_Angeles" }),
+    );
+  });
+
+  it.each([
+    {
+      name: "spring-forward before the gap",
+      now: "2026-03-08T08:00:00.000Z",
+      date: "2026-03-08",
+      time: "01:30",
+      expected: "2026-03-08T09:30:00.000Z",
+    },
+    {
+      name: "nonexistent spring-forward time",
+      now: "2026-03-08T08:00:00.000Z",
+      date: "2026-03-08",
+      time: "02:30",
+      expected: "2026-03-08T09:30:00.000Z",
+    },
+    {
+      name: "spring-forward after the gap",
+      now: "2026-03-08T08:00:00.000Z",
+      date: "2026-03-08",
+      time: "03:30",
+      expected: "2026-03-08T10:30:00.000Z",
+    },
+    {
+      name: "ambiguous fall-back time",
+      now: "2026-11-01T07:00:00.000Z",
+      date: "2026-11-01",
+      time: "01:30",
+      expected: "2026-11-01T08:30:00.000Z",
+    },
+    {
+      name: "fall-back after the repeated hour",
+      now: "2026-11-01T07:00:00.000Z",
+      date: "2026-11-01",
+      time: "02:30",
+      expected: "2026-11-01T10:30:00.000Z",
+    },
+  ])("preserves existing DST handling for $name", async ({ now, date, time, expected }) => {
+    vi.setSystemTime(new Date(now));
+
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Los_Angeles",
+      date,
+      time,
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).toHaveBeenCalledWith(
+      expect.objectContaining({ syncTime: new Date(expected) }),
+    );
+  });
+
+  it.each([
+    { date: "2026-02-29", time: "00:20", message: "Invalid date" },
+    { date: "2026-11-24", time: "24:00", message: "Invalid time" },
+    { date: "2026-11-24", time: "12:60", message: "Invalid time" },
+  ])("keeps rejecting invalid date/time input", async ({ date, time, message }) => {
+    const interaction = makeSubmitInteraction({
+      timezone: "America/Los_Angeles",
+      date,
+      time,
+      role: "<@&123456789012345678>",
+    });
+
+    await handlePostModalSubmit(interaction as any);
+
+    expect(syncTimePostPublisherService.publishImmediateSyncTimePost).not.toHaveBeenCalled();
+    expect(scheduledSyncPostService.scheduleSyncTimePost).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining(message));
   });
 
   it("rejects scheduling when the sync time is already in the past", async () => {
