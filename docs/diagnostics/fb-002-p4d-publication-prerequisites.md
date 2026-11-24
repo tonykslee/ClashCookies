@@ -1,5 +1,10 @@
 # FB-002 P4d-0 — Native reference publication prerequisites
 
+> Historical prerequisite record. P4d-2 is now implemented locally under the
+> owner-approved `native-provisional-v1` policy (five clans per band, two
+> direct anchors) using the additive storage and operator controls documented
+> in [fb-002-p4d-2-native-publication.md](fb-002-p4d-2-native-publication.md).
+
 Status: proposed documentation-only contract. No native evidence owner, native
 reference table, publication pointer, activation state, migration, or runtime
 writer is implemented by this document.
@@ -97,7 +102,7 @@ contains contradictory or malformed facts and cannot qualify.
 | Stable source generation/freshness | `observedAt`, `ingestedAt`, `sourceSyncedAt`, `sourceCurrentWarUpdatedAt`, feed `lastSuccessAt`, and a content hash are local/current-state metadata. No durable upstream generation or monotonic source revision survives restarts and competing fetches. | `UNAVAILABLE`; no replay protection or freshness ordering. |
 | Duplicate/replayed observations | Current rows are upserts keyed by clan/player and stale rows are deleted. `FwaFeedSyncState.lastContentHash` is one latest hash, not immutable history. | `UNAVAILABLE`; repeated or out-of-order observations cannot be classified safely. |
 | Conflict retention | Current sync replaces rows and does not retain both conflicting payloads. P4c reports conflict diagnostics but does not persist them. | `UNAVAILABLE`; a native source owner is required before publication. |
-| Candidate support threshold | The default threshold of ten distinct qualifying clans is a diagnostic engineering policy in `nativeHeatMapRefCandidate`; it is not a production confidence or authority policy. | Must be approved/versioned in the native publication policy. |
+| Candidate support threshold | The owner-approved provisional threshold is five distinct qualifying clans per band; ten remains diagnostic. | Authoritative publication and operational activation remain separate gates. |
 | Native target state | Diagnostic artifacts already distinguish `SUPPORTED` and `UNKNOWN` target results, but persisted native targets do not exist. | P4d must preserve this distinction per band and bucket. |
 
 Matching tags, timestamps, `warNo=1`, a selected `CurrentWar`, a 50-row
@@ -571,18 +576,20 @@ Before any owner approval for a migration-bearing P4d PR:
   deployment outside this documentation milestone.
 
 The current mocked advisory-lock and transaction tests are not sufficient to
-close these gates. Until live evidence exists, concurrency validation is
-`UNVERIFIED` and the recommendation remains NO-GO.
+close these gates. Until live evidence exists, concurrency validation remains
+`UNVERIFIED`; the owner-approved local P4d-2 implementation is therefore
+informational and not an operational activation.
 
 ## 10. Explicit recommendation
 
-**Recommendation: do not implement native publication yet.** First obtain an
-upstream contract or independent source authority that can prove exact war
-identity, FWA classification, complete membership, direct weights,
-authenticity, stable generation/freshness, and replay/conflict history. Then
-implement P4d-1 as an additive immutable observation owner and validate it on
-real PostgreSQL. Only after P4d-1 is green should P4d-2 add the isolated native
-generation and publication head.
+**Historical recommendation (superseded for local implementation):** do not
+activate native operational recommendations until an upstream contract or
+independent source authority proves exact war identity, FWA classification,
+complete membership, direct weights, authenticity, stable generation/freshness,
+and replay/conflict history. P4d-2 now adds the isolated native generation and
+publication head for the owner-approved provisional informational policy;
+publication remains operator-controlled and real-PostgreSQL rehearsal is still
+required before production migration/publication.
 
 The current state is:
 
@@ -590,9 +597,10 @@ The current state is:
   facts exist, latest-only current-state ownership, legacy-v1 parity and
   fail-closed behavior, diagnostic candidate versioning, and mocked rollback /
   stale-generation contract tests.
-- **Proposed:** immutable observation ownership, conflict retention, native
-  generation/target/head model, transactional fencing, snapshot readers,
-  idempotent retry, crash recovery, and rollback protocol described here.
+- **Implemented locally:** native generation/target/head model, transactional
+  fencing, snapshot readers, idempotent retry, and operator rollback for the
+  provisional policy; real-PostgreSQL migration/contention rehearsal remains
+  outstanding.
 - **Blocked/UNAVAILABLE:** exact upstream war identity, independent FWA
   classification, source-declared completeness and totals, direct-weight
   authority for persisted snapshots, source authenticity, durable generation,
