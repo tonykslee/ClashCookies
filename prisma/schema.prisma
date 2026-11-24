@@ -2916,3 +2916,141 @@ model DuskRewardPolicyVersion {
   @@unique([policyKey, version])
   @@index([policyKey, createdAt])
 }
+
+enum NativeHeatMapReferenceGenerationStatus {
+  PREVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum NativeHeatMapReferenceTargetStatus {
+  SUPPORTED
+  UNKNOWN
+}
+
+enum NativeHeatMapReferencePublicationEventType {
+  PREVIEW
+  PUBLISHED
+  REJECTED_STALE
+  REJECTED_CONFLICT
+  REJECTED_INVALID
+  ROLLBACK
+}
+
+/// Additive native reference content. This is deliberately isolated from legacy HeatMapRef publication.
+model NativeHeatMapReferenceGeneration {
+  generationId                 String                                   @id @default(cuid())
+  profileId                    String                                   @db.VarChar(128)
+  profileVersion               String                                   @db.VarChar(64)
+  policyId                     String                                   @db.VarChar(128)
+  policyVersion                String                                   @db.VarChar(64)
+  sampleThreshold              Int
+  minimumDirectWeightAnchors   Int
+  authorityStatus              String                                   @db.VarChar(64)
+  evaluationAt                 DateTime
+  eraPolicyId                  String                                   @db.VarChar(128)
+  eraPolicyVersion             String                                   @db.VarChar(64)
+  eraStart                     DateTime
+  eraEnd                       DateTime
+  status                       NativeHeatMapReferenceGenerationStatus
+  bucketDefinitionFingerprint  String                                   @db.VarChar(128)
+  sourceLineageFingerprint     String                                   @db.VarChar(128)
+  contentFingerprint           String                                   @db.VarChar(128)
+  requestKey                   String                                   @db.VarChar(128)
+  candidateFingerprint         String?                                  @db.VarChar(128)
+  createdAt                    DateTime                                 @default(now())
+  verifiedAt                   DateTime?
+  bands                        NativeHeatMapReferenceGenerationBand[]
+  buckets                      NativeHeatMapReferenceGenerationBucket[]
+  targets                      NativeHeatMapReferenceTarget[]             @relation("NativeReferenceTargetGeneration")
+  lineage                      NativeHeatMapReferenceLineage[]
+
+  @@unique([profileId, policyVersion, requestKey])
+  @@index([profileId, policyVersion, createdAt])
+  @@index([status, profileId, policyVersion])
+}
+
+model NativeHeatMapReferenceGenerationBand {
+  generationId       String
+  ordinal            Int
+  weightMinInclusive Int
+  weightMaxInclusive Int
+  generation         NativeHeatMapReferenceGeneration  @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+  targets            NativeHeatMapReferenceTarget[] @relation("NativeReferenceTargetBand")
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, weightMinInclusive, weightMaxInclusive])
+}
+
+model NativeHeatMapReferenceGenerationBucket {
+  generationId String
+  ordinal      Int
+  bucketId     String                            @db.VarChar(64)
+  sourceBucketIds Json
+  generation   NativeHeatMapReferenceGeneration @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, bucketId])
+}
+
+model NativeHeatMapReferenceTarget {
+  generationId       String
+  bandOrdinal        Int
+  bucketId           String                                  @db.VarChar(64)
+  status             NativeHeatMapReferenceTargetStatus
+  targetCount        Int?
+  qualifyingClanCount Int
+  sampleCount        Int
+  reasonCode         String?
+  generation         NativeHeatMapReferenceGeneration       @relation("NativeReferenceTargetGeneration", fields: [generationId], references: [generationId], onDelete: Cascade)
+  band               NativeHeatMapReferenceGenerationBand   @relation("NativeReferenceTargetBand", fields: [generationId, bandOrdinal], references: [generationId, ordinal], onDelete: Cascade)
+
+  @@id([generationId, bandOrdinal, bucketId])
+  @@index([generationId, status])
+}
+
+model NativeHeatMapReferenceLineage {
+  generationId              String                                  @db.VarChar(128)
+  ordinal                   Int
+  observationId             String                                  @db.VarChar(128)
+  observationContentFingerprint String                               @db.VarChar(128)
+  role                      String                                  @db.VarChar(64)
+  inputDigest               String                                  @db.VarChar(128)
+  generation                NativeHeatMapReferenceGeneration       @relation(fields: [generationId], references: [generationId], onDelete: Cascade)
+
+  @@id([generationId, ordinal])
+  @@unique([generationId, observationId])
+}
+
+/// One mutable pointer per native profile/policy. It never changes legacy references.
+model NativeHeatMapReferenceHead {
+  profileId              String   @db.VarChar(128)
+  policyVersion          String   @db.VarChar(64)
+  generationId           String?  @db.VarChar(128)
+  fenceToken             BigInt   @default(0)
+  lastPublicationEventId String?  @db.VarChar(128)
+  updatedAt              DateTime @updatedAt
+
+  @@id([profileId, policyVersion])
+  @@index([generationId])
+}
+
+model NativeHeatMapReferencePublicationEvent {
+  eventId               String                                      @id @default(cuid())
+  profileId             String                                      @db.VarChar(128)
+  policyVersion         String                                      @db.VarChar(64)
+  generationId          String?                                     @db.VarChar(128)
+  eventType             NativeHeatMapReferencePublicationEventType
+  previousGenerationId  String?                                     @db.VarChar(128)
+  newGenerationId       String?                                     @db.VarChar(128)
+  previousFenceToken    BigInt?
+  newFenceToken         BigInt?
+  actorDiscordUserId    String?                                     @db.VarChar(128)
+  requestKey            String?                                     @db.VarChar(128)
+  reasonCode            String?                                     @db.VarChar(128)
+  contentFingerprint    String?                                     @db.VarChar(128)
+  createdAt             DateTime                                    @default(now())
+
+  @@index([profileId, policyVersion, createdAt])
+  @@index([generationId])
+}

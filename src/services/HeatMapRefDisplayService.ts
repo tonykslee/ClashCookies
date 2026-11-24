@@ -18,6 +18,7 @@ import {
   type HeatMapRefReferenceAvailability,
 } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import { NativeHeatMapReferencePublicationService, type NativeHeatMapReferenceRead } from "./NativeHeatMapReferencePublicationService";
 
 export type HeatMapRefDisplayReferenceStatus =
   | "validated"
@@ -30,6 +31,41 @@ export type HeatMapRefDisplayReferenceState = {
   sourceVersion: string | null;
   notice: string;
 };
+
+function nativeReferenceRows(native: NativeHeatMapReferenceRead): string[][] {
+  if (native.status !== "CURRENT") return [];
+  const grouped = new Map<number, NativeHeatMapReferenceRead["targets"]>();
+  for (const target of native.targets) {
+    const current = [...(grouped.get(target.bandOrdinal) ?? [])];
+    current.push(target);
+    grouped.set(target.bandOrdinal, current);
+  }
+  const rows: string[][] = [
+    ["PROVISIONAL NATIVE · INFORMATIONAL ONLY", `profile ${native.profileVersion}`, `policy ${native.policyVersion}`, `samples ≥${native.sampleThreshold ?? "?"}`],
+    ["Band", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10 or lower", "Qualifying clans"],
+  ];
+  const bucketIds = ["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10_OR_LOWER"];
+  for (const [bandOrdinal, targets] of [...grouped.entries()].sort(([left], [right]) => left - right)) {
+    const byBucket = new Map(targets.map((target) => [target.bucketId, target]));
+    const sampleCount = targets[0]?.sampleCount ?? 0;
+    rows.push([
+      native.bands[bandOrdinal]
+        ? `${native.bands[bandOrdinal]!.weightMinInclusive.toLocaleString("en-US")}–${native.bands[bandOrdinal]!.weightMaxInclusive.toLocaleString("en-US")}`
+        : `band ${bandOrdinal + 1}`,
+      ...bucketIds.map((bucketId) => {
+        const target = byBucket.get(bucketId);
+        return target?.status === "SUPPORTED" && target.targetCount !== null ? `${target.targetCount}` : "UNKNOWN";
+      }),
+      `${sampleCount}`,
+    ]);
+  }
+  return rows;
+}
+
+function appendNativeReferenceCopy(copyText: string, rows: readonly string[][]): string {
+  if (rows.length === 0) return copyText;
+  return `${copyText}\n\n${rows.map((row) => row.join("\t")).join("\n")}`;
+}
 
 type HeatMapRefSourceMember = {
   clanTag: string;
@@ -168,6 +204,7 @@ export class HeatMapRefDisplayService {
     availability: HeatMapRefReferenceAvailability;
     historicalAvailability: HeatMapRefHistoricalReferenceAvailability;
     referenceState: HeatMapRefDisplayReferenceState;
+    nativeReference: NativeHeatMapReferenceRead;
   }> {
     const reference = await resolveHeatMapRefReference({ guildId: input?.guildId });
     const referenceState = buildReferenceState({
@@ -175,16 +212,34 @@ export class HeatMapRefDisplayService {
       availability: reference.availability,
       historicalAvailability: reference.historicalAvailability,
     });
-    const [display, availability] = await Promise.all([
+    const [display, availability, nativeReference] = await Promise.all([
       this.buildDisplayData(reference.heatMapRefs),
       Promise.resolve(reference.availability),
+      this.readNativeReference(),
     ]);
+    const nativeRows = nativeReferenceRows(nativeReference);
     return {
-      ...display,
+      rows: nativeRows.length > 0 ? [...display.rows, ...nativeRows] : display.rows,
+      copyText: appendNativeReferenceCopy(display.copyText, nativeRows),
       availability,
       historicalAvailability: reference.historicalAvailability,
-      referenceState,
+      referenceState: nativeReference.status === "CURRENT"
+        ? { ...referenceState, notice: `${referenceState.notice} Provisional native targets are informational only · ${nativeReference.profileVersion} · ${nativeReference.policyVersion}.` }
+        : referenceState,
+      nativeReference,
     };
+  }
+
+  private async readNativeReference(): Promise<NativeHeatMapReferenceRead> {
+    const db = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
+    if (!db.nativeHeatMapReferenceHead) {
+      return { status: "UNKNOWN", informationalOnly: true, reason: "native_publication_tables_unavailable", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, targets: [], bands: [] };
+    }
+    try {
+      return await new NativeHeatMapReferencePublicationService(prisma).readCurrent();
+    } catch {
+      return { status: "UNKNOWN", informationalOnly: true, reason: "native_reference_read_failed", generationId: null, fenceToken: null, profileVersion: "native-reference-v2", policyVersion: "native-provisional-v1", sampleThreshold: null, targets: [], bands: [] };
+    }
   }
 
   async readHeatMapRefBandMatchRates(input?: {

@@ -28,6 +28,7 @@
     "seed:fwa-layouts": "ts-node src/scripts/seedFwaLayouts.ts",
     "seed:heatmap-ref": "ts-node src/scripts/seedHeatMapRef.ts",
     "diagnose:heatmap-ref-native": "ts-node src/scripts/diagnoseNativeHeatMapRef.ts",
+    "native-reference": "ts-node src/scripts/nativeHeatMapReference.ts",
     "diagnose:fwa-war-observations": "ts-node src/scripts/diagnoseFwaWarMembersObservations.ts",
     "repair:fwa-ended-war": "ts-node src/scripts/repairEndedWarState.ts",
     "diagnose:membership-history-backfill": "node dist/scripts/auditMembershipHistoryBackfill.js",

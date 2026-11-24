@@ -10,11 +10,12 @@ export const NATIVE_REFERENCE_PROFILE_ID = "fwa-native-composition-reference";
 export const NATIVE_REFERENCE_PROFILE_VERSION = "native-reference-v2";
 export const NATIVE_REFERENCE_UNCERTAINTY_POLICY_VERSION = "resolved-weight-quality-v2";
 export const NATIVE_REFERENCE_SAMPLE_QUALITY_POLICY_VERSION = "anchor-sufficiency-v1";
-/** Diagnostic proposal only: two direct anchors are the minimum for inferred reference evidence. */
+/** Provisional owner-approved policy: two direct anchors are the minimum for inferred reference evidence. */
 export const NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS = 2;
 export const NATIVE_REFERENCE_BUCKET_DEFINITION_VERSION = "compo-war-buckets-v1";
 export const NATIVE_REFERENCE_ERA_POLICY_VERSION = "explicit-window-v1";
-export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 10;
+/** Owner-approved provisional native qualification threshold. Authoritative publication has a separate gate. */
+export const NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD = 5;
 export const NATIVE_REFERENCE_TARGET_TOTAL = 50;
 export const NATIVE_REFERENCE_PERSISTED_SOURCE_CATEGORY = "persisted_fwa_snapshot";
 export const NATIVE_REFERENCE_RETAINED_OBSERVATION_SOURCE_CATEGORY = "retained_fwa_observations";

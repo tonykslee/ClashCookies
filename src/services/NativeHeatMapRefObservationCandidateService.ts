@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
   computeNativeReferenceCandidateContentFingerprint,
@@ -36,13 +36,14 @@ export const NATIVE_OBSERVATION_READ_LIMIT = 1_000;
 
 type ObservationDb = Pick<PrismaClient, "fwaWarMembersObservation">;
 
-type RetainedMember = {
-  clanTag: string;
-  playerTag: string;
-  position: number | null;
-  townHall: number | null;
-  rawWeight: number | null;
-};
+type RetainedObservationQuery = Prisma.FwaWarMembersObservationGetPayload<{
+  include: { members: true; qualityEvidence: true };
+}>;
+
+type RetainedMember = Pick<
+  RetainedObservationQuery["members"][number],
+  "observationId" | "playerTag" | "position" | "townHall" | "rawWeight"
+>;
 
 type RetainedEvidence = {
   id: string;
@@ -73,6 +74,28 @@ type RetainedObservation = {
   members: RetainedMember[];
   qualityEvidence: RetainedEvidence[];
 };
+
+function mapRetainedObservation(row: RetainedObservationQuery): RetainedObservation {
+  return {
+    id: row.id,
+    clanTag: row.clanTag,
+    sourceContractVersion: row.sourceContractVersion,
+    observationSchemaVersion: row.observationSchemaVersion,
+    sourceWarNo: row.sourceWarNo,
+    firstObservedAt: row.firstObservedAt,
+    observedAt: row.observedAt,
+    ingestedAt: row.ingestedAt,
+    rosterFingerprint: row.rosterFingerprint,
+    members: row.members.map((member) => ({
+      observationId: member.observationId,
+      playerTag: member.playerTag,
+      position: member.position,
+      townHall: member.townHall,
+      rawWeight: member.rawWeight,
+    })),
+    qualityEvidence: row.qualityEvidence,
+  };
+}
 
 type RetainedReadResult = {
   rows: RetainedObservation[];
@@ -171,7 +194,8 @@ function sourceQualityIsEligible(evidence: RetainedEvidence): string | null {
 
 function validateMembers(observation: RetainedObservation): { members: RetainedMember[]; reasonCode: string | null } {
   const clanTag = normalizeFwaTag(observation.clanTag);
-  if (!clanTag || observation.members.length !== 50) return { members: [], reasonCode: "member_roster_mismatch" };
+  if (!clanTag) return { members: [], reasonCode: "member_roster_mismatch" };
+  if (observation.members.length !== 50) return { members: [], reasonCode: "member_count_mismatch" };
   const members = [...observation.members].sort((left, right) =>
     (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
     left.playerTag.localeCompare(right.playerTag),
@@ -181,7 +205,7 @@ function validateMembers(observation: RetainedObservation): { members: RetainedM
   for (const member of members) {
     const playerTag = normalizeFwaTag(member.playerTag);
     const position = member.position;
-    if (normalizeFwaTag(member.clanTag) !== clanTag) return { members: [], reasonCode: "member_roster_mismatch" };
+    if (member.observationId !== observation.id) return { members: [], reasonCode: "member_ownership_mismatch" };
     if (!playerTag || typeof position !== "number" || !Number.isInteger(position) || position < 1 || position > 50 || positions.has(position)) {
       return { members: [], reasonCode: "member_structure" };
     }
@@ -236,7 +260,7 @@ export class NativeHeatMapRefObservationCandidateService {
       },
     });
     return {
-      rows: rows as unknown as RetainedObservation[],
+      rows: rows.map(mapRetainedObservation),
       coverageStatus: rows.length > NATIVE_OBSERVATION_READ_LIMIT ? "TRUNCATED" : "VERIFIED",
       readRowCount: rows.length,
       readLimited: rows.length > NATIVE_OBSERVATION_READ_LIMIT,
@@ -391,7 +415,11 @@ export class NativeHeatMapRefObservationCandidateService {
               sourceMatchType: null,
               sourceMemberCompletenessStatus: "VERIFIED",
               members: memberValidation.members.map((member) => ({
-                ...member,
+                clanTag,
+                playerTag: member.playerTag,
+                position: member.position,
+                townHall: member.townHall,
+                rawWeight: member.rawWeight,
                 effectiveWeight: null,
                 effectiveWeightStatus: "UNRESOLVED" as const,
               })),

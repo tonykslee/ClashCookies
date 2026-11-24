@@ -20,8 +20,8 @@ import {
 } from "./NativeHeatMapRefObservationCandidateService";
 
 export const NATIVE_COHORT_AUDIT_SCHEMA_VERSION = "native-cohort-qualification-audit-v1";
-export const NATIVE_COHORT_AUDIT_POLICY_VERSION = "proposed-cohort-policy-v1";
-export const NATIVE_COHORT_AUDIT_OWNER_POLICY_STATUS = "PROPOSED_NOT_OWNER_APPROVED" as const;
+export const NATIVE_COHORT_AUDIT_POLICY_VERSION = "native-provisional-v1";
+export const NATIVE_COHORT_AUDIT_OWNER_POLICY_STATUS = "OWNER_APPROVED" as const;
 
 type CandidateInput = {
   evaluationAt: Date | string;
@@ -290,7 +290,8 @@ export class NativeHeatMapRefCohortAuditService {
       selectionExclusionCount: selectionExclusions.length,
     });
     const anchorThresholds = [1, NATIVE_REFERENCE_MIN_DIRECT_WEIGHT_ANCHORS, 3];
-    const clanThresholds = [1, 5, NATIVE_REFERENCE_DEFAULT_SAMPLE_THRESHOLD, 15];
+    // Keep the ten-clan scenario diagnostic even though the owner-approved provisional policy is five.
+    const clanThresholds = [1, 5, 10, 15];
     const sensitivity = anchorThresholds.flatMap((minimumDirectWeightAnchors) => clanThresholds.map((minimumDistinctClansPerBand) => evaluateScenario({
       context,
       bandDefinitions,

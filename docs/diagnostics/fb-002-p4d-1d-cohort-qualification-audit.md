@@ -1,6 +1,6 @@
 # FB-002 P4d-1d Native Cohort Qualification Audit
 
-Status: implemented as a read-only diagnostic; owner policy is not approved.
+Status: implemented as a read-only diagnostic; the provisional owner policy is approved.
 
 P4d-1d adds an aggregate audit over the immutable
 `FwaWarMembersObservation`, member, and quality-evidence records retained by
@@ -15,8 +15,8 @@ npm run diagnose:heatmap-ref-native -- --evaluation-at 2026-11-21T00:00:00.000Z 
 
 The default CLI mode and the existing `--fixture`, `--db`, and
 `--retained-observations` artifact contracts are unchanged. The audit's
-schema is `native-cohort-qualification-audit-v1` and its proposed policy
-version is `proposed-cohort-policy-v1`. Its content fingerprint covers the
+schema is `native-cohort-qualification-audit-v1` and its approved provisional
+policy version is `native-provisional-v1`. Its content fingerprint covers the
 aggregate report, band summaries, sensitivity scenarios, policy labels, the
 validated P4d-1c candidate content fingerprint, and source evidence
 fingerprint. Different retained quality-evidence lineage therefore cannot
@@ -66,12 +66,13 @@ audit never invents a band for an unresolved or malformed total.
 
 When global observation coverage is truncated or ambiguous, every sensitivity
 scenario remains `UNKNOWN`. Sensitivity results are diagnostic comparisons,
-not policy activation or publication approval. The current engineering
-proposal remains two RAW/DEFERRED direct anchors for inference-dependent
-rosters and ten distinct qualifying clans per band; the audit labels these
-thresholds `PROPOSED_NOT_OWNER_APPROVED`.
+not policy activation or publication approval. The approved provisional policy
+is two RAW/DEFERRED direct anchors for inference-dependent rosters and five
+distinct qualifying clans per band; the audit labels these thresholds
+`OWNER_APPROVED`. This approval does not waive source-authority,
+exact-war-binding, freshness, or publication safeguards.
 
-## Proposed qualification policy for owner review
+## Approved provisional qualification policy
 
 The smallest policy that can be reviewed is versioned and explicit:
 
@@ -90,11 +91,13 @@ The smallest policy that can be reviewed is versioned and explicit:
 6. Treat source authority, exact historical-war identity, source generation,
    freshness, and replay proof as `UNKNOWN_UNVERIFIED` until separately
    established. A supported diagnostic band is not a publishable reference.
-7. Require owner approval of the policy version and representative real
-   evidence before any P4d-2 persistence or publication decision.
+7. The owner-approved provisional version is `native-provisional-v1`: two
+   direct RAW/DEFERRED anchors and five distinct qualifying clans per band.
+   This is separate from authoritative publication eligibility and does not
+   activate operational recommendations.
 
-These are proposed modeling rules, not active native-calculator defaults or
-production gates. The current legacy-v1 profile remains authoritative.
+These are now the approved provisional native policy, not an authoritative
+publication gate. The current legacy-v1 profile remains authoritative.
 
 The parent P4d-1c observation identifies one distinct semantic roster. Its
 quality fields are first-seen historical facts, not automatically the latest

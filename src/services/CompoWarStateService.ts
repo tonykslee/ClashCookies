@@ -20,6 +20,9 @@ import { FwaFeedOpsService } from "./fwa-feeds/FwaFeedOpsService";
 import { normalizeFwaTag } from "./fwa-feeds/normalize";
 import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+import { calculateProfileDeviationScore } from "../helper/compoCalculationProfile";
+import { LEGACY_COMPO_CALCULATION_PROFILE } from "../helper/compoCalculationProfile";
+import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
 
 type CollapsedStateRow = {
   clanName: string;
@@ -77,6 +80,52 @@ function normalizeWarStateClanDisplayName(value: string): string {
 function toRefreshLine(value: Date | null): string {
   if (!value) return "refreshed (not available)";
   return `refreshed <t:${Math.floor(value.getTime() / 1000)}:F>`;
+}
+
+function nativeComparisonLine(input: {
+  native: Awaited<ReturnType<NativeHeatMapReferencePublicationService["readCurrent"]>>;
+  clans: readonly CompoWarStateClanContext[];
+}): string | null {
+  if (input.native.status !== "CURRENT") return null;
+  let supported = 0;
+  let unknown = 0;
+  const scores: number[] = [];
+  for (const clan of input.clans) {
+    const bandOrdinal = input.native.bands.findIndex(
+      (band) => clan.totalEffectiveWeight >= band.weightMinInclusive && clan.totalEffectiveWeight <= band.weightMaxInclusive,
+    );
+    if (bandOrdinal < 0) {
+      unknown += 1;
+      continue;
+    }
+    const targets = input.native.targets.filter((target) => target.bandOrdinal === bandOrdinal);
+    if (targets.length === 0 || targets.some((target) => target.status !== "SUPPORTED" || target.targetCount === null)) {
+      unknown += 1;
+      continue;
+    }
+    const targetByBucket = new Map(targets.map((target) => [target.bucketId, target.targetCount as number]));
+    const targetCounts = {
+      TH18: targetByBucket.get("TH18")!,
+      TH17: targetByBucket.get("TH17")!,
+      TH16: targetByBucket.get("TH16")!,
+      TH15: targetByBucket.get("TH15")!,
+      TH14: targetByBucket.get("TH14")!,
+      "<=TH13": (targetByBucket.get("TH13") ?? 0) + (targetByBucket.get("TH12") ?? 0) + (targetByBucket.get("TH11") ?? 0) + (targetByBucket.get("TH10_OR_LOWER") ?? 0),
+    };
+    const observedCounts = {
+      TH18: clan.bucketCounts.TH18 ?? 0,
+      TH17: clan.bucketCounts.TH17 ?? 0,
+      TH16: clan.bucketCounts.TH16 ?? 0,
+      TH15: clan.bucketCounts.TH15 ?? 0,
+      TH14: clan.bucketCounts.TH14 ?? 0,
+      "<=TH13": (clan.bucketCounts.TH13 ?? 0) + (clan.bucketCounts.TH12 ?? 0) + (clan.bucketCounts.TH11 ?? 0) + (clan.bucketCounts.TH10 ?? 0) + (clan.bucketCounts.TH9 ?? 0) + (clan.bucketCounts.TH8_OR_LOWER ?? 0),
+    };
+    const score = calculateProfileDeviationScore({ profile: LEGACY_COMPO_CALCULATION_PROFILE, observedCounts, targetCounts });
+    if (score === null) unknown += 1;
+    else { supported += 1; scores.push(score); }
+  }
+  const scoreText = scores.length > 0 ? ` · profile score avg ${ (scores.reduce((sum, score) => sum + score, 0) / scores.length).toFixed(1) }` : "";
+  return `Provisional native comparison (informational only; no recommendations): ${supported} supported / ${unknown} UNKNOWN clans · ${input.native.profileVersion} · ${input.native.policyVersion}${scoreText}`;
 }
 
 /** Purpose: derive the legacy display delta columns while preserving granular internal TH counts. */
@@ -267,6 +316,15 @@ export class CompoWarStateService {
   /** Purpose: load alliance-wide tracked-clan war state rows from persisted feed-owned tables only. */
   async readState(guildId?: string | null): Promise<CompoWarStateReadResult> {
     const context = await loadCompoWarStateContext(guildId);
+    let nativeLine: string | null = null;
+    try {
+      const nativeDb = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
+      if (nativeDb.nativeHeatMapReferenceHead) {
+        nativeLine = nativeComparisonLine({ native: await new NativeHeatMapReferencePublicationService(prisma).readCurrent(), clans: context.clans });
+      }
+    } catch {
+      nativeLine = null;
+    }
 
     if (context.trackedClanTags.length === 0) {
       return {
@@ -277,6 +335,7 @@ export class CompoWarStateService {
         contentLines: [
           "WAR · refreshed (not available)",
           "No tracked clans are configured for DB-backed WAR state.",
+        ...(nativeLine ? [nativeLine] : []),
         ],
       };
     }
@@ -319,6 +378,7 @@ export class CompoWarStateService {
     if (context.referenceAvailability.warning) {
       contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
     }
+    if (nativeLine) contentLines.push(nativeLine);
 
     if (renderableRows.length === 0) {
       contentLines.push("No DB-backed WAR roster snapshots are currently renderable.");
