@@ -13,8 +13,23 @@ import {
   buildHeatMapRefDisplayRows,
 } from "../helper/heatMapRefDisplay";
 import { getHeatMapRefBandKey } from "../helper/compoHeatMap";
-import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
+import {
+  type HeatMapRefHistoricalReferenceAvailability,
+  type HeatMapRefReferenceAvailability,
+} from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
+
+export type HeatMapRefDisplayReferenceStatus =
+  | "validated"
+  | "historical"
+  | "blocked"
+  | "unavailable";
+
+export type HeatMapRefDisplayReferenceState = {
+  status: HeatMapRefDisplayReferenceStatus;
+  sourceVersion: string | null;
+  notice: string;
+};
 
 type HeatMapRefSourceMember = {
   clanTag: string;
@@ -85,6 +100,65 @@ function formatMatchPercent(matchRate: number, evaluatedWarCount: number): strin
   return `${(matchRate * 100).toFixed(2)}%`;
 }
 
+function readUniformSourceVersion(heatMapRefs: readonly HeatMapRef[]): string | null {
+  const versions = [...new Set(
+    heatMapRefs
+      .map((row) => row.sourceVersion?.trim() ?? "")
+      .filter(Boolean),
+  )];
+  return versions.length === 1 ? versions[0]! : null;
+}
+
+function buildReferenceState(input: {
+  heatMapRefs: readonly HeatMapRef[];
+  availability: HeatMapRefReferenceAvailability;
+  historicalAvailability: HeatMapRefHistoricalReferenceAvailability;
+}): HeatMapRefDisplayReferenceState {
+  if (input.availability.status === "validated") {
+    const sourceVersion = readUniformSourceVersion(input.heatMapRefs);
+    return {
+      status: "validated",
+      sourceVersion,
+      notice: `Reference: validated current${sourceVersion ? ` · version ${sourceVersion}` : " · version unavailable"}.`,
+    };
+  }
+
+  if (input.historicalAvailability.status === "verified") {
+    const currentState = input.availability.status === "retained_unverified"
+      ? `current validation blocked (${input.availability.blockReasonCode ?? "bounded_reason_unavailable"})`
+      : "current validation unavailable";
+    return {
+      status: "historical",
+      sourceVersion: input.historicalAvailability.sourceVersion,
+      notice: `Reference: verified historical legacy-v1 baseline · version ${input.historicalAvailability.sourceVersion ?? "unavailable"} · informational only · ${currentState}.`,
+    };
+  }
+
+  if (input.availability.status === "retained_unverified") {
+    const sourceVersion = readUniformSourceVersion(input.heatMapRefs);
+    return {
+      status: "blocked",
+      sourceVersion,
+      notice: `Reference: blocked · retained version ${sourceVersion ?? "unavailable"} (unverified) · current validation unavailable (${input.availability.blockReasonCode ?? "bounded_reason_unavailable"}); retained rows are informational only.`,
+    };
+  }
+
+  const sourceVersion = readUniformSourceVersion(input.heatMapRefs);
+  const warning = input.availability.warning ?? "current validation unavailable";
+  const boundedWarning = warning.includes("in progress")
+    ? "validation pending"
+    : warning.includes("malformed")
+      ? "validation provenance malformed or unavailable"
+      : warning.includes("could not be read")
+        ? "validation provenance could not be read"
+        : "validation provenance unavailable";
+  return {
+    status: "unavailable",
+    sourceVersion,
+    notice: `Reference: unavailable · retained version ${sourceVersion ?? "unavailable"} (unverified) · ${boundedWarning}; retained rows are informational only.`,
+  };
+}
+
 /** Purpose: build the copyable HeatMapRef table display from persisted current-state rows. */
 export class HeatMapRefDisplayService {
   /** Purpose: compute display rows and copy text without mutating HeatMapRef state. */
@@ -92,13 +166,25 @@ export class HeatMapRefDisplayService {
     rows: string[][];
     copyText: string;
     availability: HeatMapRefReferenceAvailability;
+    historicalAvailability: HeatMapRefHistoricalReferenceAvailability;
+    referenceState: HeatMapRefDisplayReferenceState;
   }> {
     const reference = await resolveHeatMapRefReference({ guildId: input?.guildId });
+    const referenceState = buildReferenceState({
+      heatMapRefs: reference.heatMapRefs,
+      availability: reference.availability,
+      historicalAvailability: reference.historicalAvailability,
+    });
     const [display, availability] = await Promise.all([
       this.buildDisplayData(reference.heatMapRefs),
       Promise.resolve(reference.availability),
     ]);
-    return { ...display, availability };
+    return {
+      ...display,
+      availability,
+      historicalAvailability: reference.historicalAvailability,
+      referenceState,
+    };
   }
 
   async readHeatMapRefBandMatchRates(input?: {

@@ -80,6 +80,8 @@ function formatHeatMapRefRepairSummary(result: {
   qualifyingRosterCount: number;
   excludedRosterCount: number;
   rowCount: number;
+  writtenRowCount?: number;
+  retainedRowCount?: number;
   alertSent: boolean;
 }): string {
   const lines = [
@@ -88,7 +90,8 @@ function formatHeatMapRefRepairSummary(result: {
     `Source rosters: ${result.sourceRosterCount}.`,
     `Qualifying rosters: ${result.qualifyingRosterCount}.`,
     `Excluded rosters: ${result.excludedRosterCount}.`,
-    `Rows written: ${result.rowCount}.`,
+    `Rows written: ${result.writtenRowCount ?? (result.status === "skipped" ? 0 : result.rowCount)}.`,
+    `Retained rows: ${result.retainedRowCount ?? (result.status === "skipped" ? result.rowCount : 0)}.`,
   ];
   if (result.reason) {
     lines.push(`Reason: ${result.reason}.`);

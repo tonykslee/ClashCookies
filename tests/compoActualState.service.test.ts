@@ -74,6 +74,7 @@ import {
 import { COMPO_ACTUAL_STATE_HEALTHY_DEVIATION_THRESHOLD } from "../src/helper/compoActualStateView";
 import { normalizeClashTagInput } from "../src/helper/clashTag";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 import {
   computeClanMembersSnapshotHash,
   toPersistedClanMembersSnapshotRow,
@@ -687,6 +688,42 @@ describe("CompoActualStateService", () => {
     expect(result.imageNotice).toBe("TH comparisons unavailable - HeatMapRef not validated");
   });
 
+  it("uses only the independently verified legacy baseline for informational historical comparisons", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    ]);
+    prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValue([
+      makeMember({ clanTag: "#AAA111", playerTag: "#P000002", weight: 175000 }),
+    ]);
+    prismaMock.fwaTrackedClanWarRosterMemberCurrent.findMany.mockResolvedValue([]);
+    prismaMock.heatMapRef.findMany.mockResolvedValue([...HEAT_MAP_REF_SEED_ROWS]);
+    prismaMock.$queryRaw.mockResolvedValue([]);
+
+    const context = await loadCompoActualStateContext("guild-1");
+    const result = await new CompoActualStateService().readState("guild-1", {
+      view: "auto",
+    });
+
+    expect(context.referenceAvailability.status).toBe("unknown");
+    expect(context.historicalReferenceAvailability?.status).toBe("verified");
+    expect(context.historicalReferenceAvailability?.sourceVersion).toBe("bootstrap-2026-08-21");
+    expect(context.heatMapRefs).toEqual([]);
+    expect(context.historicalHeatMapRefs).toHaveLength(14);
+    expect(result.stateRows?.[1]?.slice(-6).every((value) => value !== "?")).toBe(true);
+    const content = result.contentLines.join(" ");
+    expect(content).toContain("verified historical legacy-v1 HeatMapRef baseline (informational only)");
+    expect(content).toContain("comparisons are informational only");
+    expect(content).toContain("Current-reference warning:");
+    expect(result.imageNotice).toBe(
+      "Historical legacy-v1 comparison is informational only; current reference validation unavailable",
+    );
+    const operationalComposition = await readTrackedClanCurrentComposition({
+      guildId: "guild-1",
+      trackedClan: makeTrackedClan("#AAA111", "Alpha Clan-actual"),
+    });
+    expect(operationalComposition?.selectedHeatMapRefAvailable).toBe(false);
+  });
+
   it("does not show an unavailable-reference notice for validated supported references", async () => {
     prismaMock.trackedClan.findMany.mockResolvedValue([
       makeTrackedClan("#AAA111", "Alpha Clan-actual"),
@@ -1234,7 +1271,7 @@ describe("CompoActualStateService", () => {
     expect(result.contentLines[0]).toContain("ACTUAL · View: **Auto-Detect Band** · refreshed");
     expect(result.contentLines[1]).toContain("Plan=projected 50-player total");
     expect(result.contentLines[1]).toContain("DF=deferred-weight count");
-    expect(result.contentLines[1]).toContain("TH=roster delta vs HeatMapRef");
+    expect(result.contentLines[1]).toContain("TH=roster delta vs current validated HeatMapRef");
   });
 
   it("keeps auto-detect projected band selection but shows resolved-count deltas against the selected band", async () => {
@@ -1282,7 +1319,7 @@ describe("CompoActualStateService", () => {
       "0",
     ]);
     expect(result.contentLines[1]).toContain("DF=deferred-weight count");
-    expect(result.contentLines[1]).toContain("TH=roster delta vs HeatMapRef");
+    expect(result.contentLines[1]).toContain("TH=roster delta vs current validated HeatMapRef");
   });
 
   it("uses total resolved ACTUAL weight for HeatMapRef matching and collapses TH13-and-below by resolved weight bucket", async () => {
