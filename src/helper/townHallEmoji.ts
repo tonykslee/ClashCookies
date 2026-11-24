@@ -3,6 +3,8 @@ import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 
 export type TownHallEmojiMap = Map<number, string>;
 
+export const TOWN_HALL_EMOJI_MAX_LEVEL = 19;
+
 let cachedTownHallEmojiMap: TownHallEmojiMap = new Map();
 
 /** Purpose: normalize any likely Town Hall field to a positive integer or null. */
@@ -14,12 +16,17 @@ export function normalizeTownHallLevel(input: unknown): number | null {
 }
 
 /** Purpose: load rendered Town Hall application emojis once for display-only command rendering. */
-export async function resolveTownHallEmojiMap(client: Client): Promise<TownHallEmojiMap> {
-  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
+export async function resolveTownHallEmojiMap(
+  client: Client,
+  options?: { forceRefresh?: boolean },
+): Promise<TownHallEmojiMap> {
+  const inventory = await emojiResolverService
+    .fetchApplicationEmojiInventory(client, options)
+    .catch(() => null);
   if (!inventory?.ok) return new Map();
 
   const renderedByTownHall = new Map<number, string>();
-  for (let townHall = 1; townHall <= 18; townHall += 1) {
+  for (let townHall = 1; townHall <= TOWN_HALL_EMOJI_MAX_LEVEL; townHall += 1) {
     const shortcode = `th${townHall}`;
     const exact = inventory.snapshot.exactByName.get(shortcode);
     const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());

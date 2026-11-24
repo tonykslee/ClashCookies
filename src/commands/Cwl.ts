@@ -14,6 +14,7 @@ import {
 import { randomUUID } from "crypto";
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
+import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
@@ -142,21 +143,6 @@ function formatRelativeTimestamp(value: Date | null): string {
     return "unknown";
   }
   return `<t:${Math.floor(value.getTime() / 1000)}:R>`;
-}
-
-async function resolveTownHallEmojiMap(client: Client): Promise<Map<number, string>> {
-  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
-  const renderedByTownHall = new Map<number, string>();
-  if (!inventory?.ok) {
-    return renderedByTownHall;
-  }
-  for (let townHall = 1; townHall <= 18; townHall += 1) {
-    const rendered = resolveApplicationEmojiRendered(inventory.snapshot, `th${townHall}`);
-    if (rendered) {
-      renderedByTownHall.set(townHall, rendered);
-    }
-  }
-  return renderedByTownHall;
 }
 
 async function resolveNoEntryEmoji(client: Client): Promise<string> {
