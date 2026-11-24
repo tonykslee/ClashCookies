@@ -638,6 +638,7 @@ export function computeMembershipStreaksFromEvidence(
     const latestClanTag = physicalEvidenceOf(clanAnchorEvidence).clanTag!;
     if (clanAnchorEvidence?.fwa.status === "RESOLVED") clanStreakSyncs = 1;
     let stopped = orderedIdentities[clanStartIndex]?.syncNumber === null;
+    let clanTerminatedByDefinitiveEvidence = false;
     for (let index = 1; index <= clanStartIndex; index += 1) {
       if (!hasContiguousCanonicalBoundary(index)) {
         clanStreakIsLowerBound = true;
@@ -666,13 +667,16 @@ export function computeMembershipStreaksFromEvidence(
           if (evidence?.fwa.status === "RESOLVED") clanStreakSyncs += 1;
           continue;
         }
-        if (physical.status === "RESOLVED" || physical.status === "ABSENT") break;
+        if (physical.status === "RESOLVED" || physical.status === "ABSENT") {
+          clanTerminatedByDefinitiveEvidence = true;
+          break;
+        }
         clanStreakIsLowerBound = true;
         stopped = true;
         break;
       }
     }
-    if (!stopped && historyBoundReached) {
+    if (!stopped && !clanTerminatedByDefinitiveEvidence && historyBoundReached) {
       clanStreakIsLowerBound = true;
     }
   } else if (latestBoundaryTime && !latestEvidencePending && latestPhysical.status !== "ABSENT") {
@@ -699,6 +703,7 @@ export function computeMembershipStreaksFromEvidence(
     );
     if (allianceAnchorEvidence?.fwa.status === "RESOLVED") allianceStreakSyncs = 1;
     let stopped = orderedIdentities[allianceStartIndex]?.syncNumber === null;
+    let allianceTerminatedByDefinitiveEvidence = false;
     for (let index = 1; index <= allianceStartIndex; index += 1) {
       if (!hasContiguousCanonicalBoundary(index)) {
         allianceStreakIsLowerBound = true;
@@ -726,13 +731,16 @@ export function computeMembershipStreaksFromEvidence(
           if (evidence?.fwa.status === "RESOLVED") allianceStreakSyncs += 1;
           continue;
         }
-        if (allianceStatusOf(evidence) === "ABSENT") break;
+        if (allianceStatusOf(evidence) === "ABSENT") {
+          allianceTerminatedByDefinitiveEvidence = true;
+          break;
+        }
         allianceStreakIsLowerBound = true;
         stopped = true;
         break;
       }
     }
-    if (!stopped && historyBoundReached) {
+    if (!stopped && !allianceTerminatedByDefinitiveEvidence && historyBoundReached) {
       allianceStreakIsLowerBound = true;
     }
   } else if (latestBoundaryTime && !latestEvidencePending && latestAllianceStatus !== "ABSENT") {

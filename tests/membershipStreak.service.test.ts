@@ -392,6 +392,64 @@ describe("MembershipStreakService", () => {
     expect(bounded).toMatchObject({ clanStreakSyncs: 3, clanStreakIsLowerBound: true, allianceStreakSyncs: 3, allianceStreakIsLowerBound: true });
   });
 
+  it("marks truncated continuous S/A histories lower-bounded but keeps definitive breaks exact", () => {
+    const boundaries = [4, 3, 2, 1].map(time);
+    const continuous = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      boundaries.map((boundaryTime) => pureEvidence(boundaryTime, "RESOLVED")),
+      true,
+      canonicalIdentities(boundaries),
+    );
+    const physicalBreak = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [
+        pureEvidence(boundaries[0], "RESOLVED", rockyRoad),
+        pureEvidence(boundaries[1], "RESOLVED", rockyRoad),
+        pureEvidence(boundaries[2], "RESOLVED", otherAllianceClan),
+        pureEvidence(boundaries[3], "RESOLVED", otherAllianceClan),
+      ],
+      true,
+      canonicalIdentities(boundaries),
+    );
+    const allianceBreakEvidence = pureEvidence(boundaries[2], "RESOLVED", "#OUTSIDE");
+    allianceBreakEvidence.alliance = {
+      status: "ABSENT",
+      positive: false,
+      clanTags: [],
+      ambiguous: false,
+      sources: [],
+    };
+    const allianceBreak = computeMembershipStreaksFromEvidence(
+      playerTag,
+      boundaries,
+      [
+        pureEvidence(boundaries[0], "RESOLVED", rockyRoad),
+        pureEvidence(boundaries[1], "RESOLVED", rockyRoad),
+        allianceBreakEvidence,
+        pureEvidence(boundaries[3], "RESOLVED", "#OUTSIDE"),
+      ],
+      true,
+      canonicalIdentities(boundaries),
+    );
+
+    expect(continuous).toMatchObject({
+      clanStreakSyncs: 4,
+      clanStreakIsLowerBound: true,
+      allianceStreakSyncs: 4,
+      allianceStreakIsLowerBound: true,
+    });
+    expect(physicalBreak).toMatchObject({
+      clanStreakSyncs: 2,
+      clanStreakIsLowerBound: false,
+    });
+    expect(allianceBreak).toMatchObject({
+      allianceStreakSyncs: 2,
+      allianceStreakIsLowerBound: false,
+    });
+  });
+
   it("uses canonical historical participation when a stale snapshot omits the player", async () => {
     const row = historical(552, 1, rockyRoad);
     const built = serviceFor({
