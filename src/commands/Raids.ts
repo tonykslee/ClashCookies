@@ -65,7 +65,7 @@ import {
   upsertRaidIntelDistrictLayoutMark,
 } from "../services/RaidIntelLayoutMarkService";
 import { refreshRaidTrackedClanListWithQueueContext } from "./TrackedClan";
-import { getCachedTownHallEmojiMap } from "../helper/townHallEmoji";
+import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
 
 const RAID_DASHBOARD_TIMEOUT_MS = 10 * 60 * 1000;
 const RAID_DASHBOARD_PUBLIC_TIMEOUT_MS = 60 * 60 * 1000;
@@ -1682,7 +1682,10 @@ export const Raids: Command = {
         return;
       }
 
-      const embeds = buildRaidRosterStatusEmbeds(rows, getCachedTownHallEmojiMap());
+      const embeds = buildRaidRosterStatusEmbeds(
+        rows,
+        await resolveTownHallEmojiMap(interaction.client),
+      );
       await interaction.editReply({
         embeds,
       });

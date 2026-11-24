@@ -155,6 +155,7 @@ describe("AccountDisplayService", () => {
       snapshot: {
         exactByName: new Map([
           ["th16", { rendered: "<:th16:116>" }],
+          ["th19", { rendered: "<:th19:1572442203844902932>" }],
         ]),
         lowercaseByName: new Map([
           ["th17", { rendered: "<:th17:117>" }],
@@ -166,6 +167,7 @@ describe("AccountDisplayService", () => {
 
     expect(map.get(16)).toBe("<:th16:116>");
     expect(map.get(17)).toBe("<:th17:117>");
+    expect(map.get(19)).toBe("<:th19:1572442203844902932>");
     expect(map.has(18)).toBe(false);
   });
 });

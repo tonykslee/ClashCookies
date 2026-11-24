@@ -1,30 +1,22 @@
-import { Client } from "discord.js";
+import type { Client } from "discord.js";
 import { normalizeClashTagInput } from "../helper/clashTag";
-import { emojiResolverService } from "./emoji/EmojiResolverService";
+import {
+  resolveTownHallEmojiMap as resolveCanonicalTownHallEmojiMap,
+  type TownHallEmojiMap,
+} from "../helper/townHallEmoji";
 import { buildAccountsRows, type AccountRow } from "./AccountRowsService";
 import { listTrackedClanRepBadgesForPlayerTags } from "./TrackedClanRepService";
 
-export type AccountDisplayEmojiMap = Map<number, string>;
+export type AccountDisplayEmojiMap = TownHallEmojiMap;
 
 export type AccountDisplayRow = AccountRow & {
   repBadgeTokens: string[];
 };
 
-export async function resolveTownHallEmojiMap(client: Client): Promise<AccountDisplayEmojiMap> {
-  const inventory = await emojiResolverService.fetchApplicationEmojiInventory(client).catch(() => null);
-  if (!inventory?.ok) return new Map();
-
-  const renderedByTownHall = new Map<number, string>();
-  for (let townHall = 1; townHall <= 18; townHall += 1) {
-    const shortcode = `th${townHall}`;
-    const exact = inventory.snapshot.exactByName.get(shortcode);
-    const lower = inventory.snapshot.lowercaseByName.get(shortcode.toLowerCase());
-    const rendered = exact?.rendered ?? lower?.rendered ?? null;
-    if (rendered) {
-      renderedByTownHall.set(townHall, rendered);
-    }
-  }
-  return renderedByTownHall;
+export async function resolveTownHallEmojiMap(
+  client: Client,
+): Promise<AccountDisplayEmojiMap> {
+  return resolveCanonicalTownHallEmojiMap(client);
 }
 
 function normalizeTag(input: string): string {

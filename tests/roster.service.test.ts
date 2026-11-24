@@ -134,9 +134,10 @@ function makeRosterEmojiClient(options?: { missing?: string[] }) {
       ["house", makeEmoji("house", "<:house:111>")],
       ["yes", makeEmoji("yes", "<:yes:901>")],
       ["no", makeEmoji("no", "<:no:902>")],
-      ...Array.from({ length: 18 }, (_, index) => {
+      ...Array.from({ length: 19 }, (_, index) => {
         const name = `th${index + 1}`;
-        return missing.has(name) ? null : [name, makeEmoji(name, `<:${name}:${index + 101}>`)] as const;
+        const id = name === "th19" ? "1572442203844902932" : `${index + 101}`;
+        return missing.has(name) ? null : [name, makeEmoji(name, `<:${name}:${id}>`)] as const;
       }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
     ],
   );
@@ -4049,7 +4050,7 @@ describe("RosterService", () => {
     expect(bravoRow).toContain("2");
   });
 
-  it("renders TH1 through TH18 as app emojis and falls back safely when one emoji is missing", async () => {
+  it("renders TH1 through TH19 as app emojis and falls back safely when one emoji is missing", async () => {
     prismaMock.roster.findUnique.mockResolvedValueOnce({
       id: "roster-1",
       guildId: "guild-1",
@@ -4094,7 +4095,7 @@ describe("RosterService", () => {
       },
     ] as any);
     prismaMock.rosterSignup.findMany.mockResolvedValueOnce(
-      Array.from({ length: 18 }, (_, index) => {
+      Array.from({ length: 19 }, (_, index) => {
         const townHall = index + 1;
         return {
           id: `signup-${townHall}`,
@@ -4117,21 +4118,21 @@ describe("RosterService", () => {
       }) as any,
     );
     prismaMock.playerLink.findMany.mockResolvedValueOnce(
-      Array.from({ length: 18 }, (_, index) => ({
+      Array.from({ length: 19 }, (_, index) => ({
         playerTag: makeValidRosterPlayerTag(index + 1),
         discordUsername: `player-${index + 1}`,
       })) as any,
     );
     playerCurrentServiceMock.listPlayerCurrentByTags.mockResolvedValueOnce(
       makePlayerCurrentMap(
-        Array.from({ length: 18 }, (_, index) => [makeValidRosterPlayerTag(index + 1), index + 1] as const),
+        Array.from({ length: 19 }, (_, index) => [makeValidRosterPlayerTag(index + 1), index + 1] as const),
       ),
     );
     prismaMock.fwaClanMemberCurrent.findMany.mockResolvedValueOnce([] as any);
     prismaMock.fwaPlayerCatalog.findMany.mockResolvedValueOnce([] as any);
     prismaMock.externalPlayerWeightCurrent.findMany.mockResolvedValueOnce([] as any);
     todoSnapshotServiceMock.listSnapshotsByClanTag.mockResolvedValueOnce(
-      Array.from({ length: 18 }, (_, index) => ({
+      Array.from({ length: 19 }, (_, index) => ({
         playerTag: makeValidRosterPlayerTag(index + 1),
         clanTag: "#2QG2C08UP",
         clanName: "Rising Dawn",
@@ -4155,6 +4156,7 @@ describe("RosterService", () => {
     expect(description).toContain("<:th8:108>");
     expect(description).toContain("<:th9:109>");
     expect(description).toContain("<:th18:118>");
+    expect(description).toContain("<:th19:1572442203844902932>");
   });
 
   it("renders Max. TH when only maximum town hall is configured", async () => {
