@@ -1417,6 +1417,7 @@ describe("/sync post status reaction scan", () => {
     );
 
     prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) => {
+      if (where?.OR) return [root];
       if (
         where?.status === "ACTIVE" &&
         where?.referenceId === null &&
@@ -1427,7 +1428,10 @@ describe("/sync post status reaction scan", () => {
       }
       return [];
     });
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+      where?.referenceId === null ? { messageId: root.messageId } : null,
+    );
+    prismaMock.trackedMessage.findUnique.mockResolvedValue(root);
     prismaMock.trackedMessage.update.mockImplementation(async ({ data }: any) => {
       root.metadata = { ...root.metadata, ...(data?.metadata ?? {}) };
       return root;

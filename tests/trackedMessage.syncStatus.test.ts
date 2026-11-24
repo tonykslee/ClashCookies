@@ -76,7 +76,7 @@ function makeTrackedRow(overrides: Partial<Record<string, unknown>> = {}) {
     status: TRACKED_MESSAGE_STATUS.ACTIVE,
     referenceId: null,
     remindAt: new Date("2026-03-19T15:25:00.000Z"),
-    expiresAt: new Date("2026-03-19T17:30:00.000Z"),
+    expiresAt: new Date("2027-03-19T17:30:00.000Z"),
     metadata: makeMetadata(),
     claims: [],
     ...overrides,
@@ -107,6 +107,9 @@ function makeClient(params?: {
 }
 
 function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>): void {
+  prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+    where?.messageId === trackedRow.messageId ? trackedRow : null,
+  );
   prismaMock.trackedMessage.update.mockImplementation(async ({ where, data }: any) => {
     if (where?.id === trackedRow.id && data?.metadata) {
       trackedRow.metadata = {
@@ -119,6 +122,12 @@ function bindTrackedRowPersistence(trackedRow: ReturnType<typeof makeTrackedRow>
     }
     return trackedRow;
   });
+}
+
+function bindLatestRootLookup(existingStatus: { id: string } | null = null): void {
+  prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+    where?.referenceId === null ? { messageId: "sync-message-1" } : existingStatus,
+  );
 }
 
 function makeLeadershipEntry(input: {
@@ -149,7 +158,7 @@ describe("TrackedMessageService sync spin status", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     prismaMock.trackedMessage.findMany.mockResolvedValue([]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
     prismaMock.trackedMessage.findUnique.mockResolvedValue(null);
     prismaMock.trackedMessage.upsert.mockResolvedValue(undefined);
     prismaMock.trackedMessage.update.mockResolvedValue(undefined);
@@ -170,7 +179,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const otherUserSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({
@@ -227,7 +236,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -248,7 +257,7 @@ describe("TrackedMessageService sync spin status", () => {
     const userId = "444444444444444444";
     const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockRejectedValueOnce(new Error("lookup unavailable"));
@@ -264,7 +273,7 @@ describe("TrackedMessageService sync spin status", () => {
     const userId = "555555555555555555";
     const trackedRow = makeTrackedRow({ claims: [{ clanTag: "#PYLQ", userId }] });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -313,7 +322,7 @@ describe("TrackedMessageService sync spin status", () => {
       ],
     });
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
     const userSend = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ userById: { [userId]: { send: userSend } } });
     leadershipLookupMock.mockResolvedValue({
@@ -428,6 +437,32 @@ describe("TrackedMessageService sync spin status", () => {
         }),
       }),
     );
+  });
+
+  it("does not generate a status for a root replaced by a newer active sync", async () => {
+    const trackedRow = makeTrackedRow({
+      metadata: {
+        ...makeMetadata(),
+        reminderSentAt: "2026-03-19T15:25:00.000Z",
+      },
+      claims: [
+        { clanTag: "#PYLQ", userId: "user-1" },
+        { clanTag: "#PYLG", userId: "user-2" },
+      ],
+    });
+    bindTrackedRowPersistence(trackedRow);
+    prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
+    prismaMock.trackedMessage.findFirst.mockImplementation(async ({ where }: any) =>
+      where?.referenceId === null ? { messageId: "newer-root-message" } : null,
+    );
+
+    const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
+    const result = await trackedMessageService.processDueSyncReminders(
+      makeClient({ guildChannel: { send } }),
+    );
+
+    expect(result).toBe(0);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("posts the scheduled status embed to the typed sync channel when configured", async () => {
@@ -567,7 +602,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
@@ -598,7 +633,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue({ id: "status-message-1" });
+    bindLatestRootLookup({ id: "status-message-1" });
 
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react: vi.fn() });
     const userSend = vi.fn().mockResolvedValue(undefined);
@@ -629,7 +664,7 @@ describe("TrackedMessageService sync spin status", () => {
     });
     bindTrackedRowPersistence(trackedRow);
     prismaMock.trackedMessage.findMany.mockResolvedValue([trackedRow]);
-    prismaMock.trackedMessage.findFirst.mockResolvedValue(null);
+    bindLatestRootLookup();
 
     const react = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "status-message-1", react });
@@ -674,10 +709,14 @@ describe("TrackedMessageService sync spin status", () => {
     prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: "sync-message-1" });
     prismaMock.trackedMessage.findMany
       .mockResolvedValueOnce([
-      makeTrackedRow({ messageId: "sync-message-1", claims: [{ clanTag: "#PYLQ", userId: "user-1" }] }),
+      makeTrackedRow({
+        messageId: "sync-message-1",
+        channelId: "source-channel",
+        claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
+      }),
       ])
       .mockResolvedValueOnce([
-        makeTrackedRow({ messageId: "sync-message-1", claims: [] }),
+        makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel", claims: [] }),
       ]);
 
     const edit = vi.fn().mockResolvedValue(undefined);

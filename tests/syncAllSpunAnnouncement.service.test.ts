@@ -236,6 +236,55 @@ describe("SyncAllSpunAnnouncementService", () => {
     expect(deps.send).not.toHaveBeenCalled();
   });
 
+  it("fails closed when the claims query returns a replaced canonical root", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    let rootLookupCount = 0;
+    deps.trackedMessage.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.messageId !== "root-message") return null;
+      rootLookupCount += 1;
+      return rootLookupCount === 1
+        ? { ...deps.rows[0] }
+        : { ...deps.rows[0], id: "replacement-root-id" };
+    });
+    deps.trackedMessage.findFirst.mockResolvedValue({ messageId: "root-message" });
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "skipped", reason: "invalid_participating_clans" });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the canonical root metadata changes before claim aggregation", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    let rootLookupCount = 0;
+    deps.trackedMessage.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.messageId !== "root-message") return null;
+      rootLookupCount += 1;
+      if (rootLookupCount === 1) return { ...deps.rows[0] };
+      return {
+        ...deps.rows[0],
+        metadata: metadata({
+          clans: [
+            { ...metadata().clans[0], clanName: "Changed Alpha" },
+            metadata().clans[1],
+          ],
+        }),
+      };
+    });
+    deps.trackedMessage.findFirst.mockResolvedValue({ messageId: "root-message" });
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "skipped", reason: "invalid_participating_clans" });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
   it("releases the reservation when a claim is removed during delivery preparation", async () => {
     const deps = makeDependencies();
     deps.rows[0].claims = [

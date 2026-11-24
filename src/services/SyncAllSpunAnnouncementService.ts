@@ -9,7 +9,7 @@ import { prisma } from "../prisma";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
-  hasSameSyncTimeMetadataIdentity,
+  hasSameSyncTimeMetadataSnapshot,
   loadValidatedSyncClaimAggregation,
   parseSyncTimeMetadata,
   type SyncTimeTrackedMetadata,
@@ -245,7 +245,15 @@ export class SyncAllSpunAnnouncementService {
     now: Date,
   ): Promise<CompletionSnapshot | null> {
     const aggregation = await loadValidatedSyncClaimAggregation(this.db, root.messageId, now);
-    if (!aggregation || aggregation.root.id !== root.id) return null;
+    if (
+      !aggregation ||
+      aggregation.root.id !== root.id ||
+      aggregation.root.guildId !== root.guildId ||
+      aggregation.root.messageId !== root.messageId ||
+      (aggregation.root.expiresAt?.getTime() ?? null) !== (root.expiresAt?.getTime() ?? null) ||
+      !hasSameSyncTimeMetadataSnapshot(aggregation.metadata, root.metadata) ||
+      aggregation.syncTime.getTime() !== root.syncTime.getTime()
+    ) return null;
     return {
       ...root,
       metadata: aggregation.metadata,
@@ -391,10 +399,13 @@ export class SyncAllSpunAnnouncementService {
     if (
       !currentRoot ||
       !currentSnapshot ||
+      currentRoot.id !== initialRoot.id ||
       currentRoot.guildId !== initialRoot.guildId ||
       currentRoot.messageId !== initialRoot.messageId ||
+      (currentRoot.expiresAt?.getTime() ?? null) !== (initialRoot.expiresAt?.getTime() ?? null) ||
       currentRoot.syncTime.getTime() !== initialRoot.syncTime.getTime() ||
-      !hasSameSyncTimeMetadataIdentity(initialRoot.metadata, currentRoot.metadata) ||
+      !hasSameSyncTimeMetadataSnapshot(initialRoot.metadata, currentRoot.metadata) ||
+      !hasSameSyncTimeMetadataSnapshot(initialSnapshot.metadata, currentSnapshot.metadata) ||
       currentSnapshot.claimedClanTags.size !== currentSnapshot.participatingClanTags.size ||
       currentSnapshot.participatingClanTags.size !== initialSnapshot.participatingClanTags.size
     ) return false;

@@ -22,7 +22,6 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
-import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
@@ -41,7 +40,6 @@ import {
 } from "../services/SyncTimeFwaClanListViewService";
 import {
   buildSyncSpinStatusEmbed,
-  loadValidatedSyncClaimAggregation,
   parseSyncTimeMetadata,
   trackedMessageService,
   type SyncReadinessTrackedMetadata,
@@ -665,8 +663,7 @@ async function handleSyncSpinStatusSubcommand(
     return;
   }
 
-  const aggregation = await loadValidatedSyncClaimAggregation(
-    prisma,
+  const aggregation = await trackedMessageService.getValidatedSyncClaimAggregation(
     message.id,
     new Date(),
     { checkSyncTime: false },

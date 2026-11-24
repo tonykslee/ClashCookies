@@ -1607,6 +1607,26 @@ export function getSyncTimeParticipantTags(metadata: SyncTimeTrackedMetadata): S
   );
 }
 
+function canonicalizeSyncMetadata(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalizeSyncMetadata(entry));
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeSyncMetadata(entry)]),
+  );
+}
+
+/** Purpose: compare the complete persisted sync snapshot, including participant presentation. */
+export function hasSameSyncTimeMetadataSnapshot(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalizeSyncMetadata(left)) === JSON.stringify(canonicalizeSyncMetadata(right));
+}
+
+function hasSameNullableDate(left: unknown, right: unknown): boolean {
+  if (left === null || right === null) return left === right;
+  return left instanceof Date && right instanceof Date && left.getTime() === right.getTime();
+}
+
 export type ValidatedSyncClaimAggregation = {
   root: {
     id: string;
@@ -1746,6 +1766,30 @@ export async function loadValidatedSyncClaimAggregation(
       claims: { select: { clanTag: true } },
     },
   });
+
+  const rootRow = rows.find((row) => String(row.id) === String(root.id));
+  if (
+    !rootRow ||
+    String(rootRow.id) !== String(root.id) ||
+    rootRow.guildId !== root.guildId ||
+    rootRow.channelId !== root.channelId ||
+    rootRow.messageId !== root.messageId ||
+    rootRow.referenceId !== null ||
+    rootRow.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    rootRow.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+    !hasSameNullableDate(rootRow.expiresAt, root.expiresAt) ||
+    (options.checkExpiration !== false &&
+      rootRow.expiresAt instanceof Date &&
+      rootRow.expiresAt.getTime() <= now.getTime()) ||
+    !hasSameSyncTimeMetadataSnapshot(rootRow.metadata, root.metadata) ||
+    !Array.isArray(rootRow.claims)
+  ) return null;
+  const rootRowMetadata = parseSyncTimeMetadata(rootRow.metadata);
+  if (
+    !rootRowMetadata ||
+    !hasSameSyncTimeMetadataIdentity(metadata, rootRowMetadata) ||
+    !resolveExactSyncTime(rootRowMetadata, rootRow.metadata)
+  ) return null;
 
   const participatingClanTags = getSyncTimeParticipantTags(metadata);
   if (participatingClanTags.size === 0) return null;
@@ -5891,9 +5935,6 @@ export class TrackedMessageService {
         tracked.messageId,
         now,
         {
-          trackedOverride: tracked,
-          requireLatestRoot: false,
-          checkExpiration: false,
           checkSyncTime: false,
         },
       );
@@ -5983,6 +6024,14 @@ export class TrackedMessageService {
     });
   }
 
+  async getValidatedSyncClaimAggregation(
+    messageId: string,
+    now: Date = new Date(),
+    options: { checkSyncTime?: boolean } = {},
+  ): Promise<ValidatedSyncClaimAggregation | null> {
+    return loadValidatedSyncClaimAggregation(prisma, messageId, now, options);
+  }
+
   async refreshSyncSpinStatusMessage(message: {
     id: string;
     edit: (payload: {
@@ -6007,7 +6056,7 @@ export class TrackedMessageService {
         prisma,
         message.id,
         new Date(),
-        { checkExpiration: false, checkSyncTime: false },
+        { checkSyncTime: false },
       );
       if (
         !aggregation ||
@@ -6025,7 +6074,7 @@ export class TrackedMessageService {
       prisma,
       messageId,
       new Date(),
-      { checkExpiration: false, checkSyncTime: false },
+      { checkSyncTime: false },
     );
     if (!initial) return 0;
     const rootMessageId = initial.root.messageId;
@@ -6035,7 +6084,7 @@ export class TrackedMessageService {
         prisma,
         rootMessageId,
         new Date(),
-        { checkExpiration: false, checkSyncTime: false },
+        { checkSyncTime: false },
       );
       if (
         !aggregation ||
