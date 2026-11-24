@@ -99,6 +99,7 @@ import {
   setPointsSnapshotCacheForTest,
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
+import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
 
 function makeMatchInteraction(params: {
   subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
@@ -2098,6 +2099,9 @@ describe("/fwa match response normalization", () => {
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
       .mockResolvedValue(true);
+    const accountabilitySpy = vi
+      .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
+      .mockResolvedValue(true);
     const syncIdentitySpy = vi
       .spyOn(trackedMessageService, "resolveFwaBaseSwapSyncIdentityForClanWar")
       .mockResolvedValue({
@@ -2123,6 +2127,16 @@ describe("/fwa match response normalization", () => {
         createdByUserId: "user-1",
         clanTag: "#PYPY",
         checked: true,
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
+        syncMessageId: "sync-expired",
+      }),
+    );
+    expect(accountabilitySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#PYPY",
+        actorUserId: "user-1",
         warId: 1001,
         warStartTime: new Date("2026-05-13T18:00:00.000Z"),
         opponentTag: "#OPP1",

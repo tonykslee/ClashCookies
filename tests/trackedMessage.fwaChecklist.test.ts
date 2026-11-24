@@ -48,6 +48,7 @@ import {
   trackedMessageService,
 } from "../src/services/TrackedMessageService";
 import { repWorkActivityService } from "../src/services/RepWorkActivityService";
+import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
 import {
   addFwaMatchChecklistReactionsForTest,
   buildFwaMatchChecklistRowsFromCopyView,
@@ -930,6 +931,9 @@ describe("fwa checklist tracked messages", () => {
     vi.mocked(trackedMessageService.resolveLatestActiveSyncPost).mockResolvedValue(null);
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(null);
     const edit = vi.fn().mockResolvedValue(undefined);
+    const accountabilitySpy = vi
+      .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
+      .mockResolvedValue(true);
 
     await expect(
       trackedMessageService.refreshFwaMatchChecklistMessage(
@@ -948,6 +952,7 @@ describe("fwa checklist tracked messages", () => {
           reactorUserId: "user-2",
           reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
         },
+        { client: {} as any },
       ),
     ).resolves.toBe(true);
 
@@ -972,6 +977,15 @@ describe("fwa checklist tracked messages", () => {
       }),
     ).resolves.toMatchObject({ messageId: completionRow.messageId });
     expect(edit.mock.calls.at(-1)?.[0]?.content).toContain("✅ Bases checked and all good");
+    expect(accountabilitySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#PYPY",
+        actorUserId: "user-2",
+          warId: null,
+          opponentTag: null,
+          syncMessageId: null,
+      }),
+    );
   });
 
   it("falls back to sync-scoped bases completion after war identity becomes known", async () => {

@@ -28,6 +28,7 @@ import {
   buildFwaMatchChecklistMessageContent,
 } from "../src/services/FwaMatchChecklistService";
 import { repWorkActivityService } from "../src/services/RepWorkActivityService";
+import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
 
 function makeMailTrackedChecklistRow() {
   return {
@@ -1688,6 +1689,9 @@ describe("fwa checklist badge reaction reconciliation", () => {
         trackedMessageService.refreshFwaMatchChecklistMessage(message, change, options);
       const contentWith = (checkedClanTags: string[]) =>
         buildFwaMatchChecklistMessageContent({ rows, checkedClanTags });
+      const accountabilitySpy = vi
+        .spyOn(fwaAccountabilityNotificationService, "notifyMailConfirmed")
+        .mockResolvedValue(true);
 
       await expect(refresh()).resolves.toBe(true);
       expect(currentTracked.metadata.checkedClanTags).toEqual([]);
@@ -1699,8 +1703,17 @@ describe("fwa checklist badge reaction reconciliation", () => {
         kind: "add",
         reactorUserId: "user-rr",
         reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
-      })).resolves.toBe(true);
+      }, { client: {} as any })).resolves.toBe(true);
       expect(currentTracked.metadata.checkedClanTags).toEqual(["RR"]);
+      expect(accountabilitySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clanTag: "#RR",
+          actorUserId: "user-rr",
+          warId: null,
+          opponentTag: null,
+          syncMessageId: "sync-a",
+        }),
+      );
 
       reactionCache.set("custom:222", {
         emoji: { id: "222", name: "bravo" }, count: 2, me: true,

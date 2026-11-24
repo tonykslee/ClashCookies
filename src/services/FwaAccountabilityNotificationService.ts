@@ -39,6 +39,7 @@ type AccountabilityRoute =
   | "mail-confirmed";
 
 type WarSyncIdentity = {
+  clanTag?: string | null;
   warId?: string | number | null;
   warStartTime?: Date | null;
   opponentTag?: string | null;
@@ -54,7 +55,7 @@ type AccountabilityNotificationInput = WarSyncIdentity & {
   eventKey: string;
   eventType: AccountabilityEventType;
   route: AccountabilityRoute;
-  content: string;
+  renderContent: (actorUserId: string) => string;
 };
 
 function normalizeId(input: string | null | undefined): string | null {
@@ -70,7 +71,12 @@ function normalizeDate(input: Date | null | undefined): string | null {
 
 function normalizeWarId(input: string | number | null | undefined): string | null {
   const value = String(input ?? "").trim();
-  return /^\d+$/.test(value) ? String(Math.trunc(Number(value))) : null;
+  if (!/^\d+$/.test(value)) return null;
+  try {
+    return BigInt(value).toString();
+  } catch {
+    return null;
+  }
 }
 
 function normalizeOpponentTag(input: string | null | undefined): string | null {
@@ -82,17 +88,34 @@ function normalizeOpponentTag(input: string | null | undefined): string | null {
 export function buildFwaAccountabilityWarSyncIdentityForTest(
   input: WarSyncIdentity,
 ): string | null {
+  const clanTag = normalizeClanTag(String(input.clanTag ?? ""));
+  if (!clanTag) return null;
   const warId = normalizeWarId(input.warId);
   const warStartTime = normalizeDate(input.warStartTime);
   const opponentTag = normalizeOpponentTag(input.opponentTag);
   const syncMessageId = normalizeId(input.syncMessageId);
-  if (!warId && !warStartTime && !syncMessageId) return null;
-  return [
-    `war=${warId ?? "none"}`,
-    `start=${warStartTime ?? "none"}`,
-    `opponent=${opponentTag ?? "none"}`,
-    `sync=${syncMessageId ?? "none"}`,
-  ].join("|");
+  const suppliedWarIdentity = Boolean(warId || warStartTime || opponentTag);
+  const hasCompleteWarIdentity = Boolean(warId && warStartTime && opponentTag);
+  if (suppliedWarIdentity && !hasCompleteWarIdentity) return null;
+  if (hasCompleteWarIdentity) {
+    // A complete war identity is authoritative. Sync metadata is enrichment and
+    // deliberately does not create a second event key for the same war.
+    return JSON.stringify({
+      version: 2,
+      clanTag,
+      kind: "war",
+      warId,
+      warStartTime,
+      opponentTag,
+    });
+  }
+  if (!syncMessageId) return null;
+  return JSON.stringify({
+    version: 2,
+    clanTag,
+    kind: "sync",
+    syncMessageId,
+  });
 }
 
 function jumpUrl(guildId: string, channelId: string, messageId: string): string | null {
@@ -124,8 +147,9 @@ function summarizeError(error: unknown): string {
   return formatError(error).slice(0, MAX_FAILURE_REASON_LENGTH);
 }
 
-function isAmbiguousDeliveryError(error: unknown): boolean {
-  return typeof (error as { code?: unknown } | null | undefined)?.code !== "number";
+function isKnownNondeliveryError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return code === 50001 || code === 50013 || code === 10003 || code === 10004;
 }
 
 function isTextSendableChannel(channel: any): boolean {
@@ -159,7 +183,10 @@ export class FwaAccountabilityNotificationService {
     checklistChannelId?: string | null;
     checklistMessageId?: string | null;
   }): Promise<boolean> {
-    const identity = buildFwaAccountabilityWarSyncIdentityForTest(input);
+    const identity = buildFwaAccountabilityWarSyncIdentityForTest({
+      ...input,
+      clanTag: input.clanTag,
+    });
     if (!identity) return false;
     const clanName = input.clanName ?? await this.resolveClanName(input.clanTag);
     return this.deliver({
@@ -167,8 +194,9 @@ export class FwaAccountabilityNotificationService {
       clanName,
       eventType: "BASES_CHECKED",
       route: "bases-checked",
-      eventKey: identity,
-      content: this.buildBasesContent({ ...input, clanName }),
+      eventKey: `bases:${identity}`,
+      renderContent: (actorUserId) =>
+        this.buildBasesContent({ ...input, clanName, actorUserId }),
     });
   }
 
@@ -186,17 +214,21 @@ export class FwaAccountabilityNotificationService {
     mailChannelId: string;
     mailMessageId: string;
   }): Promise<boolean> {
-    const publicationIdentity = String(input.publicationIdentity ?? "").trim();
     const mailUrl = jumpUrl(input.guildId, input.mailChannelId, input.mailMessageId);
-    if (!publicationIdentity || !mailUrl) return false;
+    const publicationMessageIdentity = [
+      normalizeId(input.mailChannelId),
+      normalizeId(input.mailMessageId),
+    ];
+    if (!mailUrl || publicationMessageIdentity.some((value) => !value)) return false;
     const clanName = input.clanName ?? await this.resolveClanName(input.clanTag);
     return this.deliver({
       ...input,
       clanName,
       eventType: "MAIL_POSTED",
       route: "mail-posted",
-      eventKey: `publication=${publicationIdentity}`,
-      content: `${input.resent ? "📨 Clan mail resent" : "📨 Clan mail posted"} by <@${input.actorUserId}> — [View Mail](${mailUrl}) — ${displayClanLabel(input.clanTag, clanName)} (${contextLabel(input)})`,
+      eventKey: `mail:${normalizeClanTag(input.clanTag)}:channel=${publicationMessageIdentity[0]}:message=${publicationMessageIdentity[1]}`,
+      renderContent: (actorUserId) =>
+        `${input.resent ? "📨 Clan mail resent" : "📨 Clan mail posted"} by <@${actorUserId}> — [View Mail](${mailUrl}) — ${displayClanLabel(input.clanTag, clanName)} (${contextLabel(input)})`,
     });
   }
 
@@ -213,7 +245,10 @@ export class FwaAccountabilityNotificationService {
     checklistChannelId?: string | null;
     checklistMessageId?: string | null;
   }): Promise<boolean> {
-    const identity = buildFwaAccountabilityWarSyncIdentityForTest(input);
+    const identity = buildFwaAccountabilityWarSyncIdentityForTest({
+      ...input,
+      clanTag: input.clanTag,
+    });
     if (!identity) return false;
     const clanName = input.clanName ?? await this.resolveClanName(input.clanTag);
     const checklistUrl = input.checklistChannelId && input.checklistMessageId
@@ -224,12 +259,13 @@ export class FwaAccountabilityNotificationService {
       clanName,
       eventType: "MAIL_CONFIRMED",
       route: "mail-confirmed",
-      eventKey: identity,
-      content: [
-        `✅ Clan mail marked as sent by <@${input.actorUserId}>`,
-        checklistUrl ? `— [View Checklist](${checklistUrl})` : null,
-        `— ${displayClanLabel(input.clanTag, clanName)} (${contextLabel(input)})`,
-      ].filter((line): line is string => Boolean(line)).join(" "),
+      eventKey: `mail-confirmed:${identity}`,
+      renderContent: (actorUserId) =>
+        [
+          `✅ Clan mail marked as sent by <@${actorUserId}>`,
+          checklistUrl ? `— [View Checklist](${checklistUrl})` : null,
+          `— ${displayClanLabel(input.clanTag, clanName)} (${contextLabel(input)})`,
+        ].filter((line): line is string => Boolean(line)).join(" "),
     });
   }
 
@@ -271,49 +307,69 @@ export class FwaAccountabilityNotificationService {
       route: input.route,
     });
     if (!destination) {
-      await this.markFailed(claim, "DESTINATION_UNAVAILABLE", "Configured destination is missing, inaccessible, or not sendable.");
+      await this.markFailedSafely(
+        claim,
+        "DESTINATION_UNAVAILABLE",
+        "Configured destination is missing, inaccessible, or not sendable.",
+      );
       return false;
     }
 
+    const content = input.renderContent(claim.actorUserId);
     try {
       const sent = await destination.channel.send({
-        content: input.content,
-        allowedMentions: { parse: [], users: [actorUserId] },
+        content,
+        allowedMentions: { parse: [], users: [claim.actorUserId] },
       });
       const messageId = normalizeId(String(sent?.id ?? ""));
       const messageUrl = messageId
         ? jumpUrl(guildId, destination.channelId, messageId)
         : null;
-      await this.db.fwaAccountabilityNotification.updateMany({
-        where: {
-          id: claim.id,
-          status: FwaAccountabilityNotificationStatus.CLAIMED,
-          claimToken: claim.claimToken,
-        },
-        data: {
-          status: FwaAccountabilityNotificationStatus.SENT,
-          claimToken: null,
-          claimedAt: null,
-          sentAt: new Date(),
-          channelId: destination.channelId,
-          messageId,
-          messageUrl,
-          failureCode: null,
-          failureReason: null,
-        },
-      });
+      let finalized: { count: number };
+      try {
+        finalized = await this.db.fwaAccountabilityNotification.updateMany({
+          where: {
+            id: claim.id,
+            status: FwaAccountabilityNotificationStatus.CLAIMED,
+            claimToken: claim.claimToken,
+          },
+          data: {
+            status: FwaAccountabilityNotificationStatus.SENT,
+            claimToken: null,
+            claimedAt: null,
+            sentAt: new Date(),
+            channelId: destination.channelId,
+            messageId,
+            messageUrl,
+            failureCode: null,
+            failureReason: null,
+          },
+        });
+      } catch (error) {
+        console.error(
+          `[fwa-accountability] event=finalization_unknown guild=${guildId} clan=${clanTag} type=${input.eventType} channel=${destination.channelId} message=${messageId ?? "unknown"} error=${summarizeError(error)}`,
+        );
+        return false;
+      }
+      if (finalized.count !== 1) {
+        console.error(
+          `[fwa-accountability] event=finalization_unknown guild=${guildId} clan=${clanTag} type=${input.eventType} channel=${destination.channelId} message=${messageId ?? "unknown"} reason=claim_not_owned`,
+        );
+        return false;
+      }
       return true;
     } catch (error) {
-      await this.markFailed(
+      const knownNondelivery = isKnownNondeliveryError(error);
+      await this.markFailedSafely(
         claim,
-        isAmbiguousDeliveryError(error) ? "DELIVERY_UNKNOWN" : "SEND_FAILED",
+        knownNondelivery ? "SEND_FAILED" : "DELIVERY_UNKNOWN",
         summarizeError(error),
-        isAmbiguousDeliveryError(error)
-          ? FwaAccountabilityNotificationStatus.UNKNOWN
-          : FwaAccountabilityNotificationStatus.FAILED,
+        knownNondelivery
+          ? FwaAccountabilityNotificationStatus.FAILED
+          : FwaAccountabilityNotificationStatus.UNKNOWN,
       );
       console.warn(
-        `[fwa-accountability] event=delivery_failed guild=${guildId} clan=${clanTag} type=${input.eventType} destination=${destination.channelId} status=${isAmbiguousDeliveryError(error) ? "unknown" : "failed"} error=${summarizeError(error)}`,
+        `[fwa-accountability] event=delivery_failed guild=${guildId} clan=${clanTag} type=${input.eventType} destination=${destination.channelId} status=${knownNondelivery ? "failed" : "unknown"} error=${summarizeError(error)}`,
       );
       return false;
     }
@@ -325,7 +381,7 @@ export class FwaAccountabilityNotificationService {
     eventType: AccountabilityEventType;
     eventKey: string;
     actorUserId: string;
-  }): Promise<{ id: string; claimToken: string } | null> {
+  }): Promise<{ id: string; claimToken: string; actorUserId: string } | null> {
     const claimToken = randomUUID();
     const now = new Date();
     const row = await this.db.fwaAccountabilityNotification.upsert({
@@ -336,7 +392,7 @@ export class FwaAccountabilityNotificationService {
           eventKey: input.eventKey,
         },
       },
-      update: {},
+          update: {},
       create: {
         guildId: input.guildId,
         clanTag: input.clanTag,
@@ -362,7 +418,31 @@ export class FwaAccountabilityNotificationService {
       status === FwaAccountabilityNotificationStatus.CLAIMED &&
       claimedAt > now.getTime() - CLAIM_LEASE_MS
     ) {
-      return row.claimToken === claimToken ? { id: row.id, claimToken } : null;
+      return row.claimToken === claimToken && normalizeId(row.actorUserId)
+        ? { id: row.id, claimToken, actorUserId: row.actorUserId }
+        : null;
+    }
+    if (status === FwaAccountabilityNotificationStatus.CLAIMED) {
+      const expired = await this.db.fwaAccountabilityNotification.updateMany({
+        where: {
+          id: row.id,
+          status: FwaAccountabilityNotificationStatus.CLAIMED,
+          claimedAt: { lt: new Date(now.getTime() - CLAIM_LEASE_MS) },
+        },
+        data: {
+          status: FwaAccountabilityNotificationStatus.UNKNOWN,
+          claimToken: null,
+          claimedAt: null,
+          failureCode: "CLAIM_EXPIRED_UNRECONCILED",
+          failureReason: "A delivery claim expired before durable SENT confirmation; automatic retry is suppressed to avoid duplicate Discord delivery.",
+        },
+      });
+      if (expired.count === 1) {
+        console.warn(
+          `[fwa-accountability] event=claim_expired guild=${input.guildId} clan=${input.clanTag} type=${input.eventType} status=unknown reason=delivery_reconciliation_required`,
+        );
+      }
+      return null;
     }
     const updated = await this.db.fwaAccountabilityNotification.updateMany({
       where: {
@@ -371,9 +451,6 @@ export class FwaAccountabilityNotificationService {
           FwaAccountabilityNotificationStatus.CLAIMED,
           FwaAccountabilityNotificationStatus.FAILED,
         ] },
-        ...(status === FwaAccountabilityNotificationStatus.CLAIMED
-          ? { claimedAt: { lt: new Date(now.getTime() - CLAIM_LEASE_MS) } }
-          : {}),
       },
       data: {
         status: FwaAccountabilityNotificationStatus.CLAIMED,
@@ -381,10 +458,11 @@ export class FwaAccountabilityNotificationService {
         claimedAt: now,
         attemptCount: { increment: 1 },
         lastAttemptAt: now,
-        actorUserId: input.actorUserId,
       },
     });
-    return updated.count === 1 ? { id: row.id, claimToken } : null;
+    return updated.count === 1 && normalizeId(row.actorUserId)
+      ? { id: row.id, claimToken, actorUserId: row.actorUserId }
+      : null;
   }
 
   private async markFailed(
@@ -407,6 +485,21 @@ export class FwaAccountabilityNotificationService {
         failureReason: reason.slice(0, MAX_FAILURE_REASON_LENGTH),
       },
     });
+  }
+
+  private async markFailedSafely(
+    claim: { id: string; claimToken: string },
+    code: string,
+    reason: string,
+    status: FwaAccountabilityNotificationStatus = FwaAccountabilityNotificationStatus.FAILED,
+  ): Promise<void> {
+    try {
+      await this.markFailed(claim, code, reason, status);
+    } catch (error) {
+      console.error(
+        `[fwa-accountability] event=failure_finalization_unknown notification=${claim.id} error=${summarizeError(error)}`,
+      );
+    }
   }
 
   private async resolveDestination(input: {

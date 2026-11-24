@@ -282,6 +282,8 @@ export type FwaMatchChecklistBasesCompletionMetadata = {
   kind: "bases_completion";
   createdByUserId: string;
   createdAtIso: string;
+  checkedByUserId?: string | null;
+  checkedAtIso?: string | null;
   syncMessageId?: string | null;
   syncReferenceId?: string | null;
   clanTag: string;
@@ -674,6 +676,26 @@ function normalizeWarIdText(input: string | number | null | undefined): string |
 function normalizeDateTimeIso(input: Date | null | undefined): string | null {
   if (!(input instanceof Date)) return null;
   return Number.isFinite(input.getTime()) ? input.toISOString() : null;
+}
+
+/** Purpose: pass only complete war metadata to accountability identity construction; sync is the fallback when enrichment is incomplete. */
+function buildAccountabilityWarIdentity(input: {
+  warId?: string | number | null;
+  warStartTime?: Date | null;
+  opponentTag?: string | null;
+}): {
+  warId: string | number | null;
+  warStartTime: Date | null;
+  opponentTag: string | null;
+} {
+  const warId = normalizeWarIdText(input.warId ?? null);
+  const warStartTime = input.warStartTime instanceof Date && Number.isFinite(input.warStartTime.getTime())
+    ? input.warStartTime
+    : null;
+  const opponentTag = normalizeClanTag(String(input.opponentTag ?? "")) || null;
+  return warId && warStartTime && opponentTag
+    ? { warId, warStartTime, opponentTag }
+    : { warId: null, warStartTime: null, opponentTag: null };
 }
 
 function normalizeDateMs(input: Date | null | undefined): number | null {
@@ -1545,6 +1567,8 @@ function parseFwaMatchChecklistBasesCompletionMetadata(
   if (String(value.kind ?? "").trim() !== "bases_completion") return null;
   const createdByUserId = String(value.createdByUserId ?? "").trim();
   const createdAtIso = String(value.createdAtIso ?? "").trim();
+  const checkedByUserId = String(value.checkedByUserId ?? "").trim() || null;
+  const checkedAtIso = String(value.checkedAtIso ?? "").trim() || null;
   const clanTag = normalizeChecklistClanTag(String(value.clanTag ?? ""));
   const clanName = String(value.clanName ?? "").trim() || null;
   const warId = normalizeWarIdText(value.warId as string | number | null | undefined);
@@ -1559,6 +1583,8 @@ function parseFwaMatchChecklistBasesCompletionMetadata(
     kind: "bases_completion",
     createdByUserId,
     createdAtIso,
+    checkedByUserId,
+    checkedAtIso,
     syncMessageId,
     syncReferenceId,
     clanTag,
@@ -2609,7 +2635,21 @@ export class TrackedMessageService {
     automaticClaimToken?: string | null;
     recoveryExpectedContents: readonly string[];
     renderContent: (metadata: FwaMatchChecklistTrackedMetadata) => string;
-  }): Promise<FwaMatchChecklistTrackedMetadata | null> {
+  }): Promise<{
+    metadata: FwaMatchChecklistTrackedMetadata;
+    appliedCheckedClanTags: string[];
+  } | null> {
+    const normalizedCheckedTags = (value: string[] | undefined): Set<string> =>
+      new Set(
+        (value ?? [])
+          .map((clanTag) => normalizeChecklistClanTag(clanTag))
+          .filter((clanTag): clanTag is string => Boolean(clanTag)),
+      );
+    const baseCheckedTags = normalizedCheckedTags(params.baseMetadata.checkedClanTags);
+    const desiredCheckedTags = normalizedCheckedTags(params.desiredMetadata.checkedClanTags);
+    const desiredAddedCheckedTags = [...desiredCheckedTags].filter(
+      (clanTag) => !baseCheckedTags.has(clanTag),
+    );
     const recoveryExpectedContents = new Set(params.recoveryExpectedContents);
     const editAfterPersist = async (
       metadata: FwaMatchChecklistTrackedMetadata,
@@ -2681,9 +2721,11 @@ export class TrackedMessageService {
       return null;
     }
     if (initialPersisted.count === 1) {
-      if (!completionChanged) return params.desiredMetadata;
+      if (!completionChanged) {
+        return { metadata: params.desiredMetadata, appliedCheckedClanTags: [] };
+      }
       return (await editAfterPersist(params.desiredMetadata, "initial_edit"))
-        ? params.desiredMetadata
+        ? { metadata: params.desiredMetadata, appliedCheckedClanTags: desiredAddedCheckedTags }
         : null;
     }
     console.warn(
@@ -2812,7 +2854,11 @@ export class TrackedMessageService {
         console.info(
           `[tracked-message] event=fwa_checklist_reconciliation_succeeded guild=${params.tracked.guildId} messageId=${params.tracked.messageId} attempt=${attempt}`,
         );
-        return mergedMetadata;
+        const latestCheckedTags = normalizedCheckedTags(latestMetadata.checkedClanTags);
+        const appliedCheckedClanTags = desiredAddedCheckedTags.filter(
+          (clanTag) => !latestCheckedTags.has(clanTag) && normalizedCheckedTags(mergedMetadata.checkedClanTags).has(clanTag),
+        );
+        return { metadata: mergedMetadata, appliedCheckedClanTags };
       }
       console.warn(
         `[tracked-message] event=fwa_checklist_metadata_conflict guild=${params.tracked.guildId} messageId=${params.tracked.messageId} phase=reconciliation_cas attempt=${attempt}`,
@@ -4305,6 +4351,7 @@ export class TrackedMessageService {
     warStartTime?: Date | null;
     opponentTag?: string | null;
     checked: boolean;
+    completionActorUserId?: string | null;
     syncMessageId?: string | null;
     syncReferenceId?: string | null;
   }): Promise<boolean> {
@@ -4328,6 +4375,10 @@ export class TrackedMessageService {
       kind: "bases_completion",
       createdByUserId: params.createdByUserId,
       createdAtIso,
+      checkedByUserId: params.checked
+        ? String(params.completionActorUserId ?? "").trim() || null
+        : null,
+      checkedAtIso: params.checked ? createdAtIso : null,
       syncMessageId: normalizeTrackedMessageId(params.syncMessageId ?? null),
       syncReferenceId: normalizeTrackedMessageId(params.syncReferenceId ?? null),
       clanTag: normalizedClanTag,
@@ -5566,6 +5617,7 @@ export class TrackedMessageService {
       const persistBasesCheckedStateForRow = async (
         row: FwaMatchChecklistTrackedRow,
         checked: boolean,
+        completionActorUserId?: string | null,
       ): Promise<boolean> => {
         const clanTag = normalizeChecklistClanTag(row.clanTag);
         const rowWarId = normalizeWarIdText(row.warId ?? null);
@@ -5668,6 +5720,7 @@ export class TrackedMessageService {
                   syncReferenceId,
                 }),
             checked,
+            completionActorUserId: completionActorUserId ?? null,
           });
         } catch (err) {
           logPersistenceFailure(row, "completion_write_error", checked);
@@ -5709,22 +5762,30 @@ export class TrackedMessageService {
             matchedRow,
           );
           if (reactionChange.kind === "add") {
-            const persisted = await persistBasesCheckedStateForRow(matchedRow, true);
+            const wasAlreadyChecked = matchedRow.basesStatus === "all_good";
+            const persisted = await persistBasesCheckedStateForRow(
+              matchedRow,
+              true,
+              reactionChange.reactorUserId ?? null,
+            );
             if (persisted) {
               completionStatusByTag.set(changedRowTag, true);
-              if (reactionChange.reactorUserId && options?.client) {
+              if (!wasAlreadyChecked && reactionChange.reactorUserId && options?.client) {
                 const resolvedWarIdentity = resolvedWarIdentityByClanTag.get(changedRowTag) ?? null;
+                const accountabilityWarIdentity = buildAccountabilityWarIdentity({
+                  warId: resolvedWarIdentity?.warId ?? matchedRow.warId ?? null,
+                  warStartTime:
+                    resolvedWarIdentity?.warStartTime ??
+                    (matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null),
+                  opponentTag: resolvedWarIdentity?.opponentTag ?? matchedRow.opponentTag ?? null,
+                });
                 await fwaAccountabilityNotificationService
                   .notifyBasesChecked({
                     client: options.client,
                     guildId: tracked.guildId,
                     clanTag: matchedRow.clanTag,
                     actorUserId: reactionChange.reactorUserId,
-                    warId: resolvedWarIdentity?.warId ?? matchedRow.warId ?? null,
-                    warStartTime:
-                      resolvedWarIdentity?.warStartTime ??
-                      (matchedRow.warStartTimeIso ? new Date(matchedRow.warStartTimeIso) : null),
-                    opponentTag: resolvedWarIdentity?.opponentTag ?? matchedRow.opponentTag ?? null,
+                    ...accountabilityWarIdentity,
                     syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
                     checklistChannelId: tracked.channelId,
                     checklistMessageId: tracked.messageId,
@@ -5953,7 +6014,7 @@ export class TrackedMessageService {
         guildId: tracked.guildId,
         messageId: message.id,
         message,
-        rows: persistedMetadata.rows,
+        rows: persistedMetadata.metadata.rows,
         source: reconcileSource,
         viewType: "Bases",
         reactionObservation,
@@ -6147,17 +6208,26 @@ export class TrackedMessageService {
     if (!persistedMetadata) {
       return false;
     }
-    if (manualMailConfirmation && options?.client) {
+    if (
+      manualMailConfirmation &&
+      options?.client &&
+      persistedMetadata.appliedCheckedClanTags.includes(
+        normalizeChecklistClanTag(manualMailConfirmation.row.clanTag),
+      )
+    ) {
       const row = manualMailConfirmation.row;
+      const accountabilityWarIdentity = buildAccountabilityWarIdentity({
+        warId: row.warId ?? null,
+        warStartTime: row.warStartTimeIso ? new Date(row.warStartTimeIso) : null,
+        opponentTag: row.opponentTag ?? null,
+      });
       await fwaAccountabilityNotificationService
         .notifyMailConfirmed({
           client: options.client,
           guildId: tracked.guildId,
           clanTag: row.clanTag,
           actorUserId: manualMailConfirmation.actorUserId,
-          warId: row.warId ?? null,
-          warStartTime: row.warStartTimeIso ? new Date(row.warStartTimeIso) : null,
-          opponentTag: row.opponentTag ?? null,
+          ...accountabilityWarIdentity,
           syncMessageId: normalizeTrackedMessageId(tracked.referenceId ?? null),
           checklistChannelId: tracked.channelId,
           checklistMessageId: tracked.messageId,
@@ -6172,7 +6242,7 @@ export class TrackedMessageService {
       guildId: tracked.guildId,
       messageId: message.id,
       message,
-      rows: persistedMetadata.rows,
+      rows: persistedMetadata.metadata.rows,
       source: reconcileSource,
       viewType: "Mail",
       reactionObservation,
