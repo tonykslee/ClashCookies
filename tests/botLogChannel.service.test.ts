@@ -226,6 +226,38 @@ describe("BotLogChannelService typed routing", () => {
     });
   });
 
+  it("defaults each FB-020 route to clan-lead and keeps them independently configurable", async () => {
+    const stub = createSettingsStub();
+    const service = new BotLogChannelService(stub.settings as any);
+    for (const type of ["bases-checked", "mail-posted", "mail-confirmed"] as const) {
+      await expect(service.getRoutingConfigForType("guild-1", type)).resolves.toMatchObject({
+        routingMode: "CLAN_LEAD",
+        configured: false,
+      });
+    }
+
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "bases-checked",
+      routingMode: "CLAN_LOG",
+    });
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "mail-posted",
+      routingMode: "CUSTOM",
+      channelId: "777777777777777777",
+    });
+    await service.setRoutingConfigForType({
+      guildId: "guild-1",
+      type: "mail-confirmed",
+      routingMode: "DISABLED",
+    });
+
+    await expect(service.getRoutingConfigForType("guild-1", "bases-checked")).resolves.toMatchObject({ routingMode: "CLAN_LOG", configured: true });
+    await expect(service.getRoutingConfigForType("guild-1", "mail-posted")).resolves.toMatchObject({ routingMode: "CUSTOM", channelId: "777777777777777777", configured: true });
+    await expect(service.getRoutingConfigForType("guild-1", "mail-confirmed")).resolves.toMatchObject({ routingMode: "DISABLED", configured: true });
+  });
+
   it("persists all clan-goals routed modes in the shared routed setting", async () => {
     const stub = createSettingsStub();
     const service = new BotLogChannelService(stub.settings as any);

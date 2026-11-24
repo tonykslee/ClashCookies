@@ -53,11 +53,19 @@ vi.mock("../src/services/WarMailLifecycleService", () => ({
 import {
   buildFwaMatchChecklistRowContextKey,
   trackedMessageService,
+  type FwaMatchChecklistBasesCompletionTransition,
 } from "../src/services/TrackedMessageService";
 import { buildFwaMatchBasesMessageContent } from "../src/services/FwaMatchChecklistService";
 import { buildFwaMatchChecklistRenderStateForGuild } from "../src/services/FwaMatchChecklistStateService";
 import { WarMailLifecycleService } from "../src/services/WarMailLifecycleService";
 import { shouldApplyFwaMatchChecklistBadgeReaction } from "../src/services/TrackedMessageService";
+
+const july15BasesCompletionTransition: FwaMatchChecklistBasesCompletionTransition = {
+  persisted: true,
+  messageId: "bases-completion-july-15",
+  transition: "COMMITTED",
+  committedByUserId: null,
+};
 
 function makeBaseSwapTrackedMessageRow(params: {
   messageId: string;
@@ -1840,7 +1848,7 @@ describe("FwaMatchChecklistStateService checklist expiry", () => {
       } as any);
     const setCompletionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-      .mockResolvedValue(true);
+      .mockResolvedValue(july15BasesCompletionTransition);
     vi.spyOn(trackedMessageService, "findLatestActiveFwaBaseSwapTrackedMessageForClan").mockResolvedValue(
       null,
     );

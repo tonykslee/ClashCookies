@@ -10,6 +10,12 @@ const prismaMock = vi.hoisted(() => ({
 const botLogChannelServiceMock = vi.hoisted(() => ({
   getChannelIdForType: vi.fn(),
   clearChannelIdForType: vi.fn(),
+  getChannelId: vi.fn(),
+  getRoutingConfigForType: vi.fn().mockResolvedValue({
+    configured: false,
+    routingMode: "CLAN_LEAD",
+    channelId: null,
+  }),
 }));
 
 const renderStateMock = vi.hoisted(() => ({
@@ -33,6 +39,7 @@ vi.mock("../src/prisma", () => ({
 
 vi.mock("../src/services/BotLogChannelService", () => ({
   BotLogChannelService: vi.fn().mockImplementation(() => botLogChannelServiceMock),
+  botLogChannelService: botLogChannelServiceMock,
 }));
 
 vi.mock("../src/services/CoCService", () => ({

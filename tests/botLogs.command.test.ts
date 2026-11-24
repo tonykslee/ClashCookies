@@ -75,6 +75,9 @@ describe("/bot-logs command shape", () => {
       { name: "ban-join-alert", value: "ban-join-alert" },
       { name: "clan-goals", value: "clan-goals" },
       { name: "sync-retrospective", value: "sync-retrospective" },
+      { name: "bases-checked", value: "bases-checked" },
+      { name: "mail-posted", value: "mail-posted" },
+      { name: "mail-confirmed", value: "mail-confirmed" },
     ]);
     expect(setChannelOption).toBeUndefined();
     expect(enableOption?.type).toBe(ApplicationCommandOptionType.String);
@@ -502,6 +505,42 @@ describe("/bot-logs behavior", () => {
     });
   });
 
+  it("configures an FB-020 route independently and exposes its default inspection", async () => {
+    const setRoutingConfigForType = vi
+      .spyOn(BotLogChannelService.prototype, "setRoutingConfigForType")
+      .mockResolvedValue(undefined);
+    const configured = createInteraction({
+      guildId: "111",
+      type: "mail-posted",
+      enable: "custom",
+      channel: {
+        id: "999999999999999999",
+        guildId: "111",
+        type: ChannelType.GuildText,
+      },
+    });
+    await BotLogs.run({} as any, configured as any, {} as any);
+    expect(setRoutingConfigForType).toHaveBeenCalledWith({
+      guildId: "111",
+      type: "mail-posted",
+      routingMode: "CUSTOM",
+      channelId: "999999999999999999",
+    });
+
+    vi.mocked(BotLogChannelService.prototype.getRoutingConfigForType).mockResolvedValue({
+      routingMode: "CLAN_LEAD",
+      channelId: null,
+      legacy: false,
+      configured: false,
+    });
+    const inspect = createInteraction({ guildId: "111", type: "mail-confirmed" });
+    await BotLogs.run({} as any, inspect as any, {} as any);
+    expect(inspect.reply).toHaveBeenCalledWith({
+      ephemeral: true,
+      content: "Mail confirmed routing defaults to clan-lead channel.",
+    });
+  });
+
   it("does not accept a channel argument with clan-chat routing", async () => {
     const setRoutingConfigForType = vi.mocked(
       BotLogChannelService.prototype.setRoutingConfigForType,
@@ -679,7 +718,7 @@ describe("/bot-logs behavior", () => {
     expect(interaction.reply).toHaveBeenCalledWith({
       ephemeral: true,
         content:
-          "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, or `type:sync-retrospective`.",
+          "`enable` is only supported with `type:base-swap`, `type:ban-log`, `type:ban-join-alert`, `type:clan-goals`, `type:sync-retrospective`, `type:bases-checked`, `type:mail-posted`, or `type:mail-confirmed`.",
     });
   });
 
@@ -806,6 +845,9 @@ describe("/bot-logs behavior", () => {
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
         "Sync retrospective: Disabled",
+        "Bases checked: Disabled",
+        "Mail posted: Disabled",
+        "Mail confirmed: Disabled",
       ].join("\n"),
     });
   });
@@ -954,6 +996,9 @@ describe("/bot-logs behavior", () => {
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
         "Sync retrospective: Disabled",
+        "Bases checked: Disabled",
+        "Mail posted: Disabled",
+        "Mail confirmed: Disabled",
       ].join("\n"),
     });
   });
@@ -982,6 +1027,9 @@ describe("/bot-logs behavior", () => {
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
         "Sync retrospective: Disabled",
+        "Bases checked: Disabled",
+        "Mail posted: Disabled",
+        "Mail confirmed: Disabled",
       ].join("\n"),
     });
   });
@@ -1031,6 +1079,9 @@ describe("/bot-logs behavior", () => {
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled",
         "Sync retrospective: Disabled",
+        "Bases checked: Disabled",
+        "Mail posted: Disabled",
+        "Mail confirmed: Disabled",
       ].join("\n"),
     });
   });
@@ -1070,7 +1121,10 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled",
         "Ban join alert: Default clan-lead channel",
         "Clan goals: Disabled\n" +
-        "Sync retrospective: Disabled",
+        "Sync retrospective: Disabled\n" +
+        "Bases checked: Disabled\n" +
+        "Mail posted: Disabled\n" +
+        "Mail confirmed: Disabled",
       ].join("\n"),
     });
   });
@@ -1159,7 +1213,10 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
         "Clan goals: Disabled\n" +
-        "Sync retrospective: Disabled",
+        "Sync retrospective: Disabled\n" +
+        "Bases checked: Disabled\n" +
+        "Mail posted: Disabled\n" +
+        "Mail confirmed: Disabled",
     });
   });
 
@@ -1294,7 +1351,10 @@ describe("/bot-logs behavior", () => {
         "Ban log: Disabled\n" +
         "Ban join alert: Default clan-lead channel\n" +
         "Clan goals: Disabled\n" +
-        "Sync retrospective: Disabled",
+        "Sync retrospective: Disabled\n" +
+        "Bases checked: Disabled\n" +
+        "Mail posted: Disabled\n" +
+        "Mail confirmed: Disabled",
     });
   });
 

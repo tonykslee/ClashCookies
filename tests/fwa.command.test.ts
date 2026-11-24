@@ -100,6 +100,16 @@ import {
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 
+function mockBasesCompletionTransition(params: { checked?: boolean; completionActorUserId?: string | null }) {
+  return {
+    persisted: true,
+    messageId: "completion-test",
+    transition: params.checked ? "COMMITTED" : "CLEARED",
+    committedByUserId: params.checked ? params.completionActorUserId ?? null : null,
+  } as const;
+}
+import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
+
 function makeMatchInteraction(params: {
   subcommand?: "match" | "match-checklist" | "blacklist-import" | "rebuild";
   subcommandGroup?: "blacklist-samples" | "blacklist-profile" | null;
@@ -2097,6 +2107,9 @@ describe("/fwa match response normalization", () => {
     });
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockImplementation(mockBasesCompletionTransition);
+    const accountabilitySpy = vi
+      .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
       .mockResolvedValue(true);
     const syncIdentitySpy = vi
       .spyOn(trackedMessageService, "resolveFwaBaseSwapSyncIdentityForClanWar")
@@ -2126,7 +2139,15 @@ describe("/fwa match response normalization", () => {
         warId: 1001,
         warStartTime: new Date("2026-05-13T18:00:00.000Z"),
         opponentTag: "#OPP1",
-        syncMessageId: "sync-expired",
+      }),
+    );
+    expect(accountabilitySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clanTag: "#PYPY",
+        actorUserId: "user-1",
+        warId: 1001,
+        warStartTime: new Date("2026-05-13T18:00:00.000Z"),
+        opponentTag: "#OPP1",
       }),
     );
     expect(syncIdentitySpy).toHaveBeenCalledWith(
@@ -2166,7 +2187,7 @@ describe("/fwa match response normalization", () => {
     });
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-      .mockResolvedValue(true);
+      .mockImplementation(mockBasesCompletionTransition);
 
     const run = makeMatchInteraction({
       subcommand: "match-checklist",
@@ -2190,6 +2211,88 @@ describe("/fwa match response normalization", () => {
         content: expect.stringContaining("Cleared all-good bases state"),
       }),
     );
+  });
+
+  it("does not notify a command retry when another actor already committed Bases", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1001,
+      startTime: new Date("2026-05-13T18:00:00.000Z"),
+      opponentTag: "#0PPY",
+      state: "battle",
+    });
+    vi.spyOn(trackedMessageService, "resolveFwaBaseSwapSyncIdentityForClanWar").mockResolvedValue({
+      syncMessageId: "sync-current",
+      source: "active_sync_post",
+    });
+    const setCompletion = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue({
+        persisted: true,
+        messageId: "completion-1",
+        transition: "ALREADY_COMPLETED",
+        committedByUserId: "original-actor",
+      });
+    const accountabilitySpy = vi
+      .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
+      .mockResolvedValue(true);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+      type: "Bases",
+      clan: "A",
+      checked: true,
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(setCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({ completionActorUserId: "user-1", checked: true }),
+    );
+    expect(accountabilitySpy).not.toHaveBeenCalled();
+  });
+
+  it("persists a sync-only command acknowledgment without notifying incomplete identity", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYPY", name: "Alpha", shortName: "A" },
+    ]);
+    prismaMock.currentWar.findFirst.mockResolvedValue({
+      warId: 1001,
+      startTime: null,
+      opponentTag: null,
+      state: "battle",
+    });
+    vi.spyOn(trackedMessageService, "resolveFwaBaseSwapSyncIdentityForClanWar").mockResolvedValue({
+      syncMessageId: "sync-only",
+      source: "active_sync_post",
+    });
+    const setCompletion = vi
+      .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
+      .mockResolvedValue({
+        persisted: true,
+        messageId: "completion-sync-only",
+        transition: "COMMITTED",
+        committedByUserId: "user-1",
+      });
+    const accountabilitySpy = vi
+      .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
+      .mockResolvedValue(true);
+
+    const run = makeMatchInteraction({
+      subcommand: "match-checklist",
+      visibility: "public",
+      type: "Bases",
+      clan: "A",
+      checked: true,
+    });
+    await Fwa.run({} as any, run.interaction as any, {} as any);
+
+    expect(setCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({ syncMessageId: "sync-only", checked: true }),
+    );
+    expect(accountabilitySpy).not.toHaveBeenCalled();
   });
 
   it("rejects clan and checked when provided for mail mode", async () => {
