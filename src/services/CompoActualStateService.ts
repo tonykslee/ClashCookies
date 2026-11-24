@@ -40,7 +40,10 @@ import {
 } from "./WeightInputDefermentService";
 import { normalizeTag } from "./war-events/core";
 import { FwaClanMembersSyncService } from "./fwa-feeds/FwaClanMembersSyncService";
-import { type HeatMapRefReferenceAvailability } from "../helper/heatMapRefAvailability";
+import {
+  type HeatMapRefHistoricalReferenceAvailability,
+  type HeatMapRefReferenceAvailability,
+} from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 import {
   getConfiguredClanMembersCadenceMinutes,
@@ -120,8 +123,13 @@ export type CompoActualStateContext = {
   latestSourceSyncedAt: Date | null;
   heatMapRefs: HeatMapRef[];
   referenceAvailability: HeatMapRefReferenceAvailability;
+  /** Separately verified canonical legacy-v1 rows usable only for informational state display. */
+  historicalHeatMapRefs?: HeatMapRef[];
+  historicalReferenceAvailability?: HeatMapRefHistoricalReferenceAvailability;
   clans: CompoActualStateClanContext[];
 };
+
+type CompoActualStateReferenceMode = "current" | "historical" | "unavailable";
 
 export type CompoActualStateTrackedClanComposition = {
   clanTag: string;
@@ -252,6 +260,8 @@ function buildActualViewSummaryLines(
   missingTo50Count: number,
   includeTh19: boolean,
   referenceAvailability: HeatMapRefReferenceAvailability,
+  historicalReferenceAvailability: HeatMapRefHistoricalReferenceAvailability,
+  referenceMode: CompoActualStateReferenceMode,
   heatMapRefParentCount: number,
   unsupportedTh19Comparisons: string[],
 ): string[] {
@@ -263,8 +273,14 @@ function buildActualViewSummaryLines(
       `Columns: Total=resolved weight; Missing=unresolved/fallback; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=resolved composition counts.`,
     );
   } else {
+    const comparisonLabel =
+      referenceMode === "current"
+        ? "current validated HeatMapRef"
+        : referenceMode === "historical"
+          ? "verified historical legacy-v1 HeatMapRef baseline (informational only)"
+          : "HeatMapRef";
     contentLines.push(
-      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=roster delta vs HeatMapRef${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=roster delta vs ${comparisonLabel}${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
     );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {
@@ -275,10 +291,15 @@ function buildActualViewSummaryLines(
   if (
     view !== "raw" &&
     heatMapRefParentCount > 0 &&
-    referenceAvailability.status !== "validated"
+    referenceMode === "unavailable"
   ) {
     contentLines.push(
       "HeatMapRef parent bands are present, but target comparisons remain UNKNOWN until reference validation is available.",
+    );
+  }
+  if (view !== "raw" && referenceMode === "historical") {
+    contentLines.push(
+      `Reference mode: verified historical legacy-v1 baseline ${historicalReferenceAvailability.sourceVersion ?? "(version unavailable)"}; comparisons are informational only and do not authorize current-reference operations.`,
     );
   }
   if (view !== "raw" && unsupportedTh19Comparisons.length > 0) {
@@ -293,11 +314,20 @@ function buildActualViewSummaryLines(
 
 function buildHeatMapRefUnknownNotice(
   availability: HeatMapRefReferenceAvailability,
+  historicalAvailability: HeatMapRefHistoricalReferenceAvailability,
+  referenceMode: CompoActualStateReferenceMode,
   view: CompoActualStateView,
   unsupportedTh19ComparisonCount: number,
 ): string | null {
   if (view === "raw") {
     return null;
+  }
+  if (referenceMode === "historical") {
+    return historicalAvailability.status === "verified"
+      ? unsupportedTh19ComparisonCount > 0
+        ? "Historical legacy-v1 comparison is informational only; current validation unavailable; observed TH19 remains unsupported"
+        : "Historical legacy-v1 comparison is informational only; current reference validation unavailable"
+      : "TH comparisons unavailable - historical legacy-v1 baseline not verified";
   }
   if (
     availability.status === "validated" &&
@@ -584,6 +614,12 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         lastSuccessAtIso: null,
         warning: null,
       },
+      historicalHeatMapRefs: [],
+      historicalReferenceAvailability: {
+        status: "unknown",
+        sourceVersion: null,
+        warning: null,
+      },
       clans: [],
     };
   }
@@ -629,6 +665,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
   ]);
   const heatMapRefs = reference.heatMapRefs;
   const referenceAvailability = reference.availability;
+  const historicalReferenceAvailability = reference.historicalAvailability;
   const availableHeatMapRefs =
     referenceAvailability.status === "validated" ? heatMapRefs : [];
 
@@ -871,6 +908,9 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     latestSourceSyncedAt,
     heatMapRefs: availableHeatMapRefs,
     referenceAvailability,
+    historicalHeatMapRefs:
+      historicalReferenceAvailability.status === "verified" ? heatMapRefs : [],
+    historicalReferenceAvailability,
     clans,
   };
 }
@@ -1123,6 +1163,23 @@ export class CompoActualStateService {
     const renderableClanTags: string[] = [];
     const missingHeatMapBands: string[] = [];
     const unsupportedTh19Comparisons: string[] = [];
+    const historicalReferenceAvailability = context.historicalReferenceAvailability ?? {
+      status: "unknown" as const,
+      sourceVersion: null,
+      warning: null,
+    };
+    const referenceMode: CompoActualStateReferenceMode =
+      context.referenceAvailability.status === "validated"
+        ? "current"
+        : historicalReferenceAvailability.status === "verified"
+          ? "historical"
+          : "unavailable";
+    const stateHeatMapRefs =
+      referenceMode === "current"
+        ? context.heatMapRefs
+        : referenceMode === "historical"
+          ? context.historicalHeatMapRefs ?? []
+          : [];
     const includeTh19 = context.clans.some(
       (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
     );
@@ -1136,7 +1193,7 @@ export class CompoActualStateService {
       const projection = projectCompoActualStateView({
         view,
         base: clan.base,
-        heatMapRefs: context.heatMapRefs,
+        heatMapRefs: stateHeatMapRefs,
       });
       const displayName = buildTrackedClanDisplayName({
         tag: clan.clanTag,
@@ -1154,7 +1211,7 @@ export class CompoActualStateService {
         }
       }
       if (
-        context.referenceAvailability.status === "validated" &&
+        referenceMode !== "unavailable" &&
         hasUnsupportedCompoTh19Target(clan.base.bucketCounts) &&
         projection.targetStatus === "unavailable"
       ) {
@@ -1177,7 +1234,7 @@ export class CompoActualStateService {
         view,
         base: clan.base,
         projection,
-        heatMapRefs: context.heatMapRefs,
+        heatMapRefs: stateHeatMapRefs,
       });
       rows.push(row);
       renderableClanTags.push(clan.clanTag);
@@ -1190,15 +1247,22 @@ export class CompoActualStateService {
       totalMissingTo50Count,
       includeTh19,
       context.referenceAvailability,
+      historicalReferenceAvailability,
+      referenceMode,
       context.heatMapRefParents.length,
       unsupportedTh19Comparisons,
     );
     if (context.referenceAvailability.warning) {
-      contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
+      contentLines.push(
+        referenceMode === "historical"
+          ? `Current-reference warning: ${context.referenceAvailability.warning} Historical comparisons remain informational only.`
+          : `Reference warning: ${context.referenceAvailability.warning}`,
+      );
     }
-
     const imageNotice = buildHeatMapRefUnknownNotice(
       context.referenceAvailability,
+      historicalReferenceAvailability,
+      referenceMode,
       view,
       unsupportedTh19Comparisons.length,
     );

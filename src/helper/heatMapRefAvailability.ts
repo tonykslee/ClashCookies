@@ -5,6 +5,10 @@ import {
   computeHeatMapRefContentHash,
   type HeatMapRefContentHashRow,
 } from "./heatMapRefRebuild";
+import {
+  HEAT_MAP_REF_SEED_ROWS,
+  HEAT_MAP_REF_SEED_SOURCE_VERSION,
+} from "../services/HeatMapRefSeedData";
 
 export const HEAT_MAP_REF_REBUILD_STATE_KEY_PREFIX = "heatmapref_rebuild_state";
 export const HEAT_MAP_REF_REFERENCE_INTEGRITY_KEY = "heatmapref_reference_integrity";
@@ -29,6 +33,42 @@ export type HeatMapRefReferenceAvailability = {
   lastSuccessAtIso: string | null;
   warning: string | null;
 };
+
+export type HeatMapRefHistoricalReferenceAvailability = {
+  status: "verified" | "unknown";
+  sourceVersion: string | null;
+  warning: string | null;
+};
+
+export function readHeatMapRefHistoricalReferenceAvailability(input: {
+  heatMapRefs?: readonly (HeatMapRefContentHashRow | HeatMapRef)[];
+}): HeatMapRefHistoricalReferenceAvailability {
+  if (!input.heatMapRefs || input.heatMapRefs.length !== HEAT_MAP_REF_SEED_ROWS.length) {
+    return {
+      status: "unknown",
+      sourceVersion: null,
+      warning:
+        "Persisted HeatMapRef rows do not match the checked-in historical legacy-v1 baseline; historical comparisons remain unavailable.",
+    };
+  }
+
+  const persistedHash = computeHeatMapRefContentHash(input.heatMapRefs);
+  const baselineHash = computeHeatMapRefContentHash(HEAT_MAP_REF_SEED_ROWS);
+  if (persistedHash !== baselineHash) {
+    return {
+      status: "unknown",
+      sourceVersion: null,
+      warning:
+        "Persisted HeatMapRef rows do not match the checked-in historical legacy-v1 baseline; historical comparisons remain unavailable.",
+    };
+  }
+
+  return {
+    status: "verified",
+    sourceVersion: HEAT_MAP_REF_SEED_SOURCE_VERSION,
+    warning: null,
+  };
+}
 
 type CheckpointLike = {
   version?: unknown;

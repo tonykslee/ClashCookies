@@ -33,12 +33,12 @@ describe("compo heatmapref copy button", () => {
 
   it("returns copy-ready table text for the requester", async () => {
     const copyText =
-      "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
-      "0,100,1,2,3,4,5,6,7,8,83.42%,11";
+      "WeightMin,WeightMax,TH19,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+      "0,100,—,1,2,3,4,5,6,7,8,83.42%,11";
     vi.spyOn(HeatMapRefDisplayService.prototype, "readHeatMapRefDisplayTable").mockResolvedValue({
       rows: [
-        ["Band", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11+", "Match%", "Clans"],
-        ["0 - 100", "1", "2", "3", "4", "5", "6", "7", "8", "83.42%", "11"],
+        ["Band", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11+", "Match%", "Clans"],
+        ["0 - 100", "—", "1", "2", "3", "4", "5", "6", "7", "8", "83.42%", "11"],
       ],
       copyText,
     } as never);
@@ -55,12 +55,13 @@ describe("compo heatmapref copy button", () => {
 
   it("returns blacklist copy-ready table text for the requester", async () => {
     const copyText =
-      "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Samples,Src Clans,Opponents,Confidence,Generated\n" +
-      "0,100000,10,9,8,7,6,5,4,3,12,4,5,high (92),2026-05-20 12:34Z";
+      "WeightMin,WeightMax,TH19,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Samples,Src Clans,Opponents,Confidence,Generated\n" +
+      "0,100000,—,10,9,8,7,6,5,4,3,12,4,5,high (92),2026-05-20 12:34Z";
     vi.spyOn(BlacklistHeatmapRefService.prototype, "readBlacklistHeatMapRefDisplayTable").mockResolvedValue({
       rows: [
         [
           "Band",
+          "TH19",
           "TH18",
           "TH17",
           "TH16",
@@ -77,6 +78,7 @@ describe("compo heatmapref copy button", () => {
         ],
         [
           "0 - 100000",
+          "—",
           "10",
           "9",
           "8",

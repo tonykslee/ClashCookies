@@ -3,7 +3,9 @@ import { prisma } from "../prisma";
 import { validateHeatMapRefContinuity } from "./heatMapRefContinuity";
 import {
   readHeatMapRefReferenceAvailability,
+  readHeatMapRefHistoricalReferenceAvailability,
   type HeatMapRefReferenceAvailability,
+  type HeatMapRefHistoricalReferenceAvailability,
 } from "./heatMapRefAvailability";
 import { SettingsService } from "../services/SettingsService";
 
@@ -38,6 +40,7 @@ export type HeatMapRefReferenceResolution = {
   supportedBucketIds: readonly string[];
   normalizedState: "verified" | "missing" | "invalid" | "unavailable";
   availability: HeatMapRefReferenceAvailability;
+  historicalAvailability: HeatMapRefHistoricalReferenceAvailability;
 };
 
 function unknownAvailability(warning: string): HeatMapRefReferenceAvailability {
@@ -45,6 +48,16 @@ function unknownAvailability(warning: string): HeatMapRefReferenceAvailability {
     status: "unknown",
     blockReasonCode: null,
     lastSuccessAtIso: null,
+    warning,
+  };
+}
+
+function unknownHistoricalAvailability(
+  warning: string,
+): HeatMapRefHistoricalReferenceAvailability {
+  return {
+    status: "unknown",
+    sourceVersion: null,
     warning,
   };
 }
@@ -161,6 +174,9 @@ export async function resolveHeatMapRefReference(input: {
       availability: unknownAvailability(
         "HeatMapRef normalized target evidence is unavailable because the child-table reader is missing; target-dependent composition output is withheld until the normalized projection is readable.",
       ),
+      historicalAvailability: unknownHistoricalAvailability(
+        "Historical HeatMapRef comparison is unavailable because the normalized child-table reader is missing.",
+      ),
     };
   }
 
@@ -185,6 +201,9 @@ export async function resolveHeatMapRefReference(input: {
       availability: unknownAvailability(
         "HeatMapRef normalized target evidence could not be read; factual composition observations remain available, but target-dependent output is withheld until the child projection is readable.",
       ),
+      historicalAvailability: unknownHistoricalAvailability(
+        "Historical HeatMapRef comparison is unavailable because the normalized child projection could not be read.",
+      ),
     };
   }
   const validation = validateLegacyTargets(heatMapRefs, bucketTargets);
@@ -197,6 +216,9 @@ export async function resolveHeatMapRefReference(input: {
       availability: unknownAvailability(
         `HeatMapRef normalized target evidence is ${bucketTargets.length === 0 ? "missing" : "invalid"} (${validation.reason}); target comparisons remain UNKNOWN.`,
       ),
+      historicalAvailability: unknownHistoricalAvailability(
+        `Historical HeatMapRef comparison is unavailable because normalized target evidence is ${bucketTargets.length === 0 ? "missing" : "invalid"}.`,
+      ),
     };
   }
 
@@ -205,12 +227,16 @@ export async function resolveHeatMapRefReference(input: {
     settings: input.settings ?? new SettingsService(),
     heatMapRefs,
   });
+  const historicalAvailability = readHeatMapRefHistoricalReferenceAvailability({
+    heatMapRefs,
+  });
   return {
     heatMapRefs,
     bucketTargets,
     supportedBucketIds: validation.supportedBucketIds,
     normalizedState: "verified",
     availability,
+    historicalAvailability,
   };
 }
 

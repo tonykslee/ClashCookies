@@ -1,16 +1,21 @@
 import type { BlacklistHeatMapRef, HeatMapRef } from "@prisma/client";
 import { formatHeatMapRefBandLabel, getHeatMapRefBandKey } from "./compoHeatMap";
+import {
+  getCompoLegacyReferenceBucketCount,
+  getCompoProfileReferenceDisplayColumns,
+  LEGACY_COMPO_CALCULATION_PROFILE,
+  type CompoCalculationProfile,
+  type CompoProfileReferenceCountReader,
+  type CompoReferenceDisplayColumn,
+} from "./compoCalculationProfile";
+
+export const HEAT_MAP_REF_DISPLAY_COLUMNS = getCompoProfileReferenceDisplayColumns(
+  LEGACY_COMPO_CALCULATION_PROFILE,
+);
 
 export const HEAT_MAP_REF_DISPLAY_HEADERS = [
   "Band",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11+",
+  ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label),
   "Match%",
   "Clans",
 ];
@@ -18,28 +23,14 @@ export const HEAT_MAP_REF_DISPLAY_HEADERS = [
 export const HEAT_MAP_REF_COPY_HEADERS = [
   "WeightMin",
   "WeightMax",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11+",
+  ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label),
   "Match%",
   "# Clans",
 ];
 
 export const BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS = [
   "Band",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11+",
+  ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label),
   "Samples",
   "Src Clans",
   "Opponents",
@@ -50,14 +41,7 @@ export const BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS = [
 export const BLACKLIST_HEAT_MAP_REF_COPY_HEADERS = [
   "WeightMin",
   "WeightMax",
-  "TH18",
-  "TH17",
-  "TH16",
-  "TH15",
-  "TH14",
-  "TH13",
-  "TH12",
-  "TH11+",
+  ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label),
   "Samples",
   "Src Clans",
   "Opponents",
@@ -100,55 +84,98 @@ function formatConfidenceCell(label: string | null | undefined, score: number | 
   return clampCell(`${normalizedLabel} (${normalizedScore})`);
 }
 
+function formatReferenceDisplayCell<TReference>(input: {
+  reference: TReference;
+  column: CompoReferenceDisplayColumn;
+  readCount: CompoProfileReferenceCountReader<TReference>;
+}): string {
+  if (input.column.status === "unsupported") return "—";
+  let total = 0;
+  for (const referenceBucketId of input.column.referenceBucketIds) {
+    const count = input.readCount(input.reference, referenceBucketId);
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || total > Number.MAX_SAFE_INTEGER - count) {
+      return "—";
+    }
+    total += count;
+  }
+  return clampCell(String(total));
+}
+
+function readBlacklistReferenceCount(
+  reference: BlacklistHeatMapRefLike,
+  referenceBucketId: string,
+): number | null {
+  const values: Record<string, unknown> = {
+    TH18: reference.th18Count,
+    TH17: reference.th17Count,
+    TH16: reference.th16Count,
+    TH15: reference.th15Count,
+    TH14: reference.th14Count,
+    TH13: reference.th13Count,
+    TH12: reference.th12Count,
+    TH11: reference.th11PlusCount,
+    TH10_OR_LOWER: 0,
+  };
+  return Number.isSafeInteger(values[referenceBucketId]) && Number(values[referenceBucketId]) >= 0
+    ? Number(values[referenceBucketId])
+    : null;
+}
+
 /** Purpose: build the displayed HeatMapRef table rows with band-level match percentages. */
 export function buildHeatMapRefDisplayRows(input: {
   heatMapRefs: readonly HeatMapRef[];
   matchPercentByBandKey?: ReadonlyMap<string, string>;
+  profile?: CompoCalculationProfile;
+  profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>;
 }): string[][] {
   const matchPercentByBandKey = input.matchPercentByBandKey ?? new Map<string, string>();
+  const columns = input.profile
+    ? getCompoProfileReferenceDisplayColumns(input.profile)
+    : HEAT_MAP_REF_DISPLAY_COLUMNS;
+  const readCount = input.profileReferenceCountReader ?? getCompoLegacyReferenceBucketCount;
   const contentRows = input.heatMapRefs.map((heatMapRef) => {
     const bandKey = getHeatMapRefBandKey(heatMapRef);
     return [
       clampCell(formatHeatMapRefBandLabel(heatMapRef)),
-      clampCell(String(heatMapRef.th18Count)),
-      clampCell(String(heatMapRef.th17Count)),
-      clampCell(String(heatMapRef.th16Count)),
-      clampCell(String(heatMapRef.th15Count)),
-      clampCell(String(heatMapRef.th14Count)),
-      clampCell(String(heatMapRef.th13Count)),
-      clampCell(String(heatMapRef.th12Count)),
-      clampCell(String(heatMapRef.th11Count + heatMapRef.th10OrLowerCount)),
+      ...columns.map((column) => formatReferenceDisplayCell({
+        reference: heatMapRef,
+        column,
+        readCount,
+      })),
       formatMatchPercentText(matchPercentByBandKey.get(bandKey)),
       clampCell(String(heatMapRef.contributingClanCount)),
     ];
   });
-  return [HEAT_MAP_REF_DISPLAY_HEADERS, ...contentRows];
+  return [["Band", ...columns.map((column) => column.label), "Match%", "Clans"], ...contentRows];
 }
 
 /** Purpose: build the copy/export HeatMapRef rows with split band boundaries for CSV paste. */
 export function buildHeatMapRefCopyRows(input: {
   heatMapRefs: readonly HeatMapRef[];
   matchPercentByBandKey?: ReadonlyMap<string, string>;
+  profile?: CompoCalculationProfile;
+  profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>;
 }): string[][] {
   const matchPercentByBandKey = input.matchPercentByBandKey ?? new Map<string, string>();
+  const columns = input.profile
+    ? getCompoProfileReferenceDisplayColumns(input.profile)
+    : HEAT_MAP_REF_DISPLAY_COLUMNS;
+  const readCount = input.profileReferenceCountReader ?? getCompoLegacyReferenceBucketCount;
   const contentRows = input.heatMapRefs.map((heatMapRef) => {
     const bandKey = getHeatMapRefBandKey(heatMapRef);
     return [
       formatWeightBoundary(heatMapRef.weightMinInclusive),
       formatWeightBoundary(heatMapRef.weightMaxInclusive),
-      clampCell(String(heatMapRef.th18Count)),
-      clampCell(String(heatMapRef.th17Count)),
-      clampCell(String(heatMapRef.th16Count)),
-      clampCell(String(heatMapRef.th15Count)),
-      clampCell(String(heatMapRef.th14Count)),
-      clampCell(String(heatMapRef.th13Count)),
-      clampCell(String(heatMapRef.th12Count)),
-      clampCell(String(heatMapRef.th11Count + heatMapRef.th10OrLowerCount)),
+      ...columns.map((column) => formatReferenceDisplayCell({
+        reference: heatMapRef,
+        column,
+        readCount,
+      })),
       formatMatchPercentText(matchPercentByBandKey.get(bandKey)),
       clampCell(String(heatMapRef.contributingClanCount)),
     ];
   });
-  return [HEAT_MAP_REF_COPY_HEADERS, ...contentRows];
+  return [["WeightMin", "WeightMax", ...columns.map((column) => column.label), "Match%", "# Clans"], ...contentRows];
 }
 
 /** Purpose: serialize the displayed HeatMapRef table into comma-separated text for copy/paste flows. */
@@ -160,6 +187,8 @@ export function buildHeatMapRefDisplayText(rows: readonly string[][]): string {
 export function buildHeatMapRefCopyText(input: {
   heatMapRefs: readonly HeatMapRef[];
   matchPercentByBandKey?: ReadonlyMap<string, string>;
+  profile?: CompoCalculationProfile;
+  profileReferenceCountReader?: CompoProfileReferenceCountReader<HeatMapRef>;
 }): string {
   return buildHeatMapRefDisplayText(buildHeatMapRefCopyRows(input));
 }
@@ -191,14 +220,11 @@ export function buildBlacklistHeatMapRefDisplayRows(input: {
   const contentRows = input.heatMapRefs.map((heatMapRef) => {
     return [
       clampCell(formatHeatMapRefBandLabel(heatMapRef)),
-      clampCell(String(heatMapRef.th18Count)),
-      clampCell(String(heatMapRef.th17Count)),
-      clampCell(String(heatMapRef.th16Count)),
-      clampCell(String(heatMapRef.th15Count)),
-      clampCell(String(heatMapRef.th14Count)),
-      clampCell(String(heatMapRef.th13Count)),
-      clampCell(String(heatMapRef.th12Count)),
-      clampCell(String(heatMapRef.th11PlusCount)),
+      ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => formatReferenceDisplayCell({
+        reference: heatMapRef,
+        column,
+        readCount: readBlacklistReferenceCount,
+      })),
       clampCell(String(heatMapRef.sampleCount)),
       clampCell(String(heatMapRef.uniqueSourceClanCount)),
       clampCell(String(heatMapRef.uniqueOpponentCount)),
@@ -206,7 +232,7 @@ export function buildBlacklistHeatMapRefDisplayRows(input: {
       formatUtcTimestamp(heatMapRef.generatedAt),
     ];
   });
-  return [BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS, ...contentRows];
+  return [["Band", ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label), "Samples", "Src Clans", "Opponents", "Confidence", "Generated"], ...contentRows];
 }
 
 /** Purpose: build the copy/export blacklist HeatMapRef rows for CSV paste. */
@@ -217,14 +243,11 @@ export function buildBlacklistHeatMapRefCopyRows(input: {
     return [
       formatWeightBoundary(heatMapRef.weightMinInclusive),
       formatWeightBoundary(heatMapRef.weightMaxInclusive),
-      clampCell(String(heatMapRef.th18Count)),
-      clampCell(String(heatMapRef.th17Count)),
-      clampCell(String(heatMapRef.th16Count)),
-      clampCell(String(heatMapRef.th15Count)),
-      clampCell(String(heatMapRef.th14Count)),
-      clampCell(String(heatMapRef.th13Count)),
-      clampCell(String(heatMapRef.th12Count)),
-      clampCell(String(heatMapRef.th11PlusCount)),
+      ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => formatReferenceDisplayCell({
+        reference: heatMapRef,
+        column,
+        readCount: readBlacklistReferenceCount,
+      })),
       clampCell(String(heatMapRef.sampleCount)),
       clampCell(String(heatMapRef.uniqueSourceClanCount)),
       clampCell(String(heatMapRef.uniqueOpponentCount)),
@@ -232,7 +255,7 @@ export function buildBlacklistHeatMapRefCopyRows(input: {
       formatUtcTimestamp(heatMapRef.generatedAt),
     ];
   });
-  return [BLACKLIST_HEAT_MAP_REF_COPY_HEADERS, ...contentRows];
+  return [["WeightMin", "WeightMax", ...HEAT_MAP_REF_DISPLAY_COLUMNS.map((column) => column.label), "Samples", "Src Clans", "Opponents", "Confidence", "Generated"], ...contentRows];
 }
 
 /** Purpose: serialize the displayed blacklist HeatMapRef table into comma-separated text for copy/paste flows. */

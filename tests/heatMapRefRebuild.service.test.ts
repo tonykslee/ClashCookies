@@ -534,6 +534,10 @@ describe("HeatMapRefRebuildService", () => {
     expect(result.excludedRosterCount).toBe(1);
     expect(result.reason).toContain("existing HeatMapRef rows were preserved");
     expect(result.summaryLines.join(" ")).toContain("unsupported_th19=1");
+    expect(result.summaryLines.join(" ")).toContain("heatmap rows written: 0");
+    expect(result.summaryLines.join(" ")).toContain("retained rows: 14");
+    expect(result.writtenRowCount).toBe(0);
+    expect(result.retainedRowCount).toBe(14);
     expect(prismaMock.heatMapRef.deleteMany).not.toHaveBeenCalled();
     expect(prismaMock.heatMapRef.createMany).not.toHaveBeenCalled();
   });
