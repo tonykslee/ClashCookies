@@ -356,7 +356,7 @@ describe("MembershipStreakService", () => {
       canonicalIdentities(boundaries),
     );
 
-    expect(result).toMatchObject({ clanStreakSyncs: 1, clanStreakIsLowerBound: true, allianceStreakSyncs: 2 });
+    expect(result).toMatchObject({ clanStreakSyncs: 1, clanStreakIsLowerBound: true, allianceStreakSyncs: 1, allianceStreakIsLowerBound: true });
     expect(resolvedFlagged).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, clanStreakIsLowerBound: false });
   });
 
@@ -1013,7 +1013,7 @@ describe("MembershipStreakService", () => {
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
     expect(evidence[playerTag][0].fwa).toMatchObject({ status: "AMBIGUOUS", clanTag: null, clanTags: [partyBlizzard, rockyRoad] });
-    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 1 });
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0, allianceStreakIsLowerBound: true });
   });
 
   it("proves historical absence only when canonical participation coverage exists", async () => {
@@ -1172,7 +1172,7 @@ describe("MembershipStreakService", () => {
     });
   });
 
-  it("reproduces FWA absence plus BL Home roster as C2/S3/A3", async () => {
+  it("reproduces FWA absence plus BL Home roster as C2/S2/A2", async () => {
     const older = historical(586, 1, rockyRoad);
     const middleFwaElsewhere = historical(587, 2, partyBlizzard, [otherPlayerTag], 100587);
     const middleBlHome = nonFwaHistorical(587, 2, rockyRoad, "BL", [playerTag], 300587);
@@ -1190,8 +1190,8 @@ describe("MembershipStreakService", () => {
     expect(result).toMatchObject({
       latestFwaEvidenceStatus: "RESOLVED",
       latestPhysicalEvidenceStatus: "RESOLVED",
-      clanStreakSyncs: 3,
-      allianceStreakSyncs: 3,
+      clanStreakSyncs: 2,
+      allianceStreakSyncs: 2,
     });
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
     expect(evidence[playerTag][1].fwa.status).toBe("ABSENT");
@@ -1211,10 +1211,10 @@ describe("MembershipStreakService", () => {
       built.service,
     );
     const [analyticsResult] = await analytics.getAnalyticsForPlayers(input());
-    expect(analyticsResult).toMatchObject({ clanTenureSyncs: 2, clanStreakSyncs: 3, allianceStreakSyncs: 3 });
+    expect(analyticsResult).toMatchObject({ clanTenureSyncs: 2, clanStreakSyncs: 2, allianceStreakSyncs: 2 });
   });
 
-  it("counts an FWA to MM to FWA sequence without relabeling MM as FWA", async () => {
+  it("preserves an FWA to MM to FWA sequence without relabeling MM or incrementing it", async () => {
     const older = historical(586, 1, rockyRoad);
     const middle = nonFwaHistorical(587, 2, rockyRoad, "MM");
     const latest = historical(588, 3, rockyRoad);
@@ -1227,9 +1227,58 @@ describe("MembershipStreakService", () => {
 
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
-    expect(result).toMatchObject({ clanStreakSyncs: 3, allianceStreakSyncs: 3 });
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
     const evidence = await built.service.getRecentFwaEvidenceForPlayers(input());
     expect(evidence[playerTag][1].fwa.status).toBe("UNKNOWN");
+  });
+
+  it("preserves continuity across consecutive BL/MM boundaries while counting only FWA boundaries", async () => {
+    const oldest = historical(585, 4, rockyRoad);
+    const older = nonFwaHistorical(586, 5, rockyRoad, "MM");
+    const middle = nonFwaHistorical(587, 6, rockyRoad, "BL");
+    const latest = historical(588, 7, rockyRoad);
+    const built = serviceFor({
+      cycles: [oldest, older, middle, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [oldest.point, latest.point],
+      histories: [oldest.history, older.history, middle.history, latest.history],
+      participation: [...oldest.participation, ...older.participation, ...middle.participation, ...latest.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2 });
+  });
+
+  it("breaks S on a verified BL/MM physical-clan change while preserving A", async () => {
+    const older = historical(586, 1, otherAllianceClan);
+    const middle = historical(587, 2, otherAllianceClan);
+    const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
+    const built = serviceFor({
+      cycles: [older, middle, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point, middle.point],
+      histories: [older.history, middle.history, latest.history],
+      participation: [...older.participation, ...middle.participation, ...latest.participation],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 2 });
+  });
+
+  it("breaks A on a verified outside-alliance BL/MM departure", async () => {
+    const older = historical(587, 2, rockyRoad);
+    const latest = nonFwaHistorical(588, 3, "#2L2L", "BL");
+    const built = serviceFor({
+      cycles: [older, latest].map((row) => ({ guildId, syncNumber: row.history.syncNumber, syncTime: row.history.warStartTime })),
+      points: [older.point],
+      histories: [older.history, latest.history],
+      participation: [...older.participation, ...latest.participation],
+      trackedClans: [{ tag: rockyRoad }, { tag: partyBlizzard }, { tag: otherAllianceClan }],
+    });
+
+    const [result] = await built.service.getMembershipStreaksForPlayers(input());
+
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0, latestAllianceEvidenceStatus: "ABSENT" });
   });
 
   it("ignores an orphaned BL history from another guild beside valid FWA evidence", async () => {
@@ -1287,7 +1336,7 @@ describe("MembershipStreakService", () => {
     });
   });
 
-  it("counts verified BL membership even when the same boundary is CWL-neutral", async () => {
+  it("preserves verified BL continuity even when the same boundary is CWL-neutral", async () => {
     const older = historical(587, 2, rockyRoad);
     const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
     const cwlContinuityReader = {
@@ -1308,7 +1357,7 @@ describe("MembershipStreakService", () => {
 
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
-    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 2, latestCwlContinuityExempt: false });
+    expect(result).toMatchObject({ clanStreakSyncs: 1, allianceStreakSyncs: 1, latestCwlContinuityExempt: false });
   });
 
   it("keeps same-player physical-clan conflicts unresolved", async () => {
@@ -1370,7 +1419,7 @@ describe("MembershipStreakService", () => {
     });
   });
 
-  it("lets a latest BL roster anchor S/A while the latest FWA axis remains UNKNOWN", async () => {
+  it("lets a latest BL roster preserve prior S/A while the latest FWA axis remains UNKNOWN", async () => {
     const older = historical(587, 2, rockyRoad);
     const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
     const built = serviceFor({
@@ -1386,8 +1435,8 @@ describe("MembershipStreakService", () => {
       latestFwaEvidenceStatus: "UNKNOWN",
       latestPhysicalEvidenceStatus: "RESOLVED",
       latestPhysicalClanTag: rockyRoad,
-      clanStreakSyncs: 2,
-      allianceStreakSyncs: 2,
+      clanStreakSyncs: 1,
+      allianceStreakSyncs: 1,
     });
   });
 
@@ -1411,7 +1460,7 @@ describe("MembershipStreakService", () => {
     });
   });
 
-  it("preserves A across a BL/MM switch between tracked clans but resets S", async () => {
+  it("does not manufacture S/A from leading BL/MM boundaries without FWA", async () => {
     const latest = nonFwaHistorical(588, 3, rockyRoad, "BL");
     const middle = nonFwaHistorical(587, 2, rockyRoad, "MM");
     const older = nonFwaHistorical(586, 1, otherAllianceClan, "BL");
@@ -1423,7 +1472,7 @@ describe("MembershipStreakService", () => {
 
     const [result] = await built.service.getMembershipStreaksForPlayers(input());
 
-    expect(result).toMatchObject({ clanStreakSyncs: 2, allianceStreakSyncs: 3 });
+    expect(result).toMatchObject({ clanStreakSyncs: 0, allianceStreakSyncs: 0 });
   });
 
   it("fails closed for duplicate same-boundary BL/MM proof", async () => {

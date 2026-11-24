@@ -91,7 +91,7 @@ function resolveClanTenure(input: {
   };
 }
 
-/** Purpose: expose the authoritative physical-clan streak without applying Home-specific interpretation. */
+/** Purpose: expose the FWA-counted physical-clan streak with verified BL/MM continuity bridges. */
 function resolvePhysicalClanStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
@@ -117,7 +117,7 @@ function resolvePhysicalClanStreak(
   return { syncs: null, isLowerBound: false };
 }
 
-/** Purpose: retain existing alliance-streak values while hiding genuinely unknown latest coverage. */
+/** Purpose: retain the FWA-counted alliance streak across verified tracked BL/MM continuity while hiding unknown latest coverage. */
 function resolveAllianceStreak(
   streak: MembershipStreakResult,
 ): { syncs: number | null; isLowerBound: boolean } {
