@@ -110,7 +110,7 @@ export default (client: Client): void => {
             },
             count: fullReaction.count ?? null,
           },
-        });
+        }, { client });
       }
     } catch (err) {
       console.error(`messageReactionAdd failed: ${formatError(err)}`);

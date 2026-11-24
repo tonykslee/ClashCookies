@@ -28,6 +28,16 @@ import {
   buildFwaMatchChecklistMessageContent,
 } from "../src/services/FwaMatchChecklistService";
 import { repWorkActivityService } from "../src/services/RepWorkActivityService";
+import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
+
+function mockBasesCompletionTransition(params: { checked?: boolean; completionActorUserId?: string | null }) {
+  return {
+    persisted: true,
+    messageId: "completion-test",
+    transition: params.checked ? "COMMITTED" : "CLEARED",
+    committedByUserId: params.checked ? params.completionActorUserId ?? null : null,
+  } as const;
+}
 
 function makeMailTrackedChecklistRow() {
   return {
@@ -1203,7 +1213,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",
@@ -1314,7 +1324,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",
@@ -1380,7 +1390,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",
@@ -1688,6 +1698,9 @@ describe("fwa checklist badge reaction reconciliation", () => {
         trackedMessageService.refreshFwaMatchChecklistMessage(message, change, options);
       const contentWith = (checkedClanTags: string[]) =>
         buildFwaMatchChecklistMessageContent({ rows, checkedClanTags });
+      const accountabilitySpy = vi
+        .spyOn(fwaAccountabilityNotificationService, "notifyMailConfirmed")
+        .mockResolvedValue(true);
 
       await expect(refresh()).resolves.toBe(true);
       expect(currentTracked.metadata.checkedClanTags).toEqual([]);
@@ -1699,8 +1712,9 @@ describe("fwa checklist badge reaction reconciliation", () => {
         kind: "add",
         reactorUserId: "user-rr",
         reaction: { emoji: { id: "111", name: "alpha" }, count: 2 },
-      })).resolves.toBe(true);
+      }, { client: {} as any })).resolves.toBe(true);
       expect(currentTracked.metadata.checkedClanTags).toEqual(["RR"]);
+      expect(accountabilitySpy).not.toHaveBeenCalled();
 
       reactionCache.set("custom:222", {
         emoji: { id: "222", name: "bravo" }, count: 2, me: true,

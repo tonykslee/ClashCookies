@@ -136,6 +136,7 @@ import {
 } from "./fwa/mailConfig";
 import { PostedMessageService } from "../services/PostedMessageService";
 import { repWorkActivityService } from "../services/RepWorkActivityService";
+import { fwaAccountabilityNotificationService } from "../services/FwaAccountabilityNotificationService";
 import {
   ActiveWarSyncResolutionService,
   buildActiveWarSyncIdentity,
@@ -12075,6 +12076,25 @@ async function handleFwaMailConfirmAction(
     interactionUserId: parsed.userId,
     pingRole: options.pingRole,
   });
+  await fwaAccountabilityNotificationService
+    .notifyMailPosted({
+      client: interaction.client,
+      guildId: normalizedGuildId,
+      clanTag: normalizedClanTag,
+      actorUserId: parsed.userId,
+      publicationIdentity: sendKey,
+      resent: Boolean(previousPostedSnapshot),
+      warId: exactCurrentWarIdentity.warId,
+      warStartTime: exactCurrentWarIdentity.startTime,
+      opponentTag: exactCurrentWarIdentity.opponentTag,
+      mailChannelId: channel.id,
+      mailMessageId: sent.id,
+    })
+    .catch((error) => {
+      console.error(
+        `[fwa-accountability] mail notification failed guild=${normalizedGuildId} clan=${normalizedClanTag} message=${sent.id} error=${formatError(error)}`,
+      );
+    });
   await repWorkActivityService.recordMailSent({
     guildId: normalizedGuildId,
     discordUserId: parsed.userId,
@@ -19039,11 +19059,57 @@ export const Fwa: Command = {
             warStartTime: currentWar.startTime ?? null,
             opponentTag: currentWar.opponentTag ?? null,
             checked: Boolean(checklistCheckedOption),
+            completionActorUserId: interaction.user.id,
             syncMessageId: syncIdentity.syncMessageId ?? null,
           });
-        if (!updated) {
+        if (!updated?.persisted) {
           await editReplySafe("Unable to update bases completion state.");
           return;
+        }
+        if (
+          checklistCheckedOption &&
+          updated.transition === "COMMITTED" &&
+          updated.committedByUserId === interaction.user.id
+        ) {
+          const completeWarIdentity =
+            currentWar.warId !== null &&
+            currentWar.warId !== undefined &&
+            currentWar.startTime instanceof Date &&
+            Number.isFinite(currentWar.startTime.getTime()) &&
+            Boolean(currentWar.opponentTag)
+              ? {
+                  warId: currentWar.warId,
+                  warStartTime: currentWar.startTime,
+                  opponentTag: currentWar.opponentTag,
+                }
+              : {
+                  warId: null,
+                  warStartTime: null,
+                  opponentTag: null,
+                };
+          if (
+            completeWarIdentity.warId !== null &&
+            completeWarIdentity.warStartTime !== null &&
+            completeWarIdentity.opponentTag !== null
+          ) {
+            await fwaAccountabilityNotificationService
+              .notifyBasesChecked({
+                client: interaction.client,
+                guildId: interaction.guildId,
+                clanTag: resolvedClan.tag,
+                clanName:
+                  sanitizeClanName(resolvedClan.shortName) ??
+                  sanitizeClanName(resolvedClan.name) ??
+                  `#${normalizeTag(resolvedClan.tag)}`,
+                actorUserId: updated.committedByUserId,
+                ...completeWarIdentity,
+              })
+              .catch((error) => {
+                console.error(
+                  `[fwa-accountability] bases notification failed guild=${interaction.guildId} clan=${resolvedClan.tag} error=${formatError(error)}`,
+                );
+              });
+          }
         }
         const clanLabel =
           sanitizeClanName(resolvedClan.shortName) ??
