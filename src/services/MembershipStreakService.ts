@@ -413,7 +413,7 @@ function buildFwaEvidence(
   return { status: "UNKNOWN", clanTag: null, clanTags: [], source: null };
 }
 
-/** Purpose: derive alliance membership only from the canonical FWA roster observation. */
+/** Purpose: derive alliance membership from canonical FWA or verified tracked BL/MM roster evidence. */
 function buildAllianceEvidence(fwa: MembershipFwaEvidence): MembershipAllianceEvidence {
   const fwaPositive = fwa.status === "RESOLVED" || fwa.status === "AMBIGUOUS";
   return {
@@ -425,7 +425,7 @@ function buildAllianceEvidence(fwa: MembershipFwaEvidence): MembershipAllianceEv
   };
 }
 
-/** Purpose: retain the existing FWA axis while combining only the S/A physical observation. */
+/** Purpose: retain the existing FWA axis while combining physical S/A continuity evidence. */
 function combinePhysicalEvidence(
   fwa: MembershipFwaEvidence,
   nonFwa: NonFwaBoundaryEvidence | undefined,
@@ -471,7 +471,7 @@ function combinePhysicalEvidence(
   return { ...fwa };
 }
 
-/** Purpose: combine alliance membership without changing the FWA-only C/Home evidence. */
+/** Purpose: combine alliance continuity without changing the FWA-only C/Home evidence. */
 function combineAllianceEvidence(
   fwa: MembershipFwaEvidence,
   nonFwa: NonFwaBoundaryEvidence | undefined,
@@ -565,7 +565,7 @@ function isCwlNeutralEvidence(evidence: MembershipBoundaryEvidence | undefined):
     !evidence?.alliance.positive;
 }
 
-/** Purpose: compute bounded physical-clan and alliance streaks from boundary evidence. */
+/** Purpose: compute bounded physical-clan and alliance streaks from canonical evidence. */
 export function computeMembershipStreaksFromEvidence(
   playerTag: string,
   boundaries: Date[],
@@ -632,11 +632,13 @@ export function computeMembershipStreaksFromEvidence(
     clanStartIndex = 1;
   }
   if (clanStartIndex !== null) {
-    const latestClanTag = physicalEvidenceOf(evidenceByKey.get(
+    const clanAnchorEvidence = evidenceByKey.get(
       evidenceKey(playerTag, boundaries[clanStartIndex]),
-    )).clanTag!;
-    clanStreakSyncs = 1;
+    );
+    const latestClanTag = physicalEvidenceOf(clanAnchorEvidence).clanTag!;
+    if (clanAnchorEvidence?.fwa.status === "RESOLVED") clanStreakSyncs = 1;
     let stopped = orderedIdentities[clanStartIndex]?.syncNumber === null;
+    let clanTerminatedByDefinitiveEvidence = false;
     for (let index = 1; index <= clanStartIndex; index += 1) {
       if (!hasContiguousCanonicalBoundary(index)) {
         clanStreakIsLowerBound = true;
@@ -660,16 +662,21 @@ export function computeMembershipStreaksFromEvidence(
         if (isCwlNeutralEvidence(evidence)) continue;
         const physical = physicalEvidenceOf(evidence);
         if (physical.status === "RESOLVED" && physical.clanTag === latestClanTag) {
-          clanStreakSyncs += 1;
+          // FWA participation is the only incrementing S evidence. Verified BL/MM
+          // participation is a physical-clan bridge and must not add a sync.
+          if (evidence?.fwa.status === "RESOLVED") clanStreakSyncs += 1;
           continue;
         }
-        if (physical.status === "RESOLVED" || physical.status === "ABSENT") break;
+        if (physical.status === "RESOLVED" || physical.status === "ABSENT") {
+          clanTerminatedByDefinitiveEvidence = true;
+          break;
+        }
         clanStreakIsLowerBound = true;
         stopped = true;
         break;
       }
     }
-    if (!stopped && clanStreakSyncs === boundaries.length && historyBoundReached) {
+    if (!stopped && !clanTerminatedByDefinitiveEvidence && historyBoundReached) {
       clanStreakIsLowerBound = true;
     }
   } else if (latestBoundaryTime && !latestEvidencePending && latestPhysical.status !== "ABSENT") {
@@ -680,19 +687,23 @@ export function computeMembershipStreaksFromEvidence(
   let allianceStreakIsLowerBound = false;
   let allianceStartIndex: number | null = null;
   if (leadingCwlNeutralCount > 0) {
-    if (firstNonNeutralEvidence?.alliance.positive) {
+    if (allianceStatusOf(firstNonNeutralEvidence) === "RESOLVED") {
       allianceStartIndex = leadingCwlNeutralCount;
     } else if (allianceStatusOf(firstNonNeutralEvidence) === "UNKNOWN" || allianceStatusOf(firstNonNeutralEvidence) === "AMBIGUOUS") {
       allianceStreakIsLowerBound = true;
     }
-  } else if (latest?.alliance.positive) {
+  } else if (allianceStatusOf(latest) === "RESOLVED") {
     allianceStartIndex = 0;
-  } else if (latestEvidencePending && evidenceRows[1]?.alliance.positive) {
+  } else if (latestEvidencePending && allianceStatusOf(priorEvidence) === "RESOLVED") {
     allianceStartIndex = 1;
   }
   if (allianceStartIndex !== null) {
-    allianceStreakSyncs = 1;
+    const allianceAnchorEvidence = evidenceByKey.get(
+      evidenceKey(playerTag, boundaries[allianceStartIndex]),
+    );
+    if (allianceAnchorEvidence?.fwa.status === "RESOLVED") allianceStreakSyncs = 1;
     let stopped = orderedIdentities[allianceStartIndex]?.syncNumber === null;
+    let allianceTerminatedByDefinitiveEvidence = false;
     for (let index = 1; index <= allianceStartIndex; index += 1) {
       if (!hasContiguousCanonicalBoundary(index)) {
         allianceStreakIsLowerBound = true;
@@ -714,17 +725,22 @@ export function computeMembershipStreaksFromEvidence(
         }
         const evidence = evidenceByKey.get(evidenceKey(playerTag, boundaries[index]));
         if (isCwlNeutralEvidence(evidence)) continue;
-        if (evidence?.alliance.positive) {
-          allianceStreakSyncs += 1;
+        if (allianceStatusOf(evidence) === "RESOLVED") {
+          // FWA participation is the only incrementing A evidence. Verified
+          // tracked BL/MM participation preserves alliance continuity only.
+          if (evidence?.fwa.status === "RESOLVED") allianceStreakSyncs += 1;
           continue;
         }
-        if (allianceStatusOf(evidence) === "ABSENT") break;
+        if (allianceStatusOf(evidence) === "ABSENT") {
+          allianceTerminatedByDefinitiveEvidence = true;
+          break;
+        }
         allianceStreakIsLowerBound = true;
         stopped = true;
         break;
       }
     }
-    if (!stopped && allianceStreakSyncs === boundaries.length && historyBoundReached) {
+    if (!stopped && !allianceTerminatedByDefinitiveEvidence && historyBoundReached) {
       allianceStreakIsLowerBound = true;
     }
   } else if (latestBoundaryTime && !latestEvidencePending && latestAllianceStatus !== "ABSENT") {
