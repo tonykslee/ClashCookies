@@ -2232,6 +2232,8 @@ const GLYPHS: Record<string, string[]> = {
   " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
   "'": ["00100", "00100", "00100", "00000", "00000", "00000", "00000"],
   '"': ["01010", "01010", "01010", "00000", "00000", "00000", "00000"],
+  "·": ["00000", "00000", "00100", "00000", "00000", "00000", "00000"],
+  "—": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
   "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
   "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
   ",": ["00000", "00000", "00000", "00000", "00110", "00110", "00100"],
@@ -4016,7 +4018,13 @@ export const Compo: Command = {
         await interaction.editReply({
           ...buildCompoHeatMapRefPayloadFromRows({
             rows: display.rows,
-            content: display.availability?.warning ?? undefined,
+            content:
+              display.referenceState?.notice ??
+              display.availability?.warning ??
+              undefined,
+            title: display.referenceState
+              ? `HEATMAP REF · ${display.referenceState.status.toUpperCase()}`
+              : "HEATMAP REF",
             components: [buildCompoHeatMapRefCopyButtonRow(interaction.user.id, heatMapRefMode)],
           }),
         });

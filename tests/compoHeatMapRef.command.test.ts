@@ -88,6 +88,7 @@ describe("/compo heatmapref command", () => {
       rows: [
         [
           "Band",
+          "TH19",
           "TH18",
           "TH17",
           "TH16",
@@ -99,11 +100,16 @@ describe("/compo heatmapref command", () => {
           "Match%",
           "Clans",
         ],
-        ["0 - 100", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
+        ["0 - 100", "—", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
       ],
       copyText:
-        "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
-        "0,100,3,6,7,9,9,8,5,2,83.42%,4",
+        "WeightMin,WeightMax,TH19,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+          "0,100,—,3,6,7,9,9,8,5,2,83.42%,4",
+      referenceState: {
+        status: "historical",
+        sourceVersion: "bootstrap-2026-08-21",
+        notice: "Reference: verified historical legacy-v1 baseline · version bootstrap-2026-08-21 · informational only.",
+      },
     } as never);
 
     const interaction = makeInteraction();
@@ -116,6 +122,7 @@ describe("/compo heatmapref command", () => {
     const payload = interaction.editReply.mock.calls.at(-1)?.[0];
     expect(Array.isArray(payload?.files)).toBe(true);
     expect(payload?.files?.[0]?.name).toBe("compo-heatmapref.png");
+    expect(payload?.content).toContain("verified historical legacy-v1 baseline");
     expect(collectButtonCustomIds(payload)).toEqual([
       buildCompoHeatMapRefCopyCustomIdForTest("user-1"),
     ]);
@@ -134,6 +141,7 @@ describe("/compo heatmapref command", () => {
       rows: [
         [
           "Band",
+          "TH19",
           "TH18",
           "TH17",
           "TH16",
@@ -145,11 +153,11 @@ describe("/compo heatmapref command", () => {
           "Match%",
           "Clans",
         ],
-        ["0 - 100", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
+        ["0 - 100", "—", "3", "6", "7", "9", "9", "8", "5", "2", "83.42%", "4"],
       ],
       copyText:
-        "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
-        "0,100,3,6,7,9,9,8,5,2,83.42%,4",
+        "WeightMin,WeightMax,TH19,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+          "0,100,—,3,6,7,9,9,8,5,2,83.42%,4",
     } as never);
 
     const interaction = makeInteraction("fwa");
@@ -171,6 +179,7 @@ describe("/compo heatmapref command", () => {
         BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS,
         [
           "0 - 100000",
+          "—",
           "10",
           "9",
           "8",
@@ -265,6 +274,7 @@ describe("/compo heatmapref command", () => {
     expect(rows[0]).toEqual(BLACKLIST_HEAT_MAP_REF_DISPLAY_HEADERS);
     expect(rows[1]).toEqual([
       "0 - 100,000",
+      "—",
       "10",
       "9",
       "8",
@@ -306,6 +316,7 @@ describe("/compo heatmapref command", () => {
 
     expect(rows[0]).toEqual([
       "Band",
+      "TH19",
       "TH18",
       "TH17",
       "TH16",
@@ -319,6 +330,7 @@ describe("/compo heatmapref command", () => {
     ]);
     expect(rows[1]).toEqual([
       "0 - 100",
+      "—",
       "1",
       "2",
       "3",
@@ -342,6 +354,8 @@ describe("/compo heatmapref command", () => {
 
   it("keeps glyph-safe renderer text literal for plus and percent characters", () => {
     expect(toGlyphSafeTextForTest("TH11+")).toBe("TH11+");
+    expect(toGlyphSafeTextForTest("—")).toBe("—");
+    expect(toGlyphSafeTextForTest("·")).toBe("·");
     expect(toGlyphSafeTextForTest("Match%")).toBe("MATCH%");
     expect(toGlyphSafeTextForTest("0%")).toBe("0%");
     expect(toGlyphSafeTextForTest("83.42%")).toBe("83.42%");

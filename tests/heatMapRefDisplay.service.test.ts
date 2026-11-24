@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
+import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 const prismaMock = vi.hoisted(() => ({
   heatMapRef: {
@@ -18,6 +20,7 @@ const prismaMock = vi.hoisted(() => ({
   fwaClanMatchStatsCurrent: {
     findMany: vi.fn(),
   },
+  $queryRaw: vi.fn(),
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -105,6 +108,7 @@ describe("HeatMapRefDisplayService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
+    prismaMock.$queryRaw.mockResolvedValue([]);
   });
 
   it("computes band match% as a weighted average by evaluatedWarCount", async () => {
@@ -132,12 +136,12 @@ describe("HeatMapRefDisplayService", () => {
       }),
     );
     expect(result.rows).toEqual([
-      ["Band", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11+", "Match%", "Clans"],
-      ["0 - 9,999,999", "0", "0", "0", "0", "0", "0", "0", "3", "31.25%", "2"],
+      ["Band", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11+", "Match%", "Clans"],
+      ["0 - 9,999,999", "—", "0", "0", "0", "0", "0", "0", "0", "3", "31.25%", "2"],
     ]);
     expect(result.copyText).toBe(
-      "WeightMin,WeightMax,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
-        "0,9999999,0,0,0,0,0,0,0,3,31.25%,2",
+      "WeightMin,WeightMax,TH19,TH18,TH17,TH16,TH15,TH14,TH13,TH12,TH11+,Match%,# Clans\n" +
+        "0,9999999,—,0,0,0,0,0,0,0,3,31.25%,2",
     );
   });
 
@@ -155,8 +159,10 @@ describe("HeatMapRefDisplayService", () => {
     const service = new HeatMapRefDisplayService();
     const result = await service.readHeatMapRefDisplayTable();
 
+    expect(result.referenceState.status).toBe("unavailable");
     expect(result.rows[1]).toEqual([
       "0 - 9,999,999",
+      "—",
       "0",
       "0",
       "0",
@@ -168,7 +174,94 @@ describe("HeatMapRefDisplayService", () => {
       "0%",
       "2",
     ]);
-    expect(result.copyText).toContain("0%,2");
+    expect(result.copyText.split("\n")[1]?.split(",").slice(2, 12)).toEqual([
+      "—",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0%",
+    ]);
     expect(result.copyText.startsWith("WeightMin,WeightMax,")).toBe(true);
+  });
+
+  it("labels the current reference state and keeps supported zeroes distinct from unavailable TH19", async () => {
+    const refs = [makeHeatMapRef({
+      th18Count: 0,
+      th11Count: 0,
+      th10OrLowerCount: 0,
+      contributingClanCount: 3,
+    })];
+    prismaMock.heatMapRef.findMany.mockResolvedValue(refs);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          version: 1,
+          status: "validated",
+          blockReasonCode: null,
+          reason: null,
+          validatedAtIso: "2026-04-12T00:00:00.000Z",
+          updatedAtIso: "2026-04-12T00:00:00.000Z",
+          contentHash: computeHeatMapRefContentHash(refs),
+        }),
+      },
+    ]);
+
+    const result = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+
+    expect(result.referenceState).toEqual({
+      status: "validated",
+      sourceVersion: null,
+      notice: "Reference: validated current · version unavailable.",
+    });
+    expect(result.rows[1]?.slice(1, 10)).toEqual(["—", "0", "0", "0", "0", "0", "0", "0", "0"]);
+    expect(result.copyText).toContain("TH19,TH18");
+    expect(result.copyText).toContain("—,0,0,0,0,0,0,0,0");
+  });
+
+  it("labels an independently verified historical baseline as informational", async () => {
+    prismaMock.heatMapRef.findMany.mockResolvedValue([...HEAT_MAP_REF_SEED_ROWS]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
+
+    const result = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+
+    expect(result.referenceState).toEqual({
+      status: "historical",
+      sourceVersion: "bootstrap-2026-08-21",
+      notice: "Reference: verified historical legacy-v1 baseline · version bootstrap-2026-08-21 · informational only · current validation unavailable.",
+    });
+    expect(result.rows[0]).toContain("TH19");
+    expect(result.rows[1]?.[1]).toBe("—");
+    expect(result.copyText.length).toBeLessThan(2000);
+  });
+
+  it("labels blocked current provenance without exposing the stored reason text", async () => {
+    const refs = [makeHeatMapRef()];
+    prismaMock.heatMapRef.findMany.mockResolvedValue(refs);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([
+      {
+        value: JSON.stringify({
+          version: 1,
+          status: "blocked",
+          blockReasonCode: "th19_integrity",
+          reason: "private operator detail that must not be rendered",
+          validatedAtIso: null,
+          updatedAtIso: "2026-04-12T00:00:00.000Z",
+          contentHash: null,
+        }),
+      },
+    ]);
+
+    const result = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+
+    expect(result.referenceState.status).toBe("blocked");
+    expect(result.referenceState.notice).toContain("th19_integrity");
+    expect(result.referenceState.notice).not.toContain("private operator detail");
   });
 });

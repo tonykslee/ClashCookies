@@ -77,4 +77,31 @@ describe("Force /force refresh heatmapref", () => {
       expect.stringContaining("HeatMapRef refresh success."),
     );
   });
+
+  it("reports zero written rows and retained rows when a blocked rebuild preserves the table", async () => {
+    rebuildSpy.mockResolvedValue({
+      status: "skipped",
+      reason: "TH19 evidence blocks safe replacement",
+      trackedClanCount: 475,
+      sourceRosterCount: 412,
+      qualifyingRosterCount: 321,
+      excludedRosterCount: 91,
+      rowCount: 14,
+      writtenRowCount: 0,
+      retainedRowCount: 14,
+      changedRowCount: 0,
+      contentHash: null,
+      alertSent: false,
+      summaryLines: ["blocked"],
+      cycleKey: null,
+      dueAt: null,
+    });
+
+    const interaction = makeInteraction();
+    await Force.run({} as any, interaction as any, {} as any);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.stringContaining("Rows written: 0. Retained rows: 14."),
+    );
+  });
 });

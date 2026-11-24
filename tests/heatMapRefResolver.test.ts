@@ -6,6 +6,7 @@ import {
   validateLegacyHeatMapRefTargetsForTest,
 } from "../src/helper/heatMapRefResolver";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
+import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
 
 const parent = {
   weightMinInclusive: 0,
@@ -154,5 +155,53 @@ describe("HeatMapRef normalized reference resolver", () => {
       settings: validatedSettings(),
     });
     expect(result.availability.status).toBe("validated");
+  });
+
+  it("verifies the checked-in historical baseline only with all 14 parents and 126 normalized targets", async () => {
+    const targets = buildLegacyHeatMapRefBucketTargets(HEAT_MAP_REF_SEED_ROWS);
+    const result = await resolveHeatMapRefReference({
+      client: {
+        heatMapRef: {
+          findMany: vi.fn(async () => [...HEAT_MAP_REF_SEED_ROWS]),
+        },
+        heatMapRefBucketTarget: {
+          findMany: vi.fn(async () => targets),
+        },
+      } as never,
+      settings: {
+        get: vi.fn(async () => null),
+      },
+    });
+
+    expect(result.normalizedState).toBe("verified");
+    expect(result.bucketTargets).toHaveLength(126);
+    expect(result.historicalAvailability).toEqual({
+      status: "verified",
+      sourceVersion: "bootstrap-2026-08-21",
+      warning: null,
+    });
+    expect(result.availability.status).toBe("unknown");
+  });
+
+  it("does not verify historical provenance for a content-mismatched parent projection", async () => {
+    const rows = [...HEAT_MAP_REF_SEED_ROWS];
+    rows[0] = { ...rows[0]!, th18Count: rows[0]!.th18Count + 1 };
+    const result = await resolveHeatMapRefReference({
+      client: {
+        heatMapRef: {
+          findMany: vi.fn(async () => rows),
+        },
+        heatMapRefBucketTarget: {
+          findMany: vi.fn(async () => buildLegacyHeatMapRefBucketTargets(rows)),
+        },
+      } as never,
+      settings: {
+        get: vi.fn(async () => null),
+      },
+    });
+
+    expect(result.normalizedState).toBe("verified");
+    expect(result.historicalAvailability.status).toBe("unknown");
+    expect(result.historicalAvailability.warning).toContain("do not match");
   });
 });

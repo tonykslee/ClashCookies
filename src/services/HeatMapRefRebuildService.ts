@@ -88,6 +88,9 @@ export type HeatMapRefRebuildRunResult = {
   summaryLines: string[];
   blockReasonCode?: HeatMapRefRebuildBlockReasonCode | null;
   evaluationPerformed?: boolean;
+  /** Explicit publication accounting for operator summaries; blocked runs write zero rows. */
+  writtenRowCount?: number;
+  retainedRowCount?: number;
 };
 
 type RebuildCycleContext = {
@@ -269,6 +272,7 @@ function buildSummaryLines(input: {
   qualifyingRosters: HeatMapRefRebuildQualifiedRoster[];
   excludedRosters: HeatMapRefRebuildExcludedRoster[];
   rows: HeatMapRefRebuildRow[];
+  retainedRowCount?: number;
   status: "success" | "noop" | "skipped" | "failed";
   reason: string | null;
 }): string[] {
@@ -277,7 +281,8 @@ function buildSummaryLines(input: {
     `source rosters: ${input.sourceRosterCount}`,
     `qualifying rosters: ${input.qualifyingRosters.length}`,
     `excluded rosters: ${input.excludedRosters.length}`,
-    `heatmap rows: ${input.rows.length}`,
+    `heatmap rows written: ${input.rows.length}`,
+    `retained rows: ${input.retainedRowCount ?? 0}`,
     `result: ${input.status}`,
   ];
   if (input.sourceRosterCount === 0) {
@@ -434,6 +439,8 @@ export class HeatMapRefRebuildService {
         excludedRosterCount: rebuiltResult.excludedRosters.length,
         rowCount: currentRows.length,
         changedRowCount: 0,
+        writtenRowCount: 0,
+        retainedRowCount: currentRows.length,
         contentHash: null,
         alertSent: false,
         blockReasonCode,
@@ -442,7 +449,8 @@ export class HeatMapRefRebuildService {
           sourceRosterCount: sourceRosters.length,
           qualifyingRosters: rebuiltResult.qualifyingRosters,
           excludedRosters: rebuiltResult.excludedRosters,
-          rows: currentRows as HeatMapRefRebuildRow[],
+          rows: [],
+          retainedRowCount: currentRows.length,
           status,
           reason,
         }),
@@ -461,6 +469,8 @@ export class HeatMapRefRebuildService {
         excludedRosterCount: rebuiltResult.excludedRosters.length,
         rowCount: rebuilt.length,
         changedRowCount: 0,
+        writtenRowCount: 0,
+        retainedRowCount: rebuilt.length,
         contentHash: nextHash,
         alertSent: false,
         summaryLines: buildSummaryLines({
@@ -468,10 +478,11 @@ export class HeatMapRefRebuildService {
           sourceRosterCount: sourceRosters.length,
           qualifyingRosters: rebuiltResult.qualifyingRosters,
           excludedRosters: rebuiltResult.excludedRosters,
-        rows: rebuilt,
-        status: "noop",
-        reason: "rebuilt content matched the stored HeatMapRef rows",
-      }),
+          rows: [],
+          retainedRowCount: rebuilt.length,
+          status: "noop",
+          reason: "rebuilt content matched the stored HeatMapRef rows",
+        }),
       }, now, evaluationGeneration);
     }
 
@@ -495,6 +506,8 @@ export class HeatMapRefRebuildService {
       excludedRosterCount: rebuiltResult.excludedRosters.length,
       rowCount: rebuilt.length,
       changedRowCount: rebuilt.length,
+      writtenRowCount: rebuilt.length,
+      retainedRowCount: 0,
       contentHash: nextHash,
       alertSent: false,
       summaryLines: result,

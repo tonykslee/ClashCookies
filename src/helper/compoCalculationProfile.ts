@@ -28,6 +28,13 @@ export type CompoCalculationTargetMapping = {
   referenceBucketIds: readonly string[];
 };
 
+export type CompoReferenceDisplayColumn = Readonly<{
+  id: string;
+  label: string;
+  referenceBucketIds: readonly string[];
+  status: "supported" | "unsupported";
+}>;
+
 export type CompoCalculationProfile = Readonly<{
   profileId: string;
   policyVersion: string;
@@ -35,6 +42,8 @@ export type CompoCalculationProfile = Readonly<{
   unsupportedFactualBucketIds: readonly string[];
   factualToCalculationBucket: Readonly<Record<string, string | null>>;
   targetMappings: readonly CompoCalculationTargetMapping[];
+  /** Optional reference-table presentation contract for this profile. */
+  referenceDisplayColumns?: readonly CompoReferenceDisplayColumn[];
   compatibility: Readonly<{
     plannerBucketByCalculationBucket: Readonly<Record<string, string>>;
     displayBucketByCalculationBucket: Readonly<Record<string, string>>;
@@ -311,6 +320,37 @@ function validateCompoCalculationProfileInternal(
       mappedReferenceIds.add(referenceId);
     }
   }
+
+  if (profile.referenceDisplayColumns !== undefined) {
+    if (!Array.isArray(profile.referenceDisplayColumns) || profile.referenceDisplayColumns.length === 0) {
+      return "reference display columns must be a nonempty array";
+    }
+    const displayIds = new Set<string>();
+    for (const column of profile.referenceDisplayColumns) {
+      if (
+        !column ||
+        typeof column.id !== "string" ||
+        !column.id.trim() ||
+        displayIds.has(column.id) ||
+        typeof column.label !== "string" ||
+        !column.label.trim() ||
+        !Array.isArray(column.referenceBucketIds) ||
+        (column.status !== "supported" && column.status !== "unsupported")
+      ) {
+        return `invalid reference display column (${column?.id ?? ""})`;
+      }
+      displayIds.add(column.id);
+      if (column.status === "supported" && column.referenceBucketIds.length === 0) {
+        return `supported reference display column has no source (${column.id})`;
+      }
+      if (column.status === "unsupported" && column.referenceBucketIds.length > 0) {
+        return `unsupported reference display column has sources (${column.id})`;
+      }
+      if (column.referenceBucketIds.some((referenceId: string) => !referenceId.trim())) {
+        return `invalid reference display source (${column.id})`;
+      }
+    }
+  }
   if (targetMappingByBucket.size !== bucketIds.size) {
     return "target mappings do not cover every calculation bucket";
   }
@@ -474,6 +514,17 @@ export const LEGACY_COMPO_CALCULATION_PROFILE = createCompoCalculationProfile({
     { calculationBucketId: "TH14", referenceBucketIds: ["TH14"] },
     { calculationBucketId: "<=TH13", referenceBucketIds: ["TH13", "TH12", "TH11", "TH10_OR_LOWER"] },
   ],
+  referenceDisplayColumns: [
+    { id: "TH19", label: "TH19", referenceBucketIds: [], status: "unsupported" },
+    { id: "TH18", label: "TH18", referenceBucketIds: ["TH18"], status: "supported" },
+    { id: "TH17", label: "TH17", referenceBucketIds: ["TH17"], status: "supported" },
+    { id: "TH16", label: "TH16", referenceBucketIds: ["TH16"], status: "supported" },
+    { id: "TH15", label: "TH15", referenceBucketIds: ["TH15"], status: "supported" },
+    { id: "TH14", label: "TH14", referenceBucketIds: ["TH14"], status: "supported" },
+    { id: "TH13", label: "TH13", referenceBucketIds: ["TH13"], status: "supported" },
+    { id: "TH12", label: "TH12", referenceBucketIds: ["TH12"], status: "supported" },
+    { id: "TH11+", label: "TH11+", referenceBucketIds: ["TH11", "TH10_OR_LOWER"], status: "supported" },
+  ],
   compatibility: {
     plannerBucketByCalculationBucket: { TH18: "TH18", TH17: "TH17", TH16: "TH16", TH15: "TH15", TH14: "TH14", "<=TH13": "TH13" },
     displayBucketByCalculationBucket: { TH18: "TH18", TH17: "TH17", TH16: "TH16", TH15: "TH15", TH14: "TH14", "<=TH13": "<=TH13" },
@@ -535,6 +586,32 @@ export function getCompoCalculationBucket(profile: CompoCalculationProfile, fact
 
 export function getCompoProfileSourceBucketIds(profile: CompoCalculationProfile): readonly string[] {
   return isUsableProfile(profile) ? profile.buckets.flatMap((bucket) => bucket.sourceBucketIds) : [];
+}
+
+/** Return profile-owned reference columns without imposing a presentation maximum. */
+export function getCompoProfileReferenceDisplayColumns(
+  profile: CompoCalculationProfile,
+): readonly CompoReferenceDisplayColumn[] {
+  if (!isUsableProfile(profile)) return [];
+  if (profile.referenceDisplayColumns) return profile.referenceDisplayColumns;
+
+  const targetMappings = new Map(
+    profile.targetMappings.map((mapping) => [mapping.calculationBucketId, mapping.referenceBucketIds]),
+  );
+  return [
+    ...profile.unsupportedFactualBucketIds.map((bucketId) => ({
+      id: bucketId,
+      label: bucketId,
+      referenceBucketIds: [],
+      status: "unsupported" as const,
+    })),
+    ...profile.buckets.map((bucket) => ({
+      id: bucket.id,
+      label: bucket.displayLabel,
+      referenceBucketIds: targetMappings.get(bucket.id) ?? [],
+      status: "supported" as const,
+    })),
+  ];
 }
 
 export function validateCompoProfileFactualCounts(
