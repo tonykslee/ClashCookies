@@ -654,6 +654,47 @@ describe("projectCompoActualStateView", () => {
     expect(result.totalWeight).toBe(361000);
   });
 
+  it("uses resolved deltas for native Auto-Detect but projected deltas for Best Fit", () => {
+    const native = {
+      status: "CURRENT" as const,
+      generationId: "native-test",
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      bands: [{ weightMinInclusive: 0, weightMaxInclusive: 500000 }],
+      targets: makeNativeReference({
+        weightMinInclusive: 0,
+        weightMaxInclusive: 500000,
+        counts: { TH19: 1, TH18: 2, TH15: 47 },
+      }).targets,
+    };
+    const base = {
+      resolvedTotalWeight: 1000,
+      unresolvedWeightCount: 0,
+      memberCount: 48,
+      bucketCounts: makeBucketCounts({ TH19: 1, TH15: 47 }),
+      profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+    };
+    const heatMapRefs = buildNativeCompoProjectionReferences(native);
+    const auto = projectCompoActualStateView({
+      view: "auto",
+      base,
+      heatMapRefs,
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+    const best = projectCompoActualStateView({
+      view: "best",
+      base,
+      heatMapRefs,
+      profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
+    });
+
+    expect(auto.totalWeight).toBe(351000);
+    expect(best.totalWeight).toBe(351000);
+    expect(auto.deltaByBucket.TH18).toBe(-2);
+    expect(best.deltaByBucket.TH18).toBe(0);
+  });
+
   it("withholds projections when member or unresolved metadata is outside the 50-member contract", () => {
     const invalidMember = projectCompoActualStateView({
       view: "auto",

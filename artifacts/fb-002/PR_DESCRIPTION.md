@@ -8,6 +8,7 @@
 - Aggregate lower native target bands consistently for collapsed display; unsupported native bands remain `UNKNOWN`.
 - Track unresolved weight slots separately from fallback-resolved WAR weights so incomplete rosters do not double-count fallback weights during Auto-Detect projection.
 - Evaluate plausible native projections across supported bands and reject out-of-band candidates, including the unsupported raw-band Native Best Fit path.
+- Preserve projection semantics: Auto-Detect selects by projected weight but displays resolved deltas; Best Fit displays projected deltas; RAW remains factual.
 
 ## Regression coverage
 
@@ -17,10 +18,10 @@ Additional coverage includes supported and unsupported native bands, TH19, ACTUA
 
 ## Validation
 
-- Targeted Vitest: 9 files, 140 tests passed.
+- Targeted Vitest: 9 files, 141 tests passed.
 - TypeScript: `npx tsc --noEmit --pretty false` passed.
 - Targeted ESLint: passed; one pre-existing warning remains in `compoActualStateView.ts`.
-- Full `npm test -- --reporter=dot`: 387 files and 6,041 tests passed.
+- Full `npm test -- --reporter=dot`: 387 files and 6,042 tests passed.
 - Full output: `artifacts/fb-002/full-validation.log`.
 - Rendered through the actual command payload builders and visually inspected PNG fixtures:
   - `compo-heatmapref-provisional.png`

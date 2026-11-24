@@ -613,6 +613,23 @@ function buildPlausibleNativeBandProjections(input: {
     );
 }
 
+function applyAutoResolvedDeltas(
+  projection: CompoActualStateProjection,
+  rawProjection: CompoActualStateProjection,
+  displayCounts: CompoWarDisplayBucketCounts,
+  profile: CompoCalculationProfile,
+): CompoActualStateProjection {
+  return {
+    ...projection,
+    deltaByBucket: buildCalculationDeltaByDisplay({
+      profile,
+      observedCounts: rawProjection.calculationCounts ?? {},
+      targetCounts: projection.targetCalculationCounts ?? null,
+      displayCounts,
+    }),
+  };
+}
+
 function buildEstimatedProjectionForBand(input: {
   view: "auto" | "best";
   base: CompoActualStateBaseMetrics;
@@ -894,7 +911,12 @@ function buildAutoProjection(input: {
     const selectedProjection = plausibleProjections[0];
     return selectedProjection
       ? {
-          ...selectedProjection,
+          ...applyAutoResolvedDeltas(
+            selectedProjection,
+            rawProjection,
+            input.displayCounts,
+            input.profile,
+          ),
           view: "auto",
           missingWeights: rawProjection.missingTo50Count + rawProjection.unresolvedWeightCount,
         }
