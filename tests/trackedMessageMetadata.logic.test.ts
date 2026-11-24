@@ -350,11 +350,6 @@ describe("tracked message metadata parsing", () => {
           emojiName: " rr ",
           emojiInline: " <:rr:111> ",
         },
-        {
-          clanTag: "",
-          clanName: "Ignored",
-          emojiInline: "<:bad:999>",
-        },
       ],
     });
 
@@ -374,6 +369,27 @@ describe("tracked message metadata parsing", () => {
         },
       ],
     });
+  });
+
+  it("rejects a partially malformed participant snapshot instead of reducing the denominator", () => {
+    expect(parseSyncTimeMetadata({
+      syncTimeIso: "2026-03-19T15:30:00.000Z",
+      syncEpochSeconds: "1742407800",
+      roleId: "456",
+      clans: [
+        { clanTag: "#AAA111", clanName: "Alpha", emojiInline: "🅰️" },
+        { clanTag: "", clanName: "Missing tag", emojiInline: "🅱️" },
+      ],
+    })).toBeNull();
+    expect(parseSyncTimeMetadata({
+      syncTimeIso: "2026-03-19T15:30:00.000Z",
+      syncEpochSeconds: "1742407800",
+      roleId: "456",
+      clans: [
+        { clanTag: "#PYLQ", clanName: "Alpha", emojiInline: "🅰️" },
+        { clanTag: "#pylq", clanName: "Contradictory duplicate", emojiInline: "🅱️" },
+      ],
+    })).toBeNull();
   });
 
   it("rejects sync-time metadata when required fields are missing or no clans survive parsing", () => {

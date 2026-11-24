@@ -10,6 +10,8 @@ import { normalizeTag } from "./war-events/core";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
+  getSyncTimeParticipantTags,
+  hasSameSyncTimeMetadataIdentity,
   parseSyncTimeMetadata,
   type SyncTimeTrackedMetadata,
 } from "./TrackedMessageService";
@@ -55,6 +57,7 @@ type CanonicalSyncRoot = {
 type CompletionSnapshot = CanonicalSyncRoot & {
   participatingClanTags: Set<string>;
   claimedClanTags: Set<string>;
+  invalidChildIdentityCount: number;
 };
 
 export type SyncAllSpunEvaluation =
@@ -131,6 +134,7 @@ function claimedPayload(root: CanonicalSyncRoot, snapshot: CompletionSnapshot) {
     rootMessageId: root.messageId,
     participatingClanCount: snapshot.participatingClanTags.size,
     claimedClanCount: snapshot.claimedClanTags.size,
+    invalidChildIdentityCount: snapshot.invalidChildIdentityCount,
   };
 }
 
@@ -245,11 +249,7 @@ export class SyncAllSpunAnnouncementService {
     root: CanonicalSyncRoot,
     now: Date,
   ): Promise<CompletionSnapshot | null> {
-    const participatingClanTags = new Set(
-      root.metadata.clans
-        .map((clan) => normalizeClanTag(clan.clanTag))
-        .filter((tag): tag is string => Boolean(tag)),
-    );
+    const participatingClanTags = getSyncTimeParticipantTags(root.metadata);
     if (participatingClanTags.size === 0) return null;
 
     const trackedRows = await this.db.trackedMessage.findMany({
@@ -268,10 +268,38 @@ export class SyncAllSpunAnnouncementService {
           },
         ],
       },
-      select: { claims: { select: { clanTag: true } } },
+      select: {
+        id: true,
+        guildId: true,
+        messageId: true,
+        referenceId: true,
+        featureType: true,
+        status: true,
+        expiresAt: true,
+        metadata: true,
+        claims: { select: { clanTag: true } },
+      },
     });
     const claimedClanTags = new Set<string>();
+    let invalidChildIdentityCount = 0;
     for (const row of trackedRows) {
+      const rowMetadata = parseSyncTimeMetadata(row.metadata);
+      if (
+        !rowMetadata ||
+        !hasSameSyncTimeMetadataIdentity(root.metadata, rowMetadata)
+      ) {
+        if (row.id !== root.id) invalidChildIdentityCount += 1;
+        continue;
+      }
+      if (
+        row.id !== root.id &&
+        (row.guildId !== root.guildId ||
+          row.messageId === root.messageId ||
+          row.referenceId !== root.messageId ||
+          row.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+          row.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+          (row.expiresAt instanceof Date && row.expiresAt.getTime() <= now.getTime()))
+      ) continue;
       for (const claim of row.claims ?? []) {
         const tag = normalizeClanTag(claim.clanTag);
         if (tag && participatingClanTags.has(tag)) claimedClanTags.add(tag);
@@ -282,6 +310,7 @@ export class SyncAllSpunAnnouncementService {
       ...root,
       participatingClanTags,
       claimedClanTags,
+      invalidChildIdentityCount,
     };
   }
 
@@ -343,13 +372,7 @@ export class SyncAllSpunAnnouncementService {
       const currentSnapshot = currentRoot
         ? await this.loadCompletionSnapshot(currentRoot, now)
         : null;
-      if (
-        !currentRoot ||
-        !currentSnapshot ||
-        currentRoot.messageId !== root.messageId ||
-        currentRoot.syncTime.getTime() !== root.syncTime.getTime() ||
-        currentSnapshot.claimedClanTags.size !== currentSnapshot.participatingClanTags.size
-      ) {
+      if (!this.isDeliverySnapshotStillValid(root, initialSnapshot, currentRoot, currentSnapshot)) {
         await releaseSyncEvent({ eventModel: this.db.syncEvent, identity, createdAt: claim.createdAt });
         dozzleLog.debug(
           `[sync-all-spun] event=delivery_revalidation_failed guild_id=${root.guildId} root_message_id=${root.messageId} reason=root_or_completion_changed`,
@@ -366,6 +389,21 @@ export class SyncAllSpunAnnouncementService {
         return { state: "failed", reason: "sync_destination_unavailable_after_claim" };
       }
 
+      const finalRoot = await this.resolveCanonicalRoot(root.messageId, now);
+      const finalSnapshot = finalRoot
+        ? await this.loadCompletionSnapshot(finalRoot, now)
+        : null;
+      if (
+        !finalRoot ||
+        !this.isDeliverySnapshotStillValid(root, initialSnapshot, finalRoot, finalSnapshot)
+      ) {
+        await releaseSyncEvent({ eventModel: this.db.syncEvent, identity, createdAt: claim.createdAt });
+        dozzleLog.debug(
+          `[sync-all-spun] event=delivery_revalidation_failed guild_id=${root.guildId} root_message_id=${root.messageId} reason=root_or_completion_changed_before_send`,
+        );
+        return { state: "failed", reason: "root_or_completion_changed_before_send" };
+      }
+
       const sent = await currentDestination.channel.send(SYNC_ALL_SPUN_MESSAGE);
       const messageId = String(sent?.id ?? "").trim() || null;
       const marked = await markSyncEventDelivered({
@@ -373,8 +411,8 @@ export class SyncAllSpunAnnouncementService {
         identity,
         createdAt: claim.createdAt,
         deliveredPayload: deliveredPayload(
-          root,
-          currentSnapshot,
+          finalRoot,
+          finalSnapshot,
           currentDestination.channelId,
           messageId,
         ),
@@ -387,7 +425,7 @@ export class SyncAllSpunAnnouncementService {
         return { state: "failed", reason: "delivery_state_update_failed" };
       }
       dozzleLog.info(
-        `[sync-all-spun] event=delivered guild_id=${root.guildId} root_message_id=${root.messageId} sync_time=${root.syncTime.toISOString()} participating_clan_count=${currentSnapshot.participatingClanTags.size} channel_id=${currentDestination.channelId} message_id=${messageId ?? "none"}`,
+        `[sync-all-spun] event=delivered guild_id=${root.guildId} root_message_id=${root.messageId} sync_time=${root.syncTime.toISOString()} participating_clan_count=${finalSnapshot.participatingClanTags.size} channel_id=${currentDestination.channelId} message_id=${messageId ?? "none"}`,
       );
       return { state: "delivered", channelId: currentDestination.channelId, messageId };
     } catch (error) {
@@ -397,6 +435,28 @@ export class SyncAllSpunAnnouncementService {
       );
       return { state: "failed", reason: "discord_send_failed" };
     }
+  }
+
+  /** Purpose: require one unchanged canonical participant snapshot through delivery preparation. */
+  private isDeliverySnapshotStillValid(
+    initialRoot: CanonicalSyncRoot,
+    initialSnapshot: CompletionSnapshot,
+    currentRoot: CanonicalSyncRoot | null,
+    currentSnapshot: CompletionSnapshot | null,
+  ): currentSnapshot is CompletionSnapshot {
+    if (
+      !currentRoot ||
+      !currentSnapshot ||
+      currentRoot.guildId !== initialRoot.guildId ||
+      currentRoot.messageId !== initialRoot.messageId ||
+      currentRoot.syncTime.getTime() !== initialRoot.syncTime.getTime() ||
+      !hasSameSyncTimeMetadataIdentity(initialRoot.metadata, currentRoot.metadata) ||
+      currentSnapshot.claimedClanTags.size !== currentSnapshot.participatingClanTags.size ||
+      currentSnapshot.participatingClanTags.size !== initialSnapshot.participatingClanTags.size
+    ) return false;
+    return [...initialSnapshot.participatingClanTags].every((clanTag) =>
+      currentSnapshot.participatingClanTags.has(clanTag),
+    );
   }
 
   async evaluateAfterAdd(
@@ -424,7 +484,7 @@ export class SyncAllSpunAnnouncementService {
       }
       if (snapshot.claimedClanTags.size !== snapshot.participatingClanTags.size) {
         dozzleLog.debug(
-          `[sync-all-spun] event=evaluation_incomplete guild_id=${root.guildId} root_message_id=${root.messageId} claimed_count=${snapshot.claimedClanTags.size} participating_count=${snapshot.participatingClanTags.size}`,
+          `[sync-all-spun] event=evaluation_incomplete guild_id=${root.guildId} root_message_id=${root.messageId} claimed_count=${snapshot.claimedClanTags.size} participating_count=${snapshot.participatingClanTags.size} invalid_child_identity_count=${snapshot.invalidChildIdentityCount}`,
         );
         return {
           state: "incomplete",

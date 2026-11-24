@@ -388,9 +388,9 @@ describe("TrackedMessageService sync spin status", () => {
     const payload = send.mock.calls[0]?.[0] as any;
     const embed = payload.embeds[0].toJSON() as any;
     expect(embed.title).toBe("Sync Spin Status");
-    expect(embed.description).toContain("Claimed: **0/2**");
-    expect(embed.description).toContain("- <:rr:111> **RR** (Rocky Road)");
-    expect(embed.description).toContain("- <:twc:222> **TWC** (TheWiseCowboys)");
+    expect(embed.description).toContain("Claimed: **2/2**");
+    expect(embed.description).toContain("✅ <:rr:111> **RR** (Rocky Road)");
+    expect(embed.description).toContain("✅ <:twc:222> **TWC** (TheWiseCowboys)");
     expect(payload.components[0].components[0].data.label).toBe("My Leader Accounts");
     expect(payload.components[0].components[0].data.custom_id).toBe(
       "sync-leaders:v1:sync-message-1:0",
@@ -661,9 +661,7 @@ describe("TrackedMessageService sync spin status", () => {
           claims: [{ clanTag: "#PYLQ", userId: "user-1" }],
         }),
       })
-      .mockResolvedValueOnce({
-        channelId: "source-channel",
-      })
+      .mockResolvedValueOnce(makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel" }))
       .mockResolvedValueOnce({
         ...makeTrackedRow({
           messageId: "status-message-1",
@@ -672,9 +670,15 @@ describe("TrackedMessageService sync spin status", () => {
           claims: [],
         }),
       })
-      .mockResolvedValueOnce({
-        channelId: "source-channel",
-      });
+      .mockResolvedValueOnce(makeTrackedRow({ messageId: "sync-message-1", channelId: "source-channel" }));
+    prismaMock.trackedMessage.findFirst.mockResolvedValue({ messageId: "sync-message-1" });
+    prismaMock.trackedMessage.findMany
+      .mockResolvedValueOnce([
+      makeTrackedRow({ messageId: "sync-message-1", claims: [{ clanTag: "#PYLQ", userId: "user-1" }] }),
+      ])
+      .mockResolvedValueOnce([
+        makeTrackedRow({ messageId: "sync-message-1", claims: [] }),
+      ]);
 
     const edit = vi.fn().mockResolvedValue(undefined);
     const message = {
