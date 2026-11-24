@@ -22,6 +22,7 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { safeReply } from "../helper/safeReply";
+import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { normalizeClanTag } from "../services/PlayerLinkService";
 import {
@@ -40,6 +41,7 @@ import {
 } from "../services/SyncTimeFwaClanListViewService";
 import {
   buildSyncSpinStatusEmbed,
+  loadValidatedSyncClaimAggregation,
   parseSyncTimeMetadata,
   trackedMessageService,
   type SyncReadinessTrackedMetadata,
@@ -663,25 +665,29 @@ async function handleSyncSpinStatusSubcommand(
     return;
   }
 
-  const tracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(message.id);
-  const metadata = tracked ? parseSyncTimeMetadata(tracked.metadata) : null;
-  if (!tracked || tracked.status !== "ACTIVE" || tracked.featureType !== "SYNC_TIME_POST" || !metadata) {
+  const aggregation = await loadValidatedSyncClaimAggregation(
+    prisma,
+    message.id,
+    new Date(),
+    { checkSyncTime: false },
+  );
+  if (!aggregation) {
     await interaction.editReply("Could not find tracked sync status for that message.");
     return;
   }
 
   const embed = buildSyncSpinStatusEmbed({
     guildId: guild.id,
-    sourceChannelId: tracked.channelId,
-    sourceMessageId: tracked.referenceId ?? tracked.messageId,
-    metadata,
-    claimedClanTags: tracked.claims.map((claim) => claim.clanTag),
+    sourceChannelId: aggregation.root.channelId,
+    sourceMessageId: aggregation.root.messageId,
+    metadata: aggregation.metadata,
+    claimedClanTags: aggregation.claimedClanTags,
     title: "Sync Spin Status",
   });
 
   await interaction.editReply({
     embeds: [embed],
-    components: buildSyncLeaderAccountsButtonComponents(tracked.messageId),
+    components: buildSyncLeaderAccountsButtonComponents(message.id),
     allowedMentions: { parse: [] },
   });
 }

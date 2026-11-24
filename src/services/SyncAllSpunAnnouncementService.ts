@@ -6,12 +6,11 @@ import {
 import { formatError } from "../helper/formatError";
 import { dozzleLog } from "../helper/dozzleLogger";
 import { prisma } from "../prisma";
-import { normalizeTag } from "./war-events/core";
 import {
   TRACKED_MESSAGE_FEATURE_TYPE,
   TRACKED_MESSAGE_STATUS,
-  getSyncTimeParticipantTags,
   hasSameSyncTimeMetadataIdentity,
+  loadValidatedSyncClaimAggregation,
   parseSyncTimeMetadata,
   type SyncTimeTrackedMetadata,
 } from "./TrackedMessageService";
@@ -79,11 +78,6 @@ export type SyncAllSpunRecoverySummary = {
 
 function isValidDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
-}
-
-function normalizeClanTag(value: unknown): string | null {
-  const normalized = normalizeTag(String(value ?? ""));
-  return normalized || null;
 }
 
 function syncTimeFromMetadata(metadata: SyncTimeTrackedMetadata): Date | null {
@@ -158,6 +152,7 @@ export class SyncAllSpunAnnouncementService {
     private readonly botLogChannels: Pick<BotLogChannelService, "getChannelIdForType"> = botLogChannelService,
     private readonly db: SyncAllSpunDb = prisma as unknown as SyncAllSpunDb,
     private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   private runtimeAllowed(): boolean {
@@ -249,68 +244,15 @@ export class SyncAllSpunAnnouncementService {
     root: CanonicalSyncRoot,
     now: Date,
   ): Promise<CompletionSnapshot | null> {
-    const participatingClanTags = getSyncTimeParticipantTags(root.metadata);
-    if (participatingClanTags.size === 0) return null;
-
-    const trackedRows = await this.db.trackedMessage.findMany({
-      where: {
-        OR: [
-          { id: root.id },
-          {
-            guildId: root.guildId,
-            referenceId: root.messageId,
-            featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
-            status: TRACKED_MESSAGE_STATUS.ACTIVE,
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { gt: now } },
-            ],
-          },
-        ],
-      },
-      select: {
-        id: true,
-        guildId: true,
-        messageId: true,
-        referenceId: true,
-        featureType: true,
-        status: true,
-        expiresAt: true,
-        metadata: true,
-        claims: { select: { clanTag: true } },
-      },
-    });
-    const claimedClanTags = new Set<string>();
-    let invalidChildIdentityCount = 0;
-    for (const row of trackedRows) {
-      const rowMetadata = parseSyncTimeMetadata(row.metadata);
-      if (
-        !rowMetadata ||
-        !hasSameSyncTimeMetadataIdentity(root.metadata, rowMetadata)
-      ) {
-        if (row.id !== root.id) invalidChildIdentityCount += 1;
-        continue;
-      }
-      if (
-        row.id !== root.id &&
-        (row.guildId !== root.guildId ||
-          row.messageId === root.messageId ||
-          row.referenceId !== root.messageId ||
-          row.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
-          row.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
-          (row.expiresAt instanceof Date && row.expiresAt.getTime() <= now.getTime()))
-      ) continue;
-      for (const claim of row.claims ?? []) {
-        const tag = normalizeClanTag(claim.clanTag);
-        if (tag && participatingClanTags.has(tag)) claimedClanTags.add(tag);
-      }
-    }
-
+    const aggregation = await loadValidatedSyncClaimAggregation(this.db, root.messageId, now);
+    if (!aggregation || aggregation.root.id !== root.id) return null;
     return {
       ...root,
-      participatingClanTags,
-      claimedClanTags,
-      invalidChildIdentityCount,
+      metadata: aggregation.metadata,
+      syncTime: aggregation.syncTime,
+      participatingClanTags: aggregation.participatingClanTags,
+      claimedClanTags: aggregation.claimedClanTags,
+      invalidChildIdentityCount: aggregation.invalidChildIdentityCount,
     };
   }
 
@@ -389,9 +331,11 @@ export class SyncAllSpunAnnouncementService {
         return { state: "failed", reason: "sync_destination_unavailable_after_claim" };
       }
 
-      const finalRoot = await this.resolveCanonicalRoot(root.messageId, now);
+      const clockNow = this.clock();
+      const finalNow = clockNow.getTime() >= now.getTime() ? clockNow : now;
+      const finalRoot = await this.resolveCanonicalRoot(root.messageId, finalNow);
       const finalSnapshot = finalRoot
-        ? await this.loadCompletionSnapshot(finalRoot, now)
+        ? await this.loadCompletionSnapshot(finalRoot, finalNow)
         : null;
       if (
         !finalRoot ||
@@ -462,7 +406,7 @@ export class SyncAllSpunAnnouncementService {
   async evaluateAfterAdd(
     client: Client,
     messageId: string,
-    now: Date = new Date(),
+    now: Date = this.clock(),
   ): Promise<SyncAllSpunEvaluation> {
     if (!this.runtimeAllowed()) {
       return { state: "skipped", reason: "non_production_runtime" };
@@ -538,7 +482,7 @@ export class SyncAllSpunAnnouncementService {
 
   async reconcileDue(
     client: Client,
-    now: Date = new Date(),
+    now: Date = this.clock(),
   ): Promise<SyncAllSpunRecoverySummary> {
     const summary: SyncAllSpunRecoverySummary = {
       scanned: 0,

@@ -89,6 +89,7 @@ function makeDependencies(options: {
   rows?: TrackedRow[];
   send?: ReturnType<typeof vi.fn>;
   env?: NodeJS.ProcessEnv;
+  clock?: () => Date;
 } = {}) {
   const rows = options.rows ?? makeRows();
   const events = new Map<string, any>();
@@ -153,6 +154,7 @@ function makeDependencies(options: {
     routing as any,
     db as any,
     options.env ?? { POLLING_MODE: "active", DEPLOY_ENV: "prod" },
+    options.clock ?? (() => new Date(now)),
   );
   return { rows, events, syncEvent, trackedMessage, client, guild, channel, send, routing, service };
 }
@@ -255,6 +257,26 @@ describe("SyncAllSpunAnnouncementService", () => {
     expect(deps.events).toHaveLength(0);
   });
 
+  it("releases the reservation when the root expires before final revalidation", async () => {
+    const deps = makeDependencies({
+      clock: () => new Date("2026-08-15T12:31:00.000Z"),
+    });
+    deps.rows[0].expiresAt = new Date("2026-08-15T12:30:00.000Z");
+    deps.rows[1].expiresAt = new Date("2026-08-15T12:30:00.000Z");
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({
+        state: "failed",
+        reason: "root_or_completion_changed_before_send",
+      });
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(deps.events).toHaveLength(0);
+  });
+
   it("suppresses duplicate completion attempts through the durable event", async () => {
     const deps = makeDependencies();
     deps.rows[0].claims = [
@@ -319,6 +341,7 @@ describe("SyncAllSpunAnnouncementService", () => {
       deps.routing as any,
       { trackedMessage: deps.trackedMessage, syncEvent: deps.syncEvent } as any,
       { POLLING_MODE: "active", DEPLOY_ENV: "prod" },
+      () => new Date(now),
     );
     await expect(restarted.evaluateAfterAdd(deps.client, "root-message", now))
       .resolves.toMatchObject({ state: "suppressed" });

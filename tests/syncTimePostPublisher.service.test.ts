@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsService } from "../src/services/SettingsService";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
 import {
+  getSyncBadgesWithTrackedClanFallback,
   scheduledSyncReadinessPublisherService,
   syncTimePostPublisherService,
 } from "../src/services/SyncTimePostPublisherService";
@@ -39,7 +40,7 @@ describe("SyncTimePostPublisherService", () => {
     vi.clearAllMocks();
     prismaMock.trackedClan.findMany.mockResolvedValue([
       {
-        tag: "#RR",
+        tag: "#PYLQ",
         name: "Rocky Road",
         clanBadge: "<:rr:111>",
         shortName: "RR",
@@ -58,6 +59,29 @@ describe("SyncTimePostPublisherService", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("fails closed when a tracked participant has no usable badge", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([
+      { tag: "#PYLQ", name: "Rocky Road", clanBadge: "", shortName: "RR" },
+      { tag: "#PYLG", name: "Unconfigured Clan", clanBadge: "", shortName: "UC" },
+    ]);
+
+    await expect(
+      getSyncBadgesWithTrackedClanFallback("bot-1", {
+        emojis: { cache: new Map(), fetch: vi.fn().mockResolvedValue(undefined) },
+      } as any),
+    ).rejects.toMatchObject({ code: "missing_badges" });
+  });
+
+  it("does not manufacture a participant cohort from hardcoded badges", async () => {
+    prismaMock.trackedClan.findMany.mockResolvedValue([]);
+
+    await expect(
+      getSyncBadgesWithTrackedClanFallback("bot-1", {
+        emojis: { cache: new Map(), fetch: vi.fn().mockResolvedValue(undefined) },
+      } as any),
+    ).resolves.toEqual([]);
   });
 
   it("publishes the immediate sync announcement and owns the active sync tracked row", async () => {

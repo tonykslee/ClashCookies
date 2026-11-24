@@ -71,8 +71,9 @@ export default (client: Client): void => {
           fullUser.id,
           fullReaction,
         );
-        if (removed && tracked.referenceId) {
-          await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
+        if (removed) {
+          const rootMessageId = tracked.referenceId ?? tracked.messageId;
+          await trackedMessageService.refreshSyncSpinStatusMessages(client, rootMessageId);
         }
         return;
       }

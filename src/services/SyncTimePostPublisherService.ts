@@ -1,8 +1,9 @@
 import { type Guild, type MessageMentionOptions } from "discord.js";
-import { findSyncBadgeEmojiForClan, getSyncBadgeEmojis } from "../helper/syncBadgeEmoji";
+import { findSyncBadgeEmojiForClan } from "../helper/syncBadgeEmoji";
 import { formatError } from "../helper/formatError";
 import { prisma } from "../prisma";
 import { SettingsService } from "./SettingsService";
+import { normalizeClanTag } from "./PlayerLinkService";
 import type {
   ScheduledSyncPostClaimOwnershipResult,
   ScheduledSyncPostRow,
@@ -153,23 +154,6 @@ function resolveAbbreviation(
   return (base + tagBase).slice(0, 3);
 }
 
-function makeSyncBadgeFromHardcoded(
-  entry: { code: string; label: string; name: string; id: string },
-  overrides?: { code?: string; label?: string },
-): SyncBadge {
-  return {
-    clanTag: overrides?.label?.startsWith("#") ? (overrides?.label as string) : `#${(overrides?.code ?? entry.code)}`,
-    code: overrides?.code ?? entry.code,
-    label: overrides?.label ?? entry.label,
-    reactionIdentifier: `${entry.name}:${entry.id}`,
-    emojiInline: `<:${entry.name}:${entry.id}>`,
-    id: entry.id,
-    name: entry.name,
-    matchEmojiIds: dedupe([entry.id]),
-    matchEmojiNames: dedupe([entry.name]),
-  };
-}
-
 function makeSyncBadgeFromTrackedClan(
   clanTag: string,
   clanName: string | null,
@@ -229,13 +213,22 @@ async function getSyncBadgesWithTrackedClanFallback(
     select: { tag: true, name: true, clanBadge: true, shortName: true },
   });
 
-  const hardcoded = getSyncBadgeEmojis(botUserId);
   if (tracked.length === 0) {
-    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+    return [];
   }
 
   const badges: SyncBadge[] = [];
+  const participantTags = new Set<string>();
   for (const clan of tracked) {
+    const participantTag = normalizeClanTag(clan.tag);
+    if (!participantTag || participantTags.has(participantTag)) {
+      throwPublishError(
+        "Could not establish a unique tracked sync participant cohort.",
+        "invalid_participant_cohort",
+        false,
+      );
+    }
+    participantTags.add(participantTag);
     const configuredBadge = clan.clanBadge?.trim() ?? "";
     if (configuredBadge.length > 0) {
       const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
@@ -278,21 +271,40 @@ async function getSyncBadgesWithTrackedClanFallback(
     }
 
     const fallbackCode = resolveAbbreviation(clan.shortName, clan.name, clan.tag);
-    const fallback = clan.name ? findSyncBadgeEmojiForClan(botUserId, clan.name, fallbackCode) : null;
+    const fallback = findSyncBadgeEmojiForClan(
+      botUserId,
+      clan.name?.trim() || clan.tag,
+      fallbackCode,
+    );
     if (fallback) {
       badges.push(
-        makeSyncBadgeFromHardcoded(fallback, {
-          code: fallbackCode,
-          label: clan.name?.trim() || clan.tag,
-        }),
+        addAlternateEmojiMatch(
+          makeSyncBadgeFromTrackedClan(
+            clan.tag,
+            clan.name,
+            `<:${fallback.name}:${fallback.id}>`,
+            clan.shortName,
+          ),
+          fallback,
+        ),
       );
+      continue;
     }
+
+    throwPublishError(
+      `No usable badge configuration found for tracked clan ${participantTag}.`,
+      "missing_badges",
+      false,
+    );
   }
 
-  if (badges.length === 0) {
-    return hardcoded.map((entry) => makeSyncBadgeFromHardcoded(entry));
+  if (badges.length !== participantTags.size) {
+    throwPublishError(
+      "Could not establish the complete tracked sync participant cohort.",
+      "invalid_participant_cohort",
+      false,
+    );
   }
-
   return badges;
 }
 
@@ -373,7 +385,6 @@ export class SyncTimePostPublisherService {
     clientUserId?: string | null;
     now?: Date;
   }): Promise<SyncTimePostPublishResult> {
-    const now = input.now ?? new Date();
     const settings = input.settings ?? new SettingsService();
     const guild = input.guild;
     const channel = input.channel;
