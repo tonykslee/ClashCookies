@@ -1089,9 +1089,9 @@ describe("fwa checklist tracked messages", () => {
           "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=999|opponent=#0PPY|start=2026-06-13T18:00:00.000Z",
         featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
-        referenceId: "sync-old",
+        referenceId: "sync-command",
         clanTag: "#PYPY",
-        metadata: makeMetadata("stale-user", "sync-old", 999, "#0PPY"),
+        metadata: makeMetadata("stale-user", "sync-command", 999, "#0PPY"),
       },
       {
         id: "other-clan-active",
@@ -1308,6 +1308,45 @@ describe("fwa checklist tracked messages", () => {
   });
 
   it("clears sync-scoped bases completion when a known-war unchecked action is saved", async () => {
+    const syncScopedMessageId =
+      "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=none|opponent=none|start=none|sync=sync-message-1";
+    const syncScopedRow: any = {
+      id: "sync-scoped-completion",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: syncScopedMessageId,
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "sync-message-1",
+      clanTag: "#PYPY",
+      metadata: {
+        kind: "bases_completion",
+        createdByUserId: "user-1",
+        createdAtIso: "2026-05-13T18:00:00.000Z",
+        checkedByUserId: "user-1",
+        checkedAtIso: "2026-05-13T18:00:00.000Z",
+        syncMessageId: "sync-message-1",
+        syncReferenceId: null,
+        clanTag: "#PYPY",
+        clanName: "Alpha",
+        checked: true,
+        warId: null,
+        opponentTag: null,
+        warStartTimeIso: null,
+      },
+    };
+    prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+      where?.messageId === syncScopedMessageId ? syncScopedRow : null,
+    );
+    prismaMock.trackedMessage.findMany.mockResolvedValue([]);
+    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ where, data }: any) => {
+      if (where?.messageId !== syncScopedMessageId || syncScopedRow.status !== where?.status) {
+        return { count: 0 };
+      }
+      Object.assign(syncScopedRow, data);
+      return { count: 1 };
+    });
+
     await trackedMessageService.setFwaMatchChecklistBasesCompletion({
       guildId: "guild-1",
       channelId: "channel-1",
@@ -1323,17 +1362,17 @@ describe("fwa checklist tracked messages", () => {
 
     expect(prismaMock.trackedMessage.updateMany).toHaveBeenCalledWith({
       where: {
-        guildId: "guild-1",
-        messageId:
-          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=none|opponent=none|start=none|sync=sync-message-1",
-        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        messageId: syncScopedMessageId,
         status: TRACKED_MESSAGE_STATUS.ACTIVE,
       },
-      data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
+      data: expect.objectContaining({
+        status: TRACKED_MESSAGE_STATUS.REPLACED,
+        metadata: expect.objectContaining({
+          checked: false,
+          warId: "1001",
+        }),
+      }),
     });
-
-    prismaMock.trackedMessage.findUnique.mockResolvedValueOnce(null);
-    prismaMock.trackedMessage.findMany.mockResolvedValueOnce([]);
 
     await expect(
       trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({

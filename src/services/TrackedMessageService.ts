@@ -4687,27 +4687,6 @@ export class TrackedMessageService {
     if (clearedEquivalentCount === 0 && !createdReplacement) {
       return result(messageId, "ALREADY_CLEARED", committedActor(current));
     }
-    if (!params.checked && syncIdentity) {
-      const syncScopedMessageId = buildFwaMatchChecklistBasesCompletionKey({
-        guildId: params.guildId,
-        clanTag: params.clanTag,
-        warId: null,
-        opponentTag: null,
-        warStartTime: null,
-        syncMessageId: syncIdentity,
-      });
-      if (syncScopedMessageId && syncScopedMessageId !== messageId) {
-        await prisma.trackedMessage.updateMany({
-          where: {
-            guildId: params.guildId,
-            messageId: syncScopedMessageId,
-            featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
-            status: TRACKED_MESSAGE_STATUS.ACTIVE,
-          },
-          data: { status: TRACKED_MESSAGE_STATUS.REPLACED },
-        });
-      }
-    }
     return result(messageId, "CLEARED", metadata.checkedByUserId ?? null);
   }
 
