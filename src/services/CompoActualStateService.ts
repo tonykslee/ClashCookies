@@ -46,10 +46,10 @@ import {
 } from "../helper/heatMapRefAvailability";
 import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 import {
-  calculateNativeCompoComparison,
-  NATIVE_COMPO_COMPARISON_BUCKETS,
-  type NativeCompoComparison,
+  buildNativeCompoProjectionReferences,
+  readNativeCompoProjectionReferenceCount,
 } from "../helper/nativeCompoComparison";
+import { NATIVE_PROVISIONAL_COMPOSITION_PROFILE } from "../helper/compoCalculationProfile";
 import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
 import {
   getConfiguredClanMembersCadenceMinutes,
@@ -186,7 +186,7 @@ export type CompoActualStateReadResult = {
 
 type NativeActualComparisonState = {
   summaryLine: string;
-  byClanTag: ReadonlyMap<string, NativeCompoComparison>;
+  byClanTag: ReadonlyMap<string, CompoActualStateProjection>;
 };
 
 function buildRefreshTimestamp(latestSourceSyncedAt: Date | null): string {
@@ -204,7 +204,7 @@ function buildActualStateRow(input: {
   base: CompoActualStateBaseMetrics;
   projection: CompoActualStateProjection;
   includeTh19: boolean;
-  nativeComparison?: NativeCompoComparison;
+  nativeProjection?: CompoActualStateProjection;
 }): string[] {
   const row = [normalizeActualStateClanDisplayName(input.clanName)];
   if (input.view === "raw") {
@@ -221,7 +221,7 @@ function buildActualStateRow(input: {
       `${input.projection.displayCounts.TH14}`,
       `${input.projection.displayCounts["<=TH13"]}`,
     );
-    return appendNativeActualColumns(row, input.nativeComparison);
+    return row;
   }
 
   row.push(input.base.resolvedTotalWeight.toLocaleString("en-US"));
@@ -230,43 +230,33 @@ function buildActualStateRow(input: {
     `${input.projection.missingWeights}`,
     `${input.projection.deferredWeightCount}`,
     `${input.projection.memberCount}`,
-    ...(input.includeTh19 ? [`${input.projection.displayCounts.TH19 ?? 0}`] : []),
-    input.projection.deltaByBucket.TH18 !== null
-      ? `${input.projection.deltaByBucket.TH18}`
-      : "?",
-    input.projection.deltaByBucket.TH17 !== null
-      ? `${input.projection.deltaByBucket.TH17}`
-      : "?",
-    input.projection.deltaByBucket.TH16 !== null
-      ? `${input.projection.deltaByBucket.TH16}`
-      : "?",
-    input.projection.deltaByBucket.TH15 !== null
-      ? `${input.projection.deltaByBucket.TH15}`
-      : "?",
-    input.projection.deltaByBucket.TH14 !== null
-      ? `${input.projection.deltaByBucket.TH14}`
-      : "?",
-    input.projection.deltaByBucket["<=TH13"] !== null
-      ? `${input.projection.deltaByBucket["<=TH13"]}`
-      : "?",
   );
-  return appendNativeActualColumns(row, input.nativeComparison);
-}
-
-function appendNativeActualColumns(
-  row: string[],
-  comparison: NativeCompoComparison | undefined,
-): string[] {
-  if (!comparison) return row;
-  return [
-    ...row,
-    comparison.status === "SUPPORTED" ? "PROVISIONAL" : "UNKNOWN",
-    ...NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => {
-      const delta = comparison.deltaByBucket[bucketId];
-      return delta === null || delta === undefined ? "UNKNOWN" : `${delta}`;
-    }),
-    comparison.score === null ? "UNKNOWN" : comparison.score.toFixed(1),
-  ];
+  const displayBuckets = input.nativeProjection
+    ? (["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const)
+    : (["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const);
+  if (!input.nativeProjection && input.includeTh19) {
+    row.push(`${input.projection.displayCounts.TH19 ?? 0}`);
+  }
+  if (input.nativeProjection && input.includeTh19) {
+    row.push(input.nativeProjection.deltaByBucket.TH19 === null ? "?" : `${input.nativeProjection.deltaByBucket.TH19}`);
+  }
+  for (const bucketId of displayBuckets) {
+    if (bucketId === "TH19") continue;
+    const nativeLowerBucketIds = ["TH13", "TH12", "TH11", "TH10_OR_LOWER"] as const;
+    const delta = input.nativeProjection && bucketId === "<=TH13"
+      ? nativeLowerBucketIds.every(
+          (lowerBucket) => input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] !== null &&
+            input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] !== undefined,
+        )
+        ? nativeLowerBucketIds.reduce(
+            (sum, lowerBucket) => sum + (input.nativeProjection?.deltaByBucket[lowerBucket as keyof typeof input.nativeProjection.deltaByBucket] ?? 0),
+            0,
+          )
+        : null
+      : input.projection.deltaByBucket[bucketId];
+    row.push(delta === null ? "?" : `${delta}`);
+  }
+  return row;
 }
 
 function buildTrackedClanDisplayName(clan: TrackedClanRow): string {
@@ -292,6 +282,7 @@ function buildActualViewSummaryLines(
   referenceMode: CompoActualStateReferenceMode,
   heatMapRefParentCount: number,
   unsupportedTh19Comparisons: string[],
+  nativeComparisonActive: boolean,
 ): string[] {
   const contentLines = [
     `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(latestSourceSyncedAt)}`,
@@ -301,14 +292,15 @@ function buildActualViewSummaryLines(
       `Columns: Total=resolved weight; Missing=unresolved/fallback; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=resolved composition counts.`,
     );
   } else {
-    const comparisonLabel =
-      referenceMode === "current"
+    const comparisonLabel = nativeComparisonActive
+      ? "provisional native targets (informational only)"
+      : referenceMode === "current"
         ? "current validated HeatMapRef"
         : referenceMode === "historical"
           ? "verified historical legacy-v1 HeatMapRef baseline (informational only)"
           : "HeatMapRef";
     contentLines.push(
-      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? "TH19=observed count; " : ""}TH=roster delta vs ${comparisonLabel}${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
+      `Columns: Total=resolved weight; Plan=projected 50-player total; Missing=unresolved/empty slots; DF=deferred-weight count; ${includeTh19 ? nativeComparisonActive ? "TH19=delta; " : "TH19=observed count; " : ""}TH=roster delta vs ${comparisonLabel}${missingTo50Count > 0 ? `; ${missingTo50Count} open roster slot${missingTo50Count === 1 ? "" : "s"} across tracked clans` : ""}.`,
     );
   }
   if (view !== "raw" && missingHeatMapBands.length > 0) {
@@ -325,12 +317,12 @@ function buildActualViewSummaryLines(
       "HeatMapRef parent bands are present, but target comparisons remain UNKNOWN until reference validation is available.",
     );
   }
-  if (view !== "raw" && referenceMode === "historical") {
+  if (view !== "raw" && referenceMode === "historical" && !nativeComparisonActive) {
     contentLines.push(
       `Reference mode: verified historical legacy-v1 baseline ${historicalReferenceAvailability.sourceVersion ?? "(version unavailable)"}; comparisons are informational only and do not authorize current-reference operations.`,
     );
   }
-  if (view !== "raw" && unsupportedTh19Comparisons.length > 0) {
+  if (view !== "raw" && unsupportedTh19Comparisons.length > 0 && !nativeComparisonActive) {
     contentLines.push(
       `TH19 comparison unavailable for: ${unsupportedTh19Comparisons.join(
         "; ",
@@ -518,25 +510,37 @@ export function maybeLogCompoActualDiagnostics(input: {
 }
 
 async function readNativeInformationalComparison(
-  clans: readonly CompoActualStateClanContext[],
+  input: {
+    clans: readonly CompoActualStateClanContext[];
+    view: CompoActualStateView;
+  },
 ): Promise<NativeActualComparisonState | null> {
-  if (clans.length === 0) return null;
+  if (input.clans.length === 0 || input.view === "raw") return null;
   try {
     const nativeDb = prisma as typeof prisma & { nativeHeatMapReferenceHead?: unknown };
     if (!nativeDb.nativeHeatMapReferenceHead) return null;
     const native = await new NativeHeatMapReferencePublicationService(prisma).readCurrent();
     if (native.status !== "CURRENT") return null;
+    const nativeHeatMapRefs = buildNativeCompoProjectionReferences(native);
     let supported = 0;
     let unknown = 0;
-    const byClanTag = new Map<string, NativeCompoComparison>();
-    for (const clan of clans) {
-      const comparison = calculateNativeCompoComparison({
-        native,
-        totalWeight: clan.base.resolvedTotalWeight,
-        sourceCounts: clan.base.bucketCounts,
+    const byClanTag = new Map<string, CompoActualStateProjection>();
+    for (const clan of input.clans) {
+      const projection = projectCompoActualStateView({
+        view: input.view,
+        base: {
+          ...clan.base,
+          bucketCounts: {
+            ...clan.base.bucketCounts,
+            TH19: clan.base.bucketCounts.TH19 ?? 0,
+          },
+          profileReferenceCountReader: readNativeCompoProjectionReferenceCount,
+        },
+        heatMapRefs: nativeHeatMapRefs,
+        profile: NATIVE_PROVISIONAL_COMPOSITION_PROFILE,
       });
-      byClanTag.set(clan.clanTag, comparison);
-      if (comparison.status === "UNKNOWN") {
+      byClanTag.set(clan.clanTag, projection);
+      if (projection.targetStatus !== "supported" || !projection.selectedHeatMapRef) {
         unknown += 1;
       } else {
         supported += 1;
@@ -552,6 +556,7 @@ async function readNativeInformationalComparison(
 }
 
 export const buildCompoActualDiagnosticsLineForTest = buildCompoActualDiagnosticsLine;
+export const buildActualStateRowForTest = buildActualStateRow;
 
 function assessPersistedClanMembersCoverage(input: {
   syncState: ClanMembersSyncStateRow | null;
@@ -873,6 +878,7 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
     };
     let totalResolvedWeight = 0;
     let unresolvedWeightCount = 0;
+    let unresolvedWeightSlotCount = 0;
     let unclassifiedWeightCount = 0;
     let deferredWeightCount = 0;
     const members: CompoActualStateMemberContext[] = [];
@@ -917,6 +923,9 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
         resolvedWeightSource,
       });
       if (resolvedWeight === null || !bucket) {
+        if (resolvedWeight === null) {
+          unresolvedWeightSlotCount += 1;
+        }
         if (resolvedWeight !== null && !bucket) {
           unclassifiedWeightCount += 1;
         }
@@ -949,6 +958,9 @@ async function loadCompoActualStateContextFromTrackedClans(input: {
       base: {
         resolvedTotalWeight: totalResolvedWeight,
         unresolvedWeightCount,
+        unresolvedWeightSlotCount: unresolvedWeightCount !== unresolvedWeightSlotCount
+          ? unresolvedWeightSlotCount
+          : undefined,
         unclassifiedWeightCount,
         deferredWeightCount,
         memberCount: clanMembers.length,
@@ -1207,7 +1219,11 @@ export class CompoActualStateService {
   ): Promise<CompoActualStateReadResult> {
     const view = options?.view ?? "auto";
     const context = await loadCompoActualStateContext(guildId);
-    const nativeComparison = await readNativeInformationalComparison(context.clans);
+    const nativeComparison = await readNativeInformationalComparison({
+      clans: context.clans,
+      view,
+    });
+    const displayNativeComparison = view === "raw" ? null : nativeComparison;
 
     if (context.trackedClanTags.length === 0) {
       return {
@@ -1219,7 +1235,7 @@ export class CompoActualStateService {
         contentLines: [
           `ACTUAL · View: **${getCompoActualStateViewLabel(view)}** · ${buildRefreshTimestamp(null)}`,
           "No tracked clans are configured for DB-backed ACTUAL state.",
-          ...(nativeComparison ? [nativeComparison.summaryLine] : []),
+          ...(displayNativeComparison ? [displayNativeComparison.summaryLine] : []),
         ],
       };
     }
@@ -1244,9 +1260,10 @@ export class CompoActualStateService {
         : referenceMode === "historical"
           ? context.historicalHeatMapRefs ?? []
           : [];
-    const includeTh19 = context.clans.some(
+    const observedTh19 = context.clans.some(
       (clan) => (clan.base.bucketCounts.TH19 ?? 0) > 0,
     );
+    const includeTh19 = observedTh19 || Boolean(displayNativeComparison);
     const rows: string[][] = [];
     const totalMissingTo50Count = context.clans.reduce(
       (sum, clan) => sum + Math.max(0, 50 - clan.base.memberCount),
@@ -1254,7 +1271,8 @@ export class CompoActualStateService {
     );
 
     for (const clan of context.clans) {
-      const projection = projectCompoActualStateView({
+      const nativeProjection = displayNativeComparison?.byClanTag.get(clan.clanTag);
+      const projection = nativeProjection ?? projectCompoActualStateView({
         view,
         base: clan.base,
         heatMapRefs: stateHeatMapRefs,
@@ -1263,7 +1281,7 @@ export class CompoActualStateService {
         tag: clan.clanTag,
         name: clan.clanName,
       });
-      if (!projection.selectedHeatMapRef) {
+      if (!displayNativeComparison && !projection.selectedHeatMapRef) {
         const parentHeatMapRef = findHeatMapRefForWeight(
           context.heatMapRefParents,
           projection.totalWeight,
@@ -1275,6 +1293,7 @@ export class CompoActualStateService {
         }
       }
       if (
+        !displayNativeComparison &&
         referenceMode !== "unavailable" &&
         hasUnsupportedCompoTh19Target(clan.base.bucketCounts) &&
         projection.targetStatus === "unavailable"
@@ -1290,7 +1309,7 @@ export class CompoActualStateService {
         base: clan.base,
         projection,
         includeTh19,
-        nativeComparison: nativeComparison?.byClanTag.get(clan.clanTag),
+        nativeProjection,
       });
       maybeLogCompoActualDiagnostics({
         surface: "state",
@@ -1315,18 +1334,19 @@ export class CompoActualStateService {
       historicalReferenceAvailability,
       referenceMode,
       context.heatMapRefParents.length,
-      unsupportedTh19Comparisons,
+      displayNativeComparison ? [] : unsupportedTh19Comparisons,
+      Boolean(displayNativeComparison),
     );
-    if (context.referenceAvailability.warning) {
+    if (context.referenceAvailability.warning && !displayNativeComparison) {
       contentLines.push(
         referenceMode === "historical"
           ? `Current-reference warning: ${context.referenceAvailability.warning} Historical comparisons remain informational only.`
           : `Reference warning: ${context.referenceAvailability.warning}`,
       );
     }
-    if (nativeComparison) contentLines.push(nativeComparison.summaryLine);
+    if (displayNativeComparison) contentLines.push(displayNativeComparison.summaryLine);
     const imageNotice = buildHeatMapRefUnknownNotice(
-      context.referenceAvailability,
+      displayNativeComparison ? { status: "validated", warning: null } as HeatMapRefReferenceAvailability : context.referenceAvailability,
       historicalReferenceAvailability,
       referenceMode,
       view,
@@ -1349,9 +1369,6 @@ export class CompoActualStateService {
               "TH15",
               "TH14",
               "<=TH13",
-              ...(nativeComparison ? ["Native"] : []),
-              ...(nativeComparison ? NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => `Native Δ ${bucketId}`) : []),
-              ...(nativeComparison ? ["Native score"] : []),
             ]
           : [
               "Clan",
@@ -1367,9 +1384,6 @@ export class CompoActualStateService {
               "TH15",
               "TH14",
               "<=TH13",
-              ...(nativeComparison ? ["Native"] : []),
-              ...(nativeComparison ? NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => `Native Δ ${bucketId}`) : []),
-              ...(nativeComparison ? ["Native score"] : []),
             ],
         ...rows,
       ],

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HeatMapRefDisplayService } from "../src/services/HeatMapRefDisplayService";
+import { buildNativeReferenceDisplayForTest, buildNativeReferenceNoticeForTest } from "../src/services/HeatMapRefDisplayService";
+import { NativeHeatMapReferencePublicationService } from "../src/services/NativeHeatMapReferencePublicationService";
 import { installLegacyHeatMapRefBucketTargetMock } from "./heatMapRefTestHelpers";
 import { computeHeatMapRefContentHash } from "../src/helper/heatMapRefRebuild";
 import { HEAT_MAP_REF_SEED_ROWS } from "../src/services/HeatMapRefSeedData";
@@ -21,6 +23,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   $queryRaw: vi.fn(),
+  nativeHeatMapReferenceHead: undefined as unknown,
 }));
 
 vi.mock("../src/prisma", () => ({
@@ -107,6 +110,7 @@ function makeRosterMembers(clanTag: string, weight: number): ReturnType<typeof m
 describe("HeatMapRefDisplayService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.nativeHeatMapReferenceHead = undefined;
     installLegacyHeatMapRefBucketTargetMock(prismaMock);
     prismaMock.$queryRaw.mockResolvedValue([]);
   });
@@ -263,5 +267,66 @@ describe("HeatMapRefDisplayService", () => {
     expect(result.referenceState.status).toBe("blocked");
     expect(result.referenceState.notice).toContain("th19_integrity");
     expect(result.referenceState.notice).not.toContain("private operator detail");
+  });
+
+  it("renders one compact native table with truthful unknowns, zeroes, clans, and copy parity", async () => {
+    prismaMock.nativeHeatMapReferenceHead = {};
+    vi.spyOn(NativeHeatMapReferencePublicationService.prototype, "readCurrent").mockResolvedValue({
+      status: "CURRENT",
+      informationalOnly: true,
+      reason: null,
+      generationId: "cmwuba01p0001104anu6a4d6u",
+      fenceToken: 1n,
+      profileVersion: "native-reference-v2",
+      policyVersion: "native-provisional-v1",
+      sampleThreshold: 5,
+      evaluationAt: new Date("2026-11-23T00:00:00.000Z"),
+      createdAt: new Date("2026-11-23T00:00:00.000Z"),
+      bands: [
+        { weightMinInclusive: 7_300_001, weightMaxInclusive: 7_400_000 },
+        { weightMinInclusive: 7_400_001, weightMaxInclusive: 7_500_000 },
+      ],
+      targets: [
+        ...Array.from({ length: 10 }, (_, index) => ({
+          bandOrdinal: 0,
+          bucketId: ["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10_OR_LOWER"][index]!,
+          status: index === 0 ? "UNKNOWN" as const : "SUPPORTED" as const,
+          targetCount: index === 0 ? null : index === 1 ? 0 : 1,
+          qualifyingClanCount: 5,
+          sampleCount: 5,
+          reasonCode: index === 0 ? "insufficient_source" : null,
+        })),
+        ...Array.from({ length: 10 }, (_, index) => ({
+          bandOrdinal: 1,
+          bucketId: ["TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10_OR_LOWER"][index]!,
+          status: "SUPPORTED" as const,
+          targetCount: index === 0 ? 0 : index === 1 ? 1 : 0,
+          qualifyingClanCount: 5,
+          sampleCount: 5,
+          reasonCode: null,
+        })),
+      ],
+    });
+    prismaMock.heatMapRef.findMany.mockResolvedValue([makeHeatMapRef()]);
+    prismaMock.fwaClanCatalog.findMany.mockResolvedValue([]);
+
+    const result = await new HeatMapRefDisplayService().readHeatMapRefDisplayTable();
+
+    expect(result.rows).toHaveLength(3);
+    expect(result.rows[0]).toEqual([
+      "Band", "TH19", "TH18", "TH17", "TH16", "TH15", "TH14", "TH13", "TH12", "TH11", "TH10 or lower", "Clans",
+    ]);
+    expect(result.rows[1]?.[0]).toBe("7,300,001 - 7,400,000");
+    expect(result.rows[1]?.slice(1)).toEqual(["?", "0", "1", "1", "1", "1", "1", "1", "1", "1", "5"]);
+    expect(result.rows.flat().join(" ")).not.toContain("Match%");
+    expect(result.copyText).toContain("WeightMin,WeightMax,TH19,TH18");
+    expect(result.copyText).toContain("7300001,7400000,?,0,1,1,1,1,1,1,1,1,5");
+    expect(result.copyText).not.toContain("legacy");
+    expect(result.referenceState.notice).toContain("generation cmwuba01p0001104anu6a4d6u");
+    expect(result.referenceState.notice).toContain("supported bands 1/2");
+
+    const direct = buildNativeReferenceDisplayForTest((await new NativeHeatMapReferencePublicationService(prismaMock as never).readCurrent()) as never);
+    expect(direct.rows).toEqual(result.rows);
+    expect(buildNativeReferenceNoticeForTest((await new NativeHeatMapReferencePublicationService(prismaMock as never).readCurrent()) as never)).toContain("fence");
   });
 });
