@@ -4498,27 +4498,31 @@ export class TrackedMessageService {
             syncMessageId: syncIdentity,
           })
         : null;
+    const normalizedClanWithoutHash = normalizedClanTag.replace(/^#/, "");
     const warRows = async () =>
       completeWarIdentity
         ? (await prisma.trackedMessage.findMany({
             where: {
               guildId: String(params.guildId ?? "").trim(),
               featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST as any,
+              OR: [
+                { clanTag: { equals: normalizedClanTag, mode: "insensitive" } },
+                { clanTag: { equals: normalizedClanWithoutHash, mode: "insensitive" } },
+                { clanTag: { equals: `#${normalizedClanWithoutHash}`, mode: "insensitive" } },
+              ],
               messageId: {
                 startsWith: FWA_MATCH_CHECKLIST_BASES_COMPLETION_PREFIX,
               },
             },
           })) ?? []
         : [];
-    const readCandidate = async (): Promise<{
-      messageId: string;
-      row: any;
-    } | null> => {
+    const readEquivalentRows = async (): Promise<Array<{ messageId: string; row: any }>> => {
       const candidateIds = [
         canonicalMessageId,
         legacyWarAndSyncMessageId,
         legacySyncScopedMessageId,
       ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+      const rowsByMessageId = new Map<string, any>();
       for (const candidateId of candidateIds) {
         const row = await prisma.trackedMessage.findUnique({
           where: { messageId: candidateId },
@@ -4552,7 +4556,7 @@ export class TrackedMessageService {
               : !matchesLegacySync
           ) continue;
         }
-        return { messageId: candidateId, row };
+        rowsByMessageId.set(candidateId, row);
       }
       for (const row of await warRows()) {
         const metadata = parseFwaMatchChecklistBasesCompletionMetadata(row?.metadata);
@@ -4568,10 +4572,13 @@ export class TrackedMessageService {
             syncIdentity,
           })
         ) {
-          return { messageId: row.messageId, row };
+          rowsByMessageId.set(row.messageId, row);
         }
       }
-      return null;
+      return [...candidateIds, ...rowsByMessageId.keys()]
+        .filter((messageId, index, values) => values.indexOf(messageId) === index)
+        .filter((messageId) => rowsByMessageId.has(messageId))
+        .map((messageId) => ({ messageId, row: rowsByMessageId.get(messageId) }));
     };
     const updateData = {
       ...baseData,
@@ -4580,7 +4587,14 @@ export class TrackedMessageService {
         : TRACKED_MESSAGE_STATUS.REPLACED,
     };
 
-    const candidate = await readCandidate();
+    const equivalentRows = await readEquivalentRows();
+    const candidate = params.checked
+      ? equivalentRows.find(
+          ({ row }) =>
+            row?.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+            parseFwaMatchChecklistBasesCompletionMetadata(row?.metadata)?.checked === true,
+        ) ?? equivalentRows[0]
+      : equivalentRows[0];
     let messageId = candidate?.messageId ?? canonicalMessageId;
     let current = candidate?.row ?? null;
     const readCurrent = () =>
@@ -4636,24 +4650,22 @@ export class TrackedMessageService {
       }
     }
 
-    if (current?.status === TRACKED_MESSAGE_STATUS.REPLACED) {
-      return result(messageId, "ALREADY_CLEARED", committedActor(current));
-    }
-    if (current) {
+    const activeEquivalentRows = equivalentRows.filter(
+      ({ row }) => row?.status === TRACKED_MESSAGE_STATUS.ACTIVE,
+    );
+    let clearedEquivalentCount = 0;
+    let createdReplacement = false;
+    for (const equivalent of activeEquivalentRows) {
       const cleared = await prisma.trackedMessage.updateMany({
         where: {
-          messageId,
+          messageId: equivalent.messageId,
           status: TRACKED_MESSAGE_STATUS.ACTIVE,
         },
         data: updateData,
       });
-      if (cleared.count !== 1) {
-        current = await readCurrent();
-        return current?.status === TRACKED_MESSAGE_STATUS.REPLACED
-          ? result(messageId, "ALREADY_CLEARED", committedActor(current))
-          : result(messageId, "FAILED", null, false);
-      }
-    } else {
+      clearedEquivalentCount += cleared.count;
+    }
+    if (clearedEquivalentCount === 0 && current?.status !== TRACKED_MESSAGE_STATUS.REPLACED) {
       try {
         await prisma.trackedMessage.create({
           data: {
@@ -4662,6 +4674,7 @@ export class TrackedMessageService {
             status: TRACKED_MESSAGE_STATUS.REPLACED,
           },
         });
+        createdReplacement = true;
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
         current = await readCurrent();
@@ -4670,6 +4683,9 @@ export class TrackedMessageService {
         }
         return result(messageId, "ALREADY_CLEARED", committedActor(current));
       }
+    }
+    if (clearedEquivalentCount === 0 && !createdReplacement) {
+      return result(messageId, "ALREADY_CLEARED", committedActor(current));
     }
     if (!params.checked && syncIdentity) {
       const syncScopedMessageId = buildFwaMatchChecklistBasesCompletionKey({

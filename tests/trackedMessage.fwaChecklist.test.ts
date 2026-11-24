@@ -1023,6 +1023,168 @@ describe("fwa checklist tracked messages", () => {
     expect(prismaMock.trackedMessage.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "command uncheck, reaction recheck",
+      { completionActorUserId: "command-user", syncMessageId: "sync-command" },
+      { completionActorUserId: "reaction-user" },
+    ],
+    [
+      "reaction uncheck, command recheck",
+      { completionActorUserId: "reaction-user" },
+      { completionActorUserId: "command-user", syncMessageId: "sync-command" },
+    ],
+  ])("clears equivalent canonical and legacy rows through %s", async (
+    _label,
+    uncheckInput,
+    recheckInput,
+  ) => {
+    const canonicalMessageId =
+      "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=#0PPY|start=2026-06-13T18:00:00.000Z";
+    const legacyMessageId =
+      "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=1001|opponent=#0PPY|start=2026-06-13T18:00:00.000Z|sync=sync-command";
+    const makeMetadata = (actor: string, syncMessageId: string | null, warId: number, opponentTag: string) => ({
+      kind: "bases_completion",
+      createdByUserId: actor,
+      createdAtIso: "2026-06-13T18:00:00.000Z",
+      checkedByUserId: actor,
+      checkedAtIso: "2026-06-13T18:00:00.000Z",
+      syncMessageId,
+      syncReferenceId: null,
+      clanTag: "#PYPY",
+      clanName: "Alpha",
+      checked: true,
+      warId: String(warId),
+      opponentTag,
+      warStartTimeIso: "2026-06-13T18:00:00.000Z",
+    });
+    const rows: any[] = [
+      {
+        id: "canonical-active",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: canonicalMessageId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: null,
+        clanTag: "#PYPY",
+        metadata: makeMetadata("canonical-user", null, 1001, "#0PPY"),
+      },
+      {
+        id: "legacy-active",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId: legacyMessageId,
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: "sync-command",
+        clanTag: "#PYPY",
+        metadata: makeMetadata("legacy-user", "sync-command", 1001, "#0PPY"),
+      },
+      {
+        id: "stale-active",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId:
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#PYPY|war=999|opponent=#0PPY|start=2026-06-13T18:00:00.000Z",
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: "sync-old",
+        clanTag: "#PYPY",
+        metadata: makeMetadata("stale-user", "sync-old", 999, "#0PPY"),
+      },
+      {
+        id: "other-clan-active",
+        guildId: "guild-1",
+        channelId: "channel-1",
+        messageId:
+          "fwa_match_checklist_bases_completion|guild=guild-1|clan=#TWC|war=1001|opponent=#0PPY|start=2026-06-13T18:00:00.000Z",
+        featureType: TRACKED_MESSAGE_FEATURE_TYPE.FWA_MATCH_CHECKLIST,
+        status: TRACKED_MESSAGE_STATUS.ACTIVE,
+        referenceId: null,
+        clanTag: "#TWC",
+        metadata: { ...makeMetadata("other-user", null, 1001, "#0PPY"), clanTag: "#TWC" },
+      },
+    ];
+    prismaMock.trackedMessage.findUnique.mockImplementation(async ({ where }: any) =>
+      rows.find((row) => row.messageId === where?.messageId) ?? null,
+    );
+    prismaMock.trackedMessage.findMany.mockImplementation(async ({ where }: any) =>
+      rows.filter((row) => !where?.status || row.status === where.status),
+    );
+    prismaMock.trackedMessage.updateMany.mockImplementation(async ({ where, data }: any) => {
+      const row = rows.find((candidate) => candidate.messageId === where?.messageId);
+      if (!row || row.status !== where?.status) return { count: 0 };
+      row.status = data.status;
+      row.metadata = data.metadata;
+      row.referenceId = data.referenceId;
+      return { count: 1 };
+    });
+
+    const baseInput = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      createdByUserId: "requesting-user",
+      clanTag: "#PYPY",
+      warId: 1001,
+      warStartTime: new Date("2026-06-13T18:00:00.000Z"),
+      opponentTag: "#0PPY",
+    };
+    const uncheck = await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+      ...baseInput,
+      ...uncheckInput,
+      checked: false,
+    });
+    expect(uncheck.transition).toBe("CLEARED");
+    expect(rows.find((row) => row.messageId === canonicalMessageId)?.status).toBe(
+      TRACKED_MESSAGE_STATUS.REPLACED,
+    );
+    expect(rows.find((row) => row.messageId === legacyMessageId)?.status).toBe(
+      TRACKED_MESSAGE_STATUS.REPLACED,
+    );
+    expect(rows.find((row) => row.id === "stale-active")?.status).toBe(
+      TRACKED_MESSAGE_STATUS.ACTIVE,
+    );
+    expect(rows.find((row) => row.id === "other-clan-active")?.status).toBe(
+      TRACKED_MESSAGE_STATUS.ACTIVE,
+    );
+
+    const aliasLookup = prismaMock.trackedMessage.findMany.mock.calls
+      .map(([args]) => args)
+      .find((args) =>
+        args?.where?.messageId?.startsWith === "fwa_match_checklist_bases_completion|",
+      );
+    expect(aliasLookup?.where?.OR).toEqual(expect.arrayContaining([
+      { clanTag: { equals: "#PYPY", mode: "insensitive" } },
+    ]));
+
+    await expect(
+      trackedMessageService.findLatestActiveFwaMatchChecklistBasesCompletionForClan({
+        guildId: "guild-1",
+        clanTag: "#PYPY",
+        warId: 1001,
+        warStartTime: baseInput.warStartTime,
+        opponentTag: "#0PPY",
+        syncMessageId: uncheckInput.syncMessageId,
+      }),
+    ).resolves.toBeNull();
+
+    const recheck = await trackedMessageService.setFwaMatchChecklistBasesCompletion({
+      ...baseInput,
+      ...recheckInput,
+      checked: true,
+    });
+    expect(recheck.transition).toBe("COMMITTED");
+    expect(recheck.committedByUserId).toBe(recheckInput.completionActorUserId);
+    expect(rows.filter((row) =>
+      row.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+      (row.id === "canonical-active" || row.id === "legacy-active"),
+    )).toHaveLength(1);
+    expect(rows.find((row) => row.id === "stale-active")?.status).toBe(
+      TRACKED_MESSAGE_STATUS.ACTIVE,
+    );
+  });
+
   it("does not replace a previously completed Bases transition actor", async () => {
     const row = {
       id: "bases-completion-existing",
