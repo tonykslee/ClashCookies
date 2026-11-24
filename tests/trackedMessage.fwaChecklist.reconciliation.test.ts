@@ -30,6 +30,15 @@ import {
 import { repWorkActivityService } from "../src/services/RepWorkActivityService";
 import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
 
+function mockBasesCompletionTransition(params: { checked?: boolean; completionActorUserId?: string | null }) {
+  return {
+    persisted: true,
+    messageId: "completion-test",
+    transition: params.checked ? "COMMITTED" : "CLEARED",
+    committedByUserId: params.checked ? params.completionActorUserId ?? null : null,
+  } as const;
+}
+
 function makeMailTrackedChecklistRow() {
   return {
     id: "tracked-mail-1",
@@ -1204,7 +1213,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",
@@ -1315,7 +1324,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",
@@ -1381,7 +1390,7 @@ describe("fwa checklist badge reaction reconciliation", () => {
       } as any);
       const setCompletion = vi
         .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-        .mockResolvedValue(true);
+        .mockImplementation(mockBasesCompletionTransition);
       const recordBasesChecklistChecked = vi.spyOn(
         repWorkActivityService,
         "recordBasesChecklistChecked",

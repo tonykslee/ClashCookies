@@ -19045,7 +19045,7 @@ export const Fwa: Command = {
             prepStartTime: currentWar.prepStartTime ?? null,
           })
           .catch(() => ({ syncMessageId: null }));
-        const updatedResult: any =
+        const updated =
           await trackedMessageService.setFwaMatchChecklistBasesCompletion({
             guildId: interaction.guildId ?? "",
             channelId: interaction.channelId,
@@ -19062,14 +19062,6 @@ export const Fwa: Command = {
             completionActorUserId: interaction.user.id,
             syncMessageId: syncIdentity.syncMessageId ?? null,
           });
-        const updated =
-          typeof updatedResult === "boolean"
-            ? {
-                persisted: updatedResult,
-                transition: updatedResult ? "COMMITTED" : "FAILED",
-                committedByUserId: updatedResult ? interaction.user.id : null,
-              }
-            : updatedResult;
         if (!updated?.persisted) {
           await editReplySafe("Unable to update bases completion state.");
           return;

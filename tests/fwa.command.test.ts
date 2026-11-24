@@ -99,6 +99,15 @@ import {
   setPointsSnapshotCacheForTest,
 } from "../src/commands/Fwa";
 import { trackedMessageService } from "../src/services/TrackedMessageService";
+
+function mockBasesCompletionTransition(params: { checked?: boolean; completionActorUserId?: string | null }) {
+  return {
+    persisted: true,
+    messageId: "completion-test",
+    transition: params.checked ? "COMMITTED" : "CLEARED",
+    committedByUserId: params.checked ? params.completionActorUserId ?? null : null,
+  } as const;
+}
 import { fwaAccountabilityNotificationService } from "../src/services/FwaAccountabilityNotificationService";
 
 function makeMatchInteraction(params: {
@@ -2098,7 +2107,7 @@ describe("/fwa match response normalization", () => {
     });
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-      .mockResolvedValue(true);
+      .mockImplementation(mockBasesCompletionTransition);
     const accountabilitySpy = vi
       .spyOn(fwaAccountabilityNotificationService, "notifyBasesChecked")
       .mockResolvedValue(true);
@@ -2178,7 +2187,7 @@ describe("/fwa match response normalization", () => {
     });
     const completionSpy = vi
       .spyOn(trackedMessageService, "setFwaMatchChecklistBasesCompletion")
-      .mockResolvedValue(true);
+      .mockImplementation(mockBasesCompletionTransition);
 
     const run = makeMatchInteraction({
       subcommand: "match-checklist",
