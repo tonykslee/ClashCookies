@@ -85,15 +85,11 @@ export default (client: Client): void => {
           fullReaction,
         );
         if (recorded) {
+          const rootMessageId = tracked.referenceId ?? tracked.messageId;
           try {
-            if (tracked.referenceId) {
-              await trackedMessageService.refreshSyncSpinStatusMessage(fullReaction.message);
-            }
+            await trackedMessageService.refreshSyncSpinStatusMessages(client, rootMessageId);
           } finally {
-            await syncAllSpunAnnouncementService.evaluateAfterAdd(
-              client,
-              fullReaction.message.id,
-            );
+            await syncAllSpunAnnouncementService.evaluateAfterAdd(client, rootMessageId);
           }
         }
         return;

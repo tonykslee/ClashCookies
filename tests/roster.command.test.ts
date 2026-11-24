@@ -377,9 +377,10 @@ function makeRosterEmojiClient(options?: { missing?: string[] }) {
     [
       ["yes", makeEmoji("yes", "<:yes:901>")],
       ["no", makeEmoji("no", "<:no:902>")],
-      ...Array.from({ length: 18 }, (_, index) => {
+      ...Array.from({ length: 19 }, (_, index) => {
         const name = `th${index + 1}`;
-        return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${index + 1001}>`)] as const);
+        const id = name === "th19" ? "1572442203844902932" : `${index + 1001}`;
+        return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${id}>`)] as const);
       }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
     ],
   );
@@ -1120,8 +1121,8 @@ describe("/roster command", () => {
   it("renders linked roster signups for the selected Discord user", async () => {
     vi.spyOn(rosterService, "listRosterSignupsForDiscordUser").mockResolvedValue({
       discordUserId: "222222222222222222",
-      linkedAccountCount: 3,
-      signupCount: 3,
+      linkedAccountCount: 4,
+      signupCount: 4,
       sections: [
         {
           roster: {
@@ -1171,6 +1172,12 @@ describe("/roster command", () => {
                   playerName: "Charmander",
                   townHall: 18,
                   signedUpAt: new Date("2026-04-20T10:00:00.000Z"),
+                },
+                {
+                  playerTag: makeValidRosterPlayerTag(2),
+                  playerName: "TH19 Player",
+                  townHall: 19,
+                  signedUpAt: new Date("2026-04-20T10:30:00.000Z"),
                 },
               ],
             },
@@ -1272,6 +1279,9 @@ describe("/roster command", () => {
     );
     expect(String(firstEmbed?.description ?? "")).toContain("Confirmed");
     expect(String(firstEmbed?.description ?? "")).toContain("<:th18:1018> Charmander `#GGYLPVCUQ`");
+    expect(String(firstEmbed?.description ?? "")).toContain(
+      `<:th19:1572442203844902932> TH19 Player \`${makeValidRosterPlayerTag(2)}\``,
+    );
     expect(String(firstEmbed?.description ?? "")).toContain("Substitute");
     expect(String(firstEmbed?.description ?? "")).toContain("<:th17:1017> Bulbasaur `#YJCLLYU8C`");
     expect(String(firstEmbed?.description ?? "")).toContain("FWA Beta Signup (Beta Force)");

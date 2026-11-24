@@ -15,8 +15,8 @@ import {
 import { Command } from "../Command";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
 import { formatError } from "../helper/formatError";
+import { resolveTownHallEmojiMap } from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
-import { resolveTownHallEmojiMap } from "./Accounts";
 import {
   listFillerAccountsForClan,
   listFillerAccountsForDiscordUser,

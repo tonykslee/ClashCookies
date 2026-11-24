@@ -89,6 +89,7 @@ function makeDependencies(options: {
   rows?: TrackedRow[];
   send?: ReturnType<typeof vi.fn>;
   env?: NodeJS.ProcessEnv;
+  clock?: () => Date;
 } = {}) {
   const rows = options.rows ?? makeRows();
   const events = new Map<string, any>();
@@ -153,8 +154,9 @@ function makeDependencies(options: {
     routing as any,
     db as any,
     options.env ?? { POLLING_MODE: "active", DEPLOY_ENV: "prod" },
+    options.clock ?? (() => new Date(now)),
   );
-  return { rows, events, syncEvent, trackedMessage, client, channel, send, routing, service };
+  return { rows, events, syncEvent, trackedMessage, client, guild, channel, send, routing, service };
 }
 
 describe("SyncAllSpunAnnouncementService", () => {
@@ -193,6 +195,135 @@ describe("SyncAllSpunAnnouncementService", () => {
     await expect(mixed.service.evaluateAfterAdd(mixed.client, "status-message", now))
       .resolves.toMatchObject({ state: "delivered" });
     expect(mixed.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires every distinct participant in the canonical root snapshot", async () => {
+    const threeClanMetadata = metadata({
+      clans: [
+        ...metadata().clans,
+        { clanTag: "#CCC333", clanName: "Charlie", code: "C", emojiId: null, emojiName: "🆑", emojiInline: "🆑" },
+      ],
+    });
+    const deps = makeDependencies({ rows: makeRows(threeClanMetadata) });
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "incomplete", participatingClanCount: 3, claimedClanCount: 2 });
+    expect(deps.send).not.toHaveBeenCalled();
+
+    deps.rows[0].claims.push({ clanTag: "#CCC333", userId: "user-c" });
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "delivered" });
+  });
+
+  it("allows a legitimate single-clan sync to complete at one of one", async () => {
+    const single = makeDependencies({ rows: makeRows(metadata({ clans: [metadata().clans[0]] })) });
+    single.rows[0].claims = [{ clanTag: "#AAA111", userId: "user-a" }];
+    await expect(single.service.evaluateAfterAdd(single.client, "root-message", now))
+      .resolves.toMatchObject({ state: "delivered" });
+    expect(single.send).toHaveBeenCalledWith(SYNC_ALL_SPUN_MESSAGE);
+  });
+
+  it("rejects child claims whose persisted metadata does not match the canonical sync identity", async () => {
+    const deps = makeDependencies();
+    deps.rows[1].claims = [{ clanTag: "#BBB222", userId: "user-b" }];
+    deps.rows[1].metadata = metadata({ clans: [metadata().clans[0]] });
+    await expect(deps.service.evaluateAfterAdd(deps.client, "status-message", now))
+      .resolves.toMatchObject({ state: "incomplete", participatingClanCount: 2, claimedClanCount: 0 });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the claims query returns a replaced canonical root", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    let rootLookupCount = 0;
+    deps.trackedMessage.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.messageId !== "root-message") return null;
+      rootLookupCount += 1;
+      return rootLookupCount === 1
+        ? { ...deps.rows[0] }
+        : { ...deps.rows[0], id: "replacement-root-id" };
+    });
+    deps.trackedMessage.findFirst.mockResolvedValue({ messageId: "root-message" });
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "skipped", reason: "invalid_participating_clans" });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the canonical root metadata changes before claim aggregation", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    let rootLookupCount = 0;
+    deps.trackedMessage.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where?.messageId !== "root-message") return null;
+      rootLookupCount += 1;
+      if (rootLookupCount === 1) return { ...deps.rows[0] };
+      return {
+        ...deps.rows[0],
+        metadata: metadata({
+          clans: [
+            { ...metadata().clans[0], clanName: "Changed Alpha" },
+            metadata().clans[1],
+          ],
+        }),
+      };
+    });
+    deps.trackedMessage.findFirst.mockResolvedValue({ messageId: "root-message" });
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "skipped", reason: "invalid_participating_clans" });
+    expect(deps.send).not.toHaveBeenCalled();
+  });
+
+  it("releases the reservation when a claim is removed during delivery preparation", async () => {
+    const deps = makeDependencies();
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+    let channelFetchCount = 0;
+    deps.guild.channels.fetch.mockImplementation(async () => {
+      channelFetchCount += 1;
+      if (channelFetchCount === 2) {
+        deps.rows[0].claims = [{ clanTag: "#AAA111", userId: "user-a" }];
+      }
+      return deps.channel;
+    });
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({ state: "failed", reason: "root_or_completion_changed_before_send" });
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(deps.events).toHaveLength(0);
+  });
+
+  it("releases the reservation when the root expires before final revalidation", async () => {
+    const deps = makeDependencies({
+      clock: () => new Date("2026-08-15T12:31:00.000Z"),
+    });
+    deps.rows[0].expiresAt = new Date("2026-08-15T12:30:00.000Z");
+    deps.rows[1].expiresAt = new Date("2026-08-15T12:30:00.000Z");
+    deps.rows[0].claims = [
+      { clanTag: "#AAA111", userId: "user-a" },
+      { clanTag: "#BBB222", userId: "user-b" },
+    ];
+
+    await expect(deps.service.evaluateAfterAdd(deps.client, "root-message", now))
+      .resolves.toMatchObject({
+        state: "failed",
+        reason: "root_or_completion_changed_before_send",
+      });
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(deps.events).toHaveLength(0);
   });
 
   it("suppresses duplicate completion attempts through the durable event", async () => {
@@ -242,7 +373,7 @@ describe("SyncAllSpunAnnouncementService", () => {
     expect(deps.send).toHaveBeenCalledTimes(1);
     expect(deps.routing.getChannelIdForType).toHaveBeenCalledTimes(2);
     expect(deps.trackedMessage.findMany.mock.calls.filter((call: any[]) => call[0]?.select?.claims))
-      .toHaveLength(2);
+      .toHaveLength(3);
     expect(info.mock.calls.filter(([message]) => String(message).includes("event=recovery_summary")))
       .toHaveLength(1);
     info.mockRestore();
@@ -259,6 +390,7 @@ describe("SyncAllSpunAnnouncementService", () => {
       deps.routing as any,
       { trackedMessage: deps.trackedMessage, syncEvent: deps.syncEvent } as any,
       { POLLING_MODE: "active", DEPLOY_ENV: "prod" },
+      () => new Date(now),
     );
     await expect(restarted.evaluateAfterAdd(deps.client, "root-message", now))
       .resolves.toMatchObject({ state: "suppressed" });

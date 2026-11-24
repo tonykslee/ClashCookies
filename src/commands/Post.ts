@@ -663,25 +663,28 @@ async function handleSyncSpinStatusSubcommand(
     return;
   }
 
-  const tracked = await trackedMessageService.fetchSyncTrackedMessageWithClaims(message.id);
-  const metadata = tracked ? parseSyncTimeMetadata(tracked.metadata) : null;
-  if (!tracked || tracked.status !== "ACTIVE" || tracked.featureType !== "SYNC_TIME_POST" || !metadata) {
+  const aggregation = await trackedMessageService.getValidatedSyncClaimAggregation(
+    message.id,
+    new Date(),
+    { checkSyncTime: false },
+  );
+  if (!aggregation) {
     await interaction.editReply("Could not find tracked sync status for that message.");
     return;
   }
 
   const embed = buildSyncSpinStatusEmbed({
     guildId: guild.id,
-    sourceChannelId: tracked.channelId,
-    sourceMessageId: tracked.referenceId ?? tracked.messageId,
-    metadata,
-    claimedClanTags: tracked.claims.map((claim) => claim.clanTag),
+    sourceChannelId: aggregation.root.channelId,
+    sourceMessageId: aggregation.root.messageId,
+    metadata: aggregation.metadata,
+    claimedClanTags: aggregation.claimedClanTags,
     title: "Sync Spin Status",
   });
 
   await interaction.editReply({
     embeds: [embed],
-    components: buildSyncLeaderAccountsButtonComponents(tracked.messageId),
+    components: buildSyncLeaderAccountsButtonComponents(message.id),
     allowedMentions: { parse: [] },
   });
 }
@@ -1249,7 +1252,7 @@ function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   });
 
   const parts = formatter.formatToParts(date);
@@ -1279,6 +1282,8 @@ function toEpochSeconds(
   let result = utcGuess - firstOffset;
 
   // Re-apply using the first pass result to stabilize around DST boundaries.
+  // This preserves the existing deterministic choice for ambiguous fall-back
+  // times and the existing mapping for nonexistent spring-forward times.
   const secondOffset = getTimeZoneOffsetMs(new Date(result), timeZone);
   result = utcGuess - secondOffset;
 
@@ -1296,7 +1301,7 @@ function getDateTimeInTimeZone(
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   });
 
   const parts = formatter.formatToParts(date);

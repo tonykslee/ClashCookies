@@ -5161,6 +5161,105 @@ describe("fwa checklist tracked messages", () => {
     expect(refreshSync).not.toHaveBeenCalled();
   });
 
+  it("refreshes all active status children after a root sync claim transition", async () => {
+    vi.resetModules();
+    const { default: messageReactionAddFresh } = await import("../src/listeners/messageReactionAdd");
+    const { trackedMessageService: trackedMessageServiceFresh } = await import(
+      "../src/services/TrackedMessageService"
+    );
+    const { syncAllSpunAnnouncementService: syncAllSpunAnnouncementServiceFresh } = await import(
+      "../src/services/SyncAllSpunAnnouncementService"
+    );
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionAddFresh(client);
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionAdd")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+
+    vi.spyOn(trackedMessageServiceFresh, "recordSyncClaim").mockResolvedValue(true);
+    const refreshStatuses = vi
+      .spyOn(trackedMessageServiceFresh, "refreshSyncSpinStatusMessages")
+      .mockResolvedValue(2);
+    const evaluateAllSpun = vi
+      .spyOn(syncAllSpunAnnouncementServiceFresh, "evaluateAfterAdd")
+      .mockResolvedValue({ state: "incomplete", participatingClanCount: 2, claimedClanCount: 1 });
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "root-id",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "root-message",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: null,
+    } as any);
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "root-message" },
+        emoji: { id: "111", name: "rr" },
+        count: 2,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: false,
+        id: "111111111111111111",
+      },
+    );
+
+    expect(refreshStatuses).toHaveBeenCalledWith(client, "root-message");
+    expect(evaluateAllSpun).toHaveBeenCalledWith(client, "root-message");
+  });
+
+  it("refreshes the canonical root's status children after a status-child removal", async () => {
+    vi.resetModules();
+    const { default: messageReactionRemoveFresh } = await import("../src/listeners/messageReactionRemove");
+    const { trackedMessageService: trackedMessageServiceFresh } = await import(
+      "../src/services/TrackedMessageService"
+    );
+    const on = vi.fn();
+    const client = { on } as any;
+    messageReactionRemoveFresh(client);
+    const handler = on.mock.calls.find((call) => call[0] === "messageReactionRemove")?.[1] as
+      | ((reaction: any, user: any) => Promise<void>)
+      | undefined;
+
+    vi.spyOn(trackedMessageServiceFresh, "removeSyncClaim").mockResolvedValue(true);
+    const refreshStatuses = vi
+      .spyOn(trackedMessageServiceFresh, "refreshSyncSpinStatusMessages")
+      .mockResolvedValue(2);
+    prismaMock.trackedMessage.findUnique.mockResolvedValue({
+      id: "status-id",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "status-message",
+      featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+      status: TRACKED_MESSAGE_STATUS.ACTIVE,
+      referenceId: "root-message",
+    } as any);
+
+    await handler?.(
+      {
+        partial: false,
+        fetch: vi.fn(),
+        message: { id: "status-message" },
+        emoji: { id: "111", name: "rr" },
+        count: 1,
+      },
+      {
+        partial: false,
+        fetch: vi.fn(),
+        bot: false,
+        id: "111111111111111111",
+      },
+    );
+
+    expect(refreshStatuses).toHaveBeenCalledWith(client, "root-message");
+  });
+
   it("logs checklist bot_user diagnostics while ignoring bot reactions", async () => {
     vi.resetModules();
     const { default: messageReactionAddFresh } = await import("../src/listeners/messageReactionAdd");

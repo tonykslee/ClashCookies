@@ -15,6 +15,7 @@ import { repWorkActivityService } from "./RepWorkActivityService";
 import { fwaAccountabilityNotificationService } from "./FwaAccountabilityNotificationService";
 import { buildSyncLeaderAccountsButtonComponents } from "./SyncLeaderAccountsViewService";
 import { isMirrorPollingMode } from "./PollingModeService";
+import { normalizeTag as normalizeSyncTag } from "./war-events/core";
 
 export const TRACKED_MESSAGE_FEATURE_TYPE = {
   FWA_BASE_SWAP: "FWA_BASE_SWAP",
@@ -545,6 +546,7 @@ type SyncReactionDb = {
   trackedMessage: {
     findUnique: (args: any) => Promise<any>;
     findFirst: (args: any) => Promise<any>;
+    findMany?: (args: any) => Promise<any[]>;
   };
   trackedMessageClaim: {
     findUnique: (args: any) => Promise<any>;
@@ -631,6 +633,14 @@ async function resolveSyncReactionContext(
 
   const metadata = parseSyncTimeMetadata(root.metadata);
   if (!metadata) return null;
+  const trackedMetadata = parseSyncTimeMetadata(tracked.metadata);
+  if (
+    !trackedMetadata ||
+    (tracked.referenceId !== null && tracked.referenceId !== root.messageId) ||
+    !hasSameSyncTimeMetadataIdentity(metadata, trackedMetadata)
+  ) {
+    return null;
+  }
   const syncTime = resolveExactSyncTime(metadata, root.metadata);
   if (!syncTime) return null;
 
@@ -1357,6 +1367,12 @@ function resolveSyncClanCode(input: { code?: unknown; clanTag: string; clanName:
   return (base + tagBase).slice(0, 3).toUpperCase();
 }
 
+/** Purpose: return the canonical participant identity represented by sync metadata. */
+function normalizeSyncMetadataClanTag(value: unknown): string | null {
+  const normalized = normalizeSyncTag(String(value ?? ""));
+  return normalized || null;
+}
+
 export function parseFwaBaseSwapMetadata(value: unknown): FwaBaseSwapTrackedMetadata | null {
   if (!isObject(value) || !Array.isArray(value.entries)) return null;
   const clanKindRaw = String(value.clanKind ?? "").trim().toUpperCase();
@@ -1473,7 +1489,7 @@ export type SyncTimeMetadataParseOptions = {
   fallbackEmojiInline?: string;
 };
 
-/** Purpose: parse persisted sync metadata while preserving required-field semantics for existing consumers. */
+/** Purpose: parse persisted sync metadata without reducing a malformed participant snapshot. */
 export function parseSyncTimeMetadata(
   value: unknown,
   options: SyncTimeMetadataParseOptions = {},
@@ -1482,10 +1498,9 @@ export function parseSyncTimeMetadata(
   const syncTimeIso = String(value.syncTimeIso ?? "").trim();
   const syncEpochSeconds = Number(value.syncEpochSeconds);
   const roleId = String(value.roleId ?? "").trim();
-  if (!syncTimeIso || !Number.isFinite(syncEpochSeconds) || !roleId) return null;
+  if (!syncTimeIso || !Number.isSafeInteger(syncEpochSeconds) || !roleId) return null;
   const fallbackEmojiInline = String(options.fallbackEmojiInline ?? "").trim();
-  const clans = value.clans
-    .map((clan) => {
+  const clans = value.clans.map((clan) => {
       if (!isObject(clan)) return null;
       const clanCode = resolveSyncClanCode({
         code: clan.code,
@@ -1497,7 +1512,7 @@ export function parseSyncTimeMetadata(
       const emojiInline = String(clan.emojiInline ?? "").trim() || fallbackEmojiInline;
       const emojiIdRaw = String(clan.emojiId ?? "").trim();
       const emojiNameRaw = String(clan.emojiName ?? "").trim();
-      if (!clanTag || !clanName || !emojiInline) return null;
+      if (!normalizeSyncMetadataClanTag(clanTag) || !clanName || !emojiInline) return null;
       return {
         code: clanCode,
         clanTag,
@@ -1506,9 +1521,14 @@ export function parseSyncTimeMetadata(
         emojiName: emojiNameRaw || null,
         emojiInline,
       };
-    })
-    .filter((clan): clan is SyncTimeTrackedMetadata["clans"][number] => Boolean(clan));
-  if (clans.length === 0) return null;
+    });
+  if (clans.length === 0 || clans.some((clan) => !clan)) return null;
+  const normalizedParticipantTags = clans.map((clan) => normalizeSyncMetadataClanTag(clan!.clanTag));
+  if (
+    normalizedParticipantTags.some((clanTag) => !clanTag) ||
+    new Set(normalizedParticipantTags).size !== normalizedParticipantTags.length
+  ) return null;
+  const validClans = clans as SyncTimeTrackedMetadata["clans"];
   const reminderSentAt = typeof value.reminderSentAt === "string" ? value.reminderSentAt : null;
   const statusPostedAt = typeof value.statusPostedAt === "string" ? value.statusPostedAt : null;
   const fwaClanListEnabled = value.fwaClanListEnabled === true;
@@ -1539,9 +1559,9 @@ export function parseSyncTimeMetadata(
       : null;
   return {
     syncTimeIso,
-    syncEpochSeconds: Math.trunc(syncEpochSeconds),
+    syncEpochSeconds,
     roleId,
-    clans,
+    clans: validClans,
     ...(reminderSentAt ? { reminderSentAt } : {}),
     ...(statusPostedAt ? { statusPostedAt } : {}),
     ...(fwaClanListEnabled ? { fwaClanListEnabled } : {}),
@@ -1558,6 +1578,280 @@ export function parseSyncTimeMetadata(
       ? { fwaClanListRefreshInProgressByUserId }
       : {}),
     ...(fwaClanListRefreshLockToken ? { fwaClanListRefreshLockToken } : {}),
+  };
+}
+
+/** Purpose: compare the immutable sync identity shared by a root and one child post. */
+export function hasSameSyncTimeMetadataIdentity(
+  left: SyncTimeTrackedMetadata,
+  right: SyncTimeTrackedMetadata,
+): boolean {
+  if (
+    left.syncEpochSeconds !== right.syncEpochSeconds ||
+    new Date(left.syncTimeIso).getTime() !== new Date(right.syncTimeIso).getTime() ||
+    left.roleId !== right.roleId
+  ) return false;
+  const leftTags = new Set(left.clans.map((clan) => normalizeSyncMetadataClanTag(clan.clanTag)));
+  const rightTags = new Set(right.clans.map((clan) => normalizeSyncMetadataClanTag(clan.clanTag)));
+  if (leftTags.size !== left.clans.length || rightTags.size !== right.clans.length) return false;
+  if (leftTags.size !== rightTags.size) return false;
+  return [...leftTags].every((clanTag) => clanTag && rightTags.has(clanTag));
+}
+
+/** Purpose: expose the canonical participant snapshot for aggregate claim readers. */
+export function getSyncTimeParticipantTags(metadata: SyncTimeTrackedMetadata): Set<string> {
+  return new Set(
+    metadata.clans
+      .map((clan) => normalizeSyncMetadataClanTag(clan.clanTag))
+      .filter((clanTag): clanTag is string => Boolean(clanTag)),
+  );
+}
+
+function canonicalizeSyncMetadata(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalizeSyncMetadata(entry));
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeSyncMetadata(entry)]),
+  );
+}
+
+/** Purpose: compare the complete persisted sync snapshot, including participant presentation. */
+export function hasSameSyncTimeMetadataSnapshot(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalizeSyncMetadata(left)) === JSON.stringify(canonicalizeSyncMetadata(right));
+}
+
+function hasSameNullableDate(left: unknown, right: unknown): boolean {
+  if (left === null || right === null) return left === right;
+  return left instanceof Date && right instanceof Date && left.getTime() === right.getTime();
+}
+
+export type ValidatedSyncClaimAggregation = {
+  root: {
+    id: string;
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    referenceId: null;
+    featureType: string;
+    status: string;
+    expiresAt: Date | null;
+    metadata: SyncTimeTrackedMetadata;
+  };
+  metadata: SyncTimeTrackedMetadata;
+  syncTime: Date;
+  participatingClanTags: Set<string>;
+  claimedClanTags: Set<string>;
+  invalidChildIdentityCount: number;
+  eligibleRows: Array<{
+    id: string;
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    referenceId: string | null;
+    featureType: string;
+    status: string;
+    expiresAt: Date | null;
+    metadata: unknown;
+    claims: Array<{ clanTag: string }>;
+  }>;
+};
+
+/** Purpose: load one current, canonical root/status claim view for every sync consumer. */
+export async function loadValidatedSyncClaimAggregation(
+  db: Pick<SyncReactionDb, "trackedMessage">,
+  messageId: string,
+  now: Date = new Date(),
+  options: {
+    trackedOverride?: any;
+    requireLatestRoot?: boolean;
+    checkExpiration?: boolean;
+    checkSyncTime?: boolean;
+  } = {},
+): Promise<ValidatedSyncClaimAggregation | null> {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return null;
+  const select = {
+    id: true,
+    guildId: true,
+    channelId: true,
+    messageId: true,
+    referenceId: true,
+    featureType: true,
+    status: true,
+    expiresAt: true,
+    metadata: true,
+  };
+  const tracked = options.trackedOverride ?? await db.trackedMessage.findUnique({
+    where: { messageId },
+    select,
+  });
+  if (
+    !tracked ||
+    tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE
+  ) return null;
+  if (
+    options.checkExpiration !== false &&
+    tracked.expiresAt instanceof Date &&
+    tracked.expiresAt.getTime() <= now.getTime()
+  ) return null;
+
+  const root = tracked.referenceId
+    ? await db.trackedMessage.findUnique({
+        where: { messageId: tracked.referenceId },
+        select,
+      })
+    : tracked;
+  if (
+    !root ||
+    root.guildId !== tracked.guildId ||
+    root.referenceId !== null ||
+    root.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    root.status !== TRACKED_MESSAGE_STATUS.ACTIVE
+  ) return null;
+  if (
+    options.checkExpiration !== false &&
+    root.expiresAt instanceof Date &&
+    root.expiresAt.getTime() <= now.getTime()
+  ) return null;
+
+  const metadata = parseSyncTimeMetadata(root.metadata);
+  const trackedMetadata = parseSyncTimeMetadata(tracked.metadata);
+  if (
+    !metadata ||
+    !trackedMetadata ||
+    (tracked.referenceId !== null && tracked.referenceId !== root.messageId) ||
+    !hasSameSyncTimeMetadataIdentity(metadata, trackedMetadata)
+  ) return null;
+  const syncTime = resolveExactSyncTime(metadata, root.metadata);
+  if (!syncTime || (options.checkSyncTime !== false && syncTime.getTime() > now.getTime())) return null;
+
+  if (options.requireLatestRoot !== false) {
+    const latestRoot = await db.trackedMessage.findFirst({
+      where: activeRootSyncWhere(root.guildId),
+      orderBy: [{ createdAt: "desc" }, { messageId: "desc" }],
+      select: { messageId: true },
+    });
+    if (!latestRoot || latestRoot.messageId !== root.messageId) return null;
+  }
+  if (!db.trackedMessage.findMany) return null;
+
+  const rows = await db.trackedMessage.findMany({
+    where: {
+      OR: [
+        { id: root.id },
+        {
+          guildId: root.guildId,
+          referenceId: root.messageId,
+          featureType: TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST,
+          status: TRACKED_MESSAGE_STATUS.ACTIVE,
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: now } },
+          ],
+        },
+      ],
+    },
+    select: {
+      id: true,
+      guildId: true,
+      channelId: true,
+      messageId: true,
+      referenceId: true,
+      featureType: true,
+      status: true,
+      expiresAt: true,
+      metadata: true,
+      claims: { select: { clanTag: true } },
+    },
+  });
+
+  const rootRow = rows.find((row) => String(row.id) === String(root.id));
+  if (
+    !rootRow ||
+    String(rootRow.id) !== String(root.id) ||
+    rootRow.guildId !== root.guildId ||
+    rootRow.channelId !== root.channelId ||
+    rootRow.messageId !== root.messageId ||
+    rootRow.referenceId !== null ||
+    rootRow.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+    rootRow.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+    !hasSameNullableDate(rootRow.expiresAt, root.expiresAt) ||
+    (options.checkExpiration !== false &&
+      rootRow.expiresAt instanceof Date &&
+      rootRow.expiresAt.getTime() <= now.getTime()) ||
+    !hasSameSyncTimeMetadataSnapshot(rootRow.metadata, root.metadata) ||
+    !Array.isArray(rootRow.claims)
+  ) return null;
+  const rootRowMetadata = parseSyncTimeMetadata(rootRow.metadata);
+  if (
+    !rootRowMetadata ||
+    !hasSameSyncTimeMetadataIdentity(metadata, rootRowMetadata) ||
+    !resolveExactSyncTime(rootRowMetadata, rootRow.metadata)
+  ) return null;
+
+  const participatingClanTags = getSyncTimeParticipantTags(metadata);
+  if (participatingClanTags.size === 0) return null;
+  const claimedClanTags = new Set<string>();
+  const eligibleRows: ValidatedSyncClaimAggregation["eligibleRows"] = [];
+  let invalidChildIdentityCount = 0;
+  for (const row of rows) {
+    const isRoot = String(row.id) === String(root.id);
+    if (!isRoot) {
+      const validLifecycle =
+        row.guildId === root.guildId &&
+        row.messageId !== root.messageId &&
+        row.referenceId === root.messageId &&
+        row.featureType === TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST &&
+        row.status === TRACKED_MESSAGE_STATUS.ACTIVE &&
+        (options.checkExpiration === false ||
+          !(row.expiresAt instanceof Date && row.expiresAt.getTime() <= now.getTime()));
+      if (!validLifecycle) continue;
+      const rowMetadata = parseSyncTimeMetadata(row.metadata);
+      if (!rowMetadata || !hasSameSyncTimeMetadataIdentity(metadata, rowMetadata)) {
+        invalidChildIdentityCount += 1;
+        continue;
+      }
+    }
+
+    const eligibleRow = {
+      ...row,
+      id: String(row.id),
+      guildId: String(row.guildId ?? "").trim(),
+      channelId: String(row.channelId ?? "").trim(),
+      messageId: String(row.messageId ?? "").trim(),
+      referenceId: row.referenceId ?? null,
+      featureType: String(row.featureType ?? ""),
+      status: String(row.status ?? ""),
+      expiresAt: row.expiresAt instanceof Date ? row.expiresAt : null,
+      claims: Array.isArray(row.claims) ? row.claims : [],
+    };
+    eligibleRows.push(eligibleRow);
+    for (const claim of eligibleRow.claims) {
+      const clanTag = normalizeSyncMetadataClanTag(String(claim.clanTag ?? ""));
+      if (clanTag && participatingClanTags.has(clanTag)) claimedClanTags.add(clanTag);
+    }
+  }
+
+  return {
+    root: {
+      id: String(root.id),
+      guildId: String(root.guildId ?? "").trim(),
+      channelId: String(root.channelId ?? "").trim(),
+      messageId: String(root.messageId ?? "").trim(),
+      referenceId: null,
+      featureType: String(root.featureType ?? ""),
+      status: String(root.status ?? ""),
+      expiresAt: root.expiresAt instanceof Date ? root.expiresAt : null,
+      metadata,
+    },
+    metadata,
+    syncTime,
+    participatingClanTags,
+    claimedClanTags,
+    invalidChildIdentityCount,
+    eligibleRows,
   };
 }
 
@@ -2635,6 +2929,8 @@ function findChecklistRowTagForReaction(
 
 export class TrackedMessageService {
   private readonly fwaChecklistRefreshLocks = new Map<string, Promise<void>>();
+  private readonly syncSpinStatusRefreshLocks = new Map<string, Promise<void>>();
+  private readonly syncSpinStatusRefreshGenerations = new Map<string, number>();
 
   /** Purpose: serialize refresh ownership for one tracked checklist within this runtime. */
   private async withFwaChecklistRefreshLock<T>(
@@ -2656,6 +2952,57 @@ export class TrackedMessageService {
         this.fwaChecklistRefreshLocks.delete(messageId);
       }
     }
+  }
+
+  /** Purpose: serialize status edits and let only the newest queued refresh write. */
+  private async withSyncSpinStatusRefreshLock<T>(
+    rootMessageId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.syncSpinStatusRefreshLocks.get(rootMessageId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.syncSpinStatusRefreshLocks.set(rootMessageId, current);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.syncSpinStatusRefreshLocks.get(rootMessageId) === current) {
+        this.syncSpinStatusRefreshLocks.delete(rootMessageId);
+      }
+    }
+  }
+
+  private beginSyncSpinStatusRefresh(rootMessageId: string): number {
+    const generation = (this.syncSpinStatusRefreshGenerations.get(rootMessageId) ?? 0) + 1;
+    this.syncSpinStatusRefreshGenerations.set(rootMessageId, generation);
+    return generation;
+  }
+
+  private isCurrentSyncSpinStatusRefresh(rootMessageId: string, generation: number): boolean {
+    return this.syncSpinStatusRefreshGenerations.get(rootMessageId) === generation;
+  }
+
+  private buildSyncSpinStatusEditPayload(
+    aggregation: ValidatedSyncClaimAggregation,
+  ): {
+    embeds: EmbedBuilder[];
+    components: ReturnType<typeof buildSyncLeaderAccountsButtonComponents>;
+  } {
+    return {
+      embeds: [buildSyncSpinStatusEmbed({
+        guildId: aggregation.root.guildId,
+        sourceChannelId: aggregation.root.channelId,
+        sourceMessageId: aggregation.root.messageId,
+        metadata: aggregation.metadata,
+        claimedClanTags: aggregation.claimedClanTags,
+        title: "Sync Spin Status",
+      })],
+      components: buildSyncLeaderAccountsButtonComponents(aggregation.root.messageId),
+    };
   }
 
   /** Purpose: revalidate a scheduled claim immediately before its Discord side effect. */
@@ -5583,12 +5930,27 @@ export class TrackedMessageService {
         continue;
       }
 
+      const aggregation = await loadValidatedSyncClaimAggregation(
+        prisma,
+        tracked.messageId,
+        now,
+        {
+          checkSyncTime: false,
+        },
+      );
+      if (!aggregation) {
+        console.warn(
+          `[tracked-message] sync status post skipped event=sync_status_invalid_root message=${tracked.messageId} reference=${tracked.referenceId ?? "none"} status=${tracked.status} feature=${tracked.featureType} expires=${tracked.expiresAt instanceof Date ? tracked.expiresAt.toISOString() : "none"}`,
+        );
+        if (didWork) sentCount += 1;
+        continue;
+      }
       const embed = buildSyncSpinStatusEmbed({
-        guildId: tracked.guildId,
-        sourceChannelId: tracked.channelId,
-        sourceMessageId: tracked.messageId,
-        metadata,
-        claimedClanTags: [],
+        guildId: aggregation.root.guildId,
+        sourceChannelId: aggregation.root.channelId,
+        sourceMessageId: aggregation.root.messageId,
+        metadata: aggregation.metadata,
+        claimedClanTags: aggregation.claimedClanTags,
         title: "Sync Spin Status",
       });
 
@@ -5662,6 +6024,14 @@ export class TrackedMessageService {
     });
   }
 
+  async getValidatedSyncClaimAggregation(
+    messageId: string,
+    now: Date = new Date(),
+    options: { checkSyncTime?: boolean } = {},
+  ): Promise<ValidatedSyncClaimAggregation | null> {
+    return loadValidatedSyncClaimAggregation(prisma, messageId, now, options);
+  }
+
   async refreshSyncSpinStatusMessage(message: {
     id: string;
     edit: (payload: {
@@ -5671,35 +6041,76 @@ export class TrackedMessageService {
   }): Promise<boolean> {
     const tracked = await prisma.trackedMessage.findUnique({
       where: { messageId: message.id },
-      include: { claims: true },
+      select: { featureType: true, status: true, referenceId: true },
     });
-    if (!tracked || tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE) return false;
-    if (tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST) return false;
-    if (!tracked.referenceId) return false;
+    if (
+      !tracked ||
+      tracked.featureType !== TRACKED_MESSAGE_FEATURE_TYPE.SYNC_TIME_POST ||
+      tracked.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+      !tracked.referenceId
+    ) return false;
+    const rootMessageId = String(tracked.referenceId);
+    const generation = this.beginSyncSpinStatusRefresh(rootMessageId);
+    return this.withSyncSpinStatusRefreshLock(rootMessageId, async () => {
+      const aggregation = await loadValidatedSyncClaimAggregation(
+        prisma,
+        message.id,
+        new Date(),
+        { checkSyncTime: false },
+      );
+      if (
+        !aggregation ||
+        aggregation.root.messageId === message.id ||
+        !this.isCurrentSyncSpinStatusRefresh(rootMessageId, generation)
+      ) return false;
+      await message.edit(this.buildSyncSpinStatusEditPayload(aggregation));
+      return true;
+    });
+  }
 
-    const metadata = parseSyncTimeMetadata(tracked.metadata);
-    if (!metadata) return false;
-    const sourceSyncPost = await prisma.trackedMessage.findUnique({
-      where: { messageId: tracked.referenceId },
-      select: { channelId: true },
-    });
-    const sourceChannelId = sourceSyncPost?.channelId ?? tracked.channelId;
+  /** Purpose: refresh every active status child from one validated root/claim snapshot. */
+  async refreshSyncSpinStatusMessages(client: Client, messageId: string): Promise<number> {
+    const initial = await loadValidatedSyncClaimAggregation(
+      prisma,
+      messageId,
+      new Date(),
+      { checkSyncTime: false },
+    );
+    if (!initial) return 0;
+    const rootMessageId = initial.root.messageId;
+    const generation = this.beginSyncSpinStatusRefresh(rootMessageId);
+    return this.withSyncSpinStatusRefreshLock(rootMessageId, async () => {
+      const aggregation = await loadValidatedSyncClaimAggregation(
+        prisma,
+        rootMessageId,
+        new Date(),
+        { checkSyncTime: false },
+      );
+      if (
+        !aggregation ||
+        !this.isCurrentSyncSpinStatusRefresh(rootMessageId, generation)
+      ) return 0;
 
-    const embed = buildSyncSpinStatusEmbed({
-      guildId: tracked.guildId,
-      sourceChannelId,
-      sourceMessageId: tracked.referenceId,
-      metadata,
-      claimedClanTags: new Set(
-        tracked.claims.map((claim) => String(claim.clanTag ?? "").trim()).filter(Boolean),
-      ),
-      title: "Sync Spin Status",
+      const guild = await client.guilds.fetch(aggregation.root.guildId).catch(() => null);
+      if (!guild) return 0;
+      let refreshedCount = 0;
+      for (const row of aggregation.eligibleRows) {
+        if (
+          row.messageId === rootMessageId ||
+          row.referenceId !== rootMessageId ||
+          row.status !== TRACKED_MESSAGE_STATUS.ACTIVE ||
+          !this.isCurrentSyncSpinStatusRefresh(rootMessageId, generation)
+        ) continue;
+        const channel = await guild.channels.fetch(row.channelId).catch(() => null);
+        const statusMessage = channel && "messages" in channel
+          ? await (channel as any).messages.fetch(row.messageId).catch(() => null)
+          : null;
+        if (!statusMessage || typeof statusMessage.edit !== "function") continue;
+        await statusMessage.edit(this.buildSyncSpinStatusEditPayload(aggregation));
+        refreshedCount += 1;
+      }
+      return refreshedCount;
     });
-    await message.edit({
-      embeds: [embed],
-      components: buildSyncLeaderAccountsButtonComponents(tracked.referenceId),
-    });
-    return true;
   }
 
   /** Purpose: serialize and refresh one checklist without allowing stale metadata to win. */

@@ -12,6 +12,7 @@ import { randomUUID } from "crypto";
 import { CoCService } from "./CoCService";
 import { prisma } from "../prisma";
 import { truncateDiscordContent } from "../helper/discordContent";
+import { TOWN_HALL_EMOJI_MAX_LEVEL } from "../helper/townHallEmoji";
 import { emojiResolverService } from "./emoji/EmojiResolverService";
 import {
   listPlayerLinksForClanMembers,
@@ -5201,7 +5202,7 @@ export function formatRosterTownhallIconsValue(townHall: number | null | undefin
   if (normalized <= 0) {
     return null;
   }
-  if (normalized <= 18) {
+  if (normalized <= TOWN_HALL_EMOJI_MAX_LEVEL) {
     return `:th${normalized}:`;
   }
   return String(normalized);

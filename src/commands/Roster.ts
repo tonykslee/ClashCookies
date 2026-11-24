@@ -19,11 +19,14 @@ import {
 import { Command } from "../Command";
 import { formatError } from "../helper/formatError";
 import { buildClanProfileMarkdownLink } from "../helper/clanProfileLink";
+import {
+  resolveTownHallEmojiMap,
+  TOWN_HALL_EMOJI_MAX_LEVEL,
+} from "../helper/townHallEmoji";
 import { prisma } from "../prisma";
 import { CoCService } from "../services/CoCService";
 import { CommandPermissionService } from "../services/CommandPermissionService";
 import { refreshCwlTrackedClanMetadataForSeason, resolveCurrentCwlSeasonKey } from "../services/CwlRegistryService";
-import { emojiResolverService } from "../services/emoji/EmojiResolverService";
 import {
   listPlayerLinksForDiscordUser,
   normalizeClanTag,
@@ -546,23 +549,11 @@ function buildRosterSignupUserGroupHeading(group: {
 
 async function resolveRosterTownHallIconMap(client: Client): Promise<Map<number, string>> {
   const fallback = new Map<number, string>(
-    Array.from({ length: 18 }, (_, index) => [index + 1, `TH${index + 1}`] as const),
+    Array.from({ length: TOWN_HALL_EMOJI_MAX_LEVEL }, (_, index) => [index + 1, `TH${index + 1}`] as const),
   );
-  const inventory = await emojiResolverService
-    .fetchApplicationEmojiInventory(client, { forceRefresh: true })
-    .catch(() => null);
-  if (!inventory?.ok) {
-    return fallback;
-  }
-
   const resolved = new Map(fallback);
-  for (let level = 1; level <= 18; level += 1) {
-    const exact = inventory.snapshot.exactByName.get(`th${level}`);
-    const lowered = inventory.snapshot.lowercaseByName.get(`th${level}`);
-    const rendered = exact?.rendered ?? lowered?.rendered ?? null;
-    if (rendered) {
-      resolved.set(level, rendered);
-    }
+  for (const [level, rendered] of await resolveTownHallEmojiMap(client, { forceRefresh: true })) {
+    resolved.set(level, rendered);
   }
   return resolved;
 }

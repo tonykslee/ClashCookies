@@ -129,9 +129,10 @@ function makeCwlEmojiInventory(options?: { missing?: string[] }) {
     ["yes", makeEmoji("yes", "<:yes:111>")] as const,
     ["no", makeEmoji("no", "<:no:222>")] as const,
     ["no_entry", makeEmoji("no_entry", "<:no_entry:333>")] as const,
-    ...Array.from({ length: 18 }, (_, index) => {
+    ...Array.from({ length: 19 }, (_, index) => {
       const name = `th${index + 1}`;
-      return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${1001 + index}>`)] as const);
+      const id = name === "th19" ? "1572442203844902932" : `${1001 + index}`;
+      return missing.has(name) ? null : ([name, makeEmoji(name, `<:${name}:${id}>`)] as const);
     }).filter((entry): entry is readonly [string, ReturnType<typeof makeEmoji>] => Boolean(entry)),
   ];
   return {
@@ -591,7 +592,7 @@ describe("/cwl command", () => {
         clanTag: "#2QG2C08UP",
         playerTag: "#PYLQ0289",
         playerName: "Alpha",
-        townHall: 16,
+        townHall: 19,
         linkedDiscordUserId: "111111111111111111",
         linkedDiscordUsername: "alpha-user",
         daysParticipated: 2,
@@ -647,7 +648,7 @@ describe("/cwl command", () => {
     );
     expect(description).toContain("Members spun in CWL: 1");
     expect(description).toContain("Signed up + spun in CWL: 1");
-    expect(description).toContain("<:th16:1016> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
+    expect(description).toContain("<:th19:1572442203844902932> Alpha `#PYLQ0289` - days 2 - <@111111111111111111> - 0/0");
     expect(description).toContain("Not signed up but included in CWL");
     expect(description).toContain("none");
     expect(description).not.toContain("preparation 0/0");

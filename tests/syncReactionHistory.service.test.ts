@@ -433,4 +433,13 @@ describe("sync reaction history", () => {
       observedAt,
     }]);
   });
+
+  it("rejects a status claim when the child metadata no longer matches the root snapshot", async () => {
+    state.rows[1].metadata = makeMetadata({ clans: [makeMetadata().clans[0]] });
+
+    await expect(trackedMessageService.recordSyncClaim("status-message", "user-b", reaction("222"), observedAt))
+      .resolves.toBe(false);
+    expect(state.claims).toHaveLength(0);
+    expect(state.events).toHaveLength(0);
+  });
 });
