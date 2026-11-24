@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateNativeCompoComparison,
+  getNativeCompoDisplayDeltas,
   NATIVE_COMPO_COMPARISON_BUCKETS,
 } from "../src/helper/nativeCompoComparison";
 
@@ -47,5 +48,21 @@ describe("native provisional composition comparison", () => {
     });
     expect(incomplete.status).toBe("UNKNOWN");
     expect(incomplete.deltaByBucket.TH19).toBeNull();
+  });
+
+  it("collapses native lower buckets without treating UNKNOWN as zero", () => {
+    const comparison = calculateNativeCompoComparison({
+      native,
+      totalWeight: 8_650_000,
+      sourceCounts: { TH13: 3, TH12: 2, TH11: 2, TH10: 1 },
+    });
+    const display = getNativeCompoDisplayDeltas(comparison);
+    expect(display["<=TH13"]).toBe(0);
+
+    const unknown = getNativeCompoDisplayDeltas({
+      ...comparison,
+      deltaByBucket: { ...comparison.deltaByBucket, TH12: null },
+    });
+    expect(unknown["<=TH13"]).toBeNull();
   });
 });

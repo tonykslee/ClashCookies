@@ -268,6 +268,32 @@ describe("projectCompoActualStateView", () => {
     expect(result.deltaByBucket["<=TH13"]).toBe(1);
   });
 
+  it("uses a supported adjacent band for a near-complete fallback-resolved roster without double-counting it", () => {
+    const result = projectCompoActualStateView({
+      view: "auto",
+      base: {
+        resolvedTotalWeight: 7_319_000,
+        unresolvedWeightCount: 7,
+        unresolvedWeightSlotCount: 0,
+        memberCount: 49,
+        bucketCounts: makeBucketCounts({ TH18: 49 }),
+      },
+      heatMapRefs: [
+        makeHeatMapRef({
+          weightMinInclusive: 7_400_001,
+          weightMaxInclusive: 7_500_000,
+          th18Count: 50,
+        }),
+      ],
+    });
+
+    expect(result.selectedHeatMapRef?.weightMinInclusive).toBe(7_400_001);
+    expect(result.missingWeights).toBe(8);
+    expect(result.nMissing).toBe(1);
+    expect(result.totalWeight).toBe(7_494_000);
+    expect(result.deltaByBucket.TH18).toBe(-1);
+  });
+
   it("projects ACTUAL deltas from a newly granular upper HeatMapRef band", () => {
     const result = projectCompoActualStateView({
       view: "raw",

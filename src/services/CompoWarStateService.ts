@@ -23,7 +23,7 @@ import { resolveHeatMapRefReference } from "../helper/heatMapRefResolver";
 import { NativeHeatMapReferencePublicationService } from "./NativeHeatMapReferencePublicationService";
 import {
   calculateNativeCompoComparison,
-  NATIVE_COMPO_COMPARISON_BUCKETS,
+  getNativeCompoDisplayDeltas,
   type NativeCompoComparison,
 } from "../helper/nativeCompoComparison";
 
@@ -122,14 +122,13 @@ function readNativeComparison(input: {
 
 function appendNativeWarColumns(row: string[], comparison: NativeCompoComparison | undefined): string[] {
   if (!comparison) return row;
+  const nativeDeltas = getNativeCompoDisplayDeltas(comparison);
   return [
-    ...row,
-    comparison.status === "SUPPORTED" ? "PROVISIONAL" : "UNKNOWN",
-    ...NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => {
-      const delta = comparison.deltaByBucket[bucketId];
-      return delta === null || delta === undefined ? "UNKNOWN" : `${delta}`;
+    ...row.slice(0, -6),
+    ...(["TH18", "TH17", "TH16", "TH15", "TH14", "<=TH13"] as const).map((bucketId) => {
+      const delta = nativeDeltas[bucketId];
+      return delta === null ? "?" : `${delta}`;
     }),
-    comparison.score === null ? "UNKNOWN" : comparison.score.toFixed(1),
   ];
 }
 
@@ -374,13 +373,13 @@ export class CompoWarStateService {
 
     const contentLines = [
       `WAR · ${toRefreshLine(context.latestRefreshAt)}`,
-      `Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; ${includeTh19 ? "TH19=observed count; " : ""}TH columns=delta vs HeatMapRef.`,
+      `Columns: Total=effective weight; Missing=unresolved weights; Players=roster size; ${includeTh19 ? "TH19=observed count; " : ""}TH columns=delta vs ${nativeComparison ? "provisional native targets (informational only)" : "HeatMapRef"}.`,
     ];
 
     if (context.skipped.length > 0) {
       contentLines.push(`Skipped ineligible clans: ${context.skipped.join("; ")}`);
     }
-    if (context.referenceAvailability.warning) {
+    if (context.referenceAvailability.warning && !nativeComparison) {
       contentLines.push(`Reference warning: ${context.referenceAvailability.warning}`);
     }
     if (nativeComparison) contentLines.push(nativeComparison.summaryLine);
@@ -410,9 +409,6 @@ export class CompoWarStateService {
           "TH15",
           "TH14",
           "<=TH13",
-          ...(nativeComparison ? ["Native"] : []),
-          ...(nativeComparison ? NATIVE_COMPO_COMPARISON_BUCKETS.map((bucketId) => `Native Δ ${bucketId}`) : []),
-          ...(nativeComparison ? ["Native score"] : []),
         ],
         ...renderableRows,
       ],

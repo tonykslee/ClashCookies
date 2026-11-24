@@ -26,6 +26,38 @@ export type NativeCompoComparison = {
   deltaByBucket: Readonly<Record<string, number | null>>;
 };
 
+/** The compact state-table columns shared by ACTUAL and WAR displays. */
+export const NATIVE_COMPO_DISPLAY_BUCKETS = [
+  "TH18",
+  "TH17",
+  "TH16",
+  "TH15",
+  "TH14",
+  "<=TH13",
+] as const;
+
+/**
+ * Collapse native TH13-and-below targets into the same display bucket used by
+ * the legacy state table. Unknown native targets stay unknown; they are never
+ * treated as zero while aggregating the lower bucket.
+ */
+export function getNativeCompoDisplayDeltas(
+  comparison: NativeCompoComparison,
+): Readonly<Record<(typeof NATIVE_COMPO_DISPLAY_BUCKETS)[number], number | null>> {
+  const lowerBucketIds = ["TH13", "TH12", "TH11", "TH10_OR_LOWER"] as const;
+  const lowerDeltas = lowerBucketIds.map((bucketId) => comparison.deltaByBucket[bucketId]);
+  return {
+    TH18: comparison.deltaByBucket.TH18 ?? null,
+    TH17: comparison.deltaByBucket.TH17 ?? null,
+    TH16: comparison.deltaByBucket.TH16 ?? null,
+    TH15: comparison.deltaByBucket.TH15 ?? null,
+    TH14: comparison.deltaByBucket.TH14 ?? null,
+    "<=TH13": lowerDeltas.every((value): value is number => typeof value === "number")
+      ? lowerDeltas.reduce((sum, value) => sum + value, 0)
+      : null,
+  };
+}
+
 /** Build the profile-owned comparison used only for informational state rendering. */
 export function calculateNativeCompoComparison(input: {
   native: NativeReferenceRead;
