@@ -313,3 +313,13 @@ The corrected P4c evaluator uses one shared WarMembers parser for every raw row 
 Stop and explain the conflict.
 
 Do not implement changes that violate architecture rules without explicit approval.
+
+## November 24, 2026 — Accountability and sync reliability checkpoint
+
+- FB-020 [#2141](https://github.com/tonykslee/ClashCookies/issues/2141), merged [PR #2165](https://github.com/tonykslee/ClashCookies/pull/2165) (`fb87146d`): independent bases-checked, mail-posted and manual mail-confirmed typed routes, defaulting to clan-lead. The notification owner does not establish actual base correctness or in-game mail delivery. Canonical Bases persistence is shared by command and reaction; validated legacy aliases do not create duplicate transitions.
+- FB-016 [#2127](https://github.com/tonykslee/ClashCookies/issues/2127), merged [PR #2166](https://github.com/tonykslee/ClashCookies/pull/2166) (`8371a13d`): regression-only verification of the existing FB-020 correction, with real service paths behind an isolated Prisma seam. No additional production logic was needed. The original November 20 production incident was not independently reconstructed.
+- FB-023 [#2155](https://github.com/tonykslee/ClashCookies/issues/2155), merged [PR #2168](https://github.com/tonykslee/ClashCookies/pull/2168) (`be72ce5e`): explicit h23 formatting fixes local midnight conversion and modal defaults. Existing two-pass DST mapping is preserved, not redesigned.
+- FB-021 [#2143](https://github.com/tonykslee/ClashCookies/issues/2143), merged [PR #2169](https://github.com/tonykslee/ClashCookies/pull/2169) (`825c9463`): shared Town Hall application-emoji resolver supports TH19; live inventory/rendering of the supplied emoji remains unverified. All four final feature PRs passed GitHub CI.
+- Owner-selected next task: FB-015 (#2126), premature all-spun announcement. Investigate persisted root participant denominator, claim identity, and delivery revalidation before changing code. Do not presume that the November 20 incident was caused by any one observed code weakness. Then review the next production release, before resuming FB-002 operational composition recovery (advice #2162, place #2163, fill #2164). FB-017 is not in the current quick-win batch.
+- Production distinction: main `5bdba1e4` was observed with FB-020's additive Prisma migration and FB-016 tests in the release diff; actual VM completion was not independently verified here. The documented deployment chooses intentional downtime if the actual OLD_SHA..NEW_SHA diff contains Prisma schema/migration changes; non-migration changes are build-first, near-zero downtime when the live wrapper matches the reviewed procedure. No infrastructure change is authorized.
+
