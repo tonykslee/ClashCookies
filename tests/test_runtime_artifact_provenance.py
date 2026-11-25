@@ -605,6 +605,8 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         signature_path = directory / "record.sig"
         checkout = directory / "mutable-checkout"
         checkout.mkdir()
+        directory.chmod(0o700)
+        checkout.chmod(0o700)
         subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
         subprocess.run([openssl, "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
         public_key.chmod(0o600)
@@ -653,6 +655,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             journal_authorization = authorization_for(identity, authorization_id="snapshot-journal-1")
             material = Path(directory) / "journal-material"
             material.mkdir()
+            material.chmod(0o700)
             journal_envelope, journal_trust, _ = self._signed_envelope(material, journal_authorization)
             journal_root = Path(directory) / "journal"
             journal_root.mkdir()
@@ -685,6 +688,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             rsa_der = Path(directory) / "rsa-public.der"
             subprocess.run([openssl, "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:512", "-out", str(rsa_private)], check=True, capture_output=True)
             subprocess.run([openssl, "pkey", "-in", str(rsa_private), "-pubout", "-out", str(rsa_public)], check=True, capture_output=True)
+            rsa_public.chmod(0o600)
             subprocess.run([openssl, "pkey", "-pubin", "-in", str(rsa_public), "-outform", "DER", "-out", str(rsa_der)], check=True, capture_output=True)
             rsa_trust = provenance.AuthorizationTrustConfig(rsa_public, "test-key", hashlib.sha256(rsa_der.read_bytes()).hexdigest(), trust.repository_root)
             with self.assertRaisesRegex(provenance.ProvenanceError, "not an Ed25519"):
@@ -693,8 +697,10 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             second_public = Path(directory) / "second-public.pem"
             subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(second_private)], check=True, capture_output=True)
             subprocess.run([openssl, "pkey", "-in", str(second_private), "-pubout", "-out", str(second_public)], check=True, capture_output=True)
+            second_public.chmod(0o600)
             substituted = Path(directory) / "substituted-public.pem"
             substituted.write_bytes(second_public.read_bytes())
+            substituted.chmod(0o600)
             substituted_trust = replace(trust, public_key_path=substituted)
             with self.assertRaisesRegex(provenance.ProvenanceError, "fingerprint"):
                 provenance.verify_signed_authorization_record(envelope, substituted_trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
@@ -702,6 +708,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
                 provenance.verify_signed_authorization_record(envelope, replace(trust, expected_public_key_sha256="0" * 64), identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             local_key = trust.repository_root / "local-public.pem"
             local_key.write_bytes(trust.public_key_path.read_bytes())
+            local_key.chmod(0o600)
             with self.assertRaisesRegex(provenance.ProvenanceError, "outside the mutable checkout"):
                 provenance.verify_signed_authorization_record(envelope, replace(trust, public_key_path=local_key), identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             with self.assertRaisesRegex(provenance.ProvenanceError, "trust configuration"):
