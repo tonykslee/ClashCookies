@@ -72,8 +72,8 @@ docker run --rm --platform "${platform}" -i \
     npm run build
     export BUILD_DURATION_MS="$(( $(date +%s%3N) - BUILD_STARTED_EPOCH_MS ))"
     node scripts/runtime-artifact-manifest.js --root /work/source --output /work/package/runtime-artifact-manifest.json
-    cp -a dist node_modules prisma package.json /work/package/
-    tar -czf "/output/${ARTIFACT_NAME}" -C /work/package dist node_modules prisma package.json runtime-artifact-manifest.json
+    cp -a dist node_modules prisma package.json yarn.lock /work/package/
+    tar -czf "/output/${ARTIFACT_NAME}" -C /work/package dist node_modules prisma package.json yarn.lock runtime-artifact-manifest.json
     archive_sha="$(sha256sum "/output/${ARTIFACT_NAME}" | awk "{print \$1}")"
     archive_bytes="$(stat -c %s "/output/${ARTIFACT_NAME}")"
     node scripts/finalize-runtime-artifact.js \
@@ -83,6 +83,6 @@ docker run --rm --platform "${platform}" -i \
       --sha256 "${archive_sha}" \
       --archive-bytes "${archive_bytes}"
     printf "%s  %s\n" "${archive_sha}" "${ARTIFACT_NAME}" > "/output/${ARTIFACT_NAME}.sha256"
-  '
+  ' < "${source_tar}"
 
 echo "Built ${output_dir}/${artifact_name}"

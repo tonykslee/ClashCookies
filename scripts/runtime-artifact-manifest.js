@@ -53,7 +53,7 @@ function buildManifest(root) {
     artifact: {
       name: process.env.ARTIFACT_NAME,
       format: "tar.gz",
-      contents: ["dist", "node_modules", "prisma", "package.json"],
+      contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"],
       nonProductionEvidence: true,
     },
     source: { gitSha: sourceSha.toLowerCase(), context: "git-archive", untrackedFilesExcluded: true, localEnvironmentFilesExcluded: true, cleanSourceContext: true },
@@ -64,6 +64,11 @@ function buildManifest(root) {
       note: isPullRequest
         ? "GitHub pull_request GITHUB_SHA is a test/merge commit and is not a deployable release identity."
         : "This development artifact is evidence only and is not eligible for production promotion.",
+    },
+    provenance: {
+      integrity: "archive SHA-256 checksum and manifest binding",
+      authenticated: false,
+      note: "Integrity metadata does not authenticate the source revision or authorize production use.",
     },
     workflow: {
       name: process.env.GITHUB_WORKFLOW || "local",

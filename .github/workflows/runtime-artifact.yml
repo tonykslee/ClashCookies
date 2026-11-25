@@ -42,6 +42,11 @@ jobs:
             --expected-sha "$GITHUB_SHA"
           jq -e '.artifact.nonProductionEvidence == true and .identity.deployableRelease == false and .build.baseImageDigest' \
             "$RUNNER_TEMP/runtime-artifact"/*.manifest.json
+          manifest="$RUNNER_TEMP/runtime-artifact/$(basename "$(find "$RUNNER_TEMP/runtime-artifact" -maxdepth 1 -name '*.manifest.json' -print -quit)")"
+          {
+            echo "## FB-028A runtime artifact"
+            jq -r '"- Build duration: \(.build.durationMs) ms\n- Archive size: \(.measurements.archiveBytes) bytes\n- Extracted footprint: \(.measurements.extractedFootprintBytes) bytes\n- Source SHA: `\(.source.gitSha)`\n- Base image: `\(.build.baseImage)`"' "$manifest"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish development validation artifact
         uses: actions/upload-artifact@v4
@@ -78,7 +83,14 @@ jobs:
             --checksum "$archive.sha256" \
             --manifest "$archive.manifest.json" \
             --expected-sha "$GITHUB_SHA" \
-            --platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --expected-platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-workflow "$GITHUB_WORKFLOW" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-base-image "$RUNTIME_ARTIFACT_IMAGE" \
+            --expected-base-image-digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --source-root "$GITHUB_WORKSPACE" \
             --extract "$RUNNER_TEMP/extracted-runtime-artifact"
 
       - name: Start disposable PostgreSQL for runtime engine probe
