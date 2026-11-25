@@ -149,6 +149,59 @@ jobs:
           actual="$("$GH_ATTESTATION_CLI" version | awk 'NR == 1 { print $3 }')"
           test "$actual" = "$GH_ATTESTATION_CLI_VERSION"
 
+      - name: Select exact artifact-service ZIP and inner archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          archive_name="$(basename "$archive")"
+          archive_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
+          archive_bytes="$(stat -c '%s' "$archive")"
+          artifact_name="runtime-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/exact-run-attempt.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/run-artifacts.json"
+          artifact="$(jq -c --arg name "$artifact_name" '[.artifacts[] | select(.name == $name)] | if length == 1 then .[0] else error("exact attempt artifact is missing or ambiguous") end' "$RUNNER_TEMP/run-artifacts.json")"
+          artifact_id="$(jq -r '.id' <<< "$artifact")"
+          test "$artifact_id" != null
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/artifact-service.zip"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --argjson repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson artifact_id "$artifact_id" \
+            --arg artifact_name "$artifact_name" \
+            --arg artifact_class "development-runtime-evidence" \
+            --arg artifact_service_zip_sha256 "$(sha256sum "$RUNNER_TEMP/artifact-service.zip" | awk '{ print $1 }')" \
+            --argjson artifact_service_zip_bytes "$(stat -c '%s' "$RUNNER_TEMP/artifact-service.zip")" \
+            --arg archive_name "$archive_name" \
+            --arg archive_sha256 "$archive_sha256" \
+            --argjson archive_bytes "$archive_bytes" \
+            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
+            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --arg authorization_context "ci-selection-only" \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_id:$artifact_id,artifact_name:$artifact_name,artifact_class:$artifact_class,artifact_service_zip_sha256:$artifact_service_zip_sha256,artifact_service_zip_bytes:$artifact_service_zip_bytes,archive_name:$archive_name,archive_sha256:$archive_sha256,archive_bytes:$archive_bytes,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:$authorization_context}' \
+            > "$RUNNER_TEMP/exact-selection-identity.json"
+          python scripts/runtime_artifact_provenance.py \
+            --select-exact-artifact \
+            --selection-identity "$RUNNER_TEMP/exact-selection-identity.json" \
+            --selection-artifacts "$RUNNER_TEMP/run-artifacts.json" \
+            --selection-run-metadata "$RUNNER_TEMP/exact-run-attempt.json" \
+            --selection-service-zip "$RUNNER_TEMP/artifact-service.zip" \
+            | tee "$RUNNER_TEMP/exact-selection.json"
+
       - name: Validate retrieved bytes and safely extract
         env:
           GH_TOKEN: ${{ github.token }}

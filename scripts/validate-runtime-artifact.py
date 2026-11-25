@@ -1172,7 +1172,7 @@ def main() -> int:
                 source_sha=args.expected_sha,
                 verifier_version=args.expected_gh_version,
             )
-            run_metadata = fetch_run_metadata(args.expected_repository, int(args.expected_run_id))
+            run_metadata = fetch_run_metadata(args.expected_repository, int(args.expected_run_id), int(args.expected_run_attempt))
             authenticated_provenance = validate_verified_result(
                 result,
                 archive_name=snapshot.name,
