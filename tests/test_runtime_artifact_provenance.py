@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import shutil
@@ -219,7 +220,7 @@ def authorization_for(identity: object, *, scope: str = "forward-release", issue
         archive_name=identity.archive_name, archive_sha256=identity.archive_sha256, archive_bytes=identity.archive_bytes,
         platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
         issued_at=issued_at, expires_at=expires_at, retry_key=authorization_id, recovery_context=recovery_context,
-        signing_key_id="test-key", verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, issued_at, "test-key"),
+        signing_key_id="test-key", verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, issued_at, "test-key", key_fingerprint="8" * 64),
     )
 
 
@@ -594,36 +595,77 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(provenance.ProvenanceError):
                 provenance.validate_independent_authorization(candidate, identity, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
 
-    def _signed_envelope(self, directory: Path, authorization: object) -> tuple[dict[str, object], Path]:
+    def _signed_envelope(self, directory: Path, authorization: object) -> tuple[dict[str, object], provenance.AuthorizationTrustConfig, Path]:
         openssl = shutil.which("openssl")
         self.assertIsNotNone(openssl)
         private_key = directory / "test-private.pem"
         public_key = directory / "test-public.pem"
         record_path = directory / "record.json"
         signature_path = directory / "record.sig"
+        checkout = directory / "mutable-checkout"
+        checkout.mkdir()
         subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
         subprocess.run([openssl, "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
+        public_key.chmod(0o600)
         record_path.write_bytes(provenance.canonical_authorization_record(authorization))
         subprocess.run([openssl, "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record_path), "-out", str(signature_path)], check=True, capture_output=True)
-        return provenance.authorization_record_envelope(authorization, signature_path.read_bytes()), public_key
+        der_path = directory / "expected-public-key.der"
+        subprocess.run([openssl, "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der_path)], check=True, capture_output=True)
+        trust = provenance.AuthorizationTrustConfig(public_key, "test-key", hashlib.sha256(der_path.read_bytes()).hexdigest(), checkout)
+        return provenance.authorization_record_envelope(authorization, signature_path.read_bytes()), trust, private_key
 
     def test_signed_authorization_verifies_with_complete_identity_and_rejects_mutations(self) -> None:
         self.assertIsNotNone(shutil.which("openssl"))
         identity = trusted_identity()
         authorization = authorization_for(identity)
         with TemporaryDirectory() as directory:
-            envelope, public_key = self._signed_envelope(Path(directory), authorization)
-            verified = provenance.verify_signed_authorization_record(envelope, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            verified = provenance.verify_signed_authorization_record(envelope, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             self.assertEqual(verified.authorization_id, authorization.authorization_id)
             self.assertEqual(verified.verification.algorithm, "ed25519")
             mutated = copy.deepcopy(envelope)
             mutated["record"]["release"]["archive_sha256"] = "0" * 64
             with self.assertRaisesRegex(provenance.ProvenanceError, "signature is invalid"):
-                provenance.verify_signed_authorization_record(mutated, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+                provenance.verify_signed_authorization_record(mutated, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             bad_signature = copy.deepcopy(envelope)
             bad_signature["signature"]["value"] = base64.b64encode(b"x" * 64).decode("ascii")
             with self.assertRaisesRegex(provenance.ProvenanceError, "signature is invalid"):
-                provenance.verify_signed_authorization_record(bad_signature, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+                provenance.verify_signed_authorization_record(bad_signature, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+
+    def test_trust_configuration_rejects_non_ed25519_keys_substitution_and_checkout_local_roots(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity)
+        with TemporaryDirectory() as directory:
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            openssl = shutil.which("openssl")
+            rsa_private = Path(directory) / "rsa-private.pem"
+            rsa_public = Path(directory) / "rsa-public.pem"
+            rsa_der = Path(directory) / "rsa-public.der"
+            subprocess.run([openssl, "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:512", "-out", str(rsa_private)], check=True, capture_output=True)
+            subprocess.run([openssl, "pkey", "-in", str(rsa_private), "-pubout", "-out", str(rsa_public)], check=True, capture_output=True)
+            subprocess.run([openssl, "pkey", "-pubin", "-in", str(rsa_public), "-outform", "DER", "-out", str(rsa_der)], check=True, capture_output=True)
+            rsa_trust = provenance.AuthorizationTrustConfig(rsa_public, "test-key", hashlib.sha256(rsa_der.read_bytes()).hexdigest(), trust.repository_root)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "not an Ed25519"):
+                provenance.verify_signed_authorization_record(envelope, rsa_trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            second_private = Path(directory) / "second-private.pem"
+            second_public = Path(directory) / "second-public.pem"
+            subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(second_private)], check=True, capture_output=True)
+            subprocess.run([openssl, "pkey", "-in", str(second_private), "-pubout", "-out", str(second_public)], check=True, capture_output=True)
+            substituted = Path(directory) / "substituted-public.pem"
+            substituted.write_bytes(second_public.read_bytes())
+            substituted_trust = replace(trust, public_key_path=substituted)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "fingerprint"):
+                provenance.verify_signed_authorization_record(envelope, substituted_trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(provenance.ProvenanceError, "fingerprint"):
+                provenance.verify_signed_authorization_record(envelope, replace(trust, expected_public_key_sha256="0" * 64), identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            local_key = trust.repository_root / "local-public.pem"
+            local_key.write_bytes(trust.public_key_path.read_bytes())
+            with self.assertRaisesRegex(provenance.ProvenanceError, "outside the mutable checkout"):
+                provenance.verify_signed_authorization_record(envelope, replace(trust, public_key_path=local_key), identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(provenance.ProvenanceError, "trust configuration"):
+                provenance.verify_signed_authorization_record(envelope, None, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(provenance.ProvenanceError, "trusted key"):
+                provenance.verify_signed_authorization_record(envelope, replace(trust, expected_key_id="other-key"), identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
 
     def test_authorization_allowlists_expiry_and_retry_identity_are_enforced(self) -> None:
         identity = trusted_identity()
@@ -641,12 +683,12 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         identity = trusted_identity()
         recovery = authorization_for(identity, scope="recovery-release", recovery_context="operator-recovery-2026-11-25", authorization_id="recovery-1")
         with TemporaryDirectory() as directory:
-            envelope, public_key = self._signed_envelope(Path(directory), recovery)
-            verified = provenance.verify_signed_authorization_record(envelope, public_key, identity, authorization_allowlist(), repository_root=Path(directory) / "mutable-checkout", trusted_key_id="test-key", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            envelope, trust, _ = self._signed_envelope(Path(directory), recovery)
+            verified = provenance.verify_signed_authorization_record(envelope, trust, identity, authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             self.assertEqual(verified.scope, "recovery-release")
-            result = provenance.evaluate_production_eligibility("not-authenticated", identity, verified, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            result = provenance.evaluate_production_eligibility(authoritative_evidence_for(identity), identity, verified, revision_allowlist=authorization_allowlist(), now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
             self.assertFalse(result.eligible)
-            self.assertEqual(result.reason_code, "unverifiable-provenance")
+            self.assertEqual(result.reason_code, "recovery-authorization-required")
 
     def test_replay_journal_allows_same_identity_retry_and_rejects_replay_or_mismatch(self) -> None:
         identity = trusted_identity()
@@ -654,16 +696,25 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "replay"
             root.mkdir()
-            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            root.chmod(0o700)
+            envelope, trust, private_key = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
             now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
-            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
-            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
-            mismatched = replace(authorization, archive_sha256="0" * 64)
+            journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            mismatched = replace(authorization, issued_at="2026-11-25T11:00:00Z", expires_at="2026-11-26T11:00:00Z")
+            altered_record = Path(directory) / "altered-record.json"
+            altered_signature = Path(directory) / "altered-record.sig"
+            altered_record.write_bytes(provenance.canonical_authorization_record(mismatched))
+            subprocess.run([shutil.which("openssl"), "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(altered_record), "-out", str(altered_signature)], check=True, capture_output=True)
+            altered_envelope = provenance.authorization_record_envelope(mismatched, altered_signature.read_bytes())
             with self.assertRaises(provenance.ProvenanceError):
-                journal.reserve(mismatched, identity, authorization_allowlist(), now=now)
-            journal.consume(authorization, identity, authorization_allowlist(), now=now)
+                journal.reserve(altered_envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            with self.assertRaises(provenance.ProvenanceError):
+                journal.reserve(authorization, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            journal.consume(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
             with self.assertRaisesRegex(provenance.ProvenanceError, "replay"):
-                journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
 
     def test_replay_journal_recovers_from_interrupted_consume_without_losing_reservation(self) -> None:
         identity = trusted_identity()
@@ -671,12 +722,82 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "replay"
             root.mkdir()
-            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout")
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
             now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
-            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+            journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
             with patch.object(provenance.os, "replace", side_effect=OSError("simulated interruption")), self.assertRaisesRegex(provenance.ProvenanceError, "commit failed"):
-                journal.consume(authorization, identity, authorization_allowlist(), now=now)
-            journal.reserve(authorization, identity, authorization_allowlist(), now=now)
+                journal.consume(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+
+    def test_replay_journal_serializes_consumers_and_survives_process_restart(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="concurrent-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(journal.consume, envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now) for _ in range(2)]
+                outcomes = [future.exception() for future in futures]
+            self.assertEqual(sum(outcome is None for outcome in outcomes), 1)
+            self.assertEqual(sum(isinstance(outcome, provenance.ProvenanceError) for outcome in outcomes), 1)
+            restarted = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            with self.assertRaisesRegex(provenance.ProvenanceError, "replay"):
+                restarted.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+
+    def test_replay_journal_interrupted_creation_preserves_other_writer_temp_and_propagates_fsync_failure(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="creation-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            foreign_temp = root / ".authorization-reservation-foreign.tmp"
+            foreign_temp.write_bytes(b"foreign-writer")
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            now = datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)
+            with patch.object(provenance.os, "link", side_effect=OSError("simulated interrupted creation")), self.assertRaisesRegex(provenance.ProvenanceError, "publication"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+            self.assertTrue(foreign_temp.exists())
+            self.assertFalse(any(path.suffix == ".json" for path in root.iterdir()))
+            with patch.object(provenance, "_fsync_directory", side_effect=provenance.ProvenanceError("simulated fsync failure")), self.assertRaisesRegex(provenance.ProvenanceError, "fsync"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=now)
+
+    def test_replay_journal_rejects_malformed_state_and_requires_operation_context(self) -> None:
+        identity = trusted_identity()
+        authorization = authorization_for(identity, authorization_id="malformed-1")
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o700)
+            envelope, trust, _ = self._signed_envelope(Path(directory), authorization)
+            journal = provenance.AuthorizationReplayJournal(root, repository_root=Path(directory) / "mutable-checkout", development_mode=(provenance.os.name == "nt"))
+            path = journal._path(authorization)
+            path.write_bytes(b"not-json")
+            path.chmod(0o600)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "malformed"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="forward-release", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+            path.unlink()
+            with self.assertRaisesRegex(provenance.ProvenanceError, "operation context"):
+                journal.reserve(envelope, identity, authorization_allowlist(), trust, operation="", now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+
+    @unittest.skipUnless(provenance.os.name == "posix", "Linux ownership and permission regression")
+    def test_replay_journal_rejects_non_private_directory(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "replay"
+            root.mkdir()
+            root.chmod(0o755)
+            checkout = Path(directory) / "mutable-checkout"
+            checkout.mkdir()
+            with self.assertRaisesRegex(provenance.ProvenanceError, "not private"):
+                provenance.AuthorizationReplayJournal(root, repository_root=checkout)
 
     def test_production_eligibility_is_disabled_even_for_valid_forward_authorization(self) -> None:
         identity = trusted_identity()

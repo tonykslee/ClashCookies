@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -24,6 +25,11 @@ from zipfile import BadZipFile, ZipFile
 from pathlib import Path
 from typing import Any
 
+if os.name == "posix":
+    import fcntl
+else:
+    import msvcrt
+
 
 PROVENANCE_CONTRACT_VERSION = 1
 PROVENANCE_CONTRACT = "clashcookies.runtime-artifact-provenance"
@@ -33,6 +39,7 @@ AUTHORIZATION_SIGNATURE_ALGORITHM = "ed25519"
 AUTHORIZATION_VERIFIER = "openssl-pkeyutl"
 AUTHORIZATION_FORWARD_VALIDITY_SECONDS = 24 * 60 * 60
 MAX_AUTHORIZATION_RECORD_BYTES = 256 * 1024
+MAX_AUTHORIZATION_PUBLIC_KEY_BYTES = 64 * 1024
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
 ACTIONS_WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
@@ -100,6 +107,17 @@ class AuthorizationVerificationReceipt:
     verified_at: str
     key_reference: str
     algorithm: str = AUTHORIZATION_SIGNATURE_ALGORITHM
+    key_fingerprint: str = ""
+
+
+@dataclass(frozen=True)
+class AuthorizationTrustConfig:
+    """Owner-supplied trust root metadata; no production defaults are permitted."""
+
+    public_key_path: Path
+    expected_key_id: str
+    expected_public_key_sha256: str
+    repository_root: Path
 
 
 @dataclass(frozen=True)
@@ -706,54 +724,131 @@ def _authorization_from_payload(record: dict[str, Any], verification: Authorizat
         fail(f"authorization record fields are malformed: {error}")
 
 
-def _require_external_path(path: Path, repository_root: Path | None, label: str) -> None:
-    """Require a trusted input to be absolute and outside the mutable checkout."""
-    require(path.is_absolute(), f"{label} must be an absolute path")
-    if repository_root is not None:
-        root = repository_root.resolve()
-        require(root.is_absolute(), "mutable repository root must be absolute")
-        try:
-            path.resolve().relative_to(root)
-        except ValueError:
-            return
-        fail(f"{label} must be outside the mutable checkout")
+def _require_external_path(path: Path, repository_root: Path, label: str) -> None:
+    """Require a trusted input to be absolute, real, and outside the mutable checkout."""
+    require(isinstance(path, Path) and path.is_absolute(), f"{label} must be an absolute path")
+    require(isinstance(repository_root, Path) and repository_root.is_absolute(), "mutable repository root must be an absolute path")
+    try:
+        root_metadata = os.lstat(repository_root)
+    except OSError as error:
+        fail(f"mutable repository root is unavailable: {error}")
+    require(stat.S_ISDIR(root_metadata.st_mode) and not stat.S_ISLNK(root_metadata.st_mode), "mutable repository root must be a real directory")
+    try:
+        path.resolve().relative_to(repository_root.resolve())
+    except ValueError:
+        return
+    fail(f"{label} must be outside the mutable checkout")
+
+
+def _validate_trust_config(trust: AuthorizationTrustConfig) -> None:
+    """Require complete external trust policy before inspecting any key material."""
+    require(isinstance(trust, AuthorizationTrustConfig), "authorization trust configuration is required")
+    _require_external_path(trust.public_key_path, trust.repository_root, "trusted public key")
+    require_string(trust.expected_key_id, "authorization trust expected_key_id")
+    require_digest(trust.expected_public_key_sha256, "authorization trust expected_public_key_sha256")
+    try:
+        key_metadata = os.lstat(trust.public_key_path)
+        parent_metadata = os.lstat(trust.public_key_path.parent)
+    except OSError as error:
+        fail(f"trusted public-key custody is unavailable: {error}")
+    require(stat.S_ISREG(key_metadata.st_mode) and not stat.S_ISLNK(key_metadata.st_mode), "trusted public key must be a regular non-symlink file")
+    require(stat.S_ISDIR(parent_metadata.st_mode) and not stat.S_ISLNK(parent_metadata.st_mode), "trusted public-key parent must be a real directory")
+    if os.name == "posix":
+        require(key_metadata.st_uid == os.geteuid() and parent_metadata.st_uid == os.geteuid(), "trusted public-key custody is not owned by the current user")
+        require(stat.S_IMODE(key_metadata.st_mode) & 0o077 == 0 and stat.S_IMODE(parent_metadata.st_mode) & 0o077 == 0, "trusted public-key custody is not private")
+
+
+def _write_private_bytes(path: Path, payload: bytes, label: str) -> None:
+    """Write a private temporary file completely and durably."""
+    descriptor = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        descriptor = os.open(path, flags, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        written = 0
+        while written < len(payload):
+            written += os.write(descriptor, payload[written:])
+        os.fsync(descriptor)
+    except OSError as error:
+        fail(f"{label} write failed: {error}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _private_snapshot(source: Path, directory: Path, label: str) -> Path:
+    """Copy one bounded regular input and use only that private snapshot thereafter."""
+    source_descriptor, source_size = _open_nofollow_regular(source, MAX_AUTHORIZATION_PUBLIC_KEY_BYTES, label)
+    snapshot = directory / "trusted-public-key.pem"
+    try:
+        chunks: list[bytes] = []
+        remaining = source_size
+        while remaining:
+            chunk = os.read(source_descriptor, min(64 * 1024, remaining))
+            require(chunk, f"{label} changed while snapshotting")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        metadata = os.fstat(source_descriptor)
+        require(metadata.st_size == source_size, f"{label} changed during snapshot")
+        _write_private_bytes(snapshot, b"".join(chunks), f"{label} snapshot")
+        return snapshot
+    finally:
+        os.close(source_descriptor)
+
+
+def _openssl_executable() -> str:
+    executable = shutil.which("openssl")
+    require(executable is not None, "established Ed25519 tooling is unavailable: openssl was not found")
+    return executable
+
+
+def _inspect_ed25519_key(snapshot: Path, directory: Path) -> str:
+    """Use OpenSSL's parsed key type and SPKI DER to identify an Ed25519 public key."""
+    openssl = _openssl_executable()
+    text_result = run_bounded([openssl, "pkey", "-pubin", "-in", str(snapshot), "-text", "-noout"], timeout_seconds=10, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="Ed25519 public-key inspection")
+    require(text_result.returncode == 0 and "ED25519" in text_result.stdout.upper(), "trusted public key is not an Ed25519 public key")
+    der_path = directory / "trusted-public-key.der"
+    der_result = run_bounded([openssl, "pkey", "-pubin", "-in", str(snapshot), "-outform", "DER", "-out", str(der_path)], timeout_seconds=10, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="public-key fingerprint derivation")
+    require(der_result.returncode == 0, "trusted public-key fingerprint derivation failed")
+    fingerprint, _ = _sha256_file(der_path, MAX_AUTHORIZATION_PUBLIC_KEY_BYTES, "trusted public-key DER snapshot")
+    return fingerprint
 
 
 def verify_signed_authorization_record(
     envelope: Any,
-    trusted_public_key: Path,
+    trust: AuthorizationTrustConfig,
     identity: TrustedReleaseIdentity,
     revision_allowlist: AuthorizationRevisionAllowlist,
     *,
-    repository_root: Path | None = None,
-    trusted_key_id: str | None = None,
     now: datetime | None = None,
 ) -> IndependentReleaseAuthorization:
-    """Verify an owner-signed Ed25519 record using the installed OpenSSL CLI."""
-    require(shutil.which("openssl") is not None, "established Ed25519 tooling is unavailable: openssl was not found")
-    _require_external_path(trusted_public_key, repository_root, "trusted public key")
-    key_descriptor, _ = _open_nofollow_regular(trusted_public_key, 64 * 1024, "trusted public key")
-    os.close(key_descriptor)
+    """Verify an owner-signed Ed25519 record from one bounded trusted-key snapshot."""
+    _validate_trust_config(trust)
     record, signature, key_id = _validate_authorization_envelope(envelope)
-    if trusted_key_id is not None:
-        require(key_id == trusted_key_id, "authorization signing key is not the trusted key")
+    require(key_id == trust.expected_key_id, "authorization signing key is not the independently trusted key")
     require(record.get("contract") == AUTHORIZATION_CONTRACT and record.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization record contract version is unsupported")
     payload_auth = record.get("authorization")
     require(isinstance(payload_auth, dict) and payload_auth.get("signing_key_id") == key_id, "authorization signing key is not bound to the record")
     canonical = _canonical_json(record)
-    with tempfile.TemporaryDirectory(prefix="clashcookies-auth-verify-") as directory:
-        record_path = Path(directory) / "record.json"
-        signature_path = Path(directory) / "record.sig"
-        record_path.write_bytes(canonical)
-        signature_path.write_bytes(signature)
-        os.chmod(record_path, 0o600)
-        os.chmod(signature_path, 0o600)
+    with tempfile.TemporaryDirectory(prefix="clashcookies-auth-verify-") as directory_name:
+        directory = Path(directory_name)
+        snapshot = _private_snapshot(trust.public_key_path, directory, "trusted public key")
+        key_fingerprint = _inspect_ed25519_key(snapshot, directory)
+        require(key_fingerprint == trust.expected_public_key_sha256, "trusted public-key fingerprint does not match policy")
+        record_path = directory / "record.json"
+        signature_path = directory / "record.sig"
+        _write_private_bytes(record_path, canonical, "authorization record snapshot")
+        _write_private_bytes(signature_path, signature, "authorization signature snapshot")
+        openssl = _openssl_executable()
         try:
-            result = run_bounded([str(shutil.which("openssl")), "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(trusted_public_key), "-in", str(record_path), "-sigfile", str(signature_path)], timeout_seconds=10, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="Ed25519 authorization verification")
+            result = run_bounded([openssl, "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(snapshot), "-in", str(record_path), "-sigfile", str(signature_path)], timeout_seconds=10, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="Ed25519 authorization verification")
         except (OSError, subprocess.TimeoutExpired) as error:
             fail(f"Ed25519 authorization verification failed to run: {error}")
-        require(result.returncode == 0, "Ed25519 authorization signature is invalid")
-    verification = AuthorizationVerificationReceipt(AUTHORIZATION_VERIFIER, hashlib.sha256(canonical).hexdigest(), (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), key_id)
+        require(result.returncode == 0, f"Ed25519 authorization signature is invalid: {result.stderr.strip() or result.stdout.strip()}")
+    verification = AuthorizationVerificationReceipt(AUTHORIZATION_VERIFIER, hashlib.sha256(canonical).hexdigest(), (now or _now_utc()).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), key_id, AUTHORIZATION_SIGNATURE_ALGORITHM, key_fingerprint)
     authorization = _authorization_from_payload(record, verification)
     validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
     return authorization
@@ -763,104 +858,194 @@ def _identity_fingerprint(identity: TrustedReleaseIdentity) -> str:
     return hashlib.sha256(_canonical_json(_authorization_identity_payload(identity))).hexdigest()
 
 
-def _fsync_directory(path: Path) -> None:
-    """Fsync a journal directory where the platform exposes directory handles."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
+def _fsync_directory(path: Path, *, required: bool) -> None:
+    """Fsync a journal directory, failing closed when Linux durability is promised."""
+    if os.name != "posix":
+        if required:
+            fail("directory fsync durability is unavailable on this platform")
         return
+    descriptor = None
     try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(path, flags)
         os.fsync(descriptor)
-    except OSError:
-        pass
+    except OSError as error:
+        if required:
+            fail(f"authorization replay directory fsync failed: {error}")
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 class AuthorizationReplayJournal:
-    """Private durable replay state kept outside the mutable checkout."""
+    """Serialized replay state kept outside the mutable checkout."""
 
-    def __init__(self, root: Path, *, repository_root: Path | None = None) -> None:
+    def __init__(self, root: Path, *, repository_root: Path, development_mode: bool = False) -> None:
         _require_external_path(root, repository_root, "authorization replay journal")
         try:
             metadata = os.lstat(root)
         except OSError as error:
             fail(f"authorization replay journal is unavailable: {error}")
         require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "authorization replay journal must be a real directory")
-        os.chmod(root, 0o700)
         self.root = root
+        self.development_mode = development_mode
+        self.durable = os.name == "posix"
+        if not self.durable:
+            require(development_mode, "durable authorization replay storage is unsupported on Windows without explicit development mode")
+        self._validate_private_directory()
+        self.lock_path = self.root / ".journal.lock"
 
-    def _path(self, authorization: IndependentReleaseAuthorization) -> Path:
-        token = hashlib.sha256(authorization.retry_key.encode("utf-8")).hexdigest()
-        return self.root / f"{token}.json"
+    def _validate_private_directory(self) -> None:
+        metadata = os.stat(self.root)
+        if os.name == "posix":
+            require(metadata.st_uid == os.geteuid(), "authorization replay journal owner is not the current user")
+            require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, "authorization replay journal directory is not private")
 
-    def _state(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, state: str) -> dict[str, Any]:
-        return {"contract": AUTHORIZATION_CONTRACT, "version": AUTHORIZATION_CONTRACT_VERSION, "authorization_id": authorization.authorization_id, "retry_key": authorization.retry_key, "scope": authorization.scope, "identity_sha256": _identity_fingerprint(identity), "expires_at": authorization.expires_at, "state": state}
+    def _validate_private_file(self, path: Path, label: str) -> None:
+        metadata = os.lstat(path)
+        require(stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), f"{label} must be a private regular file")
+        if os.name == "posix":
+            require(metadata.st_uid == os.geteuid(), f"{label} owner is not the current user")
+            require(stat.S_IMODE(metadata.st_mode) & 0o077 == 0, f"{label} is not private")
 
-    def _write_new(self, path: Path, value: dict[str, Any]) -> None:
-        payload = _canonical_json(value)
+    @contextmanager
+    def _locked(self):
         descriptor = None
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.fchmod(descriptor, 0o600) if hasattr(os, "fchmod") else None
+            descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"0")
+                os.fsync(descriptor)
+            self._validate_private_file(self.lock_path, "authorization replay lock")
+            if os.name == "posix":
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            else:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            yield
+        except OSError as error:
+            fail(f"authorization replay journal lock failed: {error}")
+        finally:
+            if descriptor is not None:
+                try:
+                    if os.name == "posix":
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    else:
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                finally:
+                    os.close(descriptor)
+
+    def _path(self, authorization: IndependentReleaseAuthorization) -> Path:
+        token = hashlib.sha256(authorization.authorization_id.encode("utf-8")).hexdigest()
+        return self.root / f"{token}.json"
+
+    def _state(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, operation: str, state: str) -> dict[str, Any]:
+        verification = authorization.verification
+        return {"contract": AUTHORIZATION_CONTRACT, "version": AUTHORIZATION_CONTRACT_VERSION, "authorization_id": authorization.authorization_id, "retry_key": authorization.retry_key, "record_sha256": verification.record_sha256, "key_fingerprint": verification.key_fingerprint, "identity_sha256": _identity_fingerprint(identity), "scope": authorization.scope, "operation": operation, "recovery_context": authorization.recovery_context, "issued_at": authorization.issued_at, "expires_at": authorization.expires_at, "state": state}
+
+    def _sync_directory(self) -> None:
+        _fsync_directory(self.root, required=self.durable)
+
+    def _write_temp(self, value: dict[str, Any], prefix: str) -> Path:
+        payload = _canonical_json(value)
+        descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=self.root)
+        path = Path(name)
+        failure: Exception | None = None
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
             written = 0
             while written < len(payload):
                 written += os.write(descriptor, payload[written:])
             os.fsync(descriptor)
+            self._validate_private_file(path, "authorization replay temporary file")
+            return path
+        except (OSError, ProvenanceError) as error:
+            failure = error
+        finally:
+            os.close(descriptor)
+        self._remove_owned_temp(path)
+        if isinstance(failure, ProvenanceError):
+            raise failure
+        fail(f"authorization replay temporary write failed: {failure}")
+
+    def _remove_owned_temp(self, path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            fail(f"authorization replay temporary cleanup failed: {error}")
+
+    def _publish_no_replace(self, temporary: Path, destination: Path) -> None:
+        try:
+            os.link(temporary, destination)
         except FileExistsError:
             raise
         except OSError as error:
-            fail(f"authorization replay journal write failed: {error}")
+            self._remove_owned_temp(temporary)
+            fail(f"authorization replay reservation publication failed: {error}")
+        try:
+            self._sync_directory()
         finally:
-            if descriptor is not None:
-                os.close(descriptor)
-        _fsync_directory(self.root)
+            self._remove_owned_temp(temporary)
 
     def _read(self, path: Path) -> dict[str, Any]:
+        self._validate_private_file(path, "authorization replay entry")
         value = _read_bounded_json(path, "authorization replay entry")
         require(isinstance(value, dict), "authorization replay entry is malformed")
         return value
 
-    def _check_existing(self, existing: dict[str, Any], authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, now: datetime) -> None:
-        require(existing.get("contract") == AUTHORIZATION_CONTRACT and existing.get("version") == AUTHORIZATION_CONTRACT_VERSION, "authorization replay entry contract is unsupported")
-        require(existing.get("authorization_id") == authorization.authorization_id and existing.get("retry_key") == authorization.retry_key, "authorization retry identity mismatch")
-        require(existing.get("scope") == authorization.scope and existing.get("identity_sha256") == _identity_fingerprint(identity), "authorization replay identity mismatch")
+    def _check_existing(self, existing: dict[str, Any], expected: dict[str, Any], now: datetime) -> None:
+        for field, value in expected.items():
+            if field != "state":
+                require(existing.get(field) == value, "authorization replay record does not exactly match the signed authorization")
         require(existing.get("state") == "reserved", "authorization replay detected")
         require(_parse_timestamp(existing.get("expires_at"), "authorization replay expires_at") > now, "authorization replay entry is expired")
 
-    def reserve(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, *, now: datetime | None = None) -> None:
-        """Reserve once; same-identity, unexpired retries remain idempotent."""
-        validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
-        current = (now or _now_utc()).astimezone(timezone.utc)
-        path = self._path(authorization)
-        try:
-            self._write_new(path, self._state(authorization, identity, "reserved"))
-            return
-        except FileExistsError:
-            self._check_existing(self._read(path), authorization, identity, current)
+    def _verify_operation(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, operation: str, now: datetime | None) -> IndependentReleaseAuthorization:
+        require(operation in {"forward-release", "recovery-release"}, "authorization operation context is required")
+        authorization = verify_signed_authorization_record(envelope, trust, identity, revision_allowlist, now=now)
+        require(authorization.scope == operation, "authorization scope does not match the explicit operation context")
+        return authorization
 
-    def consume(self, authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, *, now: datetime | None = None) -> None:
-        """Atomically mark a reserved authorization consumed, preserving recovery on interruption."""
-        validate_independent_authorization(authorization, identity, revision_allowlist=revision_allowlist, now=now)
-        current = (now or _now_utc()).astimezone(timezone.utc)
-        path = self._path(authorization)
-        require(path.exists(), "authorization replay reservation is missing")
-        existing = self._read(path)
-        self._check_existing(existing, authorization, identity, current)
-        temporary = self.root / f".{path.name}.{os.getpid()}.tmp"
-        try:
-            self._write_new(temporary, self._state(authorization, identity, "consumed"))
-            os.replace(temporary, path)
-            _fsync_directory(self.root)
-        except FileExistsError:
-            fail("authorization replay journal interruption left a temporary entry")
-        except OSError as error:
-            fail(f"authorization replay journal commit failed: {error}")
-        finally:
+    def reserve(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, now: datetime | None = None) -> None:
+        """Verify and reserve an authorization; retries require exact signed-record equality."""
+        with self._locked():
+            authorization = self._verify_operation(envelope, identity, revision_allowlist, trust, operation, now)
+            current = (now or _now_utc()).astimezone(timezone.utc)
+            path = self._path(authorization)
+            expected = self._state(authorization, identity, operation, "reserved")
             try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+                temporary = self._write_temp(expected, ".authorization-reservation-")
+                try:
+                    self._publish_no_replace(temporary, path)
+                except FileExistsError:
+                    self._remove_owned_temp(temporary)
+                    self._check_existing(self._read(path), expected, current)
+            except FileExistsError:
+                self._check_existing(self._read(path), expected, current)
+
+    def consume(self, envelope: Any, identity: TrustedReleaseIdentity, revision_allowlist: AuthorizationRevisionAllowlist, trust: AuthorizationTrustConfig, *, operation: str, now: datetime | None = None) -> None:
+        """Verify and atomically consume a reservation under the same serialized lock."""
+        with self._locked():
+            authorization = self._verify_operation(envelope, identity, revision_allowlist, trust, operation, now)
+            current = (now or _now_utc()).astimezone(timezone.utc)
+            path = self._path(authorization)
+            require(path.exists(), "authorization replay reservation is missing")
+            expected = self._state(authorization, identity, operation, "reserved")
+            self._check_existing(self._read(path), expected, current)
+            temporary = self._write_temp(self._state(authorization, identity, operation, "consumed"), ".authorization-consume-")
+            try:
+                os.replace(temporary, path)
+                self._sync_directory()
+            except OSError as error:
+                fail(f"authorization replay journal commit failed: {error}")
+            finally:
+                self._remove_owned_temp(temporary)
 
 
 def validate_independent_authorization(authorization: IndependentReleaseAuthorization, identity: TrustedReleaseIdentity, *, revision_allowlist: AuthorizationRevisionAllowlist | None = None, now: datetime | None = None) -> None:
@@ -900,6 +1085,7 @@ def validate_independent_authorization(authorization: IndependentReleaseAuthoriz
     _parse_timestamp(verification.verified_at, "authorization.verification.verified_at")
     require_string(verification.key_reference, "authorization.verification.key_reference")
     require(verification.algorithm == AUTHORIZATION_SIGNATURE_ALGORITHM, "authorization verification algorithm is unsupported")
+    require_digest(verification.key_fingerprint, "authorization.verification.key_fingerprint")
 
 
 def validate_authenticated_provenance_binding(provenance: AuthenticatedProvenance, identity: TrustedReleaseIdentity) -> None:
