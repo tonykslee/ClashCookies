@@ -50,7 +50,14 @@ MAX_AGGREGATE_BYTES = MAX_SERVICE_ZIP_BYTES + provenance.MAX_BUNDLE_BYTES + prov
 MAX_RECEIVING_SECONDS = 180
 MAX_SSH_OUTPUT_BYTES = 64 * 1024
 MAX_VALIDATOR_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
-MAX_TEMPORARY_BYTES = (2 * MAX_SERVICE_ZIP_BYTES) + (2 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_VALIDATOR_EXPANDED_BYTES
+MAX_CHECKSUM_BYTES = 512
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_SIDECAR_BYTES = MAX_CHECKSUM_BYTES + MAX_MANIFEST_BYTES
+# This is a simultaneous-capacity admission bound, not an expected-use
+# estimate.  It covers the framed input, attempt snapshot, publication copy,
+# retained-publication verification snapshot, bundle/root snapshots, archive
+# snapshots, extracted archive/sidecars, and validator expansion.
+MAX_TEMPORARY_BYTES = (4 * MAX_SERVICE_ZIP_BYTES) + (3 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_SIDECAR_BYTES + MAX_VALIDATOR_EXPANDED_BYTES
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"}
 
 
@@ -331,7 +338,7 @@ def _validate_endpoint(endpoint: SshDeliveryEndpoint, repository_root: Path) -> 
     _assert_private_input(endpoint.known_hosts, repository_root, "trusted known_hosts", 1024 * 1024)
     _assert_private_input(endpoint.identity_file, repository_root, "disposable SSH identity", 1024 * 1024)
     def strict_remote_path(value: str, label: str) -> None:
-        _require(isinstance(value, str) and value.startswith("/") and "\x00" not in value and "\\" not in value, f"{label} must be an explicit normalized absolute path")
+        _require(isinstance(value, str) and re.fullmatch(r"/[A-Za-z0-9_./:-]*", value) is not None, f"{label} must be an explicit normalized absolute path")
         _require(os.path.normpath(value) == value and ".." not in Path(value).parts, f"{label} must be an explicit normalized absolute path")
 
     strict_remote_path(endpoint.destination, "SSH destination")
@@ -515,7 +522,7 @@ def _extract_original_entries(snapshot: provenance.ZipSnapshot, identity: Any, o
             for name in names:
                 info = infos[name]
                 _require(not info.is_dir() and ".." not in name.split("/") and not name.startswith("/"), "required ZIP entry is unsafe")
-                maximum = identity.archive_bytes if name == identity.archive_name else 1024 * 1024
+                maximum = identity.archive_bytes if name == identity.archive_name else MAX_CHECKSUM_BYTES if name.endswith(".sha256") else MAX_MANIFEST_BYTES
                 _require(info.file_size <= maximum, f"required ZIP entry {name} exceeds its limit")
                 destination = output_root / name
                 with archive.open(info, "r") as source, destination.open("xb") as target:
@@ -696,6 +703,7 @@ def _fsync_existing_publication(path: Path, expected_bundle: tuple[str, int] | N
 def _publish_payload(staging: Path, publication_root: Path, identity: Any, expected_bundle: tuple[str, int] | None = None, expected_authorization: tuple[str, int] | None = None) -> tuple[Path, bool]:
     destination = publication_root / _safe_publication_name(identity)
     _require(staging.parent.absolute() == publication_root.absolute(), "publication staging must be directly inside the configured publication directory")
+    _attempt_bytes(staging, MAX_TEMPORARY_BYTES)
     _fsync_tree(staging)
     root_metadata = os.lstat(publication_root)
     root_descriptor = os.open(publication_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -775,13 +783,20 @@ def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publi
 def _owned_temp_directory(parent: Path, prefix: str) -> Iterator[Path]:
     """Allocate and remove one attempt-owned directory under a stable parent."""
     parent_metadata = os.lstat(parent)
+    _require(stat.S_ISDIR(parent_metadata.st_mode) and not stat.S_ISLNK(parent_metadata.st_mode), "temporary directory parent is not a real directory")
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     parent_descriptor = os.open(parent, flags)
     temporary: Path | None = None
+    temporary_descriptor: int | None = None
+    temporary_identity: tuple[int, int, int, int] | None = None
     try:
         opened = os.fstat(parent_descriptor)
         _require((opened.st_dev, opened.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during open")
         temporary = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+        temporary_descriptor = os.open(temporary, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        temporary_metadata = os.fstat(temporary_descriptor)
+        _require(stat.S_ISDIR(temporary_metadata.st_mode) and not stat.S_ISLNK(temporary_metadata.st_mode), "attempt-owned temporary directory is not a real directory")
+        temporary_identity = (temporary_metadata.st_dev, temporary_metadata.st_ino, temporary_metadata.st_mode, temporary_metadata.st_uid)
         current = os.lstat(parent)
         _require((current.st_dev, current.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during allocation")
         yield temporary
@@ -791,11 +806,18 @@ def _owned_temp_directory(parent: Path, prefix: str) -> Iterator[Path]:
             opened = os.fstat(parent_descriptor)
             _require((current.st_dev, current.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during cleanup")
             _require((opened.st_dev, opened.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent descriptor changed during cleanup")
-            if temporary is not None and os.path.lexists(temporary):
+            if temporary is not None:
+                _require(os.path.lexists(temporary), "attempt-owned temporary directory disappeared")
                 metadata = os.lstat(temporary)
+                _require(temporary_descriptor is not None and temporary_identity is not None, "attempt-owned temporary directory identity is unavailable")
+                opened_temporary = os.fstat(temporary_descriptor)
                 _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "attempt-owned temporary directory was substituted")
+                _require((metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid) == temporary_identity, "attempt-owned temporary directory was substituted")
+                _require((opened_temporary.st_dev, opened_temporary.st_ino, opened_temporary.st_mode, opened_temporary.st_uid) == temporary_identity, "attempt-owned temporary directory descriptor changed")
                 shutil.rmtree(temporary)
         finally:
+            if temporary_descriptor is not None:
+                os.close(temporary_descriptor)
             os.close(parent_descriptor)
 
 
@@ -974,10 +996,6 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         while not all(output_done.values()):
             remaining = deadline - time.monotonic()
             _require(remaining > 0, "bounded SSH artifact delivery timed out")
-            if write_error:
-                _fail(f"SSH artifact stream failed: {write_error[0]}")
-            if output_errors:
-                _fail(f"SSH receiver output drain failed: {output_errors[0]}")
             for label in ("stdout", "stderr"):
                 if output_done[label]:
                     continue
@@ -992,8 +1010,12 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
                 _require(len(collected[label]) <= limits.max_subprocess_output_bytes, "SSH receiver output exceeds the limit")
         writer_thread.join(timeout=max(0.0, min(1.0, deadline - time.monotonic())))
         _require(not writer_thread.is_alive(), "SSH artifact writer did not terminate within the transport deadline")
-        _require(not write_error, f"SSH artifact stream failed: {write_error[0] if write_error else ''}")
         process.wait(timeout=max(0.1, min(1.0, deadline - time.monotonic())))
+        if write_error:
+            diagnostics = bytes(collected["stderr"]).decode("utf-8", "replace")[-400:]
+            _fail(f"SSH artifact stream failed: {write_error[0]}; receiver diagnostics: {diagnostics}")
+        if output_errors:
+            _fail(f"SSH receiver output drain failed: {output_errors[0]}")
         _require(process.returncode == 0, f"SSH artifact receiver failed: {bytes(collected['stderr']).decode('utf-8', 'replace')[-400:]}")
         try:
             acknowledgment = json.loads(bytes(collected["stdout"]).decode("utf-8"))
@@ -1003,18 +1025,32 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         return acknowledgment
     finally:
         try:
-            if process.poll() is None:
-                if os.name == "posix":
+            if os.name == "posix":
+                try:
                     os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
+                except ProcessLookupError:
+                    pass
                 try:
                     process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    if os.name == "posix":
-                        os.killpg(process.pid, signal.SIGKILL)
-                    else:
-                        process.kill()
+                    pass
+                try:
+                    # The direct child may already have exited while a
+                    # descendant retains stdout/stderr.  Kill the whole
+                    # session regardless of the child's current state.
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+            elif process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
                     process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired) as error:
             cleanup_error = cleanup_error or error

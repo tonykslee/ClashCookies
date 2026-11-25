@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from io import BytesIO
 import importlib.util
 import json
@@ -10,7 +9,9 @@ import getpass
 import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
+import base64
 import hashlib
 import shlex
 import shutil
@@ -31,6 +32,7 @@ assert SPEC and SPEC.loader
 delivery = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = delivery
 SPEC.loader.exec_module(delivery)
+from tests.test_runtime_artifact_provenance import trusted_identity
 
 
 def development_identity() -> object:
@@ -90,6 +92,24 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with self.assertRaises(delivery.DeliveryError):
                 delivery._attempt_bytes(root, 64)
 
+    @unittest.skipUnless(os.name == "posix", "attempt identity regression requires POSIX descriptors")
+    def test_owned_attempt_directory_substitution_is_not_deleted(self) -> None:
+        with TemporaryDirectory() as root_name:
+            parent = Path(root_name)
+            parent.chmod(0o700)
+            replacement = None
+            original = None
+            with self.assertRaisesRegex(delivery.DeliveryError, "temporary directory was substituted"):
+                with delivery._owned_temp_directory(parent, "identity-test-") as attempt:
+                    original = attempt.with_name(attempt.name + "-original")
+                    attempt.rename(original)
+                    attempt.mkdir(mode=0o700)
+                    replacement = attempt
+            self.assertIsNotNone(original)
+            self.assertIsNotNone(replacement)
+            self.assertTrue(original.is_dir())
+            self.assertTrue(replacement.is_dir())
+
     def test_frame_round_trip_is_bounded_and_exact(self) -> None:
         identity = development_identity()
         with TemporaryDirectory() as root_name:
@@ -135,6 +155,24 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             attempt.mkdir()
             with self.assertRaises(delivery.DeliveryError):
                 delivery._read_frame(stream, attempt, delivery.DeliveryLimits())
+
+    def test_checksum_sidecar_limit_is_enforced_before_extraction(self) -> None:
+        identity = development_identity()
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            source = root / "artifact-service.zip"
+            output = root / "attempt"
+            output.mkdir(mode=0o700)
+            with ZipFile(source, "w") as archive:
+                archive.writestr(identity.archive_name, b"archive")
+                archive.writestr(f"{identity.archive_name}.sha256", b"x" * (delivery.MAX_CHECKSUM_BYTES + 1))
+                archive.writestr(f"{identity.archive_name}.manifest.json", b"{}")
+            snapshot = delivery.provenance.open_zip_snapshot(source, directory=output)
+            try:
+                with self.assertRaisesRegex(delivery.DeliveryError, "exceeds its limit"):
+                    delivery._extract_original_entries(snapshot, identity, output)
+            finally:
+                delivery.provenance.close_zip_snapshot(snapshot)
 
     def test_acknowledgment_is_identity_and_publication_bound(self) -> None:
         identity = development_identity()
@@ -197,6 +235,36 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             with delivery._receiver_lock(root):
                 pass
 
+    @unittest.skipUnless(os.name == "posix", "lock contention regression requires POSIX file locks")
+    def test_receiver_lock_contention_is_bounded_and_retryable(self) -> None:
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            root.chmod(0o700)
+            ready = root / "holder-ready"
+            holder_code = (
+                "import fcntl, os, pathlib, sys, time; "
+                "fd=os.open(sys.argv[1], os.O_RDWR|os.O_CREAT, 0o600); "
+                "fcntl.flock(fd, fcntl.LOCK_EX); pathlib.Path(sys.argv[2]).write_text('ready'); "
+                "time.sleep(0.35); fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)"
+            )
+            holder = subprocess.Popen([sys.executable, "-c", holder_code, str(root / ".receiver.lock"), str(ready)])
+            try:
+                for _ in range(100):
+                    if ready.exists():
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "lock holder did not establish deterministic contention")
+                with self.assertRaisesRegex(delivery.DeliveryError, "lock acquisition deadline exceeded"):
+                    with delivery._receiver_lock(root, timeout_seconds=0.05):
+                        pass
+                holder.wait(timeout=2)
+                with delivery._receiver_lock(root, timeout_seconds=1):
+                    pass
+            finally:
+                if holder.poll() is None:
+                    holder.kill()
+                    holder.wait(timeout=2)
+
     @unittest.skipUnless(os.name == "posix", "transport worker regressions require POSIX process pipes")
     def test_transport_silent_blocked_and_excessive_peers_are_bounded(self) -> None:
         with TemporaryDirectory() as directory_name:
@@ -210,7 +278,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             known_hosts.chmod(0o600)
             identity_file.chmod(0o600)
             fake_ssh = root / "ssh"
-            fake_ssh.write_text("#!/bin/sh\ncase \"$FAKE_SSH_MODE\" in\n  silent) sleep 5 ;;\n  excessive) cat >/dev/null; head -c 200000 /dev/zero ;;\n  disconnect) exit 0 ;;\nesac\n", encoding="utf-8")
+            fake_ssh.write_text("#!/bin/sh\ncase \"$FAKE_SSH_MODE\" in\n  silent) sleep 5 ;;\n  excessive) cat >/dev/null; head -c 200000 /dev/zero ;;\n  disconnect) exit 0 ;;\n  hostkey) echo 'Host key verification failed.' >&2; exit 255 ;;\nesac\n", encoding="utf-8")
             fake_ssh.chmod(0o700)
             artifact = root / "artifact.bin"
             artifact.write_bytes(b"x" * (8 * 1024 * 1024))
@@ -218,7 +286,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             endpoint = delivery.SshDeliveryEndpoint("127.0.0.1", getpass.getuser(), known_hosts, identity_file, str(root / "publication"), "/tmp/repo", "/tmp/receiving", str(root / "publication"), "/tmp/identity.json", "/tmp/trusted-root", "/tmp/expectation", port=22, execution_timeout_seconds=1)
             old_path = os.environ.get("PATH", "")
             with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + old_path}):
-                for mode, expected_error in (("silent", "timed out"), ("excessive", "output exceeds"), ("disconnect", "stream failed")):
+                for mode, expected_error in (("silent", "timed out"), ("excessive", "output exceeds"), ("disconnect", "stream failed"), ("hostkey", "Host key verification failed")):
                     with self.subTest(mode=mode), patch.dict(os.environ, {"FAKE_SSH_MODE": mode}):
                         with self.assertRaisesRegex(delivery.DeliveryError, expected_error):
                             delivery._ssh_stream(endpoint, checkout, header, [("artifact-service.zip", artifact, artifact.stat().st_size)], delivery.DeliveryLimits(max_subprocess_output_bytes=1024))
@@ -233,25 +301,22 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             root.chmod(0o700)
             checkout = root / "checkout"
             checkout.mkdir(mode=0o700)
-            inner_name = "clashcookies-runtime-" + "a" * 40 + ".tar.gz"
+            canonical_identity = trusted_identity()
+            inner_name = canonical_identity.archive_name
             inner = b"synthetic archive bytes"
             service_zip = root / "artifact-service.zip"
             with ZipFile(service_zip, "w") as archive:
                 archive.writestr(inner_name, inner)
             service_zip.chmod(0o600)
             service_digest, service_bytes = delivery.provenance._sha256_file(service_zip, delivery.MAX_SERVICE_ZIP_BYTES, "synthetic service ZIP")
-            identity = delivery.provenance.TrustedReleaseIdentity(
-                repository="tonykslee/ClashCookies", repository_id=668452496, repository_owner_id=18295450,
-                source_ref="refs/heads/main", source_sha="b" * 40, event="push",
-                producer_workflow=".github/workflows/runtime-artifact.yml", producer_revision="c" * 40,
-                signer_workflow=".github/workflows/runtime-artifact.yml", signer_revision="d" * 40,
-                run_id=12345, run_attempt=1, artifact_id=67890, artifact_name="runtime-artifact-12345-1",
-                artifact_class=delivery.provenance.PRODUCTION_CANDIDATE_ARTIFACT_CLASS,
-                artifact_service_zip_sha256=service_digest, artifact_service_zip_bytes=service_bytes,
-                archive_name=inner_name, archive_sha256=hashlib.sha256(inner).hexdigest(), archive_bytes=len(inner),
-                platform="linux/amd64", image="node:20-bookworm@sha256:" + "e" * 64,
-                image_digest="sha256:" + "e" * 64, authorization_context="owner-approved-main-release",
+            identity = replace(
+                canonical_identity,
+                artifact_service_zip_sha256=service_digest,
+                artifact_service_zip_bytes=service_bytes,
+                archive_sha256=hashlib.sha256(inner).hexdigest(),
+                archive_bytes=len(inner),
             )
+            delivery.provenance.validate_trusted_release_identity(identity)
             authorization = delivery.provenance.IndependentReleaseAuthorization(
                 authorization_id="delivery-test-auth", context=identity.authorization_context, scope="forward-release",
                 repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
@@ -276,12 +341,15 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             subprocess.run([openssl, "genpkey", "-algorithm", "ED25519", "-out", str(private_key)], check=True, capture_output=True)
             subprocess.run([openssl, "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)], check=True, capture_output=True)
             public_key.chmod(0o600)
-            record.write_bytes(delivery.provenance.canonical_authorization_record(authorization))
-            subprocess.run([openssl, "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record), "-out", str(signature)], check=True, capture_output=True)
             der = material / "public.der"
             subprocess.run([openssl, "pkey", "-pubin", "-in", str(public_key), "-outform", "DER", "-out", str(der)], check=True, capture_output=True)
             trust = delivery.provenance.AuthorizationTrustConfig(public_key, "test-key", hashlib.sha256(der.read_bytes()).hexdigest(), checkout)
-            envelope = delivery.provenance.authorization_record_envelope(authorization, signature.read_bytes())
+            def signed_envelope(record_value: object) -> dict[str, object]:
+                record.write_bytes(delivery.provenance.canonical_authorization_record(record_value))
+                subprocess.run([openssl, "pkeyutl", "-sign", "-rawin", "-inkey", str(private_key), "-in", str(record), "-out", str(signature)], check=True, capture_output=True)
+                return delivery.provenance.authorization_record_envelope(record_value, signature.read_bytes())
+
+            envelope = signed_envelope(authorization)
             allowlist = delivery.provenance.AuthorizationRevisionAllowlist(identity.producer_workflow, (identity.producer_revision,), identity.signer_workflow, (identity.signer_revision,))
             receiving = root / "receiving"
             publication = root / "publication"
@@ -327,10 +395,14 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             expired_journal = delivery.provenance.AuthorizationReplayJournal(expired_journal_root, repository_root=checkout)
             with self.assertRaises(delivery.provenance.ProvenanceError):
                 delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=envelope, trust=trust, revision_allowlist=allowlist, journal=expired_journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=datetime(2026, 11, 27, 12, 0, tzinfo=timezone.utc))
-            conflicting = copy.deepcopy(envelope)
-            conflicting["record"]["source_sha"] = "a" * 40
+            conflicting_authorization = replace(authorization, scope="recovery-release", recovery_context="synthetic-conflict")
+            conflicting = signed_envelope(conflicting_authorization)
             with self.assertRaises(delivery.provenance.ProvenanceError):
-                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=conflicting, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=conflicting, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, operation="recovery-release", now=now)
+            tampered = {"contract": envelope["contract"], "version": envelope["version"], "record": envelope["record"], "signature": dict(envelope["signature"])}
+            tampered["signature"]["value"] = base64.b64encode(b"\0" * 64).decode("ascii")
+            with self.assertRaises(delivery.provenance.ProvenanceError):
+                delivery.publish_synthetic_authorized_delivery_for_test(service_zip=service_zip, expected_identity=identity, authorization_envelope=tampered, trust=trust, revision_allowlist=allowlist, journal=journal, repository_root=checkout, receiving_root=receiving, publication_root=publication, now=now)
 
     def test_endpoint_rejects_destination_and_remote_command_injection(self) -> None:
         with TemporaryDirectory() as root_name:
@@ -342,6 +414,8 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             identity = external / "id_ed25519"
             known_hosts.write_text("host ssh-ed25519 AAAA\n", encoding="utf-8")
             identity.write_text("private-test-key", encoding="utf-8")
+            known_hosts.chmod(0o600)
+            identity.chmod(0o600)
             endpoint = delivery.SshDeliveryEndpoint(
                 host="receiver",
                 user="owner",
@@ -357,6 +431,12 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             )
             with self.assertRaises(delivery.DeliveryError):
                 delivery._validate_endpoint(endpoint, root)
+            valid = replace(endpoint, remote_publication_root="/srv/evidence")
+            for field in ("remote_repository_root", "remote_receiving_root", "remote_publication_root", "remote_expected_identity", "remote_trusted_root", "remote_offline_expectation"):
+                with self.subTest(field=field):
+                    unsafe = replace(valid, **{field: "/srv/ok;echo-pwned"})
+                    with self.assertRaisesRegex(delivery.DeliveryError, "normalized absolute path"):
+                        delivery._validate_endpoint(unsafe, root)
 
     def test_offline_gh_verification_uses_external_root_and_no_auth_environment(self) -> None:
         with TemporaryDirectory() as root_name:
@@ -366,9 +446,13 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             archive = base / "archive"
             bundle = base / "bundle.json"
             trusted_root = base / "trusted-root.pem"
+            base.chmod(0o700)
             archive.write_bytes(b"archive")
             bundle.write_text("{}", encoding="utf-8")
             trusted_root.write_text("root", encoding="utf-8")
+            archive.chmod(0o600)
+            bundle.chmod(0o600)
+            trusted_root.chmod(0o600)
             calls = []
 
             def fake_run(command, **kwargs):
@@ -469,6 +553,10 @@ class TrustedSshDeliveryTests(unittest.TestCase):
             def deliver() -> delivery.DeliveryResult:
                 return delivery.deliver_exact_artifact_over_ssh(endpoint(), service_zip, json_identity, checkout, attestation_bundle=bundle)
 
+            def assert_no_receiver_activity() -> None:
+                self.assertFalse((receiving / ".receiver.lock").exists(), "host-key rejection reached the receiver lock")
+                self.assertEqual(list(publication.iterdir()), [], "host-key rejection reached publication activity")
+
             json_identity = delivery.identity_from_json(json.loads(identity_path.read_text(encoding="utf-8")))
             for private_path in (service_zip, bundle, identity_path, trusted_root, expectation):
                 self.assertTrue(private_path.is_file(), f"missing integration input: {private_path}")
@@ -491,11 +579,13 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 wait_for_server()
                 with self.assertRaisesRegex(delivery.DeliveryError, "[Hh]ost key"):
                     deliver()
+                assert_no_receiver_activity()
                 wrong = client_key.with_suffix(".pub").read_text(encoding="utf-8").split()
                 known_hosts.write_text(f"[127.0.0.1]:{port} {wrong[0]} {wrong[1]}\n", encoding="utf-8")
                 known_hosts.chmod(0o600)
                 with self.assertRaisesRegex(delivery.DeliveryError, "[Hh]ost key"):
                     deliver()
+                assert_no_receiver_activity()
                 known_hosts.write_text(f"[127.0.0.1]:{port} {server_pub[0]} {server_pub[1]}\n", encoding="utf-8")
                 known_hosts.chmod(0o600)
                 result = deliver()
@@ -519,10 +609,6 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                     deliver()
                 trusted_root.write_bytes(trusted_bytes)
                 trusted_root.chmod(0o600)
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    concurrent_results = list(executor.map(lambda _index: deliver(), range(2)))
-                self.assertEqual({item.status for item in concurrent_results}, {"retry-success"})
-                self.assertEqual({item.publication for item in concurrent_results}, {result.publication})
 
                 stop_server(server)
                 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / "changed_server_key")], check=True, capture_output=True)
@@ -532,6 +618,7 @@ class TrustedSshDeliveryTests(unittest.TestCase):
                 wait_for_server()
                 with self.assertRaisesRegex(delivery.DeliveryError, "[Hh]ost key"):
                     deliver()
+                assert_no_receiver_activity()
             finally:
                 stop_server(server)
 

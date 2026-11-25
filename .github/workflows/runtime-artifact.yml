@@ -157,11 +157,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          trusted_root="$RUNNER_TEMP/trusted_root.jsonl"
+          trusted_root_dir="$RUNNER_TEMP/trusted-root-custody"
+          rm -rf "$trusted_root_dir"
+          install -d -m 700 "$trusted_root_dir"
+          trusted_root="$trusted_root_dir/trusted_root.jsonl"
           "$GH_ATTESTATION_CLI" attestation trusted-root > "$trusted_root"
           test -s "$trusted_root"
           chmod 600 "$trusted_root"
-          sha256sum "$trusted_root" | tee "$RUNNER_TEMP/trusted-root.sha256"
+          sha256sum "$trusted_root" | tee "$trusted_root_dir/trusted-root.sha256"
           echo "Trusted root was acquired before network-disabled verification and retained outside the checkout." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Select exact artifact-service ZIP and inner archive
@@ -367,7 +370,7 @@ jobs:
           mkdir -m 700 "$custody"
           install -m 600 "$RUNNER_TEMP/artifact-service.zip" "$custody/artifact-service.zip"
           install -m 600 "$bundle" "$custody/attestation-bundle.json"
-          install -m 600 "$RUNNER_TEMP/trusted_root.jsonl" "$custody/trusted_root.jsonl"
+          install -m 600 "$RUNNER_TEMP/trusted-root-custody/trusted_root.jsonl" "$custody/trusted_root.jsonl"
           jq -n \
             --arg repository "$GITHUB_REPOSITORY" \
             --argjson repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
@@ -429,6 +432,7 @@ jobs:
           test "$CC_RECEIVER_NETWORK_DISABLED" = 1
           python -m unittest \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_receiver_and_exclusive_host_pinning \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_receiver_lock_contention_is_bounded_and_retryable \
             tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry -v
 
       - name: Verify genuine attestation offline without token or network
@@ -439,9 +443,19 @@ jobs:
           RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
-          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
-          test -n "$archive" -a -n "$bundle"
+          source_archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          source_bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
+          test -n "$source_archive" -a -n "$source_bundle"
+          offline_custody="$RUNNER_TEMP/offline-verifier-custody"
+          rm -rf "$offline_custody"
+          install -d -m 700 "$offline_custody"
+          archive_name="$(basename "$source_archive")"
+          install -m 600 "$source_archive" "$offline_custody/$archive_name"
+          install -m 600 "$source_bundle" "$offline_custody/attestation-bundle.json"
+          install -m 600 "$RUNNER_TEMP/trusted-root-custody/trusted_root.jsonl" "$offline_custody/trusted_root.jsonl"
+          archive="$offline_custody/$archive_name"
+          bundle="$offline_custody/attestation-bundle.json"
+          trusted_root="$offline_custody/trusted_root.jsonl"
           jq -n \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
@@ -459,13 +473,15 @@ jobs:
             --arg image "$RUNTIME_ARTIFACT_IMAGE" \
             --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
             '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,repository_visibility:$repository_visibility,signer_workflow:$signer_workflow,signer_revision:$signer_revision,source_ref:$source_ref,source_sha:$source_sha,event:$event,workflow_name:$workflow_name,run_id:$run_id,run_attempt:$run_attempt,platform:$platform,image:$image,image_digest:$image_digest,artifact_class:"development-runtime-evidence"}' \
-            > "$RUNNER_TEMP/offline-expectation.json"
+            > "$offline_custody/offline-expectation.json"
+          chmod 600 "$offline_custody/offline-expectation.json"
+          expectation_path="$offline_custody/offline-expectation.json"
           runner_user="$(id -un)"
           sudo -n unshare --net --mount-proc --fork runuser -u "$runner_user" -- env -i \
             PATH="/usr/bin:/bin" \
             GH_ATTESTATION_CLI="$GH_ATTESTATION_CLI" \
             PYTHONPATH="$GITHUB_WORKSPACE/scripts" \
-            python3 - "$archive" "$bundle" "$RUNNER_TEMP/trusted_root.jsonl" "$RUNNER_TEMP/offline-expectation.json" "$GITHUB_WORKSPACE" <<'PY'
+            python3 - "$archive" "$bundle" "$trusted_root" "$expectation_path" "$GITHUB_WORKSPACE" <<'PY'
           import json
           import sys
           from pathlib import Path
