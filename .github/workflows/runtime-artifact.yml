@@ -73,6 +73,9 @@ jobs:
           name: runtime-artifact-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/retrieved-runtime-artifact
 
+      - name: Run Linux descriptor-boundary regressions
+        run: python -m unittest discover -s tests -p 'test_runtime_artifact_security.py' -v
+
       - name: Validate retrieved bytes and safely extract
         run: |
           set -euo pipefail

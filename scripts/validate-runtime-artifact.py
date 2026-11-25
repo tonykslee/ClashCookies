@@ -12,6 +12,7 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -103,6 +104,21 @@ class Snapshot:
             os.close(self.fd)
         except OSError:
             pass
+
+
+@dataclass
+class ExtractionWorkspace:
+    path: Path
+    name: str
+    fd: int
+
+
+@dataclass(frozen=True)
+class DestinationParent:
+    path: Path
+    fd: int | None
+    device: int
+    inode: int
 
 
 class BoundedReader:
@@ -476,7 +492,8 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
                 require(metadata_total <= limits.metadata_total_bytes, "aggregate physical metadata exceeds the limit")
                 payload = read_exact(size, "extension metadata")
                 if padded > size:
-                    skip(padded - size, "extension metadata padding")
+                    padding = read_exact(padded - size, "extension metadata padding")
+                    require(not any(padding), "nonzero extension metadata padding")
                 if typeflag in (ord("x"), ord("g")):
                     validate_pax_records(payload, "global" if typeflag == ord("g") else "local", limits)
                     if typeflag == ord("g"):
@@ -489,6 +506,8 @@ def preflight_metadata(snapshot: Snapshot, limits: Limits) -> dict[str, int]:
             consecutive_extensions = 0
             require(typeflag in (0, ord("0"), ord("2"), ord("5")), f"unsupported physical tar header type: {chr(typeflag)!r}")
             require(size <= limits.file_bytes, "archive entry size exceeds the limit")
+            physical_name = header[0:100].split(b"\0", 1)[0]
+            require(not (typeflag in (0, ord("0")) and physical_name.endswith(b"/")), "legacy NUL-type directory headers are unsupported")
             require(typeflag in (0, ord("0")) or size == 0, "non-regular tar entry has a payload")
             if typeflag in (0, ord("0")):
                 require(size <= limits.expanded_bytes, "expanded archive exceeds the size limit")
@@ -838,10 +857,12 @@ def safe_destination(destination: Path) -> Path:
     return destination
 
 
-def open_destination_parent(destination: Path) -> int:
+def open_destination_parent(destination: Path) -> DestinationParent:
     parent = destination.parent
     metadata = os.lstat(parent)
     require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "extraction destination parent is unsafe")
+    if os.name == "nt":
+        return DestinationParent(parent, None, metadata.st_dev, metadata.st_ino)
     descriptor: int | None = None
     try:
         descriptor = os.open(parent, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | nonblocking_flag() | directory_flag())
@@ -856,52 +877,93 @@ def open_destination_parent(destination: Path) -> int:
     if opened.st_dev != metadata.st_dev or opened.st_ino != metadata.st_ino:
         os.close(descriptor)
         fail("extraction destination parent changed during open")
-    return descriptor
+    return DestinationParent(parent, descriptor, opened.st_dev, opened.st_ino)
 
 
-def publish_without_replacement(source: Path, destination: Path) -> None:
-    """Atomically publish only through a trusted parent and no-replace primitive."""
-    require(source.parent == destination.parent, "temporary extraction is outside the destination parent")
-    parent_fd = open_destination_parent(destination)
-    try:
+def ensure_destination_parent_unchanged(destination: Path, parent: DestinationParent) -> None:
+    current = os.lstat(destination.parent)
+    require(stat.S_ISDIR(current.st_mode) and not stat.S_ISLNK(current.st_mode), "extraction destination parent is unsafe")
+    require(current.st_dev == parent.device and current.st_ino == parent.inode, "extraction destination parent changed during extraction")
+    if parent.fd is not None:
+        opened = os.fstat(parent.fd)
+        require(opened.st_dev == parent.device and opened.st_ino == parent.inode, "extraction destination parent descriptor changed during extraction")
+
+
+def create_extraction_workspace(parent: Path, parent_boundary: DestinationParent) -> ExtractionWorkspace:
+    for _ in range(16):
+        name = f".runtime-artifact-extract-{secrets.token_hex(12)}"
         if sys.platform == "linux":
-            if os.environ.get("RUNTIME_ARTIFACT_TEST_DISABLE_ATOMIC_PUBLISH") == "1":
-                fail("atomic no-replacement publication is unavailable")
+            assert parent_boundary.fd is not None
             try:
                 libc = ctypes.CDLL(None, use_errno=True)
-                renameat2 = libc.renameat2
+                mkdirat = libc.mkdirat
             except AttributeError:
-                fail("atomic no-replacement publication is unavailable")
-            renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-            renameat2.restype = ctypes.c_int
-            result = renameat2(parent_fd, os.fsencode(source.name), parent_fd, os.fsencode(destination.name), 1)  # RENAME_NOREPLACE
-            if result == 0:
-                return
-            error_number = ctypes.get_errno()
-            if error_number == errno.EEXIST:
-                fail("extraction destination appeared during validation")
-            fail("atomic no-replacement publication is unavailable" if error_number in (errno.ENOSYS, errno.EINVAL) else os.strerror(error_number))
-        if os.name == "nt":
-            require(not os.path.lexists(destination), "extraction destination appeared during validation")
-            os.rename(source, destination)
-            return
-        fail("atomic no-replacement publication is unavailable")
-    finally:
+                fail("trusted extraction workspace creation is unavailable")
+            mkdirat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            mkdirat.restype = ctypes.c_int
+            if mkdirat(parent_boundary.fd, os.fsencode(name), 0o700) != 0:
+                if ctypes.get_errno() == errno.EEXIST:
+                    continue
+                fail(f"trusted extraction workspace creation failed: {os.strerror(ctypes.get_errno())}")
+            workspace_fd = os.open(name, os.O_RDONLY | binary_flag() | cloexec_flag() | nofollow_flag() | directory_flag(), dir_fd=parent_boundary.fd)
+            return ExtractionWorkspace(Path(f"/proc/self/fd/{workspace_fd}"), name, workspace_fd)
+        path = parent / name
         try:
-            os.close(parent_fd)
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            continue
+        return ExtractionWorkspace(path, name, -1)
+    fail("could not allocate a private extraction workspace")
+
+
+def cleanup_extraction_workspace(workspace: ExtractionWorkspace, parent_boundary: DestinationParent) -> None:
+    if workspace.fd >= 0:
+        try:
+            os.close(workspace.fd)
         except OSError:
             pass
+    try:
+        if os.name == "nt":
+            shutil.rmtree(workspace.path, ignore_errors=True)
+        else:
+            require(parent_boundary.fd is not None, "trusted extraction workspace cleanup is unavailable")
+            shutil.rmtree(workspace.name, dir_fd=parent_boundary.fd, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def publish_without_replacement(workspace: ExtractionWorkspace, destination: Path, parent_boundary: DestinationParent) -> None:
+    """Atomically publish only through the already trusted parent boundary."""
+    if sys.platform == "linux":
+        assert parent_boundary.fd is not None
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = libc.renameat2
+        except AttributeError:
+            fail("atomic no-replacement publication is unavailable")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(parent_boundary.fd, os.fsencode(workspace.name), parent_boundary.fd, os.fsencode(destination.name), 1)  # RENAME_NOREPLACE
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            fail("extraction destination appeared during validation")
+        fail("atomic no-replacement publication is unavailable" if error_number in (errno.ENOSYS, errno.EINVAL) else os.strerror(error_number))
+    if os.name == "nt":
+        require(not os.path.lexists(destination), "extraction destination appeared during validation")
+        os.rename(workspace.path, destination)
+        return
+    fail("atomic no-replacement publication is unavailable")
 
 
 def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[str, str], destination: Path, limits: Limits, validated_digest: str) -> None:
     destination = safe_destination(destination)
-    temporary = Path(tempfile.mkdtemp(prefix=".runtime-artifact-extract-", dir=destination.parent))
-    os.chmod(temporary, 0o700)
+    parent_boundary = open_destination_parent(destination)
+    workspace: ExtractionWorkspace | None = None
+    published = False
     try:
-        if os.environ.get("RUNTIME_ARTIFACT_TEST_ENTRY_MISMATCH") == "1":
-            entries[0] = Entry(entries[0].name, entries[0].kind, entries[0].size + 1, entries[0].mode, entries[0].link)
-        elif os.environ.get("RUNTIME_ARTIFACT_TEST_CONTENT_MISMATCH") == "1":
-            file_hashes["dist/ClashCookies.js"] = "0" * 64
+        workspace = create_extraction_workspace(destination.parent, parent_boundary)
         by_name = {entry.name: entry for entry in entries}
         directory_modes = {entry.name: entry.mode for entry in entries if entry.kind == "directory"}
         symlinks: list[Entry] = []
@@ -910,7 +972,7 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
             expected = by_name.get(entry.name)
             require(expected is not None and expected == entry, f"archive entry changed between validation and extraction: {entry.name}")
             seen.add(entry.name)
-            target = temporary / Path(*entry.name.split("/"))
+            target = workspace.path / Path(*entry.name.split("/"))
             if entry.kind == "directory":
                 target.mkdir(parents=True, exist_ok=True)
             elif entry.kind == "file":
@@ -932,8 +994,6 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
                             output.write(chunk)
                     require(total == entry.size, f"archive entry has unexpected content length: {entry.name}")
                     require(digest.hexdigest() == file_hashes.get(entry.name), f"archive entry content changed between validation and extraction: {entry.name}")
-                    if os.environ.get("RUNTIME_ARTIFACT_TEST_FAIL_EXTRACTION") == "1":
-                        fail("injected extraction-stage failure")
                 except Exception:
                     try:
                         os.close(fd)
@@ -944,18 +1004,31 @@ def extract_archive(snapshot: Snapshot, entries: list[Entry], file_hashes: dict[
             else:
                 symlinks.append(entry)
         for entry in symlinks:
-            os.symlink(entry.link, temporary / Path(*entry.name.split("/")))
+            os.symlink(entry.link, workspace.path / Path(*entry.name.split("/")))
         for name, mode in sorted(directory_modes.items(), key=lambda item: item[0].count("/"), reverse=True):
-            os.chmod(temporary / Path(*name.split("/")), mode & 0o7777)
+            os.chmod(workspace.path / Path(*name.split("/")), mode & 0o7777)
         require(seen == set(by_name), "archive entry set changed between validation and extraction")
         snapshot.verify(validated_digest)
+        ensure_destination_parent_unchanged(destination, parent_boundary)
         require(not os.path.lexists(destination), "extraction destination appeared during validation")
-        if os.environ.get("RUNTIME_ARTIFACT_TEST_DESTINATION_APPEARS") == "1":
-            destination.mkdir()
-        publish_without_replacement(temporary, destination)
+        publish_without_replacement(workspace, destination, parent_boundary)
+        published = True
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
         raise
+    finally:
+        if workspace is not None and not published:
+            cleanup_extraction_workspace(workspace, parent_boundary)
+        elif workspace is not None:
+            if workspace.fd >= 0:
+                try:
+                    os.close(workspace.fd)
+                except OSError:
+                    pass
+        if parent_boundary.fd is not None:
+            try:
+                os.close(parent_boundary.fd)
+            except OSError:
+                pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -985,26 +1058,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-long-name-bytes", type=int, default=Limits.long_name_bytes)
     parser.add_argument("--max-retained-metadata-bytes", type=int, default=Limits.retained_metadata_bytes)
     return parser.parse_args()
-
-
-def apply_test_hook(archive_path: Path, checksum_path: Path) -> None:
-    """Deterministic negative-test seam; hooks fail closed or mutate only the original input."""
-    hook = os.environ.get("RUNTIME_ARTIFACT_TEST_HOOK")
-    if hook == "replace-source":
-        replacement = archive_path.with_name(f"{archive_path.name}.replacement")
-        replacement.write_bytes(b"replacement source")
-        os.replace(replacement, archive_path)
-    elif hook == "mutate-source-preserve-stat":
-        metadata = os.stat(archive_path)
-        with archive_path.open("r+b") as stream:
-            stream.seek(40 if metadata.st_size > 40 else 0)
-            original = stream.read(1)
-            stream.seek(-1, os.SEEK_CUR)
-            stream.write(bytes((original[0] ^ 0xFF,)))
-            stream.flush()
-        os.utime(archive_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-    elif hook == "mutate-checksum":
-        checksum_path.write_text(f"{'0' * 64}  {archive_path.name}\n", encoding="ascii")
 
 
 def peak_memory_bytes() -> int | None:
@@ -1040,7 +1093,6 @@ def main() -> int:
     snapshot = snapshot_source(archive_path, limits)
     try:
         digest = snapshot.digest
-        apply_test_hook(archive_path, checksum_path)
         validate_checksum(archive_path, checksum_path, digest)
         preflight = preflight_metadata(snapshot, limits)
         entries, metadata_files, file_hashes = collect_entries(snapshot, limits)

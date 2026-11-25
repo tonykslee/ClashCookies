@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 type Entry = { name: string; content?: string; type?: "file" | "directory" | "symlink"; link?: string; mode?: number };
-type Extension = { type: string; payload?: Buffer; declaredSize?: number };
+type Extension = { type: string; payload?: Buffer; declaredSize?: number; padding?: Buffer };
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
 
 function tar(entries: Entry[]): Buffer {
@@ -70,9 +70,17 @@ function withExtensions(archive: Buffer, extensions: Extension[]): Buffer {
     extensionBlocks.push(tarHeader("PaxHeader", extension.type.charCodeAt(0), declaredSize));
     const padded = Buffer.alloc(Math.ceil(declaredSize / 512) * 512);
     payload.copy(padded, 0, 0, Math.min(payload.length, padded.length));
+    if (extension.padding) extension.padding.copy(padded, declaredSize, 0, Math.min(extension.padding.length, padded.length - declaredSize));
     extensionBlocks.push(padded);
   }
   return gzipSync(Buffer.concat([raw.subarray(0, raw.length - 1024), ...extensionBlocks, Buffer.alloc(1024)]));
+}
+
+function withLegacyNulDirectory(archive: Buffer): Buffer {
+  const raw = gunzipSync(archive);
+  const legacyDirectory = tarHeader("legacy/", 0, 512);
+  const hiddenHeader = tarHeader("hidden", 0, 0);
+  return gzipSync(Buffer.concat([raw.subarray(0, raw.length - 1024), legacyDirectory, hiddenHeader, Buffer.alloc(1024)]));
 }
 
 function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicSymlink?: boolean; intermediateSymlink?: boolean; unsafeMode?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
@@ -165,14 +173,6 @@ function runValidation(archivePath: string, ...extra: string[]) {
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
 }
 
-function runValidationWithEnv(archivePath: string, envPatch: Record<string, string>, ...extra: string[]) {
-  const command = process.platform === "win32" ? "python" : "bash";
-  const commandArgs = process.platform === "win32"
-    ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py")]
-    : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh")];
-  return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), env: { ...process.env, ...envPatch }, encoding: "utf8", stdio: "pipe" });
-}
-
 function expectValidationFailure(archivePath: string, reason: string, ...extra: string[]) {
   let stderr = "";
   try {
@@ -181,16 +181,6 @@ function expectValidationFailure(archivePath: string, reason: string, ...extra: 
     stderr = String((error as { stderr?: unknown }).stderr ?? "");
   }
   if (!stderr) throw new Error(`expected validation subprocess to fail with stderr containing ${JSON.stringify(reason)}`);
-  expect(stderr).toContain(reason);
-}
-
-function expectValidationFailureWithEnv(archivePath: string, envPatch: Record<string, string>, reason: string, ...extra: string[]) {
-  let stderr = "";
-  try {
-    runValidationWithEnv(archivePath, envPatch, ...extra);
-  } catch (error) {
-    stderr = String((error as { stderr?: unknown }).stderr ?? "");
-  }
   expect(stderr).toContain(reason);
 }
 
@@ -470,53 +460,19 @@ describe("runtime artifact validation", () => {
     rmSync(value.root, { recursive: true, force: true });
   });
 
-  it("keeps the validated snapshot when the original pathname is replaced", () => {
-    if (process.platform === "win32") return;
-    const value = fixture();
-    const destination = join(value.root, "replaced-source-output");
-    expect(runValidationWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "replace-source" }, "--extract", destination)).toContain(sourceSha);
-    expect(lstatSync(join(destination, "dist", "ClashCookies.js")).isFile()).toBe(true);
-    rmSync(value.root, { recursive: true, force: true });
+  it("rejects nonzero extension padding and legacy NUL-type directory framing before parser dispatch", () => {
+    const padded = fixture();
+    const hiddenHeader = tarHeader("hidden", "x".charCodeAt(0), 0);
+    writeFileSync(padded.archivePath, withExtensions(readFileSync(padded.archivePath), [{ type: "x", payload: paxRecord("size", "1024"), padding: hiddenHeader }]));
+    refreshExternalIntegrity(padded.archivePath);
+    expectValidationFailure(padded.archivePath, "nonzero extension metadata padding");
+    rmSync(padded.root, { recursive: true, force: true });
+
+    const legacy = fixture();
+    writeFileSync(legacy.archivePath, withLegacyNulDirectory(readFileSync(legacy.archivePath)));
+    refreshExternalIntegrity(legacy.archivePath);
+    expectValidationFailure(legacy.archivePath, "legacy NUL-type directory headers are unsupported");
+    rmSync(legacy.root, { recursive: true, force: true });
   });
 
-  it("keeps the validated snapshot when the original bytes mutate with preserved stat", () => {
-    if (process.platform === "win32") return;
-    const value = fixture();
-    const destination = join(value.root, "mutated-source-output");
-    expect(runValidationWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "mutate-source-preserve-stat" }, "--extract", destination)).toContain(sourceSha);
-    expect(lstatSync(join(destination, "dist", "ClashCookies.js")).isFile()).toBe(true);
-    rmSync(value.root, { recursive: true, force: true });
-  });
-
-  it("rejects a mutated sidecar without publishing", () => {
-    const value = fixture();
-    const destination = join(value.root, "mutated-sidecar-output");
-    expectValidationFailureWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_HOOK: "mutate-checksum" }, "checksum metadata does not match archive bytes", "--extract", destination);
-    expect(() => lstatSync(destination)).toThrow();
-    rmSync(value.root, { recursive: true, force: true });
-  });
-
-  it.each([
-    ["entry contract", { RUNTIME_ARTIFACT_TEST_ENTRY_MISMATCH: "1" }, "archive entry changed between validation and extraction"],
-    ["entry content", { RUNTIME_ARTIFACT_TEST_CONTENT_MISMATCH: "1" }, "archive entry content changed between validation and extraction"],
-    ["extraction stage", { RUNTIME_ARTIFACT_TEST_FAIL_EXTRACTION: "1" }, "injected extraction-stage failure"],
-    ["destination publication", { RUNTIME_ARTIFACT_TEST_DESTINATION_APPEARS: "1" }, "extraction destination appeared during validation"],
-  ] as const)("cleans up after %s failure without publishing", (_label, envPatch, reason) => {
-    if (process.platform === "win32" && _label === "destination publication") return;
-    const value = fixture();
-    const destination = join(value.root, `failed-${_label.replaceAll(" ", "-")}`);
-    expectValidationFailureWithEnv(value.archivePath, envPatch, reason, "--extract", destination);
-    if (_label === "destination publication") expect(lstatSync(destination).isDirectory()).toBe(true);
-    else expect(() => lstatSync(destination)).toThrow();
-    rmSync(value.root, { recursive: true, force: true });
-  });
-
-  it("fails closed when Linux atomic no-replacement publication is disabled", () => {
-    if (process.platform !== "linux") return;
-    const value = fixture();
-    const destination = join(value.root, "unsupported-atomic-output");
-    expectValidationFailureWithEnv(value.archivePath, { RUNTIME_ARTIFACT_TEST_DISABLE_ATOMIC_PUBLISH: "1" }, "atomic no-replacement publication is unavailable", "--extract", destination);
-    expect(() => lstatSync(destination)).toThrow();
-    rmSync(value.root, { recursive: true, force: true });
-  });
 });
