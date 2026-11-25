@@ -26,13 +26,13 @@ Malformed, contradictory, unsupported, missing, stale, or ambiguous fields are r
 The verified upstream API behavior is:
 
 1. Fetch `GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}`. This exposes the exact attempt and retains the original event SHA/ref on reruns.
-2. Fetch `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?per_page=100`. The response is run-scoped and includes artifact ID, name, `size_in_bytes`, `digest`, expiry, and `workflow_run`, but no artifact attempt field.
-3. Require the exact artifact ID, exact attempt-qualified name `runtime-artifact-{run_id}-{run_attempt}`, repository/run correlation, API digest/size, valid retention, and exactly one match.
-4. Hash the downloaded artifact-service ZIP and inspect it as a ZIP. Require exactly one expected inner `tar.gz` whose digest and byte count match the release identity.
+2. Fetch `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?per_page=100` through the bounded CLI path. The complete response is run-scoped and includes artifact ID, name, `size_in_bytes`, `digest`, expiry, and `workflow_run`, but no artifact attempt field.
+3. Correlate the exact attempt's source SHA/branch/repository/owner and PR head/base/test-merge identity with the artifact's head SHA/branch/repository. Require the exact artifact ID, exact attempt-qualified name `runtime-artifact-{run_id}-{run_attempt}`, API digest/size, valid retention, coherent attempt chronology, and exactly one match.
+4. Retrieve that exact artifact ID through the bounded CLI, copy it into a private descriptor-backed snapshot, and hash/parse the same snapshot. Require exactly one expected inner `tar.gz` whose digest and byte count match the release identity.
 
 The service ZIP digest is not the inner archive digest. Latest-by-name lookup, a moving branch tip, a duplicate/ambiguous match, a different run or attempt, an expired/missing artifact, a stale API page, or a partial rerun that cannot bind both identities is rejected. No fallback artifact is selected.
 
-The `--select-exact-artifact` command exercised by the non-production workflow emits `authoritative: false`; it is a selection diagnostic, not authorization.
+The `--selection-request` command exercised by the non-production workflow emits `authoritative: false` and distinguishes `byteVerified: false` metadata-only selection from `byteVerified: true` selection after consuming the exact ZIP bytes. It is a selection diagnostic, not authorization. Snapshot or parser failures remove the temporary downloaded ZIP and never extract arbitrary ZIP paths.
 
 ## Authorization trust boundary
 

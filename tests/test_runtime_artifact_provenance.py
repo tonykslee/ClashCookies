@@ -140,12 +140,13 @@ def run_metadata(context: dict[str, object] | None = None) -> dict[str, object]:
         "path": SIGNER_WORKFLOW,
         "head_branch": context["pr_head_ref"] if context["event"] == "pull_request" else "dev",
         "repository": {"full_name": REPOSITORY, "id": REPOSITORY_ID, "owner": {"id": REPOSITORY_OWNER_ID}},
+        "head_repository": {"full_name": REPOSITORY, "id": REPOSITORY_ID, "owner": {"id": REPOSITORY_OWNER_ID}},
     }
     if context["event"] == "pull_request":
         metadata["pull_requests"] = [{
             "number": 2188,
-            "head": {"sha": PR_HEAD_SHA, "ref": context["pr_head_ref"]},
-            "base": {"sha": PR_BASE_SHA, "ref": "dev"},
+            "head": {"sha": PR_HEAD_SHA, "ref": context["pr_head_ref"], "repo": {"id": REPOSITORY_ID}},
+            "base": {"sha": PR_BASE_SHA, "ref": "dev", "repo": {"id": REPOSITORY_ID}},
         }]
     return metadata
 
@@ -189,6 +190,73 @@ def trusted_identity() -> object:
         image_digest=provenance.RELEASE_IMAGE.split("@", 1)[1],
         authorization_context="owner-approved-main-release",
     )
+
+
+def selection_request() -> object:
+    """Return a complete non-authoritative PR selection request."""
+    return provenance.ArtifactSelectionRequest(
+        repository=provenance.RELEASE_REPOSITORY,
+        repository_id=provenance.RELEASE_REPOSITORY_ID,
+        repository_owner_id=provenance.RELEASE_REPOSITORY_OWNER_ID,
+        source_ref="refs/pull/2190/merge",
+        source_sha=MAIN_SOURCE_SHA,
+        event="pull_request",
+        signer_workflow=provenance.RELEASE_SIGNER_WORKFLOW,
+        signer_revision=SIGNER_SHA,
+        run_id=RUN_ID,
+        run_attempt=RUN_ATTEMPT,
+        artifact_name=provenance.expected_artifact_name(RUN_ID, RUN_ATTEMPT),
+        artifact_class=provenance.DEVELOPMENT_ARTIFACT_CLASS,
+        archive_name=ARCHIVE_NAME,
+        platform=provenance.RELEASE_PLATFORM,
+        image=provenance.RELEASE_IMAGE,
+        image_digest=provenance.RELEASE_IMAGE.split("@", 1)[1],
+        authorization_context="ci-selection-only",
+        run_head_repository=provenance.RELEASE_REPOSITORY,
+        run_head_repository_id=provenance.RELEASE_REPOSITORY_ID,
+        run_head_repository_owner_id=provenance.RELEASE_REPOSITORY_OWNER_ID,
+        run_head_ref="refs/heads/feature/trusted-artifact-provenance",
+        run_head_sha=PR_HEAD_SHA,
+        pull_request_number=2190,
+        pull_request_head_sha=PR_HEAD_SHA,
+        pull_request_head_ref="refs/heads/feature/trusted-artifact-provenance",
+        pull_request_base_sha="e" * 40,
+        pull_request_base_ref="refs/heads/dev",
+    )
+
+
+def selection_run_metadata(request: object | None = None) -> dict[str, object]:
+    """Return an exact-attempt API response shape for selection tests."""
+    request = request or selection_request()
+    return {
+        "id": request.run_id,
+        "run_attempt": request.run_attempt,
+        "event": request.event,
+        "path": request.signer_workflow,
+        "created_at": "2026-11-25T19:45:14Z",
+        "run_started_at": "2026-11-25T19:45:14Z",
+        "updated_at": "2026-11-25T19:48:13Z",
+        "head_sha": request.run_head_sha,
+        "head_branch": request.run_head_ref.removeprefix("refs/heads/"),
+        "repository": {"full_name": request.repository, "id": request.repository_id, "owner": {"id": request.repository_owner_id}},
+        "head_repository": {"full_name": request.run_head_repository, "id": request.run_head_repository_id, "owner": {"id": request.run_head_repository_owner_id}},
+        "pull_requests": [{"number": request.pull_request_number, "head": {"sha": request.pull_request_head_sha, "ref": request.pull_request_head_ref.removeprefix("refs/heads/"), "repo": {"id": request.run_head_repository_id}}, "base": {"sha": request.pull_request_base_sha, "ref": request.pull_request_base_ref.removeprefix("refs/heads/"), "repo": {"id": request.repository_id}}}],
+    }
+
+
+def selection_artifact_metadata(request: object | None = None) -> dict[str, object]:
+    """Return one exact artifact API entry correlated to the attempt."""
+    request = request or selection_request()
+    return {
+        "id": ARTIFACT_ID,
+        "name": request.artifact_name,
+        "size_in_bytes": ARTIFACT_ZIP_BYTES,
+        "digest": "sha256:" + ARTIFACT_ZIP_SHA,
+        "expired": False,
+        "created_at": "2026-11-25T19:47:00Z",
+        "expires_at": "2026-11-28T19:46:58Z",
+        "workflow_run": {"id": request.run_id, "repository_id": request.repository_id, "head_repository_id": request.run_head_repository_id, "head_branch": request.run_head_ref.removeprefix("refs/heads/"), "head_sha": request.run_head_sha},
+    }
 
 
 class RuntimeArtifactProvenanceTests(unittest.TestCase):
@@ -293,7 +361,7 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
             recovery_context=None,
             verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, "2026-11-25T00:00:00Z", "test-key"),
         )
-        result = provenance.evaluate_production_eligibility(evidence, identity, authorization)
+        result = provenance.evaluate_production_eligibility(evidence, identity, authorization, now=datetime(2026, 11, 25, 12, tzinfo=timezone.utc))
         self.assertFalse(result.eligible)
         self.assertEqual(result.reason_code, "production-producer-unavailable")
 
@@ -347,6 +415,102 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
                 provenance.select_exact_artifact([candidate], identity, now=datetime(2026, 11, 25, tzinfo=timezone.utc))
         with self.assertRaises(provenance.ProvenanceError):
             provenance.select_exact_artifact([metadata, dict(metadata)], identity, now=datetime(2026, 11, 25, tzinfo=timezone.utc))
+
+    def test_shared_cli_selection_validates_complete_pr_attempt_and_metadata_response(self) -> None:
+        request = selection_request()
+        run = selection_run_metadata(request)
+        response = {"total_count": 1, "artifacts": [selection_artifact_metadata(request)]}
+        with patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value=response):
+            selected = provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+        self.assertFalse(selected.byte_verified)
+        self.assertIsNone(selected.archive_sha256)
+        self.assertEqual(selected.artifact_id, ARTIFACT_ID)
+
+    def test_attempt_and_artifact_correlation_rejects_source_branch_owner_repo_and_head_mutations(self) -> None:
+        request = selection_request()
+        base = selection_run_metadata(request)
+        mutations = (
+            ("head_sha", "0" * 40),
+            ("head_branch", "wrong"),
+            ("repository", {"full_name": "evil/repo", "id": request.repository_id, "owner": {"id": request.repository_owner_id}}),
+            ("head_repository", {"full_name": request.repository, "id": request.repository_id, "owner_id": 999}),
+        )
+        for field, value in mutations:
+            candidate = copy.deepcopy(base)
+            candidate[field] = value
+            with self.subTest(field=field), self.assertRaises(provenance.ProvenanceError):
+                provenance.validate_exact_run_attempt_request_metadata(candidate, request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+        artifact = selection_artifact_metadata(request)
+        for field, value in (("head_sha", "0" * 40), ("head_branch", "wrong"), ("head_repository_id", 999), ("repository_id", 999)):
+            candidate = copy.deepcopy(artifact)
+            candidate["workflow_run"][field] = value
+            response = {"total_count": 1, "artifacts": [candidate]}
+            with self.subTest(artifact_field=field), patch.object(provenance, "fetch_run_metadata", return_value=base), patch.object(provenance, "fetch_run_artifacts", return_value=response), self.assertRaises(provenance.ProvenanceError):
+                provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+
+    def test_selection_rejects_incomplete_api_pages_future_artifacts_and_contradictory_time(self) -> None:
+        request = selection_request()
+        run = selection_run_metadata(request)
+        for response in ({"total_count": 2, "artifacts": [selection_artifact_metadata(request)]}, {"total_count": 1, "artifacts": [selection_artifact_metadata(request), selection_artifact_metadata(request)]}):
+            with self.subTest(response=response), patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value=response), self.assertRaises(provenance.ProvenanceError):
+                provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+        future = selection_artifact_metadata(request)
+        future["created_at"] = "2026-11-25T21:00:00Z"
+        with patch.object(provenance, "fetch_run_metadata", return_value=run), patch.object(provenance, "fetch_run_artifacts", return_value={"total_count": 1, "artifacts": [future]}), self.assertRaises(provenance.ProvenanceError):
+            provenance.select_artifact_request(request, now=datetime(2026, 11, 25, 20, tzinfo=timezone.utc))
+
+    def test_zip_hash_and_parser_use_one_snapshot_and_reject_independent_digest_mutations(self) -> None:
+        identity = trusted_identity()
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "artifact.zip"
+            with ZipFile(source, "w") as archive:
+                archive.writestr(identity.archive_name, b"runtime-bytes")
+            snapshot = provenance.open_zip_snapshot(source)
+            try:
+                source.write_bytes(b"substituted-after-snapshot")
+                digest, size = provenance.inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name)
+                self.assertEqual(digest, hashlib.sha256(b"runtime-bytes").hexdigest())
+                self.assertEqual(size, len(b"runtime-bytes"))
+            finally:
+                provenance.close_zip_snapshot(snapshot)
+            identity = replace(identity, archive_sha256="0" * 64)
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.inspect_artifact_service_zip(source, identity)
+
+    def test_zip_metadata_limits_and_nonregular_inputs_fail_closed(self) -> None:
+        identity = trusted_identity()
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "artifact.zip"
+            with ZipFile(source, "w") as archive:
+                archive.comment = b"x" * (provenance.MAX_ZIP_COMMENT_BYTES + 1)
+                archive.writestr(identity.archive_name, b"runtime-bytes")
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.inspect_artifact_service_zip(source, identity)
+            directory_path = Path(directory) / "not-a-file"
+            directory_path.mkdir()
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.open_zip_snapshot(directory_path)
+
+    def test_authorization_lifecycle_is_deterministic_and_recovery_is_not_forward_authority(self) -> None:
+        identity = trusted_identity()
+        authorization = provenance.IndependentReleaseAuthorization(
+            authorization_id="auth-1", context=identity.authorization_context, scope="forward-release",
+            repository=identity.repository, repository_id=identity.repository_id, repository_owner_id=identity.repository_owner_id,
+            source_ref=identity.source_ref, source_sha=identity.source_sha, event=identity.event,
+            signer_workflow=identity.signer_workflow, signer_revision=identity.signer_revision, run_id=identity.run_id, run_attempt=identity.run_attempt,
+            artifact_id=identity.artifact_id, artifact_name=identity.artifact_name, artifact_class=identity.artifact_class,
+            artifact_service_zip_sha256=identity.artifact_service_zip_sha256, artifact_service_zip_bytes=identity.artifact_service_zip_bytes,
+            archive_name=identity.archive_name, archive_sha256=identity.archive_sha256, archive_bytes=identity.archive_bytes,
+            platform=identity.platform, image=identity.image, image_digest=identity.image_digest,
+            issued_at="2026-11-25T12:00:00Z", expires_at="2026-11-25T13:00:00Z", retry_key="auth-1", recovery_context=None,
+            verification=provenance.AuthorizationVerificationReceipt("test", "7" * 64, "2026-11-25T12:00:00Z", "test-key"),
+        )
+        provenance.validate_independent_authorization(authorization, identity, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
+        self.assertFalse(provenance.evaluate_production_eligibility("not-authenticated", identity, authorization, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc)).authoritative)
+        for field, value in (("expires_at", "2026-11-25T12:00:00Z"), ("issued_at", "2026-11-25T14:00:00Z"), ("scope", "recovery-release"), ("retry_key", "other")):
+            candidate = replace(authorization, **{field: value})
+            with self.subTest(field=field), self.assertRaises(provenance.ProvenanceError):
+                provenance.validate_independent_authorization(candidate, identity, now=datetime(2026, 11, 25, 12, 30, tzinfo=timezone.utc))
 
     def test_exact_run_attempt_api_route_is_used(self) -> None:
         response = provenance.subprocess.CompletedProcess([], 0, '{"id": 45506759751, "run_attempt": 2}', "")
