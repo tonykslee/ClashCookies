@@ -3,15 +3,16 @@ Project handoff and priorities for this repo (`ClashCookies`):
 > **Owner deployment decision — 2026-11-19:** The replacement broker/immutable-executor/systemd deployment project was withdrawn; the existing SSH `~/deploy-prod.sh` workflow was restored by [PR #2086](https://github.com/tonykslee/ClashCookies/pull/2086) (`f98b2c4`). A reviewed and explicitly owner-approved `dev` → `main` merge automatically deploys through this established workflow. Feature code and migrations should be production-ready before merging into `dev`; current backup/recovery/runtime checks remain release-time operator verification, not a second infrastructure project. Historical Gate 1/broker proposals below are superseded.
 
 1) Git workflow and commit standards
-- Always create a feature branch before edits using:
-  - `./scripts/start-feature.sh <2-4 word description>`
+- For new feature work, the owner creates the feature branch before edits using:
+  - `bash ./scripts/start-feature.sh "short feature description"`
+- Reuse the assigned branch/PR for review corrections.
 - Never commit directly to `main` or `dev`.
 - Keep commits small, scoped, and conventional (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`).
-- Before finalizing:
-  - run typecheck/tests when code behavior changed
-  - generate commit message
-  - save to `.git/AI_COMMIT_MSG`
-  - run `./scripts/commit-feature.sh`
+- Codex completes and publishes each assigned feature slice without a separate owner publication handoff, following the [canonical workflow](ai-development-workflow.md):
+  - run applicable local typecheck/tests and report any unavailable CI-only evidence
+  - write `.git/AI_COMMIT_MSG` and `.git/AI_PR_BODY_CUSTOM.md`
+  - run `bash ./scripts/commit-feature.sh && gh pr edit --body-file .git/AI_PR_BODY_CUSTOM.md` (use the verified actual PR number in `gh pr edit` when needed)
+  - verify and report the PR URL, pushed SHA, custom description and validation status; do not bypass freshness/hooks or merge/deploy
 - Avoid destructive git operations unless explicitly requested.
 - **Standing documentation-only merge approval (2026-11-12):** For changes strictly limited to documentation, roadmap/vision/priorities, policy decisions, or roadmap-progress reconciliation, reuse an appropriate feature branch/PR or create one targeting `dev`, review the actual GitHub diff and mergeability/CI/review state, and **merge without requesting separate user approval**. Keep the PR audit trail; never commit directly to `dev` or `main`. Validate doc formatting and agreement vs proposal vs shipped status; do not run unrelated code tests.
 - **Code-changing boundary:** That standing approval does not extend to application code, database schema/migrations, runtime configuration, deployment/infrastructure, or any production/currency issuance/fulfillment operation. These still require explicit user approval to merge or execute. Never promote `dev` to `main` implicitly.
