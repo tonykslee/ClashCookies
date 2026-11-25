@@ -55,6 +55,7 @@ function buildManifest(root) {
       name: process.env.ARTIFACT_NAME,
       format: "tar.gz",
       contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"],
+      artifactClass: "development-runtime-evidence",
       nonProductionEvidence: true,
     },
     source: { gitSha: sourceSha.toLowerCase(), context: "git-archive", untrackedFilesExcluded: true, localEnvironmentFilesExcluded: true, cleanSourceContext: true },
@@ -67,9 +68,10 @@ function buildManifest(root) {
         : "This development artifact is evidence only and is not eligible for production promotion.",
     },
     provenance: {
+      contractVersion: 1,
       integrity: "archive SHA-256 checksum and manifest binding",
       authenticated: false,
-      note: "Integrity metadata does not authenticate the source revision or authorize production use.",
+      note: "This legacy development manifest is not the authenticated envelope; integrity metadata does not authenticate the source revision or authorize production use.",
     },
     workflow: {
       name: process.env.GITHUB_WORKFLOW || "local",
@@ -77,6 +79,9 @@ function buildManifest(root) {
       runAttempt: process.env.GITHUB_RUN_ATTEMPT || "1",
       ref: process.env.GITHUB_REF || "local",
       repository: process.env.GITHUB_REPOSITORY || "local",
+      sourceRef: process.env.GITHUB_REF || "local",
+      signerWorkflow: process.env.GITHUB_WORKFLOW_PATH || "local",
+      signerRevision: process.env.GITHUB_WORKFLOW_SHA || "local",
       url: process.env.GITHUB_RUN_ID && process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY
         ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
         : null,

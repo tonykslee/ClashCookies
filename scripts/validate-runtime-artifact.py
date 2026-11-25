@@ -25,6 +25,15 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from runtime_artifact_provenance import (  # noqa: E402
+    DEVELOPMENT_ARTIFACT_CLASS,
+    evaluate_production_eligibility,
+    fetch_run_metadata,
+    run_gh_attestation_verify,
+    validate_verified_result,
+)
+
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -610,6 +619,7 @@ def validate_manifest(manifest: dict, archive_name: str, archive_size: int, dige
     require(artifact.get("contents") == ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], "manifest artifact contents are invalid")
     require_bool(artifact.get("nonProductionEvidence"), "artifact.nonProductionEvidence")
     require(artifact.get("nonProductionEvidence") is True, "artifact is not marked as non-production evidence")
+    require(artifact.get("artifactClass") == DEVELOPMENT_ARTIFACT_CLASS, "manifest artifact class is not development evidence")
     source = manifest.get("source")
     require(isinstance(source, dict), "manifest source section is missing")
     git_sha = require_string(source.get("gitSha"), "source.gitSha").lower()
@@ -630,6 +640,7 @@ def validate_manifest(manifest: dict, archive_name: str, archive_size: int, dige
 
     provenance = manifest.get("provenance")
     require(isinstance(provenance, dict), "manifest provenance section is missing")
+    require(provenance.get("contractVersion") == 1, "unsupported manifest provenance contract")
     require_string(provenance.get("integrity"), "provenance.integrity")
     require_bool(provenance.get("authenticated"), "provenance.authenticated")
     require_string(provenance.get("note"), "provenance.note")
@@ -642,6 +653,10 @@ def validate_manifest(manifest: dict, archive_name: str, archive_size: int, dige
     for key, expected_value in (("repository", expected.expected_repository), ("name", expected.expected_workflow), ("runId", expected.expected_run_id), ("runAttempt", expected.expected_run_attempt)):
         if expected_value is not None:
             require(workflow.get(key) == expected_value, f"manifest workflow.{key} does not match independent CI context")
+    if expected.expected_event is not None:
+        require(identity.get("event") == expected.expected_event, "manifest identity event does not match independent CI context")
+    if expected.expected_source_ref is not None:
+        require(workflow.get("sourceRef") == expected.expected_source_ref, "manifest source ref does not match independent CI context")
 
     build = manifest.get("build")
     require(isinstance(build, dict), "manifest build section is missing")
@@ -1051,8 +1066,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-workflow")
     parser.add_argument("--expected-run-id")
     parser.add_argument("--expected-run-attempt")
+    parser.add_argument("--expected-event")
+    parser.add_argument("--expected-source-ref")
+    parser.add_argument("--expected-repository-id")
+    parser.add_argument("--expected-repository-owner-id")
+    parser.add_argument("--expected-repository-visibility", default="public")
+    parser.add_argument("--expected-signer-workflow")
+    parser.add_argument("--expected-signer-revision")
+    parser.add_argument("--expected-pr-number", type=int)
+    parser.add_argument("--expected-pr-head-sha")
+    parser.add_argument("--expected-pr-head-ref")
+    parser.add_argument("--expected-pr-base-sha")
+    parser.add_argument("--expected-pr-base-ref")
+    parser.add_argument("--expected-gh-version", default="2.89.0")
     parser.add_argument("--expected-base-image")
     parser.add_argument("--expected-base-image-digest")
+    parser.add_argument("--require-attestation", action="store_true")
+    parser.add_argument("--attestation-bundle")
+    parser.add_argument("--provenance-output")
     parser.add_argument("--source-root")
     parser.add_argument("--extract")
     parser.add_argument("--max-compressed-bytes", type=int, default=Limits.compressed_bytes)
@@ -1100,6 +1131,56 @@ def main() -> int:
     snapshot = snapshot_source(archive_path, limits)
     try:
         digest = snapshot.digest
+        authenticated_provenance = None
+        if args.require_attestation:
+            for value, label in ((args.expected_repository, "expected repository"), (args.expected_repository_id, "expected repository ID"), (args.expected_repository_owner_id, "expected repository owner ID"), (args.expected_signer_workflow, "expected signer workflow"), (args.expected_signer_revision, "expected signer revision"), (args.expected_source_ref, "expected source ref"), (args.expected_event, "expected event"), (args.expected_run_id, "expected run ID"), (args.expected_run_attempt, "expected run attempt"), (args.expected_workflow, "expected workflow name"), (args.expected_base_image, "expected base image"), (args.expected_base_image_digest, "expected base image digest")):
+                require(value is not None and str(value) != "", f"{label} is required when attestation verification is enabled")
+            if args.expected_event == "pull_request":
+                for value, label in ((args.expected_pr_number, "expected PR number"), (args.expected_pr_head_sha, "expected PR head SHA"), (args.expected_pr_head_ref, "expected PR head ref"), (args.expected_pr_base_sha, "expected PR base SHA"), (args.expected_pr_base_ref, "expected PR base ref")):
+                    require(value is not None and str(value) != "", f"{label} is required for pull_request attestation verification")
+            expected_provenance = {
+                "repository": args.expected_repository,
+                "repository_id": str(args.expected_repository_id),
+                "repository_owner_id": str(args.expected_repository_owner_id),
+                "repository_visibility": args.expected_repository_visibility,
+                "signer_workflow": args.expected_signer_workflow,
+                "signer_revision": args.expected_signer_revision.lower(),
+                "source_ref": args.expected_source_ref,
+                "source_sha": args.expected_sha.lower(),
+                "event": args.expected_event,
+                "run_id": int(args.expected_run_id),
+                "run_attempt": int(args.expected_run_attempt),
+                "workflow_name": args.expected_workflow,
+                "pr_number": int(args.expected_pr_number) if args.expected_pr_number else 0,
+                "pr_head_sha": args.expected_pr_head_sha,
+                "pr_head_ref": args.expected_pr_head_ref,
+                "pr_base_sha": args.expected_pr_base_sha,
+                "pr_base_ref": args.expected_pr_base_ref,
+                "artifact_class": DEVELOPMENT_ARTIFACT_CLASS,
+                "platform": args.expected_platform,
+                "image": args.expected_base_image,
+                "image_digest": args.expected_base_image_digest,
+            }
+            bundle = Path(args.attestation_bundle) if args.attestation_bundle else None
+            result = run_gh_attestation_verify(
+                Path(snapshot.workspace) / "archive.bin",
+                bundle=bundle,
+                repository=args.expected_repository,
+                signer_workflow=args.expected_signer_workflow,
+                signer_revision=args.expected_signer_revision,
+                source_ref=args.expected_source_ref,
+                source_sha=args.expected_sha,
+                verifier_version=args.expected_gh_version,
+            )
+            run_metadata = fetch_run_metadata(args.expected_repository, int(args.expected_run_id))
+            authenticated_provenance = validate_verified_result(
+                result,
+                archive_name=snapshot.name,
+                archive_digest=digest,
+                archive_bytes=snapshot.size,
+                expected=expected_provenance,
+                run_metadata=run_metadata,
+            )
         validate_checksum(archive_path, checksum_path, digest)
         preflight = preflight_metadata(snapshot, limits)
         entries, metadata_files, file_hashes = collect_entries(snapshot, limits)
@@ -1121,6 +1202,11 @@ def main() -> int:
             require(source_input_hashes(source_root) == manifest_inputs, "manifest inputs do not match the exact source revision")
         footprint = sum(entry.size for entry in entries if entry.kind == "file" and (entry.name in ("package.json", "yarn.lock", "runtime-artifact-manifest.json") or entry.name.startswith("dist/") or entry.name.startswith("node_modules/") or entry.name.startswith("prisma/")))
         require(external["measurements"]["extractedFootprintBytes"] == footprint, "manifest extracted footprint does not match archive")
+        if authenticated_provenance is not None and args.provenance_output:
+            policy_result = evaluate_production_eligibility(authenticated_provenance, None, None)
+            diagnostic = authenticated_provenance.diagnostic_json()
+            diagnostic["productionEligibility"] = policy_result.diagnostic_json()
+            Path(args.provenance_output).write_text(json.dumps(diagnostic, indent=2) + "\n", encoding="utf-8")
         if args.extract:
             extract_archive(snapshot, entries, file_hashes, Path(args.extract), limits, digest)
         print(json.dumps({
@@ -1130,6 +1216,7 @@ def main() -> int:
             "sourceSha": external["source"]["gitSha"],
             "archiveBytes": snapshot.size,
             "extractedFootprintBytes": footprint,
+            "authenticatedProvenance": authenticated_provenance.diagnostic_json() if authenticated_provenance is not None else None,
             "measurements": {
                 "elapsedMs": round((time.monotonic() - started) * 1000, 3),
                 "temporaryDiskBytesRequired": snapshot.size + footprint,

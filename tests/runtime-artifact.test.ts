@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -126,11 +126,11 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicS
 
   const manifest = {
     schemaVersion: 1,
-    artifact: { name, format: "tar.gz", contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], nonProductionEvidence: true },
+    artifact: { name, format: "tar.gz", contents: ["dist", "node_modules", "prisma", "package.json", "yarn.lock"], artifactClass: "development-runtime-evidence", nonProductionEvidence: true },
     source: { gitSha: sourceSha, context: "git-archive", untrackedFilesExcluded: true, localEnvironmentFilesExcluded: true, cleanSourceContext: true },
     identity: { kind: "pull_request_merge_commit", event: "pull_request", deployableRelease: false, note: "test" },
-    provenance: { integrity: "archive SHA-256 checksum and manifest binding", authenticated: false, note: "Integrity metadata does not authenticate the source revision or authorize production use." },
-    workflow: { name: "test", runId: "1", runAttempt: "1", ref: "refs/pull/1/merge", repository: "test/test", url: null },
+    provenance: { contractVersion: 1, integrity: "archive SHA-256 checksum and manifest binding", authenticated: false, note: "Integrity metadata does not authenticate the source revision or authorize production use." },
+    workflow: { name: "test", runId: "1", runAttempt: "1", ref: "refs/pull/1/merge", sourceRef: "refs/pull/1/merge", repository: "test/test", url: null },
     build: { platform: "linux/amd64", architecture: "amd64", nodeVersion: "v20.0.0", yarnVersion: "1.22.22", compiler: "npm run build", baseImage: "node:20-bookworm@sha256:" + "a".repeat(64), baseImageDigest: "sha256:" + "a".repeat(64), nativeLibraryCompatibility: { libc: "glibc", distribution: "Debian Bookworm", openssl: "OpenSSL 3.x", liveVmCompatibility: "not established" }, durationMs: 1, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z" },
     inputs: { packageJsonSha256: "", yarnLockSha256: "", prismaSchemaSha256: "", prismaMigrations: [] },
     integrity: { checksumFile: `${name}.sha256`, sha256: null },
@@ -171,6 +171,65 @@ function runValidation(archivePath: string, ...extra: string[]) {
     ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py")]
     : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh")];
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
+}
+
+function attestationCli(root: string) {
+  const script = join(root, "fake-gh.js");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+const args = process.argv.slice(2);
+const pick = (name) => args[args.indexOf(name) + 1];
+if (args[0] === "version") { console.log("gh version 2.89.0 (fixture)"); process.exit(0); }
+if (args[0] === "api") {
+  console.log(JSON.stringify({ id: 1, head_sha: "${"d".repeat(40)}", event: "pull_request", run_attempt: 1, path: ".github/workflows/runtime-artifact.yml", head_branch: "feature/test", repository: { full_name: "test/test", id: "123456789", owner: { id: "987654321" } }, pull_requests: [{ number: 1, head: { sha: "${"d".repeat(40)}", ref: "feature/test" }, base: { sha: "${"e".repeat(40)}", ref: "dev" } }] }));
+  process.exit(0);
+}
+if (args[0] !== "attestation" || args[1] !== "verify") process.exit(64);
+const archive = args[2];
+const digest = crypto.createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
+if (process.env.REPLACE_ARCHIVE && process.env.REPLACE_WITH) fs.copyFileSync(process.env.REPLACE_WITH, process.env.REPLACE_ARCHIVE);
+if (process.env.CREATE_DESTINATION) fs.mkdirSync(process.env.CREATE_DESTINATION, { recursive: true });
+const repository = "test/test";
+const repositoryUri = "https://github.com/test/test";
+const workflow = ".github/workflows/runtime-artifact.yml";
+const sourceRef = "refs/pull/1/merge";
+const sourceSha = "${sourceSha}";
+const subjectName = "clashcookies-runtime-${sourceSha}.tar.gz";
+const runUri = "https://github.com/test/test/actions/runs/1/attempts/1";
+const workflowUri = repositoryUri + "/" + workflow;
+console.log(JSON.stringify([{ _verifierVersion: "2.89.0", verificationResult: { mediaType: "application/vnd.dev.sigstore.verificationresult+json;version=0.1", signature: { certificate: { certificateIssuer: "CN=sigstore-intermediate,O=sigstore.dev", sourceRepositoryURI: repositoryUri, sourceRepositoryIdentifier: "123456789", sourceRepositoryOwnerURI: "https://github.com/test", sourceRepositoryOwnerIdentifier: "987654321", sourceRepositoryRef: sourceRef, sourceRepositoryDigest: sourceSha, githubWorkflowTrigger: "pull_request", githubWorkflowSHA: "${"a".repeat(40)}", githubWorkflowName: "test", githubWorkflowRepository: repository, githubWorkflowRef: sourceRef, buildSignerURI: workflowUri + "@" + sourceRef, buildSignerDigest: "${"a".repeat(40)}", buildConfigURI: workflowUri + "@" + sourceRef, buildConfigDigest: "${"a".repeat(40)}", buildTrigger: "pull_request", runInvocationURI: runUri, runnerEnvironment: "github-hosted", issuer: "https://token.actions.githubusercontent.com", sourceRepositoryVisibilityAtSigning: "public", subjectAlternativeName: workflowUri + "@" + sourceRef } }, verifiedTimestamps: [{ type: "Tlog" }], statement: { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: subjectName, digest: { sha256: digest } }], predicate: { buildDefinition: { buildType: "https://actions.github.io/buildtypes/workflow/v1", externalParameters: { workflow: { path: workflow, ref: sourceRef, repository: repositoryUri } }, internalParameters: { github: { event_name: "pull_request", repository_id: "123456789", repository_owner_id: "987654321", runner_environment: "github-hosted" } }, resolvedDependencies: [{ uri: "git+" + repositoryUri + "@" + sourceRef, digest: { gitCommit: sourceSha } }] }, runDetails: { builder: { id: workflowUri + "@" + sourceRef }, metadata: { invocationId: runUri } } } } } }]));
+`;
+  writeFileSync(script, source);
+  if (process.platform !== "win32") chmodSync(script, 0o755);
+  if (process.platform === "win32") {
+    const wrapper = join(root, "fake-gh.cmd");
+    writeFileSync(wrapper, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+    return wrapper;
+  }
+  return script;
+}
+
+function runAttestedValidation(value: { root: string; archivePath: string }, options: { replaceWith?: string; createDestination?: string } = {}) {
+  const bundle = join(value.root, "attestation-bundle.json");
+  const provenance = join(value.root, "provenance.json");
+  const extracted = join(value.root, "attested-extracted");
+  writeFileSync(bundle, "{}\n");
+  const cli = attestationCli(value.root);
+  const args = [
+    "--archive", value.archivePath, "--checksum", `${value.archivePath}.sha256`, "--manifest", `${value.archivePath}.manifest.json`, "--expected-sha", sourceSha,
+    "--expected-platform", "linux/amd64", "--expected-repository", "test/test", "--expected-workflow", "test", "--expected-run-id", "1", "--expected-run-attempt", "1",
+    "--expected-event", "pull_request", "--expected-source-ref", "refs/pull/1/merge", "--expected-repository-id", "123456789", "--expected-repository-owner-id", "987654321",
+    "--expected-repository-visibility", "public", "--expected-signer-workflow", ".github/workflows/runtime-artifact.yml", "--expected-signer-revision", "a".repeat(40),
+    "--expected-pr-number", "1", "--expected-pr-head-sha", "d".repeat(40), "--expected-pr-head-ref", "feature/test", "--expected-pr-base-sha", "e".repeat(40), "--expected-pr-base-ref", "dev",
+    "--expected-gh-version", "2.89.0", "--expected-base-image", "node:20-bookworm@sha256:" + "a".repeat(64), "--expected-base-image-digest", "sha256:" + "a".repeat(64),
+    "--require-attestation", "--attestation-bundle", bundle, "--provenance-output", provenance,
+  ];
+  if (process.platform !== "win32") args.push("--extract", extracted);
+  const command = process.platform === "win32" ? "python" : "bash";
+  const commandArgs = process.platform === "win32" ? [join(process.cwd(), "scripts", "validate-runtime-artifact.py"), ...args] : [join(process.cwd(), "scripts", "validate-runtime-artifact.sh"), ...args];
+  const env = { ...process.env, GH_ATTESTATION_CLI: cli, ...(process.platform !== "win32" ? { TMPDIR: value.root } : {}), ...(options.replaceWith ? { REPLACE_ARCHIVE: value.archivePath, REPLACE_WITH: options.replaceWith } : {}), ...(options.createDestination ? { CREATE_DESTINATION: options.createDestination } : {}) };
+  return execFileSync(command, commandArgs, { cwd: process.cwd(), env, encoding: "utf8", stdio: "pipe" });
 }
 
 function expectValidationFailure(archivePath: string, reason: string, ...extra: string[]) {
@@ -281,6 +340,47 @@ describe("runtime artifact validation", () => {
     expect(runValidation(value.archivePath, ...extractionArgs)).toContain(sourceSha);
     expect(() => expectValidationFailure(value.archivePath, "should-not-match")).toThrow("expected validation subprocess to fail");
     if (process.platform !== "win32") expect(statSync(join(extracted, "dist", "ClashCookies.js")).mode & 0o111).toBeTruthy();
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("runs the attestation-required validator and keeps provenance diagnostics non-accepting", () => {
+    const value = fixture();
+    const output = runAttestedValidation(value);
+    expect(output).toContain("verified-provenance-only");
+    expect(output).toContain('"contentValidated": false');
+    if (process.platform !== "win32") expect(statSync(join(value.root, "attested-extracted", "dist", "ClashCookies.js")).isFile()).toBe(true);
+    expect(JSON.parse(readFileSync(join(value.root, "provenance.json"), "utf8")).acceptance).toEqual({ contentValidated: false, extractedAndPublished: false });
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("keeps authenticated snapshot bytes stable across archive-path substitution", () => {
+    const value = fixture();
+    const replacement = join(value.root, "replacement.tar.gz");
+    writeFileSync(replacement, "replacement bytes");
+    const output = runAttestedValidation(value, { replaceWith: replacement });
+    expect(output).toContain("verified-provenance-only");
+    expect(JSON.parse(readFileSync(join(value.root, "provenance.json"), "utf8")).subject.name).toContain(sourceSha);
+    if (process.platform !== "win32") expect(statSync(join(value.root, "attested-extracted", "dist", "ClashCookies.js")).isFile()).toBe(true);
+    rmSync(value.root, { recursive: true, force: true });
+  });
+
+  it("cleans up an attestation-required extraction failure without acceptance", () => {
+    if (process.platform === "win32") return;
+    const value = fixture();
+    const destination = join(value.root, "attested-extracted");
+    mkdirSync(destination);
+    writeFileSync(join(destination, "untouched.txt"), "preserve me\n");
+    let stderr = "";
+    try {
+      runAttestedValidation(value, { createDestination: destination });
+    } catch (error) {
+      stderr = String((error as { stderr?: unknown }).stderr ?? "");
+    }
+    expect(stderr).toContain("extraction destination already exists");
+    expect(statSync(destination).isDirectory()).toBe(true);
+    expect(readFileSync(join(destination, "untouched.txt"), "utf8")).toBe("preserve me\n");
+    expect(readdirSync(value.root).filter((name) => name.startsWith(".runtime-artifact-validation-") || name.startsWith(".runtime-artifact-extract-")).sort()).toEqual([]);
+    expect(JSON.parse(readFileSync(join(value.root, "provenance.json"), "utf8")).acceptance).toEqual({ contentValidated: false, extractedAndPublished: false });
     rmSync(value.root, { recursive: true, force: true });
   });
 
