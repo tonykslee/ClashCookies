@@ -1,6 +1,6 @@
 # FB-028B-2b-1 — Release Identity, Exact Selection, and Authorization Foundation
 
-Status: implemented repository contract; production authority unavailable
+Status: identity/selection contract merged; authorization-only verifier boundary implemented on the feature branch; production authority unavailable
 
 ## Scope
 
@@ -38,7 +38,11 @@ The `--selection-request` command exercised by the non-production workflow emits
 
 The implementation defines the future authorization binding and lifecycle fields: forward versus recovery scope, exact identity binding, issuance/expiry, stable retry key, recovery context, and verification evidence. A retry may reuse only the same still-valid authorization and exact identity. An expired forward authorization cannot authorize rollback; rollback needs a separately approved recovery context. Durable replay state is required to reject a consumed authorization across retries.
 
-GitHub protected environments can express approval for a job, but the available upstream evidence does not by itself provide durable offline proof bound to this exact artifact-service ZIP and inner archive. The separately approved signed authorization-record alternative is documented but not implemented. No trusted key root, signed-record verifier, replay store, production producer, production environment, or production secret is provisioned. Dataclass constructors, serialized envelopes, fixtures, environment variables, and booleans cannot establish authoritative eligibility. The evaluator remains fail-closed with production authority unavailable.
+GitHub protected environments can express approval for a job, but the available upstream evidence does not by itself provide durable offline proof bound to this exact artifact-service ZIP and inner archive. The authorization-only branch now verifies a versioned canonical record with the installed OpenSSL Ed25519 verifier. The signed record binds the exact main-push SHA, producer and signer workflow revisions, run/attempt, artifact-service and inner-archive IDs/digests/sizes, platform/image digest, scope, issuance/expiry, retry key, signing-key ID, and recovery context.
+
+The verifier requires an owner-supplied immutable producer/signer revision allowlist plus an independently expected trusted key ID and Ed25519 SPKI fingerprint. It snapshots the inspected public key into a bounded private file, checks the parsed OpenSSL key type, and verifies against that snapshot; the trust configuration must include an existing checkout-exclusion root. Forward records are exactly 24 hours, and recovery records are separate signed records with non-empty recovery context; a recovery record cannot authorize a forward release. The replay journal is an explicitly supplied directory outside the checkout. It re-verifies the signed envelope before mutation and parses only the private canonical bytes verified by OpenSSL. It binds the canonical record digest, key fingerprint, full identity, operation, scope, recovery context, issuance, and expiry, and uses a verified directory identity, a bounded five-second serialized lock acquisition, private files, atomic no-replace reservation, unique transition files, and fail-closed durability errors. Identical retries re-fsync the existing reservation file and directory before success. Linux requires owner/private directory state and file/directory fsync; Windows development tests use an explicit non-production development mode and do not claim those Linux durability guarantees. Tests use disposable Ed25519 keys and temporary replay directories only.
+
+No production key, trust root, allowlist, replay store, producer, production environment, or production secret is provisioned. The evaluator remains unconditionally disabled for production in this authorization-only slice. Dataclass constructors, serialized envelopes, fixtures, environment variables, and booleans cannot establish authoritative eligibility. SSH transfer, host-key handling, deployment workflows, the live wrapper, and VM state remain out of scope for the subsequent delivery milestone.
 
 ## Producer and validation contract
 
