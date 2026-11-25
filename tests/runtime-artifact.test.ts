@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -38,7 +38,7 @@ function tar(entries: Entry[]): Buffer {
   return gzipSync(Buffer.concat(blocks));
 }
 
-function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicSymlink?: boolean; unsafeMode?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
+function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicSymlink?: boolean; intermediateSymlink?: boolean; unsafeMode?: boolean; missingManifest?: boolean; missingRuntime?: boolean; realTar?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-artifact-test-"));
   const name = `clashcookies-runtime-${sourceSha}.tar.gz`;
   const archivePath = join(root, name);
@@ -69,6 +69,10 @@ function fixture(options: { unsafe?: boolean; escapingSymlink?: boolean; cyclicS
   if (options.cyclicSymlink) {
     entries.push({ name: "node_modules/cycle-a", type: "symlink", link: "cycle-b" });
     entries.push({ name: "node_modules/cycle-b", type: "symlink", link: "cycle-a" });
+  }
+  if (options.intermediateSymlink) {
+    entries.push({ name: "node_modules/intermediate", type: "symlink", link: "../../outside" });
+    entries.push({ name: "node_modules/traversal", type: "symlink", link: "intermediate/../prisma" });
   }
   if (options.realTar) {
     entries.push({ name: "node_modules/long-package", type: "directory" });
@@ -124,6 +128,29 @@ function runValidation(archivePath: string, ...extra: string[]) {
   return execFileSync(command, [...commandArgs, "--archive", archivePath, "--checksum", `${archivePath}.sha256`, "--manifest", `${archivePath}.manifest.json`, "--expected-sha", sourceSha, ...extra], { cwd: process.cwd(), encoding: "utf8", stdio: "pipe" });
 }
 
+function expectValidationFailure(archivePath: string, reason: string, ...extra: string[]) {
+  try {
+    runValidation(archivePath, ...extra);
+    throw new Error(`expected validation failure containing ${JSON.stringify(reason)}`);
+  } catch (error) {
+    const output = String((error as { stderr?: unknown }).stderr ?? error);
+    expect(output).toContain(reason);
+  }
+}
+
+function refreshExternalIntegrity(archivePath: string) {
+  const archive = readFileSync(archivePath);
+  const digest = createHash("sha256").update(archive).digest("hex");
+  const manifestPath = `${archivePath}.manifest.json`;
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { artifact: Record<string, unknown>; integrity: Record<string, unknown>; measurements: Record<string, unknown> };
+  manifest.artifact.archiveSha256 = digest;
+  manifest.artifact.archiveBytes = archive.length;
+  manifest.integrity.sha256 = digest;
+  manifest.measurements.archiveBytes = archive.length;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(`${archivePath}.sha256`, `${digest}  ${archivePath.split(/[\\/]/).pop()}\n`);
+}
+
 function producerContractFixture() {
   const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-producer-contract-"));
   const payload = join(root, "payload");
@@ -158,6 +185,23 @@ function producerContractFixture() {
 }
 
 describe("runtime artifact validation", () => {
+  it("normalizes group-writable producer directories/files without following dependency symlinks", () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-permissions-test-"));
+    const packageRoot = join(root, "package");
+    const dependencyRoot = join(packageRoot, "node_modules", "fixture");
+    mkdirSync(dependencyRoot, { recursive: true, mode: 0o777 });
+    const target = join(dependencyRoot, "target.js");
+    writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o777 });
+    chmodSync(target, 0o777);
+    symlinkSync("fixture/target.js", join(packageRoot, "node_modules", "link.js"));
+    execFileSync(process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash", [join(process.cwd(), "scripts", "normalize-runtime-artifact-permissions.sh"), packageRoot], { stdio: "pipe" });
+    expect(statSync(dependencyRoot).mode & 0o7777).toBe(0o755);
+    expect(statSync(target).mode & 0o7777).toBe(0o755);
+    expect(statSync(join(packageRoot, "node_modules", "link.js")).isSymbolicLink()).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("delivers the clean Git source archive to the Docker build stdin", () => {
     const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-builder-test-"));
     const fakeBin = join(root, "bin");
@@ -209,28 +253,31 @@ describe("runtime artifact validation", () => {
     ["unsafe path", { unsafe: true }],
     ["escaping symlink", { escapingSymlink: true }],
     ["cyclic symlink", { cyclicSymlink: true }],
+    ["intermediate symlink traversal", { intermediateSymlink: true }],
     ["unsafe permissions", { unsafeMode: true }],
     ["missing runtime file", { missingRuntime: true }],
   ])("rejects %s", (_label, options) => {
     const value = fixture(options);
-    expect(() => runValidation(value.archivePath)).toThrow();
+    const reasons: Record<string, string> = { "missing embedded manifest": "embedded manifest is missing", "unsafe path": "unsafe archive path", "escaping symlink": "symlink traversal escapes", "cyclic symlink": "cyclic symlink", "intermediate symlink traversal": "symlink traversal escapes", "unsafe permissions": "special permission bits", "missing runtime file": "missing required runtime file" };
+    expectValidationFailure(value.archivePath, reasons[_label]);
     rmSync(value.root, { recursive: true, force: true });
   });
 
   it("rejects an unexpected revision and a corrupt checksum", () => {
     const value = fixture();
-    expect(() => runValidation(value.archivePath, "--expected-sha", "fedcba9876543210fedcba9876543210fedcba98")).toThrow();
+    expectValidationFailure(value.archivePath, "manifest Git SHA", "--expected-sha", "fedcba9876543210fedcba9876543210fedcba98");
     writeFileSync(`${value.archivePath}.sha256`, `${"0".repeat(64)}  ${value.archivePath.split(/[\\/]/).pop()}\n`);
-    expect(() => runValidation(value.archivePath)).toThrow();
+    expectValidationFailure(value.archivePath, "checksum metadata",);
     rmSync(value.root, { recursive: true, force: true });
   });
 
   it("rejects independent-context mismatches and resource-limit violations", () => {
     const value = fixture();
-    expect(() => runValidation(value.archivePath, "--expected-repository", "wrong/repository")).toThrow();
-    expect(() => runValidation(value.archivePath, "--expected-platform", "linux/arm64")).toThrow();
-    expect(() => runValidation(value.archivePath, "--max-expanded-bytes", "1")).toThrow();
-    expect(() => runValidation(value.archivePath, "--max-entries", "1")).toThrow();
+    expectValidationFailure(value.archivePath, "workflow.repository", "--expected-repository", "wrong/repository");
+    expectValidationFailure(value.archivePath, "manifest platform", "--expected-platform", "linux/arm64");
+    expectValidationFailure(value.archivePath, "expanded archive", "--max-expanded-bytes", "1");
+    expectValidationFailure(value.archivePath, "entry count", "--max-entries", "1");
+    expectValidationFailure(value.archivePath, "aggregate retained", "--max-retained-metadata-bytes", "1");
     rmSync(value.root, { recursive: true, force: true });
   });
 
@@ -241,7 +288,7 @@ describe("runtime artifact validation", () => {
     writeFileSync(value.archivePath, corrupted);
     const digest = createHash("sha256").update(corrupted).digest("hex");
     writeFileSync(`${value.archivePath}.sha256`, `${digest}  ${value.archivePath.split(/[\\/]/).pop()}\n`);
-    expect(() => runValidation(value.archivePath)).toThrow();
+    expectValidationFailure(value.archivePath, "malformed archive");
     rmSync(value.root, { recursive: true, force: true });
   });
 
@@ -250,11 +297,16 @@ describe("runtime artifact validation", () => {
     let corrupted = readFileSync(value.archivePath);
     if (kind === "truncated gzip") corrupted = corrupted.subarray(0, corrupted.length - 1);
     if (kind === "trailing bytes") corrupted = Buffer.concat([corrupted, Buffer.from("unexpected trailing data")]);
-    if (kind === "invalid tar termination") corrupted = corrupted.subarray(0, corrupted.length - 20);
+    if (kind === "invalid tar termination") {
+      const raw = gunzipSync(corrupted);
+      const malformedHeader = Buffer.from("not-a-valid-tar-header");
+      const payload = raw.subarray(0, raw.length - 1024);
+      corrupted = gzipSync(Buffer.concat([payload, malformedHeader, Buffer.alloc(512 - malformedHeader.length), Buffer.alloc(1024)]));
+    }
     writeFileSync(value.archivePath, corrupted);
-    const digest = createHash("sha256").update(corrupted).digest("hex");
-    writeFileSync(`${value.archivePath}.sha256`, `${digest}  ${value.archivePath.split(/[\\/]/).pop()}\n`);
-    expect(() => runValidation(value.archivePath)).toThrow();
+    refreshExternalIntegrity(value.archivePath);
+    const reasons: Record<string, string> = { "truncated gzip": "malformed archive", "trailing bytes": "malformed archive", "invalid tar termination": "invalid tar termination header" };
+    expectValidationFailure(value.archivePath, reasons[kind]);
     rmSync(value.root, { recursive: true, force: true });
   });
 });

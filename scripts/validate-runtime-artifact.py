@@ -51,6 +51,7 @@ class Limits:
     metadata_bytes: int = 64 * 1024
     manifest_bytes: int = 1024 * 1024
     file_bytes: int = 1024 * 1024 * 1024
+    retained_metadata_bytes: int = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -174,14 +175,37 @@ def normalized_name(raw_name: str, is_directory: bool, limits: Limits) -> str:
     return name
 
 
-def safe_link(name: str, link: str, limits: Limits) -> str:
+def validate_link_text(name: str, link: str, limits: Limits) -> None:
     require(isinstance(link, str) and link, f"empty symlink target: {name}")
     require(len(link.encode("utf-8", "strict")) <= limits.link_bytes, f"symlink target exceeds the link limit: {name}")
     require(not link.startswith("/") and "\\" not in link and not re.match(r"^[A-Za-z]:", link), f"escaping symlink: {name} -> {link}")
-    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), link))
-    require(resolved not in ("", ".") and not resolved.startswith("../") and resolved != "..", f"escaping symlink: {name} -> {link}")
-    require(resolved == "dist" or resolved.startswith("dist/") or resolved == "node_modules" or resolved.startswith("node_modules/") or resolved == "prisma" or resolved.startswith("prisma/"), f"symlink escapes runtime roots: {name} -> {link}")
-    return resolved
+
+
+def resolve_link_target(name: str, link: str, by_name: dict[str, Entry], limits: Limits, stack: tuple[str, ...] = ()) -> str:
+    validate_link_text(name, link, limits)
+    pending = posixpath.dirname(name).split("/") + link.split("/")
+    resolved: list[str] = []
+    while pending:
+        component = pending.pop(0)
+        if component in ("", "."):
+            continue
+        if component == "..":
+            require(resolved, f"symlink traversal escapes archive root: {name} -> {link}")
+            resolved.pop()
+            continue
+        resolved.append(component)
+        current = "/".join(resolved)
+        intermediate = by_name.get(current)
+        if intermediate is not None and intermediate.kind == "symlink":
+            require(current not in stack, f"cyclic symlink traversal: {' -> '.join(stack + (current,))}")
+            validate_link_text(current, intermediate.link, limits)
+            resolved.pop()
+            pending = intermediate.link.split("/") + pending
+            stack = stack + (current,)
+    target = "/".join(resolved)
+    require(target in by_name, f"symlink target is not present: {name} -> {link}")
+    require(target == "dist" or target.startswith("dist/") or target == "node_modules" or target.startswith("node_modules/") or target == "prisma" or target.startswith("prisma/"), f"symlink traversal escapes runtime roots: {name} -> {link}")
+    return target
 
 
 def classify(info: tarfile.TarInfo) -> str:
@@ -198,7 +222,7 @@ def validate_mode(mode: int, name: str, kind: str) -> int:
     mode &= 0o7777
     if kind == "symlink":
         return mode
-    require(not mode & 0o6000, f"unsafe special permission bits: {name}")
+    require(not mode & 0o7000, f"unsafe special permission bits: {name}")
     require(not mode & 0o022, f"group/world-writable archive entry: {name}")
     require(mode & 0o400, f"archive entry is not owner-readable: {name}")
     return mode
@@ -220,6 +244,7 @@ def iter_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentity) 
                 except (tarfile.TarError, EOFError, OSError) as error:
                     fail(f"malformed archive: {error}")
                 if info is None:
+                    require(len(stream.tail) >= 512 and bytes(stream.tail[-512:]) == b"\0" * 512, "invalid tar termination header")
                     stream.marked = True
                     while stream.read(64 * 1024):
                         pass
@@ -235,7 +260,7 @@ def iter_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentity) 
                 require(info.name == name or (kind == "directory" and info.name.rstrip("/") == name), f"archive path normalization mismatch: {info.name!r}")
                 link = info.linkname if kind == "symlink" else ""
                 if kind == "symlink":
-                    safe_link(name, link, limits)
+                    validate_link_text(name, link, limits)
                 metadata_size = sum(len(str(key).encode()) + len(str(value).encode()) for key, value in info.pax_headers.items())
                 metadata_size += sum(len(str(key).encode()) + len(str(value).encode()) for key, value in tar.pax_headers.items())
                 require(metadata_size <= limits.metadata_bytes, f"archive metadata exceeds the limit: {name}")
@@ -437,14 +462,19 @@ def collect_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentit
     entries: list[Entry] = []
     metadata_files: dict[str, bytes] = {}
     seen: set[str] = set()
+    retained_metadata = 0
     for entry, info, tar in iter_entries(archive_path, limits, identity):
         require(entry.name not in seen, f"duplicate archive path: {entry.name}")
         seen.add(entry.name)
         require(entry.name in ALLOWED_ROOTS or entry.name.startswith(tuple(root + "/" for root in ALLOWED_ROOTS)) or entry.name in ("package.json", "yarn.lock", "runtime-artifact-manifest.json"), f"unexpected archive root: {entry.name}")
         if entry.kind == "symlink":
-            safe_link(entry.name, entry.link, limits)
+            validate_link_text(entry.name, entry.link, limits)
+        retained_metadata += len(entry.name.encode("utf-8")) + len(entry.link.encode("utf-8"))
+        require(retained_metadata <= limits.retained_metadata_bytes, "aggregate retained archive metadata exceeds the limit")
         if entry.kind == "file" and (entry.name in {"package.json", "yarn.lock", "prisma/schema.prisma", "runtime-artifact-manifest.json"} or (entry.name.startswith("prisma/migrations/") and entry.name.endswith("/migration.sql"))):
             metadata_files[entry.name] = read_entry(tar, info, limits.manifest_bytes)
+            retained_metadata += len(metadata_files[entry.name])
+            require(retained_metadata <= limits.retained_metadata_bytes, "aggregate retained input metadata exceeds the limit")
         entries.append(entry)
     require("runtime-artifact-manifest.json" in metadata_files, "embedded manifest is missing")
     require(len(entries) > 0, "archive is empty")
@@ -459,8 +489,7 @@ def collect_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentit
             require(parent_name in by_name and by_name[parent_name].kind == "directory", f"file/directory conflict or missing parent: {entry.name}")
     for entry in entries:
         if entry.kind == "symlink":
-            target = safe_link(entry.name, entry.link, limits)
-            require(target in by_name, f"symlink target is not present: {entry.name} -> {entry.link}")
+            resolve_link_target(entry.name, entry.link, by_name, limits)
     resolve_symlinks(by_name, limits)
     for required in REQUIRED_PATHS:
         require(required in by_name, f"missing required runtime file: {required}")
@@ -468,22 +497,15 @@ def collect_entries(archive_path: Path, limits: Limits, identity: ArchiveIdentit
         require(by_name[required].kind == "file" and by_name[required].size > 0, f"required runtime file is not a non-empty regular file: {required}")
     prisma_link = by_name["node_modules/.bin/prisma"]
     require(prisma_link.kind == "symlink", "Prisma CLI entry is not a symlink")
-    prisma_target = by_name[safe_link(prisma_link.name, prisma_link.link, limits)]
+    prisma_target = by_name[resolve_link_target(prisma_link.name, prisma_link.link, by_name, limits)]
     require(prisma_target.kind == "file" and prisma_target.size > 0 and prisma_target.mode & 0o111, "Prisma CLI symlink does not resolve to an executable file")
     return entries, metadata_files
 
 
 def resolve_symlinks(by_name: dict[str, Entry], limits: Limits) -> None:
-    def resolve(name: str, stack: tuple[str, ...]) -> str:
-        require(name in by_name, f"symlink target is not present: {name}")
-        entry = by_name[name]
-        if entry.kind != "symlink":
-            return name
-        require(name not in stack, f"cyclic symlink: {' -> '.join(stack + (name,))}")
-        return resolve(safe_link(name, entry.link, limits), stack + (name,))
     for name, entry in by_name.items():
         if entry.kind == "symlink":
-            target = resolve(name, ())
+            target = resolve_link_target(name, entry.link, by_name, limits)
             require(by_name[target].kind in ("file", "directory"), f"invalid symlink target: {name}")
 
 
@@ -580,12 +602,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-compressed-bytes", type=int, default=Limits.compressed_bytes)
     parser.add_argument("--max-expanded-bytes", type=int, default=Limits.expanded_bytes)
     parser.add_argument("--max-entries", type=int, default=Limits.entry_count)
+    parser.add_argument("--max-retained-metadata-bytes", type=int, default=Limits.retained_metadata_bytes)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    limits = Limits(compressed_bytes=args.max_compressed_bytes, expanded_bytes=args.max_expanded_bytes, entry_count=args.max_entries)
+    limits = Limits(compressed_bytes=args.max_compressed_bytes, expanded_bytes=args.max_expanded_bytes, entry_count=args.max_entries, retained_metadata_bytes=args.max_retained_metadata_bytes)
     archive_path = Path(args.archive).resolve()
     identity = archive_identity(archive_path, limits)
     checksum_path = Path(args.checksum or f"{archive_path}.sha256")
