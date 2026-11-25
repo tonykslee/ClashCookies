@@ -1761,10 +1761,37 @@ describe("CompoActualStateService", () => {
         ],
       });
 
+      expect(result?.displayCounts.TH19).toBe(1);
+      expect(result?.displayCounts.TH18).toBe(49);
       expect(result?.selectedHeatMapRefAvailable).toBe(false);
       expect(result?.deviationScore).toBeNull();
       expect(result?.healthy).toBe(false);
       expect(result?.projection.deltaByBucket.TH18).toBeNull();
+    });
+
+    it("counts a tracked roster containing only TH19 without residual classification", async () => {
+      const result = await loadComposition({
+        members: Array.from({ length: 50 }, (_, index) => ({
+          clanTag: "#AAA111",
+          playerTag: makeValidPlayerTag(index),
+          weight: 181_000,
+          sourceSyncedAt: new Date("2026-03-09T11:00:00.000Z"),
+        })),
+        heatMapRefs: [
+          makeHeatMapRef({
+            weightMinInclusive: 0,
+            weightMaxInclusive: 10_000_000,
+            th15Count: 50,
+          }),
+        ],
+      });
+
+      expect(result?.displayCounts.TH19).toBe(50);
+      expect(result?.displayCounts.TH18).toBe(0);
+      expect(result?.displayCounts["<=TH13"]).toBe(0);
+      expect(result?.selectedHeatMapRefAvailable).toBe(false);
+      expect(result?.deviationScore).toBeNull();
+      expect(result?.healthy).toBe(false);
     });
 
     it("marks a healthy 50/50 roster with a shared deviation at or below the threshold", async () => {
@@ -1931,6 +1958,7 @@ describe("CompoActualStateService", () => {
 
       expect(result).not.toBeNull();
       expect(result?.displayCounts).toEqual({
+        TH19: null,
         TH18: 5,
         TH17: 7,
         TH16: 8,
@@ -1982,6 +2010,7 @@ describe("CompoActualStateService", () => {
 
       expect(result).not.toBeNull();
       expect(result?.displayCounts.TH18).toBe(3);
+      expect(result?.displayCounts.TH19).toBeNull();
       expect(result?.displayCounts.TH17).toBeNull();
       expect(result?.displayCounts["<=TH13"]).toBe(7);
       expect(result?.memberCount).toBeNull();

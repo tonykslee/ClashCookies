@@ -444,7 +444,7 @@ describe("command coverage", () => {
     expect(clanHealthHelpText).toContain("actual ended-war sample count");
     expect(clanHealthHelpText).toContain("BL-inclusive match rate");
     expect(clanHealthHelpText).toContain("Current Composition section");
-    expect(clanHealthHelpText).toContain("collapsed TH18, TH17, TH16, TH15, TH14, and <=TH13 counts");
+    expect(clanHealthHelpText).toContain("collapsed TH19, TH18, TH17, TH16, TH15, TH14, and <=TH13 counts");
     expect(clanHealthHelpText).toContain("N/50 member count");
     expect(clanHealthHelpText).toContain("persisted source freshness");
     expect(clanHealthHelpText).toContain("missed both attacks in at least one eligible FWA war within the tracked metrics window");
