@@ -182,6 +182,8 @@ Validation downloads the published bytes in a fresh job, rejects malformed or mi
 
 Artifacts are retained for three days and are explicitly marked non-production evidence. The workflow does not start the Discord runtime, use production credentials or services, modify the production deployment workflow, install the live wrapper, consume artifacts in production, promote releases, or provide a fallback to local compilation. Production integration remains a separately reviewed future change.
 
+The following are mandatory FB-028B production-consumption gates, not claims established by FB-028A: Python `tarfile` parses PAX metadata before this validator can apply its post-parse metadata bounds, and the multi-pass validation/extraction flow rechecks archive identity but does not hold a descriptor-stable immutable-byte snapshot across extraction. Until bounded pre-parser PAX accounting and an immutable-byte extraction boundary are separately implemented and reviewed, these artifacts remain validation evidence only and must not be consumed by production.
+
 - **Backup release gate (observed Nov 15):** A real encrypted off-host backup and separate disposable PostgreSQL 17 restore were operator-verified. Freshness, recovery custody, staging waiver, and the migration-bearing release still require explicit review/approval. The backup timer remains disabled.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.

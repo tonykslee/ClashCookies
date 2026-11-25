@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -129,13 +129,14 @@ function runValidation(archivePath: string, ...extra: string[]) {
 }
 
 function expectValidationFailure(archivePath: string, reason: string, ...extra: string[]) {
+  let stderr = "";
   try {
     runValidation(archivePath, ...extra);
-    throw new Error(`expected validation failure containing ${JSON.stringify(reason)}`);
   } catch (error) {
-    const output = String((error as { stderr?: unknown }).stderr ?? error);
-    expect(output).toContain(reason);
+    stderr = String((error as { stderr?: unknown }).stderr ?? "");
   }
+  if (!stderr) throw new Error(`expected validation subprocess to fail with stderr containing ${JSON.stringify(reason)}`);
+  expect(stderr).toContain(reason);
 }
 
 function refreshExternalIntegrity(archivePath: string) {
@@ -185,12 +186,16 @@ function producerContractFixture() {
 }
 
 describe("runtime artifact validation", () => {
-  it("normalizes group-writable producer directories/files without following dependency symlinks", () => {
+  it("normalizes group-writable, setgid, and sticky producer directories/files without following dependency symlinks", () => {
     if (process.platform === "win32") return;
     const root = mkdtempSync(join(tmpdir(), "clashcookies-runtime-permissions-test-"));
     const packageRoot = join(root, "package");
     const dependencyRoot = join(packageRoot, "node_modules", "fixture");
-    mkdirSync(dependencyRoot, { recursive: true, mode: 0o777 });
+    mkdirSync(dependencyRoot, { recursive: true, mode: 0o2777 });
+    const stickyRoot = join(packageRoot, "sticky");
+    mkdirSync(stickyRoot, { recursive: true, mode: 0o1777 });
+    chmodSync(dependencyRoot, 0o2777);
+    chmodSync(stickyRoot, 0o1777);
     const target = join(dependencyRoot, "target.js");
     writeFileSync(target, "#!/usr/bin/env node\n", { mode: 0o777 });
     chmodSync(target, 0o777);
@@ -198,7 +203,8 @@ describe("runtime artifact validation", () => {
     execFileSync(process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash", [join(process.cwd(), "scripts", "normalize-runtime-artifact-permissions.sh"), packageRoot], { stdio: "pipe" });
     expect(statSync(dependencyRoot).mode & 0o7777).toBe(0o755);
     expect(statSync(target).mode & 0o7777).toBe(0o755);
-    expect(statSync(join(packageRoot, "node_modules", "link.js")).isSymbolicLink()).toBe(true);
+    expect(statSync(stickyRoot).mode & 0o7777).toBe(0o755);
+    expect(lstatSync(join(packageRoot, "node_modules", "link.js")).isSymbolicLink()).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -228,6 +234,7 @@ describe("runtime artifact validation", () => {
     const extracted = join(value.root, "extracted");
     const extractionArgs = process.platform === "win32" ? [] : ["--extract", extracted];
     expect(runValidation(value.archivePath, ...extractionArgs)).toContain(sourceSha);
+    expect(() => expectValidationFailure(value.archivePath, "should-not-match")).toThrow("expected validation subprocess to fail");
     if (process.platform !== "win32") expect(statSync(join(extracted, "dist", "ClashCookies.js")).mode & 0o111).toBeTruthy();
     rmSync(value.root, { recursive: true, force: true });
   });
