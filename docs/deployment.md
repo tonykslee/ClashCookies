@@ -174,6 +174,14 @@ From the droplet host, use:
 
 ## Deployment Notes
 
+### FB-028A off-host runtime artifact evidence
+
+The separate `Runtime Artifact Round Trip` GitHub Actions workflow builds a clean runtime archive from the exact checked-out commit in the pinned `node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5` image for `linux/amd64`. The build uses Node 20, Yarn Classic 1.22.22, `yarn install --frozen-lockfile`, and the canonical `npm run build`; it retains the complete dependency tree, generated Prisma client/native engine, Prisma CLI, compiled `dist`, schema, and migrations. The manifest records the full Git SHA, workflow run and attempt, package/lockfile/Prisma inputs, toolchain, platform, native-library compatibility, build duration, archive size, extracted footprint, and the SHA-256 sidecar.
+
+Validation downloads the published bytes in a fresh job, rejects malformed or mismatched metadata, unsafe paths, escaping symlinks, missing runtime files, wrong revisions, and incompatible platforms, then extracts safely. The extracted runtime is checked in the same pinned Linux family without dependency installation, compilation, or Prisma regeneration. A disposable PostgreSQL container supplies a bounded Prisma CLI/schema check and a `SELECT 1` native-engine query probe. This does not prove the full migration chain, live VM compatibility, application readiness, or production deployment safety.
+
+Artifacts are retained for three days and are explicitly marked non-production evidence. The workflow does not start the Discord runtime, use production credentials or services, modify the production deployment workflow, install the live wrapper, consume artifacts in production, promote releases, or provide a fallback to local compilation. Production integration remains a separately reviewed future change.
+
 - **Backup release gate (observed Nov 15):** A real encrypted off-host backup and separate disposable PostgreSQL 17 restore were operator-verified. Freshness, recovery custody, staging waiver, and the migration-bearing release still require explicit review/approval. The backup timer remains disabled.
 
 - Commands are registered as guild commands using `GUILD_ID` on startup.

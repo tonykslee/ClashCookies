@@ -130,6 +130,8 @@ Production and staging currently run on a droplet-based container deployment.
 
 Production uses `POLLING_MODE=active` and owns upstream pollers/schedulers. Staging uses `POLLING_MODE=mirror` with guarded prod-to-staging runtime snapshot sync so it can stay operational without duplicating upstream polling. Near-zero-downtime deploy behavior, Prisma migration downtime handling, and health-gated promotion are documented in [Deployment and Install Links](docs/deployment.md). Health endpoints are built into the app, and the droplet observability stack is documented in [Observability](docs/observability.md).
 
+The repository also contains a non-production FB-028A off-host runtime artifact workflow. GitHub Actions builds a clean, SHA-bound `dist`/`node_modules`/Prisma archive in a pinned Node 20 Debian Bookworm image, publishes it for three days, and independently retrieves and exercises it against disposable PostgreSQL. This establishes development validation evidence only; production artifact consumption, promotion, wrapper installation, and deployment behavior remain pending and unchanged.
+
 ## Documentation
 - [Setup and Environment](docs/setup.md)
 - [Commands Reference](docs/commands.md)
