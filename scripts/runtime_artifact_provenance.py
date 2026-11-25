@@ -20,6 +20,7 @@ from typing import Any
 PROVENANCE_CONTRACT_VERSION = 1
 PROVENANCE_CONTRACT = "clashcookies.runtime-artifact-provenance"
 SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
+ACTIONS_WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_HOSTED_RUNNER = "github-hosted"
 PRODUCTION_ARTIFACT_CLASS = "production-runtime-release"
@@ -184,18 +185,29 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
     assert process.stdout is not None and process.stderr is not None
     streams = (process.stdout, process.stderr)
     queues = (queue.Queue(maxsize=1), queue.Queue(maxsize=1))
+    cancelled = threading.Event()
 
     def drain(stream: Any, output_queue: queue.Queue[bytes | None]) -> None:
         try:
-            while True:
+            while not cancelled.is_set():
                 chunk = stream.read(min(65536, max_output_bytes + 1))
                 if not chunk:
                     break
-                output_queue.put(chunk)
+                while not cancelled.is_set():
+                    try:
+                        output_queue.put(chunk, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
         finally:
-            output_queue.put(None)
+            while not cancelled.is_set():
+                try:
+                    output_queue.put(None, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
 
-    readers = [threading.Thread(target=drain, args=(stream, output_queue), daemon=True) for stream, output_queue in zip(streams, queues)]
+    readers = [threading.Thread(name=f"runtime-artifact-reader-{index}", target=drain, args=(stream, output_queue), daemon=True) for index, (stream, output_queue) in enumerate(zip(streams, queues))]
     for reader in readers:
         reader.start()
     buffers = [bytearray(), bytearray()]
@@ -203,6 +215,7 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
     deadline = time.monotonic() + timeout_seconds
 
     def stop_process() -> None:
+        cancelled.set()
         if process.poll() is None:
             process.kill()
         try:
@@ -211,7 +224,7 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
             pass
 
     try:
-        while not all(finished):
+        while True:
             if time.monotonic() > deadline:
                 stop_process()
                 raise subprocess.TimeoutExpired(command, timeout_seconds)
@@ -230,14 +243,26 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
                     if len(buffers[index]) > max_output_bytes:
                         stop_process()
                         raise ProvenanceError(f"{label} output exceeds the limit during execution")
+            if all(finished):
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    stop_process()
+                    raise
+                break
             if not progress:
                 time.sleep(0.005)
         return subprocess.CompletedProcess(command, process.returncode, bytes(buffers[0]).decode("utf-8", "replace"), bytes(buffers[1]).decode("utf-8", "replace"))
     finally:
         if process.poll() is None:
             stop_process()
+        cancelled.set()
         for stream in streams:
-            stream.close()
+            try:
+                stream.close()
+            except OSError:
+                pass
         for reader in readers:
             reader.join(timeout=2)
 
@@ -352,6 +377,9 @@ def validate_run_metadata(metadata: dict[str, Any], expected: dict[str, Any]) ->
     require(isinstance(repository_data, dict), "GitHub run metadata repository evidence is missing")
     require(repository_data.get("full_name") == expected["repository"], "GitHub run metadata repository mismatch")
     require(str(repository_data.get("id")) == str(expected["repository_id"]), "GitHub run metadata repository ID mismatch")
+    owner_data = repository_data.get("owner")
+    if expected.get("repository_owner_id") is not None:
+        require(isinstance(owner_data, dict) and str(owner_data.get("id")) == str(expected["repository_owner_id"]), "GitHub run metadata repository owner ID mismatch")
     if expected["event"] == "pull_request":
         require(metadata.get("head_sha") == expected["pr_head_sha"], "GitHub run metadata PR head SHA mismatch")
         require(metadata.get("head_branch") == expected["pr_head_ref"], "GitHub run metadata PR head ref mismatch")
@@ -394,8 +422,10 @@ def validate_verified_result(
     """Validate verified certificate claims and bind them to one artifact contract."""
     verification = result.get("verificationResult")
     require(isinstance(verification, dict), "attestation verification result is missing")
+    require(verification.get("mediaType") == "application/vnd.dev.sigstore.verificationresult+json;version=0.1", "unsupported official verifier result media type")
     statement = verification.get("statement")
     require(isinstance(statement, dict), "attestation statement is missing")
+    require(statement.get("_type") == "https://in-toto.io/Statement/v1", "unsupported attestation statement type")
     require(statement.get("predicateType") == SLSA_PROVENANCE_V1, "unsupported attestation predicate type")
     subjects = statement.get("subject")
     require(isinstance(subjects, list) and len(subjects) == 1, "attestation subject is missing or ambiguous")
@@ -415,8 +445,10 @@ def validate_verified_result(
     expected_attempt = require_int(expected["run_attempt"], "expected.run_attempt", 1)
     run_uri = f"{repository_uri}/actions/runs/{expected_run_id}/attempts/{expected_attempt}"
     expected_certificate_fields = {
+        "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
         "sourceRepositoryURI": repository_uri,
         "sourceRepositoryIdentifier": str(expected["repository_id"]),
+        "sourceRepositoryOwnerIdentifier": str(expected["repository_owner_id"]),
         "sourceRepositoryOwnerURI": owner_uri,
         "sourceRepositoryRef": expected["source_ref"],
         "sourceRepositoryDigest": expected["source_sha"],
@@ -425,6 +457,7 @@ def validate_verified_result(
         "githubWorkflowName": expected["workflow_name"],
         "githubWorkflowRepository": repository,
         "githubWorkflowRef": expected["source_ref"],
+        "buildTrigger": expected["event"],
         "buildSignerURI": f"{workflow_uri}@{expected['source_ref']}",
         "buildSignerDigest": expected["signer_revision"],
         "buildConfigURI": f"{workflow_uri}@{expected['source_ref']}",
@@ -432,6 +465,7 @@ def validate_verified_result(
         "runInvocationURI": run_uri,
         "runnerEnvironment": GITHUB_HOSTED_RUNNER,
         "issuer": GITHUB_OIDC_ISSUER,
+        "sourceRepositoryVisibilityAtSigning": expected["repository_visibility"],
     }
     for field, value in expected_certificate_fields.items():
         require(certificate.get(field) == value, f"attestation certificate {field} mismatch or missing")
@@ -442,6 +476,7 @@ def validate_verified_result(
     require(isinstance(predicate, dict), "attestation predicate is missing")
     build_definition = predicate.get("buildDefinition")
     require(isinstance(build_definition, dict), "attestation buildDefinition is missing")
+    require(build_definition.get("buildType") == ACTIONS_WORKFLOW_BUILD_TYPE, "attestation build type mismatch")
     external = build_definition.get("externalParameters")
     require(isinstance(external, dict), "attestation externalParameters is missing")
     workflow = external.get("workflow")
@@ -453,6 +488,7 @@ def validate_verified_result(
     require(isinstance(github_internal, dict), "attestation GitHub internal parameters are missing")
     require(github_internal.get("event_name") == expected["event"], "attestation internal event mismatch")
     require(str(github_internal.get("repository_id")) == str(expected["repository_id"]), "attestation internal repository ID mismatch")
+    require(str(github_internal.get("repository_owner_id")) == str(expected["repository_owner_id"]), "attestation internal repository owner ID mismatch")
     require(github_internal.get("runner_environment") == GITHUB_HOSTED_RUNNER, "attestation internal runner mismatch")
     dependencies = build_definition.get("resolvedDependencies")
     require(isinstance(dependencies, list) and len(dependencies) == 1, "attestation resolved dependency is missing or ambiguous")

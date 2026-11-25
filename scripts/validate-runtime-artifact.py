@@ -1069,6 +1069,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-event")
     parser.add_argument("--expected-source-ref")
     parser.add_argument("--expected-repository-id")
+    parser.add_argument("--expected-repository-owner-id")
+    parser.add_argument("--expected-repository-visibility", default="public")
     parser.add_argument("--expected-signer-workflow")
     parser.add_argument("--expected-signer-revision")
     parser.add_argument("--expected-pr-number", type=int)
@@ -1131,7 +1133,7 @@ def main() -> int:
         digest = snapshot.digest
         authenticated_provenance = None
         if args.require_attestation:
-            for value, label in ((args.expected_repository, "expected repository"), (args.expected_repository_id, "expected repository ID"), (args.expected_signer_workflow, "expected signer workflow"), (args.expected_signer_revision, "expected signer revision"), (args.expected_source_ref, "expected source ref"), (args.expected_event, "expected event"), (args.expected_run_id, "expected run ID"), (args.expected_run_attempt, "expected run attempt"), (args.expected_workflow, "expected workflow name"), (args.expected_base_image, "expected base image"), (args.expected_base_image_digest, "expected base image digest")):
+            for value, label in ((args.expected_repository, "expected repository"), (args.expected_repository_id, "expected repository ID"), (args.expected_repository_owner_id, "expected repository owner ID"), (args.expected_signer_workflow, "expected signer workflow"), (args.expected_signer_revision, "expected signer revision"), (args.expected_source_ref, "expected source ref"), (args.expected_event, "expected event"), (args.expected_run_id, "expected run ID"), (args.expected_run_attempt, "expected run attempt"), (args.expected_workflow, "expected workflow name"), (args.expected_base_image, "expected base image"), (args.expected_base_image_digest, "expected base image digest")):
                 require(value is not None and str(value) != "", f"{label} is required when attestation verification is enabled")
             if args.expected_event == "pull_request":
                 for value, label in ((args.expected_pr_number, "expected PR number"), (args.expected_pr_head_sha, "expected PR head SHA"), (args.expected_pr_head_ref, "expected PR head ref"), (args.expected_pr_base_sha, "expected PR base SHA"), (args.expected_pr_base_ref, "expected PR base ref")):
@@ -1139,6 +1141,8 @@ def main() -> int:
             expected_provenance = {
                 "repository": args.expected_repository,
                 "repository_id": str(args.expected_repository_id),
+                "repository_owner_id": str(args.expected_repository_owner_id),
+                "repository_visibility": args.expected_repository_visibility,
                 "signer_workflow": args.expected_signer_workflow,
                 "signer_revision": args.expected_signer_revision.lower(),
                 "source_ref": args.expected_source_ref,

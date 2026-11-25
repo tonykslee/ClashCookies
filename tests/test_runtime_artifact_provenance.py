@@ -26,6 +26,7 @@ PR_BASE_SHA = "e" * 40
 SIGNER_SHA = "c" * 40
 REPOSITORY = "tonykslee/ClashCookies"
 REPOSITORY_ID = "123456789"
+REPOSITORY_OWNER_ID = "987654321"
 SIGNER_WORKFLOW = ".github/workflows/runtime-artifact.yml"
 WORKFLOW_NAME = "Runtime Artifact Round Trip"
 PR_SOURCE_REF = "refs/pull/2188/merge"
@@ -39,6 +40,8 @@ def expected(event: str = "pull_request") -> dict[str, object]:
     return {
         "repository": REPOSITORY,
         "repository_id": REPOSITORY_ID,
+        "repository_owner_id": REPOSITORY_OWNER_ID,
+        "repository_visibility": "public",
         "signer_workflow": SIGNER_WORKFLOW,
         "signer_revision": SIGNER_SHA,
         "source_ref": PR_SOURCE_REF if event == "pull_request" else PUSH_SOURCE_REF,
@@ -71,9 +74,12 @@ def verified_result(context: dict[str, object] | None = None) -> dict[str, objec
     return {
         "_verifierVersion": provenance.SUPPORTED_GH_VERSION,
         "verificationResult": {
+            "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
             "signature": {
                 "certificate": {
+                    "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
                     "sourceRepositoryIdentifier": REPOSITORY_ID,
+                    "sourceRepositoryOwnerIdentifier": REPOSITORY_OWNER_ID,
                     "sourceRepositoryURI": repository_uri,
                     "sourceRepositoryOwnerURI": "https://github.com/tonykslee",
                     "sourceRepositoryRef": source_ref,
@@ -83,6 +89,7 @@ def verified_result(context: dict[str, object] | None = None) -> dict[str, objec
                     "githubWorkflowName": WORKFLOW_NAME,
                     "githubWorkflowRepository": REPOSITORY,
                     "githubWorkflowRef": source_ref,
+                    "buildTrigger": event,
                     "buildSignerURI": f"{workflow_uri}@{source_ref}",
                     "buildSignerDigest": SIGNER_SHA,
                     "buildConfigURI": f"{workflow_uri}@{source_ref}",
@@ -91,16 +98,19 @@ def verified_result(context: dict[str, object] | None = None) -> dict[str, objec
                     "runnerEnvironment": "github-hosted",
                     "issuer": provenance.GITHUB_OIDC_ISSUER,
                     "subjectAlternativeName": f"{workflow_uri}@{source_ref}",
+                    "sourceRepositoryVisibilityAtSigning": "public",
                 }
             },
             "verifiedTimestamps": [{"type": "Tlog"}],
             "statement": {
+                "_type": "https://in-toto.io/Statement/v1",
                 "predicateType": provenance.SLSA_PROVENANCE_V1,
                 "subject": [{"name": f"clashcookies-runtime-{SOURCE_SHA}.tar.gz", "digest": {"sha256": ARCHIVE_SHA}}],
                 "predicate": {
                     "buildDefinition": {
+                        "buildType": provenance.ACTIONS_WORKFLOW_BUILD_TYPE,
                         "externalParameters": {"workflow": {"path": SIGNER_WORKFLOW, "ref": source_ref, "repository": repository_uri}},
-                        "internalParameters": {"github": {"event_name": event, "repository_id": REPOSITORY_ID, "runner_environment": "github-hosted"}},
+                        "internalParameters": {"github": {"event_name": event, "repository_id": REPOSITORY_ID, "repository_owner_id": REPOSITORY_OWNER_ID, "runner_environment": "github-hosted"}},
                         "resolvedDependencies": [{"uri": dependency_uri, "digest": {"gitCommit": SOURCE_SHA}}],
                     },
                     "runDetails": {"builder": {"id": f"{workflow_uri}@{source_ref}"}, "metadata": {"invocationId": run_uri}},
@@ -120,7 +130,7 @@ def run_metadata(context: dict[str, object] | None = None) -> dict[str, object]:
         "run_attempt": RUN_ATTEMPT,
         "path": SIGNER_WORKFLOW,
         "head_branch": context["pr_head_ref"] if context["event"] == "pull_request" else "dev",
-        "repository": {"full_name": REPOSITORY, "id": REPOSITORY_ID},
+        "repository": {"full_name": REPOSITORY, "id": REPOSITORY_ID, "owner": {"id": REPOSITORY_OWNER_ID}},
     }
     if context["event"] == "pull_request":
         metadata["pull_requests"] = [{
@@ -241,6 +251,31 @@ class RuntimeArtifactProvenanceTests(unittest.TestCase):
         command = [sys.executable, "-c", "import sys; sys.stdout.write('x' * 10000000)"]
         with self.assertRaises(provenance.ProvenanceError):
             provenance.run_bounded(command, timeout_seconds=5, max_output_bytes=1024, label="test command")
+
+    def test_subprocess_waits_for_delayed_success_after_both_streams_close(self) -> None:
+        command = [sys.executable, "-c", "import os,time; os.close(1); os.close(2); time.sleep(.1); os._exit(0)"]
+        result = provenance.run_bounded(command, timeout_seconds=2, max_output_bytes=1024, label="delayed success")
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(any(thread.name.startswith("runtime-artifact-reader-") and thread.is_alive() for thread in provenance.threading.enumerate()))
+
+    def test_subprocess_returns_delayed_nonzero_exit_after_both_streams_close(self) -> None:
+        command = [sys.executable, "-c", "import os,time; os.close(1); os.close(2); time.sleep(.1); os._exit(7)"]
+        result = provenance.run_bounded(command, timeout_seconds=2, max_output_bytes=1024, label="delayed nonzero")
+        self.assertEqual(result.returncode, 7)
+
+    def test_subprocess_timeout_kills_child_and_reader_threads(self) -> None:
+        command = [sys.executable, "-c", "import os,time; os.close(1); os.close(2); time.sleep(5)"]
+        with self.assertRaises(provenance.subprocess.TimeoutExpired):
+            provenance.run_bounded(command, timeout_seconds=0.1, max_output_bytes=1024, label="timeout")
+        self.assertFalse(any(thread.name.startswith("runtime-artifact-reader-") and thread.is_alive() for thread in provenance.threading.enumerate()))
+
+    def test_subprocess_overflow_is_rejected_on_each_stream(self) -> None:
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                command = [sys.executable, "-c", f"import sys; sys.{stream}.write('x' * 10000000); sys.{stream}.flush()"]
+                with self.assertRaises(provenance.ProvenanceError):
+                    provenance.run_bounded(command, timeout_seconds=5, max_output_bytes=1024, label=f"{stream} overflow")
+                self.assertFalse(any(thread.name.startswith("runtime-artifact-reader-") and thread.is_alive() for thread in provenance.threading.enumerate()))
 
     def test_unsupported_contract_is_rejected(self) -> None:
         result = provenance.evaluate_synthetic_production_policy_fixture({"fixtureKind": "wrong", "synthetic": True})

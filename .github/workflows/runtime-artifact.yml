@@ -101,6 +101,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
     steps:
       - name: Checkout validation probe only
         uses: actions/checkout@v4
@@ -151,6 +153,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility || 'public' }}
           RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
           RUNTIME_ARTIFACT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           RUNTIME_ARTIFACT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
@@ -178,6 +182,8 @@ jobs:
             --expected-event "$GITHUB_EVENT_NAME" \
             --expected-source-ref "$GITHUB_REF" \
             --expected-repository-id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --expected-repository-owner-id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
+            --expected-repository-visibility "$RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY" \
             --expected-signer-workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
             --expected-signer-revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
             --expected-pr-number "${RUNTIME_ARTIFACT_PR_NUMBER:-0}" \
@@ -244,14 +250,18 @@ jobs:
           tampered_status=$?
           set -e
           test "$tampered_status" -ne 0
-          if grep -Eqi 'HTTP (401|403|404)|unauthori[sz]ed|network|timeout|unknown flag|command not found' <<< "$tampered_output"; then
+          test -n "$tampered_output"
+          if grep -Eqi 'HTTP [0-9]{3}|unauthori[sz]ed|permission|token|network|timeout|unknown|usage|invalid option|not found|connect|resolve|panic|segmentation|command' <<< "$tampered_output"; then
             echo "Modified-subject verification failed operationally: $tampered_output" >&2
             exit 1
           fi
           if grep -Fq 'verifying with issuer "sigstore.dev"' <<< "$tampered_output"; then
             echo 'Upstream gh v2.89.0 reports a generic issuer-verification error for the controlled digest negative.' >> "$GITHUB_STEP_SUMMARY"
-          else
+          elif grep -Eqi 'verification|signature|certificate|digest|subject' <<< "$tampered_output"; then
             echo 'Upstream gh returned a specific controlled verification failure for the digest negative.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Modified-subject verification failed with unexplained output: $tampered_output" >&2
+            exit 1
           fi
           recovered_output="$(verify_subject "$archive")"
           jq -e 'type == "array" and length == 1 and (.[0].verificationResult.statement.subject | length == 1)' <<< "$recovered_output" >/dev/null
