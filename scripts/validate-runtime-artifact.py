@@ -223,13 +223,13 @@ def open_regular_readonly(path: Path, label: str) -> tuple[int, os.stat_result]:
     return descriptor, opened
 
 
-def snapshot_source(path: Path, limits: Limits) -> Snapshot:
+def snapshot_source(path: Path, limits: Limits, workspace_root: Path | None = None) -> Snapshot:
     descriptor, source_stat = open_regular_readonly(path, "archive")
     workspace: str | None = None
     immutable_fd: int | None = None
     try:
         require(source_stat.st_size <= limits.compressed_bytes, "compressed archive exceeds the size limit")
-        workspace = tempfile.mkdtemp(prefix=".runtime-artifact-validation-")
+        workspace = tempfile.mkdtemp(prefix=".runtime-artifact-validation-", dir=str(workspace_root) if workspace_root is not None else None)
         os.chmod(workspace, 0o700)
         snapshot_path = Path(workspace) / "archive.bin"
         snapshot_fd = os.open(snapshot_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | binary_flag() | cloexec_flag(), 0o600)

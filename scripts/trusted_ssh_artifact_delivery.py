@@ -49,7 +49,8 @@ MAX_BUNDLE_BYTES = provenance.MAX_BUNDLE_BYTES
 MAX_AGGREGATE_BYTES = MAX_SERVICE_ZIP_BYTES + provenance.MAX_BUNDLE_BYTES + provenance.MAX_AUTHORIZATION_RECORD_BYTES
 MAX_RECEIVING_SECONDS = 180
 MAX_SSH_OUTPUT_BYTES = 64 * 1024
-MAX_TEMPORARY_BYTES = MAX_SERVICE_ZIP_BYTES + provenance.MAX_BUNDLE_BYTES + provenance.MAX_ARCHIVE_BYTES
+MAX_VALIDATOR_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_TEMPORARY_BYTES = (2 * MAX_SERVICE_ZIP_BYTES) + (2 * provenance.MAX_BUNDLE_BYTES) + (2 * provenance.MAX_ARCHIVE_BYTES) + MAX_VALIDATOR_EXPANDED_BYTES
 ALLOWED_FILES = {"artifact-service.zip", "attestation-bundle.json", "authorization-envelope.json"}
 
 
@@ -211,7 +212,7 @@ def _assert_safe_ancestors(path: Path, label: str) -> None:
 
 
 def _assert_non_overlapping(paths: list[tuple[Path, str]]) -> None:
-    absolute = [(path.absolute(), label) for path, label in paths]
+    absolute = [(Path(os.path.abspath(os.path.normpath(path))), label) for path, label in paths]
     for index, (left, left_label) in enumerate(absolute):
         for right, right_label in absolute[index + 1:]:
             try:
@@ -229,10 +230,20 @@ def _assert_non_overlapping(paths: list[tuple[Path, str]]) -> None:
 def _attempt_bytes(root: Path, maximum: int) -> int:
     total = 0
     for path in root.rglob("*"):
-        _require(not path.is_symlink(), "receiving attempt contains a symlink")
-        if path.is_file():
-            total += path.stat().st_size
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode):
+            target = os.readlink(path)
+            _require(not os.path.isabs(target), "receiving attempt contains an absolute symlink")
+            target_path = Path(os.path.normpath(os.path.join(str(path.parent), target)))
+            _require(target_path == root or root in target_path.parents, "receiving attempt symlink escapes its workspace")
+            total += len(os.fsencode(target))
             _require(total <= maximum, "receiving temporary storage exceeds the limit")
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            total += metadata.st_size
+            _require(total <= maximum, "receiving temporary storage exceeds the limit")
+        else:
+            _require(stat.S_ISDIR(metadata.st_mode), "receiving attempt contains a special file")
     return total
 
 
@@ -319,9 +330,13 @@ def _validate_endpoint(endpoint: SshDeliveryEndpoint, repository_root: Path) -> 
     _require(1 <= endpoint.execution_timeout_seconds <= MAX_RECEIVING_SECONDS, "SSH execution timeout is out of bounds")
     _assert_private_input(endpoint.known_hosts, repository_root, "trusted known_hosts", 1024 * 1024)
     _assert_private_input(endpoint.identity_file, repository_root, "disposable SSH identity", 1024 * 1024)
-    _require(endpoint.destination.startswith("/") and "\x00" not in endpoint.destination and ".." not in Path(endpoint.destination).parts, "SSH destination must be an absolute normalized path")
+    def strict_remote_path(value: str, label: str) -> None:
+        _require(isinstance(value, str) and value.startswith("/") and "\x00" not in value and "\\" not in value, f"{label} must be an explicit normalized absolute path")
+        _require(os.path.normpath(value) == value and ".." not in Path(value).parts, f"{label} must be an explicit normalized absolute path")
+
+    strict_remote_path(endpoint.destination, "SSH destination")
     for value, label in ((endpoint.remote_repository_root, "remote repository root"), (endpoint.remote_receiving_root, "remote receiving root"), (endpoint.remote_publication_root, "remote publication root"), (endpoint.remote_expected_identity, "remote expected identity"), (endpoint.remote_trusted_root, "remote trusted root"), (endpoint.remote_offline_expectation, "remote offline expectation")):
-        _require(value.startswith("/") and all(ch.isalnum() or ch in "_./:-" for ch in value) and ".." not in Path(value).parts, f"{label} must be an explicit normalized absolute path")
+        strict_remote_path(value, label)
     _require(endpoint.destination == endpoint.remote_publication_root, "SSH destination does not match the explicit receiver publication directory")
 
 
@@ -500,6 +515,8 @@ def _extract_original_entries(snapshot: provenance.ZipSnapshot, identity: Any, o
             for name in names:
                 info = infos[name]
                 _require(not info.is_dir() and ".." not in name.split("/") and not name.startswith("/"), "required ZIP entry is unsafe")
+                maximum = identity.archive_bytes if name == identity.archive_name else 1024 * 1024
+                _require(info.file_size <= maximum, f"required ZIP entry {name} exceeds its limit")
                 destination = output_root / name
                 with archive.open(info, "r") as source, destination.open("xb") as target:
                     remaining = info.file_size
@@ -518,10 +535,10 @@ def _extract_original_entries(snapshot: provenance.ZipSnapshot, identity: Any, o
     return outputs[identity.archive_name], outputs[f"{identity.archive_name}.sha256"], outputs[f"{identity.archive_name}.manifest.json"]
 
 
-def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, identity: Any, staging: Path, expected_context: dict[str, Any] | None = None) -> None:
+def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, identity: Any, staging: Path, expected_context: dict[str, Any] | None = None, snapshot_root: Path | None = None) -> None:
     validator = _load_validator()
     limits = validator.Limits()
-    snapshot = validator.snapshot_source(archive, limits)
+    snapshot = validator.snapshot_source(archive, limits, workspace_root=snapshot_root)
     try:
         _require(snapshot.digest == identity.archive_sha256 and snapshot.size == identity.archive_bytes, "inner archive identity does not match independently expected bytes")
         validator.validate_checksum(archive, checksum, snapshot.digest)
@@ -549,6 +566,26 @@ def _validate_inner_archive(archive: Path, checksum: Path, manifest: Path, ident
         validator.extract_archive(snapshot, entries, file_hashes, staging, limits, snapshot.digest)
     finally:
         validator.cleanup_snapshot(snapshot)
+
+
+def _validate_provenance_binding(identity: Any, expectation: dict[str, Any], verified: Any) -> None:
+    """Bind the independent delivery identity, verifier expectation, and receipt as one tuple."""
+    fields = (
+        "repository", "repository_id", "repository_owner_id", "source_ref", "source_sha", "event",
+        "producer_workflow", "producer_revision", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform",
+        "image", "image_digest",
+    )
+    for field in fields:
+        expected_value = expectation.get(field)
+        identity_value = getattr(identity, field if field != "signer_workflow" else "signer_workflow")
+        _require(expected_value is not None, f"offline expectation omits delivery identity field {field}")
+        _require(str(expected_value) == str(identity_value), f"offline expectation {field} does not match the delivery identity")
+    for field in ("archive_name", "archive_sha256", "archive_bytes", "artifact_service_zip_sha256", "artifact_service_zip_bytes", "artifact_id", "artifact_name"):
+        if field in expectation:
+            _require(str(expectation[field]) == str(getattr(identity, field)), f"offline expectation {field} does not match the delivery identity")
+    for field in ("repository", "source_ref", "source_sha", "event", "signer_workflow", "signer_revision", "run_id", "run_attempt", "artifact_class", "platform", "image", "image_digest", "archive_name", "archive_sha256", "archive_bytes"):
+        if hasattr(verified, field):
+            _require(str(getattr(verified, field)) == str(getattr(identity, field)), f"verified provenance {field} does not match the delivery identity")
 
 
 def _safe_publication_name(identity: Any) -> str:
@@ -624,12 +661,13 @@ def _payload_matches(path: Path, identity: Any, expected_bundle: tuple[str, int]
             authorization_digest, authorization_size = provenance._sha256_file(path / "authorization-envelope.json", provenance.MAX_AUTHORIZATION_RECORD_BYTES, "published authorization envelope")
             if (authorization_digest, authorization_size) != expected_authorization:
                 return False
-        snapshot = provenance.open_zip_snapshot(service_zip)
-        try:
-            provenance.verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
-            provenance.inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
-        finally:
-            provenance.close_zip_snapshot(snapshot)
+        with _owned_temp_directory(path.parent, "clashcookies-publication-verify-") as verification:
+            snapshot = provenance.open_zip_snapshot(service_zip, directory=verification)
+            try:
+                provenance.verify_artifact_service_zip_snapshot(snapshot, identity.artifact_service_zip_sha256, identity.artifact_service_zip_bytes)
+                provenance.inspect_artifact_service_zip_snapshot(snapshot, identity.archive_name, identity.archive_sha256, identity.archive_bytes)
+            finally:
+                provenance.close_zip_snapshot(snapshot)
         return True
     except (DeliveryError, provenance.ProvenanceError, OSError):
         return False
@@ -690,10 +728,10 @@ def _write_snapshot(snapshot: provenance.ZipSnapshot, destination: Path) -> None
                 target.write(chunk)
                 digest.update(chunk)
                 size += len(chunk)
-            _require(size == snapshot.size and digest.hexdigest() == snapshot.digest, "verified artifact snapshot changed while copying")
+            _require(size == snapshot.size and digest.hexdigest() == snapshot.sha256, "verified artifact snapshot changed while copying")
             target.flush()
             os.fsync(target.fileno())
-    except OSError as error:
+    except (OSError, DeliveryError) as error:
         destination.unlink(missing_ok=True)
         _fail(f"verified artifact snapshot copy failed: {error}")
 
@@ -722,12 +760,15 @@ def _publication_payload(staging: Path, identity: Any, service_zip_snapshot: pro
     return bundle_result, authorization_result
 
 
-def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits) -> None:
-    try:
-        free = shutil.disk_usage(receiving_root).free
-    except OSError as error:
-        _fail(f"receiving storage availability cannot be checked: {error}")
-    _require(free >= limits.max_temporary_bytes, "receiving storage does not have enough bounded temporary capacity")
+def _assert_delivery_storage(receiving_root: Path, limits: DeliveryLimits, publication_root: Path | None = None) -> None:
+    for root in (receiving_root, publication_root):
+        if root is None:
+            continue
+        try:
+            free = shutil.disk_usage(root).free
+        except OSError as error:
+            _fail(f"delivery storage availability cannot be checked: {error}")
+        _require(free >= limits.max_temporary_bytes, "delivery storage does not have enough bounded temporary capacity")
 
 
 @contextmanager
@@ -750,7 +791,7 @@ def _owned_temp_directory(parent: Path, prefix: str) -> Iterator[Path]:
             opened = os.fstat(parent_descriptor)
             _require((current.st_dev, current.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent changed during cleanup")
             _require((opened.st_dev, opened.st_ino) == (parent_metadata.st_dev, parent_metadata.st_ino), "temporary directory parent descriptor changed during cleanup")
-            if temporary is not None and temporary.exists():
+            if temporary is not None and os.path.lexists(temporary):
                 metadata = os.lstat(temporary)
                 _require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode), "attempt-owned temporary directory was substituted")
                 shutil.rmtree(temporary)
@@ -776,18 +817,18 @@ def publish_development_delivery(
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (trusted_root, "trusted root")])
-    _assert_delivery_storage(receiving_root, limits)
+    _assert_delivery_storage(receiving_root, limits, publication_root)
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", limits.max_service_zip_bytes)
     _assert_private_input(attestation_bundle, repository_root, "received attestation bundle", limits.max_bundle_bytes)
     _assert_private_input(trusted_root, repository_root, "independently configured trusted root", limits.max_bundle_bytes)
-    snapshot = provenance.open_zip_snapshot(service_zip)
-    try:
-        provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
-        provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
-        with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt:
+    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-delivery-") as attempt:
+        snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
+        try:
+            provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
+            provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
             archive, checksum, manifest = _extract_original_entries(snapshot, expected_identity, attempt)
             staging = attempt / "validated-runtime"
-            _validate_inner_archive(archive, checksum, manifest, expected_identity, staging, offline_expectation)
+            _validate_inner_archive(archive, checksum, manifest, expected_identity, staging, offline_expectation, snapshot_root=attempt)
             # The offline verifier is called only after the received bytes have
             # been snapshotted.  The caller's API-correlation metadata is kept
             # separate and must not be reconstructed from this payload.
@@ -806,12 +847,13 @@ def publish_development_delivery(
                 excluded_roots=(receiving_root, publication_root),
             )
             provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=offline_expectation, run_metadata=None, require_run_metadata=False)
+            _validate_provenance_binding(expected_identity, offline_expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, attestation_bundle)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle)
-    finally:
-        provenance.close_zip_snapshot(snapshot)
+        finally:
+            provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)
 
 
@@ -840,19 +882,19 @@ def publish_synthetic_authorized_delivery_for_test(
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
     _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
-    _assert_delivery_storage(receiving_root, DeliveryLimits())
+    _assert_delivery_storage(receiving_root, DeliveryLimits(), publication_root)
     _assert_private_input(service_zip, repository_root, "received artifact-service ZIP", MAX_SERVICE_ZIP_BYTES)
-    snapshot = provenance.open_zip_snapshot(service_zip)
-    try:
-        provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
-        provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
-        journal.reserve(authorization_envelope, expected_identity, revision_allowlist, trust, operation=operation, now=now)
-        with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt:
+    with _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-synthetic-delivery-") as attempt:
+        snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
+        try:
+            provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
+            provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
+            journal.reserve(authorization_envelope, expected_identity, revision_allowlist, trust, operation=operation, now=now)
             with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
                 _, expected_authorization = _publication_payload(payload, expected_identity, snapshot, None, authorization_envelope)
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_authorization=expected_authorization)
-    finally:
-        provenance.close_zip_snapshot(snapshot)
+        finally:
+            provenance.close_zip_snapshot(snapshot)
     return DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, False, True)
 
 
@@ -874,7 +916,7 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         "--offline-expectation", endpoint.remote_offline_expectation,
     ]
     try:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
     except OSError as error:
         _fail(f"OpenSSH transport is unavailable: {error}")
     assert process.stdin and process.stdout and process.stderr
@@ -960,22 +1002,28 @@ def _ssh_stream(endpoint: SshDeliveryEndpoint, repository_root: Path, header: by
         _require(isinstance(acknowledgment, dict), "SSH receiver acknowledgment must be an object")
         return acknowledgment
     finally:
+        try:
+            if process.poll() is None:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                    process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            cleanup_error = cleanup_error or error
         stop.set()
         for stream in (process.stdin, process.stdout, process.stderr):
             try:
                 stream.close()
             except OSError as error:
                 cleanup_error = cleanup_error or error
-        try:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            cleanup_error = cleanup_error or error
         writer_thread.join(timeout=1)
         for reader_thread in reader_threads:
             reader_thread.join(timeout=1)
@@ -993,7 +1041,8 @@ def _validate_acknowledgment(acknowledgment: dict[str, Any], identity: Any, endp
     _require(acknowledgment["artifact_service_zip_sha256"] == identity.artifact_service_zip_sha256 and acknowledgment["artifact_service_zip_bytes"] == identity.artifact_service_zip_bytes, "SSH receiver acknowledgment ZIP identity does not match the request")
     _require(acknowledgment["archive_sha256"] == identity.archive_sha256 and acknowledgment["archive_bytes"] == identity.archive_bytes, "SSH receiver acknowledgment archive identity does not match the request")
     _require(acknowledgment["offline_attestation"] is True and acknowledgment["authorization_reserved"] is False, "SSH receiver acknowledgment does not prove the required verification boundary")
-    _require(isinstance(acknowledgment["publication"], str) and re.fullmatch(re.escape(endpoint.destination.rstrip("/")) + r"/release-[0-9a-f]{64}", acknowledgment["publication"]) is not None, "SSH receiver acknowledgment publication is outside the requested destination")
+    expected_publication = endpoint.destination.rstrip("/") + "/" + _safe_publication_name(identity)
+    _require(acknowledgment["publication"] == expected_publication, "SSH receiver acknowledgment publication is not the requested identity directory")
     try:
         return DeliveryResult(**acknowledgment)
     except TypeError as error:
@@ -1039,12 +1088,13 @@ def receive_command(args: argparse.Namespace) -> int:
     repository_root = Path(args.repository_root)
     receiving_root = Path(args.receiving_root)
     publication_root = Path(args.publication_root)
-    expected_identity = _load_identity_file(Path(args.expected_identity), repository_root)
+    expected_identity_path = Path(args.expected_identity)
+    expected_identity = _load_identity_file(expected_identity_path, repository_root)
     _assert_external_directory(receiving_root, repository_root, "receiving workspace")
     _assert_external_directory(publication_root, repository_root, "publication directory")
-    _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory")])
+    _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (expected_identity_path, "expected identity")])
     limits = DeliveryLimits()
-    _assert_delivery_storage(receiving_root, limits)
+    _assert_delivery_storage(receiving_root, limits, publication_root)
     with _receiver_deadline(limits.max_elapsed_seconds) as deadline, _receiver_lock(receiving_root), _owned_temp_directory(receiving_root, "clashcookies-receive-") as attempt:
         identity_payload, files, frame_destination = _read_frame(sys.stdin.buffer, attempt, limits, deadline)
         _require(identity_payload == _identity_payload(expected_identity), "received identity is not the independently expected identity")
@@ -1065,13 +1115,13 @@ def receive_command(args: argparse.Namespace) -> int:
         _assert_non_overlapping([(receiving_root, "receiving workspace"), (publication_root, "publication directory"), (trusted_root, "trusted root"), (expectation_path, "offline expectation")])
         expectation = _read_json_file(expectation_path, MAX_HEADER_BYTES, "offline verification expectation")
         _require(isinstance(expectation, dict), "offline verification expectation must be an object")
-        snapshot = provenance.open_zip_snapshot(service_zip)
+        snapshot = provenance.open_zip_snapshot(service_zip, directory=attempt)
         try:
             provenance.verify_artifact_service_zip_snapshot(snapshot, expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes)
             provenance.inspect_artifact_service_zip_snapshot(snapshot, expected_identity.archive_name, expected_identity.archive_sha256, expected_identity.archive_bytes)
             archive, checksum, manifest = _extract_original_entries(snapshot, expected_identity, attempt)
             staging = attempt / "validated-runtime"
-            _validate_inner_archive(archive, checksum, manifest, expected_identity, staging, expectation)
+            _validate_inner_archive(archive, checksum, manifest, expected_identity, staging, expectation, snapshot_root=attempt)
             verified = provenance.run_gh_attestation_verify(
                 archive,
                 bundle=files["attestation-bundle.json"],
@@ -1085,11 +1135,12 @@ def receive_command(args: argparse.Namespace) -> int:
                 offline=True,
                 repository_root=repository_root,
                 excluded_roots=(receiving_root, publication_root),
+                deadline=deadline,
             )
             provenance.validate_verified_result(verified, archive_name=expected_identity.archive_name, archive_digest=expected_identity.archive_sha256, archive_bytes=expected_identity.archive_bytes, expected=expectation, run_metadata=None, require_run_metadata=False)
+            _validate_provenance_binding(expected_identity, expectation, verified)
             _attempt_bytes(attempt, limits.max_temporary_bytes)
-            with tempfile.TemporaryDirectory(prefix="clashcookies-publication-", dir=publication_root) as publication_name:
-                payload = Path(publication_name)
+            with _owned_temp_directory(publication_root, "clashcookies-publication-") as payload:
                 expected_bundle, _ = _publication_payload(payload, expected_identity, snapshot, files["attestation-bundle.json"])
                 destination, retry = _publish_payload(payload, publication_root, expected_identity, expected_bundle)
             result = DeliveryResult("retry-success" if retry else "published", str(destination), _identity_digest(expected_identity), expected_identity.artifact_service_zip_sha256, expected_identity.artifact_service_zip_bytes, expected_identity.archive_sha256, expected_identity.archive_bytes, True, False)

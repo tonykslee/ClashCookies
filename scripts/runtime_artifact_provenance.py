@@ -21,6 +21,7 @@ import threading
 import time
 import tempfile
 import shutil
+import signal
 import uuid
 from zipfile import BadZipFile, ZipFile
 from pathlib import Path
@@ -1303,7 +1304,7 @@ def _gh_executable() -> str:
 def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: int, label: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Run a command with bounded reader queues, output buffers, and a deadline."""
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, start_new_session=(os.name == "posix"))
     except OSError:
         raise
     assert process.stdout is not None and process.stderr is not None
@@ -1341,7 +1342,13 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
     def stop_process() -> None:
         cancelled.set()
         if process.poll() is None:
-            process.kill()
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
@@ -1429,6 +1436,7 @@ def run_gh_attestation_verify(
     offline: bool = False,
     repository_root: Path | None = None,
     excluded_roots: tuple[Path, ...] = (),
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Run the official GitHub CLI verifier against the immutable archive snapshot.
 
@@ -1472,8 +1480,13 @@ def run_gh_attestation_verify(
         except Exception:
             shutil.rmtree(config_dir, ignore_errors=True)
             raise
+    remaining_timeout = timeout_seconds
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "attestation verification deadline already expired")
+        remaining_timeout = max(1, min(timeout_seconds, int(remaining)))
     try:
-        verified_version = verify_gh_version(verifier_version, environment=environment)
+        verified_version = verify_gh_version(verifier_version, timeout_seconds=remaining_timeout, environment=environment)
     except Exception:
         if environment is not None:
             shutil.rmtree(environment["GH_CONFIG_DIR"], ignore_errors=True)
@@ -1504,7 +1517,11 @@ def run_gh_attestation_verify(
     if custom_trusted_root is not None:
         command.extend(["--custom-trusted-root", str(root_snapshot or custom_trusted_root)])
     try:
-        result = run_bounded(command, timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="official GitHub attestation verifier", environment=environment)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "attestation verification deadline already expired")
+            remaining_timeout = max(1, min(timeout_seconds, int(remaining)))
+        result = run_bounded(command, timeout_seconds=remaining_timeout, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="official GitHub attestation verifier", environment=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub attestation verifier unavailable or timed out: {error}")
     finally:
@@ -1624,13 +1641,13 @@ def _open_nofollow_regular(path: Path, maximum: int, label: str) -> tuple[int, i
     return descriptor, metadata.st_size
 
 
-def open_zip_snapshot(path: Path) -> ZipSnapshot:
+def open_zip_snapshot(path: Path, *, directory: Path | None = None) -> ZipSnapshot:
     """Copy a ZIP into a private file, then retain one descriptor for all reads."""
     source_fd, source_size = _open_nofollow_regular(path, MAX_ARTIFACT_BYTES, "artifact service ZIP")
     snapshot_path: Path | None = None
     snapshot_fd: int | None = None
     try:
-        snapshot_fd, snapshot_name = tempfile.mkstemp(prefix=".runtime-artifact-zip-snapshot-")
+        snapshot_fd, snapshot_name = tempfile.mkstemp(prefix=".runtime-artifact-zip-snapshot-", dir=str(directory) if directory is not None else None)
         snapshot_path = Path(snapshot_name)
         digest = hashlib.sha256()
         remaining = source_size

@@ -137,6 +137,12 @@ jobs:
           "$install_root/bin/gh" version | tee "$RUNNER_TEMP/gh-version.txt"
           grep -Fq "gh version $GH_ATTESTATION_CLI_VERSION" "$RUNNER_TEMP/gh-version.txt"
 
+      - name: Require supported official GitHub CLI verifier
+        run: |
+          set -euo pipefail
+          actual="$("$GH_ATTESTATION_CLI" version | awk 'NR == 1 { print $3 }')"
+          test "$actual" = "$GH_ATTESTATION_CLI_VERSION"
+
       - name: Run Linux descriptor-boundary regressions
         run: python -m unittest discover -s tests -p 'test_runtime_artifact_security.py' -v
 
@@ -145,88 +151,6 @@ jobs:
 
       - name: Run trusted SSH delivery boundary regressions
         run: python -m unittest discover -s tests -p 'test_trusted_ssh_artifact_delivery.py' -v
-
-      - name: Install disposable OpenSSH receiver for integration evidence
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends openssh-server
-
-      - name: Prepare exact receiver identity and offline expectation
-        env:
-          RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
-          RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility || 'public' }}
-          RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
-          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
-          test -n "$archive" -a -n "$bundle"
-          selection="$(jq -c '.selection' "$RUNNER_TEMP/exact-selection.json")"
-          jq -n \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --argjson repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
-            --argjson repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
-            --arg source_ref "$GITHUB_REF" \
-            --arg source_sha "$GITHUB_SHA" \
-            --arg event "$GITHUB_EVENT_NAME" \
-            --arg producer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
-            --arg producer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
-            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
-            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
-            --argjson run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            --argjson selection "$selection" \
-            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
-            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
-            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
-            --arg authorization_context "ci-selection-only" \
-            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,producer_workflow:$producer_workflow,producer_revision:$producer_revision,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_id:$selection.artifactId,artifact_name:$selection.artifactName,artifact_class:"development-runtime-evidence",artifact_service_zip_sha256:$selection.artifactServiceZipSha256,artifact_service_zip_bytes:$selection.artifactServiceZipBytes,archive_name:$selection.archiveName,archive_sha256:$selection.archiveSha256,archive_bytes:$selection.archiveBytes,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:$authorization_context}' \
-            > "$RUNNER_TEMP/receiver-expected-identity.json"
-          jq -n \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
-            --arg repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
-            --arg repository_visibility "$RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY" \
-            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
-            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
-            --arg source_ref "$GITHUB_REF" \
-            --arg source_sha "$GITHUB_SHA" \
-            --arg event "$GITHUB_EVENT_NAME" \
-            --arg workflow_name "$GITHUB_WORKFLOW" \
-            --argjson run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
-            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
-            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
-            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,repository_visibility:$repository_visibility,signer_workflow:$signer_workflow,signer_revision:$signer_revision,source_ref:$source_ref,source_sha:$source_sha,event:$event,workflow_name:$workflow_name,run_id:$run_id,run_attempt:$run_attempt,platform:$platform,image:$image,image_digest:$image_digest,artifact_class:"development-runtime-evidence"}' \
-            > "$RUNNER_TEMP/receiver-offline-expectation.json"
-          {
-            echo "CC_REAL_RECEIVER=1"
-            echo "CC_RECEIVER_NETWORK_DISABLED=1"
-            echo "CC_RECEIVER_REPOSITORY_ROOT=$GITHUB_WORKSPACE"
-            echo "CC_RECEIVER_SERVICE_ZIP=$RUNNER_TEMP/artifact-service.zip"
-            echo "CC_RECEIVER_BUNDLE=$bundle"
-            echo "CC_RECEIVER_EXPECTED_IDENTITY=$RUNNER_TEMP/receiver-expected-identity.json"
-            echo "CC_RECEIVER_TRUSTED_ROOT=$RUNNER_TEMP/trusted_root.jsonl"
-            echo "CC_RECEIVER_OFFLINE_EXPECTATION=$RUNNER_TEMP/receiver-offline-expectation.json"
-            echo "CC_RECEIVER_GH=$GH_ATTESTATION_CLI"
-          } >> "$GITHUB_ENV"
-          chmod 600 "$RUNNER_TEMP/receiver-expected-identity.json" "$RUNNER_TEMP/receiver-offline-expectation.json"
-
-      - name: Run mandatory genuine Linux/OpenSSH receiver integration
-        run: |
-          set -euo pipefail
-          test "$CC_REAL_RECEIVER" = 1
-          test "$CC_RECEIVER_NETWORK_DISABLED" = 1
-          python -m unittest tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_receiver_and_exclusive_host_pinning -v
-
-      - name: Require supported official GitHub CLI verifier
-        run: |
-          set -euo pipefail
-          actual="$("$GH_ATTESTATION_CLI" version | awk 'NR == 1 { print $3 }')"
-          test "$actual" = "$GH_ATTESTATION_CLI_VERSION"
 
       - name: Acquire independently trusted offline verification root
         env:
@@ -419,6 +343,93 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           jq -e '.productionEligibility | .eligible == false and .authoritative == false and .reasonCode == "development-artifact-class"' \
             "$RUNNER_TEMP/authenticated-development-provenance.json" >/dev/null
+
+      - name: Install disposable OpenSSH receiver for integration evidence
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openssh-server
+
+      - name: Prepare exact receiver identity and offline expectation
+        env:
+          RUNTIME_ARTIFACT_REPOSITORY_ID: ${{ github.repository_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility || 'public' }}
+          RUNTIME_ARTIFACT_SIGNER_REVISION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/retrieved-runtime-artifact" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          bundle="$(find "$RUNNER_TEMP/retrieved-runtime-attestation" -maxdepth 2 -type f -name '*.json' -print -quit)"
+          test -n "$archive" -a -n "$bundle"
+          selection="$(jq -c '.selection' "$RUNNER_TEMP/exact-selection.json")"
+          custody="$RUNNER_TEMP/receiver-custody"
+          rm -rf "$custody"
+          mkdir -m 700 "$custody"
+          install -m 600 "$RUNNER_TEMP/artifact-service.zip" "$custody/artifact-service.zip"
+          install -m 600 "$bundle" "$custody/attestation-bundle.json"
+          install -m 600 "$RUNNER_TEMP/trusted_root.jsonl" "$custody/trusted_root.jsonl"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --argjson repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg producer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg producer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson selection "$selection" \
+            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
+            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            --arg authorization_context "ci-selection-only" \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,source_ref:$source_ref,source_sha:$source_sha,event:$event,producer_workflow:$producer_workflow,producer_revision:$producer_revision,signer_workflow:$signer_workflow,signer_revision:$signer_revision,run_id:$run_id,run_attempt:$run_attempt,artifact_id:$selection.artifactId,artifact_name:$selection.artifactName,artifact_class:"development-runtime-evidence",artifact_service_zip_sha256:$selection.artifactServiceZipSha256,artifact_service_zip_bytes:$selection.artifactServiceZipBytes,archive_name:$selection.archiveName,archive_sha256:$selection.archiveSha256,archive_bytes:$selection.archiveBytes,platform:$platform,image:$image,image_digest:$image_digest,authorization_context:$authorization_context}' \
+            > "$custody/receiver-expected-identity.json"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg repository_id "$RUNTIME_ARTIFACT_REPOSITORY_ID" \
+            --arg repository_owner_id "$RUNTIME_ARTIFACT_REPOSITORY_OWNER_ID" \
+            --arg repository_visibility "$RUNTIME_ARTIFACT_REPOSITORY_VISIBILITY" \
+            --arg producer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg producer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --arg signer_workflow "$RUNTIME_ARTIFACT_SIGNER_WORKFLOW" \
+            --arg signer_revision "$RUNTIME_ARTIFACT_SIGNER_REVISION" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg workflow_name "$GITHUB_WORKFLOW" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson selection "$selection" \
+            --arg platform "$RUNTIME_ARTIFACT_PLATFORM" \
+            --arg image "$RUNTIME_ARTIFACT_IMAGE" \
+            --arg image_digest "${RUNTIME_ARTIFACT_IMAGE##*@}" \
+            '{repository:$repository,repository_id:$repository_id,repository_owner_id:$repository_owner_id,repository_visibility:$repository_visibility,producer_workflow:$producer_workflow,producer_revision:$producer_revision,signer_workflow:$signer_workflow,signer_revision:$signer_revision,source_ref:$source_ref,source_sha:$source_sha,event:$event,workflow_name:$workflow_name,run_id:$run_id,run_attempt:$run_attempt,artifact_id:$selection.artifactId,artifact_name:$selection.artifactName,artifact_service_zip_sha256:$selection.artifactServiceZipSha256,artifact_service_zip_bytes:$selection.artifactServiceZipBytes,archive_name:$selection.archiveName,archive_sha256:$selection.archiveSha256,archive_bytes:$selection.archiveBytes,platform:$platform,image:$image,image_digest:$image_digest,artifact_class:"development-runtime-evidence"}' \
+            > "$custody/receiver-offline-expectation.json"
+          chmod 600 "$custody/receiver-expected-identity.json" "$custody/receiver-offline-expectation.json"
+          {
+            echo "CC_REAL_RECEIVER=1"
+            echo "CC_RECEIVER_NETWORK_DISABLED=1"
+            echo "CC_RECEIVER_REPOSITORY_ROOT=$GITHUB_WORKSPACE"
+            echo "CC_RECEIVER_SERVICE_ZIP=$custody/artifact-service.zip"
+            echo "CC_RECEIVER_BUNDLE=$custody/attestation-bundle.json"
+            echo "CC_RECEIVER_EXPECTED_IDENTITY=$custody/receiver-expected-identity.json"
+            echo "CC_RECEIVER_TRUSTED_ROOT=$custody/trusted_root.jsonl"
+            echo "CC_RECEIVER_OFFLINE_EXPECTATION=$custody/receiver-offline-expectation.json"
+            echo "CC_RECEIVER_GH=$GH_ATTESTATION_CLI"
+          } >> "$GITHUB_ENV"
+
+      - name: Run mandatory genuine Linux/OpenSSH receiver integration
+        run: |
+          set -euo pipefail
+          test "$CC_REAL_RECEIVER" = 1
+          test "$CC_RECEIVER_NETWORK_DISABLED" = 1
+          python -m unittest \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_real_openssh_receiver_and_exclusive_host_pinning \
+            tests.test_trusted_ssh_artifact_delivery.TrustedSshDeliveryTests.test_synthetic_authorized_delivery_composes_reservation_publication_and_durable_retry -v
 
       - name: Verify genuine attestation offline without token or network
         env:
