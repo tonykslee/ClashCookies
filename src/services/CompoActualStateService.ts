@@ -157,6 +157,7 @@ export type CompoActualStateExternalClanComposition = {
   clanTag: string;
   clanName: string;
   displayCounts: {
+    TH19: number | null;
     TH18: number | null;
     TH17: number | null;
     TH16: number | null;
@@ -1151,6 +1152,9 @@ export async function readExternalClanCurrentComposition(input: {
     : null;
   const compositionComplete = countsComplete && estimatedWeight !== null;
   const displayCounts = {
+    // FwaClanCatalog/Clans.json currently has no authoritative TH19 field.
+    // Keep that absence explicit; Clan Health renders it as unknown.
+    TH19: null,
     TH18: th18Count,
     TH17: th17Count,
     TH16: th16Count,

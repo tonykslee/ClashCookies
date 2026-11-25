@@ -83,7 +83,7 @@ function formatCompositionDeviation(input: {
 function buildTrackedCurrentCompositionLines(snapshot: ClanHealthTrackedSnapshot): string[] {
   const composition = snapshot.composition;
   return [
-    `TH18: **${composition.displayCounts.TH18}** | TH17: **${composition.displayCounts.TH17}** | TH16: **${composition.displayCounts.TH16}** | TH15: **${composition.displayCounts.TH15}** | TH14: **${composition.displayCounts.TH14}** | <=TH13: **${composition.displayCounts["<=TH13"]}**`,
+    `TH19: **${composition.displayCounts.TH19 ?? 0}** | TH18: **${composition.displayCounts.TH18}** | TH17: **${composition.displayCounts.TH17}** | TH16: **${composition.displayCounts.TH16}** | TH15: **${composition.displayCounts.TH15}** | TH14: **${composition.displayCounts.TH14}** | <=TH13: **${composition.displayCounts["<=TH13"]}**`,
     `Members: **${composition.memberCount}/50** | Unresolved: **${composition.unresolvedWeightCount}**`,
     `Deviation: **${formatCompositionDeviation(composition)}**`,
     `Source age: **${formatCompositionSourceAge(composition.sourceAgeMs)}**`,
@@ -118,7 +118,7 @@ function buildExternalCurrentCompositionLines(snapshot: ClanHealthExternalSnapsh
   const composition = snapshot.composition;
   const count = (value: number | null): string => (value === null ? "?" : String(value));
   return [
-    `TH18: **${count(composition.displayCounts.TH18)}** | TH17: **${count(composition.displayCounts.TH17)}** | TH16: **${count(composition.displayCounts.TH16)}** | TH15: **${count(composition.displayCounts.TH15)}** | TH14: **${count(composition.displayCounts.TH14)}** | <=TH13: **${count(composition.displayCounts["<=TH13"])}**`,
+    `TH19: **${count(composition.displayCounts.TH19)}** | TH18: **${count(composition.displayCounts.TH18)}** | TH17: **${count(composition.displayCounts.TH17)}** | TH16: **${count(composition.displayCounts.TH16)}** | TH15: **${count(composition.displayCounts.TH15)}** | TH14: **${count(composition.displayCounts.TH14)}** | <=TH13: **${count(composition.displayCounts["<=TH13"])}**`,
     `Members: **${composition.memberCount === null ? "?" : composition.memberCount}/50** | Unresolved: **${composition.unresolvedWeightCount}**`,
     `Deviation: **${formatCompositionDeviation(composition)}**`,
     `Source age: **${formatCompositionSourceAge(composition.sourceAgeMs)}**`,

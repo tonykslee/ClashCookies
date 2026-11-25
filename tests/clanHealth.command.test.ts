@@ -89,6 +89,7 @@ describe("/clan-health command", () => {
       clanName: "Alpha",
       shortName: "A",
       displayCounts: {
+        TH19: 0,
         TH18: 0,
         TH17: 0,
         TH16: 0,
@@ -216,6 +217,7 @@ describe("/clan-health command", () => {
       clanTag: "#EXT111",
       clanName: "External Alpha",
       displayCounts: {
+        TH19: null,
         TH18: 5,
         TH17: 7,
         TH16: 8,
@@ -324,7 +326,7 @@ describe("/clan-health command", () => {
       "Inactivity",
       "Discord Links",
     ]);
-    expect(String(embedJson.fields[1].value)).toContain("TH18: **0**");
+    expect(String(embedJson.fields[1].value)).toContain("TH19: **0** | TH18: **0**");
     expect(String(embedJson.fields[1].value)).toContain("Members: **50/50**");
     expect(String(embedJson.fields[1].value)).toContain("Deviation: **✅ 0**");
     expect(String(embedJson.fields[1].value)).toContain("Source age: **1h**");
@@ -465,6 +467,7 @@ describe("/clan-health command", () => {
       "Current Composition",
     ]);
     expect(String(embedJson.fields[0].value)).toContain("Match rate (last 30 available ended wars)");
+    expect(String(embedJson.fields[1].value)).toContain("TH19: **?** | TH18: **5**");
     expect(String(embedJson.fields[1].value)).toContain("Members: **50/50**");
     expect(String(embedJson.fields[1].value)).toContain("Unresolved: **0**");
     expect(String(embedJson.fields[1].value)).toContain("Deviation: **\u2705 0**");
@@ -472,6 +475,50 @@ describe("/clan-health command", () => {
     expect(String(embedJson.fields[1].value)).not.toContain("Inactivity");
     expect(String(embedJson.fields[1].value)).not.toContain("Discord Links");
     expect(payload.components).toBeUndefined();
+  });
+
+  it("renders factual TH19 before TH18 for tracked and externally supplied snapshots", async () => {
+    serviceMock.getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      composition: {
+        displayCounts: {
+          TH19: 2,
+          TH18: 3,
+          TH17: 4,
+          TH16: 5,
+          TH15: 6,
+          TH14: 7,
+          "<=TH13": 23,
+        },
+      },
+    }));
+
+    const trackedInteraction = makeInteraction("AAA111");
+    await ClanHealth.run({} as any, trackedInteraction as any, {} as any);
+    const trackedValue = trackedInteraction.editReply.mock.calls[0]?.[0].embeds[0]
+      .toJSON().fields.find((field: any) => field.name === "Current Composition").value;
+    expect(trackedValue).toContain("TH19: **2** | TH18: **3**");
+
+    serviceMock.getSnapshot.mockResolvedValueOnce(makeExternalSnapshot({
+      composition: {
+        displayCounts: {
+          TH19: 3,
+          TH18: 5,
+          TH17: 7,
+          TH16: 8,
+          TH15: 10,
+          TH14: 9,
+          "<=TH13": 8,
+        },
+        deviationScore: null,
+        healthy: false,
+      },
+    }));
+
+    const externalInteraction = makeInteraction("EXT111");
+    await ClanHealth.run({} as any, externalInteraction as any, {} as any);
+    const externalValue = externalInteraction.editReply.mock.calls[0]?.[0].embeds[0]
+      .toJSON().fields.find((field: any) => field.name === "Current Composition").value;
+    expect(externalValue).toContain("TH19: **3** | TH18: **5**");
   });
 
   it("renders an external snapshot without war data using only the composition field", async () => {
