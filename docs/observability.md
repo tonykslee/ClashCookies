@@ -72,6 +72,12 @@ Representative examples:
 
 Filtering Dozzle to `info` hides high-volume trace chatter while keeping startup, command usage, scheduler milestones, and important side effects visible.
 
+### User-activity reminder scheduler failure containment (FB-026)
+
+The active-only `user_activity_reminder_scheduler` keeps its existing immediate startup run and 60-second interval. Both automatic entry points attach a local rejection handler that emits one bounded `[remindme] event=automatic_cycle_failed` record with `scheduler`, `trigger` (`startup` or `interval`), and a sanitized/truncated `failure_code` (for example, `P2024`). The handler contains the automatic rejection; directly awaited `runCycle()` calls still reject so callers and tests can observe the failure. The cycle's existing `finally` guard release, queue-skip handling, poll-job `started`/`succeeded`/`failed` reporting, and safe status-write isolation remain unchanged. No immediate retry is added; the next ordinary interval is the recovery opportunity.
+
+Delivery claims remain durable before external dispatch. If Discord accepts a reminder and the follow-up delivery-state persistence fails, the claimed `(rule,event)` identity is not dispatched again when a later cycle observes the existing claim. This preserves the existing at-most-once delivery limitation across the dispatch/persistence window rather than attempting an unsafe retry. Mirror and staging ownership boundaries remain enforced by the ready listener, which starts this scheduler only for active polling.
+
 ### FWA composition reference containment
 
 HeatMapRef rebuild summaries must distinguish supported, partial/excluded, and unavailable evidence. The shared rebuild helper reports explicit exclusion codes including `unsupported_th19`, `roster_size`, `missing_weights`, `no_reference_band`, and `unresolved_effective_weights`. Ordinary legacy eligibility exclusions do not block a replacement when another supported roster remains; the supported cohort may publish with partial evidence. An effective TH19 exclusion is different: it blocks global publication even when supported rosters exist, because the legacy schema cannot represent that evidence safely. A source set with no qualifying evidence, or no source rosters, is also blocked. Existing rows remain intact and seed-only data is never labeled freshly validated.

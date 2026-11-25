@@ -28,6 +28,9 @@ const DEFAULT_USER_ACTIVITY_REMINDER_INTERVAL_MS = 60 * 1000;
 const DEFAULT_GAMES_COMPLETE_TARGET = 4000;
 const USER_ACTIVITY_REMINDER_JOB_KEY = "user_activity_reminder_scheduler";
 const USER_ACTIVITY_REMINDER_DISPLAY_NAME = "User activity reminder scheduler";
+const USER_ACTIVITY_REMINDER_CYCLE_FAILURE_CODE = "CYCLE_FAILED";
+
+type AutomaticCycleTrigger = "startup" | "interval";
 
 type ReminderSchedulerCounts = {
   evaluated: number;
@@ -58,6 +61,21 @@ async function safePollJobStatusWrite(
   }
 }
 
+function getSafeSchedulerFailureCode(error: unknown): string {
+  const rawCode = String(
+    (error as { code?: unknown } | null | undefined)?.code ??
+      USER_ACTIVITY_REMINDER_CYCLE_FAILURE_CODE,
+  ).trim();
+  const safeCode = rawCode.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 100);
+  return safeCode || USER_ACTIVITY_REMINDER_CYCLE_FAILURE_CODE;
+}
+
+function logAutomaticCycleFailure(trigger: AutomaticCycleTrigger, error: unknown): void {
+  console.error(
+    `[remindme] event=automatic_cycle_failed scheduler=${USER_ACTIVITY_REMINDER_JOB_KEY} trigger=${trigger} failure_code=${getSafeSchedulerFailureCode(error)}`,
+  );
+}
+
 /** Purpose: run periodic user-activity reminder evaluation with overlap guards and restart-safe dedupe. */
 export class UserActivityReminderSchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -76,9 +94,13 @@ export class UserActivityReminderSchedulerService {
   /** Purpose: start immediate + periodic scheduler evaluation for user-scoped reminder rules. */
   start(): void {
     if (this.timer) return;
-    void this.runCycle();
+    void this.runCycle().catch((err) => {
+      logAutomaticCycleFailure("startup", err);
+    });
     this.timer = setInterval(() => {
-      void this.runCycle();
+      void this.runCycle().catch((err) => {
+        logAutomaticCycleFailure("interval", err);
+      });
     }, this.intervalMs);
     console.log(`[remindme] scheduler started interval_ms=${this.intervalMs}`);
   }
