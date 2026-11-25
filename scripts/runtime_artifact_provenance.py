@@ -143,6 +143,7 @@ class AuthenticatedProvenance:
     image_digest: str
     pull_request: dict[str, Any] | None
     receipt: VerificationReceipt
+    run_metadata_independently_checked: bool = True
 
     def diagnostic_json(self) -> dict[str, Any]:
         """Return explicitly non-authoritative diagnostic output."""
@@ -157,7 +158,7 @@ class AuthenticatedProvenance:
             "signer": {"workflow": self.signer_workflow, "revision": self.signer_revision, "certificateIdentity": self.receipt.certificate_identity, "runner": GITHUB_HOSTED_RUNNER},
             "run": {"id": self.run_id, "attempt": self.run_attempt},
             "build": {"platform": self.platform, "image": self.image, "imageDigest": self.image_digest},
-            "verification": {"tool": self.receipt.tool, "version": self.receipt.version, "predicateType": SLSA_PROVENANCE_V1, "subjectDigestAuthenticated": True, "certificateClaimsAuthenticated": self.receipt.certificate_verified, "predicateClaimsWorkflowControlled": True, "runMetadataIndependentlyChecked": True},
+            "verification": {"tool": self.receipt.tool, "version": self.receipt.version, "predicateType": SLSA_PROVENANCE_V1, "subjectDigestAuthenticated": True, "certificateClaimsAuthenticated": self.receipt.certificate_verified, "predicateClaimsWorkflowControlled": True, "runMetadataIndependentlyChecked": self.run_metadata_independently_checked},
         }
 
 
@@ -1299,10 +1300,10 @@ def _gh_executable() -> str:
     return executable
 
 
-def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: int, label: str) -> subprocess.CompletedProcess[str]:
+def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: int, label: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Run a command with bounded reader queues, output buffers, and a deadline."""
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     except OSError:
         raise
     assert process.stdout is not None and process.stderr is not None
@@ -1390,10 +1391,10 @@ def run_bounded(command: list[str], *, timeout_seconds: int, max_output_bytes: i
             reader.join(timeout=2)
 
 
-def verify_gh_version(expected_version: str = SUPPORTED_GH_VERSION, timeout_seconds: int = 10) -> str:
+def verify_gh_version(expected_version: str = SUPPORTED_GH_VERSION, timeout_seconds: int = 10, environment: dict[str, str] | None = None) -> str:
     """Require the recorded official GitHub CLI version before accepting evidence."""
     try:
-        result = run_bounded([_gh_executable(), "version"], timeout_seconds=timeout_seconds, max_output_bytes=4096, label="official GitHub CLI version")
+        result = run_bounded([_gh_executable(), "version"], timeout_seconds=timeout_seconds, max_output_bytes=4096, label="official GitHub CLI version", environment=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub CLI version check unavailable or timed out: {error}")
     require(result.returncode == 0, "official GitHub CLI version check failed")
@@ -1424,12 +1425,55 @@ def run_gh_attestation_verify(
     source_sha: str,
     verifier_version: str = SUPPORTED_GH_VERSION,
     timeout_seconds: int = 90,
+    custom_trusted_root: Path | None = None,
+    offline: bool = False,
+    repository_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Run the official GitHub CLI verifier against the immutable archive snapshot."""
+    """Run the official GitHub CLI verifier against the immutable archive snapshot.
+
+    ``offline`` is deliberately explicit.  It requires a caller-supplied root
+    outside the checkout and runs the pinned official verifier with GitHub
+    authentication/configuration removed.  API correlation remains a separate
+    operation performed by ``validate_verified_result`` when metadata is
+    available at intake.
+    """
     require_regular_bounded(archive, MAX_ARCHIVE_BYTES, "immutable archive snapshot")
     if bundle is not None:
         require_regular_bounded(bundle, MAX_BUNDLE_BYTES, "attestation bundle")
-    verified_version = verify_gh_version(verifier_version)
+    if offline:
+        require(custom_trusted_root is not None, "offline attestation verification requires an independently supplied trusted root")
+    if custom_trusted_root is not None:
+        require_regular_bounded(custom_trusted_root, MAX_BUNDLE_BYTES, "custom trusted root")
+        if repository_root is not None:
+            _require_external_path(custom_trusted_root, repository_root, "custom trusted root")
+        root_metadata = os.lstat(custom_trusted_root)
+        root_parent_metadata = os.lstat(custom_trusted_root.parent)
+        require(stat.S_ISDIR(root_parent_metadata.st_mode) and not stat.S_ISLNK(root_parent_metadata.st_mode), "custom trusted root parent is unsafe")
+        if os.name == "posix":
+            require(root_metadata.st_uid == os.geteuid() and root_parent_metadata.st_uid == os.geteuid(), "custom trusted root is not owner-controlled")
+            require(stat.S_IMODE(root_metadata.st_mode) & 0o077 == 0 and stat.S_IMODE(root_parent_metadata.st_mode) & 0o077 == 0, "custom trusted root is not private")
+    environment = None
+    root_snapshot = None
+    if offline:
+        environment = dict(os.environ)
+        for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+            environment.pop(name, None)
+        # A private empty configuration directory prevents a cached login or
+        # extension from becoming an implicit source of authenticated evidence.
+        config_dir = tempfile.mkdtemp(prefix="clashcookies-gh-offline-")
+        environment["GH_CONFIG_DIR"] = config_dir
+        environment["GH_PROMPT_DISABLED"] = "true"
+        try:
+            root_snapshot = _private_snapshot(custom_trusted_root, Path(config_dir), "custom trusted root")
+        except Exception:
+            shutil.rmtree(config_dir, ignore_errors=True)
+            raise
+    try:
+        verified_version = verify_gh_version(verifier_version, environment=environment)
+    except Exception:
+        if environment is not None:
+            shutil.rmtree(environment["GH_CONFIG_DIR"], ignore_errors=True)
+        raise
     cli_signer_workflow = signer_workflow if "/" in signer_workflow.split(".github/", 1)[0] else f"{repository}/{signer_workflow}"
     command = [
         _gh_executable(),
@@ -1453,10 +1497,15 @@ def run_gh_attestation_verify(
     ]
     if bundle is not None:
         command.extend(["--bundle", str(bundle)])
+    if custom_trusted_root is not None:
+        command.extend(["--custom-trusted-root", str(root_snapshot or custom_trusted_root)])
     try:
-        result = run_bounded(command, timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="official GitHub attestation verifier")
+        result = run_bounded(command, timeout_seconds=timeout_seconds, max_output_bytes=MAX_VERIFIER_OUTPUT_BYTES, label="official GitHub attestation verifier", environment=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"official GitHub attestation verifier unavailable or timed out: {error}")
+    finally:
+        if environment is not None:
+            shutil.rmtree(environment["GH_CONFIG_DIR"], ignore_errors=True)
     require(len(result.stdout) <= MAX_VERIFIER_OUTPUT_BYTES and len(result.stderr) <= MAX_VERIFIER_OUTPUT_BYTES, "official GitHub attestation verifier output exceeds the limit")
     if result.returncode != 0:
         detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "no verifier detail"
@@ -1990,6 +2039,7 @@ def validate_verified_result(
     archive_bytes: int,
     expected: dict[str, Any],
     run_metadata: dict[str, Any] | None = None,
+    require_run_metadata: bool = True,
 ) -> AuthenticatedProvenance:
     """Validate verified certificate claims and bind them to one artifact contract."""
     verification = result.get("verificationResult")
@@ -2077,7 +2127,7 @@ def validate_verified_result(
     require(isinstance(verification.get("verifiedTimestamps"), list) and verification["verifiedTimestamps"], "attestation has no verified timestamp evidence")
 
     pull_request = validate_run_metadata(run_metadata, expected) if run_metadata is not None else None
-    require(run_metadata is not None, "authenticated GitHub Actions run metadata is required")
+    require(not require_run_metadata or run_metadata is not None, "authenticated GitHub Actions run metadata is required")
     return AuthenticatedProvenance(
         archive_name=archive_name,
         archive_sha256=archive_digest,
@@ -2097,6 +2147,7 @@ def validate_verified_result(
         image_digest=expected["image_digest"],
         pull_request=pull_request,
         receipt=VerificationReceipt("gh attestation verify", result.get("_verifierVersion", SUPPORTED_GH_VERSION), archive_digest, True, san, run_uri),
+        run_metadata_independently_checked=run_metadata is not None,
     )
 
 
