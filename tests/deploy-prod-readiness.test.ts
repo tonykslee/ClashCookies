@@ -22,7 +22,30 @@ type Scenario =
   | "diagnostic-permissions"
   | "legacy-rollback"
   | "cleanup-failure"
-  | "workspace-cleanup-failure";
+  | "workspace-cleanup-failure"
+  | "abandoned-attempt"
+  | "abandoned-artifact"
+  | "ambiguous-owned-resource"
+  | "unrelated-resource"
+  | "insufficient-resources"
+  | "health-degradation"
+  | "signal-term"
+  | "signal-int"
+  | "signal-hup"
+  | "signal-rollback-artifact"
+  | "candidate-container-cleanup-failure"
+  | "cleanup-failure-retry"
+  | "candidate-exit-137"
+  | "candidate-exit-124"
+  | "interrupted-creation"
+  | "docker-enumeration-failure"
+  | "docker-inspection-failure"
+  | "legacy-candidate"
+  | "partial-labels"
+  | "concurrent-stale-lock"
+  | "malformed-resources"
+  | "contradictory-resources"
+  | "malformed-memory";
 
 function bashExecutable(): string {
   return process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -85,6 +108,36 @@ describe("version-controlled production deployment readiness", () => {
     expect(output).toContain("candidate-build.log");
     expect(output).not.toContain("ACTIVE_RUN name=clashcookies-app revision=new-reviewed-sha");
     expect(output).toContain("STATE=active:OLD");
+    expect(output).toContain("CONTAINERS_END\n");
+  });
+
+  it("terminates the daemon-managed candidate after the handled timeout", () => {
+    const output = runScenario("slow-candidate-build");
+    const log = section(output, "LOG");
+    expect(output).toContain("STATUS=1");
+    expect(log).toContain("DOCKER stop --time 10");
+    expect(log).toContain("DOCKER rm container-");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+  });
+
+  it("does not misclassify an observed candidate exit 137 as a wrapper deadline", () => {
+    const output = runScenario("candidate-exit-137");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("candidate_build=failed reason=build status=137");
+    expect(output).not.toContain("reason=build_deadline");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("distinguishes an observed candidate exit 124 from the wrapper deadline", () => {
+    const output = runScenario("candidate-exit-124");
+    expect(output).toContain("candidate_build=failed reason=build_exit_124 status=124");
+    expect(output).not.toContain("reason=build_deadline");
+  });
+
+  it("reconciles a failed container create through the pre-Docker intent", () => {
+    const output = runScenario("interrupted-creation");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
   });
 
   it("keeps the outer deadline safe through promotion timeout and slow rollback", () => {
@@ -187,6 +240,13 @@ describe("version-controlled production deployment readiness", () => {
     },
   );
 
+  it("serializes concurrent recovery of one stale legacy lock", () => {
+    const output = runScenario("concurrent-stale-lock");
+    expect(output).toContain("deploy_lock=recovered_stale");
+    expect(output).toMatch(/CONCURRENT_FIRST_STATUS=0|CONCURRENT_SECOND_STATUS=0/);
+    expect(output).toMatch(/CONCURRENT_FIRST_STATUS=1|CONCURRENT_SECOND_STATUS=1/);
+  });
+
   it("retains diagnostic evidence after a health timeout", () => {
     const output = runScenario("health-timeout");
     expect(output).toContain("diagnostics_saved label=promotion");
@@ -231,6 +291,124 @@ describe("version-controlled production deployment readiness", () => {
     const output = runScenario("diagnostic-permissions");
     expect(output).toContain("STATUS=1");
     expect(output).toContain("private_directory_mode_invalid");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("reconciles an abandoned owned attempt before preparing the next one", () => {
+    const output = runScenario("abandoned-attempt");
+    expect(output).toContain("STATUS=0");
+    expect(output).toContain("owned_resource_reconciliation=abandoned_container");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+  });
+
+  it("reconciles an owned abandoned artifact container by its exact revision and role", () => {
+    const output = runScenario("abandoned-artifact");
+    expect(output).toContain("STATUS=0");
+    expect(output).toContain("owned_resource_reconciliation=abandoned_container");
+    expect(output).toContain("role=artifact-stage");
+    expect(output).toContain("revision=old-reviewed-sha");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+  });
+
+  it("refuses ambiguous owned resources and leaves them for an operator", () => {
+    const output = runScenario("ambiguous-owned-resource");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("reason=ambiguous_container");
+    expect(output).toContain("ambiguous-candidate");
+  });
+
+  it.each(["docker-enumeration-failure", "docker-inspection-failure", "legacy-candidate", "partial-labels"] as const)(
+    "fails closed for %s",
+    (scenario) => {
+      const output = runScenario(scenario);
+      expect(output).toContain("STATUS=1");
+      expect(output).not.toContain("promotion_result=success");
+    },
+  );
+
+  it("fails closed when owned container removal cannot be verified", () => {
+    const output = runScenario("candidate-container-cleanup-failure");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("container_cleanup=failed");
+    expect(output).toContain("operator_intervention_required");
+    expect(output).toContain("CONTAINERS_BEGIN\ncontainer-");
+  });
+
+  it("refuses the next deployment while an owned cleanup failure remains", () => {
+    const output = runScenario("cleanup-failure-retry");
+    expect(output).toContain("FIRST_STATUS=1");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("owned_resource_reconciliation=failed");
+    expect(output).toContain("operator_intervention_required");
+  });
+
+  it("does not touch resources owned by another tool", () => {
+    const output = runScenario("unrelated-resource");
+    expect(output).toContain("STATUS=0");
+    expect(output).toContain("CONTAINERS_BEGIN\nunrelated-candidate\nCONTAINERS_END");
+  });
+
+  it("refuses candidate preparation when host headroom is insufficient", () => {
+    const output = runScenario("insufficient-resources");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("resource_admission=denied reason=insufficient_memory");
+    expect(output).not.toContain("BUILD ");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it.each(["malformed-resources", "contradictory-resources", "malformed-memory"] as const)(
+    "fails closed for invalid resource measurements/configuration: %s",
+    (scenario) => {
+      const output = runScenario(scenario);
+      expect(output).toContain("STATUS=1");
+      expect(output).not.toContain("BUILD ");
+    },
+  );
+
+  it("aborts candidate preparation after confirmed production health degradation", () => {
+    const output = runScenario("health-degradation");
+    expect(output).toContain("STATUS=1");
+    expect(output).toContain("production_health_monitor=failed");
+    expect(output).toContain("candidate_build=failed reason=build_abort_or_cleanup");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it.each(["signal-term", "signal-hup"] as const)(
+    "cleans the owned candidate on %s",
+    (scenario) => {
+      const output = runScenario(scenario);
+      expect(output).toMatch(/STATUS=(129|130|143)/);
+      expect(output).toContain("interruption=received");
+      expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+      expect(output).toContain("STATE=active:OLD");
+    },
+  );
+
+  it("delivers SIGINT to the wrapper and releases its lock", () => {
+    const output = runScenario("signal-int");
+    if (process.platform === "win32") {
+      // Git Bash translates this synthetic signal differently. Linux CI must
+      // take the exact branch below and prove INT/130; Windows is only a
+      // cleanup smoke check and is not lifecycle evidence.
+      expect(output).toMatch(/STATUS=(130|143)/);
+      expect(output).toContain("LOCK_RELEASED=1");
+      return;
+    }
+    expect(output).toContain("STATUS=130");
+    expect(output).toContain("interruption=received signal=INT");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
+    expect(output).toContain("LOCK_RELEASED=1");
+    expect(output).toContain("STATE=active:OLD");
+  });
+
+  it("cleans an interrupted rollback-artifact container using its registered identity", () => {
+    const output = runScenario("signal-rollback-artifact");
+    expect(output).toMatch(/STATUS=(129|130|143)/);
+    expect(output).toContain("interruption=received");
+    expect(output).toContain("role=artifact-stage");
+    expect(output).toContain("revision=old-reviewed-sha");
+    expect(output).toContain("container_cleanup=verified");
+    expect(output).toContain("CONTAINERS_BEGIN\nCONTAINERS_END");
     expect(output).toContain("STATE=active:OLD");
   });
 });
